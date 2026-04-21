@@ -10,6 +10,7 @@ import { StreamReader, StreamWriter } from "../stream/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
 import { FixedClock } from "../util/clock.js";
+import { OpenQuestionsRepository } from "../memory/self/index.js";
 import { selfMigrations } from "../memory/self/migrations.js";
 import { semanticMigrations } from "../memory/semantic/migrations.js";
 import { SemanticGraph } from "../memory/semantic/graph.js";
@@ -455,5 +456,72 @@ describe("retrieval pipeline", () => {
       contradicts: [expect.objectContaining({ id: contradiction.id })],
       categories: [expect.objectContaining({ id: category.id })],
     });
+  });
+
+  it("attaches relevant open questions when requested", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const openQuestionsRepository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(5_000),
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await repo.insert({
+      ...createEpisode("ep_aaaaaaaaaaaaaaaa", "strm_aaaaaaaaaaaaaaaa", [1, 0, 0, 0]),
+      title: "Atlas deployment note",
+    });
+    openQuestionsRepository.add({
+      question: "Why does Atlas deployment keep failing?",
+      urgency: 0.8,
+      source: "reflection",
+    });
+    openQuestionsRepository.add({
+      question: "What snacks should we order?",
+      urgency: 0.9,
+      source: "user",
+    });
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: repo,
+      openQuestionsRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    const reflective = await pipeline.searchWithContext("Atlas deployment", {
+      limit: 1,
+      includeOpenQuestions: true,
+    });
+    const defaultResult = await pipeline.searchWithContext("Atlas deployment", {
+      limit: 1,
+    });
+
+    expect(reflective.open_questions_context).toEqual([
+      expect.objectContaining({
+        question: "Why does Atlas deployment keep failing?",
+      }),
+    ]);
+    expect(defaultResult.open_questions_context).toEqual([]);
   });
 });

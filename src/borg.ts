@@ -34,11 +34,18 @@ import {
 } from "./memory/semantic/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "./retrieval/index.js";
 import {
+  AutobiographicalRepository,
   GoalsRepository,
+  GrowthMarkersRepository,
+  OpenQuestionsRepository,
   TraitsRepository,
   ValuesRepository,
   selfMigrations,
 } from "./memory/self/index.js";
+import {
+  appendOpenQuestionHookFailureEvent,
+  enqueueOpenQuestionForReview,
+} from "./memory/self/review-open-question-hook.js";
 import { WorkingMemoryStore, type WorkingMemory } from "./memory/working/index.js";
 import {
   AuditLog,
@@ -48,6 +55,8 @@ import {
   OverseerProcess,
   ReflectorProcess,
   ReverserRegistry,
+  RuminatorProcess,
+  SelfNarratorProcess,
   type MaintenancePlan,
   offlineMigrations,
   type OfflineProcess,
@@ -85,6 +94,9 @@ type BorgDependencies = {
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
+  autobiographicalRepository: AutobiographicalRepository;
+  growthMarkersRepository: GrowthMarkersRepository;
+  openQuestionsRepository: OpenQuestionsRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   retrievalPipeline: RetrievalPipeline;
@@ -118,6 +130,7 @@ export type BorgDreamOptions = {
       {
         dryRun?: boolean;
         budget?: number;
+        params?: Record<string, unknown>;
       }
     >
   >;
@@ -131,6 +144,16 @@ export type BorgDreamRunner = ((options?: BorgDreamOptions) => Promise<Orchestra
   reflect: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
   curate: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
   oversee: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
+  ruminate: (options?: {
+    dryRun?: boolean;
+    budget?: number;
+    maxQuestionsPerRun?: number;
+  }) => Promise<OrchestratorResult>;
+  narrate: (options?: {
+    dryRun?: boolean;
+    budget?: number;
+    label?: string;
+  }) => Promise<OrchestratorResult>;
 };
 
 function createEmbeddingClient(config: Config): EmbeddingClient {
@@ -221,6 +244,52 @@ export class Borg {
     values: ValuesRepository;
     goals: GoalsRepository;
     traits: TraitsRepository;
+    autobiographical: {
+      currentPeriod: () => ReturnType<AutobiographicalRepository["currentPeriod"]>;
+      listPeriods: (
+        ...args: Parameters<AutobiographicalRepository["listPeriods"]>
+      ) => ReturnType<AutobiographicalRepository["listPeriods"]>;
+      upsertPeriod: (
+        ...args: Parameters<AutobiographicalRepository["upsertPeriod"]>
+      ) => ReturnType<AutobiographicalRepository["upsertPeriod"]>;
+      closePeriod: (
+        ...args: Parameters<AutobiographicalRepository["closePeriod"]>
+      ) => ReturnType<AutobiographicalRepository["closePeriod"]>;
+      getPeriod: (
+        ...args: Parameters<AutobiographicalRepository["getPeriod"]>
+      ) => ReturnType<AutobiographicalRepository["getPeriod"]>;
+      getByLabel: (
+        ...args: Parameters<AutobiographicalRepository["getByLabel"]>
+      ) => ReturnType<AutobiographicalRepository["getByLabel"]>;
+    };
+    growthMarkers: {
+      list: (
+        ...args: Parameters<GrowthMarkersRepository["list"]>
+      ) => ReturnType<GrowthMarkersRepository["list"]>;
+      add: (
+        ...args: Parameters<GrowthMarkersRepository["add"]>
+      ) => ReturnType<GrowthMarkersRepository["add"]>;
+      summarize: (
+        ...args: Parameters<GrowthMarkersRepository["summarize"]>
+      ) => ReturnType<GrowthMarkersRepository["summarize"]>;
+    };
+    openQuestions: {
+      list: (
+        ...args: Parameters<OpenQuestionsRepository["list"]>
+      ) => ReturnType<OpenQuestionsRepository["list"]>;
+      add: (
+        ...args: Parameters<OpenQuestionsRepository["add"]>
+      ) => ReturnType<OpenQuestionsRepository["add"]>;
+      resolve: (
+        ...args: Parameters<OpenQuestionsRepository["resolve"]>
+      ) => ReturnType<OpenQuestionsRepository["resolve"]>;
+      abandon: (
+        ...args: Parameters<OpenQuestionsRepository["abandon"]>
+      ) => ReturnType<OpenQuestionsRepository["abandon"]>;
+      bumpUrgency: (
+        ...args: Parameters<OpenQuestionsRepository["bumpUrgency"]>
+      ) => ReturnType<OpenQuestionsRepository["bumpUrgency"]>;
+    };
   };
   readonly semantic: {
     nodes: {
@@ -302,6 +371,8 @@ export class Borg {
         reflector: this.deps.config.offline.reflector.enabled,
         curator: this.deps.config.offline.curator.enabled,
         overseer: this.deps.config.offline.overseer.enabled,
+        ruminator: this.deps.config.offline.ruminator.enabled,
+        "self-narrator": this.deps.config.offline.selfNarrator.enabled,
       })
         .filter(([, enabled]) => enabled)
         .map(([name]) => name as OfflineProcessName);
@@ -356,6 +427,26 @@ export class Borg {
       values: this.deps.valuesRepository,
       goals: this.deps.goalsRepository,
       traits: this.deps.traitsRepository,
+      autobiographical: {
+        currentPeriod: () => this.deps.autobiographicalRepository.currentPeriod(),
+        listPeriods: (...args) => this.deps.autobiographicalRepository.listPeriods(...args),
+        upsertPeriod: (...args) => this.deps.autobiographicalRepository.upsertPeriod(...args),
+        closePeriod: (...args) => this.deps.autobiographicalRepository.closePeriod(...args),
+        getPeriod: (...args) => this.deps.autobiographicalRepository.getPeriod(...args),
+        getByLabel: (...args) => this.deps.autobiographicalRepository.getByLabel(...args),
+      },
+      growthMarkers: {
+        list: (...args) => this.deps.growthMarkersRepository.list(...args),
+        add: (...args) => this.deps.growthMarkersRepository.add(...args),
+        summarize: (...args) => this.deps.growthMarkersRepository.summarize(...args),
+      },
+      openQuestions: {
+        list: (...args) => this.deps.openQuestionsRepository.list(...args),
+        add: (...args) => this.deps.openQuestionsRepository.add(...args),
+        resolve: (...args) => this.deps.openQuestionsRepository.resolve(...args),
+        abandon: (...args) => this.deps.openQuestionsRepository.abandon(...args),
+        bumpUrgency: (...args) => this.deps.openQuestionsRepository.bumpUrgency(...args),
+      },
     };
     this.semantic = {
       nodes: {
@@ -494,6 +585,50 @@ export class Borg {
         reflect: (options = {}) => runDream(["reflector"], options),
         curate: (options = {}) => runDream(["curator"], options),
         oversee: (options = {}) => runDream(["overseer"], options),
+        ruminate: (
+          options: {
+            dryRun?: boolean;
+            budget?: number;
+            maxQuestionsPerRun?: number;
+          } = {},
+        ) =>
+          runDream(["ruminator"], {
+            ...options,
+            processOverrides: {
+              ruminator: {
+                dryRun: options.dryRun,
+                budget: options.budget,
+                params:
+                  options.maxQuestionsPerRun === undefined
+                    ? undefined
+                    : {
+                        maxQuestionsPerRun: options.maxQuestionsPerRun,
+                      },
+              },
+            },
+          }),
+        narrate: (
+          options: {
+            dryRun?: boolean;
+            budget?: number;
+            label?: string;
+          } = {},
+        ) =>
+          runDream(["self-narrator"], {
+            ...options,
+            processOverrides: {
+              "self-narrator": {
+                dryRun: options.dryRun,
+                budget: options.budget,
+                params:
+                  options.label === undefined
+                    ? undefined
+                    : {
+                        label: options.label,
+                      },
+              },
+            },
+          }),
       },
     ) satisfies BorgDreamRunner;
     this.workmem = {
@@ -536,7 +671,17 @@ export class Borg {
         db: sqlite,
         clock,
       });
+      const createDefaultStreamWriter = () =>
+        new StreamWriter({
+          dataDir: config.dataDir,
+          sessionId: DEFAULT_SESSION_ID,
+          clock,
+        });
       let reviewQueueRepository: ReviewQueueRepository | undefined;
+      const openQuestionsRepository = new OpenQuestionsRepository({
+        db: sqlite,
+        clock,
+      });
       const enqueueReview = (input: Parameters<ReviewQueueRepository["enqueue"]>[0]) => {
         return reviewQueueRepository?.enqueue(input);
       };
@@ -550,6 +695,17 @@ export class Borg {
         db: sqlite,
         clock,
         semanticNodeRepository,
+        onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
+        onEnqueueError: (error) => {
+          const writer = createDefaultStreamWriter();
+          void appendOpenQuestionHookFailureEvent(
+            writer,
+            "review_queue_open_question",
+            error,
+          ).finally(() => {
+            writer.close();
+          });
+        },
       });
       const semanticEdgeRepository = new SemanticEdgeRepository({
         db: sqlite,
@@ -572,6 +728,14 @@ export class Borg {
         db: sqlite,
         clock,
       });
+      const autobiographicalRepository = new AutobiographicalRepository({
+        db: sqlite,
+        clock,
+      });
+      const growthMarkersRepository = new GrowthMarkersRepository({
+        db: sqlite,
+        clock,
+      });
       const entityRepository = new EntityRepository({
         db: sqlite,
         clock,
@@ -585,6 +749,7 @@ export class Borg {
         episodicRepository,
         semanticNodeRepository,
         semanticGraph,
+        openQuestionsRepository,
         dataDir: config.dataDir,
         clock,
       });
@@ -625,6 +790,16 @@ export class Borg {
           reviewQueueRepository,
           registry: reverserRegistry,
         }),
+        ruminator: new RuminatorProcess({
+          openQuestionsRepository,
+          growthMarkersRepository,
+          registry: reverserRegistry,
+        }),
+        "self-narrator": new SelfNarratorProcess({
+          autobiographicalRepository,
+          growthMarkersRepository,
+          registry: reverserRegistry,
+        }),
       } satisfies Record<OfflineProcessName, OfflineProcess>;
       const maintenanceOrchestrator = new MaintenanceOrchestrator({
         baseContext: {
@@ -643,8 +818,12 @@ export class Borg {
           valuesRepository,
           goalsRepository,
           traitsRepository,
+          autobiographicalRepository,
+          growthMarkersRepository,
+          openQuestionsRepository,
           entityRepository,
           commitmentRepository,
+          retrievalPipeline,
         },
         auditLog,
         createStreamWriter: () => createStreamWriter(DEFAULT_SESSION_ID),
@@ -659,6 +838,7 @@ export class Borg {
         valuesRepository,
         goalsRepository,
         traitsRepository,
+        openQuestionsRepository,
         workingMemoryStore,
         llmFactory,
         clock,
@@ -677,6 +857,9 @@ export class Borg {
         valuesRepository,
         goalsRepository,
         traitsRepository,
+        autobiographicalRepository,
+        growthMarkersRepository,
+        openQuestionsRepository,
         entityRepository,
         commitmentRepository,
         retrievalPipeline,

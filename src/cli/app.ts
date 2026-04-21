@@ -2,7 +2,11 @@ import { cac } from "cac";
 
 import { Borg, VERSION, loadConfig, redactConfig, type BorgOpenOptions } from "../index.js";
 import { commitmentTypeSchema } from "../memory/commitments/index.js";
-import { goalStatusSchema } from "../memory/self/index.js";
+import {
+  goalStatusSchema,
+  growthMarkerCategorySchema,
+  openQuestionStatusSchema,
+} from "../memory/self/index.js";
 import {
   reviewKindSchema,
   reviewResolutionSchema,
@@ -20,10 +24,12 @@ import { readJsonFile, writeJsonFileAtomic } from "../util/atomic-write.js";
 import { BorgError } from "../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
+  parseAutobiographicalPeriodId,
   parseAuditId,
   parseCommitmentId,
   parseEpisodeId,
   parseGoalId,
+  parseOpenQuestionId,
   parseMaintenanceRunId,
   parseSemanticNodeId,
   parseSessionId,
@@ -166,6 +172,34 @@ function resolveValueId(value: unknown) {
   }
 }
 
+function resolveAutobiographicalPeriodId(value: unknown) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new CliError("Period id is required");
+  }
+
+  try {
+    return parseAutobiographicalPeriodId(value);
+  } catch (error) {
+    throw new CliError(`Invalid period id: ${value}`, {
+      cause: error,
+    });
+  }
+}
+
+function resolveOpenQuestionId(value: unknown) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new CliError("Open question id is required");
+  }
+
+  try {
+    return parseOpenQuestionId(value);
+  } catch (error) {
+    throw new CliError(`Invalid open question id: ${value}`, {
+      cause: error,
+    });
+  }
+}
+
 function parseSinceToTimestamp(value: unknown, nowMs = Date.now()): number | undefined {
   if (value === undefined) {
     return undefined;
@@ -201,6 +235,33 @@ function parseGoalStatus(value: unknown) {
 
   if (!parsed.success) {
     throw new CliError("--status must be one of: active, done, abandoned, blocked", {
+      cause: parsed.error,
+    });
+  }
+
+  return parsed.data;
+}
+
+function parseGrowthMarkerCategory(value: unknown) {
+  const parsed = growthMarkerCategorySchema.safeParse(value);
+
+  if (!parsed.success) {
+    throw new CliError(
+      `--category must be one of: ${growthMarkerCategorySchema.options.join(", ")}`,
+      {
+        cause: parsed.error,
+      },
+    );
+  }
+
+  return parsed.data;
+}
+
+function parseOpenQuestionStatus(value: unknown) {
+  const parsed = openQuestionStatusSchema.safeParse(value);
+
+  if (!parsed.success) {
+    throw new CliError(`--status must be one of: ${openQuestionStatusSchema.options.join(", ")}`, {
       cause: parsed.error,
     });
   }
@@ -296,6 +357,46 @@ function parsePositiveInteger(value: unknown, flag: string): number {
   }
 
   return candidate;
+}
+
+function parseOptionalPositiveInteger(value: unknown, flag: string): number | undefined {
+  const candidate = Array.isArray(value) ? value.at(-1) : value;
+
+  if (
+    candidate === undefined ||
+    candidate === null ||
+    candidate === false ||
+    (typeof candidate === "number" && Number.isNaN(candidate)) ||
+    (typeof candidate === "string" && candidate.trim() === "")
+  ) {
+    return undefined;
+  }
+
+  if (typeof candidate !== "number" && typeof candidate !== "string") {
+    return undefined;
+  }
+
+  return parsePositiveInteger(candidate, flag);
+}
+
+function parseFiniteNumber(value: unknown, label: string): number {
+  const candidate = Array.isArray(value) ? value.at(-1) : value;
+  const numeric =
+    typeof candidate === "number"
+      ? candidate
+      : typeof candidate === "string" && candidate.trim() !== ""
+        ? Number(candidate)
+        : Number.NaN;
+
+  if (!Number.isFinite(numeric)) {
+    throw new CliError(`${label} must be a finite number`);
+  }
+
+  return numeric;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function parseStakes(value: unknown): "low" | "medium" | "high" | undefined {
@@ -602,12 +703,19 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     .option("--dry-run", "Preview changes without applying them")
     .option("--budget <tokens>", "Override token budget")
     .option("--process <names>", "Comma-separated process names")
+    .option("--max-questions <count>", "Limit questions per ruminator run", {
+      type: [Number],
+    })
     .option("--output <path>", "Write a generated dry-run plan to a file")
     .option("--plan <path>", "Maintenance plan file to apply")
     .action(async (action: string | undefined, commandOptions: Record<string, unknown>) => {
       const budget = parseBudget(commandOptions.budget);
       const processList = parseOfflineProcessList(commandOptions.process);
       const dryRun = commandOptions.dryRun === true;
+      const maxQuestions = parseOptionalPositiveInteger(
+        commandOptions.maxQuestions,
+        "--max-questions",
+      );
       const outputPath = parseOptionalPath(commandOptions.output, "--output");
       const planPath = parseOptionalPath(commandOptions.plan, "--plan");
 
@@ -650,17 +758,33 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
                 ? ["curator"]
                 : action === "oversee"
                   ? ["overseer"]
-                  : undefined;
+                  : action === "ruminate"
+                    ? ["ruminator"]
+                    : action === "narrate"
+                      ? ["self-narrator"]
+                      : undefined;
 
       if (selectedProcesses === undefined) {
         throw new CliError(`Unknown dream action: ${action}`);
       }
+
+      const processOverrides =
+        maxQuestions === undefined || !selectedProcesses.includes("ruminator")
+          ? undefined
+          : {
+              ruminator: {
+                params: {
+                  maxQuestionsPerRun: maxQuestions,
+                },
+              },
+            };
 
       if (outputPath !== undefined) {
         const response = await withBorg(options, async (borg) => {
           const plan = await borg.dream.plan({
             budget,
             processes: selectedProcesses,
+            processOverrides,
           });
           writeJsonFileAtomic(outputPath, plan);
 
@@ -679,6 +803,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
           dryRun,
           budget,
           processes: selectedProcesses,
+          processOverrides,
         });
       });
 
@@ -972,6 +1097,208 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
         }
 
         throw new CliError(`Unknown value action: ${action}`);
+      },
+    );
+
+  cli
+    .command("period <action> [arg]", "Manage autobiographical periods")
+    .option("--limit <count>", "Maximum number of periods", {
+      default: 20,
+      type: [Number],
+    })
+    .action(
+      async (action: string, arg: string | undefined, commandOptions: Record<string, unknown>) => {
+        if (action === "current") {
+          const period = await withBorg(options, async (borg) =>
+            borg.self.autobiographical.currentPeriod(),
+          );
+          writeLine(stdout, JSON.stringify(period, null, 2));
+          return;
+        }
+
+        if (action === "list") {
+          const periods = await withBorg(options, async (borg) =>
+            borg.self.autobiographical.listPeriods({
+              limit: parseLimit(commandOptions.limit),
+            }),
+          );
+          writeLine(stdout, JSON.stringify(periods, null, 2));
+          return;
+        }
+
+        if (action === "open") {
+          const period = await withBorg(options, async (borg) =>
+            borg.self.autobiographical.upsertPeriod({
+              label: parseRequiredText(arg, "<label>"),
+              start_ts: Date.now(),
+              narrative: "A new autobiographical period began.",
+            }),
+          );
+          writeLine(stdout, JSON.stringify(period, null, 2));
+          return;
+        }
+
+        if (action === "close") {
+          const periodId = resolveAutobiographicalPeriodId(arg);
+          await withBorg(options, async (borg) => {
+            borg.self.autobiographical.closePeriod(periodId, Date.now());
+          });
+          writeLine(stdout, JSON.stringify({ id: periodId, closed: true }));
+          return;
+        }
+
+        if (action === "show") {
+          const periodId = resolveAutobiographicalPeriodId(arg);
+          const period = await withBorg(options, async (borg) =>
+            borg.self.autobiographical.getPeriod(periodId),
+          );
+
+          if (period === null) {
+            throw new CliError(`Period not found: ${periodId}`, {
+              code: "CLI_NOT_FOUND",
+            });
+          }
+
+          writeLine(stdout, JSON.stringify(period, null, 2));
+          return;
+        }
+
+        throw new CliError(`Unknown period action: ${action}`);
+      },
+    );
+
+  cli
+    .command("growth <action> [arg1] [arg2]", "Manage growth markers")
+    .option("--since <duration>", "Relative duration like 1h or epoch ms")
+    .option("--until <duration>", "Relative duration like 1h or epoch ms")
+    .option("--category <category>", "Growth marker category")
+    .option("--episode <id>", "Evidence episode id")
+    .action(
+      async (
+        action: string,
+        arg1: string | undefined,
+        arg2: string | undefined,
+        commandOptions: Record<string, unknown>,
+      ) => {
+        if (action === "list") {
+          const markers = await withBorg(options, async (borg) =>
+            borg.self.growthMarkers.list({
+              sinceTs: parseSinceToTimestamp(commandOptions.since),
+              untilTs: parseSinceToTimestamp(commandOptions.until),
+              category:
+                commandOptions.category === undefined
+                  ? undefined
+                  : parseGrowthMarkerCategory(commandOptions.category),
+            }),
+          );
+          writeLine(stdout, JSON.stringify(markers, null, 2));
+          return;
+        }
+
+        if (action === "add") {
+          const marker = await withBorg(options, async (borg) =>
+            borg.self.growthMarkers.add({
+              ts: Date.now(),
+              category: parseGrowthMarkerCategory(arg1),
+              what_changed: parseRequiredText(arg2, "<change>"),
+              evidence_episode_ids: [resolveEpisodeId(commandOptions.episode)],
+              confidence: 0.6,
+              source_process: "manual",
+            }),
+          );
+          writeLine(stdout, JSON.stringify(marker, null, 2));
+          return;
+        }
+
+        throw new CliError(`Unknown growth action: ${action}`);
+      },
+    );
+
+  cli
+    .command("question <action> [arg1] [arg2]", "Manage open questions")
+    .option("--status <status>", "Open question status")
+    .option("--min-urgency <value>", "Minimum urgency", {
+      type: [Number],
+    })
+    .option("--episode <id>", "Resolution episode id")
+    .option("--note <text>", "Resolution note")
+    .option("--reason <text>", "Abandon reason")
+    .action(
+      async (
+        action: string,
+        arg1: string | undefined,
+        arg2: string | undefined,
+        commandOptions: Record<string, unknown>,
+      ) => {
+        if (action === "list") {
+          const minUrgency =
+            commandOptions.minUrgency === undefined
+              ? undefined
+              : clamp(parseFiniteNumber(commandOptions.minUrgency, "--min-urgency"), 0, 1);
+          const questions = await withBorg(options, async (borg) =>
+            borg.self.openQuestions.list({
+              status:
+                commandOptions.status === undefined
+                  ? undefined
+                  : parseOpenQuestionStatus(commandOptions.status),
+              minUrgency,
+            }),
+          );
+          writeLine(stdout, JSON.stringify(questions, null, 2));
+          return;
+        }
+
+        if (action === "add") {
+          const question = await withBorg(options, async (borg) =>
+            borg.self.openQuestions.add({
+              question: parseRequiredText(arg1, "<question>"),
+              urgency: 0.4,
+              source: "user",
+            }),
+          );
+          writeLine(stdout, JSON.stringify(question, null, 2));
+          return;
+        }
+
+        if (action === "resolve") {
+          const questionId = resolveOpenQuestionId(arg1);
+          const resolved = await withBorg(options, async (borg) =>
+            borg.self.openQuestions.resolve(questionId, {
+              resolution_episode_id: resolveEpisodeId(commandOptions.episode),
+              resolution_note:
+                commandOptions.note === undefined
+                  ? null
+                  : parseRequiredText(commandOptions.note, "--note"),
+            }),
+          );
+          writeLine(stdout, JSON.stringify(resolved, null, 2));
+          return;
+        }
+
+        if (action === "abandon") {
+          const questionId = resolveOpenQuestionId(arg1);
+          const abandoned = await withBorg(options, async (borg) =>
+            borg.self.openQuestions.abandon(
+              questionId,
+              typeof commandOptions.reason === "string"
+                ? commandOptions.reason
+                : "Abandoned from CLI",
+            ),
+          );
+          writeLine(stdout, JSON.stringify(abandoned, null, 2));
+          return;
+        }
+
+        if (action === "bump") {
+          const questionId = resolveOpenQuestionId(arg1);
+          const bumped = await withBorg(options, async (borg) =>
+            borg.self.openQuestions.bumpUrgency(questionId, parseFiniteNumber(arg2, "<delta>")),
+          );
+          writeLine(stdout, JSON.stringify(bumped, null, 2));
+          return;
+        }
+
+        throw new CliError(`Unknown question action: ${action}`);
       },
     );
 

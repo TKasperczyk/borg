@@ -11,9 +11,14 @@ import { openDatabase } from "../../storage/sqlite/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import { episodicMigrations } from "../../memory/episodic/migrations.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "../../memory/episodic/repository.js";
-import { GoalsRepository, TraitsRepository, ValuesRepository } from "../../memory/self/index.js";
+import {
+  GoalsRepository,
+  OpenQuestionsRepository,
+  TraitsRepository,
+  ValuesRepository,
+} from "../../memory/self/index.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
-import { StreamWriter } from "../../stream/index.js";
+import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
@@ -54,6 +59,10 @@ describe("reflector", () => {
       clock,
     });
     const valuesRepository = new ValuesRepository({
+      db,
+      clock,
+    });
+    const openQuestionsRepository = new OpenQuestionsRepository({
       db,
       clock,
     });
@@ -120,6 +129,11 @@ describe("reflector", () => {
         suppressionPenalty: 0,
       },
       citationChain: [],
+      semantic_context: {
+        supports: [],
+        contradicts: [],
+        categories: [],
+      },
     };
     const reflected = await reflector.reflect(
       {
@@ -176,6 +190,7 @@ describe("reflector", () => {
         episodicRepository,
         goalsRepository,
         traitsRepository,
+        openQuestionsRepository,
         suppressionSet,
       },
       writer,
@@ -215,6 +230,10 @@ describe("reflector", () => {
       clock,
     });
     const traitsRepository = new TraitsRepository({
+      db,
+      clock,
+    });
+    const openQuestionsRepository = new OpenQuestionsRepository({
       db,
       clock,
     });
@@ -267,6 +286,11 @@ describe("reflector", () => {
         suppressionPenalty: 0,
       },
       citationChain: [],
+      semantic_context: {
+        supports: [],
+        contradicts: [],
+        categories: [],
+      },
     };
 
     await reflector.reflect(
@@ -324,11 +348,327 @@ describe("reflector", () => {
         episodicRepository,
         goalsRepository,
         traitsRepository,
+        openQuestionsRepository,
         suppressionSet,
       },
       writer,
     );
 
     expect(episodicRepository.getStats(episode.id)?.use_count).toBe(1);
+  });
+
+  it("adds an open question when system 2 finishes with low retrieval confidence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const clock = new FixedClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const episodicRepository = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+    const goalsRepository = new GoalsRepository({
+      db,
+      clock,
+    });
+    const traitsRepository = new TraitsRepository({
+      db,
+      clock,
+    });
+    const openQuestionsRepository = new OpenQuestionsRepository({
+      db,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const episode = await episodicRepository.insert({
+      id: "ep_cccccccccccccccc" as never,
+      title: "Atlas uncertainty",
+      narrative: "The logs were incomplete and the root cause stayed unclear.",
+      participants: ["Atlas"],
+      location: null,
+      start_time: 0,
+      end_time: 1,
+      source_stream_ids: ["strm_cccccccccccccccc" as never],
+      significance: 0.5,
+      tags: ["atlas"],
+      confidence: 0.4,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 0,
+      updated_at: 0,
+    });
+
+    const reflector = new Reflector({
+      clock,
+    });
+    const retrieved: RetrievedEpisode = {
+      episode,
+      score: 0.2,
+      scoreBreakdown: {
+        similarity: 0.2,
+        decayedSalience: 0.2,
+        heat: 0.1,
+        goalRelevance: 0,
+        timeRelevance: 0,
+        suppressionPenalty: 0,
+      },
+      citationChain: [],
+      semantic_context: {
+        supports: [],
+        contradicts: [],
+        categories: [],
+      },
+    };
+
+    await reflector.reflect(
+      {
+        userMessage: "Why is Atlas still failing?",
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          scratchpad: "",
+          current_focus: "Atlas",
+          recent_thoughts: [],
+          hot_entities: ["Atlas"],
+          pending_intents: [],
+          suppressed: [],
+          mode: "reflective",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_2",
+          response: "I still need to compare more evidence.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "low confidence",
+          retrievedEpisodes: [retrieved],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "I still need to compare more evidence.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            scratchpad: "",
+            current_focus: "Atlas",
+            recent_thoughts: [],
+            hot_entities: ["Atlas"],
+            pending_intents: [],
+            suppressed: [],
+            mode: "reflective",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        episodicRepository,
+        goalsRepository,
+        traitsRepository,
+        openQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+      },
+      writer,
+    );
+
+    expect(openQuestionsRepository.list({ status: "open" })).toEqual([
+      expect.objectContaining({
+        source: "reflection",
+      }),
+    ]);
+  });
+
+  it("logs and continues when the reflection open-question hook fails", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const clock = new FixedClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const episodicRepository = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+    const goalsRepository = new GoalsRepository({
+      db,
+      clock,
+    });
+    const traitsRepository = new TraitsRepository({
+      db,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const episode = await episodicRepository.insert({
+      id: "ep_dddddddddddddddd" as never,
+      title: "Atlas unknowns",
+      narrative: "Atlas remains uncertain.",
+      participants: ["Atlas"],
+      location: null,
+      start_time: 0,
+      end_time: 1,
+      source_stream_ids: ["strm_dddddddddddddddd" as never],
+      significance: 0.4,
+      tags: ["atlas"],
+      confidence: 0.4,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 0,
+      updated_at: 0,
+    });
+    const reflector = new Reflector({
+      clock,
+    });
+    const retrieved: RetrievedEpisode = {
+      episode,
+      score: 0.2,
+      scoreBreakdown: {
+        similarity: 0.2,
+        decayedSalience: 0.2,
+        heat: 0.1,
+        goalRelevance: 0,
+        timeRelevance: 0,
+        suppressionPenalty: 0,
+      },
+      citationChain: [],
+      semantic_context: {
+        supports: [],
+        contradicts: [],
+        categories: [],
+      },
+    };
+    const brokenOpenQuestionsRepository = {
+      add() {
+        throw new Error("hook exploded");
+      },
+    } as unknown as OpenQuestionsRepository;
+
+    const reflected = await reflector.reflect(
+      {
+        userMessage: "Why is Atlas still failing?",
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          scratchpad: "",
+          current_focus: "Atlas",
+          recent_thoughts: [],
+          hot_entities: ["Atlas"],
+          pending_intents: [],
+          suppressed: [],
+          mode: "reflective",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_2",
+          response: "I still need to compare more evidence.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "low confidence",
+          retrievedEpisodes: [retrieved],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "I still need to compare more evidence.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            scratchpad: "",
+            current_focus: "Atlas",
+            recent_thoughts: [],
+            hot_entities: ["Atlas"],
+            pending_intents: [],
+            suppressed: [],
+            mode: "reflective",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        episodicRepository,
+        goalsRepository,
+        traitsRepository,
+        openQuestionsRepository: brokenOpenQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+      },
+      writer,
+    );
+
+    const entries = new StreamReader({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    }).tail(1);
+
+    expect(reflected.scratchpad).toBe("");
+    expect(entries[0]).toMatchObject({
+      kind: "internal_event",
+      content: {
+        hook: "reflection_open_question",
+      },
+    });
   });
 });

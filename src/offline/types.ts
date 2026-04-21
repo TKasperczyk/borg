@@ -3,19 +3,34 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
-import type { GoalsRepository, TraitsRepository, ValuesRepository } from "../memory/self/index.js";
+import type {
+  AutobiographicalRepository,
+  GoalsRepository,
+  GrowthMarkersRepository,
+  OpenQuestionsRepository,
+  TraitsRepository,
+  ValuesRepository,
+} from "../memory/self/index.js";
 import type {
   ReviewQueueRepository,
   SemanticEdgeRepository,
   SemanticNodeRepository,
 } from "../memory/semantic/index.js";
+import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import type { MaintenanceRunId } from "../util/ids.js";
 
 import type { AuditLog } from "./audit-log.js";
 
-export const OFFLINE_PROCESS_NAMES = ["consolidator", "reflector", "curator", "overseer"] as const;
+export const OFFLINE_PROCESS_NAMES = [
+  "consolidator",
+  "reflector",
+  "curator",
+  "overseer",
+  "ruminator",
+  "self-narrator",
+] as const;
 
 export type OfflineProcessName = (typeof OFFLINE_PROCESS_NAMES)[number];
 
@@ -67,13 +82,18 @@ export type OfflineContext = {
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
+  autobiographicalRepository: AutobiographicalRepository;
+  growthMarkersRepository: GrowthMarkersRepository;
+  openQuestionsRepository: OpenQuestionsRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  retrievalPipeline: RetrievalPipeline;
 };
 
 export type OfflineProcessRunOptions = {
   dryRun?: boolean;
   budget?: number;
+  params?: Record<string, unknown>;
 };
 
 export interface OfflineProcess<Plan extends OfflineProcessPlan = OfflineProcessPlan> {

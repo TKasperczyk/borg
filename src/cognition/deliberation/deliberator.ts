@@ -1,4 +1,9 @@
-import type { GoalRecord, TraitRecord, ValueRecord } from "../../memory/self/index.js";
+import type {
+  GoalRecord,
+  OpenQuestion,
+  TraitRecord,
+  ValueRecord,
+} from "../../memory/self/index.js";
 import { formatCommitmentsForPrompt } from "../../memory/commitments/checker.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
@@ -26,6 +31,7 @@ export type DeliberationContext = {
   retrievalResult: RetrievedEpisode[];
   contradictionPresent?: boolean;
   applicableCommitments?: readonly CommitmentRecord[];
+  openQuestionsContext?: readonly OpenQuestion[];
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;
   selfSnapshot: SelfSnapshot;
@@ -277,6 +283,22 @@ function summarizeSemanticContext(
   return lines.join("\n");
 }
 
+function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string {
+  if (openQuestions.length === 0) {
+    return "Open questions you're carrying: none";
+  }
+
+  return [
+    "Open questions you're carrying:",
+    ...openQuestions
+      .slice(0, 3)
+      .map(
+        (question) =>
+          `- ${question.question} (urgency=${question.urgency.toFixed(2)}, source=${question.source})`,
+      ),
+  ].join("\n");
+}
+
 export class Deliberator {
   constructor(private readonly options: DeliberatorOptions) {}
 
@@ -324,6 +346,9 @@ export class Deliberator {
       summarizeWorkingMemory(context.workingMemory),
       summarizeRetrievedEpisodes("Retrieved context", context.retrievalResult),
       summarizeSemanticContext(context.retrievalResult, semanticContextBudget),
+      ...(context.perception.mode === "reflective"
+        ? [summarizeOpenQuestions(context.openQuestionsContext ?? [])]
+        : []),
       commitmentSection,
     ].join("\n\n");
 

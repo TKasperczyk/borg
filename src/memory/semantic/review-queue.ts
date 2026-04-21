@@ -45,6 +45,8 @@ export type ReviewQueueRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
   semanticNodeRepository?: SemanticNodeRepository;
+  onEnqueue?: (item: ReviewQueueItem, input: ReviewQueueInsertInput) => void;
+  onEnqueueError?: (error: unknown, item: ReviewQueueItem, input: ReviewQueueInsertInput) => void;
 };
 
 function parseRefs(value: string): Record<string, unknown> {
@@ -120,7 +122,19 @@ export class ReviewQueueRepository {
       });
     }
 
-    return mapReviewRow(row);
+    const item = mapReviewRow(row);
+
+    try {
+      this.options.onEnqueue?.(item, input);
+    } catch (error) {
+      try {
+        this.options.onEnqueueError?.(error, item, input);
+      } catch {
+        // Best-effort hook error reporting only.
+      }
+    }
+
+    return item;
   }
 
   list(options: { kind?: ReviewKind; openOnly?: boolean } = {}): ReviewQueueItem[] {

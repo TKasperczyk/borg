@@ -14,6 +14,9 @@ export type SessionId = BrandedId<"SessionId">;
 export type EpisodeId = BrandedId<"EpisodeId">;
 export type GoalId = BrandedId<"GoalId">;
 export type ValueId = BrandedId<"ValueId">;
+export type AutobiographicalPeriodId = BrandedId<"AutobiographicalPeriodId">;
+export type GrowthMarkerId = BrandedId<"GrowthMarkerId">;
+export type OpenQuestionId = BrandedId<"OpenQuestionId">;
 export type SemanticNodeId = BrandedId<"SemanticNodeId">;
 export type SemanticEdgeId = BrandedId<"SemanticEdgeId">;
 export type CommitmentId = BrandedId<"CommitmentId">;
@@ -54,6 +57,9 @@ export const sessionIdHelpers = createIdHelpers<"SessionId">("sess");
 export const episodeIdHelpers = createIdHelpers<"EpisodeId">("ep");
 export const goalIdHelpers = createIdHelpers<"GoalId">("goal");
 export const valueIdHelpers = createIdHelpers<"ValueId">("val");
+export const autobiographicalPeriodIdHelpers = createIdHelpers<"AutobiographicalPeriodId">("abp");
+export const growthMarkerIdHelpers = createIdHelpers<"GrowthMarkerId">("grw");
+export const openQuestionIdHelpers = createIdHelpers<"OpenQuestionId">("oq");
 export const semanticNodeIdHelpers = createIdHelpers<"SemanticNodeId">("semn");
 export const semanticEdgeIdHelpers = createIdHelpers<"SemanticEdgeId">("seme");
 export const commitmentIdHelpers = createIdHelpers<"CommitmentId">("cmt");
@@ -65,6 +71,10 @@ export const createSessionId = (): SessionId => sessionIdHelpers.create();
 export const createEpisodeId = (): EpisodeId => episodeIdHelpers.create();
 export const createGoalId = (): GoalId => goalIdHelpers.create();
 export const createValueId = (): ValueId => valueIdHelpers.create();
+export const createAutobiographicalPeriodId = (): AutobiographicalPeriodId =>
+  autobiographicalPeriodIdHelpers.create();
+export const createGrowthMarkerId = (): GrowthMarkerId => growthMarkerIdHelpers.create();
+export const createOpenQuestionId = (): OpenQuestionId => openQuestionIdHelpers.create();
 export const createSemanticNodeId = (): SemanticNodeId => semanticNodeIdHelpers.create();
 export const createSemanticEdgeId = (): SemanticEdgeId => semanticEdgeIdHelpers.create();
 export const createCommitmentId = (): CommitmentId => commitmentIdHelpers.create();
@@ -93,6 +103,18 @@ export function parseGoalId(value: string): GoalId {
 
 export function parseValueId(value: string): ValueId {
   return valueIdHelpers.parse(value);
+}
+
+export function parseAutobiographicalPeriodId(value: string): AutobiographicalPeriodId {
+  return autobiographicalPeriodIdHelpers.parse(value);
+}
+
+export function parseGrowthMarkerId(value: string): GrowthMarkerId {
+  return growthMarkerIdHelpers.parse(value);
+}
+
+export function parseOpenQuestionId(value: string): OpenQuestionId {
+  return openQuestionIdHelpers.parse(value);
 }
 
 export function parseSemanticNodeId(value: string): SemanticNodeId {

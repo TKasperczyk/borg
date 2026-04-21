@@ -2,7 +2,9 @@ import { z } from "zod";
 
 import { consolidatorPlanSchema } from "./consolidator/index.js";
 import { curatorPlanSchema } from "./curator/index.js";
+import { ruminatorPlanSchema } from "./ruminator/index.js";
 import { reflectorPlanSchema } from "./reflector/index.js";
+import { selfNarratorPlanSchema } from "./self-narrator/index.js";
 import { overseerPlanSchema } from "./overseer/index.js";
 
 export const offlineProcessPlanSchema = z.discriminatedUnion("process", [
@@ -10,6 +12,8 @@ export const offlineProcessPlanSchema = z.discriminatedUnion("process", [
   reflectorPlanSchema,
   curatorPlanSchema,
   overseerPlanSchema,
+  ruminatorPlanSchema,
+  selfNarratorPlanSchema,
 ]);
 
 export const maintenancePlanSchema = z.object({

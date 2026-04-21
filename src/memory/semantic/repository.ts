@@ -677,6 +677,14 @@ export class SemanticEdgeRepository {
     return false;
   }
 
+  private getNodeLabel(id: SemanticNodeId): string | null {
+    const row = this.db.prepare("SELECT label FROM semantic_nodes WHERE id = ?").get(id) as
+      | { label: string }
+      | undefined;
+
+    return row?.label ?? null;
+  }
+
   addEdge(input: Omit<SemanticEdge, "id"> & { id?: SemanticEdgeId }): SemanticEdge {
     const edge = semanticEdgeSchema.parse({
       ...input,
@@ -729,6 +737,10 @@ export class SemanticEdgeRepository {
         kind: "contradiction",
         refs: {
           node_ids: [edge.from_node_id, edge.to_node_id],
+          node_labels: [
+            this.getNodeLabel(edge.from_node_id) ?? edge.from_node_id,
+            this.getNodeLabel(edge.to_node_id) ?? edge.to_node_id,
+          ],
           edge_id: edge.id,
         },
         reason: conflictsWithSupportChain

@@ -81,6 +81,27 @@ const configFileSchema = z
           })
           .partial()
           .optional(),
+        ruminator: z
+          .object({
+            enabled: z.boolean().optional(),
+            maxQuestionsPerRun: z.number().int().positive().optional(),
+            resolveConfidenceThreshold: z.number().min(0).max(1).optional(),
+            stalenessDays: z.number().positive().optional(),
+            budget: z.number().int().positive().optional(),
+            perQuestionBudget: z.number().int().positive().optional(),
+          })
+          .partial()
+          .optional(),
+        selfNarrator: z
+          .object({
+            enabled: z.boolean().optional(),
+            budget: z.number().int().positive().optional(),
+            maxObservationsPerRun: z.number().int().positive().optional(),
+            minSupportEpisodes: z.number().int().positive().optional(),
+            cadenceHintDays: z.number().positive().optional(),
+          })
+          .partial()
+          .optional(),
       })
       .partial()
       .optional(),
@@ -135,6 +156,21 @@ export const configSchema = z.object({
       maxChecksPerRun: z.number().int().positive(),
       budget: z.number().int().positive(),
     }),
+    ruminator: z.object({
+      enabled: z.boolean(),
+      maxQuestionsPerRun: z.number().int().positive(),
+      resolveConfidenceThreshold: z.number().min(0).max(1),
+      stalenessDays: z.number().positive(),
+      budget: z.number().int().positive(),
+      perQuestionBudget: z.number().int().positive(),
+    }),
+    selfNarrator: z.object({
+      enabled: z.boolean(),
+      budget: z.number().int().positive(),
+      maxObservationsPerRun: z.number().int().positive(),
+      minSupportEpisodes: z.number().int().positive(),
+      cadenceHintDays: z.number().positive(),
+    }),
   }),
 });
 
@@ -187,6 +223,21 @@ export const DEFAULT_CONFIG: Config = {
       lookbackHours: 24,
       maxChecksPerRun: 8,
       budget: 20_000,
+    },
+    ruminator: {
+      enabled: true,
+      maxQuestionsPerRun: 3,
+      resolveConfidenceThreshold: 0.65,
+      stalenessDays: 30,
+      budget: 6_000,
+      perQuestionBudget: 2_000,
+    },
+    selfNarrator: {
+      enabled: true,
+      budget: 30_000,
+      maxObservationsPerRun: 4,
+      minSupportEpisodes: 2,
+      cadenceHintDays: 7,
     },
   },
 };
@@ -449,6 +500,54 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_BUDGET") ??
           fileConfig.offline?.overseer?.budget ??
           DEFAULT_CONFIG.offline.overseer.budget,
+      },
+      ruminator: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_OFFLINE_RUMINATOR_ENABLED") ??
+          fileConfig.offline?.ruminator?.enabled ??
+          DEFAULT_CONFIG.offline.ruminator.enabled,
+        maxQuestionsPerRun:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_MAX_QUESTIONS_PER_RUN") ??
+          fileConfig.offline?.ruminator?.maxQuestionsPerRun ??
+          DEFAULT_CONFIG.offline.ruminator.maxQuestionsPerRun,
+        resolveConfidenceThreshold:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_RESOLVE_CONFIDENCE_THRESHOLD") ??
+          fileConfig.offline?.ruminator?.resolveConfidenceThreshold ??
+          DEFAULT_CONFIG.offline.ruminator.resolveConfidenceThreshold,
+        stalenessDays:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_STALENESS_DAYS") ??
+          fileConfig.offline?.ruminator?.stalenessDays ??
+          DEFAULT_CONFIG.offline.ruminator.stalenessDays,
+        budget:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_BUDGET") ??
+          fileConfig.offline?.ruminator?.budget ??
+          DEFAULT_CONFIG.offline.ruminator.budget,
+        perQuestionBudget:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_PER_QUESTION_BUDGET") ??
+          fileConfig.offline?.ruminator?.perQuestionBudget ??
+          DEFAULT_CONFIG.offline.ruminator.perQuestionBudget,
+      },
+      selfNarrator: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_OFFLINE_SELF_NARRATOR_ENABLED") ??
+          fileConfig.offline?.selfNarrator?.enabled ??
+          DEFAULT_CONFIG.offline.selfNarrator.enabled,
+        budget:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_BUDGET") ??
+          fileConfig.offline?.selfNarrator?.budget ??
+          DEFAULT_CONFIG.offline.selfNarrator.budget,
+        maxObservationsPerRun:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_MAX_OBSERVATIONS_PER_RUN") ??
+          fileConfig.offline?.selfNarrator?.maxObservationsPerRun ??
+          DEFAULT_CONFIG.offline.selfNarrator.maxObservationsPerRun,
+        minSupportEpisodes:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_MIN_SUPPORT_EPISODES") ??
+          fileConfig.offline?.selfNarrator?.minSupportEpisodes ??
+          DEFAULT_CONFIG.offline.selfNarrator.minSupportEpisodes,
+        cadenceHintDays:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_SELF_NARRATOR_CADENCE_HINT_DAYS") ??
+          fileConfig.offline?.selfNarrator?.cadenceHintDays ??
+          DEFAULT_CONFIG.offline.selfNarrator.cadenceHintDays,
       },
     },
   };

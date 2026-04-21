@@ -17,13 +17,21 @@ import {
   type Episode,
 } from "../memory/episodic/index.js";
 import {
+  AutobiographicalRepository,
   GoalsRepository,
+  GrowthMarkersRepository,
+  OpenQuestionsRepository,
   TraitsRepository,
   ValuesRepository,
   selfMigrations,
 } from "../memory/self/index.js";
 import {
+  appendOpenQuestionHookFailureEvent,
+  enqueueOpenQuestionForReview,
+} from "../memory/self/review-open-question-hook.js";
+import {
   ReviewQueueRepository,
+  SemanticGraph,
   SemanticEdgeRepository,
   SemanticNodeRepository,
   createSemanticNodesTableSchema,
@@ -31,6 +39,7 @@ import {
   type SemanticNode,
 } from "../memory/semantic/index.js";
 import { retrievalMigrations } from "../retrieval/index.js";
+import { RetrievalPipeline } from "../retrieval/index.js";
 import { StreamWriter } from "../stream/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
@@ -87,11 +96,16 @@ export type OfflineTestHarness = {
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
+  autobiographicalRepository: AutobiographicalRepository;
+  growthMarkersRepository: GrowthMarkersRepository;
+  openQuestionsRepository: OpenQuestionsRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  retrievalPipeline: RetrievalPipeline;
   registry: ReverserRegistry;
   auditLog: AuditLog;
   streamWriter: StreamWriter;
+  flushHookLogs: () => Promise<void>;
   createContext: (runId?: MaintenanceRunId) => OfflineContext;
   cleanup: () => Promise<void>;
 };
@@ -148,6 +162,14 @@ export async function createOfflineTestHarness(
         ...DEFAULT_CONFIG.offline.overseer,
         ...options.configOverrides?.offline?.overseer,
       },
+      ruminator: {
+        ...DEFAULT_CONFIG.offline.ruminator,
+        ...options.configOverrides?.offline?.ruminator,
+      },
+      selfNarrator: {
+        ...DEFAULT_CONFIG.offline.selfNarrator,
+        ...options.configOverrides?.offline?.selfNarrator,
+      },
     },
   };
   const lance = new LanceDbStore({
@@ -176,9 +198,19 @@ export async function createOfflineTestHarness(
     db,
     clock,
   });
+  const streamWriter = new StreamWriter({
+    dataDir: tempDir,
+    sessionId: DEFAULT_SESSION_ID,
+    clock,
+  });
+  const pendingHookLogs = new Set<Promise<void>>();
   const registry = new ReverserRegistry();
   const semanticNodeRepository = new SemanticNodeRepository({
     table: semanticNodesTable,
+    db,
+    clock,
+  });
+  const openQuestionsRepository = new OpenQuestionsRepository({
     db,
     clock,
   });
@@ -186,11 +218,26 @@ export async function createOfflineTestHarness(
     db,
     clock,
     semanticNodeRepository,
+    onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
+    onEnqueueError: (error) => {
+      const promise = appendOpenQuestionHookFailureEvent(
+        streamWriter,
+        "review_queue_open_question",
+        error,
+      ).finally(() => {
+        pendingHookLogs.delete(promise);
+      });
+      pendingHookLogs.add(promise);
+    },
   });
   const semanticEdgeRepository = new SemanticEdgeRepository({
     db,
     clock,
     enqueueReview: (input) => reviewQueueRepository.enqueue(input),
+  });
+  const semanticGraph = new SemanticGraph({
+    nodeRepository: semanticNodeRepository,
+    edgeRepository: semanticEdgeRepository,
   });
   const valuesRepository = new ValuesRepository({
     db,
@@ -201,6 +248,14 @@ export async function createOfflineTestHarness(
     clock,
   });
   const traitsRepository = new TraitsRepository({
+    db,
+    clock,
+  });
+  const autobiographicalRepository = new AutobiographicalRepository({
+    db,
+    clock,
+  });
+  const growthMarkersRepository = new GrowthMarkersRepository({
     db,
     clock,
   });
@@ -217,11 +272,18 @@ export async function createOfflineTestHarness(
     clock,
     registry,
   });
-  const streamWriter = new StreamWriter({
+  const retrievalPipeline = new RetrievalPipeline({
+    embeddingClient,
+    episodicRepository,
+    semanticNodeRepository,
+    semanticGraph,
+    openQuestionsRepository,
     dataDir: tempDir,
-    sessionId: DEFAULT_SESSION_ID,
     clock,
   });
+  const flushHookLogs = async () => {
+    await Promise.all([...pendingHookLogs]);
+  };
 
   return {
     tempDir,
@@ -237,11 +299,16 @@ export async function createOfflineTestHarness(
     valuesRepository,
     goalsRepository,
     traitsRepository,
+    autobiographicalRepository,
+    growthMarkersRepository,
+    openQuestionsRepository,
     entityRepository,
     commitmentRepository,
+    retrievalPipeline,
     registry,
     auditLog,
     streamWriter,
+    flushHookLogs,
     createContext: (runId = createMaintenanceRunId()) => ({
       config,
       runId,
@@ -261,10 +328,15 @@ export async function createOfflineTestHarness(
       valuesRepository,
       goalsRepository,
       traitsRepository,
+      autobiographicalRepository,
+      growthMarkersRepository,
+      openQuestionsRepository,
       entityRepository,
       commitmentRepository,
+      retrievalPipeline,
     }),
     cleanup: async () => {
+      await flushHookLogs();
       streamWriter.close();
       db.close();
       await lance.close();

@@ -13,6 +13,7 @@ import {
   type CommitmentRecord,
 } from "../memory/commitments/index.js";
 import {
+  OpenQuestionsRepository,
   GoalsRepository,
   TraitsRepository,
   ValuesRepository,
@@ -77,6 +78,7 @@ export type TurnOrchestratorOptions = {
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
+  openQuestionsRepository: OpenQuestionsRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   workingMemoryStore: WorkingMemoryStore;
@@ -262,6 +264,7 @@ export class TurnOrchestrator {
           goalDescriptions: selfSnapshot.goals.map((goal) => goal.description),
           temporalCue: perception.temporalCue,
           suppressionSet,
+          includeOpenQuestions: perception.mode === "reflective",
           timeRange:
             perception.temporalCue === null
               ? undefined
@@ -289,6 +292,7 @@ export class TurnOrchestrator {
             retrievalResult: retrievedEpisodes,
             contradictionPresent: retrieval.contradiction_present,
             applicableCommitments,
+            openQuestionsContext: retrieval.open_questions_context,
             entityRepository: this.options.entityRepository,
             workingMemory,
             selfSnapshot,
@@ -358,6 +362,7 @@ export class TurnOrchestrator {
             episodicRepository: this.options.episodicRepository,
             goalsRepository: this.options.goalsRepository,
             traitsRepository: this.options.traitsRepository,
+            openQuestionsRepository: this.options.openQuestionsRepository,
             suppressionSet,
           },
           streamWriter,

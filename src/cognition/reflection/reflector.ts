@@ -1,7 +1,13 @@
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { GoalsRepository, TraitsRepository, type GoalRecord } from "../../memory/self/index.js";
+import {
+  GoalsRepository,
+  OpenQuestionsRepository,
+  TraitsRepository,
+  type GoalRecord,
+} from "../../memory/self/index.js";
+import { appendOpenQuestionHookFailureEvent } from "../../memory/self/review-open-question-hook.js";
 import { EpisodicRepository } from "../../memory/episodic/index.js";
 import { pushRecentThought, type WorkingMemory } from "../../memory/working/index.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
@@ -20,12 +26,14 @@ export type ReflectionContext = {
   episodicRepository: EpisodicRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
+  openQuestionsRepository: OpenQuestionsRepository;
   suppressionSet: SuppressionSet;
 };
 
 const TOKEN_STOPWORDS = ["the", "and", "with", "this", "that", "from", "into", "after", "before"];
 const SURFACED_TTL_TURNS = 4;
 const NOISE_TTL_TURNS = 2;
+const OPEN_QUESTION_CONFIDENCE_THRESHOLD = 0.4;
 
 function goalMentioned(goal: GoalRecord, userMessage: string, response: string): boolean {
   const goalTokens = tokenizeText(goal.description);
@@ -85,6 +93,29 @@ function episodeUsed(result: RetrievedEpisode, response: string): boolean {
   return unionSize > 0 && overlap / unionSize >= 0.15;
 }
 
+function averageRetrievalConfidence(results: readonly RetrievedEpisode[]): number {
+  if (results.length === 0) {
+    return 0;
+  }
+
+  return results.reduce((sum, result) => sum + result.score, 0) / results.length;
+}
+
+function buildReflectionQuestion(userMessage: string, entities: readonly string[]): string {
+  const anchor = entities
+    .map((entity) => entity.trim())
+    .filter((entity) => entity.length > 0)
+    .slice(0, 2)
+    .join(" and ");
+  const prompt = userMessage.trim().replace(/\s+/g, " ");
+
+  if (anchor.length > 0) {
+    return `What am I missing about ${anchor} in this situation: ${prompt}?`;
+  }
+
+  return `What am I missing here: ${prompt}?`;
+}
+
 export type ReflectorOptions = {
   clock?: Clock;
 };
@@ -139,6 +170,27 @@ export class Reflector {
 
       if (context.deliberationResult.path === "system_2") {
         context.suppressionSet.suppress(result.episode.id, "noise this session", NOISE_TTL_TURNS);
+      }
+    }
+
+    if (
+      context.deliberationResult.path === "system_2" &&
+      averageRetrievalConfidence(context.retrievedEpisodes) < OPEN_QUESTION_CONFIDENCE_THRESHOLD
+    ) {
+      try {
+        context.openQuestionsRepository.add({
+          question: buildReflectionQuestion(
+            context.userMessage,
+            context.workingMemory.hot_entities,
+          ),
+          urgency: 0.45,
+          related_episode_ids: context.retrievedEpisodes
+            .slice(0, 3)
+            .map((result) => result.episode.id),
+          source: "reflection",
+        });
+      } catch (error) {
+        await appendOpenQuestionHookFailureEvent(streamWriter, "reflection_open_question", error);
       }
     }
 

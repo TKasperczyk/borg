@@ -8,7 +8,7 @@ import type { EmbeddingClient } from "./embeddings/index.js";
 import { FakeLLMClient } from "./llm/index.js";
 import { episodicMigrations } from "./memory/episodic/index.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "./memory/episodic/repository.js";
-import { selfMigrations } from "./memory/self/index.js";
+import { selfMigrations, type OpenQuestionsRepository } from "./memory/self/index.js";
 import { retrievalMigrations } from "./retrieval/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, SqliteDatabase } from "./storage/sqlite/index.js";
@@ -603,6 +603,90 @@ describe("Borg", () => {
       });
       expect(borg.stream.tail(2).map((entry) => entry.kind)).toEqual([
         "user_msg",
+        "internal_event",
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("keeps a turn running when the reflection open-question hook fails", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Need more evidence before answering.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "I need to compare more evidence before answering.",
+            input_tokens: 12,
+            output_tokens: 6,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+    });
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              openQuestionsRepository: OpenQuestionsRepository;
+            };
+          };
+        };
+      };
+      internal.deps.turnOrchestrator.options.openQuestionsRepository = {
+        add() {
+          throw new Error("hook exploded");
+        },
+      } as unknown as OpenQuestionsRepository;
+
+      const result = await borg.turn({
+        userMessage: "Why is Atlas still failing?",
+        stakes: "high",
+      });
+
+      expect(result.path).toBe("system_2");
+      expect(result.response).toContain("compare more evidence");
+      expect(borg.self.openQuestions.list({ status: "open" })).toEqual([]);
+      expect(borg.stream.tail(4).map((entry) => entry.kind)).toEqual([
+        "user_msg",
+        "thought",
+        "agent_msg",
         "internal_event",
       ]);
     } finally {

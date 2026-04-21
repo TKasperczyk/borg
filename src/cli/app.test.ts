@@ -324,6 +324,242 @@ describe("cli", () => {
     });
   });
 
+  it("manages autobiographical periods, growth markers, and open questions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+    });
+    await repo.insert({
+      id: "ep_cccccccccccccccc" as never,
+      title: "Atlas note",
+      narrative: "A short Atlas episode.",
+      participants: ["team"],
+      location: null,
+      start_time: 1,
+      end_time: 2,
+      source_stream_ids: ["strm_cccccccccccccccc" as never],
+      significance: 0.8,
+      tags: ["atlas"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 1,
+      updated_at: 1,
+    });
+    db.close();
+    await store.close();
+
+    const periodOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "period", "open", "2026-Q2"], {
+        stdout: periodOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      }),
+    ).toBe(0);
+    const period = JSON.parse(periodOut.read()) as { id: string };
+
+    const growthOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "growth",
+          "add",
+          "understanding",
+          "Learned Atlas rollback order",
+          "--episode",
+          "ep_cccccccccccccccc",
+        ],
+        {
+          stdout: growthOut.stream,
+          stderr: createOutputBuffer().stream,
+          dataDir: tempDir,
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(growthOut.read())).toMatchObject({
+      category: "understanding",
+    });
+
+    const questionOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "question", "add", "Why does Atlas fail?"], {
+        stdout: questionOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      }),
+    ).toBe(0);
+    const question = JSON.parse(questionOut.read()) as { id: string };
+
+    const bumpOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "question", "bump", question.id, "0.2"], {
+        stdout: bumpOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(bumpOut.read())).toMatchObject({
+      id: question.id,
+    });
+
+    const showPeriodOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "period", "show", period.id], {
+        stdout: showPeriodOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(showPeriodOut.read())).toMatchObject({
+      id: period.id,
+    });
+  });
+
+  it("supports ruminate and narrate dream commands", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+    });
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Atlas rehearsal",
+      narrative: "Atlas stabilized after rehearsal.",
+      participants: ["team"],
+      location: null,
+      start_time: 1,
+      end_time: 2,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.8,
+      tags: ["atlas"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 1,
+      updated_at: 1,
+    });
+    await repo.insert({
+      id: "ep_bbbbbbbbbbbbbbbb" as never,
+      title: "Atlas follow-up",
+      narrative: "Atlas debugging became clearer.",
+      participants: ["team"],
+      location: null,
+      start_time: 2,
+      end_time: 3,
+      source_stream_ids: ["strm_bbbbbbbbbbbbbbbb" as never],
+      significance: 0.8,
+      tags: ["atlas"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 2,
+      updated_at: 2,
+    });
+    db.close();
+    await store.close();
+
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: JSON.stringify({
+            resolution_note: "Atlas recovered after rehearsal.",
+            growth_marker: null,
+          }),
+          input_tokens: 30,
+          output_tokens: 20,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        {
+          text: JSON.stringify({
+            observation: {
+              category: "understanding",
+              what_changed: "Atlas debugging became clearer.",
+              before_description: "The failure path was fuzzy.",
+              after_description: "The failure path is clearer now.",
+              confidence: 0.8,
+              evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+            },
+          }),
+          input_tokens: 30,
+          output_tokens: 20,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const seedBorg = await openTestBorg(tempDir, llm);
+    seedBorg.self.openQuestions.add({
+      question: "Why does Atlas fail?",
+      urgency: 0.8,
+      source: "user",
+    });
+    await seedBorg.close();
+
+    const ruminateOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "dream", "ruminate", "--dry-run", "--max-questions", "1"], {
+        stdout: ruminateOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+        openBorg: () => openTestBorg(tempDir, llm),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(ruminateOut.read())).toMatchObject({
+      dryRun: true,
+    });
+
+    const narrateOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "dream", "narrate", "--dry-run"], {
+        stdout: narrateOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+        openBorg: () => openTestBorg(tempDir, llm),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(narrateOut.read())).toMatchObject({
+      dryRun: true,
+    });
+  });
+
   it("shows and clears working memory", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

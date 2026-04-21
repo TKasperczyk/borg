@@ -32,6 +32,7 @@ export type MaintenanceRunOptions = {
         {
           dryRun?: boolean;
           budget?: number;
+          params?: Record<string, unknown>;
         }
       >
     >;
@@ -105,6 +106,7 @@ export class MaintenanceOrchestrator {
         const context = this.createContext(runId, streamWriter);
         const plan = await process.plan(context, {
           budget: override?.budget ?? input.opts?.budget,
+          params: override?.params,
         });
         plans.push(plan);
       }

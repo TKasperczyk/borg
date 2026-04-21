@@ -287,6 +287,85 @@ describe("deliberator", () => {
     );
   });
 
+  it("includes reflective open questions in the prompt", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Think through the uncertainty first.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        {
+          text: "Reflective answer with open questions in view.",
+          input_tokens: 12,
+          output_tokens: 6,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "What am I still missing about Atlas?",
+      perception: {
+        entities: ["Atlas"],
+        mode: "reflective",
+        affectiveSignal: { valence: 0, arousal: 0 },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.8, ["atlas"])],
+      openQuestionsContext: [
+        {
+          id: "oq_aaaaaaaaaaaaaaaa" as never,
+          question: "Why does Atlas fail after rollback?",
+          urgency: 0.7,
+          status: "open",
+          related_episode_ids: [],
+          related_semantic_node_ids: [],
+          source: "reflection",
+          created_at: 0,
+          last_touched: 0,
+          resolution_episode_id: null,
+          resolution_note: null,
+          resolved_at: null,
+          abandoned_reason: null,
+          abandoned_at: null,
+        },
+      ],
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        scratchpad: "",
+        current_focus: "Atlas",
+        recent_thoughts: [],
+        hot_entities: ["Atlas"],
+        pending_intents: [],
+        suppressed: [],
+        mode: "reflective",
+        updated_at: 0,
+      },
+      selfSnapshot: {
+        values: [],
+        goals: [],
+        traits: [],
+      },
+      options: {
+        stakes: "low",
+      },
+    });
+
+    expect(llm.requests[1]?.system).toContain("Open questions you're carrying:");
+    expect(llm.requests[1]?.system).toContain("Why does Atlas fail after rollback?");
+  });
+
   it("chooses system 2 when contradiction language appears even at low stakes", async () => {
     const llm = new FakeLLMClient({
       responses: [

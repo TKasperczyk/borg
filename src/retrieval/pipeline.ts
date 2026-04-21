@@ -5,12 +5,14 @@ import { computeGoalRelevance } from "../cognition/attention/goal-relevance.js";
 import { extractEntitiesHeuristically } from "../cognition/perception/entity-extractor.js";
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
+import type { OpenQuestion, OpenQuestionsRepository } from "../memory/self/index.js";
 import { SemanticGraph } from "../memory/semantic/graph.js";
 import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
 import type { SemanticContext, SemanticNode, SemanticRelation } from "../memory/semantic/types.js";
 import { StreamReader, getStreamDirectory, type StreamEntry } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
+import { tokenizeText } from "../util/text/tokenize.js";
 import {
   DEFAULT_SESSION_ID,
   parseSessionId,
@@ -51,6 +53,7 @@ export type RetrievedEpisode = {
 export type RetrievalSearchResult = {
   episodes: RetrievedEpisode[];
   contradiction_present: boolean;
+  open_questions_context: OpenQuestion[];
 };
 
 export type RetrievalPipelineOptions = {
@@ -59,6 +62,7 @@ export type RetrievalPipelineOptions = {
   dataDir: string;
   semanticNodeRepository?: SemanticNodeRepository;
   semanticGraph?: SemanticGraph;
+  openQuestionsRepository?: OpenQuestionsRepository;
   clock?: Clock;
   scoreWeights?: {
     similarity: number;
@@ -143,6 +147,8 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   suppressionSet?: SuppressionLookup;
   graphWalkDepth?: number;
   maxGraphNodes?: number;
+  includeOpenQuestions?: boolean;
+  openQuestionsLimit?: number;
 };
 
 function normalizeHeat(heat: number): number {
@@ -249,6 +255,7 @@ export class RetrievalPipeline {
   ): Promise<{
     context: SemanticContext;
     contradictionPresent: boolean;
+    matchedNodeIds: SemanticNode["id"][];
   }> {
     if (
       this.options.semanticNodeRepository === undefined ||
@@ -261,6 +268,7 @@ export class RetrievalPipeline {
           categories: [],
         },
         contradictionPresent: false,
+        matchedNodeIds: [],
       };
     }
 
@@ -327,7 +335,63 @@ export class RetrievalPipeline {
         categories: [...categories.values()],
       },
       contradictionPresent: contradicts.size > 0,
+      matchedNodeIds: [...uniqueNodes.keys()],
     };
+  }
+
+  retrieveOpenQuestionsForQuery(
+    query: string,
+    options: {
+      relatedSemanticNodeIds?: readonly SemanticNode["id"][];
+      limit?: number;
+    } = {},
+  ): OpenQuestion[] {
+    if (this.options.openQuestionsRepository === undefined) {
+      return [];
+    }
+
+    const queryTokens = tokenizeText(query);
+    const relatedNodeIds = new Set(options.relatedSemanticNodeIds ?? []);
+    const limit = Math.max(1, options.limit ?? 3);
+    const candidates = this.options.openQuestionsRepository.list({
+      status: "open",
+      limit: 100,
+    });
+    const scored = candidates
+      .map((question) => {
+        const questionTokens = tokenizeText(question.question);
+        let overlap = 0;
+
+        for (const token of queryTokens) {
+          if (questionTokens.has(token)) {
+            overlap += 1;
+          }
+        }
+
+        const unionSize = new Set([...queryTokens, ...questionTokens]).size;
+        const tokenScore = unionSize === 0 ? 0 : overlap / unionSize;
+        const relatedScore = question.related_semantic_node_ids.some((id) => relatedNodeIds.has(id))
+          ? 0.35
+          : 0;
+        const score =
+          tokenScore === 0 && relatedScore === 0
+            ? 0
+            : tokenScore + relatedScore + question.urgency * 0.15;
+
+        return {
+          question,
+          score,
+        };
+      })
+      .filter((item) => item.score > 0)
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          right.question.urgency - left.question.urgency ||
+          right.question.last_touched - left.question.last_touched,
+      );
+
+    return scored.slice(0, limit).map((item) => item.question);
   }
 
   private scoreCandidate(
@@ -426,6 +490,13 @@ export class RetrievalPipeline {
       selected.flatMap((choice) => choice.item.candidate.episode.source_stream_ids),
     );
     const semantic = await this.resolveSemanticContext(query, options);
+    const openQuestionsContext =
+      options.includeOpenQuestions === true
+        ? this.retrieveOpenQuestionsForQuery(query, {
+            relatedSemanticNodeIds: semantic.matchedNodeIds,
+            limit: options.openQuestionsLimit,
+          })
+        : [];
     const results: RetrievedEpisode[] = [];
 
     for (const choice of selected) {
@@ -457,6 +528,7 @@ export class RetrievalPipeline {
     return {
       episodes: results,
       contradiction_present: semantic.contradictionPresent,
+      open_questions_context: openQuestionsContext,
     };
   }
 

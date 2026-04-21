@@ -29,6 +29,18 @@ export {
 } from "./plan-file.js";
 export { ReflectorProcess, type ReflectorProcessOptions } from "./reflector/index.js";
 export {
+  RuminatorProcess,
+  ruminatorPlanSchema,
+  type RuminatorPlan,
+  type RuminatorProcessOptions,
+} from "./ruminator/index.js";
+export {
+  SelfNarratorProcess,
+  selfNarratorPlanSchema,
+  type SelfNarratorPlan,
+  type SelfNarratorProcessOptions,
+} from "./self-narrator/index.js";
+export {
   OFFLINE_PROCESS_NAMES,
   type OfflineChange,
   type OfflineContext,

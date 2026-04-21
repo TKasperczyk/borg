@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeLLMClient } from "../../llm/index.js";
+import { StreamReader } from "../../stream/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { createMaintenanceRunId } from "../../util/ids.js";
 
@@ -80,6 +81,11 @@ describe("overseer process", () => {
     expect(harness.reviewQueueRepository.getOpen()[0]).toMatchObject({
       kind: "misattribution",
     });
+    expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([
+      expect.objectContaining({
+        source: "overseer",
+      }),
+    ]);
 
     const auditRow = harness.auditLog.list({ process: "overseer" })[0];
     await harness.auditLog.revert(auditRow!.id, "test");
@@ -326,5 +332,85 @@ describe("overseer process", () => {
         target_id: recentEpisode.id,
       },
     });
+  });
+
+  it("continues and logs when the review-to-open-question hook fails", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: JSON.stringify({
+            flags: [
+              {
+                kind: "misattribution",
+                reason: "The narrative mentions Alex, but Alex is missing from participants.",
+                confidence: 0.8,
+              },
+            ],
+          }),
+          input_tokens: 12,
+          output_tokens: 8,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+
+    const reviewQueueRepository = harness.reviewQueueRepository as unknown as {
+      options: {
+        onEnqueue?: (item: unknown, input: unknown) => void;
+      };
+    };
+    const originalHook = reviewQueueRepository.options.onEnqueue;
+    reviewQueueRepository.options.onEnqueue = () => {
+      throw new Error("hook exploded");
+    };
+
+    try {
+      await harness.episodicRepository.insert(
+        createEpisodeFixture(
+          {
+            title: "Misattributed meeting",
+            narrative: "Alex led the meeting, but the participants only mention the team.",
+            participants: ["team"],
+            created_at: nowMs - 1_000,
+            updated_at: nowMs - 1_000,
+          },
+          [0, 1, 0, 0],
+        ),
+      );
+
+      const process = new OverseerProcess({
+        reviewQueueRepository: harness.reviewQueueRepository,
+        registry: harness.registry,
+      });
+
+      const result = await process.run(harness.createContext(), {
+        dryRun: false,
+      });
+
+      await harness.flushHookLogs();
+
+      const entries = new StreamReader({
+        dataDir: harness.tempDir,
+      }).tail(1);
+
+      expect(result.errors).toEqual([]);
+      expect(harness.reviewQueueRepository.getOpen()).toHaveLength(1);
+      expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([]);
+      expect(entries[0]).toMatchObject({
+        kind: "internal_event",
+        content: {
+          hook: "review_queue_open_question",
+        },
+      });
+    } finally {
+      reviewQueueRepository.options.onEnqueue = originalHook;
+    }
   });
 });
