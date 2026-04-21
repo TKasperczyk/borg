@@ -1,6 +1,6 @@
 import { cac } from "cac";
 
-import { Borg, VERSION, loadConfig, redactConfig } from "../index.js";
+import { Borg, VERSION, loadConfig, redactConfig, type BorgOpenOptions } from "../index.js";
 import { goalStatusSchema } from "../memory/self/index.js";
 import { streamEntryKindSchema } from "../stream/index.js";
 import { BorgError } from "../util/errors.js";
@@ -19,6 +19,7 @@ export type RunCliOptions = {
   stderr?: Output;
   env?: NodeJS.ProcessEnv;
   dataDir?: string;
+  openBorg?: (options: BorgOpenOptions) => Promise<Borg>;
 };
 
 class CliError extends BorgError {
@@ -161,11 +162,24 @@ function parseGoalStatus(value: unknown) {
   return parsed.data;
 }
 
+function parseStakes(value: unknown): "low" | "medium" | "high" | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+
+  throw new CliError("--stakes must be one of: low, medium, high");
+}
+
 async function withBorg<T>(options: RunCliOptions, fn: (borg: Borg) => Promise<T>): Promise<T> {
-  const borg = await Borg.open({
+  const openOptions: BorgOpenOptions = {
     env: options.env,
     dataDir: options.dataDir,
-  });
+  };
+  const borg = await (options.openBorg?.(openOptions) ?? Borg.open(openOptions));
 
   try {
     return await fn(borg);
@@ -186,6 +200,29 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   cli.command("version", "Print borg version").action(() => {
     writeLine(stdout, `borg ${VERSION}`);
   });
+
+  cli
+    .command("turn <message>", "Run one cognitive turn")
+    .option("--session <id>", "Session id to use")
+    .option("--audience <audience>", "Audience label for the stream")
+    .option("--stakes <stakes>", "Turn stakes: low | medium | high")
+    .action(async (message: string, commandOptions: Record<string, unknown>) => {
+      const result = await withBorg(options, async (borg) =>
+        borg.turn({
+          userMessage: parseRequiredText(message, "<message>"),
+          sessionId: resolveSessionId(commandOptions.session),
+          audience:
+            typeof commandOptions.audience === "string" ? commandOptions.audience : undefined,
+          stakes: parseStakes(commandOptions.stakes),
+        }),
+      );
+
+      writeLine(stdout, result.response);
+      writeLine(
+        stdout,
+        `[mode=${result.mode}] [path=${result.path}] [tokens=${result.usage.input_tokens}/${result.usage.output_tokens}] [retrieved=${result.retrievedEpisodeIds.join(",") || "none"}]`,
+      );
+    });
 
   cli.command("config <action>", "Inspect borg config").action((action: string) => {
     if (action !== "show") {
@@ -424,6 +461,29 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     const traits = await withBorg(options, async (borg) => borg.self.traits.list());
     writeLine(stdout, JSON.stringify(traits, null, 2));
   });
+
+  cli
+    .command("workmem <action>", "Inspect or clear working memory")
+    .option("--session <id>", "Session id to use")
+    .action(async (action: string, commandOptions: Record<string, unknown>) => {
+      const sessionId = resolveSessionId(commandOptions.session);
+
+      if (action === "show") {
+        const state = await withBorg(options, async (borg) => borg.workmem.load(sessionId));
+        writeLine(stdout, JSON.stringify(state, null, 2));
+        return;
+      }
+
+      if (action === "clear") {
+        await withBorg(options, async (borg) => {
+          borg.workmem.clear(sessionId);
+        });
+        writeLine(stdout, JSON.stringify({ session: sessionId, cleared: true }));
+        return;
+      }
+
+      throw new CliError(`Unknown workmem action: ${action}`);
+    });
 
   try {
     const parsed = cli.parse(argv, { run: false });

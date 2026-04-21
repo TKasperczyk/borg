@@ -10,6 +10,12 @@ const DEFAULT_DATA_DIR = "~/.borg";
 const configFileSchema = z
   .object({
     dataDir: z.string().min(1).optional(),
+    perception: z
+      .object({
+        useLlmFallback: z.boolean().optional(),
+      })
+      .partial()
+      .optional(),
     embedding: z
       .object({
         baseUrl: z.string().url().optional(),
@@ -38,6 +44,9 @@ const configFileSchema = z
 
 export const configSchema = z.object({
   dataDir: z.string().min(1),
+  perception: z.object({
+    useLlmFallback: z.boolean(),
+  }),
   embedding: z.object({
     baseUrl: z.string().url(),
     apiKey: z.string().min(1).optional(),
@@ -58,6 +67,9 @@ export type Config = z.infer<typeof configSchema>;
 
 export const DEFAULT_CONFIG: Config = {
   dataDir: expandPath(DEFAULT_DATA_DIR),
+  perception: {
+    useLlmFallback: true,
+  },
   embedding: {
     baseUrl: "http://localhost:1234/v1",
     apiKey: "lm-studio",
@@ -110,6 +122,24 @@ function readOptionalEnvNumber(env: NodeJS.ProcessEnv, name: string): number | u
   }
 
   return value;
+}
+
+function readOptionalEnvBoolean(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
+  const raw = readOptionalEnvString(env, name);
+
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  if (raw === "true" || raw === "1") {
+    return true;
+  }
+
+  if (raw === "false" || raw === "0") {
+    return false;
+  }
+
+  throw new ConfigError(`Environment variable ${name} must be true/false or 1/0`);
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException & { code: string } {
@@ -166,6 +196,12 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         fileConfig.dataDir ??
         DEFAULT_CONFIG.dataDir,
     ),
+    perception: {
+      useLlmFallback:
+        readOptionalEnvBoolean(env, "BORG_PERCEPTION_USE_LLM_FALLBACK") ??
+        fileConfig.perception?.useLlmFallback ??
+        DEFAULT_CONFIG.perception.useLlmFallback,
+    },
     embedding: {
       baseUrl:
         readOptionalEnvString(env, "BORG_EMBEDDING_BASE_URL") ??
@@ -224,6 +260,9 @@ function redactSecret(value: string | undefined): string | undefined {
 export function redactConfig(config: Config): Config {
   return {
     ...config,
+    perception: {
+      ...config.perception,
+    },
     embedding: {
       ...config.embedding,
       apiKey: redactSecret(config.embedding.apiKey),

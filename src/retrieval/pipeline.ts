@@ -1,6 +1,8 @@
 import { existsSync, readdirSync } from "node:fs";
 import { basename } from "node:path";
 
+import { computeGoalRelevance } from "../cognition/attention/goal-relevance.js";
+import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { StreamReader, getStreamDirectory, type StreamEntry } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
@@ -23,6 +25,10 @@ import { EpisodicRepository } from "../memory/episodic/repository.js";
 
 import { applyMmr } from "./mmr.js";
 
+type SuppressionLookup = {
+  isSuppressed(id: string): boolean;
+};
+
 export type RetrievedEpisode = {
   episode: Episode;
   score: number;
@@ -30,6 +36,9 @@ export type RetrievedEpisode = {
     similarity: number;
     decayedSalience: number;
     heat: number;
+    goalRelevance: number;
+    timeRelevance: number;
+    suppressionPenalty: number;
   };
   citationChain: StreamEntry[];
 };
@@ -82,6 +91,9 @@ function buildResult(
   candidate: EpisodeSearchCandidate,
   decayedSalience: number,
   heat: number,
+  goalRelevance: number,
+  timeRelevance: number,
+  suppressionPenalty: number,
   score: number,
   citationChain: StreamEntry[],
 ): RetrievedEpisode {
@@ -92,6 +104,9 @@ function buildResult(
       similarity: candidate.similarity,
       decayedSalience,
       heat,
+      goalRelevance,
+      timeRelevance,
+      suppressionPenalty,
     },
     citationChain,
   };
@@ -105,7 +120,28 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
     salience: number;
   };
   decayOptions?: Omit<DecayOptions, "nowMs">;
+  attentionWeights?: AttentionWeights;
+  goalDescriptions?: readonly string[];
+  temporalCue?: TemporalCue | null;
+  suppressionSet?: SuppressionLookup;
 };
+
+function normalizeHeat(heat: number): number {
+  return clamp(heat / 20, 0, 1);
+}
+
+function computeTimeRelevance(
+  episode: Episode,
+  temporalCue: TemporalCue | null | undefined,
+): number {
+  if (temporalCue === null || temporalCue === undefined) {
+    return 0;
+  }
+
+  const sinceTs = temporalCue.sinceTs ?? Number.NEGATIVE_INFINITY;
+  const untilTs = temporalCue.untilTs ?? Number.POSITIVE_INFINITY;
+  return episode.start_time <= untilTs && episode.end_time >= sinceTs ? 1 : 0;
+}
 
 export class RetrievalPipeline {
   private readonly clock: Clock;
@@ -195,6 +231,9 @@ export class RetrievalPipeline {
   ): {
     decayedSalience: number;
     heat: number;
+    goalRelevance: number;
+    timeRelevance: number;
+    suppressionPenalty: number;
     score: number;
   } {
     const decay = applyEpisodeDecay(
@@ -207,11 +246,42 @@ export class RetrievalPipeline {
         : { ...searchOptions.decayOptions, nowMs },
     );
     const heat = computeEpisodeHeat(candidate.episode, candidate.stats, nowMs);
+    const goalRelevance = computeGoalRelevance(
+      searchOptions.goalDescriptions ?? [],
+      candidate.episode,
+    );
+    const timeRelevance = computeTimeRelevance(candidate.episode, searchOptions.temporalCue);
+    const suppressionPenalty =
+      searchOptions.suppressionSet?.isSuppressed(candidate.episode.id) === true ? 1 : 0;
+
+    if (searchOptions.attentionWeights !== undefined) {
+      const weights = searchOptions.attentionWeights;
+      const semanticScore =
+        weights.semantic * candidate.similarity + (1 - weights.semantic) * decay.decayedSalience;
+
+      return {
+        decayedSalience: decay.decayedSalience,
+        heat,
+        goalRelevance,
+        timeRelevance,
+        suppressionPenalty,
+        score:
+          semanticScore +
+          weights.goal_relevance * goalRelevance +
+          weights.time * timeRelevance +
+          weights.heat * normalizeHeat(heat) -
+          weights.suppression_penalty * suppressionPenalty,
+      };
+    }
+
     const weights = searchOptions.scoreWeights ?? this.scoreWeights;
 
     return {
       decayedSalience: decay.decayedSalience,
       heat,
+      goalRelevance,
+      timeRelevance,
+      suppressionPenalty,
       score: weights.similarity * candidate.similarity + weights.salience * decay.decayedSalience,
     };
   }
@@ -258,6 +328,9 @@ export class RetrievalPipeline {
         item.candidate,
         item.decayedSalience,
         item.heat,
+        item.goalRelevance,
+        item.timeRelevance,
+        item.suppressionPenalty,
         clamp(item.score, 0, 1),
         citationChain,
       );
@@ -301,6 +374,15 @@ export class RetrievalPipeline {
       citationEntries,
     );
 
-    return buildResult(candidate, scored.decayedSalience, scored.heat, 1, citationChain);
+    return buildResult(
+      candidate,
+      scored.decayedSalience,
+      scored.heat,
+      scored.goalRelevance,
+      scored.timeRelevance,
+      scored.suppressionPenalty,
+      1,
+      citationChain,
+    );
   }
 }

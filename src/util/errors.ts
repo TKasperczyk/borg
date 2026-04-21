@@ -72,3 +72,15 @@ export class StorageError extends BorgError {
     super(options.code ?? "BORG_STORAGE_ERROR", message, options);
   }
 }
+
+export class CognitionError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_COGNITION_ERROR", message, options);
+  }
+}
+
+export class WorkingMemoryError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_WORKING_MEMORY_ERROR", message, options);
+  }
+}

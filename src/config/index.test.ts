@@ -30,6 +30,7 @@ describe("config", () => {
     expect(config.embedding.baseUrl).toBe("http://localhost:1234/v1");
     expect(config.embedding.model).toBe("text-embedding-qwen3-embedding-8b");
     expect(config.anthropic.apiKey).toBeUndefined();
+    expect(config.perception.useLlmFallback).toBe(true);
   });
 
   it("merges config file values with environment overrides", () => {
@@ -53,12 +54,14 @@ describe("config", () => {
       env: {
         BORG_EMBEDDING_MODEL: "env-model",
         BORG_EMBEDDING_DIMS: "1024",
+        BORG_PERCEPTION_USE_LLM_FALLBACK: "false",
         ANTHROPIC_API_KEY: "secret",
       },
     });
 
     expect(config.embedding.model).toBe("env-model");
     expect(config.embedding.dims).toBe(1024);
+    expect(config.perception.useLlmFallback).toBe(false);
     expect(config.anthropic.apiKey).toBe("secret");
     expect(config.anthropic.models.cognition).toBe("file-cognition");
   });

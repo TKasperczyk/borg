@@ -6,6 +6,20 @@ export const VERSION = "0.1.0";
 
 export { Borg, type BorgOpenOptions } from "./borg.js";
 export {
+  TurnOrchestrator,
+  computeRetrievalLimit,
+  computeWeights,
+  SuppressionSet,
+  COGNITIVE_MODES,
+  cognitiveModeSchema,
+  perceptionResultSchema,
+  type CognitiveMode,
+  type PerceptionResult,
+  type TurnInput,
+  type TurnResult,
+  type TurnStakes,
+} from "./cognition/index.js";
+export {
   DEFAULT_CONFIG,
   configSchema,
   expandPath,
@@ -85,6 +99,14 @@ export {
   type ValuesRepositoryOptions,
 } from "./memory/self/index.js";
 export {
+  WorkingMemoryStore,
+  createWorkingMemory,
+  pushRecentThought,
+  workingMemorySchema,
+  type WorkingMemory,
+  type WorkingMemoryStoreOptions,
+} from "./memory/working/index.js";
+export {
   RetrievalPipeline,
   applyMmr,
   retrievalMigrations,
@@ -138,10 +160,12 @@ export { FixedClock, ManualClock, SystemClock, type Clock } from "./util/clock.j
 export {
   ConfigError,
   BorgError,
+  CognitionError,
   EmbeddingError,
   LLMError,
   StorageError,
   StreamError,
+  WorkingMemoryError,
   type BorgErrorJSON,
   type BorgErrorOptions,
 } from "./util/errors.js";

@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import { TurnOrchestrator, type TurnInput, type TurnResult } from "./cognition/index.js";
 import { loadConfig, type Config } from "./config/index.js";
 import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "./embeddings/index.js";
 import { AnthropicLLMClient, type LLMClient } from "./llm/index.js";
@@ -17,6 +18,7 @@ import {
   ValuesRepository,
   selfMigrations,
 } from "./memory/self/index.js";
+import { WorkingMemoryStore, type WorkingMemory } from "./memory/working/index.js";
 import { retrievalMigrations, RetrievalPipeline } from "./retrieval/index.js";
 import {
   StreamReader,
@@ -38,6 +40,8 @@ type BorgDependencies = {
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
   retrievalPipeline: RetrievalPipeline;
+  workingMemoryStore: WorkingMemoryStore;
+  turnOrchestrator: TurnOrchestrator;
   llmFactory: () => LLMClient;
   embeddingClient: EmbeddingClient;
   clock: Clock;
@@ -127,6 +131,10 @@ export class Borg {
     goals: GoalsRepository;
     traits: TraitsRepository;
   };
+  readonly workmem: {
+    load: (sessionId?: SessionId) => WorkingMemory;
+    clear: (sessionId?: SessionId) => void;
+  };
 
   private constructor(private readonly deps: BorgDependencies) {
     this.stream = {
@@ -180,6 +188,16 @@ export class Borg {
       goals: this.deps.goalsRepository,
       traits: this.deps.traitsRepository,
     };
+    this.workmem = {
+      load: (sessionId = DEFAULT_SESSION_ID) => this.deps.workingMemoryStore.load(sessionId),
+      clear: (sessionId = DEFAULT_SESSION_ID) => {
+        this.deps.turnOrchestrator.clearWorkingMemory(sessionId);
+      },
+    };
+  }
+
+  turn(input: TurnInput): Promise<TurnResult> {
+    return this.deps.turnOrchestrator.run(input);
   }
 
   static async open(options: BorgOpenOptions = {}): Promise<Borg> {
@@ -224,6 +242,29 @@ export class Borg {
         dataDir: config.dataDir,
         clock,
       });
+      const workingMemoryStore = new WorkingMemoryStore({
+        dataDir: config.dataDir,
+        clock,
+      });
+      const createStreamWriter = (sessionId: SessionId) =>
+        new StreamWriter({
+          dataDir: config.dataDir,
+          sessionId,
+          clock,
+        });
+      const llmFactory = createLlmFactory(config, options.llmClient);
+      const turnOrchestrator = new TurnOrchestrator({
+        config,
+        retrievalPipeline,
+        episodicRepository,
+        valuesRepository,
+        goalsRepository,
+        traitsRepository,
+        workingMemoryStore,
+        llmFactory,
+        clock,
+        createStreamWriter,
+      });
 
       return new Borg({
         config,
@@ -234,7 +275,9 @@ export class Borg {
         goalsRepository,
         traitsRepository,
         retrievalPipeline,
-        llmFactory: createLlmFactory(config, options.llmClient),
+        workingMemoryStore,
+        turnOrchestrator,
+        llmFactory,
         embeddingClient,
         clock,
       });

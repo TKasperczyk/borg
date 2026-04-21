@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { SuppressionSet, computeWeights } from "../cognition/attention/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
@@ -194,5 +195,89 @@ describe("retrieval pipeline", () => {
 
     expect(results).toHaveLength(2);
     expect(iterateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("rescales results with attention weights and suppression", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(2_000),
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const firstEntry = await writer.append({
+      kind: "user_msg",
+      content: "release planning",
+    });
+    const secondEntry = await writer.append({
+      kind: "agent_msg",
+      content: "release planning followup",
+    });
+
+    await repo.insert({
+      ...createEpisode("ep_aaaaaaaaaaaaaaaa", firstEntry.id, [1, 0, 0, 0]),
+      title: "release goal",
+      narrative: "release goal context",
+    });
+    await repo.insert({
+      ...createEpisode("ep_bbbbbbbbbbbbbbbb", secondEntry.id, [1, 0, 0, 0]),
+      title: "generic note",
+    });
+
+    const suppression = new SuppressionSet();
+
+    suppression.suppress("ep_bbbbbbbbbbbbbbbb", "already seen", 2);
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: repo,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    const results = await pipeline.search("release planning", {
+      limit: 2,
+      attentionWeights: computeWeights("reflective", {
+        currentGoals: [
+          {
+            id: "goal_aaaaaaaaaaaaaaaa",
+            description: "release goal",
+            priority: 1,
+            parent_goal_id: null,
+            status: "active",
+            progress_notes: null,
+            created_at: 0,
+            target_at: null,
+          },
+        ],
+        hasTemporalCue: false,
+      }),
+      goalDescriptions: ["release goal"],
+      suppressionSet: suppression,
+    });
+
+    expect(results[0]?.episode.id).toBe("ep_aaaaaaaaaaaaaaaa");
+    expect(results[1]?.scoreBreakdown.suppressionPenalty).toBe(1);
   });
 });
