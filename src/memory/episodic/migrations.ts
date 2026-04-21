@@ -20,4 +20,11 @@ export const episodicMigrations = [
       )
     `,
   },
+  {
+    id: 101,
+    name: "add-episode-archived-flag",
+    up: `
+      ALTER TABLE episode_stats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0
+    `,
+  },
 ] as const satisfies readonly Migration[];

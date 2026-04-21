@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { Borg } from "../borg.js";
+import { DEFAULT_CONFIG } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient } from "../llm/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
@@ -14,6 +15,7 @@ import { EpisodicRepository, createEpisodesTableSchema } from "../memory/episodi
 import { selfMigrations } from "../memory/self/migrations.js";
 import { retrievalMigrations } from "../retrieval/migrations.js";
 import { FixedClock } from "../util/clock.js";
+import { readJsonFile } from "../util/atomic-write.js";
 import { runCli } from "./app.js";
 
 class ScriptedEmbeddingClient implements EmbeddingClient {
@@ -71,6 +73,7 @@ function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
           extraction: "haiku",
         },
       },
+      offline: DEFAULT_CONFIG.offline,
     },
     clock: new FixedClock(1_000),
     embeddingDimensions: 4,
@@ -356,6 +359,221 @@ describe("cli", () => {
       cleared: true,
     });
     expect(clearErr.read()).toBe("");
+  });
+
+  it("runs dream maintenance and exposes audit commands", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(100 * 24 * 60 * 60 * 1_000),
+    });
+
+    await repo.insert({
+      id: "ep_dddddddddddddddd" as never,
+      title: "Archive candidate",
+      narrative: "A stale memory with low heat.",
+      participants: ["team"],
+      location: null,
+      start_time: 1,
+      end_time: 2,
+      source_stream_ids: ["strm_dddddddddddddddd" as never],
+      significance: 0.2,
+      tags: ["quiet"],
+      confidence: 0.8,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      created_at: 1,
+      updated_at: 1,
+    });
+    db.close();
+    await store.close();
+
+    const dreamOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "dream", "curate"], {
+        stdout: dreamOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      }),
+    ).toBe(0);
+    const dreamResult = JSON.parse(dreamOut.read()) as {
+      run_id: string;
+    };
+    expect(dreamResult.run_id).toMatch(/^run_/);
+
+    const auditListOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "audit", "list", "--process", "curator"], {
+        stdout: auditListOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      }),
+    ).toBe(0);
+    const audits = JSON.parse(auditListOut.read()) as Array<{ id: number }>;
+    expect(audits.length).toBeGreaterThan(0);
+
+    const auditRevertOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "audit", "revert", String(audits[0]!.id)], {
+        stdout: auditRevertOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(auditRevertOut.read())).toMatchObject({
+      id: audits[0]!.id,
+    });
+  });
+
+  it("writes a dream plan file and applies it without another llm call", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const planPath = join(tempDir, "maintenance-plan.json");
+
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Deploy prep one",
+      narrative: "Atlas deploy prep documented the rollback steps.",
+      participants: ["team"],
+      location: null,
+      start_time: 1,
+      end_time: 2,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.8,
+      tags: ["atlas", "deploy"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 1,
+      updated_at: 1,
+    });
+    await repo.insert({
+      id: "ep_bbbbbbbbbbbbbbbb" as never,
+      title: "Deploy prep two",
+      narrative: "The Atlas deploy checklist repeated the rollback prep.",
+      participants: ["team"],
+      location: null,
+      start_time: 3,
+      end_time: 4,
+      source_stream_ids: ["strm_bbbbbbbbbbbbbbbb" as never],
+      significance: 0.8,
+      tags: ["atlas", "deploy"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([0.99, 0, 0, 0]),
+      created_at: 3,
+      updated_at: 3,
+    });
+    db.close();
+    await store.close();
+
+    const planningLlm = new FakeLLMClient({
+      responses: [
+        {
+          text: JSON.stringify({
+            title: "Merged deploy prep",
+            narrative: "The deploy prep notes were merged into one grounded summary.",
+          }),
+          input_tokens: 15,
+          output_tokens: 10,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const dryRunOut = createOutputBuffer();
+
+    expect(
+      await runCli(["node", "borg", "dream", "consolidate", "--dry-run", "--output", planPath], {
+        stdout: dryRunOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+        openBorg: async () => openTestBorg(tempDir, planningLlm),
+      }),
+    ).toBe(0);
+    expect(planningLlm.requests).toHaveLength(1);
+    expect(readJsonFile(planPath)).toMatchObject({
+      kind: "borg_maintenance_plan",
+      processes: [expect.objectContaining({ process: "consolidator" })],
+    });
+
+    const applyOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "dream", "apply", "--plan", planPath], {
+        stdout: applyOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+        openBorg: async () => openTestBorg(tempDir, new FakeLLMClient()),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(applyOut.read())).toMatchObject({
+      dryRun: false,
+    });
+
+    const borg = await openTestBorg(tempDir, new FakeLLMClient());
+
+    try {
+      const episodes = await borg.episodic.list({
+        limit: 10,
+      });
+      expect(episodes.items.some((episode) => episode.title === "Merged deploy prep")).toBe(true);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("rejects invalid audit ids on revert", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const stdout = createOutputBuffer();
+    const stderr = createOutputBuffer();
+    const exitCode = await runCli(["node", "borg", "audit", "revert", "12junk"], {
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      dataDir: tempDir,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(stderr.read()).toContain("Invalid audit id: 12junk");
   });
 
   it("runs a cognitive turn through the cli", async () => {

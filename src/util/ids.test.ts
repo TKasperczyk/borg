@@ -4,6 +4,7 @@ import {
   DEFAULT_SESSION_ID,
   createSessionId,
   createStreamEntryId,
+  parseAuditId,
   parseSessionId,
   sessionIdHelpers,
   streamEntryIdHelpers,
@@ -26,5 +27,10 @@ describe("ids", () => {
     const generated = createSessionId();
     expect(parseSessionId(generated)).toBe(generated);
     expect(() => parseSessionId("bad-session")).toThrow(/Invalid sess identifier/);
+  });
+
+  it("rejects audit ids with trailing junk", () => {
+    expect(parseAuditId("12")).toBe(12);
+    expect(() => parseAuditId("12junk")).toThrow(/Invalid audit identifier/);
   });
 });

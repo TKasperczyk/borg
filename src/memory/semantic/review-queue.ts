@@ -7,7 +7,15 @@ import { serializeJsonValue } from "../../util/json-value.js";
 import type { SemanticNodeRepository } from "./repository.js";
 import { semanticNodeIdSchema } from "./types.js";
 
-export const REVIEW_KINDS = ["contradiction", "duplicate", "stale"] as const;
+export const REVIEW_KINDS = [
+  "contradiction",
+  "duplicate",
+  "stale",
+  "new_insight",
+  "misattribution",
+  "temporal_drift",
+  "identity_inconsistency",
+] as const;
 export const REVIEW_RESOLUTIONS = ["keep_both", "supersede", "invalidate", "dismiss"] as const;
 
 export const reviewKindSchema = z.enum(REVIEW_KINDS);
@@ -151,6 +159,11 @@ export class ReviewQueueRepository {
     return this.list({
       openOnly: true,
     });
+  }
+
+  delete(itemId: number): boolean {
+    const result = this.db.prepare("DELETE FROM review_queue WHERE id = ?").run(itemId);
+    return result.changes > 0;
   }
 
   async resolve(itemId: number, decision: ReviewResolution): Promise<ReviewQueueItem | null> {

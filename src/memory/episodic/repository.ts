@@ -11,7 +11,7 @@ import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
-import type { EpisodeId } from "../../util/ids.js";
+import { parseEpisodeId, type EpisodeId } from "../../util/ids.js";
 
 import {
   type Episode,
@@ -272,6 +272,7 @@ function defaultEpisodeStats(episode: Episode): EpisodeStats {
     gist: null,
     gist_generated_at: null,
     last_decayed_at: null,
+    archived: false,
   };
 }
 
@@ -325,8 +326,8 @@ export class EpisodicRepository {
         `
           INSERT INTO episode_stats (
             episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
-            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, archived
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (episode_id) DO UPDATE SET
             retrieval_count = excluded.retrieval_count,
             use_count = excluded.use_count,
@@ -337,7 +338,8 @@ export class EpisodicRepository {
             promoted_from = excluded.promoted_from,
             gist = excluded.gist,
             gist_generated_at = excluded.gist_generated_at,
-            last_decayed_at = excluded.last_decayed_at
+            last_decayed_at = excluded.last_decayed_at,
+            archived = excluded.archived
         `,
       )
       .run(
@@ -352,6 +354,7 @@ export class EpisodicRepository {
         parsed.gist,
         parsed.gist_generated_at,
         parsed.last_decayed_at,
+        parsed.archived ? 1 : 0,
       );
   }
 
@@ -456,7 +459,7 @@ export class EpisodicRepository {
         `
           SELECT
             episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
-            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, archived
           FROM episode_stats
           WHERE episode_id = ?
         `,
@@ -491,6 +494,7 @@ export class EpisodicRepository {
         row.last_decayed_at === null || row.last_decayed_at === undefined
           ? null
           : Number(row.last_decayed_at),
+      archived: row.archived === true || Number(row.archived) === 1,
     });
 
     if (!parsed.success) {
@@ -530,6 +534,33 @@ export class EpisodicRepository {
     return parsed;
   }
 
+  listStats(): EpisodeStats[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, archived
+          FROM episode_stats
+          ORDER BY promoted_at DESC, episode_id ASC
+        `,
+      )
+      .all() as Record<string, unknown>[];
+
+    return rows.map((row) => {
+      const episodeId = parseEpisodeId(String(row.episode_id));
+      const stats = this.getStats(episodeId);
+
+      if (stats === null) {
+        throw new StorageError(`Missing episode_stats row for ${episodeId}`, {
+          code: "EPISODE_STATS_MISSING",
+        });
+      }
+
+      return stats;
+    });
+  }
+
   async searchByVector(
     vector: Float32Array,
     options: EpisodeSearchOptions = {},
@@ -565,6 +596,10 @@ export class EpisodicRepository {
         options.tierFilter.length > 0 &&
         !options.tierFilter.includes(stats.tier)
       ) {
+        continue;
+      }
+
+      if (stats.archived) {
         continue;
       }
 
@@ -611,6 +646,11 @@ export class EpisodicRepository {
           ? encodeCursor({ updatedAt: lastItem.updated_at, id: lastItem.id })
           : undefined,
     };
+  }
+
+  async listAll(): Promise<Episode[]> {
+    const rows = await this.table.list();
+    return rows.map((row) => fromEpisodeRow(row)).sort(compareEpisodes);
   }
 
   recordRetrieval(episodeId: EpisodeId, timestamp: number, score: number): void {

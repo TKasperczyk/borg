@@ -18,6 +18,10 @@ export type SemanticNodeId = BrandedId<"SemanticNodeId">;
 export type SemanticEdgeId = BrandedId<"SemanticEdgeId">;
 export type CommitmentId = BrandedId<"CommitmentId">;
 export type EntityId = BrandedId<"EntityId">;
+export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
+export type AuditId = number & {
+  readonly __brand: "AuditId";
+};
 
 export const DEFAULT_SESSION_ID = DEFAULT_SESSION_LITERAL as SessionId;
 
@@ -54,6 +58,7 @@ export const semanticNodeIdHelpers = createIdHelpers<"SemanticNodeId">("semn");
 export const semanticEdgeIdHelpers = createIdHelpers<"SemanticEdgeId">("seme");
 export const commitmentIdHelpers = createIdHelpers<"CommitmentId">("cmt");
 export const entityIdHelpers = createIdHelpers<"EntityId">("ent");
+export const maintenanceRunIdHelpers = createIdHelpers<"MaintenanceRunId">("run");
 
 export const createStreamEntryId = (): StreamEntryId => streamEntryIdHelpers.create();
 export const createSessionId = (): SessionId => sessionIdHelpers.create();
@@ -64,6 +69,7 @@ export const createSemanticNodeId = (): SemanticNodeId => semanticNodeIdHelpers.
 export const createSemanticEdgeId = (): SemanticEdgeId => semanticEdgeIdHelpers.create();
 export const createCommitmentId = (): CommitmentId => commitmentIdHelpers.create();
 export const createEntityId = (): EntityId => entityIdHelpers.create();
+export const createMaintenanceRunId = (): MaintenanceRunId => maintenanceRunIdHelpers.create();
 
 export function isSessionId(value: string): value is SessionId {
   return value === DEFAULT_SESSION_LITERAL || sessionIdHelpers.is(value);
@@ -103,4 +109,23 @@ export function parseCommitmentId(value: string): CommitmentId {
 
 export function parseEntityId(value: string): EntityId {
   return entityIdHelpers.parse(value);
+}
+
+export function parseMaintenanceRunId(value: string): MaintenanceRunId {
+  return maintenanceRunIdHelpers.parse(value);
+}
+
+export function parseAuditId(value: number | string): AuditId {
+  const candidate =
+    typeof value === "number"
+      ? value
+      : /^\d+$/.test(String(value).trim())
+        ? Number(String(value).trim())
+        : Number.NaN;
+
+  if (!Number.isInteger(candidate) || candidate <= 0) {
+    throw new TypeError(`Invalid audit identifier: ${value}`);
+  }
+
+  return candidate as AuditId;
 }

@@ -96,3 +96,9 @@ export class CommitmentError extends BorgError {
     super(options.code ?? "BORG_COMMITMENT_ERROR", message, options);
   }
 }
+
+export class BudgetExceededError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_BUDGET_EXCEEDED", message, options);
+  }
+}

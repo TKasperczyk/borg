@@ -80,6 +80,20 @@ describe("config", () => {
     ).toThrow(ConfigError);
   });
 
+  it("rejects reflector confidence ceilings above the hard cap", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() =>
+      loadConfig({
+        dataDir: tempDir,
+        env: {
+          BORG_OFFLINE_REFLECTOR_CEILING_CONFIDENCE: "0.9",
+        },
+      }),
+    ).toThrow(ConfigError);
+  });
+
   it("wraps invalid config file JSON in a typed config error", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

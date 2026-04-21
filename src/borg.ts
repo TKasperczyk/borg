@@ -40,6 +40,20 @@ import {
   selfMigrations,
 } from "./memory/self/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "./memory/working/index.js";
+import {
+  AuditLog,
+  ConsolidatorProcess,
+  CuratorProcess,
+  MaintenanceOrchestrator,
+  OverseerProcess,
+  ReflectorProcess,
+  ReverserRegistry,
+  type MaintenancePlan,
+  offlineMigrations,
+  type OfflineProcess,
+  type OfflineProcessName,
+  type OrchestratorResult,
+} from "./offline/index.js";
 import { retrievalMigrations, RetrievalPipeline } from "./retrieval/index.js";
 import {
   StreamReader,
@@ -52,6 +66,8 @@ import { openDatabase, type Migration, type SqliteDatabase } from "./storage/sql
 import { SystemClock, type Clock } from "./util/clock.js";
 import {
   DEFAULT_SESSION_ID,
+  type AuditId,
+  type MaintenanceRunId,
   createSemanticNodeId,
   type EpisodeId,
   type SessionId,
@@ -74,6 +90,9 @@ type BorgDependencies = {
   retrievalPipeline: RetrievalPipeline;
   workingMemoryStore: WorkingMemoryStore;
   turnOrchestrator: TurnOrchestrator;
+  auditLog: AuditLog;
+  maintenanceOrchestrator: MaintenanceOrchestrator;
+  offlineProcesses: Record<OfflineProcessName, OfflineProcess>;
   llmFactory: () => LLMClient;
   embeddingClient: EmbeddingClient;
   clock: Clock;
@@ -87,6 +106,31 @@ export type BorgOpenOptions = {
   embeddingClient?: EmbeddingClient;
   llmClient?: LLMClient;
   clock?: Clock;
+};
+
+export type BorgDreamOptions = {
+  dryRun?: boolean;
+  budget?: number;
+  processes?: OfflineProcessName[];
+  processOverrides?: Partial<
+    Record<
+      OfflineProcessName,
+      {
+        dryRun?: boolean;
+        budget?: number;
+      }
+    >
+  >;
+};
+
+export type BorgDreamRunner = ((options?: BorgDreamOptions) => Promise<OrchestratorResult>) & {
+  plan: (options?: Omit<BorgDreamOptions, "dryRun">) => Promise<MaintenancePlan>;
+  preview: (plan: MaintenancePlan) => OrchestratorResult;
+  apply: (plan: MaintenancePlan) => Promise<OrchestratorResult>;
+  consolidate: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
+  reflect: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
+  curate: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
+  oversee: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
 };
 
 function createEmbeddingClient(config: Config): EmbeddingClient {
@@ -113,6 +157,14 @@ function createLlmFactory(config: Config, llmClient: LLMClient | undefined): () 
   };
 }
 
+function createLazyLlmClient(factory: () => LLMClient): LLMClient {
+  return {
+    complete(options) {
+      return factory().complete(options);
+    },
+  };
+}
+
 function createMigrations(): Migration[] {
   return [
     ...episodicMigrations,
@@ -120,6 +172,7 @@ function createMigrations(): Migration[] {
     ...retrievalMigrations,
     ...semanticMigrations,
     ...commitmentMigrations,
+    ...offlineMigrations,
   ];
 }
 
@@ -228,12 +281,31 @@ export class Borg {
     list: (options?: { kind?: ReviewKind; openOnly?: boolean }) => ReviewQueueItem[];
     resolve: (id: number, decision: ReviewResolution) => Promise<ReviewQueueItem | null>;
   };
+  readonly audit: {
+    list: (options?: {
+      runId?: MaintenanceRunId;
+      process?: OfflineProcessName;
+      reverted?: boolean;
+    }) => ReturnType<AuditLog["list"]>;
+    revert: (id: AuditId, revertedBy?: string) => ReturnType<AuditLog["revert"]>;
+  };
+  readonly dream: BorgDreamRunner;
   readonly workmem: {
     load: (sessionId?: SessionId) => WorkingMemory;
     clear: (sessionId?: SessionId) => void;
   };
 
   private constructor(private readonly deps: BorgDependencies) {
+    const defaultDreamProcesses = (): OfflineProcessName[] =>
+      Object.entries({
+        consolidator: this.deps.config.offline.consolidator.enabled,
+        reflector: this.deps.config.offline.reflector.enabled,
+        curator: this.deps.config.offline.curator.enabled,
+        overseer: this.deps.config.offline.overseer.enabled,
+      })
+        .filter(([, enabled]) => enabled)
+        .map(([name]) => name as OfflineProcessName);
+
     this.stream = {
       append: async (input, options = {}) => {
         const writer = new StreamWriter({
@@ -375,6 +447,55 @@ export class Borg {
       list: (options = {}) => this.deps.reviewQueueRepository.list(options),
       resolve: (id, decision) => this.deps.reviewQueueRepository.resolve(id, decision),
     };
+    this.audit = {
+      list: (options = {}) =>
+        this.deps.auditLog.list({
+          run_id: options.runId,
+          process: options.process,
+          reverted: options.reverted,
+        }),
+      revert: (id, revertedBy) => this.deps.auditLog.revert(id, revertedBy),
+    };
+    const runDream = async (
+      processNames: readonly OfflineProcessName[],
+      options: BorgDreamOptions = {},
+    ): Promise<OrchestratorResult> => {
+      const processes = processNames.map((name) => this.deps.offlineProcesses[name]);
+
+      return this.deps.maintenanceOrchestrator.run({
+        processes,
+        opts: {
+          dryRun: options.dryRun,
+          budget: options.budget,
+          processOverrides: options.processOverrides,
+        },
+      });
+    };
+    const planDream = (
+      processNames: readonly OfflineProcessName[],
+      options: BorgDreamOptions = {},
+    ) =>
+      this.deps.maintenanceOrchestrator.plan({
+        processes: processNames.map((name) => this.deps.offlineProcesses[name]),
+        opts: {
+          budget: options.budget,
+          processOverrides: options.processOverrides,
+        },
+      });
+    this.dream = Object.assign(
+      async (options: BorgDreamOptions = {}) =>
+        runDream(options.processes ?? defaultDreamProcesses(), options),
+      {
+        plan: (options: Omit<BorgDreamOptions, "dryRun"> = {}) =>
+          planDream(options.processes ?? defaultDreamProcesses(), options),
+        preview: (plan: MaintenancePlan) => this.deps.maintenanceOrchestrator.preview(plan),
+        apply: (plan: MaintenancePlan) => this.deps.maintenanceOrchestrator.apply(plan),
+        consolidate: (options = {}) => runDream(["consolidator"], options),
+        reflect: (options = {}) => runDream(["reflector"], options),
+        curate: (options = {}) => runDream(["curator"], options),
+        oversee: (options = {}) => runDream(["overseer"], options),
+      },
+    ) satisfies BorgDreamRunner;
     this.workmem = {
       load: (sessionId = DEFAULT_SESSION_ID) => this.deps.workingMemoryStore.load(sessionId),
       clear: (sessionId = DEFAULT_SESSION_ID) => {
@@ -478,6 +599,57 @@ export class Borg {
           clock,
         });
       const llmFactory = createLlmFactory(config, options.llmClient);
+      const lazyLlmClient = createLazyLlmClient(llmFactory);
+      const reverserRegistry = new ReverserRegistry();
+      const auditLog = new AuditLog({
+        db: sqlite,
+        clock,
+        registry: reverserRegistry,
+      });
+      const offlineProcesses = {
+        consolidator: new ConsolidatorProcess({
+          episodicRepository,
+          registry: reverserRegistry,
+        }),
+        reflector: new ReflectorProcess({
+          semanticNodeRepository,
+          semanticEdgeRepository,
+          reviewQueueRepository,
+          registry: reverserRegistry,
+        }),
+        curator: new CuratorProcess({
+          episodicRepository,
+          registry: reverserRegistry,
+        }),
+        overseer: new OverseerProcess({
+          reviewQueueRepository,
+          registry: reverserRegistry,
+        }),
+      } satisfies Record<OfflineProcessName, OfflineProcess>;
+      const maintenanceOrchestrator = new MaintenanceOrchestrator({
+        baseContext: {
+          config,
+          clock,
+          embeddingClient,
+          llm: {
+            cognition: lazyLlmClient,
+            background: lazyLlmClient,
+            extraction: lazyLlmClient,
+          },
+          episodicRepository,
+          semanticNodeRepository,
+          semanticEdgeRepository,
+          reviewQueueRepository,
+          valuesRepository,
+          goalsRepository,
+          traitsRepository,
+          entityRepository,
+          commitmentRepository,
+        },
+        auditLog,
+        createStreamWriter: () => createStreamWriter(DEFAULT_SESSION_ID),
+        processRegistry: offlineProcesses,
+      });
       const turnOrchestrator = new TurnOrchestrator({
         config,
         retrievalPipeline,
@@ -510,6 +682,9 @@ export class Borg {
         retrievalPipeline,
         workingMemoryStore,
         turnOrchestrator,
+        auditLog,
+        maintenanceOrchestrator,
+        offlineProcesses,
         llmFactory,
         embeddingClient,
         clock,

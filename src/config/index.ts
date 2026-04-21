@@ -39,6 +39,51 @@ const configFileSchema = z
       })
       .partial()
       .optional(),
+    offline: z
+      .object({
+        consolidator: z
+          .object({
+            enabled: z.boolean().optional(),
+            similarityThreshold: z.number().positive().optional(),
+            minClusterSize: z.number().int().positive().optional(),
+            maxClustersPerRun: z.number().int().positive().optional(),
+            budget: z.number().int().positive().optional(),
+          })
+          .partial()
+          .optional(),
+        reflector: z
+          .object({
+            enabled: z.boolean().optional(),
+            minSupport: z.number().int().positive().optional(),
+            ceilingConfidence: z.number().positive().max(0.5).optional(),
+            maxInsightsPerRun: z.number().int().positive().optional(),
+            budget: z.number().int().positive().optional(),
+          })
+          .partial()
+          .optional(),
+        curator: z
+          .object({
+            enabled: z.boolean().optional(),
+            t1Heat: z.number().positive().optional(),
+            t2Heat: z.number().positive().optional(),
+            t3DemoteHeat: z.number().positive().optional(),
+            archiveAgeDays: z.number().positive().optional(),
+            archiveMinHeat: z.number().nonnegative().optional(),
+          })
+          .partial()
+          .optional(),
+        overseer: z
+          .object({
+            enabled: z.boolean().optional(),
+            lookbackHours: z.number().positive().optional(),
+            maxChecksPerRun: z.number().int().positive().optional(),
+            budget: z.number().int().positive().optional(),
+          })
+          .partial()
+          .optional(),
+      })
+      .partial()
+      .optional(),
   })
   .partial();
 
@@ -59,6 +104,36 @@ export const configSchema = z.object({
       cognition: z.string().min(1),
       background: z.string().min(1),
       extraction: z.string().min(1),
+    }),
+  }),
+  offline: z.object({
+    consolidator: z.object({
+      enabled: z.boolean(),
+      similarityThreshold: z.number().positive(),
+      minClusterSize: z.number().int().positive(),
+      maxClustersPerRun: z.number().int().positive(),
+      budget: z.number().int().positive(),
+    }),
+    reflector: z.object({
+      enabled: z.boolean(),
+      minSupport: z.number().int().positive(),
+      ceilingConfidence: z.number().positive().max(0.5),
+      maxInsightsPerRun: z.number().int().positive(),
+      budget: z.number().int().positive(),
+    }),
+    curator: z.object({
+      enabled: z.boolean(),
+      t1Heat: z.number().positive(),
+      t2Heat: z.number().positive(),
+      t3DemoteHeat: z.number().positive(),
+      archiveAgeDays: z.number().positive(),
+      archiveMinHeat: z.number().nonnegative(),
+    }),
+    overseer: z.object({
+      enabled: z.boolean(),
+      lookbackHours: z.number().positive(),
+      maxChecksPerRun: z.number().int().positive(),
+      budget: z.number().int().positive(),
     }),
   }),
 });
@@ -82,6 +157,36 @@ export const DEFAULT_CONFIG: Config = {
       cognition: "claude-sonnet-4-5",
       background: "claude-haiku-4-5",
       extraction: "claude-haiku-4-5",
+    },
+  },
+  offline: {
+    consolidator: {
+      enabled: true,
+      similarityThreshold: 0.82,
+      minClusterSize: 2,
+      maxClustersPerRun: 2,
+      budget: 15_000,
+    },
+    reflector: {
+      enabled: true,
+      minSupport: 3,
+      ceilingConfidence: 0.5,
+      maxInsightsPerRun: 2,
+      budget: 30_000,
+    },
+    curator: {
+      enabled: true,
+      t1Heat: 5,
+      t2Heat: 15,
+      t3DemoteHeat: 3,
+      archiveAgeDays: 45,
+      archiveMinHeat: 1,
+    },
+    overseer: {
+      enabled: true,
+      lookbackHours: 24,
+      maxChecksPerRun: 8,
+      budget: 20_000,
     },
   },
 };
@@ -119,6 +224,22 @@ function readOptionalEnvNumber(env: NodeJS.ProcessEnv, name: string): number | u
 
   if (!Number.isInteger(value) || value <= 0) {
     throw new ConfigError(`Environment variable ${name} must be a positive integer`);
+  }
+
+  return value;
+}
+
+function readOptionalEnvFloat(env: NodeJS.ProcessEnv, name: string): number | undefined {
+  const raw = readOptionalEnvString(env, name);
+
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  const value = Number(raw);
+
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new ConfigError(`Environment variable ${name} must be a positive number`);
   }
 
   return value;
@@ -240,6 +361,96 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           DEFAULT_CONFIG.anthropic.models.extraction,
       },
     },
+    offline: {
+      consolidator: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_OFFLINE_CONSOLIDATOR_ENABLED") ??
+          fileConfig.offline?.consolidator?.enabled ??
+          DEFAULT_CONFIG.offline.consolidator.enabled,
+        similarityThreshold:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CONSOLIDATOR_SIMILARITY_THRESHOLD") ??
+          fileConfig.offline?.consolidator?.similarityThreshold ??
+          DEFAULT_CONFIG.offline.consolidator.similarityThreshold,
+        minClusterSize:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_MIN_CLUSTER_SIZE") ??
+          fileConfig.offline?.consolidator?.minClusterSize ??
+          DEFAULT_CONFIG.offline.consolidator.minClusterSize,
+        maxClustersPerRun:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_MAX_CLUSTERS_PER_RUN") ??
+          fileConfig.offline?.consolidator?.maxClustersPerRun ??
+          DEFAULT_CONFIG.offline.consolidator.maxClustersPerRun,
+        budget:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_BUDGET") ??
+          fileConfig.offline?.consolidator?.budget ??
+          DEFAULT_CONFIG.offline.consolidator.budget,
+      },
+      reflector: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_OFFLINE_REFLECTOR_ENABLED") ??
+          fileConfig.offline?.reflector?.enabled ??
+          DEFAULT_CONFIG.offline.reflector.enabled,
+        minSupport:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MIN_SUPPORT") ??
+          fileConfig.offline?.reflector?.minSupport ??
+          DEFAULT_CONFIG.offline.reflector.minSupport,
+        ceilingConfidence:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_REFLECTOR_CEILING_CONFIDENCE") ??
+          fileConfig.offline?.reflector?.ceilingConfidence ??
+          DEFAULT_CONFIG.offline.reflector.ceilingConfidence,
+        maxInsightsPerRun:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MAX_INSIGHTS_PER_RUN") ??
+          fileConfig.offline?.reflector?.maxInsightsPerRun ??
+          DEFAULT_CONFIG.offline.reflector.maxInsightsPerRun,
+        budget:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_BUDGET") ??
+          fileConfig.offline?.reflector?.budget ??
+          DEFAULT_CONFIG.offline.reflector.budget,
+      },
+      curator: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_OFFLINE_CURATOR_ENABLED") ??
+          fileConfig.offline?.curator?.enabled ??
+          DEFAULT_CONFIG.offline.curator.enabled,
+        t1Heat:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_T1_HEAT") ??
+          fileConfig.offline?.curator?.t1Heat ??
+          DEFAULT_CONFIG.offline.curator.t1Heat,
+        t2Heat:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_T2_HEAT") ??
+          fileConfig.offline?.curator?.t2Heat ??
+          DEFAULT_CONFIG.offline.curator.t2Heat,
+        t3DemoteHeat:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_T3_DEMOTE_HEAT") ??
+          fileConfig.offline?.curator?.t3DemoteHeat ??
+          DEFAULT_CONFIG.offline.curator.t3DemoteHeat,
+        archiveAgeDays:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_ARCHIVE_AGE_DAYS") ??
+          fileConfig.offline?.curator?.archiveAgeDays ??
+          DEFAULT_CONFIG.offline.curator.archiveAgeDays,
+        archiveMinHeat:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_ARCHIVE_MIN_HEAT") ??
+          fileConfig.offline?.curator?.archiveMinHeat ??
+          DEFAULT_CONFIG.offline.curator.archiveMinHeat,
+      },
+      overseer: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_OFFLINE_OVERSEER_ENABLED") ??
+          fileConfig.offline?.overseer?.enabled ??
+          DEFAULT_CONFIG.offline.overseer.enabled,
+        lookbackHours:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_OVERSEER_LOOKBACK_HOURS") ??
+          fileConfig.offline?.overseer?.lookbackHours ??
+          DEFAULT_CONFIG.offline.overseer.lookbackHours,
+        maxChecksPerRun:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_MAX_CHECKS_PER_RUN") ??
+          fileConfig.offline?.overseer?.maxChecksPerRun ??
+          DEFAULT_CONFIG.offline.overseer.maxChecksPerRun,
+        budget:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_BUDGET") ??
+          fileConfig.offline?.overseer?.budget ??
+          DEFAULT_CONFIG.offline.overseer.budget,
+      },
+    },
   };
 
   const parsed = configSchema.safeParse(candidate);
@@ -270,6 +481,9 @@ export function redactConfig(config: Config): Config {
     anthropic: {
       ...config.anthropic,
       apiKey: redactSecret(config.anthropic.apiKey),
+    },
+    offline: {
+      ...config.offline,
     },
   };
 }

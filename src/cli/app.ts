@@ -9,13 +9,22 @@ import {
   semanticRelationSchema,
   semanticNodeKindSchema,
 } from "../memory/semantic/index.js";
+import {
+  OFFLINE_PROCESS_NAMES,
+  maintenancePlanSchema,
+  type MaintenancePlan,
+  type OfflineProcessName,
+} from "../offline/index.js";
 import { streamEntryKindSchema } from "../stream/index.js";
+import { readJsonFile, writeJsonFileAtomic } from "../util/atomic-write.js";
 import { BorgError } from "../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
+  parseAuditId,
   parseCommitmentId,
   parseEpisodeId,
   parseGoalId,
+  parseMaintenanceRunId,
   parseSemanticNodeId,
   parseSessionId,
   parseValueId,
@@ -239,7 +248,7 @@ function parseReviewKind(value: unknown) {
   const parsed = reviewKindSchema.safeParse(value);
 
   if (!parsed.success) {
-    throw new CliError("--kind must be one of: contradiction, duplicate, stale", {
+    throw new CliError(`--kind must be one of: ${reviewKindSchema.options.join(", ")}`, {
       cause: parsed.error,
     });
   }
@@ -301,6 +310,102 @@ function parseStakes(value: unknown): "low" | "medium" | "high" | undefined {
   throw new CliError("--stakes must be one of: low, medium, high");
 }
 
+function parseBudget(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const candidate = Array.isArray(value) ? value.at(-1) : value;
+
+  if (candidate === undefined) {
+    return undefined;
+  }
+
+  if (typeof candidate === "string" && candidate.trim() !== "") {
+    const parsed = Number(candidate);
+
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new CliError("--budget must be a positive integer");
+    }
+
+    return parsed;
+  }
+
+  return parsePositiveInteger(candidate, "--budget");
+}
+
+function parseOptionalPath(value: unknown, flag: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new CliError(`${flag} must be a file path`);
+  }
+
+  return value.trim();
+}
+
+function parseOfflineProcessName(value: unknown) {
+  if (typeof value !== "string" || !OFFLINE_PROCESS_NAMES.includes(value as never)) {
+    throw new CliError(`--process must be one of: ${OFFLINE_PROCESS_NAMES.join(", ")}`);
+  }
+
+  return value as OfflineProcessName;
+}
+
+function parseOfflineProcessList(value: unknown) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new CliError("--process must be a comma-separated list");
+  }
+
+  return [
+    ...new Set(
+      value
+        .split(",")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0)
+        .map((item) => parseOfflineProcessName(item)),
+    ),
+  ] satisfies OfflineProcessName[];
+}
+
+function resolveMaintenanceRunId(value: unknown) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new CliError("Maintenance run id is required");
+  }
+
+  try {
+    return parseMaintenanceRunId(value);
+  } catch (error) {
+    throw new CliError(`Invalid maintenance run id: ${value}`, {
+      cause: error,
+    });
+  }
+}
+
+function resolveAuditId(value: unknown) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new CliError("Audit id is required");
+  }
+
+  try {
+    return parseAuditId(value);
+  } catch (error) {
+    throw new CliError(`Invalid audit id: ${value}`, {
+      cause: error,
+    });
+  }
+}
+
 async function withBorg<T>(options: RunCliOptions, fn: (borg: Borg) => Promise<T>): Promise<T> {
   const openOptions: BorgOpenOptions = {
     env: options.env,
@@ -313,6 +418,26 @@ async function withBorg<T>(options: RunCliOptions, fn: (borg: Borg) => Promise<T
   } finally {
     await borg.close();
   }
+}
+
+function readMaintenancePlan(planPath: string): MaintenancePlan {
+  const rawPlan = readJsonFile<unknown>(planPath);
+
+  if (rawPlan === undefined) {
+    throw new CliError(`Plan file not found: ${planPath}`, {
+      code: "CLI_NOT_FOUND",
+    });
+  }
+
+  const parsed = maintenancePlanSchema.safeParse(rawPlan);
+
+  if (!parsed.success) {
+    throw new CliError(`Invalid maintenance plan file: ${planPath}`, {
+      cause: parsed.error,
+    });
+  }
+
+  return parsed.data;
 }
 
 export async function runCli(argv: string[], options: RunCliOptions = {}): Promise<number> {
@@ -469,6 +594,128 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
         }
 
         throw new CliError(`Unknown episode action: ${action}`);
+      },
+    );
+
+  cli
+    .command("dream [action]", "Run offline maintenance processes")
+    .option("--dry-run", "Preview changes without applying them")
+    .option("--budget <tokens>", "Override token budget")
+    .option("--process <names>", "Comma-separated process names")
+    .option("--output <path>", "Write a generated dry-run plan to a file")
+    .option("--plan <path>", "Maintenance plan file to apply")
+    .action(async (action: string | undefined, commandOptions: Record<string, unknown>) => {
+      const budget = parseBudget(commandOptions.budget);
+      const processList = parseOfflineProcessList(commandOptions.process);
+      const dryRun = commandOptions.dryRun === true;
+      const outputPath = parseOptionalPath(commandOptions.output, "--output");
+      const planPath = parseOptionalPath(commandOptions.plan, "--plan");
+
+      if (action === "apply") {
+        if (planPath === undefined) {
+          throw new CliError("--plan is required for dream apply");
+        }
+
+        if (outputPath !== undefined) {
+          throw new CliError("--output cannot be used with dream apply");
+        }
+
+        if (dryRun) {
+          throw new CliError("--dry-run cannot be used with dream apply");
+        }
+
+        const result = await withBorg(options, async (borg) =>
+          borg.dream.apply(readMaintenancePlan(planPath)),
+        );
+        writeLine(stdout, JSON.stringify(result, null, 2));
+        return;
+      }
+
+      if (planPath !== undefined) {
+        throw new CliError("--plan can only be used with dream apply");
+      }
+
+      if (outputPath !== undefined && !dryRun) {
+        throw new CliError("--output requires --dry-run");
+      }
+
+      const selectedProcesses: OfflineProcessName[] | undefined =
+        action === undefined
+          ? processList
+          : action === "consolidate"
+            ? ["consolidator"]
+            : action === "reflect"
+              ? ["reflector"]
+              : action === "curate"
+                ? ["curator"]
+                : action === "oversee"
+                  ? ["overseer"]
+                  : undefined;
+
+      if (selectedProcesses === undefined) {
+        throw new CliError(`Unknown dream action: ${action}`);
+      }
+
+      if (outputPath !== undefined) {
+        const response = await withBorg(options, async (borg) => {
+          const plan = await borg.dream.plan({
+            budget,
+            processes: selectedProcesses,
+          });
+          writeJsonFileAtomic(outputPath, plan);
+
+          return {
+            ...borg.dream.preview(plan),
+            plan_path: outputPath,
+          };
+        });
+
+        writeLine(stdout, JSON.stringify(response, null, 2));
+        return;
+      }
+
+      const result = await withBorg(options, async (borg) => {
+        return borg.dream({
+          dryRun,
+          budget,
+          processes: selectedProcesses,
+        });
+      });
+
+      writeLine(stdout, JSON.stringify(result, null, 2));
+    });
+
+  cli
+    .command("audit <action> [arg]", "Inspect or revert maintenance audit entries")
+    .option("--run-id <id>", "Filter by maintenance run id")
+    .option("--process <name>", "Filter by maintenance process")
+    .option("--reverted", "Only include reverted entries")
+    .action(
+      async (action: string, arg: string | undefined, commandOptions: Record<string, unknown>) => {
+        if (action === "list") {
+          const items = await withBorg(options, async (borg) =>
+            borg.audit.list({
+              runId: resolveMaintenanceRunId(commandOptions.runId ?? commandOptions["run-id"]),
+              process:
+                commandOptions.process === undefined
+                  ? undefined
+                  : parseOfflineProcessName(commandOptions.process),
+              reverted: commandOptions.reverted === true ? true : undefined,
+            }),
+          );
+          writeLine(stdout, JSON.stringify(items, null, 2));
+          return;
+        }
+
+        if (action === "revert") {
+          const item = await withBorg(options, async (borg) =>
+            borg.audit.revert(resolveAuditId(arg)),
+          );
+          writeLine(stdout, JSON.stringify(item, null, 2));
+          return;
+        }
+
+        throw new CliError(`Unknown audit action: ${action}`);
       },
     );
 

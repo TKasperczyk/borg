@@ -17,6 +17,7 @@ export const STREAM_ENTRY_KINDS = [
   "tool_result",
   "perception",
   "internal_event",
+  "dream_report",
 ] as const;
 
 export const streamEntryKindSchema = z.enum(STREAM_ENTRY_KINDS);
