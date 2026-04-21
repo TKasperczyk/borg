@@ -31,6 +31,11 @@ describe("config", () => {
     expect(config.embedding.model).toBe("text-embedding-qwen3-embedding-8b");
     expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBeUndefined();
+    expect(config.anthropic.models).toEqual({
+      cognition: "claude-opus-4-7",
+      background: "claude-opus-4-7",
+      extraction: "claude-opus-4-7",
+    });
     expect(config.perception.useLlmFallback).toBe(true);
   });
 

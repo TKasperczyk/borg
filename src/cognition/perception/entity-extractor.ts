@@ -163,7 +163,7 @@ export class EntityExtractor {
         ],
         tools: [ENTITY_FALLBACK_TOOL],
         tool_choice: { type: "tool", name: ENTITY_FALLBACK_TOOL_NAME },
-        max_tokens: 200,
+        max_tokens: 512,
         budget: "perception-entity-fallback",
       });
       return parseEntityFallback(response);

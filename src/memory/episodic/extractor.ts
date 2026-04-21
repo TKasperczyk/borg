@@ -261,8 +261,8 @@ export class EpisodicExtractor {
 
   constructor(private readonly options: EpisodicExtractorOptions) {
     this.clock = options.clock ?? new SystemClock();
-    this.chunkTokenLimit = options.chunkTokenLimit ?? 1_200;
-    this.maxTokens = options.maxTokens ?? 1_024;
+    this.chunkTokenLimit = options.chunkTokenLimit ?? 16_000;
+    this.maxTokens = options.maxTokens ?? 16_000;
   }
 
   private async processCandidate(

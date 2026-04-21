@@ -249,7 +249,7 @@ async function buildInsightCandidate(
       ],
       tools: [REFLECTOR_TOOL],
       tool_choice: { type: "tool", name: REFLECTOR_TOOL_NAME },
-      max_tokens: 500,
+      max_tokens: 4_000,
       budget: "offline-reflector",
     }),
   );

@@ -225,9 +225,9 @@ export const DEFAULT_CONFIG: Config = {
     auth: "auto",
     apiKey: undefined,
     models: {
-      cognition: "claude-sonnet-4-5",
-      background: "claude-haiku-4-5",
-      extraction: "claude-haiku-4-5",
+      cognition: "claude-opus-4-7",
+      background: "claude-opus-4-7",
+      extraction: "claude-opus-4-7",
     },
   },
   offline: {
@@ -236,14 +236,14 @@ export const DEFAULT_CONFIG: Config = {
       similarityThreshold: 0.82,
       minClusterSize: 2,
       maxClustersPerRun: 2,
-      budget: 15_000,
+      budget: 60_000,
     },
     reflector: {
       enabled: true,
       minSupport: 3,
       ceilingConfidence: 0.5,
       maxInsightsPerRun: 2,
-      budget: 30_000,
+      budget: 60_000,
     },
     curator: {
       enabled: true,
@@ -257,7 +257,7 @@ export const DEFAULT_CONFIG: Config = {
       enabled: true,
       lookbackHours: 24,
       maxChecksPerRun: 8,
-      budget: 20_000,
+      budget: 40_000,
     },
     ruminator: {
       enabled: true,
@@ -265,11 +265,11 @@ export const DEFAULT_CONFIG: Config = {
       resolveConfidenceThreshold: 0.65,
       stalenessDays: 30,
       budget: 6_000,
-      perQuestionBudget: 2_000,
+      perQuestionBudget: 8_000,
     },
     selfNarrator: {
       enabled: true,
-      budget: 30_000,
+      budget: 80_000,
       maxObservationsPerRun: 4,
       minSupportEpisodes: 2,
       cadenceHintDays: 7,

@@ -145,15 +145,46 @@ function summarizeSelfState(ctx: OfflineContext): string {
 }
 
 function buildPrompt(target: OverseerTarget, ctx: OfflineContext): string {
+  const serializedTarget =
+    target.type === "episode"
+      ? {
+          type: target.type,
+          content: {
+            id: target.content.id,
+            title: target.content.title,
+            narrative: target.content.narrative,
+            participants: target.content.participants,
+            location: target.content.location,
+            start_time: target.content.start_time,
+            end_time: target.content.end_time,
+            source_stream_ids: target.content.source_stream_ids,
+            significance: target.content.significance,
+            tags: target.content.tags,
+            confidence: target.content.confidence,
+            emotional_arc: target.content.emotional_arc,
+          },
+        }
+      : {
+          type: target.type,
+          content: {
+            id: target.content.id,
+            kind: target.content.kind,
+            label: target.content.label,
+            description: target.content.description,
+            aliases: target.content.aliases,
+            confidence: target.content.confidence,
+            source_episode_ids: target.content.source_episode_ids,
+            archived: target.content.archived,
+            superseded_by: target.content.superseded_by,
+          },
+        };
+
   return [
     "Check the memory item for misattribution, temporal drift, and identity inconsistency.",
     `Emit your result by calling the ${OVERSEER_TOOL_NAME} tool exactly once.`,
     summarizeSelfState(ctx),
     "Memory item:",
-    JSON.stringify({
-      type: target.type,
-      content: target.content,
-    }),
+    JSON.stringify(serializedTarget),
   ].join("\n\n");
 }
 
@@ -260,7 +291,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                 ],
                 tools: [OVERSEER_TOOL],
                 tool_choice: { type: "tool", name: OVERSEER_TOOL_NAME },
-                max_tokens: 500,
+                max_tokens: 4_000,
                 budget: "offline-overseer",
               }),
             ).flags.filter((flag) => flag.confidence >= 0.5);

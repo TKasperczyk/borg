@@ -4,6 +4,7 @@ import type {
   MessageParam,
   TextBlock,
   TextBlockParam,
+  ThinkingConfigParam,
   Tool,
   ToolChoice,
   ToolUseBlock,
@@ -13,6 +14,7 @@ import { z } from "zod";
 import { getFreshCredentials, type GetFreshCredentialsOptions } from "../auth/claude-oauth.js";
 import type { Clock } from "../util/clock.js";
 import { AuthError, ConfigError, LLMError } from "../util/errors.js";
+import { getModelMaxOutputTokens } from "./max-tokens.js";
 
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
 const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
@@ -63,7 +65,9 @@ export type LLMCompleteOptions = {
   messages: readonly LLMMessage[];
   tools?: readonly LLMToolDefinition[];
   tool_choice?: { type: "tool"; name: string } | { type: "any" } | { type: "auto" };
-  max_tokens: number;
+  max_tokens?: number;
+  temperature?: number;
+  thinking?: ThinkingConfigParam;
   budget: string;
 };
 
@@ -97,6 +101,8 @@ type AnthropicClientLike = {
       tools?: Tool[];
       tool_choice?: ToolChoice;
       max_tokens: number;
+      temperature?: number;
+      thinking?: ThinkingConfigParam;
     }): Promise<Message>;
   };
 };
@@ -459,6 +465,29 @@ function normalizeSystemBlocks(
   }));
 }
 
+function isOpusModel(model: string): boolean {
+  return /^claude-opus-4(?:[-._].+)?$/i.test(model.trim());
+}
+
+function resolveMaxTokens(options: LLMCompleteOptions): number {
+  return options.max_tokens ?? getModelMaxOutputTokens(options.model);
+}
+
+function shouldOmitTemperature(model: string): boolean {
+  return isOpusModel(model);
+}
+
+function shouldOmitThinking(
+  auth: ResolvedAnthropicAuth | undefined,
+  options: LLMCompleteOptions,
+): boolean {
+  if (isOpusModel(options.model)) {
+    return true;
+  }
+
+  return auth?.kind === "oauth" && options.tool_choice?.type === "tool";
+}
+
 function isAuthenticationFailure(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -612,7 +641,13 @@ export class AnthropicLLMClient implements LLMClient {
         messages: toAnthropicMessages(options.messages),
         tools: toAnthropicTools(options.tools),
         tool_choice: toAnthropicToolChoice(options.tool_choice),
-        max_tokens: options.max_tokens,
+        max_tokens: resolveMaxTokens(options),
+        ...(options.temperature !== undefined && !shouldOmitTemperature(options.model)
+          ? { temperature: options.temperature }
+          : {}),
+        ...(options.thinking !== undefined && !shouldOmitThinking(this.auth, options)
+          ? { thinking: options.thinking }
+          : {}),
       });
 
       const result = {

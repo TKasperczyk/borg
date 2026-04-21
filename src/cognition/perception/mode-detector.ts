@@ -153,7 +153,7 @@ export class ModeDetector {
         ],
         tools: [MODE_FALLBACK_TOOL],
         tool_choice: { type: "tool", name: MODE_FALLBACK_TOOL_NAME },
-        max_tokens: 80,
+        max_tokens: 256,
         budget: "perception-mode-fallback",
       });
       return parseModeFallback(response);

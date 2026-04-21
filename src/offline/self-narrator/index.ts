@@ -349,7 +349,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                 ],
                 tools: [SELF_NARRATOR_TOOL],
                 tool_choice: { type: "tool", name: SELF_NARRATOR_TOOL_NAME },
-                max_tokens: 400,
+                max_tokens: 8_000,
                 budget: "offline-self-narrator",
               }),
             );

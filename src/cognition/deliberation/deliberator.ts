@@ -67,6 +67,11 @@ export type DeliberatorOptions = {
   backgroundModel: string;
 };
 
+const DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS = 8_000;
+const DEFAULT_DELIBERATION_PLAN_MAX_TOKENS = 2_000;
+const DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET = 120_000;
+const DEFAULT_SEMANTIC_CONTEXT_BUDGET = 8_000;
+
 function aggregateUsage(
   current: DeliberationUsage,
   next: {
@@ -202,21 +207,63 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
   ].join("\n");
 }
 
+function estimatePromptTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function summarizeCitationChain(result: RetrievedEpisode): string | null {
+  if (result.citationChain.length === 0) {
+    return null;
+  }
+
+  const snippets = result.citationChain.slice(0, 2).map((entry) => {
+    const content =
+      typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content ?? null);
+    const normalized = content.replace(/\s+/g, " ").trim();
+    return normalized.length > 140 ? `${normalized.slice(0, 137).trimEnd()}...` : normalized;
+  });
+
+  return snippets.length === 0 ? null : `  citations: ${snippets.join(" | ")}`;
+}
+
 function summarizeRetrievedEpisodes(
   label: string,
   retrievedEpisodes: readonly RetrievedEpisode[],
+  maxTokens = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
 ): string {
   if (retrievedEpisodes.length === 0) {
     return `${label}: none`;
   }
 
-  return [
-    `${label}:`,
-    ...retrievedEpisodes.map(
-      (result) =>
-        `- ${result.episode.title} [score=${result.score.toFixed(2)}] tags=${result.episode.tags.join(",")}`,
-    ),
-  ].join("\n");
+  const lines = [`${label}:`];
+  let usedTokens = estimatePromptTokens(lines[0] ?? label);
+
+  for (const result of retrievedEpisodes) {
+    const normalizedNarrative = result.episode.narrative.replace(/\s+/g, " ").trim();
+    const narrative =
+      normalizedNarrative.length > 320
+        ? `${normalizedNarrative.slice(0, 317).trimEnd()}...`
+        : normalizedNarrative;
+    const blockLines = [
+      `- ${result.episode.title} [score=${result.score.toFixed(2)} sim=${result.scoreBreakdown.similarity.toFixed(2)} salience=${result.scoreBreakdown.decayedSalience.toFixed(2)}]`,
+      `  narrative: ${narrative}`,
+      `  participants: ${result.episode.participants.join(", ") || "none"}`,
+      `  tags: ${result.episode.tags.join(", ") || "none"}`,
+      summarizeCitationChain(result),
+    ].filter((line): line is string => line !== null);
+    const block = blockLines.join("\n");
+    const blockTokens = estimatePromptTokens(block);
+
+    if (usedTokens + blockTokens > maxTokens) {
+      lines.push("- ... truncated");
+      break;
+    }
+
+    lines.push(block);
+    usedTokens += blockTokens;
+  }
+
+  return lines.join("\n");
 }
 
 function summarizeSemanticNode(node: SemanticNode): string {
@@ -246,7 +293,7 @@ function summarizeSemanticBucket(
 
 function summarizeSemanticContext(
   retrievedEpisodes: readonly RetrievedEpisode[],
-  maxThinkingTokens: number,
+  maxContextTokens: number,
 ): string {
   const episodesWithContext = retrievedEpisodes.filter(
     (result) =>
@@ -259,8 +306,8 @@ function summarizeSemanticContext(
     return "Related semantic context: none";
   }
 
-  const maxEpisodes = maxThinkingTokens <= 256 ? 2 : maxThinkingTokens <= 512 ? 3 : 4;
-  const maxChars = Math.max(480, Math.min(maxThinkingTokens * 6, 2_400));
+  const maxEpisodes = maxContextTokens <= 2_000 ? 4 : maxContextTokens <= 8_000 ? 6 : 8;
+  const maxChars = Math.max(960, Math.min(maxContextTokens * 6, 12_000));
   const initialLine = "Related semantic context:";
   const lines = [initialLine];
   let totalChars = initialLine.length;
@@ -362,9 +409,12 @@ export class Deliberator {
     streamWriter?: StreamWriter,
   ): Promise<DeliberationResult> {
     const stakes = context.options?.stakes ?? "low";
-    const semanticContextBudget = context.options?.maxThinkingTokens ?? 600;
-    const systemOneMaxTokens = context.options?.maxThinkingTokens ?? 600;
-    const systemTwoMaxTokens = context.options?.maxThinkingTokens ?? 700;
+    const planningMaxTokens =
+      context.options?.maxThinkingTokens ?? DEFAULT_DELIBERATION_PLAN_MAX_TOKENS;
+    const semanticContextBudget = Math.max(DEFAULT_SEMANTIC_CONTEXT_BUDGET, planningMaxTokens * 4);
+    const retrievalContextBudget = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET;
+    const systemOneMaxTokens = DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS;
+    const systemTwoMaxTokens = DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS;
     const decision = chooseDeliberationPath(
       context.perception.mode,
       stakes,
@@ -382,7 +432,11 @@ export class Deliberator {
       "You are Borg, an agent with explicit memory and identity.",
       summarizeIdentity(context.selfSnapshot),
       summarizeWorkingMemory(context.workingMemory),
-      summarizeRetrievedEpisodes("Retrieved context", context.retrievalResult),
+      summarizeRetrievedEpisodes(
+        "Retrieved context",
+        context.retrievalResult,
+        retrievalContextBudget,
+      ),
       summarizeSemanticContext(context.retrievalResult, semanticContextBudget),
       summarizeSelectedSkill(context.perception.mode, context.selectedSkill),
       ...(context.perception.mode === "reflective"
@@ -432,12 +486,16 @@ export class Deliberator {
           role: "user",
           content: [
             `User message: ${context.userMessage}`,
-            summarizeRetrievedEpisodes("Initial retrieval", context.retrievalResult),
+            summarizeRetrievedEpisodes(
+              "Initial retrieval",
+              context.retrievalResult,
+              retrievalContextBudget,
+            ),
             `Mode: ${context.perception.mode}`,
           ].join("\n\n"),
         },
       ],
-      max_tokens: Math.min(semanticContextBudget, 256),
+      max_tokens: planningMaxTokens,
       budget: "cognition-plan",
     });
     const scratchpad = planning.text.trim();
@@ -452,7 +510,11 @@ export class Deliberator {
       model: this.options.cognitionModel,
       system: [
         baseSystemPrompt,
-        summarizeRetrievedEpisodes("Additional retrieval", secondaryRetrieval),
+        summarizeRetrievedEpisodes(
+          "Additional retrieval",
+          secondaryRetrieval,
+          retrievalContextBudget,
+        ),
         `Scratchpad:\n${scratchpad || "none"}`,
       ].join("\n\n"),
       messages: [

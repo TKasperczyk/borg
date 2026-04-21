@@ -292,7 +292,7 @@ export class CommitmentChecker {
           ].join("\n"),
         },
       ],
-      max_tokens: 500,
+      max_tokens: 4_000,
       budget: "commitment-revision",
     });
     const revisedResponse = rewritten.text.trim();

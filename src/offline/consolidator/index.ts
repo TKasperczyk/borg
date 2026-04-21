@@ -305,7 +305,7 @@ async function buildMergedEpisode(
       ],
       tools: [MERGE_TOOL],
       tool_choice: { type: "tool", name: MERGE_TOOL_NAME },
-      max_tokens: 700,
+      max_tokens: 6_000,
       budget: "offline-consolidator",
     }),
   );

@@ -233,7 +233,7 @@ async function planResolution(
       ],
       tools: [RUMINATOR_TOOL],
       tool_choice: { type: "tool", name: RUMINATOR_TOOL_NAME },
-      max_tokens: 300,
+      max_tokens: 4_000,
       budget: "offline-ruminator",
     }),
   );

@@ -250,7 +250,7 @@ export class AffectiveExtractor {
       ],
       tools: [AFFECTIVE_FALLBACK_TOOL],
       tool_choice: { type: "tool", name: AFFECTIVE_FALLBACK_TOOL_NAME },
-      max_tokens: 120,
+      max_tokens: 256,
       budget: "perception-affective",
     });
 

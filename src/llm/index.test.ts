@@ -458,6 +458,83 @@ describe("llm", () => {
     });
   });
 
+  it("omits temperature and thinking for Opus requests in OAuth mode", async () => {
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+
+        expect(body.temperature).toBeUndefined();
+        expect(body.thinking).toBeUndefined();
+
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-opus-4-7",
+        system: "be concise",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [
+          {
+            name: "EmitEpisodeCandidates",
+            inputSchema: {
+              type: "object",
+            },
+          },
+        ],
+        tool_choice: { type: "tool", name: "EmitEpisodeCandidates" },
+        temperature: 0,
+        thinking: { type: "disabled" },
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).resolves.toMatchObject({
+      text: "Hello",
+    });
+  });
+
+  it("preserves non-Opus temperature settings", async () => {
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+
+        expect(body.temperature).toBe(0.3);
+        expect(body.thinking).toEqual({ type: "disabled" });
+
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-haiku-4-5",
+        system: "be concise",
+        messages: [{ role: "user", content: "hello" }],
+        temperature: 0.3,
+        thinking: { type: "disabled" },
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).resolves.toMatchObject({
+      text: "Hello",
+    });
+  });
+
   it("builds an OAuth client from the shared credentials file", async () => {
     const credentialsPath = createTempCredentialsPath(tempDirs);
     writeJsonFileAtomic(credentialsPath, {

@@ -317,7 +317,7 @@ export class SemanticExtractor {
       ],
       tools: [EXTRACT_SEMANTIC_TOOL],
       tool_choice: { type: "tool", name: EXTRACT_SEMANTIC_TOOL_NAME },
-      max_tokens: 1_200,
+      max_tokens: 12_000,
       budget: "semantic-extraction",
     });
     const parsed = parseResponse(result);
