@@ -4,7 +4,11 @@ import { ConfigError, EmbeddingError } from "../util/errors.js";
 
 type OpenAIEmbeddingsClient = {
   embeddings: {
-    create(params: { input: string | string[]; model: string }): Promise<{
+    create(params: {
+      input: string | string[];
+      model: string;
+      encoding_format?: "float" | "base64";
+    }): Promise<{
       data: Array<{
         embedding: number[];
         index: number;
@@ -29,7 +33,7 @@ export type OpenAICompatibleEmbeddingClientOptions = {
 function validateDimensions(embedding: number[], dims: number, model: string): Float32Array {
   if (embedding.length !== dims) {
     throw new EmbeddingError(
-      `Embedding dimension mismatch for model "${model}": configured ${dims}, received ${embedding.length}. Check BORG_EMBEDDING_MODEL matches a loaded model in your provider.`,
+      `Embedding dimension mismatch for model "${model}": configured ${dims}, received ${embedding.length}. Check BORG_EMBEDDING_DIMS matches the loaded model's output dimension (the model itself may be correct -- some providers like LM Studio silently truncate to zeros when the OpenAI SDK's default base64 encoding is mis-decoded; borg requests encoding_format:"float" to avoid this).`,
     );
   }
 
@@ -91,6 +95,13 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
       const response = await this.client.embeddings.create({
         input: texts.length === 1 && singleInput !== undefined ? singleInput : [...texts],
         model: this.model,
+        // Explicit -- the OpenAI SDK defaults to "base64", which we then have
+        // to decode ourselves. Many OpenAI-compatible providers (LM Studio,
+        // llama.cpp, vLLM) ignore encoding_format and always return a float
+        // array; the SDK then mis-interprets it as base64-encoded bytes and
+        // silently returns a truncated, all-zero Float32Array. Asking for
+        // "float" explicitly bypasses the client-side decode.
+        encoding_format: "float",
       });
 
       if (response.data.length !== texts.length) {

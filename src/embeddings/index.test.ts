@@ -25,6 +25,7 @@ describe("embeddings", () => {
     expect(create).toHaveBeenCalledWith({
       input: ["one", "two"],
       model: "embed-model",
+      encoding_format: "float",
     });
     expect(Array.from(embeddings[0] ?? [])).toEqual([1, 2, 3]);
     expect(Array.from(embeddings[1] ?? [])).toEqual([4, 5, 6]);
