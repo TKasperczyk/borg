@@ -84,3 +84,15 @@ export class WorkingMemoryError extends BorgError {
     super(options.code ?? "BORG_WORKING_MEMORY_ERROR", message, options);
   }
 }
+
+export class SemanticError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_SEMANTIC_ERROR", message, options);
+  }
+}
+
+export class CommitmentError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_COMMITMENT_ERROR", message, options);
+  }
+}

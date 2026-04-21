@@ -5,12 +5,33 @@ import { loadConfig, type Config } from "./config/index.js";
 import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "./embeddings/index.js";
 import { AnthropicLLMClient, type LLMClient } from "./llm/index.js";
 import {
+  CommitmentRepository,
+  EntityRepository,
+  commitmentMigrations,
+} from "./memory/commitments/index.js";
+import {
   EpisodicExtractor,
   EpisodicRepository,
   type ExtractFromStreamResult,
   createEpisodesTableSchema,
   episodicMigrations,
 } from "./memory/episodic/index.js";
+import {
+  ReviewQueueRepository,
+  SemanticEdgeRepository,
+  SemanticExtractor,
+  SemanticGraph,
+  SemanticNodeRepository,
+  createSemanticNodesTableSchema,
+  semanticMigrations,
+  type ExtractSemanticResult,
+  type ReviewKind,
+  type ReviewQueueItem,
+  type ReviewResolution,
+  type SemanticEdge,
+  type SemanticNode,
+  type SemanticNodeSearchCandidate,
+} from "./memory/semantic/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "./retrieval/index.js";
 import {
   GoalsRepository,
@@ -29,16 +50,27 @@ import {
 import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, type Migration, type SqliteDatabase } from "./storage/sqlite/index.js";
 import { SystemClock, type Clock } from "./util/clock.js";
-import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "./util/ids.js";
+import {
+  DEFAULT_SESSION_ID,
+  createSemanticNodeId,
+  type EpisodeId,
+  type SessionId,
+} from "./util/ids.js";
 
 type BorgDependencies = {
   config: Config;
   sqlite: SqliteDatabase;
   lance: LanceDbStore;
   episodicRepository: EpisodicRepository;
+  semanticNodeRepository: SemanticNodeRepository;
+  semanticEdgeRepository: SemanticEdgeRepository;
+  semanticGraph: SemanticGraph;
+  reviewQueueRepository: ReviewQueueRepository;
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
+  entityRepository: EntityRepository;
+  commitmentRepository: CommitmentRepository;
   retrievalPipeline: RetrievalPipeline;
   workingMemoryStore: WorkingMemoryStore;
   turnOrchestrator: TurnOrchestrator;
@@ -82,7 +114,13 @@ function createLlmFactory(config: Config, llmClient: LLMClient | undefined): () 
 }
 
 function createMigrations(): Migration[] {
-  return [...episodicMigrations, ...selfMigrations, ...retrievalMigrations];
+  return [
+    ...episodicMigrations,
+    ...selfMigrations,
+    ...retrievalMigrations,
+    ...semanticMigrations,
+    ...commitmentMigrations,
+  ];
 }
 
 async function closeBestEffort(
@@ -130,6 +168,65 @@ export class Borg {
     values: ValuesRepository;
     goals: GoalsRepository;
     traits: TraitsRepository;
+  };
+  readonly semantic: {
+    nodes: {
+      add: (input: {
+        kind: SemanticNode["kind"];
+        label: string;
+        description: string;
+        aliases?: string[];
+        confidence?: number;
+        sourceEpisodeIds: SemanticNode["source_episode_ids"];
+      }) => Promise<SemanticNode>;
+      get: (id: SemanticNode["id"]) => Promise<SemanticNode | null>;
+      list: (
+        ...args: Parameters<SemanticNodeRepository["list"]>
+      ) => ReturnType<SemanticNodeRepository["list"]>;
+      search: (
+        query: string,
+        options?: Omit<RetrievalSearchOptions, "temporalCue" | "attentionWeights"> & {
+          limit?: number;
+        },
+      ) => Promise<SemanticNodeSearchCandidate[]>;
+    };
+    edges: {
+      add: (input: Omit<SemanticEdge, "id"> & { id?: SemanticEdge["id"] }) => SemanticEdge;
+      list: (
+        ...args: Parameters<SemanticEdgeRepository["listEdges"]>
+      ) => ReturnType<SemanticEdgeRepository["listEdges"]>;
+    };
+    walk: (
+      fromId: SemanticNode["id"],
+      ...args: Parameters<SemanticGraph["walk"]> extends [unknown, ...infer Rest] ? Rest : never
+    ) => ReturnType<SemanticGraph["walk"]>;
+    extract: (
+      episodes: readonly Parameters<SemanticExtractor["extractFromEpisodes"]>[0][number][],
+    ) => Promise<ExtractSemanticResult>;
+  };
+  readonly commitments: {
+    add: (input: {
+      type: Parameters<CommitmentRepository["add"]>[0]["type"];
+      directive: string;
+      priority: number;
+      madeTo?: string | null;
+      audience?: string | null;
+      about?: string | null;
+      sourceEpisodeIds?: EpisodeId[];
+      expiresAt?: number | null;
+    }) => ReturnType<CommitmentRepository["add"]>;
+    revoke: (
+      ...args: Parameters<CommitmentRepository["revoke"]>
+    ) => ReturnType<CommitmentRepository["revoke"]>;
+    list: (options?: {
+      activeOnly?: boolean;
+      audience?: string | null;
+      aboutEntity?: string | null;
+    }) => ReturnType<CommitmentRepository["list"]>;
+  };
+  readonly review: {
+    list: (options?: { kind?: ReviewKind; openOnly?: boolean }) => ReviewQueueItem[];
+    resolve: (id: number, decision: ReviewResolution) => Promise<ReviewQueueItem | null>;
   };
   readonly workmem: {
     load: (sessionId?: SessionId) => WorkingMemory;
@@ -188,6 +285,96 @@ export class Borg {
       goals: this.deps.goalsRepository,
       traits: this.deps.traitsRepository,
     };
+    this.semantic = {
+      nodes: {
+        add: async (input) => {
+          const nowMs = this.deps.clock.now();
+          const embedding = await this.deps.embeddingClient.embed(
+            `${input.label}\n${input.description}\n${input.aliases?.join(" ") ?? ""}`,
+          );
+
+          return this.deps.semanticNodeRepository.insert({
+            id: createSemanticNodeId(),
+            kind: input.kind,
+            label: input.label,
+            description: input.description,
+            aliases: input.aliases ?? [],
+            confidence: input.confidence ?? 0.6,
+            source_episode_ids: input.sourceEpisodeIds,
+            created_at: nowMs,
+            updated_at: nowMs,
+            last_verified_at: nowMs,
+            embedding,
+            archived: false,
+            superseded_by: null,
+          });
+        },
+        get: (id) => this.deps.semanticNodeRepository.get(id),
+        list: (...args) => this.deps.semanticNodeRepository.list(...args),
+        search: async (query, options = {}) => {
+          const vector = await this.deps.embeddingClient.embed(query);
+          return this.deps.semanticNodeRepository.searchByVector(vector, {
+            limit: options.limit,
+          });
+        },
+      },
+      edges: {
+        add: (input) => this.deps.semanticEdgeRepository.addEdge(input),
+        list: (...args) => this.deps.semanticEdgeRepository.listEdges(...args),
+      },
+      walk: (fromId, ...args) => this.deps.semanticGraph.walk(fromId, ...args),
+      extract: async (episodes) => {
+        const extractor = new SemanticExtractor({
+          nodeRepository: this.deps.semanticNodeRepository,
+          edgeRepository: this.deps.semanticEdgeRepository,
+          embeddingClient: this.deps.embeddingClient,
+          llmClient: this.deps.llmFactory(),
+          model: this.deps.config.anthropic.models.extraction,
+          clock: this.deps.clock,
+        });
+
+        return extractor.extractFromEpisodes(episodes);
+      },
+    };
+    this.commitments = {
+      add: (input) =>
+        this.deps.commitmentRepository.add({
+          type: input.type,
+          directive: input.directive,
+          priority: input.priority,
+          madeToEntity:
+            input.madeTo === undefined || input.madeTo === null
+              ? null
+              : this.deps.entityRepository.resolve(input.madeTo),
+          restrictedAudience:
+            input.audience === undefined || input.audience === null
+              ? null
+              : this.deps.entityRepository.resolve(input.audience),
+          aboutEntity:
+            input.about === undefined || input.about === null
+              ? null
+              : this.deps.entityRepository.resolve(input.about),
+          sourceEpisodeIds: input.sourceEpisodeIds,
+          expiresAt: input.expiresAt ?? null,
+        }),
+      revoke: (...args) => this.deps.commitmentRepository.revoke(...args),
+      list: (options = {}) =>
+        this.deps.commitmentRepository.list({
+          activeOnly: options.activeOnly,
+          audience:
+            options.audience === undefined || options.audience === null
+              ? null
+              : this.deps.entityRepository.resolve(options.audience),
+          aboutEntity:
+            options.aboutEntity === undefined || options.aboutEntity === null
+              ? null
+              : this.deps.entityRepository.resolve(options.aboutEntity),
+        }),
+    };
+    this.review = {
+      list: (options = {}) => this.deps.reviewQueueRepository.list(options),
+      resolve: (id, decision) => this.deps.reviewQueueRepository.resolve(id, decision),
+    };
     this.workmem = {
       load: (sessionId = DEFAULT_SESSION_ID) => this.deps.workingMemoryStore.load(sessionId),
       clear: (sessionId = DEFAULT_SESSION_ID) => {
@@ -218,11 +405,39 @@ export class Borg {
         name: "episodes",
         schema: createEpisodesTableSchema(embeddingDimensions),
       });
+      const semanticNodesTable = await lance.openTable({
+        name: "semantic_nodes",
+        schema: createSemanticNodesTableSchema(embeddingDimensions),
+      });
       const embeddingClient = options.embeddingClient ?? createEmbeddingClient(config);
       const episodicRepository = new EpisodicRepository({
         table: episodesTable,
         db: sqlite,
         clock,
+      });
+      let reviewQueueRepository: ReviewQueueRepository | undefined;
+      const enqueueReview = (input: Parameters<ReviewQueueRepository["enqueue"]>[0]) => {
+        return reviewQueueRepository?.enqueue(input);
+      };
+      const semanticNodeRepository = new SemanticNodeRepository({
+        table: semanticNodesTable,
+        db: sqlite,
+        clock,
+        enqueueReview,
+      });
+      reviewQueueRepository = new ReviewQueueRepository({
+        db: sqlite,
+        clock,
+        semanticNodeRepository,
+      });
+      const semanticEdgeRepository = new SemanticEdgeRepository({
+        db: sqlite,
+        clock,
+        enqueueReview,
+      });
+      const semanticGraph = new SemanticGraph({
+        nodeRepository: semanticNodeRepository,
+        edgeRepository: semanticEdgeRepository,
       });
       const valuesRepository = new ValuesRepository({
         db: sqlite,
@@ -236,9 +451,19 @@ export class Borg {
         db: sqlite,
         clock,
       });
+      const entityRepository = new EntityRepository({
+        db: sqlite,
+        clock,
+      });
+      const commitmentRepository = new CommitmentRepository({
+        db: sqlite,
+        clock,
+      });
       const retrievalPipeline = new RetrievalPipeline({
         embeddingClient,
         episodicRepository,
+        semanticNodeRepository,
+        semanticGraph,
         dataDir: config.dataDir,
         clock,
       });
@@ -257,6 +482,8 @@ export class Borg {
         config,
         retrievalPipeline,
         episodicRepository,
+        entityRepository,
+        commitmentRepository,
         valuesRepository,
         goalsRepository,
         traitsRepository,
@@ -271,9 +498,15 @@ export class Borg {
         sqlite,
         lance,
         episodicRepository,
+        semanticNodeRepository,
+        semanticEdgeRepository,
+        semanticGraph,
+        reviewQueueRepository,
         valuesRepository,
         goalsRepository,
         traitsRepository,
+        entityRepository,
+        commitmentRepository,
         retrievalPipeline,
         workingMemoryStore,
         turnOrchestrator,

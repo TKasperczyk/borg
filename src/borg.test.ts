@@ -254,6 +254,127 @@ describe("Borg", () => {
     }
   });
 
+  it("pulls commitments for all perceived entities in a turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Atlas and Borealis status",
+      narrative: "Atlas and Borealis updates were discussed together.",
+      participants: ["team"],
+      location: null,
+      start_time: 0,
+      end_time: 1,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.9,
+      tags: ["atlas", "status"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 0,
+      updated_at: 0,
+    });
+    db.close();
+    await store.close();
+
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "List the commitments that apply before answering.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        {
+          text: "I can't discuss Atlas or Borealis with Sam.",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: llm,
+    });
+
+    try {
+      borg.commitments.add({
+        type: "boundary",
+        directive: "Do not discuss Atlas with Sam",
+        priority: 10,
+        audience: "Sam",
+        about: "Atlas",
+      });
+      borg.commitments.add({
+        type: "boundary",
+        directive: "Do not discuss Borealis with Sam",
+        priority: 9,
+        audience: "Sam",
+        about: "Borealis",
+      });
+
+      const result = await borg.turn({
+        userMessage: "Can you update Sam on Atlas and Borealis?",
+        audience: "Sam",
+      });
+      const sonnetRequest = [...llm.requests]
+        .reverse()
+        .find((request) => request.model === "sonnet");
+
+      expect(sonnetRequest?.system).toContain("Do not discuss Atlas with Sam");
+      expect(sonnetRequest?.system).toContain("Do not discuss Borealis with Sam");
+      expect(result.response).toContain("can't discuss Atlas or Borealis");
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("persists suppression across turns and Borg reopen", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

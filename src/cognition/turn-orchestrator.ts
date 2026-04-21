@@ -7,6 +7,12 @@ import { Reflector } from "./reflection/index.js";
 import type { RetrievalPipeline, RetrievalSearchOptions } from "../retrieval/index.js";
 import type { LLMClient } from "../llm/index.js";
 import {
+  CommitmentChecker,
+  CommitmentRepository,
+  EntityRepository,
+  type CommitmentRecord,
+} from "../memory/commitments/index.js";
+import {
   GoalsRepository,
   TraitsRepository,
   ValuesRepository,
@@ -71,6 +77,8 @@ export type TurnOrchestratorOptions = {
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
+  entityRepository: EntityRepository;
+  commitmentRepository: CommitmentRepository;
   workingMemoryStore: WorkingMemoryStore;
   llmFactory: () => LLMClient;
   clock?: Clock;
@@ -114,6 +122,53 @@ export class TurnOrchestrator {
 
       throw error;
     }
+  }
+
+  private collectApplicableCommitments(
+    audienceEntityId: ReturnType<EntityRepository["resolve"]> | null,
+    perceivedEntities: readonly string[],
+  ): CommitmentRecord[] {
+    const aboutEntityIds: Array<ReturnType<EntityRepository["resolve"]> | null> = [];
+    const seenEntities = new Set<string>();
+
+    for (const entity of perceivedEntities) {
+      const normalized = entity.trim();
+
+      if (normalized.length === 0) {
+        continue;
+      }
+
+      const key = normalized.toLowerCase();
+
+      if (seenEntities.has(key)) {
+        continue;
+      }
+
+      seenEntities.add(key);
+      aboutEntityIds.push(this.options.entityRepository.resolve(normalized));
+    }
+
+    if (aboutEntityIds.length === 0) {
+      aboutEntityIds.push(null);
+    }
+
+    const byId = new Map<string, CommitmentRecord>();
+
+    for (const aboutEntityId of aboutEntityIds) {
+      const applicable = this.options.commitmentRepository.getApplicable({
+        audience: audienceEntityId,
+        aboutEntity: aboutEntityId,
+        nowMs: this.clock.now(),
+      });
+
+      for (const commitment of applicable) {
+        byId.set(commitment.id, commitment);
+      }
+    }
+
+    return [...byId.values()].sort(
+      (left, right) => right.priority - left.priority || left.created_at - right.created_at,
+    );
   }
 
   private async appendFailureEvent(
@@ -188,6 +243,15 @@ export class TurnOrchestrator {
 
         await streamWriter.append(userEntry);
 
+        const audienceEntityId =
+          input.audience === undefined
+            ? null
+            : this.options.entityRepository.resolve(input.audience);
+        const applicableCommitments = this.collectApplicableCommitments(
+          audienceEntityId,
+          perception.entities,
+        );
+
         const attentionWeights = computeWeights(perception.mode, {
           currentGoals: selfSnapshot.goals,
           hasTemporalCue: perception.temporalCue !== null,
@@ -206,10 +270,11 @@ export class TurnOrchestrator {
                   end: perception.temporalCue.untilTs ?? this.clock.now(),
                 },
         };
-        const retrievedEpisodes = await this.options.retrievalPipeline.search(
+        const retrieval = await this.options.retrievalPipeline.searchWithContext(
           input.userMessage,
           retrievalOptions,
         );
+        const retrievedEpisodes = retrieval.episodes;
         const deliberator = new Deliberator({
           llmClient,
           cognitionModel: this.options.config.anthropic.models.cognition,
@@ -222,6 +287,9 @@ export class TurnOrchestrator {
             userMessage: input.userMessage,
             perception,
             retrievalResult: retrievedEpisodes,
+            contradictionPresent: retrieval.contradiction_present,
+            applicableCommitments,
+            entityRepository: this.options.entityRepository,
             workingMemory,
             selfSnapshot,
             options: {
@@ -241,17 +309,41 @@ export class TurnOrchestrator {
           scratchpad: deliberation.thoughts.join("\n"),
           updated_at: this.clock.now(),
         };
+        const commitmentChecker = new CommitmentChecker({
+          llmClient,
+          model: this.options.config.anthropic.models.cognition,
+          entityRepository: this.options.entityRepository,
+        });
+        const commitmentCheck = await commitmentChecker.check({
+          response: deliberation.response,
+          userMessage: input.userMessage,
+          commitments: applicableCommitments,
+          relevantEntities: perception.entities,
+        });
 
-        const actionResult = await performAction(
-          {
-            response: deliberation.response,
-            toolCalls: deliberation.tool_calls,
-            audience: input.audience,
-            perception,
-            workingMemory,
-          },
-          streamWriter,
-        );
+        if (commitmentCheck.fallback_applied) {
+          await streamWriter.append({
+            kind: "internal_event",
+            content:
+              "Commitment guard fell back to a softened response after revision still violated an active commitment.",
+          });
+        }
+
+        const actionResult = await performAction({
+          response: commitmentCheck.final_response,
+          toolCalls: deliberation.tool_calls,
+          audience: input.audience,
+          perception,
+          workingMemory,
+        });
+        const agentEntry = {
+          kind: "agent_msg",
+          content: actionResult.response,
+          tool_calls: actionResult.tool_calls,
+          ...(input.audience === undefined ? {} : { audience: input.audience }),
+        } satisfies Parameters<StreamWriter["append"]>[0];
+
+        await streamWriter.append(agentEntry);
         const reflector = new Reflector({
           clock: this.clock,
         });

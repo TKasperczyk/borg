@@ -5,13 +5,28 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { FakeLLMClient } from "../../llm/index.js";
+import {
+  CommitmentRepository,
+  EntityRepository,
+  commitmentMigrations,
+} from "../../memory/commitments/index.js";
+import { openDatabase } from "../../storage/sqlite/index.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import { Deliberator } from "./deliberator.js";
 
-function makeRetrievedEpisode(id: string, score: number, tags: string[] = []): RetrievedEpisode {
+function makeRetrievedEpisode(
+  id: string,
+  score: number,
+  tags: string[] = [],
+  semanticContext: RetrievedEpisode["semantic_context"] = {
+    supports: [],
+    contradicts: [],
+    categories: [],
+  },
+): RetrievedEpisode {
   return {
     episode: {
       id: id as RetrievedEpisode["episode"]["id"],
@@ -45,6 +60,7 @@ function makeRetrievedEpisode(id: string, score: number, tags: string[] = []): R
       suppressionPenalty: 0,
     },
     citationChain: [],
+    semantic_context: semanticContext,
   };
 }
 
@@ -173,6 +189,104 @@ describe("deliberator", () => {
     expect(result.decision_reason).toContain("Reflective mode");
   });
 
+  it("includes related semantic context in the Sonnet prompt", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Context aware answer",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    const result = await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "What should I know about Atlas?",
+      perception: {
+        entities: ["Atlas"],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0 },
+        temporalCue: null,
+      },
+      retrievalResult: [
+        makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.92, ["atlas"], {
+          supports: [
+            {
+              id: "semn_aaaaaaaaaaaaaaaa" as RetrievedEpisode["semantic_context"]["supports"][number]["id"],
+              kind: "concept",
+              label: "Atlas Service",
+              description: "Primary deployment service",
+              aliases: [],
+              confidence: 0.72,
+              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+              created_at: 0,
+              updated_at: 0,
+              last_verified_at: 0,
+              embedding: Float32Array.from([1, 0, 0, 0]),
+              archived: false,
+              superseded_by: null,
+            },
+          ],
+          contradicts: [
+            {
+              id: "semn_bbbbbbbbbbbbbbbb" as RetrievedEpisode["semantic_context"]["contradicts"][number]["id"],
+              kind: "proposition",
+              label: "Atlas is stable",
+              description: "Claimed stable despite deploy errors",
+              aliases: [],
+              confidence: 0.61,
+              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+              created_at: 0,
+              updated_at: 0,
+              last_verified_at: 0,
+              embedding: Float32Array.from([1, 0, 0, 0]),
+              archived: false,
+              superseded_by: null,
+            },
+          ],
+          categories: [],
+        }),
+      ],
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        scratchpad: "",
+        current_focus: null,
+        recent_thoughts: [],
+        hot_entities: [],
+        pending_intents: [],
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: {
+        values: [],
+        goals: [],
+        traits: [],
+      },
+      options: {
+        stakes: "low",
+      },
+    });
+
+    expect(result.path).toBe("system_1");
+    expect(llm.requests[0]?.system).toContain("Related semantic context:");
+    expect(llm.requests[0]?.system).toContain(
+      "supports: Atlas Service - Primary deployment service (conf 0.72)",
+    );
+    expect(llm.requests[0]?.system).toContain(
+      "contradicts: Atlas is stable - Claimed stable despite deploy errors (conf 0.61)",
+    );
+  });
+
   it("chooses system 2 when contradiction language appears even at low stakes", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -232,6 +346,153 @@ describe("deliberator", () => {
 
     expect(result.path).toBe("system_2");
     expect(result.decision_reason).toContain("Contradiction heuristic");
+  });
+
+  it("chooses system 2 when retrieval reports a contradiction even without lexical hints", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Compare the conflicting retrieved facts before answering.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        {
+          text: "Resolved contradiction answer",
+          input_tokens: 12,
+          output_tokens: 6,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    const result = await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "Summarize the deployment guidance.",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0 },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
+      contradictionPresent: true,
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        scratchpad: "",
+        current_focus: null,
+        recent_thoughts: [],
+        hot_entities: [],
+        pending_intents: [],
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: {
+        values: [],
+        goals: [],
+        traits: [],
+      },
+      options: {
+        stakes: "low",
+      },
+    });
+
+    expect(result.path).toBe("system_2");
+    expect(result.decision_reason).toContain("Contradiction heuristic");
+  });
+
+  it("injects applicable commitments into the system prompt", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({
+      db,
+      clock,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+    });
+    const sam = entities.resolve("Sam");
+    const atlas = entities.resolve("Atlas");
+    const commitment = commitments.add({
+      type: "boundary",
+      directive: "Do not discuss Atlas with Sam",
+      priority: 9,
+      restrictedAudience: sam,
+      aboutEntity: atlas,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Boundaried answer",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    try {
+      const result = await deliberator.run({
+        sessionId: DEFAULT_SESSION_ID,
+        userMessage: "Can you update Sam about Atlas?",
+        audience: "Sam",
+        perception: {
+          entities: ["Atlas", "Sam"],
+          mode: "problem_solving",
+          affectiveSignal: { valence: 0, arousal: 0 },
+          temporalCue: null,
+        },
+        retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
+        applicableCommitments: [commitment],
+        entityRepository: entities,
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          scratchpad: "",
+          current_focus: null,
+          recent_thoughts: [],
+          hot_entities: [],
+          pending_intents: [],
+          suppressed: [],
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        options: {
+          stakes: "low",
+        },
+      });
+
+      expect(result.path).toBe("system_1");
+      expect(llm.requests[0]?.system).toContain("Commitments you made to this person:");
+      expect(llm.requests[0]?.system).toContain("Do not discuss Atlas with Sam");
+      expect(llm.requests[0]?.system).toContain("audience=Sam");
+      expect(llm.requests[0]?.system).toContain("about=Atlas");
+    } finally {
+      db.close();
+    }
   });
 
   it("chooses system 2 for high stakes and persists scratchpad thoughts", async () => {

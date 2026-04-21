@@ -1,4 +1,6 @@
 import type { GoalRecord, TraitRecord, ValueRecord } from "../../memory/self/index.js";
+import { formatCommitmentsForPrompt } from "../../memory/commitments/checker.js";
+import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { LLMClient, LLMToolCall } from "../../llm/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "../../retrieval/index.js";
@@ -6,6 +8,7 @@ import { StreamWriter } from "../../stream/index.js";
 import { type CognitiveMode, type PerceptionResult } from "../types.js";
 import type { SessionId } from "../../util/ids.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
+import type { SemanticNode } from "../../memory/semantic/index.js";
 
 export type TurnStakes = "low" | "medium" | "high";
 
@@ -21,6 +24,9 @@ export type DeliberationContext = {
   userMessage: string;
   perception: PerceptionResult;
   retrievalResult: RetrievedEpisode[];
+  contradictionPresent?: boolean;
+  applicableCommitments?: readonly CommitmentRecord[];
+  entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;
   selfSnapshot: SelfSnapshot;
   options?: {
@@ -115,6 +121,7 @@ function chooseDeliberationPath(
   stakes: TurnStakes,
   retrievedEpisodes: readonly RetrievedEpisode[],
   userMessage: string,
+  contradictionPresent = false,
 ): {
   path: "system_1" | "system_2";
   reason: string;
@@ -135,7 +142,7 @@ function chooseDeliberationPath(
     };
   }
 
-  if (hasContradictionSignal(userMessage, retrievedEpisodes)) {
+  if (contradictionPresent || hasContradictionSignal(userMessage, retrievedEpisodes)) {
     return {
       path: "system_2",
       reason: "Contradiction heuristic triggered deeper reasoning.",
@@ -197,6 +204,79 @@ function summarizeRetrievedEpisodes(
   ].join("\n");
 }
 
+function summarizeSemanticNode(node: SemanticNode): string {
+  const normalizedDescription = node.description.replace(/\s+/g, " ").trim();
+  const description =
+    normalizedDescription.length > 96
+      ? `${normalizedDescription.slice(0, 93).trimEnd()}...`
+      : normalizedDescription;
+
+  return `${node.label} - ${description} (conf ${node.confidence.toFixed(2)})`;
+}
+
+function summarizeSemanticBucket(
+  label: string,
+  nodes: readonly SemanticNode[],
+  limit = 3,
+): string | null {
+  if (nodes.length === 0) {
+    return null;
+  }
+
+  return `${label}: ${nodes
+    .slice(0, limit)
+    .map((node) => summarizeSemanticNode(node))
+    .join("; ")}`;
+}
+
+function summarizeSemanticContext(
+  retrievedEpisodes: readonly RetrievedEpisode[],
+  maxThinkingTokens: number,
+): string {
+  const episodesWithContext = retrievedEpisodes.filter(
+    (result) =>
+      result.semantic_context.supports.length > 0 ||
+      result.semantic_context.contradicts.length > 0 ||
+      result.semantic_context.categories.length > 0,
+  );
+
+  if (episodesWithContext.length === 0) {
+    return "Related semantic context: none";
+  }
+
+  const maxEpisodes = maxThinkingTokens <= 256 ? 2 : maxThinkingTokens <= 512 ? 3 : 4;
+  const maxChars = Math.max(480, Math.min(maxThinkingTokens * 6, 2_400));
+  const initialLine = "Related semantic context:";
+  const lines = [initialLine];
+  let totalChars = initialLine.length;
+
+  for (const result of episodesWithContext.slice(0, maxEpisodes)) {
+    const bucketLines = [
+      summarizeSemanticBucket("supports", result.semantic_context.supports),
+      summarizeSemanticBucket("contradicts", result.semantic_context.contradicts),
+      summarizeSemanticBucket("categories", result.semantic_context.categories),
+    ].filter((value): value is string => value !== null);
+
+    if (bucketLines.length === 0) {
+      continue;
+    }
+
+    const block = [`- ${result.episode.title}`, ...bucketLines.map((line) => `  ${line}`)].join(
+      "\n",
+    );
+
+    if (totalChars + block.length > maxChars) {
+      lines.push("- ... truncated");
+      break;
+    }
+
+    lines.push(block);
+    totalChars += block.length;
+  }
+
+  return lines.join("\n");
+}
+
 export class Deliberator {
   constructor(private readonly options: DeliberatorOptions) {}
 
@@ -222,17 +302,29 @@ export class Deliberator {
     streamWriter?: StreamWriter,
   ): Promise<DeliberationResult> {
     const stakes = context.options?.stakes ?? "low";
+    const semanticContextBudget = context.options?.maxThinkingTokens ?? 600;
+    const systemOneMaxTokens = context.options?.maxThinkingTokens ?? 600;
+    const systemTwoMaxTokens = context.options?.maxThinkingTokens ?? 700;
     const decision = chooseDeliberationPath(
       context.perception.mode,
       stakes,
       context.retrievalResult,
       context.userMessage,
+      context.contradictionPresent,
     );
+    const commitmentSection =
+      context.applicableCommitments !== undefined &&
+      context.applicableCommitments.length > 0 &&
+      context.entityRepository !== undefined
+        ? formatCommitmentsForPrompt(context.applicableCommitments, context.entityRepository)
+        : "Commitments you made to this person: none";
     const baseSystemPrompt = [
       "You are Borg, an agent with explicit memory and identity.",
       summarizeIdentity(context.selfSnapshot),
       summarizeWorkingMemory(context.workingMemory),
       summarizeRetrievedEpisodes("Retrieved context", context.retrievalResult),
+      summarizeSemanticContext(context.retrievalResult, semanticContextBudget),
+      commitmentSection,
     ].join("\n\n");
 
     if (decision.path === "system_1") {
@@ -245,7 +337,7 @@ export class Deliberator {
             content: context.userMessage,
           },
         ],
-        max_tokens: context.options?.maxThinkingTokens ?? 600,
+        max_tokens: systemOneMaxTokens,
         budget: "cognition-system-1",
       });
 
@@ -279,7 +371,7 @@ export class Deliberator {
           ].join("\n\n"),
         },
       ],
-      max_tokens: Math.min(context.options?.maxThinkingTokens ?? 256, 256),
+      max_tokens: Math.min(semanticContextBudget, 256),
       budget: "cognition-plan",
     });
     const scratchpad = planning.text.trim();
@@ -303,7 +395,7 @@ export class Deliberator {
           content: context.userMessage,
         },
       ],
-      max_tokens: context.options?.maxThinkingTokens ?? 700,
+      max_tokens: systemTwoMaxTokens,
       budget: "cognition-system-2",
     });
     const thoughtsPersisted = await this.persistThoughts(streamWriter, thoughts);

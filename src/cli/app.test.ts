@@ -50,6 +50,35 @@ function createOutputBuffer() {
   };
 }
 
+function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
+  return Borg.open({
+    config: {
+      dataDir: tempDir,
+      perception: {
+        useLlmFallback: false,
+      },
+      embedding: {
+        baseUrl: "http://localhost:1234/v1",
+        apiKey: "test",
+        model: "fake-embed",
+        dims: 4,
+      },
+      anthropic: {
+        apiKey: "test",
+        models: {
+          cognition: "sonnet",
+          background: "haiku",
+          extraction: "haiku",
+        },
+      },
+    },
+    clock: new FixedClock(1_000),
+    embeddingDimensions: 4,
+    embeddingClient: new ScriptedEmbeddingClient(),
+    llmClient: llm,
+  });
+}
+
 describe("cli", () => {
   const tempDirs: string[] = [];
 
@@ -400,33 +429,7 @@ describe("cli", () => {
           stdout: stdout.stream,
           stderr: stderr.stream,
           dataDir: tempDir,
-          openBorg: async () =>
-            Borg.open({
-              config: {
-                dataDir: tempDir,
-                perception: {
-                  useLlmFallback: false,
-                },
-                embedding: {
-                  baseUrl: "http://localhost:1234/v1",
-                  apiKey: "test",
-                  model: "fake-embed",
-                  dims: 4,
-                },
-                anthropic: {
-                  apiKey: "test",
-                  models: {
-                    cognition: "sonnet",
-                    background: "haiku",
-                    extraction: "haiku",
-                  },
-                },
-              },
-              clock: new FixedClock(1_000),
-              embeddingDimensions: 4,
-              embeddingClient: new ScriptedEmbeddingClient(),
-              llmClient: llm,
-            }),
+          openBorg: async () => openTestBorg(tempDir, llm),
         },
       ),
     ).toBe(0);
@@ -436,5 +439,287 @@ describe("cli", () => {
     expect(stdout.read()).toContain("[path=system_2]");
     expect(stdout.read()).toContain("ep_aaaaaaaaaaaaaaaa");
     expect(stderr.read()).toBe("");
+  });
+
+  it("manages semantic, commitment, and review commands", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const cliOptions = {
+      dataDir: tempDir,
+      openBorg: async () => openTestBorg(tempDir),
+    };
+
+    const addAtlasOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "semantic",
+          "node",
+          "add",
+          "--kind",
+          "entity",
+          "--label",
+          "Atlas",
+          "--description",
+          "Atlas service",
+          "--source-episodes",
+          "ep_aaaaaaaaaaaaaaaa",
+        ],
+        {
+          stdout: addAtlasOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
+    ).toBe(0);
+    const atlasNode = JSON.parse(addAtlasOut.read()) as {
+      id: string;
+    };
+
+    const addRollbackOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "semantic",
+          "node",
+          "add",
+          "--kind",
+          "concept",
+          "--label",
+          "Rollback",
+          "--description",
+          "Rollback plan",
+          "--source-episodes",
+          "ep_aaaaaaaaaaaaaaaa",
+        ],
+        {
+          stdout: addRollbackOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
+    ).toBe(0);
+    const rollbackNode = JSON.parse(addRollbackOut.read()) as {
+      id: string;
+    };
+
+    const showNodeOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "semantic", "node", "show", atlasNode.id], {
+        stdout: showNodeOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(showNodeOut.read())).toMatchObject({
+      id: atlasNode.id,
+      label: "Atlas",
+    });
+
+    const searchNodeOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "semantic", "node", "search", "Atlas"], {
+        stdout: searchNodeOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(searchNodeOut.read())).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          node: expect.objectContaining({
+            id: atlasNode.id,
+          }),
+        }),
+      ]),
+    );
+
+    const listNodesOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "semantic", "node", "list"], {
+        stdout: listNodesOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(listNodesOut.read())).toHaveLength(2);
+
+    const addSupportOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "semantic",
+          "edge",
+          "add",
+          "--from",
+          atlasNode.id,
+          "--to",
+          rollbackNode.id,
+          "--relation",
+          "supports",
+          "--evidence-episodes",
+          "ep_aaaaaaaaaaaaaaaa",
+        ],
+        {
+          stdout: addSupportOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(addSupportOut.read())).toMatchObject({
+      relation: "supports",
+    });
+
+    const addContradictionOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "semantic",
+          "edge",
+          "add",
+          "--from",
+          atlasNode.id,
+          "--to",
+          rollbackNode.id,
+          "--relation",
+          "contradicts",
+          "--evidence-episodes",
+          "ep_aaaaaaaaaaaaaaaa",
+        ],
+        {
+          stdout: addContradictionOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(addContradictionOut.read())).toMatchObject({
+      relation: "contradicts",
+    });
+
+    const listEdgesOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "semantic", "edge", "list", "--from", atlasNode.id], {
+        stdout: listEdgesOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(listEdgesOut.read())).toHaveLength(2);
+
+    const walkOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "semantic", "walk", atlasNode.id, "--depth", "2"], {
+        stdout: walkOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(walkOut.read())).toEqual([
+      expect.objectContaining({
+        node: expect.objectContaining({
+          id: rollbackNode.id,
+        }),
+      }),
+    ]);
+
+    const addCommitmentOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "commitment",
+          "add",
+          "--type",
+          "boundary",
+          "--directive",
+          "Do not discuss Atlas with Sam",
+          "--priority",
+          "10",
+          "--audience",
+          "Sam",
+          "--about",
+          "Atlas",
+        ],
+        {
+          stdout: addCommitmentOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
+    ).toBe(0);
+    const commitment = JSON.parse(addCommitmentOut.read()) as {
+      id: string;
+    };
+
+    const listCommitmentsOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "commitment", "list", "--audience", "Sam"], {
+        stdout: listCommitmentsOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(listCommitmentsOut.read())).toEqual([
+      expect.objectContaining({
+        id: commitment.id,
+      }),
+    ]);
+
+    const listReviewsOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "review", "list", "--kind", "contradiction"], {
+        stdout: listReviewsOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    const reviews = JSON.parse(listReviewsOut.read()) as Array<{ id: number }>;
+    expect(reviews).toHaveLength(1);
+
+    const resolveReviewOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "review", "resolve", String(reviews[0]!.id), "invalidate"], {
+        stdout: resolveReviewOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(resolveReviewOut.read())).toMatchObject({
+      id: reviews[0]!.id,
+      resolution: "invalidate",
+    });
+
+    const revokeCommitmentOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "commitment", "revoke", commitment.id], {
+        stdout: revokeCommitmentOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(revokeCommitmentOut.read())).toMatchObject({
+      id: commitment.id,
+    });
+
+    const listCommitmentsAfterOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "commitment", "list", "--audience", "Sam"], {
+        stdout: listCommitmentsAfterOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(listCommitmentsAfterOut.read())).toEqual([]);
   });
 });

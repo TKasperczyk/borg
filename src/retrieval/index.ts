@@ -5,4 +5,5 @@ export {
   type RetrievedEpisode,
   type RetrievalPipelineOptions,
   type RetrievalSearchOptions,
+  type RetrievalSearchResult,
 } from "./pipeline.js";

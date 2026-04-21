@@ -14,6 +14,10 @@ export type SessionId = BrandedId<"SessionId">;
 export type EpisodeId = BrandedId<"EpisodeId">;
 export type GoalId = BrandedId<"GoalId">;
 export type ValueId = BrandedId<"ValueId">;
+export type SemanticNodeId = BrandedId<"SemanticNodeId">;
+export type SemanticEdgeId = BrandedId<"SemanticEdgeId">;
+export type CommitmentId = BrandedId<"CommitmentId">;
+export type EntityId = BrandedId<"EntityId">;
 
 export const DEFAULT_SESSION_ID = DEFAULT_SESSION_LITERAL as SessionId;
 
@@ -46,12 +50,20 @@ export const sessionIdHelpers = createIdHelpers<"SessionId">("sess");
 export const episodeIdHelpers = createIdHelpers<"EpisodeId">("ep");
 export const goalIdHelpers = createIdHelpers<"GoalId">("goal");
 export const valueIdHelpers = createIdHelpers<"ValueId">("val");
+export const semanticNodeIdHelpers = createIdHelpers<"SemanticNodeId">("semn");
+export const semanticEdgeIdHelpers = createIdHelpers<"SemanticEdgeId">("seme");
+export const commitmentIdHelpers = createIdHelpers<"CommitmentId">("cmt");
+export const entityIdHelpers = createIdHelpers<"EntityId">("ent");
 
 export const createStreamEntryId = (): StreamEntryId => streamEntryIdHelpers.create();
 export const createSessionId = (): SessionId => sessionIdHelpers.create();
 export const createEpisodeId = (): EpisodeId => episodeIdHelpers.create();
 export const createGoalId = (): GoalId => goalIdHelpers.create();
 export const createValueId = (): ValueId => valueIdHelpers.create();
+export const createSemanticNodeId = (): SemanticNodeId => semanticNodeIdHelpers.create();
+export const createSemanticEdgeId = (): SemanticEdgeId => semanticEdgeIdHelpers.create();
+export const createCommitmentId = (): CommitmentId => commitmentIdHelpers.create();
+export const createEntityId = (): EntityId => entityIdHelpers.create();
 
 export function isSessionId(value: string): value is SessionId {
   return value === DEFAULT_SESSION_LITERAL || sessionIdHelpers.is(value);
@@ -75,4 +87,20 @@ export function parseGoalId(value: string): GoalId {
 
 export function parseValueId(value: string): ValueId {
   return valueIdHelpers.parse(value);
+}
+
+export function parseSemanticNodeId(value: string): SemanticNodeId {
+  return semanticNodeIdHelpers.parse(value);
+}
+
+export function parseSemanticEdgeId(value: string): SemanticEdgeId {
+  return semanticEdgeIdHelpers.parse(value);
+}
+
+export function parseCommitmentId(value: string): CommitmentId {
+  return commitmentIdHelpers.parse(value);
+}
+
+export function parseEntityId(value: string): EntityId {
+  return entityIdHelpers.parse(value);
 }

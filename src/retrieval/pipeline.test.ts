@@ -11,6 +11,13 @@ import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
 import { FixedClock } from "../util/clock.js";
 import { selfMigrations } from "../memory/self/migrations.js";
+import { semanticMigrations } from "../memory/semantic/migrations.js";
+import { SemanticGraph } from "../memory/semantic/graph.js";
+import {
+  SemanticEdgeRepository,
+  SemanticNodeRepository,
+  createSemanticNodesTableSchema,
+} from "../memory/semantic/repository.js";
 import { episodicMigrations } from "../memory/episodic/migrations.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "../memory/episodic/repository.js";
 import { retrievalMigrations } from "./migrations.js";
@@ -279,5 +286,174 @@ describe("retrieval pipeline", () => {
 
     expect(results[0]?.episode.id).toBe("ep_aaaaaaaaaaaaaaaa");
     expect(results[1]?.scoreBreakdown.suppressionPenalty).toBe(1);
+  });
+
+  it("attaches semantic graph context and surfaces contradiction presence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        ...episodicMigrations,
+        ...selfMigrations,
+        ...retrievalMigrations,
+        ...semanticMigrations,
+      ],
+    });
+    const episodeTable = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const semanticTable = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table: episodeTable,
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const semanticNodeRepository = new SemanticNodeRepository({
+      table: semanticTable,
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const semanticEdgeRepository = new SemanticEdgeRepository({
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const semanticGraph = new SemanticGraph({
+      nodeRepository: semanticNodeRepository,
+      edgeRepository: semanticEdgeRepository,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(2_000),
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const entry = await writer.append({
+      kind: "user_msg",
+      content: "Atlas deploy failure",
+    });
+
+    await repo.insert(createEpisode("ep_aaaaaaaaaaaaaaaa", entry.id, [1, 0, 0, 0]));
+    const atlas = await semanticNodeRepository.insert({
+      id: "semn_aaaaaaaaaaaaaaaa" as never,
+      kind: "entity",
+      label: "Atlas",
+      description: "Atlas entity",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as Episode["id"]],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const support = await semanticNodeRepository.insert({
+      id: "semn_bbbbbbbbbbbbbbbb" as never,
+      kind: "proposition",
+      label: "Rerun install",
+      description: "Rerun pnpm install",
+      aliases: [],
+      confidence: 0.7,
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as Episode["id"]],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const contradiction = await semanticNodeRepository.insert({
+      id: "semn_cccccccccccccccc" as never,
+      kind: "proposition",
+      label: "Do nothing",
+      description: "Do nothing and wait",
+      aliases: [],
+      confidence: 0.7,
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as Episode["id"]],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const category = await semanticNodeRepository.insert({
+      id: "semn_dddddddddddddddd" as never,
+      kind: "concept",
+      label: "Service",
+      description: "Service category",
+      aliases: [],
+      confidence: 0.7,
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as Episode["id"]],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+
+    semanticEdgeRepository.addEdge({
+      from_node_id: atlas.id,
+      to_node_id: support.id,
+      relation: "supports",
+      confidence: 0.7,
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as Episode["id"]],
+      created_at: 1,
+      last_verified_at: 1,
+    });
+    semanticEdgeRepository.addEdge({
+      from_node_id: atlas.id,
+      to_node_id: contradiction.id,
+      relation: "contradicts",
+      confidence: 0.7,
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as Episode["id"]],
+      created_at: 1,
+      last_verified_at: 1,
+    });
+    semanticEdgeRepository.addEdge({
+      from_node_id: atlas.id,
+      to_node_id: category.id,
+      relation: "is_a",
+      confidence: 0.7,
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as Episode["id"]],
+      created_at: 1,
+      last_verified_at: 1,
+    });
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: repo,
+      semanticNodeRepository,
+      semanticGraph,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    const result = await pipeline.searchWithContext("Atlas", {
+      limit: 1,
+      graphWalkDepth: 1,
+      maxGraphNodes: 8,
+    });
+
+    expect(result.contradiction_present).toBe(true);
+    expect(result.episodes[0]?.semantic_context).toMatchObject({
+      supports: [expect.objectContaining({ id: support.id })],
+      contradicts: [expect.objectContaining({ id: contradiction.id })],
+      categories: [expect.objectContaining({ id: category.id })],
+    });
   });
 });

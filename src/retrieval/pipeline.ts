@@ -2,8 +2,12 @@ import { existsSync, readdirSync } from "node:fs";
 import { basename } from "node:path";
 
 import { computeGoalRelevance } from "../cognition/attention/goal-relevance.js";
+import { extractEntitiesHeuristically } from "../cognition/perception/entity-extractor.js";
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
+import { SemanticGraph } from "../memory/semantic/graph.js";
+import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
+import type { SemanticContext, SemanticNode, SemanticRelation } from "../memory/semantic/types.js";
 import { StreamReader, getStreamDirectory, type StreamEntry } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
@@ -41,12 +45,20 @@ export type RetrievedEpisode = {
     suppressionPenalty: number;
   };
   citationChain: StreamEntry[];
+  semantic_context: SemanticContext;
+};
+
+export type RetrievalSearchResult = {
+  episodes: RetrievedEpisode[];
+  contradiction_present: boolean;
 };
 
 export type RetrievalPipelineOptions = {
   embeddingClient: EmbeddingClient;
   episodicRepository: EpisodicRepository;
   dataDir: string;
+  semanticNodeRepository?: SemanticNodeRepository;
+  semanticGraph?: SemanticGraph;
   clock?: Clock;
   scoreWeights?: {
     similarity: number;
@@ -109,6 +121,11 @@ function buildResult(
       suppressionPenalty,
     },
     citationChain,
+    semantic_context: {
+      supports: [],
+      contradicts: [],
+      categories: [],
+    },
   };
 }
 
@@ -124,6 +141,8 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   goalDescriptions?: readonly string[];
   temporalCue?: TemporalCue | null;
   suppressionSet?: SuppressionLookup;
+  graphWalkDepth?: number;
+  maxGraphNodes?: number;
 };
 
 function normalizeHeat(heat: number): number {
@@ -224,6 +243,93 @@ export class RetrievalPipeline {
       .filter((entry): entry is StreamEntry => entry !== undefined);
   }
 
+  private async resolveSemanticContext(
+    query: string,
+    options: RetrievalSearchOptions,
+  ): Promise<{
+    context: SemanticContext;
+    contradictionPresent: boolean;
+  }> {
+    if (
+      this.options.semanticNodeRepository === undefined ||
+      this.options.semanticGraph === undefined
+    ) {
+      return {
+        context: {
+          supports: [],
+          contradicts: [],
+          categories: [],
+        },
+        contradictionPresent: false,
+      };
+    }
+
+    const labels = [...extractEntitiesHeuristically(query), ...query.split(/[,\n]+/)]
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+    const matchedNodes: SemanticNode[] = [];
+
+    for (const label of labels) {
+      const matches = await this.options.semanticNodeRepository.findByLabelOrAlias(label, 3);
+      matchedNodes.push(...matches);
+    }
+
+    if (matchedNodes.length === 0) {
+      const queryVector = await this.options.embeddingClient.embed(query);
+      const byVector = await this.options.semanticNodeRepository.searchByVector(queryVector, {
+        limit: 3,
+        includeArchived: false,
+      });
+      matchedNodes.push(...byVector.map((item) => item.node));
+    }
+
+    const uniqueNodes = new Map(matchedNodes.map((node) => [node.id, node]));
+    const supports = new Map<string, SemanticNode>();
+    const contradicts = new Map<string, SemanticNode>();
+    const categories = new Map<string, SemanticNode>();
+    const walkDepth = options.graphWalkDepth ?? 2;
+    const maxGraphNodes = options.maxGraphNodes ?? 16;
+
+    for (const node of uniqueNodes.values()) {
+      const supportNeighbors = await this.options.semanticGraph.walk(node.id, {
+        relations: ["supports"],
+        depth: walkDepth,
+        maxNodes: maxGraphNodes,
+      });
+      const contradictionNeighbors = await this.options.semanticGraph.walk(node.id, {
+        relations: ["contradicts"],
+        depth: walkDepth,
+        maxNodes: maxGraphNodes,
+      });
+      const categoryNeighbors = await this.options.semanticGraph.walk(node.id, {
+        relations: ["is_a"],
+        depth: walkDepth,
+        maxNodes: maxGraphNodes,
+      });
+
+      for (const item of supportNeighbors) {
+        supports.set(item.node.id, item.node);
+      }
+
+      for (const item of contradictionNeighbors) {
+        contradicts.set(item.node.id, item.node);
+      }
+
+      for (const item of categoryNeighbors) {
+        categories.set(item.node.id, item.node);
+      }
+    }
+
+    return {
+      context: {
+        supports: [...supports.values()],
+        contradicts: [...contradicts.values()],
+        categories: [...categories.values()],
+      },
+      contradictionPresent: contradicts.size > 0,
+    };
+  }
+
   private scoreCandidate(
     candidate: EpisodeSearchCandidate,
     searchOptions: RetrievalSearchOptions,
@@ -286,7 +392,10 @@ export class RetrievalPipeline {
     };
   }
 
-  async search(query: string, options: RetrievalSearchOptions = {}): Promise<RetrievedEpisode[]> {
+  async searchWithContext(
+    query: string,
+    options: RetrievalSearchOptions = {},
+  ): Promise<RetrievalSearchResult> {
     const nowMs = this.clock.now();
     const limit = Math.max(1, options.limit ?? 5);
     const queryVector = await this.options.embeddingClient.embed(query);
@@ -316,6 +425,7 @@ export class RetrievalPipeline {
     const citationEntries = await this.resolveCitationEntries(
       selected.flatMap((choice) => choice.item.candidate.episode.source_stream_ids),
     );
+    const semantic = await this.resolveSemanticContext(query, options);
     const results: RetrievedEpisode[] = [];
 
     for (const choice of selected) {
@@ -334,6 +444,7 @@ export class RetrievalPipeline {
         clamp(item.score, 0, 1),
         citationChain,
       );
+      result.semantic_context = semantic.context;
 
       this.options.episodicRepository.recordRetrieval(
         item.candidate.episode.id,
@@ -343,7 +454,15 @@ export class RetrievalPipeline {
       results.push(result);
     }
 
-    return results;
+    return {
+      episodes: results,
+      contradiction_present: semantic.contradictionPresent,
+    };
+  }
+
+  async search(query: string, options: RetrievalSearchOptions = {}): Promise<RetrievedEpisode[]> {
+    const result = await this.searchWithContext(query, options);
+    return result.episodes;
   }
 
   async getEpisode(id: Episode["id"]): Promise<RetrievedEpisode | null> {

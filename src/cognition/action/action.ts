@@ -1,6 +1,5 @@
 import type { LLMToolCall } from "../../llm/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
-import { StreamWriter } from "../../stream/index.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
 
 export type ActionContext = {
@@ -55,20 +54,8 @@ function inferIntent(response: string, toolCalls: readonly LLMToolCall[]): Inten
   return [];
 }
 
-export async function performAction(
-  context: ActionContext,
-  streamWriter: StreamWriter,
-): Promise<ActionResult> {
+export async function performAction(context: ActionContext): Promise<ActionResult> {
   const intents = inferIntent(context.response, context.toolCalls);
-
-  const streamEntry = {
-    kind: "agent_msg",
-    content: context.response,
-    tool_calls: context.toolCalls,
-    ...(context.audience === undefined ? {} : { audience: context.audience }),
-  } satisfies Parameters<StreamWriter["append"]>[0];
-
-  await streamWriter.append(streamEntry);
 
   return {
     response: context.response,
