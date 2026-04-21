@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import type { LLMClient } from "../../llm/index.js";
+import {
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { emotionalArcSchema } from "../../memory/affective/index.js";
 import {
   episodeIdSchema,
@@ -29,6 +34,12 @@ const mergeResponseSchema = z.object({
   title: z.string().min(1),
   narrative: z.string().min(1),
 });
+const MERGE_TOOL_NAME = "EmitConsolidation";
+export const MERGE_TOOL = {
+  name: MERGE_TOOL_NAME,
+  description: "Emit the merged episode title and narrative for a redundant cluster.",
+  inputSchema: toToolInputSchema(mergeResponseSchema),
+} satisfies LLMToolDefinition;
 
 const serializableEpisodeSchema = z.object({
   id: episodeIdSchema,
@@ -140,25 +151,22 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 }
 
-function parseMergeResponse(text: string) {
-  let raw: unknown;
+function parseMergeResponse(result: LLMCompleteResult) {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === MERGE_TOOL_NAME);
 
-  try {
-    raw = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new StorageError("Consolidator returned non-JSON output", {
-      cause: error,
+  if (call === undefined) {
+    throw new StorageError(`Consolidator did not emit tool ${MERGE_TOOL_NAME}`, {
       code: "CONSOLIDATOR_INVALID",
     });
   }
 
-  return mergeResponseSchema.parse(raw);
+  return mergeResponseSchema.parse(call.input);
 }
 
 function buildMergePrompt(cluster: EpisodeCluster): string {
   return [
     "Merge the redundant episodes into one grounded episode.",
-    'Return strict JSON with shape {"title":"...","narrative":"..."} and no surrounding prose.',
+    `Emit your result by calling the ${MERGE_TOOL_NAME} tool exactly once.`,
     "Preserve facts from all inputs. Keep the narrative to 2-5 sentences.",
     "Episodes:",
     ...cluster.episodes.map((episode) =>
@@ -285,21 +293,21 @@ async function buildMergedEpisode(
   cluster: EpisodeCluster,
 ): Promise<{ episode: Episode; inheritedTier: EpisodeTier }> {
   const merged = parseMergeResponse(
-    (
-      await llmClient.complete({
-        model: ctx.config.anthropic.models.background,
-        system:
-          "You merge overlapping autobiographical episodes. Keep only grounded facts from the inputs.",
-        messages: [
-          {
-            role: "user",
-            content: buildMergePrompt(cluster),
-          },
-        ],
-        max_tokens: 700,
-        budget: "offline-consolidator",
-      })
-    ).text,
+    await llmClient.complete({
+      model: ctx.config.anthropic.models.background,
+      system:
+        "You merge overlapping autobiographical episodes. Keep only grounded facts from the inputs.",
+      messages: [
+        {
+          role: "user",
+          content: buildMergePrompt(cluster),
+        },
+      ],
+      tools: [MERGE_TOOL],
+      tool_choice: { type: "tool", name: MERGE_TOOL_NAME },
+      max_tokens: 700,
+      budget: "offline-consolidator",
+    }),
   );
   const participants = uniqueStrings(cluster.episodes.flatMap((episode) => episode.participants));
   const sourceStreamIds = uniqueStrings(

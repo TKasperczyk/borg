@@ -1,5 +1,10 @@
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import type { LLMClient } from "../../llm/index.js";
+import {
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { analyzeAffectiveSignalHeuristically, type EmotionalArc } from "../affective/index.js";
 import { StreamReader, type StreamEntry } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -14,9 +19,9 @@ const extractorCandidateSchema = z.object({
   title: z.string().min(1),
   narrative: z.string().min(1),
   source_stream_ids: z.array(z.string().min(1)).min(1),
-  participants: z.array(z.string().min(1)).default([]),
-  location: z.string().min(1).nullable().optional(),
-  tags: z.array(z.string().min(1)).default([]),
+  participants: z.array(z.string().min(1)),
+  location: z.string().min(1).nullable(),
+  tags: z.array(z.string().min(1)),
   confidence: z.number().min(0).max(1),
   significance: z.number().min(0).max(1),
 });
@@ -27,6 +32,12 @@ const extractorResponseSchema = z.object({
 
 type ExtractorCandidate = z.infer<typeof extractorCandidateSchema>;
 const DEDUP_THRESHOLD = 0.85;
+const EXTRACT_EPISODES_TOOL_NAME = "EmitEpisodeCandidates";
+export const EXTRACT_EPISODES_TOOL = {
+  name: EXTRACT_EPISODES_TOOL_NAME,
+  description: "Emit grounded episodic memory candidates for the provided stream chunk.",
+  inputSchema: toToolInputSchema(extractorResponseSchema),
+} satisfies LLMToolDefinition;
 
 export type EpisodicExtractorOptions = {
   dataDir: string;
@@ -146,8 +157,7 @@ function buildExtractorPrompt(chunk: readonly StreamEntry[]): string {
 
   return [
     "You extract episodic memories from a stream chunk.",
-    'Return strict JSON with shape {"episodes":[...]} and no surrounding prose.',
-    "Each episode must include title, narrative, source_stream_ids, participants, tags, confidence, significance.",
+    `Emit your result by calling the ${EXTRACT_EPISODES_TOOL_NAME} tool exactly once.`,
     "source_stream_ids MUST only reference ids present in the chunk.",
     "Narrative should be 2-5 concise sentences.",
     "Chunk:",
@@ -155,19 +165,16 @@ function buildExtractorPrompt(chunk: readonly StreamEntry[]): string {
   ].join("\n");
 }
 
-function parseLlmResponse(text: string): ExtractorCandidate[] {
-  let raw: unknown;
+function parseLlmResponse(result: LLMCompleteResult): ExtractorCandidate[] {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === EXTRACT_EPISODES_TOOL_NAME);
 
-  try {
-    raw = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new LLMError("Extractor returned non-JSON output", {
-      cause: error,
+  if (call === undefined) {
+    throw new LLMError(`Extractor did not emit tool ${EXTRACT_EPISODES_TOOL_NAME}`, {
       code: "EXTRACTOR_OUTPUT_INVALID",
     });
   }
 
-  const parsed = extractorResponseSchema.safeParse(raw);
+  const parsed = extractorResponseSchema.safeParse(call.input);
 
   if (!parsed.success) {
     throw new LLMError("Extractor returned invalid episode payload", {
@@ -350,18 +357,19 @@ export class EpisodicExtractor {
       const chunkById = new Map(chunk.map((entry) => [entry.id, entry]));
       const result = await this.options.llmClient.complete({
         model: this.options.model,
-        system:
-          "Extract episodic memories grounded only in the provided stream chunk. Respond with strict JSON.",
+        system: "Extract episodic memories grounded only in the provided stream chunk.",
         messages: [
           {
             role: "user",
             content: buildExtractorPrompt(chunk),
           },
         ],
+        tools: [EXTRACT_EPISODES_TOOL],
+        tool_choice: { type: "tool", name: EXTRACT_EPISODES_TOOL_NAME },
         max_tokens: this.maxTokens,
         budget: "episodic-extraction",
       });
-      const candidates = parseLlmResponse(result.text);
+      const candidates = parseLlmResponse(result);
 
       for (const candidate of candidates) {
         const outcome = await this.processCandidate(candidate, chunkById);

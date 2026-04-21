@@ -1,12 +1,44 @@
 import { z } from "zod";
 
-import type { LLMClient } from "../../llm/index.js";
+import {
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { cognitiveModeSchema, type CognitiveMode } from "../types.js";
 import { CognitionError, LLMError } from "../../util/errors.js";
 
 const modeFallbackSchema = z.object({
   mode: cognitiveModeSchema,
 });
+const MODE_FALLBACK_TOOL_NAME = "EmitModeDetection";
+export const MODE_FALLBACK_TOOL = {
+  name: MODE_FALLBACK_TOOL_NAME,
+  description: "Emit the detected cognitive mode for the message.",
+  inputSchema: toToolInputSchema(modeFallbackSchema),
+} satisfies LLMToolDefinition;
+
+function parseModeFallback(result: LLMCompleteResult): CognitiveMode {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === MODE_FALLBACK_TOOL_NAME);
+
+  if (call === undefined) {
+    throw new CognitionError(`Mode fallback did not emit tool ${MODE_FALLBACK_TOOL_NAME}`, {
+      code: "MODE_FALLBACK_INVALID",
+    });
+  }
+
+  const parsed = modeFallbackSchema.safeParse(call.input);
+
+  if (!parsed.success) {
+    throw new CognitionError("Mode fallback returned invalid payload", {
+      cause: parsed.error,
+      code: "MODE_FALLBACK_INVALID",
+    });
+  }
+
+  return parsed.data.mode;
+}
 
 const IDLE_PATTERNS = [/^(ok|okay|k|thanks|thank you|cool|got it|sure|yep|nope|hi|hello)[.!?]*$/i];
 const PROBLEM_PATTERNS = [
@@ -109,8 +141,7 @@ export class ModeDetector {
     try {
       const response = await this.options.llmClient.complete({
         model: this.options.model,
-        system:
-          'Classify the message into problem_solving, relational, reflective, or idle. Return strict JSON: {"mode":"..."}',
+        system: "Classify the message into problem_solving, relational, reflective, or idle.",
         messages: [
           {
             role: "user",
@@ -120,19 +151,12 @@ export class ModeDetector {
             }),
           },
         ],
+        tools: [MODE_FALLBACK_TOOL],
+        tool_choice: { type: "tool", name: MODE_FALLBACK_TOOL_NAME },
         max_tokens: 80,
         budget: "perception-mode-fallback",
       });
-      const parsed = modeFallbackSchema.safeParse(JSON.parse(response.text) as unknown);
-
-      if (!parsed.success) {
-        throw new CognitionError("Mode fallback returned invalid JSON", {
-          cause: parsed.error,
-          code: "MODE_FALLBACK_INVALID",
-        });
-      }
-
-      return parsed.data.mode;
+      return parseModeFallback(response);
     } catch (error) {
       if (error instanceof CognitionError || error instanceof LLMError) {
         throw error;

@@ -15,6 +15,8 @@ import { openDatabase, SqliteDatabase } from "./storage/sqlite/index.js";
 import { ManualClock } from "./util/clock.js";
 import { Borg } from "./borg.js";
 
+const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
+
 class ScriptedEmbeddingClient implements EmbeddingClient {
   async embed(text: string): Promise<Float32Array> {
     return this.vector(text);
@@ -64,24 +66,31 @@ describe("Borg", () => {
         content: "planning kickoff",
       });
       llm.pushResponse({
-        text: JSON.stringify({
-          episodes: [
-            {
-              title: "Planning sync",
-              narrative:
-                "The team aligned on the sprint plan. They captured the first follow-up actions.",
-              source_stream_ids: [entry.id],
-              participants: ["team"],
-              tags: ["planning"],
-              confidence: 0.8,
-              significance: 0.8,
-            },
-          ],
-        }),
+        text: "",
         input_tokens: 1,
         output_tokens: 1,
-        stop_reason: "end_turn",
-        tool_calls: [],
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_1",
+            name: EPISODE_TOOL_NAME,
+            input: {
+              episodes: [
+                {
+                  title: "Planning sync",
+                  narrative:
+                    "The team aligned on the sprint plan. They captured the first follow-up actions.",
+                  source_stream_ids: [entry.id],
+                  participants: ["team"],
+                  location: null,
+                  tags: ["planning"],
+                  confidence: 0.8,
+                  significance: 0.8,
+                },
+              ],
+            },
+          },
+        ],
       });
 
       const extracted = await borg.episodic.extract({
@@ -209,6 +218,7 @@ describe("Borg", () => {
           dims: 4,
         },
         anthropic: {
+          auth: "api-key",
           apiKey: "test",
           models: {
             cognition: "sonnet",
@@ -329,6 +339,7 @@ describe("Borg", () => {
           dims: 4,
         },
         anthropic: {
+          auth: "api-key",
           apiKey: "test",
           models: {
             cognition: "sonnet",
@@ -452,6 +463,7 @@ describe("Borg", () => {
           dims: 4,
         },
         anthropic: {
+          auth: "api-key",
           apiKey: "test",
           models: {
             cognition: "sonnet",
@@ -505,6 +517,7 @@ describe("Borg", () => {
           dims: 4,
         },
         anthropic: {
+          auth: "api-key",
           apiKey: "test",
           models: {
             cognition: "sonnet",
@@ -565,6 +578,7 @@ describe("Borg", () => {
           dims: 4,
         },
         anthropic: {
+          auth: "api-key",
           apiKey: "test",
           models: {
             cognition: "sonnet",
@@ -628,6 +642,7 @@ describe("Borg", () => {
           dims: 4,
         },
         anthropic: {
+          auth: "api-key",
           apiKey: "test",
           models: {
             cognition: "sonnet",
@@ -718,6 +733,7 @@ describe("Borg", () => {
           dims: 4,
         },
         anthropic: {
+          auth: "api-key",
           apiKey: "test",
           models: {
             cognition: "sonnet",
@@ -804,6 +820,7 @@ describe("Borg", () => {
           dims: 4,
         },
         anthropic: {
+          auth: "api-key",
           apiKey: "test",
           models: {
             cognition: "sonnet",
@@ -899,6 +916,7 @@ describe("Borg", () => {
           dims: 4,
         },
         anthropic: {
+          auth: "api-key",
           apiKey: "test",
           models: {
             cognition: "sonnet",
@@ -1024,6 +1042,7 @@ describe("Borg", () => {
           dims: 4,
         },
         anthropic: {
+          auth: "api-key",
           apiKey: "test",
           models: {
             cognition: "sonnet",

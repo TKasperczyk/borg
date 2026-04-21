@@ -6,6 +6,29 @@ import { FakeLLMClient } from "../../llm/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
 import { ReflectorProcess } from "./index.js";
 
+const REFLECTOR_TOOL_NAME = "EmitReflectorInsights";
+
+function createReflectorResponse(input: {
+  label: string;
+  description: string;
+  confidence: number;
+  source_episode_ids: string[];
+}) {
+  return {
+    text: "",
+    input_tokens: 18,
+    output_tokens: 12,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_1",
+        name: REFLECTOR_TOOL_NAME,
+        input,
+      },
+    ],
+  };
+}
+
 describe("reflector process", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -50,19 +73,13 @@ describe("reflector process", () => {
     ];
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            label: "Deploys stabilize when rollback plans are documented",
-            description:
-              "Across the supporting episodes, explicit rollback plans correlate with steadier deploys.",
-            confidence: 0.8,
-            source_episode_ids: episodes.map((episode) => episode.id),
-          }),
-          input_tokens: 18,
-          output_tokens: 12,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createReflectorResponse({
+          label: "Deploys stabilize when rollback plans are documented",
+          description:
+            "Across the supporting episodes, explicit rollback plans correlate with steadier deploys.",
+          confidence: 0.8,
+          source_episode_ids: episodes.map((episode) => episode.id),
+        }),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -96,6 +113,10 @@ describe("reflector process", () => {
 
     expect(result.errors).toEqual([]);
     expect(result.changes).toHaveLength(1);
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: REFLECTOR_TOOL_NAME,
+    });
 
     const nodes = await harness.semanticNodeRepository.list({
       includeArchived: true,
@@ -136,7 +157,7 @@ describe("reflector process", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: JSON.stringify({
+          ...createReflectorResponse({
             label: "Bad insight",
             description: "This cites a missing episode.",
             confidence: 0.6,
@@ -144,8 +165,6 @@ describe("reflector process", () => {
           }),
           input_tokens: 5,
           output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
         },
       ],
     });
@@ -233,16 +252,22 @@ describe("reflector process", () => {
           );
 
           return {
-            text: JSON.stringify({
-              label: `Insight from ${ids[0]}`,
-              description: "Pattern insight.",
-              confidence: 0.6,
-              source_episode_ids: ids,
-            }),
+            text: "",
             input_tokens: 35,
             output_tokens: 25,
-            stop_reason: "end_turn",
-            tool_calls: [],
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_1",
+                name: REFLECTOR_TOOL_NAME,
+                input: {
+                  label: `Insight from ${ids[0]}`,
+                  description: "Pattern insight.",
+                  confidence: 0.6,
+                  source_episode_ids: ids,
+                },
+              },
+            ],
           };
         },
         ({ messages }) => {
@@ -251,16 +276,22 @@ describe("reflector process", () => {
           );
 
           return {
-            text: JSON.stringify({
-              label: `Insight from ${ids[0]}`,
-              description: "Pattern insight.",
-              confidence: 0.6,
-              source_episode_ids: ids,
-            }),
+            text: "",
             input_tokens: 35,
             output_tokens: 25,
-            stop_reason: "end_turn",
-            tool_calls: [],
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_2",
+                name: REFLECTOR_TOOL_NAME,
+                input: {
+                  label: `Insight from ${ids[0]}`,
+                  description: "Pattern insight.",
+                  confidence: 0.6,
+                  source_episode_ids: ids,
+                },
+              },
+            ],
           };
         },
         ({ messages }) => {
@@ -269,16 +300,22 @@ describe("reflector process", () => {
           );
 
           return {
-            text: JSON.stringify({
-              label: `Insight from ${ids[0]}`,
-              description: "Pattern insight.",
-              confidence: 0.6,
-              source_episode_ids: ids,
-            }),
+            text: "",
             input_tokens: 35,
             output_tokens: 25,
-            stop_reason: "end_turn",
-            tool_calls: [],
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_3",
+                name: REFLECTOR_TOOL_NAME,
+                input: {
+                  label: `Insight from ${ids[0]}`,
+                  description: "Pattern insight.",
+                  confidence: 0.6,
+                  source_episode_ids: ids,
+                },
+              },
+            ],
           };
         },
       ],

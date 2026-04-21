@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { getFreshCredentials } from "../src/auth/claude-oauth.ts";
 import {
   AnthropicLLMClient,
   Borg,
@@ -144,17 +145,44 @@ function buildLlmResult(
   text: string,
   toolCalls: LLMCompleteResult["tool_calls"] = [],
 ): LLMCompleteResult {
+  const systemLength =
+    typeof options.system === "string"
+      ? options.system.length
+      : (options.system?.reduce((sum, block) => sum + block.text.length, 0) ?? 0);
   const promptLength =
-    (options.system?.length ?? 0) +
-    options.messages.reduce((sum, message) => sum + message.content.length, 0);
+    systemLength + options.messages.reduce((sum, message) => sum + message.content.length, 0);
 
   return {
     text,
     input_tokens: Math.max(1, Math.ceil(promptLength / 4)),
-    output_tokens: Math.max(1, Math.ceil(text.length / 4)),
-    stop_reason: "end_turn",
+    output_tokens: Math.max(
+      1,
+      Math.ceil(
+        (text.length +
+          toolCalls.reduce((sum, call) => sum + JSON.stringify(call.input).length, 0)) /
+          4,
+      ),
+    ),
+    stop_reason: toolCalls.length > 0 ? "tool_use" : "end_turn",
     tool_calls: toolCalls,
   };
+}
+
+function buildToolResult(options: LLMCompleteOptions, input: unknown): LLMCompleteResult {
+  const toolName =
+    options.tool_choice?.type === "tool" ? options.tool_choice.name : options.tools?.[0]?.name;
+
+  if (toolName === undefined) {
+    return buildLlmResult(options, JSON.stringify(input));
+  }
+
+  return buildLlmResult(options, "", [
+    {
+      id: `tool_${toolName.toLowerCase()}`,
+      name: toolName,
+      input,
+    },
+  ]);
 }
 
 class ScriptedDebugLLM implements LLMClient {
@@ -208,62 +236,59 @@ class ScriptedDebugLLM implements LLMClient {
         },
       ].filter((episode) => episode.source_stream_ids.length > 0);
 
-      return buildLlmResult(options, JSON.stringify({ episodes }));
+      return buildToolResult(options, { episodes });
     }
 
     if (/Extract semantic knowledge from the provided episodes\./i.test(prompt)) {
       const episodeIds = extractEpisodeIds(prompt);
 
-      return buildLlmResult(
-        options,
-        JSON.stringify({
-          nodes: [
-            {
-              kind: "concept",
-              label: "pgvector similarity drift",
-              description:
-                "A recurring mismatch where similar vectors score differently across environments.",
-              aliases: ["pgvector drift"],
-              confidence: 0.66,
-              source_episode_ids: episodeIds.slice(0, 2),
-            },
-            {
-              kind: "proposition",
-              label: "Rollback-sensitive index state caused the mismatch",
-              description:
-                "The mismatch persisted until the operator class and index rebuild path were checked after rollback.",
-              aliases: ["index rebuild after rollback"],
-              confidence: 0.64,
-              source_episode_ids: episodeIds.slice(0, 3),
-            },
-            {
-              kind: "concept",
-              label: "Safe rebuild workflow",
-              description:
-                "A conservative sequence that verifies extension version, operator class, and index freshness before making further changes.",
-              aliases: ["safe pgvector rebuild"],
-              confidence: 0.61,
-              source_episode_ids: episodeIds.slice(1, 3),
-            },
-          ],
-          edges: [
-            {
-              from_label: "pgvector similarity drift",
-              to_label: "Rollback-sensitive index state caused the mismatch",
-              relation: "supports",
-              confidence: 0.63,
-              evidence_episode_ids: episodeIds.slice(0, 3),
-            },
-            {
-              from_label: "Safe rebuild workflow",
-              to_label: "pgvector similarity drift",
-              relation: "prevents",
-              confidence: 0.58,
-              evidence_episode_ids: episodeIds.slice(1, 3),
-            },
-          ],
-        }),
-      );
+      return buildToolResult(options, {
+        nodes: [
+          {
+            kind: "concept",
+            label: "pgvector similarity drift",
+            description:
+              "A recurring mismatch where similar vectors score differently across environments.",
+            aliases: ["pgvector drift"],
+            confidence: 0.66,
+            source_episode_ids: episodeIds.slice(0, 2),
+          },
+          {
+            kind: "proposition",
+            label: "Rollback-sensitive index state caused the mismatch",
+            description:
+              "The mismatch persisted until the operator class and index rebuild path were checked after rollback.",
+            aliases: ["index rebuild after rollback"],
+            confidence: 0.64,
+            source_episode_ids: episodeIds.slice(0, 3),
+          },
+          {
+            kind: "concept",
+            label: "Safe rebuild workflow",
+            description:
+              "A conservative sequence that verifies extension version, operator class, and index freshness before making further changes.",
+            aliases: ["safe pgvector rebuild"],
+            confidence: 0.61,
+            source_episode_ids: episodeIds.slice(1, 3),
+          },
+        ],
+        edges: [
+          {
+            from_label: "pgvector similarity drift",
+            to_label: "Rollback-sensitive index state caused the mismatch",
+            relation: "supports",
+            confidence: 0.63,
+            evidence_episode_ids: episodeIds.slice(0, 3),
+          },
+          {
+            from_label: "Safe rebuild workflow",
+            to_label: "pgvector similarity drift",
+            relation: "prevents",
+            confidence: 0.58,
+            evidence_episode_ids: episodeIds.slice(1, 3),
+          },
+        ],
+      });
     }
 
     if (
@@ -306,14 +331,11 @@ class ScriptedDebugLLM implements LLMClient {
     }
 
     if (/Merge the redundant episodes into one grounded episode\./i.test(prompt)) {
-      return buildLlmResult(
-        options,
-        JSON.stringify({
-          title: "Consolidated pgvector mismatch investigation",
-          narrative:
-            "Across several debugging turns, Borg narrowed the pgvector mismatch to rollback-sensitive index state instead of the embedding model itself. The merged story preserves the operator-class checks, extension comparison, and safe rebuild sequence that stabilized similarity scoring.",
-        }),
-      );
+      return buildToolResult(options, {
+        title: "Consolidated pgvector mismatch investigation",
+        narrative:
+          "Across several debugging turns, Borg narrowed the pgvector mismatch to rollback-sensitive index state instead of the embedding model itself. The merged story preserves the operator-class checks, extension comparison, and safe rebuild sequence that stabilized similarity scoring.",
+      });
     }
 
     if (
@@ -323,16 +345,13 @@ class ScriptedDebugLLM implements LLMClient {
     ) {
       const episodeIds = extractEpisodeIds(prompt);
 
-      return buildLlmResult(
-        options,
-        JSON.stringify({
-          label: "Pgvector rollbacks should trigger an index-state audit",
-          description:
-            "Repeated debugging episodes suggest that rollback-related similarity drift is best handled by auditing operator class, extension version, and rebuild state together.",
-          confidence: 0.62,
-          source_episode_ids: episodeIds.slice(0, Math.max(1, Math.min(episodeIds.length, 3))),
-        }),
-      );
+      return buildToolResult(options, {
+        label: "Pgvector rollbacks should trigger an index-state audit",
+        description:
+          "Repeated debugging episodes suggest that rollback-related similarity drift is best handled by auditing operator class, extension version, and rebuild state together.",
+        confidence: 0.62,
+        source_episode_ids: episodeIds.slice(0, Math.max(1, Math.min(episodeIds.length, 3))),
+      });
     }
 
     if (
@@ -340,22 +359,19 @@ class ScriptedDebugLLM implements LLMClient {
         system,
       )
     ) {
-      return buildLlmResult(
-        options,
-        JSON.stringify({
-          resolution_note:
-            "The newer episodes show that comparing operator class and rebuilding the index resolved the repeated pgvector mismatch.",
-          growth_marker: {
-            what_changed:
-              "Borg now frames pgvector drift as an index-state problem instead of a vague embedding issue.",
-            before_description: "It only suspected a generic similarity bug.",
-            after_description:
-              "It can name the rollback, operator-class, and rebuild checks that settle the issue.",
-            confidence: 0.72,
-            category: "understanding",
-          },
-        }),
-      );
+      return buildToolResult(options, {
+        resolution_note:
+          "The newer episodes show that comparing operator class and rebuilding the index resolved the repeated pgvector mismatch.",
+        growth_marker: {
+          what_changed:
+            "Borg now frames pgvector drift as an index-state problem instead of a vague embedding issue.",
+          before_description: "It only suspected a generic similarity bug.",
+          after_description:
+            "It can name the rollback, operator-class, and rebuild checks that settle the issue.",
+          confidence: 0.72,
+          category: "understanding",
+        },
+      });
     }
 
     if (
@@ -365,21 +381,18 @@ class ScriptedDebugLLM implements LLMClient {
     ) {
       const episodeIds = extractEpisodeIds(prompt);
 
-      return buildLlmResult(
-        options,
-        JSON.stringify({
-          observation: {
-            category: "understanding",
-            what_changed:
-              "Borg became more systematic about separating embedding issues from index-state issues.",
-            before_description: "It lumped the mismatch into generic pgvector confusion.",
-            after_description:
-              "It now uses a cleaner checklist around dimensions, operator class, and rebuild order.",
-            confidence: 0.68,
-            evidence_episode_ids: episodeIds.slice(0, 2),
-          },
-        }),
-      );
+      return buildToolResult(options, {
+        observation: {
+          category: "understanding",
+          what_changed:
+            "Borg became more systematic about separating embedding issues from index-state issues.",
+          before_description: "It lumped the mismatch into generic pgvector confusion.",
+          after_description:
+            "It now uses a cleaner checklist around dimensions, operator class, and rebuild order.",
+          confidence: 0.68,
+          evidence_episode_ids: episodeIds.slice(0, 2),
+        },
+      });
     }
 
     if (
@@ -387,7 +400,7 @@ class ScriptedDebugLLM implements LLMClient {
         prompt,
       )
     ) {
-      return buildLlmResult(options, JSON.stringify({ flags: [] }));
+      return buildToolResult(options, { flags: [] });
     }
 
     return buildLlmResult(options, "Acknowledged.");
@@ -402,12 +415,31 @@ async function selectClients(dataDir: string): Promise<DebugClientSelection> {
   let llm: LLMClient = new ScriptedDebugLLM();
   let embeddings: EmbeddingClient = new FakeEmbeddingClient(4);
   let embeddingDimensions = 4;
+  let oauthCredentialsAvailable = false;
+  const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
 
   if (usingReal) {
-    if ((process.env.ANTHROPIC_API_KEY ?? "").trim().length > 0) {
+    const oauthCredentials = await getFreshCredentials({ env: process.env });
+    oauthCredentialsAvailable = oauthCredentials !== null;
+
+    if (oauthCredentials !== null) {
       try {
         llm = new AnthropicLLMClient({
-          apiKey: process.env.ANTHROPIC_API_KEY,
+          authMode: "oauth",
+          env: process.env,
+        });
+        llmMode = "real";
+      } catch (error) {
+        warn(
+          `real LLM unavailable (${error instanceof Error ? error.message : String(error)}); falling back to fake`,
+        );
+      }
+    } else if (apiKey.length > 0) {
+      try {
+        llm = new AnthropicLLMClient({
+          authMode: "api-key",
+          apiKey,
+          env: process.env,
         });
         llmMode = "real";
       } catch (error) {
@@ -416,7 +448,9 @@ async function selectClients(dataDir: string): Promise<DebugClientSelection> {
         );
       }
     } else {
-      warn("ANTHROPIC_API_KEY is not set; falling back to fake LLM");
+      warn(
+        "real LLM unavailable (tried ~/.claude/.credentials.json OAuth and ANTHROPIC_API_KEY); falling back to fake",
+      );
     }
 
     try {
@@ -459,6 +493,12 @@ async function selectClients(dataDir: string): Promise<DebugClientSelection> {
     anthropic: {
       ...DEFAULT_CONFIG.anthropic,
       ...loaded.anthropic,
+      auth:
+        llmMode === "real" && oauthCredentialsAvailable
+          ? "oauth"
+          : llmMode === "real" && apiKey.length > 0
+            ? "api-key"
+            : loaded.anthropic.auth,
       models: {
         ...DEFAULT_CONFIG.anthropic.models,
         ...loaded.anthropic.models,

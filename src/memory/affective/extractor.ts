@@ -1,10 +1,20 @@
 import { z } from "zod";
 
-import type { LLMClient } from "../../llm/index.js";
+import {
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { LLMError } from "../../util/errors.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 
-import { affectiveSignalSchema, type AffectiveSignal, type DominantEmotion } from "./types.js";
+import {
+  affectiveSignalSchema,
+  dominantEmotionSchema,
+  type AffectiveSignal,
+  type DominantEmotion,
+} from "./types.js";
 
 const POSITIVE_WORDS = new Set([
   "appreciate",
@@ -105,8 +115,17 @@ const EMOTION_LEXICONS: Record<DominantEmotion, Set<string>> = {
   curiosity: new Set(["curious", "explore", "interesting", "wonder", "why"]),
   neutral: new Set(),
 };
-
-const affectiveFallbackSchema = affectiveSignalSchema;
+const AFFECTIVE_FALLBACK_TOOL_NAME = "EmitAffectiveSignal";
+const affectiveFallbackSchema = z.object({
+  valence: z.number().min(-1).max(1),
+  arousal: z.number().min(0).max(1),
+  dominant_emotion: dominantEmotionSchema.nullable(),
+});
+export const AFFECTIVE_FALLBACK_TOOL = {
+  name: AFFECTIVE_FALLBACK_TOOL_NAME,
+  description: "Emit a grounded affective signal for the input text.",
+  inputSchema: toToolInputSchema(affectiveFallbackSchema),
+} satisfies LLMToolDefinition;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -182,19 +201,16 @@ function heuristicAnalysis(text: string): { signal: AffectiveSignal; confidence:
   };
 }
 
-function parseFallbackResponse(text: string): AffectiveSignal {
-  let raw: unknown;
+function parseFallbackResponse(result: LLMCompleteResult): AffectiveSignal {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === AFFECTIVE_FALLBACK_TOOL_NAME);
 
-  try {
-    raw = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new LLMError("Affective extractor returned non-JSON output", {
-      cause: error,
+  if (call === undefined) {
+    throw new LLMError(`Affective extractor did not emit tool ${AFFECTIVE_FALLBACK_TOOL_NAME}`, {
       code: "AFFECTIVE_OUTPUT_INVALID",
     });
   }
 
-  return affectiveFallbackSchema.parse(raw);
+  return affectiveFallbackSchema.parse(call.input);
 }
 
 export type AffectiveExtractorOptions = {
@@ -222,8 +238,7 @@ export class AffectiveExtractor {
 
     const response = await this.options.llmClient.complete({
       model: this.options.model,
-      system:
-        'Infer a grounded affective signal from text. Return strict JSON with {"valence":-1..1,"arousal":0..1,"dominant_emotion":"joy|sadness|fear|anger|surprise|curiosity|neutral|null"} and no surrounding prose.',
+      system: "Infer a grounded affective signal from text.",
       messages: [
         {
           role: "user",
@@ -233,11 +248,13 @@ export class AffectiveExtractor {
           }),
         },
       ],
+      tools: [AFFECTIVE_FALLBACK_TOOL],
+      tool_choice: { type: "tool", name: AFFECTIVE_FALLBACK_TOOL_NAME },
       max_tokens: 120,
       budget: "perception-affective",
     });
 
-    return parseFallbackResponse(response.text);
+    return parseFallbackResponse(response);
   }
 }
 

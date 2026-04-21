@@ -18,6 +18,9 @@ import { FixedClock } from "../util/clock.js";
 import { readJsonFile, writeJsonFileAtomic } from "../util/atomic-write.js";
 import { runCli } from "./app.js";
 
+const CONSOLIDATION_TOOL_NAME = "EmitConsolidation";
+const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
+
 class ScriptedEmbeddingClient implements EmbeddingClient {
   async embed(text: string): Promise<Float32Array> {
     return this.vector(text);
@@ -77,6 +80,7 @@ function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
         dims: 4,
       },
       anthropic: {
+        auth: "api-key",
         apiKey: "test",
         models: {
           cognition: "sonnet",
@@ -138,6 +142,36 @@ describe("cli", () => {
         apiKey: "[REDACTED]",
       },
     });
+    expect(stderr.read()).toBe("");
+  });
+
+  it("reports oauth auth status from a mocked shared credentials file", async () => {
+    const tempDir = createCliTempDir(tempDirs);
+    const credentialsPath = join(tempDir, "claude-credentials.json");
+
+    writeJsonFileAtomic(credentialsPath, {
+      claudeAiOauth: {
+        accessToken: "oauth-access-token",
+        refreshToken: "oauth-refresh-token",
+        expiresAt: Date.now() + 4 * 60 * 60_000,
+      },
+    });
+
+    const stdout = createOutputBuffer();
+    const stderr = createOutputBuffer();
+
+    const exitCode = await runCli(["node", "borg", "auth", "status"], {
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      dataDir: tempDir,
+      env: {
+        BORG_CLAUDE_CREDENTIALS_PATH: credentialsPath,
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout.read()).toContain("oauth via");
+    expect(stdout.read()).toContain("expires in");
     expect(stderr.read()).toBe("");
   });
 
@@ -503,30 +537,42 @@ describe("cli", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: JSON.stringify({
-            resolution_note: "Atlas recovered after rehearsal.",
-            growth_marker: null,
-          }),
+          text: "",
           input_tokens: 30,
           output_tokens: 20,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: "EmitRuminatorDecisions",
+              input: {
+                resolution_note: "Atlas recovered after rehearsal.",
+                growth_marker: null,
+              },
+            },
+          ],
         },
         {
-          text: JSON.stringify({
-            observation: {
-              category: "understanding",
-              what_changed: "Atlas debugging became clearer.",
-              before_description: "The failure path was fuzzy.",
-              after_description: "The failure path is clearer now.",
-              confidence: 0.8,
-              evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
-            },
-          }),
+          text: "",
           input_tokens: 30,
           output_tokens: 20,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_2",
+              name: "EmitSelfNarratorObservations",
+              input: {
+                observation: {
+                  category: "understanding",
+                  what_changed: "Atlas debugging became clearer.",
+                  before_description: "The failure path was fuzzy.",
+                  after_description: "The failure path is clearer now.",
+                  confidence: 0.8,
+                  evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+                },
+              },
+            },
+          ],
         },
       ],
     });
@@ -746,14 +792,20 @@ describe("cli", () => {
     const planningLlm = new FakeLLMClient({
       responses: [
         {
-          text: JSON.stringify({
-            title: "Merged deploy prep",
-            narrative: "The deploy prep notes were merged into one grounded summary.",
-          }),
+          text: "",
           input_tokens: 15,
           output_tokens: 10,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: CONSOLIDATION_TOOL_NAME,
+              input: {
+                title: "Merged deploy prep",
+                narrative: "The deploy prep notes were merged into one grounded summary.",
+              },
+            },
+          ],
         },
       ],
     });
@@ -1185,23 +1237,30 @@ describe("cli", () => {
       content: "Rust lifetimes are frustrating.",
     });
     llm.pushResponse({
-      text: JSON.stringify({
-        episodes: [
-          {
-            title: "Rust lifetime frustration",
-            narrative: "The user was frustrated by Rust lifetimes.",
-            source_stream_ids: [entry.id],
-            participants: ["user"],
-            tags: ["rust", "debugging"],
-            confidence: 0.8,
-            significance: 0.7,
-          },
-        ],
-      }),
+      text: "",
       input_tokens: 10,
       output_tokens: 10,
-      stop_reason: "end_turn",
-      tool_calls: [],
+      stop_reason: "tool_use",
+      tool_calls: [
+        {
+          id: "toolu_1",
+          name: EPISODE_TOOL_NAME,
+          input: {
+            episodes: [
+              {
+                title: "Rust lifetime frustration",
+                narrative: "The user was frustrated by Rust lifetimes.",
+                source_stream_ids: [entry.id],
+                participants: ["user"],
+                location: null,
+                tags: ["rust", "debugging"],
+                confidence: 0.8,
+                significance: 0.7,
+              },
+            ],
+          },
+        },
+      ],
     });
     await borg.episodic.extract();
     const [storedEpisode] = (await borg.episodic.list()).items;

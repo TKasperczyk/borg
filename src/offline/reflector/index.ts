@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import type { LLMClient } from "../../llm/index.js";
+import {
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import { semanticNodeIdSchema, type SemanticNode } from "../../memory/semantic/index.js";
 import { semanticRelationSchema } from "../../memory/semantic/types.js";
@@ -24,6 +29,12 @@ const insightResponseSchema = z.object({
   confidence: z.number().min(0).max(1),
   source_episode_ids: z.array(z.string().min(1)).min(1),
 });
+const REFLECTOR_TOOL_NAME = "EmitReflectorInsights";
+export const REFLECTOR_TOOL = {
+  name: REFLECTOR_TOOL_NAME,
+  description: "Emit a grounded semantic insight from repeated episodic evidence.",
+  inputSchema: toToolInputSchema(insightResponseSchema),
+} satisfies LLMToolDefinition;
 
 const serializableSemanticNodeSchema = z.object({
   id: semanticNodeIdSchema,
@@ -137,7 +148,7 @@ function deserializeSemanticNode(
 function buildPrompt(cluster: ReflectionCluster, goalDescriptions: readonly string[]): string {
   return [
     "Infer one modest semantic proposition from the supporting episodes.",
-    'Return strict JSON with shape {"label":"...","description":"...","confidence":0.0,"source_episode_ids":["..."]} and no surrounding prose.',
+    `Emit your result by calling the ${REFLECTOR_TOOL_NAME} tool exactly once.`,
     "Use only source_episode_ids from the provided episodes.",
     "Keep confidence conservative.",
     `Cluster key: ${cluster.key}`,
@@ -155,19 +166,16 @@ function buildPrompt(cluster: ReflectionCluster, goalDescriptions: readonly stri
   ].join("\n");
 }
 
-function parseInsight(text: string) {
-  let raw: unknown;
+function parseInsight(result: LLMCompleteResult) {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === REFLECTOR_TOOL_NAME);
 
-  try {
-    raw = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new SemanticError("Reflector returned non-JSON output", {
-      cause: error,
+  if (call === undefined) {
+    throw new SemanticError(`Reflector did not emit tool ${REFLECTOR_TOOL_NAME}`, {
       code: "REFLECTOR_INVALID",
     });
   }
 
-  return insightResponseSchema.parse(raw);
+  return insightResponseSchema.parse(call.input);
 }
 
 function collectReflectionClusters(
@@ -226,24 +234,24 @@ async function buildInsightCandidate(
   embedding: Float32Array;
 }> {
   const insight = parseInsight(
-    (
-      await llmClient.complete({
-        model: ctx.config.anthropic.models.background,
-        system:
-          "You propose low-confidence semantic propositions grounded in repeated episodic evidence.",
-        messages: [
-          {
-            role: "user",
-            content: buildPrompt(
-              cluster,
-              ctx.goalsRepository.list({ status: "active" }).map((goal) => goal.description),
-            ),
-          },
-        ],
-        max_tokens: 500,
-        budget: "offline-reflector",
-      })
-    ).text,
+    await llmClient.complete({
+      model: ctx.config.anthropic.models.background,
+      system:
+        "You propose low-confidence semantic propositions grounded in repeated episodic evidence.",
+      messages: [
+        {
+          role: "user",
+          content: buildPrompt(
+            cluster,
+            ctx.goalsRepository.list({ status: "active" }).map((goal) => goal.description),
+          ),
+        },
+      ],
+      tools: [REFLECTOR_TOOL],
+      tool_choice: { type: "tool", name: REFLECTOR_TOOL_NAME },
+      max_tokens: 500,
+      budget: "offline-reflector",
+    }),
   );
   const allowedIds = new Set(cluster.episodes.map((episode) => episode.id));
 

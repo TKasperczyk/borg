@@ -7,6 +7,9 @@ import { EpisodicExtractor } from "../episodic/index.js";
 
 import { AffectiveExtractor } from "./extractor.js";
 
+const AFFECTIVE_TOOL_NAME = "EmitAffectiveSignal";
+const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
+
 describe("AffectiveExtractor", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;
 
@@ -36,15 +39,21 @@ describe("AffectiveExtractor", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: JSON.stringify({
-            valence: -0.2,
-            arousal: 0.4,
-            dominant_emotion: "curiosity",
-          }),
+          text: "",
           input_tokens: 10,
           output_tokens: 10,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: AFFECTIVE_TOOL_NAME,
+              input: {
+                valence: -0.2,
+                arousal: 0.4,
+                dominant_emotion: "curiosity",
+              },
+            },
+          ],
         },
       ],
     });
@@ -62,6 +71,10 @@ describe("AffectiveExtractor", () => {
       dominant_emotion: "curiosity",
       valence: -0.2,
       arousal: 0.4,
+    });
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: AFFECTIVE_TOOL_NAME,
     });
   });
 
@@ -96,23 +109,30 @@ describe("AffectiveExtractor", () => {
     }
 
     llm.pushResponse({
-      text: JSON.stringify({
-        episodes: [
-          {
-            title: "Rust lifetime debugging spiral",
-            narrative: "The user struggled with Rust lifetimes and eventually found a fix.",
-            source_stream_ids: [firstId, secondId],
-            participants: ["user"],
-            tags: ["rust", "debugging"],
-            confidence: 0.8,
-            significance: 0.7,
-          },
-        ],
-      }),
+      text: "",
       input_tokens: 20,
       output_tokens: 20,
-      stop_reason: "end_turn",
-      tool_calls: [],
+      stop_reason: "tool_use",
+      tool_calls: [
+        {
+          id: "toolu_1",
+          name: EPISODE_TOOL_NAME,
+          input: {
+            episodes: [
+              {
+                title: "Rust lifetime debugging spiral",
+                narrative: "The user struggled with Rust lifetimes and eventually found a fix.",
+                source_stream_ids: [firstId, secondId],
+                participants: ["user"],
+                location: null,
+                tags: ["rust", "debugging"],
+                confidence: 0.8,
+                significance: 0.7,
+              },
+            ],
+          },
+        },
+      ],
     });
 
     const extractor = new EpisodicExtractor({

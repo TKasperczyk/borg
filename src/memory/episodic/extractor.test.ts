@@ -17,6 +17,30 @@ import { episodicMigrations } from "./migrations.js";
 import { EpisodicExtractor } from "./extractor.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "./repository.js";
 
+const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
+
+function createEpisodeToolResponse(episodes: unknown[]) {
+  return {
+    text: "",
+    input_tokens: 10,
+    output_tokens: 20,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_1",
+        name: EPISODE_TOOL_NAME,
+        input: {
+          episodes: episodes.map((episode) =>
+            typeof episode === "object" && episode !== null && !("location" in episode)
+              ? { ...episode, location: null }
+              : episode,
+          ),
+        },
+      },
+    ],
+  };
+}
+
 class TitleEmbeddingClient implements EmbeddingClient {
   async embed(text: string): Promise<Float32Array> {
     return this.vector(text);
@@ -97,26 +121,18 @@ describe("episodic extractor", () => {
     });
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            episodes: [
-              {
-                title: "Planning sync",
-                narrative:
-                  "The team planned the sprint backlog together. They aligned on the first deliverables.",
-                source_stream_ids: [first.id],
-                participants: ["team"],
-                tags: ["planning"],
-                confidence: 0.8,
-                significance: 0.7,
-              },
-            ],
-          }),
-          input_tokens: 10,
-          output_tokens: 20,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEpisodeToolResponse([
+          {
+            title: "Planning sync",
+            narrative:
+              "The team planned the sprint backlog together. They aligned on the first deliverables.",
+            source_stream_ids: [first.id],
+            participants: ["team"],
+            tags: ["planning"],
+            confidence: 0.8,
+            significance: 0.7,
+          },
+        ]),
       ],
     });
     const extractor = new EpisodicExtractor({
@@ -134,26 +150,20 @@ describe("episodic extractor", () => {
       kind: "agent_msg",
       content: "We refined the sprint plan after review.",
     });
-    llm.pushResponse({
-      text: JSON.stringify({
-        episodes: [
-          {
-            title: "Planning sync",
-            narrative:
-              "The team refined the sprint plan and captured next actions. The same meeting gained a little more detail.",
-            source_stream_ids: [second.id],
-            participants: ["team", "pm"],
-            tags: ["planning", "review"],
-            confidence: 0.9,
-            significance: 0.9,
-          },
-        ],
-      }),
-      input_tokens: 10,
-      output_tokens: 20,
-      stop_reason: "end_turn",
-      tool_calls: [],
-    });
+    llm.pushResponse(
+      createEpisodeToolResponse([
+        {
+          title: "Planning sync",
+          narrative:
+            "The team refined the sprint plan and captured next actions. The same meeting gained a little more detail.",
+          source_stream_ids: [second.id],
+          participants: ["team", "pm"],
+          tags: ["planning", "review"],
+          confidence: 0.9,
+          significance: 0.9,
+        },
+      ]),
+    );
     const secondRun = await extractor.extractFromStream({
       sinceTs: second.timestamp,
     });
@@ -174,6 +184,10 @@ describe("episodic extractor", () => {
       expect.arrayContaining([first.id, second.id]),
     );
     expect(listed.items[0]?.tags).toEqual(expect.arrayContaining(["planning", "review"]));
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: EPISODE_TOOL_NAME,
+    });
   });
 
   it("rejects hallucinated source stream ids", async () => {
@@ -214,22 +228,67 @@ describe("episodic extractor", () => {
       embeddingClient: new TitleEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createEpisodeToolResponse([
+            {
+              title: "Planning sync",
+              narrative: "A grounded narrative.",
+              source_stream_ids: ["strm_missingmissing"],
+              participants: [],
+              tags: [],
+              confidence: 0.8,
+              significance: 0.8,
+            },
+          ]),
+        ],
+      }),
+      model: "claude-haiku",
+    });
+
+    await expect(extractor.extractFromStream()).rejects.toBeInstanceOf(LLMError);
+  });
+
+  it("raises a typed error naming the tool when the llm returns bare text", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+    });
+
+    await writer.append({
+      kind: "user_msg",
+      content: "hello",
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const extractor = new EpisodicExtractor({
+      dataDir: tempDir,
+      episodicRepository: repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
           {
-            text: JSON.stringify({
-              episodes: [
-                {
-                  title: "Planning sync",
-                  narrative: "A grounded narrative.",
-                  source_stream_ids: ["strm_missingmissing"],
-                  participants: [],
-                  tags: [],
-                  confidence: 0.8,
-                  significance: 0.8,
-                },
-              ],
-            }),
-            input_tokens: 10,
-            output_tokens: 10,
+            text: '{"episodes":[]}',
+            input_tokens: 1,
+            output_tokens: 1,
             stop_reason: "end_turn",
             tool_calls: [],
           },
@@ -238,7 +297,10 @@ describe("episodic extractor", () => {
       model: "claude-haiku",
     });
 
-    await expect(extractor.extractFromStream()).rejects.toBeInstanceOf(LLMError);
+    await expect(extractor.extractFromStream()).rejects.toMatchObject({
+      code: "EXTRACTOR_OUTPUT_INVALID",
+      message: expect.stringContaining(EPISODE_TOOL_NAME),
+    });
   });
 
   it("skips candidates whose embeddings fail and continues the extraction run", async () => {
@@ -285,34 +347,26 @@ describe("episodic extractor", () => {
       embeddingClient: new FailingOnceEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: JSON.stringify({
-              episodes: [
-                {
-                  title: "Skip me",
-                  narrative: "This candidate will fail embedding.",
-                  source_stream_ids: [first.id],
-                  participants: [],
-                  tags: [],
-                  confidence: 0.5,
-                  significance: 0.5,
-                },
-                {
-                  title: "Keep me",
-                  narrative: "This candidate should still be inserted.",
-                  source_stream_ids: [second.id],
-                  participants: [],
-                  tags: ["kept"],
-                  confidence: 0.9,
-                  significance: 0.9,
-                },
-              ],
-            }),
-            input_tokens: 10,
-            output_tokens: 10,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEpisodeToolResponse([
+            {
+              title: "Skip me",
+              narrative: "This candidate will fail embedding.",
+              source_stream_ids: [first.id],
+              participants: [],
+              tags: [],
+              confidence: 0.5,
+              significance: 0.5,
+            },
+            {
+              title: "Keep me",
+              narrative: "This candidate should still be inserted.",
+              source_stream_ids: [second.id],
+              participants: [],
+              tags: ["kept"],
+              confidence: 0.9,
+              significance: 0.9,
+            },
+          ]),
         ],
       }),
       model: "claude-haiku",

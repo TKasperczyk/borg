@@ -102,3 +102,9 @@ export class BudgetExceededError extends BorgError {
     super(options.code ?? "BORG_BUDGET_EXCEEDED", message, options);
   }
 }
+
+export class AuthError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_AUTH_ERROR", message, options);
+  }
+}

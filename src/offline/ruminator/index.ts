@@ -1,7 +1,12 @@
 import { z } from "zod";
 
 import { computeWeights } from "../../cognition/attention/index.js";
-import type { LLMClient } from "../../llm/index.js";
+import {
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { episodeIdSchema } from "../../memory/episodic/index.js";
 import {
   growthMarkerCategorySchema,
@@ -36,11 +41,16 @@ const resolutionResponseSchema = z.object({
       before_description: z.string().nullable().optional(),
       after_description: z.string().nullable().optional(),
       confidence: z.number().min(0).max(1),
-      category: growthMarkerCategorySchema.default("understanding"),
+      category: growthMarkerCategorySchema,
     })
-    .nullable()
-    .default(null),
+    .nullable(),
 });
+const RUMINATOR_TOOL_NAME = "EmitRuminatorDecisions";
+export const RUMINATOR_TOOL = {
+  name: RUMINATOR_TOOL_NAME,
+  description: "Emit a grounded open-question resolution note and optional growth marker.",
+  inputSchema: toToolInputSchema(resolutionResponseSchema),
+} satisfies LLMToolDefinition;
 
 const serializableGrowthMarkerSchema = growthMarkerSchema.extend({
   evidence_episode_ids: z.array(episodeIdSchema).min(1),
@@ -100,7 +110,7 @@ function clamp(value: number, min: number, max: number): number {
 function buildResolutionPrompt(question: OpenQuestion, evidence: string): string {
   return [
     "Resolve the open question using only the evidence below.",
-    'Return strict JSON with shape {"resolution_note":"...","growth_marker":{"what_changed":"...","before_description":"...","after_description":"...","confidence":0.0,"category":"understanding"}|null} and no surrounding prose.',
+    `Emit your result by calling the ${RUMINATOR_TOOL_NAME} tool exactly once.`,
     "Only include a growth_marker if the evidence clearly shows new understanding.",
     `Question: ${question.question}`,
     `Source: ${question.source}`,
@@ -109,19 +119,16 @@ function buildResolutionPrompt(question: OpenQuestion, evidence: string): string
   ].join("\n\n");
 }
 
-function parseResolutionResponse(text: string) {
-  let raw: unknown;
+function parseResolutionResponse(result: LLMCompleteResult) {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === RUMINATOR_TOOL_NAME);
 
-  try {
-    raw = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new StorageError("Ruminator returned non-JSON output", {
-      cause: error,
+  if (call === undefined) {
+    throw new StorageError(`Ruminator did not emit tool ${RUMINATOR_TOOL_NAME}`, {
       code: "RUMINATOR_INVALID",
     });
   }
 
-  return resolutionResponseSchema.parse(raw);
+  return resolutionResponseSchema.parse(call.input);
 }
 
 function buildChange(item: RuminatorPlan["items"][number]): OfflineChange {
@@ -215,20 +222,20 @@ async function planResolution(
     )
     .join("\n");
   const response = parseResolutionResponse(
-    (
-      await llmClient.complete({
-        model: ctx.config.anthropic.models.background,
-        system: "You update Borg's open questions conservatively and only from grounded evidence.",
-        messages: [
-          {
-            role: "user",
-            content: buildResolutionPrompt(question, evidenceBlock),
-          },
-        ],
-        max_tokens: 300,
-        budget: "offline-ruminator",
-      })
-    ).text,
+    await llmClient.complete({
+      model: ctx.config.anthropic.models.background,
+      system: "You update Borg's open questions conservatively and only from grounded evidence.",
+      messages: [
+        {
+          role: "user",
+          content: buildResolutionPrompt(question, evidenceBlock),
+        },
+      ],
+      tools: [RUMINATOR_TOOL],
+      tool_choice: { type: "tool", name: RUMINATOR_TOOL_NAME },
+      max_tokens: 300,
+      budget: "offline-ruminator",
+    }),
   );
   const growthMarker =
     response.growth_marker === null

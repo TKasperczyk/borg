@@ -26,10 +26,10 @@ export type OpenAICompatibleEmbeddingClientOptions = {
   client?: OpenAIEmbeddingsClient;
 };
 
-function validateDimensions(embedding: number[], dims: number): Float32Array {
+function validateDimensions(embedding: number[], dims: number, model: string): Float32Array {
   if (embedding.length !== dims) {
     throw new EmbeddingError(
-      `Embedding dimension mismatch: expected ${dims}, received ${embedding.length}`,
+      `Embedding dimension mismatch for model "${model}": configured ${dims}, received ${embedding.length}. Check BORG_EMBEDDING_MODEL matches a loaded model in your provider.`,
     );
   }
 
@@ -102,7 +102,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
       return response.data
         .slice()
         .sort((left, right) => left.index - right.index)
-        .map((item) => validateDimensions(item.embedding, this.dims));
+        .map((item) => validateDimensions(item.embedding, this.dims, this.model));
     } catch (error) {
       if (error instanceof EmbeddingError || error instanceof ConfigError) {
         throw error;

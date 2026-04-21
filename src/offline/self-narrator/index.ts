@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import type { LLMClient } from "../../llm/index.js";
+import {
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
   GROWTH_MARKER_CATEGORIES,
@@ -33,11 +38,16 @@ const selfNarratorObservationSchema = z.object({
       before_description: z.string().nullable().optional(),
       after_description: z.string().nullable().optional(),
       confidence: z.number().min(0).max(1),
-      evidence_episode_ids: z.array(episodeIdSchema).min(2),
+      evidence_episode_ids: z.array(z.string().min(1)).min(2),
     })
-    .nullable()
-    .default(null),
+    .nullable(),
 });
+const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
+export const SELF_NARRATOR_TOOL = {
+  name: SELF_NARRATOR_TOOL_NAME,
+  description: "Emit a grounded autobiographical growth observation or null.",
+  inputSchema: toToolInputSchema(selfNarratorObservationSchema),
+} satisfies LLMToolDefinition;
 
 const serializableGrowthMarkerSchema = growthMarkerSchema.extend({
   evidence_episode_ids: z.array(episodeIdSchema).min(1),
@@ -114,7 +124,7 @@ function defaultQuarterLabel(nowMs: number): string {
 function buildObservationPrompt(cluster: NarrativeCluster): string {
   return [
     "Infer one concise growth observation from this episode cluster if it shows meaningful change.",
-    `Return strict JSON with shape {"observation":{"category":"skill|value|habit|relationship|understanding","what_changed":"...","before_description":"...","after_description":"...","confidence":0.0,"evidence_episode_ids":["..."]}|null} and no surrounding prose.`,
+    `Emit your result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
     "Return null if there is no grounded growth signal.",
     "Only cite evidence_episode_ids from the provided episodes.",
     `Cluster: ${cluster.key}`,
@@ -131,19 +141,16 @@ function buildObservationPrompt(cluster: NarrativeCluster): string {
   ].join("\n");
 }
 
-function parseObservationResponse(text: string) {
-  let raw: unknown;
+function parseObservationResponse(result: LLMCompleteResult) {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === SELF_NARRATOR_TOOL_NAME);
 
-  try {
-    raw = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new StorageError("Self-narrator returned non-JSON output", {
-      cause: error,
+  if (call === undefined) {
+    throw new StorageError(`Self-narrator did not emit tool ${SELF_NARRATOR_TOOL_NAME}`, {
       code: "SELF_NARRATOR_INVALID",
     });
   }
 
-  return selfNarratorObservationSchema.parse(raw);
+  return selfNarratorObservationSchema.parse(call.input);
 }
 
 function collectClusters(
@@ -330,34 +337,38 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
         for (const cluster of clusters) {
           try {
             const response = parseObservationResponse(
-              (
-                await llmClient.complete({
-                  model: ctx.config.anthropic.models.background,
-                  system:
-                    "You identify grounded autobiographical growth markers. Return null when the evidence is weak.",
-                  messages: [
-                    {
-                      role: "user",
-                      content: buildObservationPrompt(cluster),
-                    },
-                  ],
-                  max_tokens: 400,
-                  budget: "offline-self-narrator",
-                })
-              ).text,
+              await llmClient.complete({
+                model: ctx.config.anthropic.models.background,
+                system:
+                  "You identify grounded autobiographical growth markers. Return null when the evidence is weak.",
+                messages: [
+                  {
+                    role: "user",
+                    content: buildObservationPrompt(cluster),
+                  },
+                ],
+                tools: [SELF_NARRATOR_TOOL],
+                tool_choice: { type: "tool", name: SELF_NARRATOR_TOOL_NAME },
+                max_tokens: 400,
+                budget: "offline-self-narrator",
+              }),
             );
 
             if (response.observation === null) {
               continue;
             }
 
-            const allowedIds = new Set(cluster.episodes.map((episode) => episode.id));
+            const allowedIds = new Set<string>(cluster.episodes.map((episode) => episode.id));
 
             if (!response.observation.evidence_episode_ids.every((id) => allowedIds.has(id))) {
               throw new StorageError("Self-narrator referenced episodes outside the cluster", {
                 code: "SELF_NARRATOR_INVALID_REF",
               });
             }
+
+            const evidenceEpisodeIds = response.observation.evidence_episode_ids.map(
+              (id) => id as Episode["id"],
+            );
 
             markerCandidates.push(
               serializableGrowthMarkerSchema.parse({
@@ -367,7 +378,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                 what_changed: response.observation.what_changed,
                 before_description: response.observation.before_description ?? null,
                 after_description: response.observation.after_description ?? null,
-                evidence_episode_ids: response.observation.evidence_episode_ids,
+                evidence_episode_ids: evidenceEpisodeIds,
                 confidence: Math.min(
                   GROWTH_MARKER_CONFIDENCE_CEILING,
                   response.observation.confidence,

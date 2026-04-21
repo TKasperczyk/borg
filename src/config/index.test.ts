@@ -29,6 +29,7 @@ describe("config", () => {
     expect(config.dataDir).toBe(tempDir);
     expect(config.embedding.baseUrl).toBe("http://localhost:1234/v1");
     expect(config.embedding.model).toBe("text-embedding-qwen3-embedding-8b");
+    expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBeUndefined();
     expect(config.perception.useLlmFallback).toBe(true);
   });
@@ -62,8 +63,23 @@ describe("config", () => {
     expect(config.embedding.model).toBe("env-model");
     expect(config.embedding.dims).toBe(1024);
     expect(config.perception.useLlmFallback).toBe(false);
+    expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBe("secret");
     expect(config.anthropic.models.cognition).toBe("file-cognition");
+  });
+
+  it("requires an api key when anthropic auth mode is api-key", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() =>
+      loadConfig({
+        dataDir: tempDir,
+        env: {
+          BORG_ANTHROPIC_AUTH: "api-key",
+        },
+      }),
+    ).toThrow(ConfigError);
   });
 
   it("throws config errors for invalid numeric environment values", () => {

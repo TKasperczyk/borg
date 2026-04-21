@@ -1,7 +1,12 @@
 import { z } from "zod";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import type { LLMClient } from "../../llm/index.js";
+import {
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
 import { createSemanticNodeId } from "../../util/ids.js";
@@ -22,7 +27,7 @@ const extractorNodeSchema = z.object({
   kind: semanticNodeKindSchema,
   label: z.string().min(1),
   description: z.string().min(1),
-  aliases: z.array(z.string().min(1)).default([]),
+  aliases: z.array(z.string().min(1)),
   confidence: z.number().min(0).max(1),
   source_episode_ids: z.array(z.string().min(1)).min(1),
 });
@@ -36,8 +41,8 @@ const extractorEdgeSchema = z.object({
 });
 
 const extractorResponseSchema = z.object({
-  nodes: z.array(extractorNodeSchema).default([]),
-  edges: z.array(extractorEdgeSchema).default([]),
+  nodes: z.array(extractorNodeSchema).max(6),
+  edges: z.array(extractorEdgeSchema).max(8),
 });
 
 type ExtractorNode = z.infer<typeof extractorNodeSchema>;
@@ -45,6 +50,12 @@ type ExtractorEdge = z.infer<typeof extractorEdgeSchema>;
 
 const DEFAULT_CONFIDENCE_CEILING = 0.7;
 const DEDUP_THRESHOLD = 0.88;
+const EXTRACT_SEMANTIC_TOOL_NAME = "EmitSemanticCandidates";
+export const EXTRACT_SEMANTIC_TOOL = {
+  name: EXTRACT_SEMANTIC_TOOL_NAME,
+  description: "Emit grounded semantic nodes and edges extracted from episodes.",
+  inputSchema: toToolInputSchema(extractorResponseSchema),
+} satisfies LLMToolDefinition;
 
 export type SemanticExtractorOptions = {
   nodeRepository: SemanticNodeRepository;
@@ -68,9 +79,12 @@ export type ExtractSemanticResult = {
 function buildPrompt(episodes: readonly Episode[]): string {
   return [
     "Extract semantic knowledge from the provided episodes.",
-    'Return strict JSON with shape {"nodes":[...],"edges":[...]} and no surrounding prose.',
+    `Emit your result by calling the ${EXTRACT_SEMANTIC_TOOL_NAME} tool exactly once.`,
+    "Populate the tool arguments directly with arrays and objects. Do not put JSON, XML tags, or parameter wrappers inside string fields.",
+    "Return at most 6 nodes and 8 edges. Prefer the most central concepts and claims over peripheral details.",
     "Each node must cite source_episode_ids from the provided episode ids only.",
     "Each edge must use from_label and to_label values that match node labels exactly.",
+    "Only use relation values allowed by the tool schema.",
     "Edges may only reference nodes that already exist or are extracted in this batch.",
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
@@ -86,22 +100,19 @@ function buildPrompt(episodes: readonly Episode[]): string {
   ].join("\n");
 }
 
-function parseResponse(text: string): {
+function parseResponse(result: LLMCompleteResult): {
   nodes: ExtractorNode[];
   edges: ExtractorEdge[];
 } {
-  let raw: unknown;
+  const call = result.tool_calls.find((toolCall) => toolCall.name === EXTRACT_SEMANTIC_TOOL_NAME);
 
-  try {
-    raw = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new LLMError("Semantic extractor returned non-JSON output", {
-      cause: error,
+  if (call === undefined) {
+    throw new LLMError(`Semantic extractor did not emit tool ${EXTRACT_SEMANTIC_TOOL_NAME}`, {
       code: "SEMANTIC_EXTRACTOR_INVALID",
     });
   }
 
-  const parsed = extractorResponseSchema.safeParse(raw);
+  const parsed = extractorResponseSchema.safeParse(normalizeSemanticToolInput(call.input));
 
   if (!parsed.success) {
     throw new LLMError("Semantic extractor returned invalid payload", {
@@ -111,6 +122,56 @@ function parseResponse(text: string): {
   }
 
   return parsed.data;
+}
+
+function parseJsonArrayString(value: string): unknown {
+  const trimmed = value.trim();
+
+  if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) {
+    return value;
+  }
+
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function normalizeSemanticToolInput(input: unknown): unknown {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return input;
+  }
+
+  const record = input as Record<string, unknown>;
+  const normalized: Record<string, unknown> = { ...record };
+  const rawNodes = normalized.nodes;
+
+  if (typeof rawNodes === "string") {
+    const parts = rawNodes.split(/\s*<parameter name="edges">\s*/);
+
+    if (parts.length === 2) {
+      normalized.nodes = parseJsonArrayString(parts[0] ?? "");
+      normalized.edges = parseJsonArrayString(parts[1] ?? "");
+      return normalized;
+    }
+
+    normalized.nodes = parseJsonArrayString(rawNodes);
+  }
+
+  if (typeof normalized.edges === "string") {
+    normalized.edges = parseJsonArrayString(normalized.edges);
+  }
+
+  if (normalized.nodes === undefined) {
+    normalized.nodes = [];
+  }
+
+  if (normalized.edges === undefined) {
+    normalized.edges = [];
+  }
+
+  return normalized;
 }
 
 function mergeAliases(left: readonly string[], right: readonly string[]): string[] {
@@ -254,10 +315,12 @@ export class SemanticExtractor {
           content: buildPrompt(episodes),
         },
       ],
+      tools: [EXTRACT_SEMANTIC_TOOL],
+      tool_choice: { type: "tool", name: EXTRACT_SEMANTIC_TOOL_NAME },
       max_tokens: 1_200,
       budget: "semantic-extraction",
     });
-    const parsed = parseResponse(result.text);
+    const parsed = parseResponse(result);
     const allowedEpisodeIds = new Set(episodes.map((episode) => episode.id));
     const existingNodes = new Map<string, SemanticNode>();
     const batchNodes = new Map<string, SemanticNode>();
@@ -310,6 +373,11 @@ export class SemanticExtractor {
         throw new SemanticError("Semantic extractor referenced an unknown edge node", {
           code: "SEMANTIC_EXTRACTOR_INVALID_REF",
         });
+      }
+
+      if (fromNode.id === toNode.id) {
+        skippedEdges += 1;
+        continue;
       }
 
       const evidenceEpisodeIds = this.validateEpisodeRefs(

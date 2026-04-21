@@ -1,11 +1,43 @@
 import { z } from "zod";
 
-import type { LLMClient } from "../../llm/index.js";
+import {
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { CognitionError, LLMError } from "../../util/errors.js";
 
 const entityFallbackSchema = z.object({
   entities: z.array(z.string().min(1)),
 });
+const ENTITY_FALLBACK_TOOL_NAME = "EmitEntityExtraction";
+export const ENTITY_FALLBACK_TOOL = {
+  name: ENTITY_FALLBACK_TOOL_NAME,
+  description: "Emit named entities, handles, products, and quoted phrases from the input.",
+  inputSchema: toToolInputSchema(entityFallbackSchema),
+} satisfies LLMToolDefinition;
+
+function parseEntityFallback(result: LLMCompleteResult): string[] {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === ENTITY_FALLBACK_TOOL_NAME);
+
+  if (call === undefined) {
+    throw new CognitionError(`Entity fallback did not emit tool ${ENTITY_FALLBACK_TOOL_NAME}`, {
+      code: "ENTITY_FALLBACK_INVALID",
+    });
+  }
+
+  const parsed = entityFallbackSchema.safeParse(call.input);
+
+  if (!parsed.success) {
+    throw new CognitionError("Entity fallback returned invalid payload", {
+      cause: parsed.error,
+      code: "ENTITY_FALLBACK_INVALID",
+    });
+  }
+
+  return dedupe(parsed.data.entities);
+}
 
 function dedupe(values: readonly string[]): string[] {
   const seen = new Set<string>();
@@ -122,27 +154,19 @@ export class EntityExtractor {
     try {
       const response = await this.options.llmClient.complete({
         model,
-        system:
-          'Extract named entities, handles, products, and quoted phrases. Return strict JSON: {"entities":["..."]}.',
+        system: "Extract named entities, handles, products, and quoted phrases.",
         messages: [
           {
             role: "user",
             content: text,
           },
         ],
+        tools: [ENTITY_FALLBACK_TOOL],
+        tool_choice: { type: "tool", name: ENTITY_FALLBACK_TOOL_NAME },
         max_tokens: 200,
         budget: "perception-entity-fallback",
       });
-      const parsed = entityFallbackSchema.safeParse(JSON.parse(response.text) as unknown);
-
-      if (!parsed.success) {
-        throw new CognitionError("Entity fallback returned invalid JSON", {
-          cause: parsed.error,
-          code: "ENTITY_FALLBACK_INVALID",
-        });
-      }
-
-      return dedupe(parsed.data.entities);
+      return parseEntityFallback(response);
     } catch (error) {
       if (error instanceof CognitionError || error instanceof LLMError) {
         throw error;

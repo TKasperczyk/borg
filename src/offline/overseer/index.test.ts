@@ -13,6 +13,24 @@ import {
 } from "../test-support.js";
 import { OverseerProcess } from "./index.js";
 
+const OVERSEER_TOOL_NAME = "EmitOverseerFlags";
+
+function createOverseerResponse(flags: unknown[], inputTokens = 12, outputTokens = 8) {
+  return {
+    text: "",
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_1",
+        name: OVERSEER_TOOL_NAME,
+        input: { flags },
+      },
+    ],
+  };
+}
+
 describe("overseer process", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -26,21 +44,13 @@ describe("overseer process", () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            flags: [
-              {
-                kind: "misattribution",
-                reason: "The narrative mentions Alex, but Alex is missing from participants.",
-                confidence: 0.8,
-              },
-            ],
-          }),
-          input_tokens: 12,
-          output_tokens: 8,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createOverseerResponse([
+          {
+            kind: "misattribution",
+            reason: "The narrative mentions Alex, but Alex is missing from participants.",
+            confidence: 0.8,
+          },
+        ]),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -72,6 +82,10 @@ describe("overseer process", () => {
     });
 
     expect(result.errors).toEqual([]);
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: OVERSEER_TOOL_NAME,
+    });
     expect(result.changes[0]).toMatchObject({
       action: "flag",
       targets: {
@@ -95,17 +109,7 @@ describe("overseer process", () => {
   it("stays quiet on clean fixtures", async () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
     const llm = new FakeLLMClient({
-      responses: [
-        {
-          text: JSON.stringify({
-            flags: [],
-          }),
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-      ],
+      responses: [createOverseerResponse([], 8, 4)],
     });
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(nowMs),
@@ -143,51 +147,39 @@ describe("overseer process", () => {
   it("halts further llm work after budget exhaustion", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            flags: [
-              {
-                kind: "misattribution",
-                reason: "First target issue.",
-                confidence: 0.8,
-              },
-            ],
-          }),
-          input_tokens: 35,
-          output_tokens: 25,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-        {
-          text: JSON.stringify({
-            flags: [
-              {
-                kind: "temporal_drift",
-                reason: "Second target issue.",
-                confidence: 0.8,
-              },
-            ],
-          }),
-          input_tokens: 35,
-          output_tokens: 25,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-        {
-          text: JSON.stringify({
-            flags: [
-              {
-                kind: "identity_inconsistency",
-                reason: "Third target issue.",
-                confidence: 0.8,
-              },
-            ],
-          }),
-          input_tokens: 35,
-          output_tokens: 25,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createOverseerResponse(
+          [
+            {
+              kind: "misattribution",
+              reason: "First target issue.",
+              confidence: 0.8,
+            },
+          ],
+          35,
+          25,
+        ),
+        createOverseerResponse(
+          [
+            {
+              kind: "temporal_drift",
+              reason: "Second target issue.",
+              confidence: 0.8,
+            },
+          ],
+          35,
+          25,
+        ),
+        createOverseerResponse(
+          [
+            {
+              kind: "identity_inconsistency",
+              reason: "Third target issue.",
+              confidence: 0.8,
+            },
+          ],
+          35,
+          25,
+        ),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -270,21 +262,13 @@ describe("overseer process", () => {
     );
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            flags: [
-              {
-                kind: "misattribution",
-                reason: "Recent target issue.",
-                confidence: 0.8,
-              },
-            ],
-          }),
-          input_tokens: 12,
-          output_tokens: 8,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createOverseerResponse([
+          {
+            kind: "misattribution",
+            reason: "Recent target issue.",
+            confidence: 0.8,
+          },
+        ]),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -338,21 +322,13 @@ describe("overseer process", () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            flags: [
-              {
-                kind: "misattribution",
-                reason: "The narrative mentions Alex, but Alex is missing from participants.",
-                confidence: 0.8,
-              },
-            ],
-          }),
-          input_tokens: 12,
-          output_tokens: 8,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createOverseerResponse([
+          {
+            kind: "misattribution",
+            reason: "The narrative mentions Alex, but Alex is missing from participants.",
+            confidence: 0.8,
+          },
+        ]),
       ],
     });
     const harness = await createOfflineTestHarness({

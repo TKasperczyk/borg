@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import type { LLMClient } from "../../llm/index.js";
+import {
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
   reviewKindSchema,
@@ -32,8 +37,14 @@ const reviewFlagSchema = z.object({
 });
 
 const overseerResponseSchema = z.object({
-  flags: z.array(reviewFlagSchema).default([]),
+  flags: z.array(reviewFlagSchema),
 });
+const OVERSEER_TOOL_NAME = "EmitOverseerFlags";
+export const OVERSEER_TOOL = {
+  name: OVERSEER_TOOL_NAME,
+  description: "Emit grounded overseer review flags for a memory item.",
+  inputSchema: toToolInputSchema(overseerResponseSchema),
+} satisfies LLMToolDefinition;
 
 const HOUR_MS = 60 * 60 * 1_000;
 
@@ -103,16 +114,14 @@ type OverseerReversal = {
   reviewItemId?: number;
 };
 
-function parseFlags(text: string) {
-  let raw: unknown;
+function parseFlags(result: LLMCompleteResult) {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === OVERSEER_TOOL_NAME);
 
-  try {
-    raw = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new TypeError(`Overseer returned non-JSON output: ${String(error)}`);
+  if (call === undefined) {
+    throw new TypeError(`Overseer did not emit tool ${OVERSEER_TOOL_NAME}`);
   }
 
-  return overseerResponseSchema.parse(raw);
+  return overseerResponseSchema.parse(call.input);
 }
 
 function summarizeSelfState(ctx: OfflineContext): string {
@@ -138,7 +147,7 @@ function summarizeSelfState(ctx: OfflineContext): string {
 function buildPrompt(target: OverseerTarget, ctx: OfflineContext): string {
   return [
     "Check the memory item for misattribution, temporal drift, and identity inconsistency.",
-    'Return strict JSON with shape {"flags":[{"kind":"misattribution|temporal_drift|identity_inconsistency","reason":"...","confidence":0.0}]} and no surrounding prose.',
+    `Emit your result by calling the ${OVERSEER_TOOL_NAME} tool exactly once.`,
     summarizeSelfState(ctx),
     "Memory item:",
     JSON.stringify({
@@ -239,21 +248,21 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
         for (const target of targets) {
           try {
             const flags = parseFlags(
-              (
-                await llmClient.complete({
-                  model: ctx.config.anthropic.models.cognition,
-                  system:
-                    "You audit recently formed memories. Flag only grounded QA concerns and keep false positives low.",
-                  messages: [
-                    {
-                      role: "user",
-                      content: buildPrompt(target, ctx),
-                    },
-                  ],
-                  max_tokens: 500,
-                  budget: "offline-overseer",
-                })
-              ).text,
+              await llmClient.complete({
+                model: ctx.config.anthropic.models.cognition,
+                system:
+                  "You audit recently formed memories. Flag only grounded QA concerns and keep false positives low.",
+                messages: [
+                  {
+                    role: "user",
+                    content: buildPrompt(target, ctx),
+                  },
+                ],
+                tools: [OVERSEER_TOOL],
+                tool_choice: { type: "tool", name: OVERSEER_TOOL_NAME },
+                max_tokens: 500,
+                budget: "offline-overseer",
+              }),
             ).flags.filter((flag) => flag.confidence >= 0.5);
 
             for (const flag of flags) {

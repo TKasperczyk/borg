@@ -19,6 +19,24 @@ import {
   createSemanticNodesTableSchema,
 } from "./repository.js";
 
+const SEMANTIC_TOOL_NAME = "EmitSemanticCandidates";
+
+function createSemanticToolResponse(input: { nodes: unknown[]; edges: unknown[] }) {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_1",
+        name: SEMANTIC_TOOL_NAME,
+        input,
+      },
+    ],
+  };
+}
+
 class SemanticEmbeddingClient implements EmbeddingClient {
   async embed(text: string): Promise<Float32Array> {
     return this.vector(text);
@@ -114,49 +132,44 @@ describe("semantic extractor", () => {
       superseded_by: null,
     });
 
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "entity",
+              label: "Atlas",
+              description: "Atlas updated node",
+              aliases: ["Atlas service"],
+              confidence: 0.7,
+              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+            },
+            {
+              kind: "concept",
+              label: "Rollback",
+              description: "Rollback plan",
+              aliases: [],
+              confidence: 0.6,
+              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+            },
+          ],
+          edges: [
+            {
+              from_label: "Atlas",
+              to_label: "Rollback",
+              relation: "supports",
+              confidence: 0.6,
+              evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+            },
+          ],
+        }),
+      ],
+    });
     const extractor = new SemanticExtractor({
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
-      llmClient: new FakeLLMClient({
-        responses: [
-          {
-            text: JSON.stringify({
-              nodes: [
-                {
-                  kind: "entity",
-                  label: "Atlas",
-                  description: "Atlas updated node",
-                  aliases: ["Atlas service"],
-                  confidence: 0.7,
-                  source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
-                },
-                {
-                  kind: "concept",
-                  label: "Rollback",
-                  description: "Rollback plan",
-                  aliases: [],
-                  confidence: 0.6,
-                  source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
-                },
-              ],
-              edges: [
-                {
-                  from_label: "Atlas",
-                  to_label: "Rollback",
-                  relation: "supports",
-                  confidence: 0.6,
-                  evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
-                },
-              ],
-            }),
-            input_tokens: 1,
-            output_tokens: 1,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-        ],
-      }),
+      llmClient: llm,
       model: "haiku",
       clock,
     });
@@ -180,6 +193,10 @@ describe("semantic extractor", () => {
     expect(edgeRepository.listEdges()).toHaveLength(1);
     expect(nodeInsertSpy).toHaveBeenCalled();
     expect(edgeAddSpy).toHaveBeenCalled();
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: SEMANTIC_TOOL_NAME,
+    });
     expect(Math.max(...nodeInsertSpy.mock.invocationCallOrder)).toBeLessThan(
       edgeAddSpy.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
     );
@@ -190,25 +207,19 @@ describe("semantic extractor", () => {
       embeddingClient: new SemanticEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: JSON.stringify({
-              nodes: [
-                {
-                  kind: "concept",
-                  label: "Bad node",
-                  description: "Bad node",
-                  aliases: [],
-                  confidence: 0.6,
-                  source_episode_ids: ["ep_missing"],
-                },
-              ],
-              edges: [],
-            }),
-            input_tokens: 1,
-            output_tokens: 1,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "concept",
+                label: "Bad node",
+                description: "Bad node",
+                aliases: [],
+                confidence: 0.6,
+                source_episode_ids: ["ep_missing"],
+              },
+            ],
+            edges: [],
+          }),
         ],
       }),
       model: "haiku",
@@ -220,5 +231,71 @@ describe("semantic extractor", () => {
         buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident"),
       ]),
     ).rejects.toThrow("unknown source_episode_ids");
+  });
+
+  it("normalizes string-wrapped tool payloads before validation", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: SEMANTIC_TOOL_NAME,
+              input: {
+                nodes:
+                  '[{"kind":"entity","label":"Atlas","description":"Atlas node","aliases":[],"confidence":0.7,"source_episode_ids":["ep_aaaaaaaaaaaaaaaa"]},{"kind":"concept","label":"Rollback","description":"Rollback concept","aliases":[],"confidence":0.6,"source_episode_ids":["ep_aaaaaaaaaaaaaaaa"]}]<parameter name="edges">[{"from_label":"Atlas","to_label":"Rollback","relation":"related_to","confidence":0.5,"evidence_episode_ids":["ep_aaaaaaaaaaaaaaaa"]}]',
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      llmClient: llm,
+      model: "haiku",
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([
+      buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident"),
+    ]);
+
+    expect(result.insertedNodes).toBe(2);
+    expect(result.insertedEdges).toBe(1);
   });
 });

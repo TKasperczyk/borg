@@ -5,6 +5,24 @@ import { FakeLLMClient } from "../../llm/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
 import { ConsolidatorProcess } from "./index.js";
 
+const CONSOLIDATION_TOOL_NAME = "EmitConsolidation";
+
+function createConsolidationResponse(title: string, narrative: string) {
+  return {
+    text: "",
+    input_tokens: 20,
+    output_tokens: 15,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_1",
+        name: CONSOLIDATION_TOOL_NAME,
+        input: { title, narrative },
+      },
+    ],
+  };
+}
+
 async function snapshotEpisodes(harness: Awaited<ReturnType<typeof createOfflineTestHarness>>) {
   const episodes = await harness.episodicRepository.listAll();
   const stats = harness.episodicRepository.listStats();
@@ -47,28 +65,14 @@ describe("consolidator process", () => {
   it("detects redundant clusters, consolidates them, and supports reversal", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            title: "Merged planning incident",
-            narrative:
-              "The team merged two overlapping planning notes into one grounded summary. The merged episode preserves both source anchors.",
-          }),
-          input_tokens: 20,
-          output_tokens: 15,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-        {
-          text: JSON.stringify({
-            title: "Merged planning incident",
-            narrative:
-              "The team merged two overlapping planning notes into one grounded summary. The merged episode preserves both source anchors.",
-          }),
-          input_tokens: 20,
-          output_tokens: 15,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createConsolidationResponse(
+          "Merged planning incident",
+          "The team merged two overlapping planning notes into one grounded summary. The merged episode preserves both source anchors.",
+        ),
+        createConsolidationResponse(
+          "Merged planning incident",
+          "The team merged two overlapping planning notes into one grounded summary. The merged episode preserves both source anchors.",
+        ),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -112,6 +116,10 @@ describe("consolidator process", () => {
       dryRun: true,
     });
     expect(dryRun.changes).toHaveLength(1);
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: CONSOLIDATION_TOOL_NAME,
+    });
     expect((await harness.episodicRepository.listAll()).map((episode) => episode.id)).toEqual([
       second.id,
       first.id,
@@ -146,16 +154,10 @@ describe("consolidator process", () => {
   });
 
   it("applies a saved plan without additional llm calls and matches a direct run", async () => {
-    const response = {
-      text: JSON.stringify({
-        title: "Merged deploy prep",
-        narrative: "Two overlapping deploy-prep notes were merged into one grounded episode.",
-      }),
-      input_tokens: 14,
-      output_tokens: 9,
-      stop_reason: "end_turn",
-      tool_calls: [],
-    } as const;
+    const response = createConsolidationResponse(
+      "Merged deploy prep",
+      "Two overlapping deploy-prep notes were merged into one grounded episode.",
+    );
     const planHarness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({
         responses: [response],
@@ -226,34 +228,19 @@ describe("consolidator process", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: JSON.stringify({
-            title: "Merged cluster A",
-            narrative: "Merged cluster A.",
-          }),
+          ...createConsolidationResponse("Merged cluster A", "Merged cluster A."),
           input_tokens: 40,
           output_tokens: 30,
-          stop_reason: "end_turn",
-          tool_calls: [],
         },
         {
-          text: JSON.stringify({
-            title: "Merged cluster B",
-            narrative: "Merged cluster B.",
-          }),
+          ...createConsolidationResponse("Merged cluster B", "Merged cluster B."),
           input_tokens: 40,
           output_tokens: 30,
-          stop_reason: "end_turn",
-          tool_calls: [],
         },
         {
-          text: JSON.stringify({
-            title: "Merged cluster C",
-            narrative: "Merged cluster C.",
-          }),
+          ...createConsolidationResponse("Merged cluster C", "Merged cluster C."),
           input_tokens: 40,
           output_tokens: 30,
-          stop_reason: "end_turn",
-          tool_calls: [],
         },
       ],
     });

@@ -5,26 +5,47 @@ import { FakeLLMClient } from "../../llm/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
 import { SelfNarratorProcess } from "./index.js";
 
+const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
+
+function createSelfNarratorResponse(input: {
+  observation: {
+    category: string;
+    what_changed: string;
+    before_description: string | null;
+    after_description: string | null;
+    confidence: number;
+    evidence_episode_ids: string[];
+  } | null;
+}) {
+  return {
+    text: "",
+    input_tokens: 40,
+    output_tokens: 30,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_1",
+        name: SELF_NARRATOR_TOOL_NAME,
+        input,
+      },
+    ],
+  };
+}
+
 describe("SelfNarratorProcess", () => {
   it("opens a period, updates the narrative through the plan, and records growth markers", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            observation: {
-              category: "understanding",
-              what_changed: "Deployment review became more disciplined.",
-              before_description: "The team improvised during deploys.",
-              after_description: "The team now rehearses rollback steps.",
-              confidence: 0.9,
-              evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
-            },
-          }),
-          input_tokens: 40,
-          output_tokens: 30,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createSelfNarratorResponse({
+          observation: {
+            category: "understanding",
+            what_changed: "Deployment review became more disciplined.",
+            before_description: "The team improvised during deploys.",
+            after_description: "The team now rehearses rollback steps.",
+            confidence: 0.9,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+          },
+        }),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -61,6 +82,10 @@ describe("SelfNarratorProcess", () => {
 
       const plan = await process.plan(harness.createContext(), {});
 
+      expect(llm.requests[0]?.tool_choice).toEqual({
+        type: "tool",
+        name: SELF_NARRATOR_TOOL_NAME,
+      });
       expect(plan.items).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -108,22 +133,16 @@ describe("SelfNarratorProcess", () => {
   it("closes the current period and opens a new one atomically without losing same-label history", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            observation: {
-              category: "skill",
-              what_changed: "Atlas operations became the main focus.",
-              before_description: "Planning dominated the period.",
-              after_description: "Operational debugging dominates now.",
-              confidence: 0.8,
-              evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
-            },
-          }),
-          input_tokens: 40,
-          output_tokens: 30,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createSelfNarratorResponse({
+          observation: {
+            category: "skill",
+            what_changed: "Atlas operations became the main focus.",
+            before_description: "Planning dominated the period.",
+            after_description: "Operational debugging dominates now.",
+            confidence: 0.8,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+          },
+        }),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -193,22 +212,16 @@ describe("SelfNarratorProcess", () => {
   it("skips invalid observations that do not cite enough supporting episodes", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            observation: {
-              category: "understanding",
-              what_changed: "Weak observation",
-              before_description: null,
-              after_description: "Only one episode cited.",
-              confidence: 0.9,
-              evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
-            },
-          }),
-          input_tokens: 40,
-          output_tokens: 30,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createSelfNarratorResponse({
+          observation: {
+            category: "understanding",
+            what_changed: "Weak observation",
+            before_description: null,
+            after_description: "Only one episode cited.",
+            confidence: 0.9,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+          },
+        }),
       ],
     });
     const harness = await createOfflineTestHarness({

@@ -178,7 +178,12 @@ function createEmbeddingClient(config: Config): EmbeddingClient {
   });
 }
 
-function createLlmFactory(config: Config, llmClient: LLMClient | undefined): () => LLMClient {
+function createLlmFactory(
+  config: Config,
+  llmClient: LLMClient | undefined,
+  env: NodeJS.ProcessEnv | undefined,
+  clock: Clock,
+): () => LLMClient {
   if (llmClient !== undefined) {
     return () => llmClient;
   }
@@ -187,7 +192,10 @@ function createLlmFactory(config: Config, llmClient: LLMClient | undefined): () 
 
   return () => {
     cached ??= new AnthropicLLMClient({
+      authMode: config.anthropic.auth,
       apiKey: config.anthropic.apiKey,
+      env,
+      clock,
     });
     return cached;
   };
@@ -912,7 +920,7 @@ export class Borg {
           sessionId,
           clock,
         });
-      const llmFactory = createLlmFactory(config, options.llmClient);
+      const llmFactory = createLlmFactory(config, options.llmClient, options.env, clock);
       const lazyLlmClient = createLazyLlmClient(llmFactory);
       const reverserRegistry = new ReverserRegistry();
       const auditLog = new AuditLog({

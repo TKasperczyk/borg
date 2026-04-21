@@ -7,6 +7,9 @@ import { ModeDetector, detectModeHeuristically } from "./mode-detector.js";
 import { Perceiver } from "./perceive.js";
 import { detectTemporalCue } from "./temporal-cue.js";
 
+const ENTITY_TOOL_NAME = "EmitEntityExtraction";
+const MODE_TOOL_NAME = "EmitModeDetection";
+
 describe("perception", () => {
   it("extracts entities with heuristics", () => {
     expect(
@@ -29,18 +32,30 @@ describe("perception", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: JSON.stringify({ entities: ["Atlas"] }),
+          text: "",
           input_tokens: 1,
           output_tokens: 1,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: ENTITY_TOOL_NAME,
+              input: { entities: ["Atlas"] },
+            },
+          ],
         },
         {
-          text: JSON.stringify({ mode: "reflective" }),
+          text: "",
           input_tokens: 1,
           output_tokens: 1,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_2",
+              name: MODE_TOOL_NAME,
+              input: { mode: "reflective" },
+            },
+          ],
         },
       ],
     });
@@ -57,6 +72,14 @@ describe("perception", () => {
 
     expect(await entityExtractor.extractEntities("something vague")).toEqual(["Atlas"]);
     expect(await modeDetector.detectMode("maybe this", [])).toBe("reflective");
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: ENTITY_TOOL_NAME,
+    });
+    expect(llm.requests[1]?.tool_choice).toEqual({
+      type: "tool",
+      name: MODE_TOOL_NAME,
+    });
   });
 
   it("detects temporal cues and produces a perception result", async () => {

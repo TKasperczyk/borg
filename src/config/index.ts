@@ -6,6 +6,7 @@ import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
 
 const DEFAULT_DATA_DIR = "~/.borg";
+const anthropicAuthModeSchema = z.enum(["auto", "oauth", "api-key"]);
 
 const configFileSchema = z
   .object({
@@ -36,6 +37,7 @@ const configFileSchema = z
       .optional(),
     anthropic: z
       .object({
+        auth: anthropicAuthModeSchema.optional(),
         apiKey: z.string().min(1).optional(),
         models: z
           .object({
@@ -134,14 +136,25 @@ export const configSchema = z.object({
     model: z.string().min(1),
     dims: z.number().int().positive(),
   }),
-  anthropic: z.object({
-    apiKey: z.string().min(1).optional(),
-    models: z.object({
-      cognition: z.string().min(1),
-      background: z.string().min(1),
-      extraction: z.string().min(1),
+  anthropic: z
+    .object({
+      auth: anthropicAuthModeSchema,
+      apiKey: z.string().min(1).optional(),
+      models: z.object({
+        cognition: z.string().min(1),
+        background: z.string().min(1),
+        extraction: z.string().min(1),
+      }),
+    })
+    .superRefine((value, context) => {
+      if (value.auth === "api-key" && value.apiKey === undefined) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Anthropic API key must be configured when anthropic.auth is api-key",
+          path: ["apiKey"],
+        });
+      }
     }),
-  }),
   offline: z.object({
     consolidator: z.object({
       enabled: z.boolean(),
@@ -209,6 +222,7 @@ export const DEFAULT_CONFIG: Config = {
     dims: 4096,
   },
   anthropic: {
+    auth: "auto",
     apiKey: undefined,
     models: {
       cognition: "claude-sonnet-4-5",
@@ -351,6 +365,27 @@ function readOptionalEnvBoolean(env: NodeJS.ProcessEnv, name: string): boolean |
   throw new ConfigError(`Environment variable ${name} must be true/false or 1/0`);
 }
 
+function readOptionalEnvAnthropicAuthMode(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): z.infer<typeof anthropicAuthModeSchema> | undefined {
+  const raw = readOptionalEnvString(env, name);
+
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  const parsed = anthropicAuthModeSchema.safeParse(raw);
+
+  if (!parsed.success) {
+    throw new ConfigError(
+      `Environment variable ${name} must be one of: ${anthropicAuthModeSchema.options.join(", ")}`,
+    );
+  }
+
+  return parsed.data;
+}
+
 function isNodeError(error: unknown): error is NodeJS.ErrnoException & { code: string } {
   return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string";
 }
@@ -448,6 +483,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         DEFAULT_CONFIG.embedding.dims,
     },
     anthropic: {
+      auth:
+        readOptionalEnvAnthropicAuthMode(env, "BORG_ANTHROPIC_AUTH") ??
+        fileConfig.anthropic?.auth ??
+        DEFAULT_CONFIG.anthropic.auth,
       apiKey:
         readOptionalEnvString(env, "ANTHROPIC_API_KEY") ??
         fileConfig.anthropic?.apiKey ??

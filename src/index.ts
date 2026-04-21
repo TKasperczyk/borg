@@ -36,11 +36,13 @@ export {
 } from "./embeddings/index.js";
 export {
   AnthropicLLMClient,
+  CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
   FakeLLMClient,
   type LLMClient,
   type LLMCompleteOptions,
   type LLMCompleteResult,
   type LLMMessage,
+  type LLMSystemBlock,
   type LLMToolCall,
   type LLMToolDefinition,
   type TokenUsageEvent,
@@ -330,6 +332,7 @@ export {
   CommitmentError,
   BudgetExceededError,
   WorkingMemoryError,
+  AuthError,
   type BorgErrorJSON,
   type BorgErrorOptions,
 } from "./util/errors.js";

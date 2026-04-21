@@ -7,26 +7,47 @@ import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
 import { RuminatorProcess } from "./index.js";
 
+const RUMINATOR_TOOL_NAME = "EmitRuminatorDecisions";
+
+function createRuminatorResponse(input: {
+  resolution_note: string;
+  growth_marker: null | {
+    category: string;
+    what_changed: string;
+    before_description: string | null;
+    after_description: string | null;
+    confidence: number;
+  };
+}) {
+  return {
+    text: "",
+    input_tokens: 50,
+    output_tokens: 40,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_1",
+        name: RUMINATOR_TOOL_NAME,
+        input,
+      },
+    ],
+  };
+}
+
 describe("RuminatorProcess", () => {
   it("plans and applies a resolution with capped growth confidence, and apply is idempotent", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: JSON.stringify({
-            resolution_note: "Atlas now succeeds after the rollback rehearsal.",
-            growth_marker: {
-              category: "understanding",
-              what_changed: "I understand Atlas rollback sequencing better.",
-              before_description: "The deployment order was unclear.",
-              after_description: "The rollback rehearsal clarified the order.",
-              confidence: 0.95,
-            },
-          }),
-          input_tokens: 50,
-          output_tokens: 40,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createRuminatorResponse({
+          resolution_note: "Atlas now succeeds after the rollback rehearsal.",
+          growth_marker: {
+            category: "understanding",
+            what_changed: "I understand Atlas rollback sequencing better.",
+            before_description: "The deployment order was unclear.",
+            after_description: "The rollback rehearsal clarified the order.",
+            confidence: 0.95,
+          },
+        }),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -63,6 +84,10 @@ describe("RuminatorProcess", () => {
       const plan = await process.plan(harness.createContext(), {});
 
       expect(plan.items).toHaveLength(1);
+      expect(llm.requests[0]?.tool_choice).toEqual({
+        type: "tool",
+        name: RUMINATOR_TOOL_NAME,
+      });
       expect(plan.items[0]).toMatchObject({
         action: "resolve",
         question_id: question.id,
@@ -149,14 +174,12 @@ describe("RuminatorProcess", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: JSON.stringify({
+          ...createRuminatorResponse({
             resolution_note: "First answer",
             growth_marker: null,
           }),
           input_tokens: 20,
           output_tokens: 20,
-          stop_reason: "end_turn",
-          tool_calls: [],
         },
       ],
     });
