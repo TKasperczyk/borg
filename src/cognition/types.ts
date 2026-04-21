@@ -1,13 +1,11 @@
 import { z } from "zod";
 
+export { affectiveSignalSchema } from "../memory/affective/types.js";
+import { affectiveSignalSchema } from "../memory/affective/types.js";
+
 export const COGNITIVE_MODES = ["problem_solving", "relational", "reflective", "idle"] as const;
 
 export const cognitiveModeSchema = z.enum(COGNITIVE_MODES);
-
-export const affectiveSignalSchema = z.object({
-  valence: z.number(),
-  arousal: z.number(),
-});
 
 export const temporalCueSchema = z.object({
   sinceTs: z.number().finite().optional(),

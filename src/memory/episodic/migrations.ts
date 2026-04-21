@@ -27,4 +27,11 @@ export const episodicMigrations = [
       ALTER TABLE episode_stats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0
     `,
   },
+  {
+    id: 102,
+    name: "add-episode-valence-mean",
+    up: `
+      ALTER TABLE episode_stats ADD COLUMN valence_mean REAL NOT NULL DEFAULT 0
+    `,
+  },
 ] as const satisfies readonly Migration[];

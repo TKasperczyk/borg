@@ -15,7 +15,7 @@ import { EpisodicRepository, createEpisodesTableSchema } from "../memory/episodi
 import { selfMigrations } from "../memory/self/migrations.js";
 import { retrievalMigrations } from "../retrieval/migrations.js";
 import { FixedClock } from "../util/clock.js";
-import { readJsonFile } from "../util/atomic-write.js";
+import { readJsonFile, writeJsonFileAtomic } from "../util/atomic-write.js";
 import { runCli } from "./app.js";
 
 class ScriptedEmbeddingClient implements EmbeddingClient {
@@ -50,6 +50,17 @@ function createOutputBuffer() {
       return value;
     },
   };
+}
+
+function createCliTempDir(tempDirs: string[]): string {
+  const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+  tempDirs.push(tempDir);
+  writeJsonFileAtomic(join(tempDir, "config.json"), {
+    embedding: {
+      dims: 4,
+    },
+  });
+  return tempDir;
 }
 
 function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
@@ -106,8 +117,7 @@ describe("cli", () => {
   });
 
   it("shows redacted config", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
 
     const stdout = createOutputBuffer();
     const stderr = createOutputBuffer();
@@ -132,8 +142,7 @@ describe("cli", () => {
   });
 
   it("appends to and tails the stream", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
 
     const appendOut = createOutputBuffer();
     const appendErr = createOutputBuffer();
@@ -169,8 +178,7 @@ describe("cli", () => {
   });
 
   it("surfaces invalid session ids as clean cli errors", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
 
     const stdout = createOutputBuffer();
     const stderr = createOutputBuffer();
@@ -189,8 +197,7 @@ describe("cli", () => {
   });
 
   it("shows an episode and manages self-band commands", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
 
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -325,8 +332,7 @@ describe("cli", () => {
   });
 
   it("manages autobiographical periods, growth markers, and open questions", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
 
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -435,8 +441,7 @@ describe("cli", () => {
   });
 
   it("supports ruminate and narrate dream commands", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
 
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -561,8 +566,7 @@ describe("cli", () => {
   });
 
   it("shows and clears working memory", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
 
     const showOut = createOutputBuffer();
     const showErr = createOutputBuffer();
@@ -598,8 +602,7 @@ describe("cli", () => {
   });
 
   it("runs dream maintenance and exposes audit commands", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
 
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -678,8 +681,7 @@ describe("cli", () => {
   });
 
   it("writes a dream plan file and applies it without another llm call", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
     const planPath = join(tempDir, "maintenance-plan.json");
 
     const store = new LanceDbStore({
@@ -797,8 +799,7 @@ describe("cli", () => {
   });
 
   it("rejects invalid audit ids on revert", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
 
     const stdout = createOutputBuffer();
     const stderr = createOutputBuffer();
@@ -813,8 +814,7 @@ describe("cli", () => {
   });
 
   it("runs a cognitive turn through the cli", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
 
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -896,8 +896,7 @@ describe("cli", () => {
   });
 
   it("manages semantic, commitment, and review commands", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
+    const tempDir = createCliTempDir(tempDirs);
     const cliOptions = {
       dataDir: tempDir,
       openBorg: async () => openTestBorg(tempDir),
@@ -1175,5 +1174,114 @@ describe("cli", () => {
       }),
     ).toBe(0);
     expect(JSON.parse(listCommitmentsAfterOut.read())).toEqual([]);
+  });
+
+  it("manages skill, mood, and social commands", async () => {
+    const tempDir = createCliTempDir(tempDirs);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm);
+    const entry = await borg.stream.append({
+      kind: "user_msg",
+      content: "Rust lifetimes are frustrating.",
+    });
+    llm.pushResponse({
+      text: JSON.stringify({
+        episodes: [
+          {
+            title: "Rust lifetime frustration",
+            narrative: "The user was frustrated by Rust lifetimes.",
+            source_stream_ids: [entry.id],
+            participants: ["user"],
+            tags: ["rust", "debugging"],
+            confidence: 0.8,
+            significance: 0.7,
+          },
+        ],
+      }),
+      input_tokens: 10,
+      output_tokens: 10,
+      stop_reason: "end_turn",
+      tool_calls: [],
+    });
+    await borg.episodic.extract();
+    const [storedEpisode] = (await borg.episodic.list()).items;
+    borg.mood.update("default", {
+      valence: -0.4,
+      arousal: 0.5,
+      reason: "seeded",
+    });
+    await borg.close();
+
+    const addSkillOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "skill",
+          "add",
+          "--applies-when",
+          "Rust lifetime debugging",
+          "--approach",
+          "Shrink borrow scopes.",
+          "--episode",
+          storedEpisode!.id,
+        ],
+        {
+          stdout: addSkillOut.stream,
+          stderr: createOutputBuffer().stream,
+          dataDir: tempDir,
+          openBorg: async () => openTestBorg(tempDir),
+        },
+      ),
+    ).toBe(0);
+    const skill = JSON.parse(addSkillOut.read()) as { id: string };
+
+    const showSkillOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "skill", "show", skill.id], {
+        stdout: showSkillOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+        openBorg: async () => openTestBorg(tempDir),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(showSkillOut.read())).toMatchObject({
+      id: skill.id,
+    });
+
+    const moodOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "mood", "current", "--session", "default"], {
+        stdout: moodOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+        openBorg: async () => openTestBorg(tempDir),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(moodOut.read())).toMatchObject({
+      session_id: "default",
+    });
+
+    const socialUpsertOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "social", "upsert", "Sam"], {
+        stdout: socialUpsertOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+        openBorg: async () => openTestBorg(tempDir),
+      }),
+    ).toBe(0);
+
+    const socialTrustOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "social", "adjust-trust", "Sam", "0.2"], {
+        stdout: socialTrustOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+        openBorg: async () => openTestBorg(tempDir),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(socialTrustOut.read()).trust).toBeGreaterThan(0.5);
   });
 });

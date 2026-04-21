@@ -1,4 +1,4 @@
-export { detectAffectiveSignal } from "./affective-signal.js";
+export { detectAffectiveSignal, detectAffectiveSignalHeuristically } from "./affective-signal.js";
 export {
   EntityExtractor,
   extractEntitiesHeuristically,

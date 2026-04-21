@@ -16,6 +16,15 @@ const configFileSchema = z
       })
       .partial()
       .optional(),
+    affective: z
+      .object({
+        useLlmFallback: z.boolean().optional(),
+        incomingMoodWeight: z.number().min(0).max(1).optional(),
+        moodHistoryRetentionDays: z.number().positive().optional(),
+        moodHalfLifeHours: z.number().positive().optional(),
+      })
+      .partial()
+      .optional(),
     embedding: z
       .object({
         baseUrl: z.string().url().optional(),
@@ -113,6 +122,12 @@ export const configSchema = z.object({
   perception: z.object({
     useLlmFallback: z.boolean(),
   }),
+  affective: z.object({
+    useLlmFallback: z.boolean(),
+    incomingMoodWeight: z.number().min(0).max(1),
+    moodHistoryRetentionDays: z.number().positive(),
+    moodHalfLifeHours: z.number().positive(),
+  }),
   embedding: z.object({
     baseUrl: z.string().url(),
     apiKey: z.string().min(1).optional(),
@@ -180,6 +195,12 @@ export const DEFAULT_CONFIG: Config = {
   dataDir: expandPath(DEFAULT_DATA_DIR),
   perception: {
     useLlmFallback: true,
+  },
+  affective: {
+    useLlmFallback: false,
+    incomingMoodWeight: 0.3,
+    moodHistoryRetentionDays: 90,
+    moodHalfLifeHours: 24,
   },
   embedding: {
     baseUrl: "http://localhost:1234/v1",
@@ -296,6 +317,22 @@ function readOptionalEnvFloat(env: NodeJS.ProcessEnv, name: string): number | un
   return value;
 }
 
+function readOptionalEnvUnitInterval(env: NodeJS.ProcessEnv, name: string): number | undefined {
+  const raw = readOptionalEnvString(env, name);
+
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  const value = Number(raw);
+
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new ConfigError(`Environment variable ${name} must be between 0 and 1`);
+  }
+
+  return value;
+}
+
 function readOptionalEnvBoolean(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
   const raw = readOptionalEnvString(env, name);
 
@@ -373,6 +410,24 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         readOptionalEnvBoolean(env, "BORG_PERCEPTION_USE_LLM_FALLBACK") ??
         fileConfig.perception?.useLlmFallback ??
         DEFAULT_CONFIG.perception.useLlmFallback,
+    },
+    affective: {
+      useLlmFallback:
+        readOptionalEnvBoolean(env, "BORG_AFFECTIVE_USE_LLM_FALLBACK") ??
+        fileConfig.affective?.useLlmFallback ??
+        DEFAULT_CONFIG.affective.useLlmFallback,
+      incomingMoodWeight:
+        readOptionalEnvUnitInterval(env, "BORG_AFFECTIVE_INCOMING_MOOD_WEIGHT") ??
+        fileConfig.affective?.incomingMoodWeight ??
+        DEFAULT_CONFIG.affective.incomingMoodWeight,
+      moodHistoryRetentionDays:
+        readOptionalEnvFloat(env, "BORG_AFFECTIVE_MOOD_HISTORY_RETENTION_DAYS") ??
+        fileConfig.affective?.moodHistoryRetentionDays ??
+        DEFAULT_CONFIG.affective.moodHistoryRetentionDays,
+      moodHalfLifeHours:
+        readOptionalEnvFloat(env, "BORG_AFFECTIVE_MOOD_HALF_LIFE_HOURS") ??
+        fileConfig.affective?.moodHalfLifeHours ??
+        DEFAULT_CONFIG.affective.moodHalfLifeHours,
     },
     embedding: {
       baseUrl:
@@ -572,6 +627,9 @@ export function redactConfig(config: Config): Config {
     ...config,
     perception: {
       ...config.perception,
+    },
+    affective: {
+      ...config.affective,
     },
     embedding: {
       ...config.embedding,

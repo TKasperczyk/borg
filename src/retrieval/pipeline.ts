@@ -5,10 +5,12 @@ import { computeGoalRelevance } from "../cognition/attention/goal-relevance.js";
 import { extractEntitiesHeuristically } from "../cognition/perception/entity-extractor.js";
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
+import type { MoodState } from "../memory/affective/index.js";
 import type { OpenQuestion, OpenQuestionsRepository } from "../memory/self/index.js";
 import { SemanticGraph } from "../memory/semantic/graph.js";
 import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
 import type { SemanticContext, SemanticNode, SemanticRelation } from "../memory/semantic/types.js";
+import type { SocialProfile } from "../memory/social/index.js";
 import { StreamReader, getStreamDirectory, type StreamEntry } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
@@ -44,6 +46,8 @@ export type RetrievedEpisode = {
     heat: number;
     goalRelevance: number;
     timeRelevance: number;
+    moodBoost: number;
+    socialRelevance: number;
     suppressionPenalty: number;
   };
   citationChain: StreamEntry[];
@@ -109,6 +113,8 @@ function buildResult(
   heat: number,
   goalRelevance: number,
   timeRelevance: number,
+  moodBoost: number,
+  socialRelevance: number,
   suppressionPenalty: number,
   score: number,
   citationChain: StreamEntry[],
@@ -122,6 +128,8 @@ function buildResult(
       heat,
       goalRelevance,
       timeRelevance,
+      moodBoost,
+      socialRelevance,
       suppressionPenalty,
     },
     citationChain,
@@ -149,6 +157,9 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   maxGraphNodes?: number;
   includeOpenQuestions?: boolean;
   openQuestionsLimit?: number;
+  moodState?: MoodState | null;
+  audienceProfile?: SocialProfile | null;
+  audienceTerms?: readonly string[];
 };
 
 function normalizeHeat(heat: number): number {
@@ -166,6 +177,60 @@ function computeTimeRelevance(
   const sinceTs = temporalCue.sinceTs ?? Number.NEGATIVE_INFINITY;
   const untilTs = temporalCue.untilTs ?? Number.POSITIVE_INFINITY;
   return episode.start_time <= untilTs && episode.end_time >= sinceTs ? 1 : 0;
+}
+
+function normalizeTerm(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function computeMoodBoost(episode: Episode, moodState: MoodState | null | undefined): number {
+  if (
+    moodState === null ||
+    moodState === undefined ||
+    Math.abs(moodState.valence) + Math.abs(moodState.arousal) <= 0.3 ||
+    episode.emotional_arc === null
+  ) {
+    return 0;
+  }
+
+  const episodeValence =
+    (episode.emotional_arc.start.valence +
+      episode.emotional_arc.peak.valence +
+      episode.emotional_arc.end.valence) /
+    3;
+  const episodeArousal =
+    (episode.emotional_arc.start.arousal +
+      episode.emotional_arc.peak.arousal +
+      episode.emotional_arc.end.arousal) /
+    3;
+
+  return (
+    (1 - Math.abs(moodState.valence - episodeValence) / 2) *
+    (1 - Math.abs(moodState.arousal - episodeArousal) / 2)
+  );
+}
+
+function computeSocialRelevance(
+  episode: Episode,
+  audienceTerms: readonly string[] | undefined,
+  audienceProfile: SocialProfile | null | undefined,
+): number {
+  if (audienceTerms === undefined || audienceTerms.length === 0) {
+    return 0;
+  }
+
+  const normalizedTerms = new Set(audienceTerms.map((term) => normalizeTerm(term)));
+  const includesAudience = episode.participants.some((participant) =>
+    normalizedTerms.has(normalizeTerm(participant)),
+  );
+
+  if (!includesAudience) {
+    return 0;
+  }
+
+  return audienceProfile !== null && audienceProfile !== undefined && audienceProfile.trust > 0.7
+    ? 0.25
+    : 0.2;
 }
 
 export class RetrievalPipeline {
@@ -403,6 +468,8 @@ export class RetrievalPipeline {
     heat: number;
     goalRelevance: number;
     timeRelevance: number;
+    moodBoost: number;
+    socialRelevance: number;
     suppressionPenalty: number;
     score: number;
   } {
@@ -421,6 +488,12 @@ export class RetrievalPipeline {
       candidate.episode,
     );
     const timeRelevance = computeTimeRelevance(candidate.episode, searchOptions.temporalCue);
+    const moodBoost = computeMoodBoost(candidate.episode, searchOptions.moodState);
+    const socialRelevance = computeSocialRelevance(
+      candidate.episode,
+      searchOptions.audienceTerms,
+      searchOptions.audienceProfile,
+    );
     const suppressionPenalty =
       searchOptions.suppressionSet?.isSuppressed(candidate.episode.id) === true ? 1 : 0;
 
@@ -434,10 +507,14 @@ export class RetrievalPipeline {
         heat,
         goalRelevance,
         timeRelevance,
+        moodBoost,
+        socialRelevance,
         suppressionPenalty,
         score:
           semanticScore +
           weights.goal_relevance * goalRelevance +
+          weights.mood * moodBoost +
+          weights.social * socialRelevance +
           weights.time * timeRelevance +
           weights.heat * normalizeHeat(heat) -
           weights.suppression_penalty * suppressionPenalty,
@@ -451,6 +528,8 @@ export class RetrievalPipeline {
       heat,
       goalRelevance,
       timeRelevance,
+      moodBoost,
+      socialRelevance,
       suppressionPenalty,
       score: weights.similarity * candidate.similarity + weights.salience * decay.decayedSalience,
     };
@@ -511,6 +590,8 @@ export class RetrievalPipeline {
         item.heat,
         item.goalRelevance,
         item.timeRelevance,
+        item.moodBoost,
+        item.socialRelevance,
         item.suppressionPenalty,
         clamp(item.score, 0, 1),
         citationChain,
@@ -571,6 +652,8 @@ export class RetrievalPipeline {
       scored.heat,
       scored.goalRelevance,
       scored.timeRelevance,
+      scored.moodBoost,
+      scored.socialRelevance,
       scored.suppressionPenalty,
       1,
       citationChain,

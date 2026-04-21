@@ -6,7 +6,14 @@ import {
   type CognitiveMode,
   type IntentRecord,
 } from "../../cognition/types.js";
-import { isSessionId, parseSessionId, type SessionId } from "../../util/ids.js";
+import { affectiveSignalSchema } from "../affective/types.js";
+import {
+  isSessionId,
+  parseSessionId,
+  skillIdHelpers,
+  type SessionId,
+  type SkillId,
+} from "../../util/ids.js";
 
 export const workingSessionIdSchema = z
   .string()
@@ -21,6 +28,13 @@ export const suppressedEntrySchema = z.object({
   until_turn: z.number().int().nonnegative(),
 });
 
+export const workingSkillIdSchema = z
+  .string()
+  .refine((value) => skillIdHelpers.is(value), {
+    message: "Invalid skill id",
+  })
+  .transform((value) => value as SkillId);
+
 export const workingMemorySchema = z.object({
   session_id: workingSessionIdSchema,
   turn_counter: z.number().int().nonnegative(),
@@ -30,6 +44,9 @@ export const workingMemorySchema = z.object({
   hot_entities: z.array(z.string().min(1)),
   pending_intents: z.array(intentRecordSchema),
   suppressed: z.array(suppressedEntrySchema).default([]),
+  mood: affectiveSignalSchema.nullable().default(null),
+  last_selected_skill_id: workingSkillIdSchema.nullable().default(null),
+  last_selected_skill_turn: z.number().int().nonnegative().nullable().default(null),
   mode: cognitiveModeSchema.nullable(),
   updated_at: z.number().finite(),
 });
@@ -46,6 +63,9 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
     hot_entities: [],
     pending_intents: [],
     suppressed: [],
+    mood: null,
+    last_selected_skill_id: null,
+    last_selected_skill_turn: null,
     mode: null,
     updated_at: timestamp,
   };

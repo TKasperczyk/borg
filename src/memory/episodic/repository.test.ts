@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { selfMigrations } from "../self/migrations.js";
-import { LanceDbStore } from "../../storage/lancedb/index.js";
+import {
+  LanceDbStore,
+  float64Field,
+  schema,
+  utf8Field,
+  vectorField,
+} from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
@@ -150,5 +156,122 @@ describe("episodic repository", () => {
         }),
       ),
     ).rejects.toBeInstanceOf(StorageError);
+  });
+
+  it("evolves a pre-sprint-7 LanceDB table and accepts emotional_arc on insert", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const clock = new ManualClock(1_700_000_000_000);
+    const legacyStore = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+
+    closers.push(async () => {
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const legacySchema = schema([
+      utf8Field("id"),
+      utf8Field("title"),
+      utf8Field("narrative"),
+      utf8Field("participants"),
+      utf8Field("location", true),
+      float64Field("start_time"),
+      float64Field("end_time"),
+      utf8Field("source_stream_ids"),
+      float64Field("significance"),
+      utf8Field("tags"),
+      float64Field("confidence"),
+      utf8Field("lineage_derived_from"),
+      utf8Field("lineage_supersedes"),
+      vectorField("embedding", 4),
+      float64Field("created_at"),
+      float64Field("updated_at"),
+    ]);
+
+    const legacyTable = await legacyStore.openTable({
+      name: "episodes",
+      schema: legacySchema,
+    });
+    legacyTable.close();
+    await legacyStore.close();
+
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    closers.push(async () => {
+      db.close();
+      await store.close();
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    const emotionalArc = {
+      start: { valence: -0.6, arousal: 0.5 },
+      peak: { valence: -0.8, arousal: 0.7 },
+      end: { valence: -0.2, arousal: 0.3 },
+      dominant_emotion: "anger",
+    };
+
+    await table.upsert(
+      [
+        {
+          id: "ep_legacyyyyyyyyyyy",
+          title: "legacy arc",
+          narrative: "legacy arc narrative.",
+          participants: JSON.stringify(["user"]),
+          location: null,
+          start_time: clock.now(),
+          end_time: clock.now() + 1_000,
+          source_stream_ids: JSON.stringify(["strm_aaaaaaaaaaaaaaaa"]),
+          significance: 0.8,
+          tags: JSON.stringify(["alpha"]),
+          confidence: 0.9,
+          lineage_derived_from: JSON.stringify([]),
+          lineage_supersedes: JSON.stringify([]),
+          emotional_arc: JSON.stringify(emotionalArc),
+          embedding: [1, 0, 0, 0],
+          created_at: clock.now(),
+          updated_at: clock.now(),
+        },
+      ],
+      { on: "id" },
+    );
+
+    expect((await repo.get("ep_legacyyyyyyyyyyy" as Episode["id"]))?.emotional_arc).toEqual(
+      emotionalArc,
+    );
+  });
+
+  it("preserves emotional_arc when a patch omits it", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+
+    const episode = createEpisode("ep_emotionalarcxxxx", harness.clock.now(), {
+      emotional_arc: {
+        start: { valence: -0.4, arousal: 0.2 },
+        peak: { valence: 0.1, arousal: 0.5 },
+        end: { valence: 0.3, arousal: 0.2 },
+        dominant_emotion: "curiosity",
+      },
+    });
+    await harness.repo.insert(episode);
+    harness.clock.advance(1_000);
+
+    const updated = await harness.repo.update(episode.id, {
+      tags: ["merged"],
+    });
+
+    expect(updated?.tags).toEqual(["merged"]);
+    expect(updated?.emotional_arc).toEqual(episode.emotional_arc);
   });
 });

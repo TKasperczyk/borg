@@ -8,6 +8,7 @@ import { formatCommitmentsForPrompt } from "../../memory/commitments/checker.js"
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { LLMClient, LLMToolCall } from "../../llm/index.js";
+import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "../../retrieval/index.js";
 import { StreamWriter } from "../../stream/index.js";
 import { type CognitiveMode, type PerceptionResult } from "../types.js";
@@ -32,6 +33,7 @@ export type DeliberationContext = {
   contradictionPresent?: boolean;
   applicableCommitments?: readonly CommitmentRecord[];
   openQuestionsContext?: readonly OpenQuestion[];
+  selectedSkill?: SkillSelectionResult | null;
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;
   selfSnapshot: SelfSnapshot;
@@ -186,10 +188,17 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot): string {
 }
 
 function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
+  const mood = workingMemory.mood;
+
   return [
     `Current focus: ${workingMemory.current_focus ?? "none"}`,
     `Recent thoughts: ${workingMemory.recent_thoughts.slice(-3).join(" | ") || "none"}`,
     `Hot entities: ${workingMemory.hot_entities.join(", ") || "none"}`,
+    `Mood snapshot: ${
+      mood === null || mood === undefined
+        ? "neutral"
+        : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`
+    }`,
   ].join("\n");
 }
 
@@ -299,6 +308,35 @@ function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string 
   ].join("\n");
 }
 
+function summarizeSelectedSkill(
+  mode: DeliberationContext["perception"]["mode"],
+  selectedSkill: SkillSelectionResult | null | undefined,
+): string | null {
+  if (mode !== "problem_solving") {
+    return null;
+  }
+
+  if (selectedSkill === null || selectedSkill === undefined) {
+    // Omit the section entirely when there is no useful procedural guidance.
+    return null;
+  }
+
+  const stats = selectedSkill.evaluatedCandidates.find(
+    (candidate) => candidate.skill.id === selectedSkill.skill.id,
+  )?.stats;
+  const successRate =
+    stats === undefined
+      ? "unknown"
+      : `${stats.mean.toFixed(2)} ± ${((stats.ci_95[1] - stats.ci_95[0]) / 2).toFixed(2)}`;
+
+  return [
+    "### Skill you might try",
+    `Applies when: ${selectedSkill.skill.applies_when}`,
+    `Approach: ${selectedSkill.skill.approach}`,
+    `Success rate: ${successRate}`,
+  ].join("\n");
+}
+
 export class Deliberator {
   constructor(private readonly options: DeliberatorOptions) {}
 
@@ -346,11 +384,14 @@ export class Deliberator {
       summarizeWorkingMemory(context.workingMemory),
       summarizeRetrievedEpisodes("Retrieved context", context.retrievalResult),
       summarizeSemanticContext(context.retrievalResult, semanticContextBudget),
+      summarizeSelectedSkill(context.perception.mode, context.selectedSkill),
       ...(context.perception.mode === "reflective"
         ? [summarizeOpenQuestions(context.openQuestionsContext ?? [])]
         : []),
       commitmentSection,
-    ].join("\n\n");
+    ]
+      .filter((section): section is string => section !== null)
+      .join("\n\n");
 
     if (decision.path === "system_1") {
       const response = await this.options.llmClient.complete({

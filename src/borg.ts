@@ -1,9 +1,10 @@
 import { join } from "node:path";
 
 import { TurnOrchestrator, type TurnInput, type TurnResult } from "./cognition/index.js";
-import { loadConfig, type Config } from "./config/index.js";
+import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "./config/index.js";
 import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "./embeddings/index.js";
 import { AnthropicLLMClient, type LLMClient } from "./llm/index.js";
+import { MoodRepository, affectiveMigrations } from "./memory/affective/index.js";
 import {
   CommitmentRepository,
   EntityRepository,
@@ -16,6 +17,13 @@ import {
   createEpisodesTableSchema,
   episodicMigrations,
 } from "./memory/episodic/index.js";
+import {
+  SkillRepository,
+  SkillSelector,
+  createSkillsTableSchema,
+  proceduralMigrations,
+  type SkillSelectionResult,
+} from "./memory/procedural/index.js";
 import {
   ReviewQueueRepository,
   SemanticEdgeRepository,
@@ -42,6 +50,7 @@ import {
   ValuesRepository,
   selfMigrations,
 } from "./memory/self/index.js";
+import { SocialRepository, socialMigrations } from "./memory/social/index.js";
 import {
   appendOpenQuestionHookFailureEvent,
   enqueueOpenQuestionForReview,
@@ -97,8 +106,12 @@ type BorgDependencies = {
   autobiographicalRepository: AutobiographicalRepository;
   growthMarkersRepository: GrowthMarkersRepository;
   openQuestionsRepository: OpenQuestionsRepository;
+  moodRepository: MoodRepository;
+  socialRepository: SocialRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  skillRepository: SkillRepository;
+  skillSelector: SkillSelector;
   retrievalPipeline: RetrievalPipeline;
   workingMemoryStore: WorkingMemoryStore;
   turnOrchestrator: TurnOrchestrator;
@@ -192,9 +205,12 @@ function createMigrations(): Migration[] {
   return [
     ...episodicMigrations,
     ...selfMigrations,
+    ...affectiveMigrations,
     ...retrievalMigrations,
     ...semanticMigrations,
     ...commitmentMigrations,
+    ...socialMigrations,
+    ...proceduralMigrations,
     ...offlineMigrations,
   ];
 }
@@ -290,6 +306,36 @@ export class Borg {
         ...args: Parameters<OpenQuestionsRepository["bumpUrgency"]>
       ) => ReturnType<OpenQuestionsRepository["bumpUrgency"]>;
     };
+  };
+  readonly skills: {
+    list: (...args: Parameters<SkillRepository["list"]>) => ReturnType<SkillRepository["list"]>;
+    add: (...args: Parameters<SkillRepository["add"]>) => ReturnType<SkillRepository["add"]>;
+    get: (...args: Parameters<SkillRepository["get"]>) => ReturnType<SkillRepository["get"]>;
+    searchByContext: (
+      ...args: Parameters<SkillRepository["searchByContext"]>
+    ) => ReturnType<SkillRepository["searchByContext"]>;
+    recordOutcome: (
+      ...args: Parameters<SkillRepository["recordOutcome"]>
+    ) => ReturnType<SkillRepository["recordOutcome"]>;
+    select: (...args: Parameters<SkillSelector["select"]>) => ReturnType<SkillSelector["select"]>;
+  };
+  readonly mood: {
+    current: (
+      ...args: Parameters<MoodRepository["current"]>
+    ) => ReturnType<MoodRepository["current"]>;
+    history: (
+      ...args: Parameters<MoodRepository["history"]>
+    ) => ReturnType<MoodRepository["history"]>;
+    update: (...args: Parameters<MoodRepository["update"]>) => ReturnType<MoodRepository["update"]>;
+  };
+  readonly social: {
+    getProfile: (entity: string) => ReturnType<SocialRepository["getProfile"]>;
+    upsertProfile: (entity: string) => ReturnType<SocialRepository["upsertProfile"]>;
+    recordInteraction: (
+      entity: string,
+      interaction: Parameters<SocialRepository["recordInteraction"]>[1],
+    ) => ReturnType<SocialRepository["recordInteraction"]>;
+    adjustTrust: (entity: string, delta: number) => ReturnType<SocialRepository["adjustTrust"]>;
   };
   readonly semantic: {
     nodes: {
@@ -447,6 +493,32 @@ export class Borg {
         abandon: (...args) => this.deps.openQuestionsRepository.abandon(...args),
         bumpUrgency: (...args) => this.deps.openQuestionsRepository.bumpUrgency(...args),
       },
+    };
+    this.skills = {
+      list: (...args) => this.deps.skillRepository.list(...args),
+      add: (...args) => this.deps.skillRepository.add(...args),
+      get: (...args) => this.deps.skillRepository.get(...args),
+      searchByContext: (...args) => this.deps.skillRepository.searchByContext(...args),
+      recordOutcome: (...args) => this.deps.skillRepository.recordOutcome(...args),
+      select: (...args) => this.deps.skillSelector.select(...args),
+    };
+    this.mood = {
+      current: (...args) => this.deps.moodRepository.current(...args),
+      history: (...args) => this.deps.moodRepository.history(...args),
+      update: (...args) => this.deps.moodRepository.update(...args),
+    };
+    this.social = {
+      getProfile: (entity) =>
+        this.deps.socialRepository.getProfile(this.deps.entityRepository.resolve(entity)),
+      upsertProfile: (entity) =>
+        this.deps.socialRepository.upsertProfile(this.deps.entityRepository.resolve(entity)),
+      recordInteraction: (entity, interaction) =>
+        this.deps.socialRepository.recordInteraction(
+          this.deps.entityRepository.resolve(entity),
+          interaction,
+        ),
+      adjustTrust: (entity, delta) =>
+        this.deps.socialRepository.adjustTrust(this.deps.entityRepository.resolve(entity), delta),
     };
     this.semantic = {
       nodes: {
@@ -649,7 +721,61 @@ export class Borg {
     let lance: LanceDbStore | undefined;
 
     try {
-      const config = options.config ?? loadConfig({ env: options.env, dataDir: options.dataDir });
+      const rawConfig =
+        options.config ?? loadConfig({ env: options.env, dataDir: options.dataDir });
+      const config = configSchema.parse({
+        ...DEFAULT_CONFIG,
+        ...rawConfig,
+        dataDir: options.dataDir ?? rawConfig.dataDir ?? DEFAULT_CONFIG.dataDir,
+        perception: {
+          ...DEFAULT_CONFIG.perception,
+          ...rawConfig.perception,
+        },
+        affective: {
+          ...DEFAULT_CONFIG.affective,
+          ...(rawConfig as Partial<Config>).affective,
+        },
+        embedding: {
+          ...DEFAULT_CONFIG.embedding,
+          ...rawConfig.embedding,
+        },
+        anthropic: {
+          ...DEFAULT_CONFIG.anthropic,
+          ...rawConfig.anthropic,
+          models: {
+            ...DEFAULT_CONFIG.anthropic.models,
+            ...rawConfig.anthropic?.models,
+          },
+        },
+        offline: {
+          ...DEFAULT_CONFIG.offline,
+          ...rawConfig.offline,
+          consolidator: {
+            ...DEFAULT_CONFIG.offline.consolidator,
+            ...rawConfig.offline?.consolidator,
+          },
+          reflector: {
+            ...DEFAULT_CONFIG.offline.reflector,
+            ...rawConfig.offline?.reflector,
+          },
+          curator: {
+            ...DEFAULT_CONFIG.offline.curator,
+            ...rawConfig.offline?.curator,
+          },
+          overseer: {
+            ...DEFAULT_CONFIG.offline.overseer,
+            ...rawConfig.offline?.overseer,
+          },
+          ruminator: {
+            ...DEFAULT_CONFIG.offline.ruminator,
+            ...rawConfig.offline?.ruminator,
+          },
+          selfNarrator: {
+            ...DEFAULT_CONFIG.offline.selfNarrator,
+            ...rawConfig.offline?.selfNarrator,
+          },
+        },
+      });
       sqlite = openDatabase(join(config.dataDir, "borg.db"), {
         migrations: createMigrations(),
       });
@@ -664,6 +790,10 @@ export class Borg {
       const semanticNodesTable = await lance.openTable({
         name: "semantic_nodes",
         schema: createSemanticNodesTableSchema(embeddingDimensions),
+      });
+      const skillsTable = await lance.openTable({
+        name: "skills",
+        schema: createSkillsTableSchema(embeddingDimensions),
       });
       const embeddingClient = options.embeddingClient ?? createEmbeddingClient(config);
       const episodicRepository = new EpisodicRepository({
@@ -681,6 +811,12 @@ export class Borg {
       const openQuestionsRepository = new OpenQuestionsRepository({
         db: sqlite,
         clock,
+      });
+      const moodRepository = new MoodRepository({
+        db: sqlite,
+        clock,
+        defaultHalfLifeHours: config.affective.moodHalfLifeHours,
+        incomingWeight: config.affective.incomingMoodWeight,
       });
       const enqueueReview = (input: Parameters<ReviewQueueRepository["enqueue"]>[0]) => {
         return reviewQueueRepository?.enqueue(input);
@@ -740,9 +876,22 @@ export class Borg {
         db: sqlite,
         clock,
       });
+      const socialRepository = new SocialRepository({
+        db: sqlite,
+        clock,
+      });
       const commitmentRepository = new CommitmentRepository({
         db: sqlite,
         clock,
+      });
+      const skillRepository = new SkillRepository({
+        table: skillsTable,
+        db: sqlite,
+        embeddingClient,
+        clock,
+      });
+      const skillSelector = new SkillSelector({
+        repository: skillRepository,
       });
       const retrievalPipeline = new RetrievalPipeline({
         embeddingClient,
@@ -784,6 +933,8 @@ export class Borg {
         }),
         curator: new CuratorProcess({
           episodicRepository,
+          moodRepository,
+          socialRepository,
           registry: reverserRegistry,
         }),
         overseer: new OverseerProcess({
@@ -821,8 +972,11 @@ export class Borg {
           autobiographicalRepository,
           growthMarkersRepository,
           openQuestionsRepository,
+          moodRepository,
+          socialRepository,
           entityRepository,
           commitmentRepository,
+          skillRepository,
           retrievalPipeline,
         },
         auditLog,
@@ -839,6 +993,10 @@ export class Borg {
         goalsRepository,
         traitsRepository,
         openQuestionsRepository,
+        moodRepository,
+        socialRepository,
+        skillRepository,
+        skillSelector,
         workingMemoryStore,
         llmFactory,
         clock,
@@ -860,8 +1018,12 @@ export class Borg {
         autobiographicalRepository,
         growthMarkersRepository,
         openQuestionsRepository,
+        moodRepository,
+        socialRepository,
         entityRepository,
         commitmentRepository,
+        skillRepository,
+        skillSelector,
         retrievalPipeline,
         workingMemoryStore,
         turnOrchestrator,

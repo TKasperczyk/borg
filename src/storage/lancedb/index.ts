@@ -1,5 +1,7 @@
 import {
   connect,
+  makeArrowTable,
+  type AddColumnsSql,
   type Connection,
   type IntoVector,
   type SchemaLike,
@@ -65,8 +67,150 @@ function normalizeRows(rows: unknown): LanceDbRow[] {
   });
 }
 
+function normalizeSchemaLike(schemaLike: SchemaLike): Schema {
+  if (schemaLike instanceof Schema) {
+    return schemaLike;
+  }
+
+  if ("fields" in schemaLike && Array.isArray(schemaLike.fields)) {
+    return new Schema(schemaLike.fields as Field[], schemaLike.metadata);
+  }
+
+  throw new StorageError("Unsupported LanceDB schema shape", {
+    code: "LANCEDB_SCHEMA_INVALID",
+  });
+}
+
+function dataTypeSignature(type: Field["type"]): unknown {
+  const signature: Record<string, unknown> = {
+    typeId: type.typeId,
+  };
+
+  if ("precision" in type && typeof type.precision === "number") {
+    signature.precision = type.precision;
+  }
+
+  if ("scale" in type && typeof type.scale === "number") {
+    signature.scale = type.scale;
+  }
+
+  if ("unit" in type && typeof type.unit === "number") {
+    signature.unit = type.unit;
+  }
+
+  if ("listSize" in type && typeof type.listSize === "number") {
+    signature.listSize = type.listSize;
+  }
+
+  if ("children" in type && Array.isArray(type.children) && type.children.length > 0) {
+    signature.children = type.children.map((child: Field) => ({
+      name: child.name,
+      type: dataTypeSignature(child.type),
+    }));
+  }
+
+  return signature;
+}
+
+function fieldTypeSignature(field: Field): string {
+  return JSON.stringify({
+    nullable: field.nullable,
+    type: dataTypeSignature(field.type),
+  });
+}
+
+function defaultValueSqlForField(field: Field): string {
+  const type = field.type;
+
+  if (type instanceof Utf8) {
+    return field.nullable ? "CAST(NULL AS STRING)" : "''";
+  }
+
+  if (type instanceof Bool) {
+    return field.nullable ? "CAST(NULL AS BOOLEAN)" : "false";
+  }
+
+  if (type instanceof Int32 || type instanceof Int64 || type instanceof TimestampMillisecond) {
+    return field.nullable ? "CAST(NULL AS BIGINT)" : "0";
+  }
+
+  if (type instanceof Float32 || type instanceof Float64) {
+    return field.nullable ? "CAST(NULL AS DOUBLE)" : "0";
+  }
+
+  throw new StorageError(`Cannot add non-nullable LanceDB column ${field.name} automatically`, {
+    code: "LANCEDB_SCHEMA_EVOLUTION_UNSUPPORTED",
+  });
+}
+
+async function ensureSchemaCompatibility(
+  table: Table,
+  requestedSchemaLike: SchemaLike,
+  tableName: string,
+): Promise<void> {
+  const requestedSchema = normalizeSchemaLike(requestedSchemaLike);
+  const existingSchema = await table.schema();
+  const existingByName = new Map(existingSchema.fields.map((field) => [field.name, field]));
+  const missingColumns: AddColumnsSql[] = [];
+
+  for (const requestedField of requestedSchema.fields) {
+    const existingField = existingByName.get(requestedField.name);
+
+    if (existingField === undefined) {
+      missingColumns.push({
+        name: requestedField.name,
+        valueSql: defaultValueSqlForField(requestedField),
+      });
+      continue;
+    }
+
+    if (fieldTypeSignature(existingField) !== fieldTypeSignature(requestedField)) {
+      throw new StorageError(
+        `Existing LanceDB field ${requestedField.name} in ${tableName} does not match the requested schema`,
+        {
+          code: "LANCEDB_SCHEMA_MISMATCH",
+        },
+      );
+    }
+  }
+
+  if (missingColumns.length > 0) {
+    await table.addColumns(missingColumns);
+  }
+}
+
 export class LanceDbTable {
   constructor(private readonly table: Table) {}
+
+  async checkoutLatest(): Promise<void> {
+    try {
+      await this.table.checkoutLatest();
+    } catch (error) {
+      throw new StorageError(`Failed to refresh LanceDB table ${this.table.name}`, {
+        cause: error,
+      });
+    }
+  }
+
+  async schema(): Promise<Schema> {
+    try {
+      return await this.table.schema();
+    } catch (error) {
+      throw new StorageError(`Failed to read LanceDB schema for table ${this.table.name}`, {
+        cause: error,
+      });
+    }
+  }
+
+  async addColumns(columns: AddColumnsSql[] | Field | Field[] | Schema): Promise<void> {
+    try {
+      await this.table.addColumns(columns);
+    } catch (error) {
+      throw new StorageError(`Failed to evolve LanceDB table ${this.table.name}`, {
+        cause: error,
+      });
+    }
+  }
 
   async upsert(rows: readonly LanceDbRow[], options: LanceDbUpsertOptions): Promise<void> {
     if (rows.length === 0) {
@@ -74,11 +218,15 @@ export class LanceDbTable {
     }
 
     try {
+      await this.table.checkoutLatest();
+      const arrowTable = makeArrowTable([...rows], {
+        schema: await this.table.schema(),
+      });
       await this.table
         .mergeInsert(options.on)
         .whenMatchedUpdateAll()
         .whenNotMatchedInsertAll()
-        .execute([...rows]);
+        .execute(arrowTable);
     } catch (error) {
       throw new StorageError(`Failed to upsert rows into LanceDB table ${this.table.name}`, {
         cause: error,
@@ -186,7 +334,13 @@ export class LanceDbStore {
       const tableNames = await connection.tableNames();
 
       if (tableNames.includes(options.name)) {
-        return new LanceDbTable(await connection.openTable(options.name));
+        const table = await connection.openTable(options.name);
+        await ensureSchemaCompatibility(table, options.schema, options.name);
+        await table.checkoutLatest();
+        table.close();
+        const reopenedTable = await connection.openTable(options.name);
+        await reopenedTable.checkoutLatest();
+        return new LanceDbTable(reopenedTable);
       }
 
       return new LanceDbTable(
@@ -196,6 +350,10 @@ export class LanceDbStore {
         }),
       );
     } catch (error) {
+      if (error instanceof StorageError) {
+        throw error;
+      }
+
       try {
         return new LanceDbTable(await connection.openTable(options.name));
       } catch {

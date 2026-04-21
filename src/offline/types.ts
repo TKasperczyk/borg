@@ -1,8 +1,10 @@
 import type { Config } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
+import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
+import type { SkillRepository } from "../memory/procedural/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -16,6 +18,7 @@ import type {
   SemanticEdgeRepository,
   SemanticNodeRepository,
 } from "../memory/semantic/index.js";
+import type { SocialRepository } from "../memory/social/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
@@ -85,8 +88,11 @@ export type OfflineContext = {
   autobiographicalRepository: AutobiographicalRepository;
   growthMarkersRepository: GrowthMarkersRepository;
   openQuestionsRepository: OpenQuestionsRepository;
+  moodRepository: MoodRepository;
+  socialRepository: SocialRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  skillRepository: SkillRepository;
   retrievalPipeline: RetrievalPipeline;
 };
 

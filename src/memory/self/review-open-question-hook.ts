@@ -4,7 +4,7 @@ import { parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
 
 import type { OpenQuestionsRepository } from "./open-questions.js";
 
-function formatHookError(error: unknown): string {
+export function formatHookError(error: unknown): string {
   if (error instanceof Error) {
     return `${error.name}: ${error.message}`;
   }
@@ -62,7 +62,7 @@ export function enqueueOpenQuestionForReview(
   }
 }
 
-export async function appendOpenQuestionHookFailureEvent(
+export async function appendInternalFailureEvent(
   streamWriter: StreamWriter,
   hook: string,
   error: unknown,
@@ -78,4 +78,12 @@ export async function appendOpenQuestionHookFailureEvent(
   } catch {
     // Best-effort logging only.
   }
+}
+
+export async function appendOpenQuestionHookFailureEvent(
+  streamWriter: StreamWriter,
+  hook: string,
+  error: unknown,
+): Promise<void> {
+  await appendInternalFailureEvent(streamWriter, hook, error);
 }

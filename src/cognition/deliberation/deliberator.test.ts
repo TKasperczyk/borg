@@ -57,6 +57,8 @@ function makeRetrievedEpisode(
       heat: 1,
       goalRelevance: 0,
       timeRelevance: 0,
+      moodBoost: 0,
+      socialRelevance: 0,
       suppressionPenalty: 0,
     },
     citationChain: [],
@@ -187,6 +189,7 @@ describe("deliberator", () => {
 
     expect(result.path).toBe("system_2");
     expect(result.decision_reason).toContain("Reflective mode");
+    expect(llm.requests[1]?.system ?? llm.requests[0]?.system).not.toContain("Skill you might try");
   });
 
   it("includes related semantic context in the Sonnet prompt", async () => {
@@ -285,6 +288,162 @@ describe("deliberator", () => {
     expect(llm.requests[0]?.system).toContain(
       "contradicts: Atlas is stable - Claimed stable despite deploy errors (conf 0.61)",
     );
+  });
+
+  it("includes skill guidance only for problem-solving mode when a candidate exists", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Skill-aware answer",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+    const selectedSkill = {
+      skill: {
+        id: "skl_aaaaaaaaaaaaaaaa" as never,
+        applies_when: "Rust lifetime debugging",
+        approach: "Shrink borrow scopes.",
+        alpha: 4,
+        beta: 2,
+        attempts: 4,
+        successes: 3,
+        failures: 1,
+        alternatives: [],
+        source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+        last_used: null,
+        last_successful: null,
+        created_at: 0,
+        updated_at: 0,
+      },
+      sampledValue: 0.82,
+      evaluatedCandidates: [
+        {
+          skill: {
+            id: "skl_aaaaaaaaaaaaaaaa" as never,
+            applies_when: "Rust lifetime debugging",
+            approach: "Shrink borrow scopes.",
+            alpha: 4,
+            beta: 2,
+            attempts: 4,
+            successes: 3,
+            failures: 1,
+            alternatives: [],
+            source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+            last_used: null,
+            last_successful: null,
+            created_at: 0,
+            updated_at: 0,
+          },
+          similarity: 0.9,
+          stats: {
+            mean: 0.67,
+            mode: 0.75,
+            ci_95: [0.4, 0.9] as [number, number],
+          },
+          sampledValue: 0.82,
+        },
+      ],
+    };
+
+    await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "Help with Rust lifetimes",
+      perception: {
+        entities: ["Rust"],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0 },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      selectedSkill,
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        scratchpad: "",
+        current_focus: null,
+        recent_thoughts: [],
+        hot_entities: [],
+        pending_intents: [],
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: {
+        values: [],
+        goals: [],
+        traits: [],
+      },
+      options: {
+        stakes: "low",
+      },
+    });
+
+    expect(llm.requests[0]?.system).toContain("### Skill you might try");
+    expect(llm.requests[0]?.system).toContain("Applies when: Rust lifetime debugging");
+    expect(llm.requests[0]?.system).toContain("Approach: Shrink borrow scopes.");
+  });
+
+  it("omits the skill section when problem-solving mode has no matching skill", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "No-skill answer",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "Help with Atlas deploys",
+      perception: {
+        entities: ["Atlas"],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0 },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      selectedSkill: null,
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        scratchpad: "",
+        current_focus: null,
+        recent_thoughts: [],
+        hot_entities: [],
+        pending_intents: [],
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: {
+        values: [],
+        goals: [],
+        traits: [],
+      },
+      options: {
+        stakes: "low",
+      },
+    });
+
+    expect(llm.requests[0]?.system).not.toContain("Skill you might try");
   });
 
   it("includes reflective open questions in the prompt", async () => {

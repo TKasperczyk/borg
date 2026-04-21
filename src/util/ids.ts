@@ -21,6 +21,7 @@ export type SemanticNodeId = BrandedId<"SemanticNodeId">;
 export type SemanticEdgeId = BrandedId<"SemanticEdgeId">;
 export type CommitmentId = BrandedId<"CommitmentId">;
 export type EntityId = BrandedId<"EntityId">;
+export type SkillId = BrandedId<"SkillId">;
 export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
 export type AuditId = number & {
   readonly __brand: "AuditId";
@@ -64,6 +65,7 @@ export const semanticNodeIdHelpers = createIdHelpers<"SemanticNodeId">("semn");
 export const semanticEdgeIdHelpers = createIdHelpers<"SemanticEdgeId">("seme");
 export const commitmentIdHelpers = createIdHelpers<"CommitmentId">("cmt");
 export const entityIdHelpers = createIdHelpers<"EntityId">("ent");
+export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
 export const maintenanceRunIdHelpers = createIdHelpers<"MaintenanceRunId">("run");
 
 export const createStreamEntryId = (): StreamEntryId => streamEntryIdHelpers.create();
@@ -79,6 +81,7 @@ export const createSemanticNodeId = (): SemanticNodeId => semanticNodeIdHelpers.
 export const createSemanticEdgeId = (): SemanticEdgeId => semanticEdgeIdHelpers.create();
 export const createCommitmentId = (): CommitmentId => commitmentIdHelpers.create();
 export const createEntityId = (): EntityId => entityIdHelpers.create();
+export const createSkillId = (): SkillId => skillIdHelpers.create();
 export const createMaintenanceRunId = (): MaintenanceRunId => maintenanceRunIdHelpers.create();
 
 export function isSessionId(value: string): value is SessionId {
@@ -131,6 +134,10 @@ export function parseCommitmentId(value: string): CommitmentId {
 
 export function parseEntityId(value: string): EntityId {
   return entityIdHelpers.parse(value);
+}
+
+export function parseSkillId(value: string): SkillId {
+  return skillIdHelpers.parse(value);
 }
 
 export function parseMaintenanceRunId(value: string): MaintenanceRunId {

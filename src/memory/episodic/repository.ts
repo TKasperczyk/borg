@@ -12,6 +12,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { parseEpisodeId, type EpisodeId } from "../../util/ids.js";
+import { createNeutralEmotionalArc, emotionalArcSchema } from "../affective/types.js";
 
 import {
   type Episode,
@@ -43,6 +44,7 @@ type EpisodeRow = {
   confidence: number;
   lineage_derived_from: string;
   lineage_supersedes: string;
+  emotional_arc: string | null;
   embedding: number[];
   created_at: number;
   updated_at: number;
@@ -211,6 +213,8 @@ function toEpisodeRow(episode: Episode): EpisodeRow {
     confidence: episode.confidence,
     lineage_derived_from: serializeJsonValue(episode.lineage.derived_from),
     lineage_supersedes: serializeJsonValue(episode.lineage.supersedes),
+    emotional_arc:
+      episode.emotional_arc === null ? null : serializeJsonValue(episode.emotional_arc),
     embedding: Array.from(episode.embedding),
     created_at: episode.created_at,
     updated_at: episode.updated_at,
@@ -218,6 +222,20 @@ function toEpisodeRow(episode: Episode): EpisodeRow {
 }
 
 function fromEpisodeRow(row: Record<string, unknown>): Episode {
+  const emotionalArc = (() => {
+    if (row.emotional_arc === null || row.emotional_arc === undefined || row.emotional_arc === "") {
+      return createNeutralEmotionalArc();
+    }
+
+    try {
+      return emotionalArcSchema.parse(JSON.parse(String(row.emotional_arc)) as unknown);
+    } catch (error) {
+      throw new StorageError("Failed to decode episode emotional arc", {
+        cause: error,
+        code: "EPISODE_ROW_INVALID",
+      });
+    }
+  })();
   const candidate = {
     id: row.id,
     title: row.title,
@@ -243,6 +261,7 @@ function fromEpisodeRow(row: Record<string, unknown>): Episode {
         "lineage.supersedes",
       ),
     },
+    emotional_arc: emotionalArc,
     embedding: toFloat32Array(row.embedding),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
@@ -260,6 +279,14 @@ function fromEpisodeRow(row: Record<string, unknown>): Episode {
 }
 
 function defaultEpisodeStats(episode: Episode): EpisodeStats {
+  const valenceMean =
+    episode.emotional_arc === null
+      ? 0
+      : (episode.emotional_arc.start.valence +
+          episode.emotional_arc.peak.valence +
+          episode.emotional_arc.end.valence) /
+        3;
+
   return {
     episode_id: episode.id,
     retrieval_count: 0,
@@ -272,6 +299,7 @@ function defaultEpisodeStats(episode: Episode): EpisodeStats {
     gist: null,
     gist_generated_at: null,
     last_decayed_at: null,
+    valence_mean: valenceMean,
     archived: false,
   };
 }
@@ -291,6 +319,7 @@ export function createEpisodesTableSchema(dimensions: number) {
     float64Field("confidence"),
     utf8Field("lineage_derived_from"),
     utf8Field("lineage_supersedes"),
+    utf8Field("emotional_arc", true),
     vectorField("embedding", dimensions),
     float64Field("created_at"),
     float64Field("updated_at"),
@@ -326,8 +355,8 @@ export class EpisodicRepository {
         `
           INSERT INTO episode_stats (
             episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
-            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, archived
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, valence_mean, archived
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (episode_id) DO UPDATE SET
             retrieval_count = excluded.retrieval_count,
             use_count = excluded.use_count,
@@ -339,6 +368,7 @@ export class EpisodicRepository {
             gist = excluded.gist,
             gist_generated_at = excluded.gist_generated_at,
             last_decayed_at = excluded.last_decayed_at,
+            valence_mean = excluded.valence_mean,
             archived = excluded.archived
         `,
       )
@@ -354,6 +384,7 @@ export class EpisodicRepository {
         parsed.gist,
         parsed.gist_generated_at,
         parsed.last_decayed_at,
+        parsed.valence_mean,
         parsed.archived ? 1 : 0,
       );
   }
@@ -417,9 +448,13 @@ export class EpisodicRepository {
       });
     }
 
+    const patchIncludesEmotionalArc = Object.prototype.hasOwnProperty.call(patch, "emotional_arc");
     const merged = {
       ...current,
       ...parsedPatch.data,
+      emotional_arc: patchIncludesEmotionalArc
+        ? (parsedPatch.data.emotional_arc ?? null)
+        : current.emotional_arc,
       lineage: {
         ...current.lineage,
         ...parsedPatch.data.lineage,
@@ -436,6 +471,15 @@ export class EpisodicRepository {
     }
 
     await this.table.upsert([toEpisodeRow(parsedEpisode.data)], { on: "id" });
+    this.updateStats(id, {
+      valence_mean:
+        parsedEpisode.data.emotional_arc === null
+          ? 0
+          : (parsedEpisode.data.emotional_arc.start.valence +
+              parsedEpisode.data.emotional_arc.peak.valence +
+              parsedEpisode.data.emotional_arc.end.valence) /
+            3,
+    });
     return parsedEpisode.data;
   }
 
@@ -459,7 +503,7 @@ export class EpisodicRepository {
         `
           SELECT
             episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
-            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, archived
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, valence_mean, archived
           FROM episode_stats
           WHERE episode_id = ?
         `,
@@ -494,6 +538,8 @@ export class EpisodicRepository {
         row.last_decayed_at === null || row.last_decayed_at === undefined
           ? null
           : Number(row.last_decayed_at),
+      valence_mean:
+        row.valence_mean === null || row.valence_mean === undefined ? 0 : Number(row.valence_mean),
       archived: row.archived === true || Number(row.archived) === 1,
     });
 
@@ -540,7 +586,7 @@ export class EpisodicRepository {
         `
           SELECT
             episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
-            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, archived
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, valence_mean, archived
           FROM episode_stats
           ORDER BY promoted_at DESC, episode_id ASC
         `,

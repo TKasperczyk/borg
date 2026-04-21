@@ -4,6 +4,8 @@ import type { CognitiveMode, AttentionWeights } from "../types.js";
 export type AttentionState = {
   currentGoals: readonly GoalRecord[];
   hasTemporalCue: boolean;
+  moodActive?: boolean;
+  audienceTrust?: number | null;
 };
 
 const DEFAULT_WEIGHTS: AttentionWeights = {
@@ -19,12 +21,15 @@ const DEFAULT_WEIGHTS: AttentionWeights = {
 export function computeWeights(mode: CognitiveMode, state: AttentionState): AttentionWeights {
   const hasGoals = state.currentGoals.length > 0;
   const hasTemporalCue = state.hasTemporalCue;
+  const moodWeight = state.moodActive === true ? 0.2 : 0;
+  const socialBase = state.audienceTrust !== undefined && state.audienceTrust !== null ? 0.1 : 0;
 
   if (mode === "problem_solving") {
     return {
       ...DEFAULT_WEIGHTS,
       semantic: 0.8,
       goal_relevance: hasGoals ? 0.1 : 0,
+      mood: moodWeight,
       time: hasTemporalCue ? 0.1 : 0,
       heat: 0.15,
     };
@@ -34,7 +39,8 @@ export function computeWeights(mode: CognitiveMode, state: AttentionState): Atte
     return {
       ...DEFAULT_WEIGHTS,
       semantic: 0.65,
-      social: 0.2,
+      mood: moodWeight,
+      social: Math.max(0.2, socialBase),
       goal_relevance: hasGoals ? 0.05 : 0,
       time: hasTemporalCue ? 0.05 : 0,
     };
@@ -45,6 +51,7 @@ export function computeWeights(mode: CognitiveMode, state: AttentionState): Atte
       ...DEFAULT_WEIGHTS,
       semantic: 0.65,
       goal_relevance: hasGoals ? 0.2 : 0,
+      mood: moodWeight,
       time: hasTemporalCue ? 0.1 : 0,
       heat: 0.05,
     };
@@ -54,6 +61,8 @@ export function computeWeights(mode: CognitiveMode, state: AttentionState): Atte
     ...DEFAULT_WEIGHTS,
     semantic: 0.55,
     goal_relevance: hasGoals ? 0.05 : 0,
+    mood: moodWeight,
+    social: socialBase,
     time: hasTemporalCue ? 0.05 : 0,
     heat: 0.05,
   };

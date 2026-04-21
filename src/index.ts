@@ -47,6 +47,22 @@ export {
   type TokenUsageSink,
 } from "./llm/index.js";
 export {
+  AffectiveExtractor,
+  MoodRepository,
+  affectiveMigrations,
+  affectiveSignalSchema as affectiveMemorySignalSchema,
+  createNeutralEmotionalArc,
+  dominantEmotionSchema,
+  emotionalArcSchema,
+  moodHistoryEntrySchema,
+  moodStateSchema,
+  type AffectiveSignal as MemoryAffectiveSignal,
+  type DominantEmotion,
+  type EmotionalArc,
+  type MoodHistoryEntry,
+  type MoodState,
+} from "./memory/affective/index.js";
+export {
   EPISODE_TIERS,
   EpisodicExtractor,
   EpisodicRepository,
@@ -78,6 +94,27 @@ export {
   type ExtractFromStreamOptions,
   type ExtractFromStreamResult,
 } from "./memory/episodic/index.js";
+export {
+  SkillRepository,
+  SkillSelector,
+  betaInverseCdf,
+  computeBetaStats,
+  createSkillsTableSchema,
+  proceduralMigrations,
+  regularizedIncompleteBeta,
+  sampleBeta,
+  sampleGamma,
+  skillIdSchema,
+  skillInsertSchema,
+  skillSchema,
+  skillStatsSchema,
+  type BetaStats,
+  type SkillRecord,
+  type SkillSearchCandidate,
+  type SkillSelectionCandidate,
+  type SkillSelectionResult,
+  type SkillStats,
+} from "./memory/procedural/index.js";
 export {
   AutobiographicalRepository,
   GoalsRepository,
@@ -122,6 +159,14 @@ export {
   type ValueRecord,
   type ValuesRepositoryOptions,
 } from "./memory/self/index.js";
+export {
+  SocialRepository,
+  socialMigrations,
+  socialProfileSchema,
+  socialSentimentPointSchema,
+  type SocialProfile,
+  type SocialSentimentPoint,
+} from "./memory/social/index.js";
 export {
   CommitmentChecker,
   CommitmentRepository,
@@ -298,6 +343,7 @@ export {
   createSessionId,
   createSemanticEdgeId,
   createSemanticNodeId,
+  createSkillId,
   createStreamEntryId,
   createValueId,
   maintenanceRunIdHelpers,
@@ -314,10 +360,12 @@ export {
   parseGoalId,
   parseSemanticEdgeId,
   parseSemanticNodeId,
+  parseSkillId,
   parseValueId,
   semanticEdgeIdHelpers,
   semanticNodeIdHelpers,
   sessionIdHelpers,
+  skillIdHelpers,
   streamEntryIdHelpers,
   valueIdHelpers,
   type BrandedId,
@@ -330,6 +378,7 @@ export {
   type SessionId as IdSessionId,
   type SemanticEdgeId,
   type SemanticNodeId,
+  type SkillId,
   type StreamEntryId,
   type ValueId,
 } from "./util/ids.js";

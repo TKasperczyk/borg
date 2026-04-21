@@ -1,6 +1,10 @@
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { LLMClient } from "../../llm/index.js";
 import { perceptionResultSchema, type PerceptionResult } from "../types.js";
+import {
+  createNeutralAffectiveSignal,
+  type AffectiveSignal,
+} from "../../memory/affective/index.js";
 import { detectAffectiveSignal } from "./affective-signal.js";
 import { EntityExtractor } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
@@ -10,16 +14,29 @@ export type PerceiverOptions = {
   llmClient?: LLMClient;
   model?: string;
   useLlmFallback?: boolean;
+  affectiveUseLlmFallback?: boolean;
   clock?: Clock;
+  detectAffectiveSignal?: typeof detectAffectiveSignal;
+  onAffectiveError?: (error: unknown) => Promise<void> | void;
 };
 
 export class Perceiver {
   private readonly clock: Clock;
   private readonly entityExtractor: EntityExtractor;
   private readonly modeDetector: ModeDetector;
+  private readonly llmClient?: LLMClient;
+  private readonly model?: string;
+  private readonly affectiveUseLlmFallback: boolean;
+  private readonly detectAffectiveSignal: typeof detectAffectiveSignal;
+  private readonly onAffectiveError?: (error: unknown) => Promise<void> | void;
 
   constructor(options: PerceiverOptions = {}) {
     this.clock = options.clock ?? new SystemClock();
+    this.llmClient = options.llmClient;
+    this.model = options.model;
+    this.affectiveUseLlmFallback = options.affectiveUseLlmFallback ?? false;
+    this.detectAffectiveSignal = options.detectAffectiveSignal ?? detectAffectiveSignal;
+    this.onAffectiveError = options.onAffectiveError;
     this.entityExtractor = new EntityExtractor({
       llmClient: options.llmClient,
       model: options.model,
@@ -32,16 +49,37 @@ export class Perceiver {
     });
   }
 
+  private async detectAffectiveSignalSafely(
+    text: string,
+    recentHistory: readonly string[],
+  ): Promise<AffectiveSignal> {
+    try {
+      return await this.detectAffectiveSignal(text, recentHistory, {
+        llmClient: this.llmClient,
+        model: this.model,
+        useLlmFallback: this.affectiveUseLlmFallback,
+      });
+    } catch (error) {
+      try {
+        await this.onAffectiveError?.(error);
+      } catch {
+        // Best-effort hook logging only.
+      }
+      return createNeutralAffectiveSignal();
+    }
+  }
+
   async perceive(text: string, recentHistory: readonly string[] = []): Promise<PerceptionResult> {
-    const [entities, mode] = await Promise.all([
+    const [entities, mode, affectiveSignal] = await Promise.all([
       this.entityExtractor.extractEntities(text),
       this.modeDetector.detectMode(text, recentHistory),
+      this.detectAffectiveSignalSafely(text, recentHistory),
     ]);
 
     return perceptionResultSchema.parse({
       entities,
       mode,
-      affectiveSignal: detectAffectiveSignal(),
+      affectiveSignal,
       temporalCue: detectTemporalCue(text, this.clock.now()),
     });
   }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { emotionalArcSchema, type EmotionalArc } from "../affective/types.js";
 import type { StreamEntryId } from "../../util/ids.js";
 import { episodeIdHelpers, streamEntryIdHelpers, type EpisodeId } from "../../util/ids.js";
 
@@ -43,6 +44,7 @@ const episodeShape = z.object({
   tags: z.array(z.string().min(1)),
   confidence: z.number().min(0).max(1),
   lineage: episodeLineageSchema,
+  emotional_arc: emotionalArcSchema.nullable().default(null),
   embedding: float32ArraySchema,
   created_at: z.number().finite(),
   updated_at: z.number().finite(),
@@ -79,6 +81,7 @@ export const episodeStatsSchema = z.object({
   gist: z.string().min(1).nullable(),
   gist_generated_at: z.number().finite().nullable(),
   last_decayed_at: z.number().finite().nullable(),
+  valence_mean: z.number().min(-1).max(1).default(0),
   archived: z.boolean().default(false),
 });
 
@@ -93,6 +96,7 @@ export type EpisodePatch = z.infer<typeof episodePatchSchema>;
 export type EpisodeTier = z.infer<typeof episodeTierSchema>;
 export type EpisodeStats = z.infer<typeof episodeStatsSchema>;
 export type EpisodeStatsPatch = z.infer<typeof episodeStatsPatchSchema>;
+export type { EmotionalArc };
 
 export type EpisodeListOptions = {
   limit?: number;

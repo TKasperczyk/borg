@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { LLMClient } from "../../llm/index.js";
+import { emotionalArcSchema } from "../../memory/affective/index.js";
 import {
   episodeIdSchema,
   episodeLineageSchema,
@@ -42,6 +43,7 @@ const serializableEpisodeSchema = z.object({
   tags: z.array(z.string().min(1)),
   confidence: z.number().min(0).max(1),
   lineage: episodeLineageSchema,
+  emotional_arc: emotionalArcSchema.nullable(),
   embedding: z.array(z.number().finite()),
   created_at: z.number().finite(),
   updated_at: z.number().finite(),
@@ -333,6 +335,8 @@ async function buildMergedEpisode(
         derived_from: cluster.episodes.map((episode) => episode.id),
         supersedes: [],
       },
+      emotional_arc:
+        cluster.episodes.find((episode) => episode.emotional_arc !== null)?.emotional_arc ?? null,
       embedding,
       created_at: nowMs,
       updated_at: nowMs,

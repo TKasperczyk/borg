@@ -694,6 +694,278 @@ describe("Borg", () => {
     }
   });
 
+  it("keeps a turn running when mood update fails and logs an internal event", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Try the rollback plan.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+    });
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              moodRepository: {
+                update: (sessionId: string, update: unknown) => unknown;
+              };
+            };
+          };
+        };
+      };
+      vi.spyOn(internal.deps.turnOrchestrator.options.moodRepository, "update").mockImplementation(
+        () => {
+          throw new Error("mood exploded");
+        },
+      );
+
+      const result = await borg.turn({
+        userMessage: "Atlas deploy failed again.",
+      });
+
+      expect(result.response).toContain("rollback plan");
+      expect(borg.stream.tail(4)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "internal_event",
+            content: expect.objectContaining({
+              hook: "mood_update",
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("keeps a turn running when social update fails and logs an internal event", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Focus on the audience and clarify the tone first.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "I'll keep this short for Sam.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+    });
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              socialRepository: {
+                recordInteraction: (entityId: string, interaction: unknown) => unknown;
+              };
+            };
+          };
+        };
+      };
+      vi.spyOn(
+        internal.deps.turnOrchestrator.options.socialRepository,
+        "recordInteraction",
+      ).mockImplementation(() => {
+        throw new Error("social exploded");
+      });
+
+      const result = await borg.turn({
+        userMessage: "Can you phrase this carefully for Sam?",
+        audience: "Sam",
+      });
+
+      expect(result.response).toContain("short for Sam");
+      expect(borg.stream.tail(4)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "internal_event",
+            content: expect.objectContaining({
+              hook: "social_update",
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("falls back to neutral affect when affective extraction fails and logs an internal event", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Let's inspect the deploy state first.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+    });
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              affectiveSignalDetector?: (
+                text: string,
+                recentHistory?: readonly string[],
+                options?: unknown,
+              ) => Promise<unknown>;
+            };
+          };
+        };
+      };
+      internal.deps.turnOrchestrator.options.affectiveSignalDetector = async () => {
+        throw new Error("affect exploded");
+      };
+
+      const result = await borg.turn({
+        userMessage: "Atlas deploy failed and I'm upset.",
+      });
+
+      expect(result.response).toContain("inspect the deploy state");
+      expect(borg.workmem.load().mood).toEqual({
+        valence: 0,
+        arousal: 0,
+        dominant_emotion: null,
+      });
+      expect(borg.stream.tail(4)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "internal_event",
+            content: expect.objectContaining({
+              hook: "affective_extraction",
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("runs offline maintenance through the Borg facade and exposes audit reversal", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

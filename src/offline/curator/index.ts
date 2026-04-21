@@ -1,7 +1,10 @@
 import { z } from "zod";
 
+import { moodHistoryEntrySchema, type MoodHistoryEntry } from "../../memory/affective/index.js";
 import { computeEpisodeHeat } from "../../memory/episodic/heat.js";
+import type { EpisodicRepository } from "../../memory/episodic/index.js";
 import {
+  episodeIdSchema,
   episodeStatsPatchSchema,
   episodeStatsSchema,
   episodeTierSchema,
@@ -9,8 +12,7 @@ import {
   type EpisodeStats,
   type EpisodeTier,
 } from "../../memory/episodic/types.js";
-import type { EpisodicRepository } from "../../memory/episodic/index.js";
-import { episodeIdSchema } from "../../memory/episodic/types.js";
+import { socialProfileSchema, type SocialProfile } from "../../memory/social/index.js";
 import type { Clock } from "../../util/clock.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
@@ -31,14 +33,30 @@ const TIER_ORDER: Record<EpisodeTier, number> = {
   T4: 4,
 };
 
-const curatorPlanActionSchema = z.enum(["promote", "demote", "archive", "decay"]);
-
-const curatorPlanItemSchema = z.object({
-  action: curatorPlanActionSchema,
+const episodePlanItemSchema = z.object({
+  action: z.enum(["promote", "demote", "archive", "decay"]),
   episode_id: episodeIdSchema,
   patch: episodeStatsPatchSchema,
   previous: episodeStatsSchema,
 });
+
+const trimMoodHistoryPlanItemSchema = z.object({
+  action: z.literal("trim_mood_history"),
+  removed: z.array(moodHistoryEntrySchema),
+});
+
+const socialPlanItemSchema = z.object({
+  action: z.literal("refresh_social_profile"),
+  entity_id: socialProfileSchema.shape.entity_id,
+  previous: socialProfileSchema,
+  next: socialProfileSchema,
+});
+
+const curatorPlanItemSchema = z.discriminatedUnion("action", [
+  episodePlanItemSchema,
+  trimMoodHistoryPlanItemSchema,
+  socialPlanItemSchema,
+]);
 
 export const curatorPlanSchema = z.object({
   process: z.literal("curator"),
@@ -62,7 +80,7 @@ function compareTiers(left: EpisodeTier, right: EpisodeTier): number {
   return TIER_ORDER[left] - TIER_ORDER[right];
 }
 
-function buildChange(item: CuratorPlan["items"][number]): OfflineChange {
+function buildEpisodeChange(item: z.infer<typeof episodePlanItemSchema>): OfflineChange {
   return {
     process: "curator",
     action: item.action,
@@ -73,7 +91,39 @@ function buildChange(item: CuratorPlan["items"][number]): OfflineChange {
   };
 }
 
-function buildItems(ctx: OfflineContext, episodes: readonly Episode[]): CuratorPlan["items"] {
+function buildChange(item: CuratorPlan["items"][number]): OfflineChange {
+  if ("episode_id" in item) {
+    return buildEpisodeChange(item);
+  }
+
+  if (item.action === "trim_mood_history") {
+    return {
+      process: "curator",
+      action: item.action,
+      targets: {
+        removed: item.removed.length,
+      },
+    };
+  }
+
+  return {
+    process: "curator",
+    action: item.action,
+    targets: {
+      entity_id: item.entity_id,
+    },
+    preview: {
+      commitment_count: item.next.commitment_count,
+      interaction_count: item.next.interaction_count,
+      sentiment_points: item.next.sentiment_history.length,
+    },
+  };
+}
+
+function buildEpisodeItems(
+  ctx: OfflineContext,
+  episodes: readonly Episode[],
+): CuratorPlan["items"] {
   const nowMs = ctx.clock.now();
   const items: CuratorPlan["items"] = [];
 
@@ -165,13 +215,83 @@ function buildItems(ctx: OfflineContext, episodes: readonly Episode[]): CuratorP
   return items;
 }
 
+function buildMoodItems(ctx: OfflineContext): CuratorPlan["items"] {
+  if ((ctx as Partial<OfflineContext>).moodRepository === undefined) {
+    return [];
+  }
+
+  const nowMs = ctx.clock.now();
+  const items: CuratorPlan["items"] = [];
+
+  const threshold = nowMs - ctx.config.affective.moodHistoryRetentionDays * DAY_MS;
+  const removed = ctx.moodRepository.historyBefore(threshold);
+
+  if (removed.length > 0) {
+    items.push({
+      action: "trim_mood_history",
+      removed,
+    });
+  }
+
+  return items;
+}
+
+function buildSocialItems(ctx: OfflineContext): CuratorPlan["items"] {
+  if (
+    (ctx as Partial<OfflineContext>).socialRepository === undefined ||
+    (ctx as Partial<OfflineContext>).commitmentRepository === undefined
+  ) {
+    return [];
+  }
+
+  return ctx.socialRepository
+    .list(500)
+    .map((previous) => {
+      const activeCommitmentCount = ctx.commitmentRepository
+        .list({ activeOnly: true })
+        .filter(
+          (commitment) =>
+            commitment.made_to_entity === previous.entity_id ||
+            commitment.restricted_audience === previous.entity_id ||
+            commitment.about_entity === previous.entity_id,
+        ).length;
+      const nextSentimentHistory = previous.sentiment_history.slice(-50);
+      const changed =
+        activeCommitmentCount !== previous.commitment_count ||
+        nextSentimentHistory.length !== previous.sentiment_history.length;
+
+      if (!changed) {
+        return null;
+      }
+
+      return {
+        action: "refresh_social_profile",
+        entity_id: previous.entity_id,
+        previous,
+        next: socialProfileSchema.parse({
+          ...previous,
+          commitment_count: activeCommitmentCount,
+          sentiment_history: nextSentimentHistory,
+          updated_at: ctx.clock.now(),
+        }),
+      } satisfies z.infer<typeof socialPlanItemSchema>;
+    })
+    .filter((item): item is z.infer<typeof socialPlanItemSchema> => item !== null);
+}
+
+function buildItems(ctx: OfflineContext, episodes: readonly Episode[]): CuratorPlan["items"] {
+  return [...buildEpisodeItems(ctx, episodes), ...buildMoodItems(ctx), ...buildSocialItems(ctx)];
+}
+
 export type CuratorProcessOptions = {
   episodicRepository: EpisodicRepository;
+  moodRepository: OfflineContext["moodRepository"];
+  socialRepository: OfflineContext["socialRepository"];
   registry: ReverserRegistry;
   clock?: Clock;
 };
 
-export class CuratorProcess implements OfflineProcess {
+export class CuratorProcess implements OfflineProcess<CuratorPlan> {
   readonly name = "curator" as const;
 
   constructor(private readonly options: CuratorProcessOptions) {
@@ -185,11 +305,9 @@ export class CuratorProcess implements OfflineProcess {
       for (const item of previous) {
         const parsed = episodeStatsSchema.safeParse(item);
 
-        if (!parsed.success) {
-          continue;
+        if (parsed.success) {
+          this.options.episodicRepository.updateStats(parsed.data.episode_id, parsed.data);
         }
-
-        this.options.episodicRepository.updateStats(parsed.data.episode_id, parsed.data);
       }
     };
 
@@ -197,6 +315,20 @@ export class CuratorProcess implements OfflineProcess {
     this.options.registry.register(this.name, "demote", revertStats);
     this.options.registry.register(this.name, "archive", revertStats);
     this.options.registry.register(this.name, "decay", revertStats);
+    this.options.registry.register(this.name, "trim_mood_history", async ({ reversal }) => {
+      const parsed = z.array(moodHistoryEntrySchema).safeParse(reversal.removed);
+
+      if (parsed.success) {
+        this.options.moodRepository.restoreHistory(parsed.data);
+      }
+    });
+    this.options.registry.register(this.name, "refresh_social_profile", async ({ reversal }) => {
+      const parsed = socialProfileSchema.safeParse(reversal.previous);
+
+      if (parsed.success) {
+        this.options.socialRepository.restoreProfile(parsed.data);
+      }
+    });
   }
 
   async plan(ctx: OfflineContext, _opts: { budget?: number } = {}): Promise<CuratorPlan> {
@@ -227,11 +359,46 @@ export class CuratorProcess implements OfflineProcess {
     const previousByAction = new Map<string, EpisodeStats[]>();
 
     for (const item of plan.items) {
-      ctx.episodicRepository.updateStats(item.episode_id, item.patch);
-      previousByAction.set(item.action, [
-        ...(previousByAction.get(item.action) ?? []),
-        item.previous,
-      ]);
+      if ("episode_id" in item) {
+        ctx.episodicRepository.updateStats(item.episode_id, item.patch);
+        previousByAction.set(item.action, [
+          ...(previousByAction.get(item.action) ?? []),
+          item.previous,
+        ]);
+        continue;
+      }
+
+      if (item.action === "trim_mood_history") {
+        ctx.moodRepository.trimHistory(
+          ctx.config.affective.moodHistoryRetentionDays,
+          ctx.clock.now(),
+        );
+        ctx.auditLog.record({
+          run_id: ctx.runId,
+          process: this.name,
+          action: item.action,
+          targets: {
+            removed: item.removed.length,
+          },
+          reversal: {
+            removed: item.removed,
+          },
+        });
+        continue;
+      }
+
+      ctx.socialRepository.restoreProfile(item.next);
+      ctx.auditLog.record({
+        run_id: ctx.runId,
+        process: this.name,
+        action: item.action,
+        targets: {
+          entity_id: item.entity_id,
+        },
+        reversal: {
+          previous: item.previous,
+        },
+      });
     }
 
     for (const [action, previous] of previousByAction.entries()) {

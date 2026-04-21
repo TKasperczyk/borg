@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { DEFAULT_CONFIG, type Config } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient, type LLMClient } from "../llm/index.js";
+import { MoodRepository, affectiveMigrations } from "../memory/affective/index.js";
 import {
   CommitmentRepository,
   EntityRepository,
@@ -16,6 +17,11 @@ import {
   episodicMigrations,
   type Episode,
 } from "../memory/episodic/index.js";
+import {
+  SkillRepository,
+  createSkillsTableSchema,
+  proceduralMigrations,
+} from "../memory/procedural/index.js";
 import {
   AutobiographicalRepository,
   GoalsRepository,
@@ -38,6 +44,7 @@ import {
   semanticMigrations,
   type SemanticNode,
 } from "../memory/semantic/index.js";
+import { SocialRepository, socialMigrations } from "../memory/social/index.js";
 import { retrievalMigrations } from "../retrieval/index.js";
 import { RetrievalPipeline } from "../retrieval/index.js";
 import { StreamWriter } from "../stream/index.js";
@@ -99,8 +106,11 @@ export type OfflineTestHarness = {
   autobiographicalRepository: AutobiographicalRepository;
   growthMarkersRepository: GrowthMarkersRepository;
   openQuestionsRepository: OpenQuestionsRepository;
+  moodRepository: MoodRepository;
+  socialRepository: SocialRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  skillRepository: SkillRepository;
   retrievalPipeline: RetrievalPipeline;
   registry: ReverserRegistry;
   auditLog: AuditLog;
@@ -129,6 +139,10 @@ export async function createOfflineTestHarness(
     perception: {
       ...DEFAULT_CONFIG.perception,
       ...options.configOverrides?.perception,
+    },
+    affective: {
+      ...DEFAULT_CONFIG.affective,
+      ...options.configOverrides?.affective,
     },
     embedding: {
       ...DEFAULT_CONFIG.embedding,
@@ -179,9 +193,12 @@ export async function createOfflineTestHarness(
     migrations: [
       ...episodicMigrations,
       ...selfMigrations,
+      ...affectiveMigrations,
       ...retrievalMigrations,
       ...semanticMigrations,
       ...commitmentMigrations,
+      ...socialMigrations,
+      ...proceduralMigrations,
       ...offlineMigrations,
     ],
   });
@@ -192,6 +209,10 @@ export async function createOfflineTestHarness(
   const semanticNodesTable = await lance.openTable({
     name: "semantic_nodes",
     schema: createSemanticNodesTableSchema(4),
+  });
+  const skillsTable = await lance.openTable({
+    name: "skills",
+    schema: createSkillsTableSchema(4),
   });
   const episodicRepository = new EpisodicRepository({
     table: episodesTable,
@@ -213,6 +234,12 @@ export async function createOfflineTestHarness(
   const openQuestionsRepository = new OpenQuestionsRepository({
     db,
     clock,
+  });
+  const moodRepository = new MoodRepository({
+    db,
+    clock,
+    defaultHalfLifeHours: config.affective.moodHalfLifeHours,
+    incomingWeight: config.affective.incomingMoodWeight,
   });
   const reviewQueueRepository = new ReviewQueueRepository({
     db,
@@ -263,8 +290,18 @@ export async function createOfflineTestHarness(
     db,
     clock,
   });
+  const socialRepository = new SocialRepository({
+    db,
+    clock,
+  });
   const commitmentRepository = new CommitmentRepository({
     db,
+    clock,
+  });
+  const skillRepository = new SkillRepository({
+    table: skillsTable,
+    db,
+    embeddingClient,
     clock,
   });
   const auditLog = new AuditLog({
@@ -302,8 +339,11 @@ export async function createOfflineTestHarness(
     autobiographicalRepository,
     growthMarkersRepository,
     openQuestionsRepository,
+    moodRepository,
+    socialRepository,
     entityRepository,
     commitmentRepository,
+    skillRepository,
     retrievalPipeline,
     registry,
     auditLog,
@@ -331,8 +371,11 @@ export async function createOfflineTestHarness(
       autobiographicalRepository,
       growthMarkersRepository,
       openQuestionsRepository,
+      moodRepository,
+      socialRepository,
       entityRepository,
       commitmentRepository,
+      skillRepository,
       retrievalPipeline,
     }),
     cleanup: async () => {
@@ -367,6 +410,7 @@ export function createEpisodeFixture(
       derived_from: [],
       supersedes: [],
     },
+    emotional_arc: overrides.emotional_arc ?? null,
     embedding: overrides.embedding ?? Float32Array.from(vector),
     created_at: nowMs,
     updated_at: overrides.updated_at ?? nowMs,

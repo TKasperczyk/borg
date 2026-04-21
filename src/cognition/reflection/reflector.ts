@@ -7,17 +7,24 @@ import {
   TraitsRepository,
   type GoalRecord,
 } from "../../memory/self/index.js";
-import { appendOpenQuestionHookFailureEvent } from "../../memory/self/review-open-question-hook.js";
+import { SkillRepository } from "../../memory/procedural/index.js";
+import {
+  appendInternalFailureEvent,
+  appendOpenQuestionHookFailureEvent,
+} from "../../memory/self/review-open-question-hook.js";
 import { EpisodicRepository } from "../../memory/episodic/index.js";
 import { pushRecentThought, type WorkingMemory } from "../../memory/working/index.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
+import type { SkillId } from "../../util/ids.js";
 
 import type { ActionResult } from "../action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import { SuppressionSet } from "../attention/index.js";
+import type { PerceptionResult } from "../types.js";
 
 export type ReflectionContext = {
   userMessage: string;
+  perception?: PerceptionResult;
   workingMemory: WorkingMemory;
   selfSnapshot: SelfSnapshot;
   deliberationResult: DeliberationResult;
@@ -27,6 +34,8 @@ export type ReflectionContext = {
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
   openQuestionsRepository: OpenQuestionsRepository;
+  skillRepository?: SkillRepository;
+  selectedSkillId?: SkillId | null;
   suppressionSet: SuppressionSet;
 };
 
@@ -34,6 +43,25 @@ const TOKEN_STOPWORDS = ["the", "and", "with", "this", "that", "from", "into", "
 const SURFACED_TTL_TURNS = 4;
 const NOISE_TTL_TURNS = 2;
 const OPEN_QUESTION_CONFIDENCE_THRESHOLD = 0.4;
+const SKILL_OUTCOME_WINDOW_TURNS = 2;
+const EXPLICIT_SUCCESS_MARKERS = [
+  /\bit works\b/i,
+  /\bit worked\b/i,
+  /\bworks now\b/i,
+  /\bfixed\b/i,
+  /\bsolved\b/i,
+  /\bthanks,\s*that did it\b/i,
+  /\bperfect\b/i,
+  /\bgreat,\s*that fixed it\b/i,
+  /^[\s]*[✅✔]/u,
+] as const;
+const EXPLICIT_FAILURE_MARKERS = [
+  /\bdidn'?t work\b/i,
+  /\bstill broken\b/i,
+  /\bsame error\b/i,
+  /\bthat didn'?t help\b/i,
+  /\bno,\s*still\b/i,
+] as const;
 
 function goalMentioned(goal: GoalRecord, userMessage: string, response: string): boolean {
   const goalTokens = tokenizeText(goal.description);
@@ -114,6 +142,18 @@ function buildReflectionQuestion(userMessage: string, entities: readonly string[
   }
 
   return `What am I missing here: ${prompt}?`;
+}
+
+function inferSkillOutcomeFromUserFollowUp(userMessage: string): boolean | null {
+  if (EXPLICIT_SUCCESS_MARKERS.some((pattern) => pattern.test(userMessage))) {
+    return true;
+  }
+
+  if (EXPLICIT_FAILURE_MARKERS.some((pattern) => pattern.test(userMessage))) {
+    return false;
+  }
+
+  return null;
 }
 
 export type ReflectorOptions = {
@@ -204,6 +244,57 @@ export class Reflector {
 
     for (const thought of context.deliberationResult.thoughts) {
       nextWorkingMemory = pushRecentThought(nextWorkingMemory, thought);
+    }
+
+    const carrySkillId = context.workingMemory.last_selected_skill_id;
+    const carrySkillTurn = context.workingMemory.last_selected_skill_turn;
+    const currentTurn = nextWorkingMemory.turn_counter;
+    let consumedCarryOutcome = false;
+
+    if (
+      carrySkillId !== null &&
+      carrySkillTurn !== null &&
+      currentTurn - carrySkillTurn <= SKILL_OUTCOME_WINDOW_TURNS
+    ) {
+      const carryOutcome = inferSkillOutcomeFromUserFollowUp(context.userMessage);
+
+      if (carryOutcome !== null && context.skillRepository !== undefined) {
+        try {
+          context.skillRepository.recordOutcome(carrySkillId, carryOutcome);
+          consumedCarryOutcome = true;
+          nextWorkingMemory = {
+            ...nextWorkingMemory,
+            last_selected_skill_id: null,
+            last_selected_skill_turn: null,
+          };
+        } catch (error) {
+          await appendInternalFailureEvent(streamWriter, "skill_outcome_record", error);
+        }
+      }
+    } else if (carrySkillId !== null && carrySkillTurn !== null) {
+      nextWorkingMemory = {
+        ...nextWorkingMemory,
+        last_selected_skill_id: null,
+        last_selected_skill_turn: null,
+      };
+    }
+
+    if (context.selectedSkillId !== null && context.selectedSkillId !== undefined) {
+      if (consumedCarryOutcome) {
+        return {
+          ...nextWorkingMemory,
+          last_selected_skill_id: null,
+          last_selected_skill_turn: null,
+        };
+      }
+
+      // Outcome attribution is follow-up-only to avoid treating the current problem statement
+      // or the assistant's own wording as evidence that a suggested skill succeeded or failed.
+      nextWorkingMemory = {
+        ...nextWorkingMemory,
+        last_selected_skill_id: context.selectedSkillId,
+        last_selected_skill_turn: currentTurn,
+      };
     }
 
     return nextWorkingMemory;

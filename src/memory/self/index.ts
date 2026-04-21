@@ -38,7 +38,10 @@ export {
   type TraitsRepositoryOptions,
   type ValuesRepositoryOptions,
 } from "./repository.js";
-export { enqueueOpenQuestionForReview } from "./review-open-question-hook.js";
+export {
+  appendInternalFailureEvent,
+  enqueueOpenQuestionForReview,
+} from "./review-open-question-hook.js";
 export {
   goalIdSchema,
   goalSchema,

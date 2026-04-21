@@ -22,6 +22,7 @@ import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
+import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
 
 describe("reflector", () => {
   const cleanup: Array<() => Promise<void>> = [];
@@ -670,5 +671,379 @@ describe("reflector", () => {
         hook: "reflection_open_question",
       },
     });
+  });
+
+  it("keeps a newly surfaced skill pending and records explicit follow-up failure once", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const episode = createEpisodeFixture({
+      title: "Rust lifetime frustration",
+      narrative: "Rust lifetime errors kept blocking progress.",
+      tags: ["rust", "lifetimes"],
+    });
+    await harness.episodicRepository.insert(episode);
+
+    const skill = await harness.skillRepository.add({
+      applies_when: "Rust lifetime debugging",
+      approach: "Shrink borrow scopes and use intermediate bindings.",
+      sourceEpisodes: [episode.id],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+    const retrieved: RetrievedEpisode = {
+      episode,
+      score: 0.8,
+      scoreBreakdown: {
+        similarity: 0.8,
+        decayedSalience: 0.4,
+        heat: 0.3,
+        goalRelevance: 0,
+        timeRelevance: 0,
+        moodBoost: 0,
+        socialRelevance: 0,
+        suppressionPenalty: 0,
+      },
+      citationChain: [],
+      semantic_context: {
+        supports: [],
+        contradicts: [],
+        categories: [],
+      },
+    };
+
+    const firstTurnMemory = await reflector.reflect(
+      {
+        userMessage: "I hit a Rust lifetime error again.",
+        perception: {
+          entities: ["Rust"],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: -0.7,
+            arousal: 0.5,
+            dominant_emotion: "anger",
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          scratchpad: "",
+          current_focus: "Rust",
+          recent_thoughts: [],
+          hot_entities: ["Rust"],
+          pending_intents: [],
+          suppressed: [],
+          mood: null,
+          last_selected_skill_id: null,
+          last_selected_skill_turn: null,
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Try shrinking the borrow scope.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [retrieved],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Try shrinking the borrow scope.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            scratchpad: "",
+            current_focus: "Rust",
+            recent_thoughts: [],
+            hot_entities: ["Rust"],
+            pending_intents: [],
+            suppressed: [],
+            mood: null,
+            last_selected_skill_id: null,
+            last_selected_skill_turn: null,
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        skillRepository: harness.skillRepository,
+        selectedSkillId: skill.id,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
+    expect(firstTurnMemory.last_selected_skill_id).toBe(skill.id);
+
+    const secondTurnMemory = await reflector.reflect(
+      {
+        userMessage: "That didn't work; I'm still failing with the Rust lifetime error.",
+        perception: {
+          entities: ["Rust"],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: -0.6,
+            arousal: 0.5,
+            dominant_emotion: "anger",
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          ...firstTurnMemory,
+          turn_counter: 2,
+          updated_at: 1,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Let's inspect the borrow spans next.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [retrieved],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Let's inspect the borrow spans next.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            ...firstTurnMemory,
+            turn_counter: 2,
+            updated_at: 1,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        skillRepository: harness.skillRepository,
+        selectedSkillId: null,
+        suppressionSet: new SuppressionSet(2),
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      attempts: 1,
+      failures: 1,
+      beta: 2,
+    });
+    expect(secondTurnMemory.last_selected_skill_id).toBeNull();
+  });
+
+  it("does not attribute outcomes from assistant wording or generic negative affect", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const episode = createEpisodeFixture({
+      title: "Rust lifetime frustration",
+      narrative: "Rust lifetime errors kept blocking progress.",
+      tags: ["rust", "lifetimes"],
+    });
+    await harness.episodicRepository.insert(episode);
+
+    const skill = await harness.skillRepository.add({
+      applies_when: "Rust lifetime debugging",
+      approach: "Shrink borrow scopes and use intermediate bindings.",
+      sourceEpisodes: [episode.id],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+    const retrieved: RetrievedEpisode = {
+      episode,
+      score: 0.8,
+      scoreBreakdown: {
+        similarity: 0.8,
+        decayedSalience: 0.4,
+        heat: 0.3,
+        goalRelevance: 0,
+        timeRelevance: 0,
+        moodBoost: 0,
+        socialRelevance: 0,
+        suppressionPenalty: 0,
+      },
+      citationChain: [],
+      semantic_context: {
+        supports: [],
+        contradicts: [],
+        categories: [],
+      },
+    };
+
+    const firstTurnMemory = await reflector.reflect(
+      {
+        userMessage: "I hit a Rust lifetime issue again.",
+        perception: {
+          entities: ["Rust"],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: -0.5,
+            arousal: 0.5,
+            dominant_emotion: "anger",
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          scratchpad: "",
+          current_focus: "Rust",
+          recent_thoughts: [],
+          hot_entities: ["Rust"],
+          pending_intents: [],
+          suppressed: [],
+          mood: null,
+          last_selected_skill_id: null,
+          last_selected_skill_turn: null,
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "This works when you shrink the borrow scope.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [retrieved],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "This works when you shrink the borrow scope.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            scratchpad: "",
+            current_focus: "Rust",
+            recent_thoughts: [],
+            hot_entities: ["Rust"],
+            pending_intents: [],
+            suppressed: [],
+            mood: null,
+            last_selected_skill_id: null,
+            last_selected_skill_turn: null,
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        skillRepository: harness.skillRepository,
+        selectedSkillId: skill.id,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
+    expect(firstTurnMemory.last_selected_skill_id).toBe(skill.id);
+
+    const secondTurnMemory = await reflector.reflect(
+      {
+        userMessage: "I'm frustrated and tired of this.",
+        perception: {
+          entities: ["Rust"],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: -0.8,
+            arousal: 0.3,
+            dominant_emotion: "sadness",
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          ...firstTurnMemory,
+          turn_counter: 2,
+          updated_at: 1,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Let's narrow the borrow lifetime a bit more.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [retrieved],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Let's narrow the borrow lifetime a bit more.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            ...firstTurnMemory,
+            turn_counter: 2,
+            updated_at: 1,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        skillRepository: harness.skillRepository,
+        selectedSkillId: null,
+        suppressionSet: new SuppressionSet(2),
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
+    expect(secondTurnMemory.last_selected_skill_id).toBe(skill.id);
   });
 });

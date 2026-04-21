@@ -118,4 +118,48 @@ describe("curator process", () => {
         .sort(),
     ).toEqual(["archive", "decay", "demote", "promote"]);
   });
+
+  it("does not mutate mood_state on curator runs but still trims old mood history", async () => {
+    const nowMs = 100 * DAY_MS;
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+    });
+    cleanup.push(harness.cleanup);
+
+    harness.moodRepository.update("default", {
+      valence: -0.6,
+      arousal: 0.4,
+      reason: "recent frustration",
+    });
+    harness.moodRepository.restoreHistory([
+      {
+        id: 10_000,
+        session_id: "default",
+        ts: nowMs - 120 * DAY_MS,
+        valence: -0.7,
+        arousal: 0.5,
+        trigger_episode_id: null,
+        trigger_reason: "old mood",
+      },
+    ]);
+    const beforeState = harness.moodRepository.listStoredStates()[0];
+
+    const process = new CuratorProcess({
+      episodicRepository: harness.episodicRepository,
+      registry: harness.registry,
+    });
+
+    const first = await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+    const second = await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+    const afterState = harness.moodRepository.listStoredStates()[0];
+
+    expect(beforeState).toEqual(afterState);
+    expect(first.changes.map((change) => change.action)).toContain("trim_mood_history");
+    expect(second.changes.map((change) => change.action)).not.toContain("trim_mood_history");
+    expect(harness.moodRepository.historyBefore(nowMs - 90 * DAY_MS)).toEqual([]);
+  });
 });

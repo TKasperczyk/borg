@@ -33,6 +33,7 @@ import {
   parseMaintenanceRunId,
   parseSemanticNodeId,
   parseSessionId,
+  parseSkillId,
   parseValueId,
 } from "../util/ids.js";
 
@@ -195,6 +196,20 @@ function resolveOpenQuestionId(value: unknown) {
     return parseOpenQuestionId(value);
   } catch (error) {
     throw new CliError(`Invalid open question id: ${value}`, {
+      cause: error,
+    });
+  }
+}
+
+function resolveSkillId(value: unknown) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new CliError("Skill id is required");
+  }
+
+  try {
+    return parseSkillId(value);
+  } catch (error) {
+    throw new CliError(`Invalid skill id: ${value}`, {
       cause: error,
     });
   }
@@ -1299,6 +1314,136 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
         }
 
         throw new CliError(`Unknown question action: ${action}`);
+      },
+    );
+
+  cli
+    .command("skill <action> [arg]", "Manage procedural skills")
+    .option("--applies-when <text>", "Context where the skill applies")
+    .option("--approach <text>", "Suggested approach")
+    .option("--episode <id>", "Source episode id")
+    .option("--limit <count>", "Maximum number of results", {
+      default: 10,
+      type: [Number],
+    })
+    .action(
+      async (action: string, arg: string | undefined, commandOptions: Record<string, unknown>) => {
+        if (action === "add") {
+          const skill = await withBorg(options, async (borg) =>
+            borg.skills.add({
+              applies_when: parseRequiredText(
+                commandOptions.appliesWhen ?? commandOptions["applies-when"],
+                "--applies-when",
+              ),
+              approach: parseRequiredText(commandOptions.approach, "--approach"),
+              sourceEpisodes: [resolveEpisodeId(commandOptions.episode)],
+            }),
+          );
+          writeLine(stdout, JSON.stringify(skill, null, 2));
+          return;
+        }
+
+        if (action === "list") {
+          const skills = await withBorg(options, async (borg) =>
+            borg.skills.list(parseLimit(commandOptions.limit)),
+          );
+          writeLine(stdout, JSON.stringify(skills, null, 2));
+          return;
+        }
+
+        if (action === "show") {
+          const skill = await withBorg(options, async (borg) =>
+            borg.skills.get(resolveSkillId(arg)),
+          );
+
+          if (skill === null) {
+            throw new CliError(`Skill not found: ${arg}`, {
+              code: "CLI_NOT_FOUND",
+            });
+          }
+
+          writeLine(stdout, JSON.stringify(skill, null, 2));
+          return;
+        }
+
+        if (action === "select") {
+          const result = await withBorg(options, async (borg) =>
+            borg.skills.select(parseRequiredText(arg, "<context>"), {
+              k: parseLimit(commandOptions.limit),
+            }),
+          );
+          writeLine(stdout, JSON.stringify(result, null, 2));
+          return;
+        }
+
+        throw new CliError(`Unknown skill action: ${action}`);
+      },
+    );
+
+  cli
+    .command("mood <action>", "Inspect affective mood state")
+    .option("--session <id>", "Session id")
+    .option("--since <duration>", "Relative duration like 1h or epoch ms")
+    .option("--until <duration>", "Relative duration like 1h or epoch ms")
+    .action(async (action: string, commandOptions: Record<string, unknown>) => {
+      const sessionId = resolveSessionId(commandOptions.session);
+
+      if (action === "current") {
+        const mood = await withBorg(options, async (borg) => borg.mood.current(sessionId));
+        writeLine(stdout, JSON.stringify(mood, null, 2));
+        return;
+      }
+
+      if (action === "history") {
+        const history = await withBorg(options, async (borg) =>
+          borg.mood.history(sessionId, {
+            fromTs: parseSinceToTimestamp(commandOptions.since),
+            toTs: parseSinceToTimestamp(commandOptions.until),
+          }),
+        );
+        writeLine(stdout, JSON.stringify(history, null, 2));
+        return;
+      }
+
+      throw new CliError(`Unknown mood action: ${action}`);
+    });
+
+  cli
+    .command("social <action> <entity> [delta]", "Manage social profiles")
+    .action(
+      async (
+        action: string,
+        entity: string | undefined,
+        delta: string | undefined,
+        _commandOptions: Record<string, unknown>,
+      ) => {
+        const entityName = parseRequiredText(entity, "<entity>");
+
+        if (action === "profile") {
+          const profile = await withBorg(options, async (borg) =>
+            borg.social.getProfile(entityName),
+          );
+          writeLine(stdout, JSON.stringify(profile, null, 2));
+          return;
+        }
+
+        if (action === "upsert") {
+          const profile = await withBorg(options, async (borg) =>
+            borg.social.upsertProfile(entityName),
+          );
+          writeLine(stdout, JSON.stringify(profile, null, 2));
+          return;
+        }
+
+        if (action === "adjust-trust") {
+          const profile = await withBorg(options, async (borg) =>
+            borg.social.adjustTrust(entityName, parseFiniteNumber(delta, "<delta>")),
+          );
+          writeLine(stdout, JSON.stringify(profile, null, 2));
+          return;
+        }
+
+        throw new CliError(`Unknown social action: ${action}`);
       },
     );
 

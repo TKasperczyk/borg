@@ -2,23 +2,31 @@ import type { Config } from "../config/index.js";
 import { SuppressionSet, computeRetrievalLimit, computeWeights } from "./attention/index.js";
 import { performAction } from "./action/index.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
+import {
+  detectAffectiveSignal,
+  detectAffectiveSignalHeuristically,
+} from "./perception/affective-signal.js";
 import { Perceiver } from "./perception/index.js";
 import { Reflector } from "./reflection/index.js";
 import type { RetrievalPipeline, RetrievalSearchOptions } from "../retrieval/index.js";
 import type { LLMClient } from "../llm/index.js";
+import { MoodRepository } from "../memory/affective/index.js";
 import {
   CommitmentChecker,
   CommitmentRepository,
   EntityRepository,
   type CommitmentRecord,
 } from "../memory/commitments/index.js";
+import { SkillRepository, SkillSelector } from "../memory/procedural/index.js";
 import {
+  appendInternalFailureEvent,
   OpenQuestionsRepository,
   GoalsRepository,
   TraitsRepository,
   ValuesRepository,
   type GoalRecord,
 } from "../memory/self/index.js";
+import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { StreamWriter } from "../stream/index.js";
@@ -79,12 +87,17 @@ export type TurnOrchestratorOptions = {
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
   openQuestionsRepository: OpenQuestionsRepository;
+  moodRepository: MoodRepository;
+  socialRepository: SocialRepository;
+  skillRepository: SkillRepository;
+  skillSelector: SkillSelector;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   workingMemoryStore: WorkingMemoryStore;
   llmFactory: () => LLMClient;
   clock?: Clock;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
+  affectiveSignalDetector?: typeof detectAffectiveSignal;
 };
 
 export class TurnOrchestrator {
@@ -193,6 +206,14 @@ export class TurnOrchestrator {
     }
   }
 
+  private async appendHookFailureEvent(
+    streamWriter: StreamWriter,
+    hook: string,
+    error: unknown,
+  ): Promise<void> {
+    await appendInternalFailureEvent(streamWriter, hook, error);
+  }
+
   async run(input: TurnInput): Promise<TurnResult> {
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
     const streamWriter = this.options.createStreamWriter(sessionId);
@@ -208,6 +229,10 @@ export class TurnOrchestrator {
           llmClient: optionalPerceptionLlm,
           model: this.options.config.anthropic.models.background,
           useLlmFallback: this.options.config.perception.useLlmFallback,
+          affectiveUseLlmFallback: this.options.config.affective.useLlmFallback,
+          detectAffectiveSignal: this.options.affectiveSignalDetector,
+          onAffectiveError: (error) =>
+            this.appendHookFailureEvent(streamWriter, "affective_extraction", error),
           clock: this.clock,
         });
         const llmClient = this.options.llmFactory();
@@ -223,6 +248,7 @@ export class TurnOrchestrator {
           scratchpad: "",
           current_focus: perception.entities[0] ?? (input.userMessage.slice(0, 80) || null),
           hot_entities: perception.entities,
+          mood: perception.affectiveSignal,
           mode: perception.mode,
           updated_at: this.clock.now(),
         };
@@ -249,20 +275,41 @@ export class TurnOrchestrator {
           input.audience === undefined
             ? null
             : this.options.entityRepository.resolve(input.audience);
+        const audienceEntity =
+          audienceEntityId === null ? null : this.options.entityRepository.get(audienceEntityId);
+        const audienceProfile =
+          audienceEntityId === null
+            ? null
+            : this.options.socialRepository.upsertProfile(audienceEntityId);
         const applicableCommitments = this.collectApplicableCommitments(
           audienceEntityId,
           perception.entities,
         );
+        const currentMood = this.options.moodRepository.current(sessionId);
 
         const attentionWeights = computeWeights(perception.mode, {
           currentGoals: selfSnapshot.goals,
           hasTemporalCue: perception.temporalCue !== null,
+          moodActive: Math.abs(currentMood.valence) + Math.abs(currentMood.arousal) > 0.3,
+          audienceTrust: audienceProfile?.trust ?? null,
         });
         const retrievalOptions: RetrievalSearchOptions = {
           limit: computeRetrievalLimit(perception.mode),
           attentionWeights,
           goalDescriptions: selfSnapshot.goals.map((goal) => goal.description),
           temporalCue: perception.temporalCue,
+          moodState: currentMood,
+          audienceProfile,
+          audienceTerms:
+            audienceEntity === null
+              ? input.audience === undefined
+                ? []
+                : [input.audience]
+              : [
+                  audienceEntity.canonical_name,
+                  ...audienceEntity.aliases,
+                  ...(input.audience === undefined ? [] : [input.audience]),
+                ],
           suppressionSet,
           includeOpenQuestions: perception.mode === "reflective",
           timeRange:
@@ -278,6 +325,15 @@ export class TurnOrchestrator {
           retrievalOptions,
         );
         const retrievedEpisodes = retrieval.episodes;
+        const selectedSkill =
+          perception.mode === "problem_solving"
+            ? await this.options.skillSelector.select(
+                perception.entities[0] ?? workingMemory.current_focus ?? input.userMessage,
+                {
+                  k: 5,
+                },
+              )
+            : null;
         const deliberator = new Deliberator({
           llmClient,
           cognitionModel: this.options.config.anthropic.models.cognition,
@@ -293,6 +349,7 @@ export class TurnOrchestrator {
             contradictionPresent: retrieval.contradiction_present,
             applicableCommitments,
             openQuestionsContext: retrieval.open_questions_context,
+            selectedSkill,
             entityRepository: this.options.entityRepository,
             workingMemory,
             selfSnapshot,
@@ -348,13 +405,45 @@ export class TurnOrchestrator {
         } satisfies Parameters<StreamWriter["append"]>[0];
 
         await streamWriter.append(agentEntry);
+        const responseSignal = detectAffectiveSignalHeuristically(actionResult.response);
+        let moodSnapshot = perception.affectiveSignal;
+
+        try {
+          const nextMood = this.options.moodRepository.update(sessionId, {
+            valence: perception.affectiveSignal.valence,
+            arousal: perception.affectiveSignal.arousal,
+            reason: input.userMessage.slice(0, 120),
+          });
+          moodSnapshot = {
+            valence: nextMood.valence,
+            arousal: nextMood.arousal,
+            dominant_emotion: perception.affectiveSignal.dominant_emotion,
+          };
+        } catch (error) {
+          await this.appendHookFailureEvent(streamWriter, "mood_update", error);
+        }
+
+        if (audienceEntityId !== null) {
+          try {
+            this.options.socialRepository.recordInteraction(audienceEntityId, {
+              valence: responseSignal.valence,
+              now: this.clock.now(),
+            });
+          } catch (error) {
+            await this.appendHookFailureEvent(streamWriter, "social_update", error);
+          }
+        }
         const reflector = new Reflector({
           clock: this.clock,
         });
         const reflectedWorkingMemory = await reflector.reflect(
           {
             userMessage: input.userMessage,
-            workingMemory: actionResult.workingMemory,
+            perception,
+            workingMemory: {
+              ...actionResult.workingMemory,
+              mood: moodSnapshot,
+            },
             selfSnapshot,
             deliberationResult: deliberation,
             actionResult,
@@ -363,6 +452,8 @@ export class TurnOrchestrator {
             goalsRepository: this.options.goalsRepository,
             traitsRepository: this.options.traitsRepository,
             openQuestionsRepository: this.options.openQuestionsRepository,
+            skillRepository: this.options.skillRepository,
+            selectedSkillId: selectedSkill?.skill.id ?? null,
             suppressionSet,
           },
           streamWriter,
@@ -370,6 +461,7 @@ export class TurnOrchestrator {
 
         this.options.workingMemoryStore.save({
           ...reflectedWorkingMemory,
+          mood: moodSnapshot,
           suppressed: suppressionSet.snapshot(),
           updated_at: this.clock.now(),
         });

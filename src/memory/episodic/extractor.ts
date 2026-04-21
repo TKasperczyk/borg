@@ -1,5 +1,6 @@
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
+import { analyzeAffectiveSignalHeuristically, type EmotionalArc } from "../affective/index.js";
 import { StreamReader, type StreamEntry } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { EmbeddingError, LLMError, StorageError } from "../../util/errors.js";
@@ -97,6 +98,41 @@ function uniqueStreamEntryIds(entries: readonly StreamEntry[]): Episode["source_
   return [...new Set(entries.map((entry) => entry.id))];
 }
 
+function entryContentText(entry: StreamEntry): string {
+  return typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content ?? null);
+}
+
+function buildEmotionalArc(sourceEntries: readonly StreamEntry[]): EmotionalArc | null {
+  if (sourceEntries.length === 0) {
+    return null;
+  }
+
+  const signals = sourceEntries.map((entry) =>
+    analyzeAffectiveSignalHeuristically(entryContentText(entry)),
+  );
+  const byPeak = [...signals].sort(
+    (left, right) =>
+      Math.abs(right.valence) + right.arousal - (Math.abs(left.valence) + left.arousal),
+  );
+
+  return {
+    start: {
+      valence: signals[0]?.valence ?? 0,
+      arousal: signals[0]?.arousal ?? 0,
+    },
+    peak: {
+      valence: byPeak[0]?.valence ?? 0,
+      arousal: byPeak[0]?.arousal ?? 0,
+    },
+    end: {
+      valence: signals.at(-1)?.valence ?? 0,
+      arousal: signals.at(-1)?.arousal ?? 0,
+    },
+    dominant_emotion:
+      signals.find((signal) => signal.dominant_emotion !== "neutral")?.dominant_emotion ?? null,
+  };
+}
+
 function buildExtractorPrompt(chunk: readonly StreamEntry[]): string {
   const lines = chunk.map((entry) =>
     JSON.stringify({
@@ -184,6 +220,7 @@ function buildEpisodeFromCandidate(
       derived_from: [],
       supersedes: [],
     },
+    emotional_arc: buildEmotionalArc(sourceEntries),
     embedding,
     created_at: nowMs,
     updated_at: nowMs,
