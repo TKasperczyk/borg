@@ -1,0 +1,70 @@
+import { z } from "zod";
+
+import {
+  episodeIdHelpers,
+  goalIdHelpers,
+  valueIdHelpers,
+  type EpisodeId,
+  type GoalId,
+  type ValueId,
+} from "../../util/ids.js";
+
+export const goalStatusSchema = z.enum(["active", "done", "abandoned", "blocked"]);
+
+export const valueIdSchema = z
+  .string()
+  .refine((value) => valueIdHelpers.is(value), {
+    message: "Invalid value id",
+  })
+  .transform((value) => value as ValueId);
+
+export const goalIdSchema = z
+  .string()
+  .refine((value) => goalIdHelpers.is(value), {
+    message: "Invalid goal id",
+  })
+  .transform((value) => value as GoalId);
+
+export const valueSourceEpisodeIdSchema = z
+  .string()
+  .refine((value) => episodeIdHelpers.is(value), {
+    message: "Invalid episode id",
+  })
+  .transform((value) => value as EpisodeId);
+
+export const valueSchema = z.object({
+  id: valueIdSchema,
+  label: z.string().min(1),
+  description: z.string().min(1),
+  priority: z.number().finite(),
+  created_at: z.number().finite(),
+  last_affirmed: z.number().finite().nullable(),
+  source_episode_ids: z.array(valueSourceEpisodeIdSchema),
+});
+
+export const goalSchema = z.object({
+  id: goalIdSchema,
+  description: z.string().min(1),
+  priority: z.number().finite(),
+  parent_goal_id: goalIdSchema.nullable(),
+  status: goalStatusSchema,
+  progress_notes: z.string().nullable(),
+  created_at: z.number().finite(),
+  target_at: z.number().finite().nullable(),
+});
+
+export const traitSchema = z.object({
+  label: z.string().min(1),
+  strength: z.number().min(0).max(1),
+  last_reinforced: z.number().finite(),
+  last_decayed: z.number().finite().nullable(),
+});
+
+export type ValueRecord = z.infer<typeof valueSchema>;
+export type GoalRecord = z.infer<typeof goalSchema>;
+export type GoalStatus = z.infer<typeof goalStatusSchema>;
+export type TraitRecord = z.infer<typeof traitSchema>;
+
+export type GoalTreeNode = GoalRecord & {
+  children: GoalTreeNode[];
+};

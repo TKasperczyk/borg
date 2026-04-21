@@ -1,0 +1,306 @@
+import { existsSync, readdirSync } from "node:fs";
+import { basename } from "node:path";
+
+import type { EmbeddingClient } from "../embeddings/index.js";
+import { StreamReader, getStreamDirectory, type StreamEntry } from "../stream/index.js";
+import { SystemClock, type Clock } from "../util/clock.js";
+import { StorageError } from "../util/errors.js";
+import {
+  DEFAULT_SESSION_ID,
+  parseSessionId,
+  type SessionId,
+  type StreamEntryId,
+} from "../util/ids.js";
+import { applyEpisodeDecay, type DecayOptions } from "../memory/episodic/decay.js";
+import { computeEpisodeHeat } from "../memory/episodic/heat.js";
+import {
+  type Episode,
+  type EpisodeSearchCandidate,
+  type EpisodeSearchOptions,
+  type EpisodeStats,
+} from "../memory/episodic/types.js";
+import { EpisodicRepository } from "../memory/episodic/repository.js";
+
+import { applyMmr } from "./mmr.js";
+
+export type RetrievedEpisode = {
+  episode: Episode;
+  score: number;
+  scoreBreakdown: {
+    similarity: number;
+    decayedSalience: number;
+    heat: number;
+  };
+  citationChain: StreamEntry[];
+};
+
+export type RetrievalPipelineOptions = {
+  embeddingClient: EmbeddingClient;
+  episodicRepository: EpisodicRepository;
+  dataDir: string;
+  clock?: Clock;
+  scoreWeights?: {
+    similarity: number;
+    salience: number;
+  };
+  mmrLambda?: number;
+  decayOptions?: Omit<DecayOptions, "nowMs">;
+};
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function parseSessionIdFromFilename(filename: string): SessionId | null {
+  if (!filename.endsWith(".jsonl")) {
+    return null;
+  }
+
+  const sessionName = basename(filename, ".jsonl");
+
+  try {
+    return parseSessionId(sessionName);
+  } catch {
+    return null;
+  }
+}
+
+function defaultDecayOptions(nowMs: number): DecayOptions {
+  return {
+    nowMs,
+    baseHalfLifeHours: 24 * 7,
+    halfLifeByTier: {
+      T1: 24 * 3,
+      T2: 24 * 7,
+      T3: 24 * 14,
+      T4: 24 * 30,
+    },
+  };
+}
+
+function buildResult(
+  candidate: EpisodeSearchCandidate,
+  decayedSalience: number,
+  heat: number,
+  score: number,
+  citationChain: StreamEntry[],
+): RetrievedEpisode {
+  return {
+    episode: candidate.episode,
+    score,
+    scoreBreakdown: {
+      similarity: candidate.similarity,
+      decayedSalience,
+      heat,
+    },
+    citationChain,
+  };
+}
+
+export type RetrievalSearchOptions = EpisodeSearchOptions & {
+  limit?: number;
+  mmrLambda?: number;
+  scoreWeights?: {
+    similarity: number;
+    salience: number;
+  };
+  decayOptions?: Omit<DecayOptions, "nowMs">;
+};
+
+export class RetrievalPipeline {
+  private readonly clock: Clock;
+  private readonly scoreWeights: {
+    similarity: number;
+    salience: number;
+  };
+  private readonly mmrLambda: number;
+  private readonly decayOptions?: Omit<DecayOptions, "nowMs">;
+
+  constructor(private readonly options: RetrievalPipelineOptions) {
+    this.clock = options.clock ?? new SystemClock();
+    this.scoreWeights = options.scoreWeights ?? {
+      similarity: 0.7,
+      salience: 0.3,
+    };
+    this.mmrLambda = options.mmrLambda ?? 0.7;
+    this.decayOptions = options.decayOptions;
+  }
+
+  private listSessionIds(): SessionId[] {
+    const streamDir = getStreamDirectory(this.options.dataDir);
+
+    if (!existsSync(streamDir)) {
+      return [DEFAULT_SESSION_ID];
+    }
+
+    const sessionIds = readdirSync(streamDir)
+      .map((filename) => parseSessionIdFromFilename(filename))
+      .filter((value): value is SessionId => value !== null);
+
+    return sessionIds.length === 0 ? [DEFAULT_SESSION_ID] : sessionIds;
+  }
+
+  private async resolveCitationEntries(
+    sourceStreamIds: readonly StreamEntryId[],
+  ): Promise<Map<string, StreamEntry>> {
+    const entries = new Map<string, StreamEntry>();
+    const pendingIds = new Set<string>(sourceStreamIds);
+
+    if (pendingIds.size === 0) {
+      return entries;
+    }
+
+    const sessionIds = this.listSessionIds();
+
+    for (const sessionId of sessionIds) {
+      const reader = new StreamReader({
+        dataDir: this.options.dataDir,
+        sessionId,
+      });
+
+      for await (const entry of reader.iterate()) {
+        if (!pendingIds.has(entry.id)) {
+          continue;
+        }
+
+        entries.set(entry.id, entry);
+        pendingIds.delete(entry.id);
+
+        if (pendingIds.size === 0) {
+          break;
+        }
+      }
+
+      if (pendingIds.size === 0) {
+        break;
+      }
+    }
+
+    return entries;
+  }
+
+  private resolveCitationChainFromMap(
+    sourceStreamIds: readonly StreamEntryId[],
+    entries: ReadonlyMap<string, StreamEntry>,
+  ): StreamEntry[] {
+    return sourceStreamIds
+      .map((sourceId) => entries.get(sourceId))
+      .filter((entry): entry is StreamEntry => entry !== undefined);
+  }
+
+  private scoreCandidate(
+    candidate: EpisodeSearchCandidate,
+    searchOptions: RetrievalSearchOptions,
+    nowMs: number,
+  ): {
+    decayedSalience: number;
+    heat: number;
+    score: number;
+  } {
+    const decay = applyEpisodeDecay(
+      candidate.episode,
+      candidate.stats,
+      searchOptions.decayOptions === undefined
+        ? this.decayOptions === undefined
+          ? defaultDecayOptions(nowMs)
+          : { ...this.decayOptions, nowMs }
+        : { ...searchOptions.decayOptions, nowMs },
+    );
+    const heat = computeEpisodeHeat(candidate.episode, candidate.stats, nowMs);
+    const weights = searchOptions.scoreWeights ?? this.scoreWeights;
+
+    return {
+      decayedSalience: decay.decayedSalience,
+      heat,
+      score: weights.similarity * candidate.similarity + weights.salience * decay.decayedSalience,
+    };
+  }
+
+  async search(query: string, options: RetrievalSearchOptions = {}): Promise<RetrievedEpisode[]> {
+    const nowMs = this.clock.now();
+    const limit = Math.max(1, options.limit ?? 5);
+    const queryVector = await this.options.embeddingClient.embed(query);
+    const candidates = await this.options.episodicRepository.searchByVector(queryVector, {
+      ...options,
+      limit: Math.max(limit * 3, limit),
+    });
+    const scored = candidates.map((candidate) => {
+      const score = this.scoreCandidate(candidate, options, nowMs);
+
+      return {
+        candidate,
+        ...score,
+      };
+    });
+    const selected = applyMmr(
+      scored.map((item) => ({
+        item,
+        vector: item.candidate.episode.embedding,
+        relevanceScore: item.score,
+      })),
+      {
+        limit,
+        lambda: options.mmrLambda ?? this.mmrLambda,
+      },
+    );
+    const citationEntries = await this.resolveCitationEntries(
+      selected.flatMap((choice) => choice.item.candidate.episode.source_stream_ids),
+    );
+    const results: RetrievedEpisode[] = [];
+
+    for (const choice of selected) {
+      const item = choice.item;
+      const citationChain = this.resolveCitationChainFromMap(
+        item.candidate.episode.source_stream_ids,
+        citationEntries,
+      );
+      const result = buildResult(
+        item.candidate,
+        item.decayedSalience,
+        item.heat,
+        clamp(item.score, 0, 1),
+        citationChain,
+      );
+
+      this.options.episodicRepository.recordRetrieval(
+        item.candidate.episode.id,
+        nowMs,
+        result.score,
+      );
+      results.push(result);
+    }
+
+    return results;
+  }
+
+  async getEpisode(id: Episode["id"]): Promise<RetrievedEpisode | null> {
+    const episode = await this.options.episodicRepository.get(id);
+
+    if (episode === null) {
+      return null;
+    }
+
+    const stats = this.options.episodicRepository.getStats(id);
+
+    if (stats === null) {
+      throw new StorageError(`Missing episode stats for ${id}`, {
+        code: "EPISODE_STATS_MISSING",
+      });
+    }
+
+    const nowMs = this.clock.now();
+    const candidate = {
+      episode,
+      stats,
+      similarity: 1,
+    };
+    const scored = this.scoreCandidate(candidate, {}, nowMs);
+    const citationEntries = await this.resolveCitationEntries(episode.source_stream_ids);
+    const citationChain = this.resolveCitationChainFromMap(
+      episode.source_stream_ids,
+      citationEntries,
+    );
+
+    return buildResult(candidate, scored.decayedSalience, scored.heat, 1, citationChain);
+  }
+}

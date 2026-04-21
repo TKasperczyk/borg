@@ -11,6 +11,9 @@ export type BrandedId<BrandName extends string> = string & {
 
 export type StreamEntryId = BrandedId<"StreamEntryId">;
 export type SessionId = BrandedId<"SessionId">;
+export type EpisodeId = BrandedId<"EpisodeId">;
+export type GoalId = BrandedId<"GoalId">;
+export type ValueId = BrandedId<"ValueId">;
 
 export const DEFAULT_SESSION_ID = DEFAULT_SESSION_LITERAL as SessionId;
 
@@ -40,9 +43,15 @@ export function createIdHelpers<BrandName extends string>(prefix: string): IdHel
 
 export const streamEntryIdHelpers = createIdHelpers<"StreamEntryId">("strm");
 export const sessionIdHelpers = createIdHelpers<"SessionId">("sess");
+export const episodeIdHelpers = createIdHelpers<"EpisodeId">("ep");
+export const goalIdHelpers = createIdHelpers<"GoalId">("goal");
+export const valueIdHelpers = createIdHelpers<"ValueId">("val");
 
 export const createStreamEntryId = (): StreamEntryId => streamEntryIdHelpers.create();
 export const createSessionId = (): SessionId => sessionIdHelpers.create();
+export const createEpisodeId = (): EpisodeId => episodeIdHelpers.create();
+export const createGoalId = (): GoalId => goalIdHelpers.create();
+export const createValueId = (): ValueId => valueIdHelpers.create();
 
 export function isSessionId(value: string): value is SessionId {
   return value === DEFAULT_SESSION_LITERAL || sessionIdHelpers.is(value);
@@ -54,4 +63,16 @@ export function parseSessionId(value: string): SessionId {
   }
 
   return sessionIdHelpers.parse(value);
+}
+
+export function parseEpisodeId(value: string): EpisodeId {
+  return episodeIdHelpers.parse(value);
+}
+
+export function parseGoalId(value: string): GoalId {
+  return goalIdHelpers.parse(value);
+}
+
+export function parseValueId(value: string): ValueId {
+  return valueIdHelpers.parse(value);
 }

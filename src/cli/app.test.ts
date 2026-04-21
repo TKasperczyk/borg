@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { LanceDbStore } from "../storage/lancedb/index.js";
+import { openDatabase } from "../storage/sqlite/index.js";
+import { episodicMigrations } from "../memory/episodic/migrations.js";
+import { EpisodicRepository, createEpisodesTableSchema } from "../memory/episodic/repository.js";
+import { selfMigrations } from "../memory/self/migrations.js";
+import { retrievalMigrations } from "../retrieval/migrations.js";
 import { runCli } from "./app.js";
 
 function createOutputBuffer() {
@@ -126,5 +132,141 @@ describe("cli", () => {
 
     expect(exitCode).toBe(1);
     expect(stderr.read()).toContain("Invalid session id");
+  });
+
+  it("shows an episode and manages self-band commands", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+    });
+
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Planning sync",
+      narrative: "A short planning episode.",
+      participants: ["team"],
+      location: null,
+      start_time: 1,
+      end_time: 2,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.8,
+      tags: ["planning"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 1,
+      updated_at: 1,
+    });
+    db.close();
+    await store.close();
+
+    const showOut = createOutputBuffer();
+    const showErr = createOutputBuffer();
+    const showExit = await runCli(["node", "borg", "episode", "show", "ep_aaaaaaaaaaaaaaaa"], {
+      stdout: showOut.stream,
+      stderr: showErr.stream,
+      dataDir: tempDir,
+    });
+
+    expect(showExit).toBe(0);
+    expect(JSON.parse(showOut.read())).toMatchObject({
+      episode: {
+        id: "ep_aaaaaaaaaaaaaaaa",
+      },
+    });
+
+    const goalAddOut = createOutputBuffer();
+    const goalExit = await runCli(
+      ["node", "borg", "goal", "add", "--description", "Ship Sprint 2", "--priority", "9"],
+      {
+        stdout: goalAddOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      },
+    );
+    const goal = JSON.parse(goalAddOut.read()) as {
+      id: string;
+    };
+
+    expect(goalExit).toBe(0);
+    expect(goal.id).toMatch(/^goal_/);
+
+    const goalProgressOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "goal", "progress", goal.id, "--note", "Almost there"], {
+        stdout: goalProgressOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(goalProgressOut.read())).toMatchObject({
+      id: goal.id,
+      progress_notes: "Almost there",
+    });
+
+    const valueAddOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "value",
+          "add",
+          "--label",
+          "clarity",
+          "--description",
+          "Prefer explicit state.",
+          "--priority",
+          "5",
+        ],
+        {
+          stdout: valueAddOut.stream,
+          stderr: createOutputBuffer().stream,
+          dataDir: tempDir,
+        },
+      ),
+    ).toBe(0);
+    const value = JSON.parse(valueAddOut.read()) as {
+      id: string;
+    };
+
+    const traitOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "trait", "show"], {
+        stdout: traitOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(traitOut.read())).toEqual([]);
+
+    const affirmOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "value", "affirm", value.id], {
+        stdout: affirmOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(affirmOut.read())).toMatchObject({
+      id: value.id,
+      affirmed: true,
+    });
   });
 });

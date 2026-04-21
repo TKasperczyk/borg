@@ -37,6 +37,7 @@ export type LanceDbSearchOptions = {
   where?: string;
   columns?: string[];
   vectorColumn?: string;
+  distanceType?: "l2" | "cosine" | "dot";
 };
 
 export type LanceDbListOptions = {
@@ -91,6 +92,14 @@ export class LanceDbTable {
 
       if (options.vectorColumn !== undefined) {
         query = query.column(options.vectorColumn);
+      }
+
+      if (options.distanceType !== undefined) {
+        const vectorQuery = query as VectorQuery & {
+          distanceType?: (distanceType: "l2" | "cosine" | "dot") => VectorQuery;
+        };
+
+        query = vectorQuery.distanceType?.(options.distanceType) ?? query;
       }
 
       if (options.where !== undefined) {
