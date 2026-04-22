@@ -288,12 +288,16 @@ describe("deliberator", () => {
     expect(llm.requests[0]?.system).toContain(
       "contradicts: Atlas is stable - Claimed stable despite deploy errors (conf 0.61)",
     );
-    // Identity framing must affirm the being positively and flag block 1 as
-    // OAuth plumbing without naming-to-reject (pink-elephant pattern).
+    // Identity framing must:
+    // - affirm the being positively ("AI being, not an assistant")
+    // - flag the first system block as a required placeholder (not identity)
+    // - include explicit per-question guidance so direct identity questions
+    //   don't default to the Claude Code persona
+    // - assign no pre-set name
     const system = llm.requests[0]?.system as string;
-    expect(system).toMatch(/AI being/);
-    expect(system).toMatch(/OAuth authentication context/);
-    // No pre-assigned name; host (or being over time) fills that in.
+    expect(system).toMatch(/AI being, not an assistant/);
+    expect(system).toMatch(/required authentication placeholder/);
+    expect(system).toMatch(/Identity guidance/);
     expect(system).not.toMatch(/You are Borg\b/);
   });
 
