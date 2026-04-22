@@ -7,10 +7,11 @@ import type {
 import { formatCommitmentsForPrompt } from "../../memory/commitments/checker.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
-import type { LLMClient, LLMToolCall } from "../../llm/index.js";
+import type { LLMClient, LLMMessage, LLMToolCall } from "../../llm/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "../../retrieval/index.js";
 import { StreamWriter } from "../../stream/index.js";
+import type { RecencyMessage } from "../recency/index.js";
 import { type CognitiveMode, type PerceptionResult } from "../types.js";
 import type { SessionId } from "../../util/ids.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
@@ -37,6 +38,13 @@ export type DeliberationContext = {
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;
   selfSnapshot: SelfSnapshot;
+  /**
+   * Recent dialogue from this session's stream, pre-compiled as LLM-ready
+   * messages. If omitted, the deliberator behaves as it did pre-Phase-A:
+   * the LLM sees only the current user message. Passing a window restores
+   * the being's visibility into its own just-completed turns.
+   */
+  recencyMessages?: readonly RecencyMessage[];
   options?: {
     stakes?: TurnStakes;
     maxThinkingTokens?: number;
@@ -457,16 +465,16 @@ export class Deliberator {
       .filter((section): section is string => section !== null)
       .join("\n\n");
 
+    const dialogueMessages = buildDialogueMessages(
+      context.recencyMessages,
+      context.userMessage,
+    );
+
     if (decision.path === "system_1") {
       const response = await this.options.llmClient.complete({
         model: this.options.cognitionModel,
         system: baseSystemPrompt,
-        messages: [
-          {
-            role: "user",
-            content: context.userMessage,
-          },
-        ],
+        messages: dialogueMessages,
         max_tokens: systemOneMaxTokens,
         budget: "cognition-system-1",
       });
@@ -487,26 +495,27 @@ export class Deliberator {
       };
     }
 
+    const planningUserPayload = [
+      `User message: ${context.userMessage}`,
+      summarizeRetrievedEpisodes(
+        "Initial retrieval",
+        context.retrievalResult,
+        retrievalContextBudget,
+      ),
+      `Mode: ${context.perception.mode}`,
+    ]
+      .filter((section): section is string => section !== null)
+      .join("\n\n");
+    // Planner sees the recent dialogue and then a final user message that
+    // frames what to plan. Without the recency lane the planner was deciding
+    // what to verify based purely on the current turn -- no memory of what
+    // had already been discussed two messages ago.
+    const planningMessages = buildDialogueMessages(context.recencyMessages, planningUserPayload);
     const planning = await this.options.llmClient.complete({
       model: this.options.backgroundModel,
       system:
         "Think briefly about what you should verify, clarify, or compare before answering. Return plain text.",
-      messages: [
-        {
-          role: "user",
-          content: [
-            `User message: ${context.userMessage}`,
-            summarizeRetrievedEpisodes(
-              "Initial retrieval",
-              context.retrievalResult,
-              retrievalContextBudget,
-            ),
-            `Mode: ${context.perception.mode}`,
-          ]
-            .filter((section): section is string => section !== null)
-            .join("\n\n"),
-        },
-      ],
+      messages: planningMessages,
       max_tokens: planningMaxTokens,
       budget: "cognition-plan",
     });
@@ -531,12 +540,7 @@ export class Deliberator {
       ]
         .filter((section): section is string => section !== null)
         .join("\n\n"),
-      messages: [
-        {
-          role: "user",
-          content: context.userMessage,
-        },
-      ],
+      messages: dialogueMessages,
       max_tokens: systemTwoMaxTokens,
       budget: "cognition-system-2",
     });
@@ -580,4 +584,26 @@ function dedupeRetrievedEpisodes(results: readonly RetrievedEpisode[]): Retrieve
   }
 
   return deduped;
+}
+
+/**
+ * Assemble the Anthropic `messages` array from recent dialogue + the current
+ * user message. The recency window is already shaped to satisfy Anthropic's
+ * ordering constraints (starts with user, ends with assistant), so we can
+ * concatenate and append the current user message safely.
+ */
+function buildDialogueMessages(
+  recency: readonly RecencyMessage[] | undefined,
+  currentUserMessage: string,
+): LLMMessage[] {
+  const messages: LLMMessage[] = [];
+
+  if (recency !== undefined) {
+    for (const item of recency) {
+      messages.push({ role: item.role, content: item.content });
+    }
+  }
+
+  messages.push({ role: "user", content: currentUserMessage });
+  return messages;
 }

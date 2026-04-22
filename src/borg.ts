@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import { TurnOrchestrator, type TurnInput, type TurnResult } from "./cognition/index.js";
+import { TurnContextCompiler } from "./cognition/recency/index.js";
 import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "./config/index.js";
 import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "./embeddings/index.js";
 import { AnthropicLLMClient, type LLMClient } from "./llm/index.js";
@@ -1050,6 +1051,10 @@ export class Borg {
         llmFactory,
         clock,
         createStreamWriter,
+        // Explicit so borg.ts wires a single compiler instance per process;
+        // turn-orchestrator.ts falls back to defaults if omitted, but doing
+        // it here makes the configuration visible at the composition root.
+        turnContextCompiler: new TurnContextCompiler(),
       });
 
       return new Borg({

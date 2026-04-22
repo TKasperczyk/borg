@@ -75,6 +75,161 @@ describe("deliberator", () => {
     }
   });
 
+  it("prepends recency messages to the LLM messages array on the S1 path", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Answer after seeing prior turns",
+          input_tokens: 12,
+          output_tokens: 6,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "And what about now?",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0 },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      recencyMessages: [
+        {
+          role: "user",
+          content: "What's the plan?",
+          stream_entry_id: "strm_aaaaaaaaaaaaaaaa" as never,
+          ts: 1,
+        },
+        {
+          role: "assistant",
+          content: "We rebuild the index first.",
+          stream_entry_id: "strm_bbbbbbbbbbbbbbbb" as never,
+          ts: 2,
+        },
+      ],
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 2,
+        scratchpad: "",
+        current_focus: null,
+        recent_thoughts: [],
+        hot_entities: [],
+        pending_intents: [],
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      options: { stakes: "low" },
+    });
+
+    const messages = llm.requests[0]?.messages;
+    expect(messages).toEqual([
+      { role: "user", content: "What's the plan?" },
+      { role: "assistant", content: "We rebuild the index first." },
+      { role: "user", content: "And what about now?" },
+    ]);
+  });
+
+  it("prepends recency messages on the S2 planner and finalizer", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Plan: check the prior fix first.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        {
+          text: "Final answer that respects earlier turn.",
+          input_tokens: 12,
+          output_tokens: 6,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "What does that mean for the rollback plan?",
+      perception: {
+        entities: [],
+        mode: "reflective",
+        affectiveSignal: { valence: 0, arousal: 0 },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      recencyMessages: [
+        {
+          role: "user",
+          content: "We hit a drift in prod.",
+          stream_entry_id: "strm_aaaaaaaaaaaaaaaa" as never,
+          ts: 1,
+        },
+        {
+          role: "assistant",
+          content: "Confirmed -- it's the index order.",
+          stream_entry_id: "strm_bbbbbbbbbbbbbbbb" as never,
+          ts: 2,
+        },
+      ],
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 2,
+        scratchpad: "",
+        current_focus: null,
+        recent_thoughts: [],
+        hot_entities: [],
+        pending_intents: [],
+        suppressed: [],
+        mode: "reflective",
+        updated_at: 0,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      options: { stakes: "low" },
+    });
+
+    // Planner (requests[0]) sees the recent dialogue AND a final user payload
+    // framing the planning task.
+    const plannerMessages = llm.requests[0]?.messages;
+    expect(plannerMessages?.[0]).toEqual({ role: "user", content: "We hit a drift in prod." });
+    expect(plannerMessages?.[1]).toEqual({
+      role: "assistant",
+      content: "Confirmed -- it's the index order.",
+    });
+    expect(plannerMessages?.[2]?.role).toBe("user");
+    expect(plannerMessages?.[2]?.content).toContain(
+      "User message: What does that mean for the rollback plan?",
+    );
+
+    // Finalizer (requests[1]) sees the same recent dialogue with the raw
+    // current user message as the trailing entry -- no planning framing,
+    // so the voice of the final answer is grounded in the actual user turn.
+    const finalMessages = llm.requests[1]?.messages;
+    expect(finalMessages).toEqual([
+      { role: "user", content: "We hit a drift in prod." },
+      { role: "assistant", content: "Confirmed -- it's the index order." },
+      { role: "user", content: "What does that mean for the rollback plan?" },
+    ]);
+  });
+
   it("chooses system 1 when confidence is high and stakes are low", async () => {
     const llm = new FakeLLMClient({
       responses: [

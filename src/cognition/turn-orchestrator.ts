@@ -7,6 +7,7 @@ import {
   detectAffectiveSignalHeuristically,
 } from "./perception/affective-signal.js";
 import { Perceiver } from "./perception/index.js";
+import { TurnContextCompiler, type RecencyWindow } from "./recency/index.js";
 import { Reflector } from "./reflection/index.js";
 import type { RetrievalPipeline, RetrievalSearchOptions } from "../retrieval/index.js";
 import type { LLMClient } from "../llm/index.js";
@@ -29,7 +30,7 @@ import {
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
-import { StreamWriter } from "../stream/index.js";
+import { StreamReader, StreamWriter } from "../stream/index.js";
 import { ConfigError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
@@ -97,14 +98,36 @@ export type TurnOrchestratorOptions = {
   llmFactory: () => LLMClient;
   clock?: Clock;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
+  /**
+   * Build a reader for the given session's stream. The orchestrator uses
+   * this to compile the recent-dialogue window before a turn starts, so the
+   * LLM can see its own prior responses without the working-memory
+   * scratchpad indirection. Defaults to the standard on-disk reader.
+   */
+  createStreamReader?: (sessionId: SessionId) => StreamReader;
+  /**
+   * Compiles the recency window (recent user/assistant messages) from the
+   * stream for every turn. A default is constructed if not provided.
+   */
+  turnContextCompiler?: TurnContextCompiler;
   affectiveSignalDetector?: typeof detectAffectiveSignal;
 };
 
 export class TurnOrchestrator {
   private readonly clock: Clock;
+  private readonly turnContextCompiler: TurnContextCompiler;
+  private readonly createStreamReader: (sessionId: SessionId) => StreamReader;
 
   constructor(private readonly options: TurnOrchestratorOptions) {
     this.clock = options.clock ?? new SystemClock();
+    this.turnContextCompiler = options.turnContextCompiler ?? new TurnContextCompiler();
+    this.createStreamReader =
+      options.createStreamReader ??
+      ((sessionId) =>
+        new StreamReader({
+          dataDir: options.config.dataDir,
+          sessionId,
+        }));
   }
 
   loadWorkingMemory(sessionId: SessionId): WorkingMemory {
@@ -242,10 +265,18 @@ export class TurnOrchestrator {
         });
         const llmClient = this.options.llmFactory();
         const selfSnapshot = this.buildSelfSnapshot();
-        const perception = await perceiver.perceive(
-          input.userMessage,
-          workingMemory.recent_thoughts.slice(-3),
+        // Compile recent dialogue BEFORE appending the current user message,
+        // so the window contains prior turns only. The compiler guarantees
+        // the window starts with a user role and ends with an assistant
+        // role, making it safe to concatenate with a trailing
+        // {role:"user", content: currentUserMessage}.
+        const recencyWindow: RecencyWindow = this.turnContextCompiler.compile(
+          this.createStreamReader(sessionId),
         );
+        const recentHistoryStrings = recencyWindow.messages.map(
+          (message) => `${message.role}: ${message.content}`,
+        );
+        const perception = await perceiver.perceive(input.userMessage, recentHistoryStrings);
 
         workingMemory = {
           ...workingMemory,
@@ -358,6 +389,7 @@ export class TurnOrchestrator {
             entityRepository: this.options.entityRepository,
             workingMemory,
             selfSnapshot,
+            recencyMessages: recencyWindow.messages,
             options: {
               stakes: input.stakes,
             },
