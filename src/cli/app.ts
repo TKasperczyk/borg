@@ -240,16 +240,29 @@ function resolveSkillId(value: unknown) {
   }
 }
 
-function parseSinceToTimestamp(value: unknown, nowMs = Date.now()): number | undefined {
+function parseSinceToTimestamp(
+  value: unknown,
+  flag = "--since",
+  nowMs = Date.now(),
+): number | undefined {
   if (value === undefined) {
     return undefined;
   }
 
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
   if (typeof value !== "string" || value.trim() === "") {
-    throw new CliError("--since must be a duration like 1h or an epoch milliseconds timestamp");
+    throw new CliError(`${flag} must be a duration like 1h, "now", or an epoch milliseconds timestamp`);
   }
 
   const trimmed = value.trim();
+
+  if (trimmed === "now") {
+    return nowMs;
+  }
+
   const absolute = Number(trimmed);
 
   if (Number.isFinite(absolute) && trimmed === String(absolute)) {
@@ -259,7 +272,7 @@ function parseSinceToTimestamp(value: unknown, nowMs = Date.now()): number | und
   const match = trimmed.match(/^(\d+)([smhd])$/);
 
   if (match === null) {
-    throw new CliError("--since must be a duration like 1h or an epoch milliseconds timestamp");
+    throw new CliError(`${flag} must be a duration like 1h, "now", or an epoch milliseconds timestamp`);
   }
 
   const amount = Number(match[1]);
@@ -387,6 +400,10 @@ function parseIdList(
     .map((item) => item.trim())
     .filter((item) => item.length > 0)
     .map((item) => itemParser(item));
+}
+
+function parseStringList(value: unknown, flag: string): string[] {
+  return parseIdList(value, (item) => item, flag);
 }
 
 function parsePositiveInteger(value: unknown, flag: string): number {
@@ -796,25 +813,38 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
       type: [Number],
     })
     .option("--since <duration>", "Relative duration like 1h or epoch ms")
+    .option("--until <duration>", "Relative duration like 1h, \"now\", or epoch ms")
+    .option("--entities <list>", "Comma-separated participant/tag terms for entity retrieval")
     .option("--audience <name>", "Audience label for scoped visibility")
     .option("--all", "Search across all audiences")
     .action(
       async (action: string, arg: string | undefined, commandOptions: Record<string, unknown>) => {
         if (action === "search") {
           const query = parseRequiredText(arg, "<query>");
-          const sinceTs = parseSinceToTimestamp(commandOptions.since);
+          const nowMs = Date.now();
+          const sinceTs = parseSinceToTimestamp(commandOptions.since, "--since", nowMs);
+          const untilTs = parseSinceToTimestamp(commandOptions.until, "--until", nowMs);
+          const entityTerms = parseStringList(commandOptions.entities, "--entities");
           const visibility = resolveEpisodeVisibilityOptions(commandOptions);
+          const timeRange =
+            sinceTs === undefined && untilTs === undefined
+              ? undefined
+              : {
+                  start: sinceTs ?? Number.NEGATIVE_INFINITY,
+                  end: untilTs ?? nowMs,
+                };
+
+          if (sinceTs !== undefined && untilTs !== undefined && sinceTs > untilTs) {
+            throw new CliError("--since cannot be later than --until");
+          }
+
           const results = await withBorg(options, async (borg) =>
             borg.episodic.search(query, {
               ...visibility,
               limit: parseLimit(commandOptions.limit),
-              timeRange:
-                sinceTs === undefined
-                  ? undefined
-                  : {
-                      start: sinceTs,
-                      end: Date.now(),
-                    },
+              entityTerms: entityTerms.length === 0 ? undefined : entityTerms,
+              timeRange,
+              strictTimeRange: timeRange !== undefined ? true : undefined,
             }),
           );
 
@@ -842,7 +872,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
         if (action === "extract") {
           const result = await withBorg(options, async (borg) =>
             borg.episodic.extract({
-              sinceTs: parseSinceToTimestamp(commandOptions.since),
+              sinceTs: parseSinceToTimestamp(commandOptions.since, "--since"),
             }),
           );
 
@@ -1340,7 +1370,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
           const markers = await withBorg(options, async (borg) =>
             borg.self.growthMarkers.list({
               sinceTs: parseSinceToTimestamp(commandOptions.since),
-              untilTs: parseSinceToTimestamp(commandOptions.until),
+              untilTs: parseSinceToTimestamp(commandOptions.until, "--until"),
               category:
                 commandOptions.category === undefined
                   ? undefined
@@ -1538,8 +1568,8 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
       if (action === "history") {
         const history = await withBorg(options, async (borg) =>
           borg.mood.history(sessionId, {
-            fromTs: parseSinceToTimestamp(commandOptions.since),
-            toTs: parseSinceToTimestamp(commandOptions.until),
+            fromTs: parseSinceToTimestamp(commandOptions.since, "--since"),
+            toTs: parseSinceToTimestamp(commandOptions.until, "--until"),
           }),
         );
         writeLine(stdout, JSON.stringify(history, null, 2));

@@ -364,15 +364,9 @@ export class TurnOrchestrator {
                   ...audienceEntity.aliases,
                   ...(input.audience === undefined ? [] : [input.audience]),
                 ],
+          entityTerms: perception.entities,
           suppressionSet,
           includeOpenQuestions: perception.mode === "reflective",
-          timeRange:
-            perception.temporalCue === null
-              ? undefined
-              : {
-                  start: perception.temporalCue.sinceTs ?? Number.NEGATIVE_INFINITY,
-                  end: perception.temporalCue.untilTs ?? this.clock.now(),
-                },
         };
         const retrieval = await this.options.retrievalPipeline.searchWithContext(
           input.userMessage,

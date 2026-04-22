@@ -24,6 +24,7 @@ export const attentionWeightsSchema = z.object({
   mood: z.number().min(0),
   time: z.number().min(0),
   social: z.number().min(0),
+  entity: z.number().min(0),
   heat: z.number().min(0),
   suppression_penalty: z.number().min(0),
 });

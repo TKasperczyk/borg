@@ -509,6 +509,118 @@ describe("cli", () => {
     expect(hiddenShowErr.read()).toContain("Episode not found");
   });
 
+  it("supports entity and until filters on episode search", async () => {
+    const tempDir = createCliTempDir(tempDirs);
+
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        ...episodicMigrations,
+        ...selfMigrations,
+        ...retrievalMigrations,
+        ...commitmentMigrations,
+      ],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    for (let index = 0; index < 12; index += 1) {
+      await repo.insert({
+        id: `ep_clientity${String(index).padStart(7, "0")}` as never,
+        title: `Decoy ${index}`,
+        narrative: "A strong vector match without the entity tag.",
+        participants: ["team"],
+        location: null,
+        start_time: 1 + index,
+        end_time: 2 + index,
+        source_stream_ids: [`strm_clientity${String(index).padStart(7, "0")}` as never],
+        significance: 0.2,
+        tags: ["decoy"],
+        confidence: 0.9,
+        lineage: {
+          derived_from: [],
+          supersedes: [],
+        },
+        audience_entity_id: null,
+        shared: true,
+        embedding: Float32Array.from([1, 0, 0, 0]),
+        created_at: 1 + index,
+        updated_at: 1 + index,
+      });
+    }
+
+    await repo.insert({
+      id: "ep_clientityrescue1" as never,
+      title: "Atlas CLI rescue",
+      narrative: "This Atlas note should be reachable from the CLI entity filter.",
+      participants: ["team"],
+      location: null,
+      start_time: 500,
+      end_time: 600,
+      source_stream_ids: ["strm_clientityrescue1" as never],
+      significance: 1,
+      tags: ["Atlas"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      audience_entity_id: null,
+      shared: true,
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      created_at: 500,
+      updated_at: 1_000,
+    });
+    repo.updateStats("ep_clientityrescue1" as never, {
+      retrieval_count: 12,
+      win_rate: 0.9,
+      last_retrieved: 999,
+    });
+    db.close();
+    await store.close();
+
+    const stdout = createOutputBuffer();
+    const stderr = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "episode",
+          "search",
+          "deploy",
+          "--entities",
+          "atlas",
+          "--since",
+          "0",
+          "--until",
+          "now",
+        ],
+        {
+          stdout: stdout.stream,
+          stderr: stderr.stream,
+          dataDir: tempDir,
+          openBorg: () => openTestBorg(tempDir),
+        },
+      ),
+    ).toBe(0);
+    expect(
+      (JSON.parse(stdout.read()) as Array<{ episode: { id: string } }>).map(
+        (item) => item.episode.id,
+      ),
+    ).toContain("ep_clientityrescue1");
+    expect(stderr.read()).toBe("");
+  });
+
   it("manages autobiographical periods, growth markers, and open questions", async () => {
     const tempDir = createCliTempDir(tempDirs);
 

@@ -14,6 +14,7 @@ import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { parseEntityId, parseEpisodeId, type EntityId, type EpisodeId } from "../../util/ids.js";
 import { createNeutralEmotionalArc, emotionalArcSchema } from "../affective/types.js";
+import { computeEpisodeHeat } from "./heat.js";
 import { isEpisodeVisibleToAudience, normalizeEpisodeAccess } from "./access.js";
 
 import {
@@ -25,6 +26,7 @@ import {
   type EpisodeSearchOptions,
   type EpisodeStats,
   type EpisodeStatsPatch,
+  type EpisodeVisibilityOptions,
   episodeInsertSchema,
   episodePatchSchema,
   episodeSchema,
@@ -157,6 +159,20 @@ function compareAfterCursor(episode: Episode, cursor: CursorPayload): boolean {
   }
 
   return episode.id.localeCompare(cursor.id) < 0;
+}
+
+function combineWhereClauses(...clauses: Array<string | undefined>): string | undefined {
+  const definedClauses = clauses.filter((clause): clause is string => clause !== undefined);
+
+  if (definedClauses.length === 0) {
+    return undefined;
+  }
+
+  return definedClauses.map((clause) => `(${clause})`).join(" AND ");
+}
+
+function normalizeTerm(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function getDistance(row: Record<string, unknown>): number | undefined {
@@ -326,6 +342,44 @@ function defaultEpisodeStats(episode: Episode): EpisodeStats {
   };
 }
 
+function fromEpisodeStatsRow(row: Record<string, unknown>): EpisodeStats {
+  const parsed = episodeStatsSchema.safeParse({
+    episode_id: row.episode_id,
+    retrieval_count: Number(row.retrieval_count),
+    use_count: Number(row.use_count),
+    last_retrieved:
+      row.last_retrieved === null || row.last_retrieved === undefined
+        ? null
+        : Number(row.last_retrieved),
+    win_rate: Number(row.win_rate),
+    tier: row.tier,
+    promoted_at: Number(row.promoted_at),
+    promoted_from:
+      row.promoted_from === null || row.promoted_from === undefined ? null : String(row.promoted_from),
+    gist: row.gist === null || row.gist === undefined ? null : String(row.gist),
+    gist_generated_at:
+      row.gist_generated_at === null || row.gist_generated_at === undefined
+        ? null
+        : Number(row.gist_generated_at),
+    last_decayed_at:
+      row.last_decayed_at === null || row.last_decayed_at === undefined
+        ? null
+        : Number(row.last_decayed_at),
+    valence_mean:
+      row.valence_mean === null || row.valence_mean === undefined ? 0 : Number(row.valence_mean),
+    archived: row.archived === true || Number(row.archived) === 1,
+  });
+
+  if (!parsed.success) {
+    throw new StorageError("Episode stats row failed validation", {
+      cause: parsed.error,
+      code: "EPISODE_STATS_INVALID",
+    });
+  }
+
+  return parsed.data;
+}
+
 export function createEpisodesTableSchema(dimensions: number) {
   return schema([
     utf8Field("id"),
@@ -387,6 +441,63 @@ export class EpisodicRepository {
     return `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
       audienceEntityId,
     )} OR shared = true)`;
+  }
+
+  private async listEpisodesWhere(where: string | undefined): Promise<Episode[]> {
+    const rows = await this.table.list(where === undefined ? {} : { where });
+    return rows.map((row) => fromEpisodeRow(row));
+  }
+
+  async listVisibleEpisodes(
+    options: EpisodeVisibilityOptions = {},
+    extraWhere?: string,
+  ): Promise<Episode[]> {
+    return this.listEpisodesWhere(
+      combineWhereClauses(
+        this.buildVisibilityWhereClause(options.audienceEntityId, options.crossAudience),
+        extraWhere,
+      ),
+    );
+  }
+
+  private hydrateSearchCandidates(
+    episodes: readonly Episode[],
+    statsById: ReadonlyMap<EpisodeId, EpisodeStats>,
+    similarityById?: ReadonlyMap<EpisodeId, number>,
+  ): EpisodeSearchCandidate[] {
+    const results: EpisodeSearchCandidate[] = [];
+
+    for (const episode of episodes) {
+      const stats = statsById.get(episode.id) ?? defaultEpisodeStats(episode);
+
+      if (stats.archived) {
+        continue;
+      }
+
+      results.push({
+        episode,
+        stats,
+        similarity: similarityById?.get(episode.id) ?? 0,
+      });
+    }
+
+    return results;
+  }
+
+  private rankEpisodesByHeat(
+    episodes: readonly Episode[],
+    statsById: ReadonlyMap<EpisodeId, EpisodeStats>,
+  ): Episode[] {
+    const nowMs = this.clock.now();
+
+    return [...episodes].sort((left, right) => {
+      const leftStats = statsById.get(left.id) ?? defaultEpisodeStats(left);
+      const rightStats = statsById.get(right.id) ?? defaultEpisodeStats(right);
+      const leftHeat = computeEpisodeHeat(left, leftStats, nowMs);
+      const rightHeat = computeEpisodeHeat(right, rightStats, nowMs);
+
+      return rightHeat - leftHeat || compareEpisodes(left, right);
+    });
   }
 
   private upsertStats(stats: EpisodeStats): void {
@@ -552,47 +663,34 @@ export class EpisodicRepository {
       )
       .get(id) as Record<string, unknown> | undefined;
 
-    if (row === undefined) {
-      return null;
+    return row === undefined ? null : fromEpisodeStatsRow(row);
+  }
+
+  getStatsMany(ids: readonly EpisodeId[]): Map<EpisodeId, EpisodeStats> {
+    const uniqueIds = [...new Set(ids)];
+
+    if (uniqueIds.length === 0) {
+      return new Map();
     }
 
-    const parsed = episodeStatsSchema.safeParse({
-      episode_id: row.episode_id,
-      retrieval_count: Number(row.retrieval_count),
-      use_count: Number(row.use_count),
-      last_retrieved:
-        row.last_retrieved === null || row.last_retrieved === undefined
-          ? null
-          : Number(row.last_retrieved),
-      win_rate: Number(row.win_rate),
-      tier: row.tier,
-      promoted_at: Number(row.promoted_at),
-      promoted_from:
-        row.promoted_from === null || row.promoted_from === undefined
-          ? null
-          : String(row.promoted_from),
-      gist: row.gist === null || row.gist === undefined ? null : String(row.gist),
-      gist_generated_at:
-        row.gist_generated_at === null || row.gist_generated_at === undefined
-          ? null
-          : Number(row.gist_generated_at),
-      last_decayed_at:
-        row.last_decayed_at === null || row.last_decayed_at === undefined
-          ? null
-          : Number(row.last_decayed_at),
-      valence_mean:
-        row.valence_mean === null || row.valence_mean === undefined ? 0 : Number(row.valence_mean),
-      archived: row.archived === true || Number(row.archived) === 1,
-    });
+    const rows = this.db
+      .prepare(
+        `
+          SELECT
+            episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, valence_mean, archived
+          FROM episode_stats
+          WHERE episode_id IN (${uniqueIds.map(() => "?").join(", ")})
+        `,
+      )
+      .all(...uniqueIds) as Record<string, unknown>[];
 
-    if (!parsed.success) {
-      throw new StorageError("Episode stats row failed validation", {
-        cause: parsed.error,
-        code: "EPISODE_STATS_INVALID",
-      });
-    }
-
-    return parsed.data;
+    return new Map(
+      rows.map((row) => {
+        const stats = fromEpisodeStatsRow(row);
+        return [stats.episode_id, stats] as const;
+      }),
+    );
   }
 
   updateStats(episodeId: EpisodeId, patch: EpisodeStatsPatch): EpisodeStats {
@@ -636,16 +734,11 @@ export class EpisodicRepository {
       .all() as Record<string, unknown>[];
 
     return rows.map((row) => {
-      const episodeId = parseEpisodeId(String(row.episode_id));
-      const stats = this.getStats(episodeId);
-
-      if (stats === null) {
-        throw new StorageError(`Missing episode_stats row for ${episodeId}`, {
-          code: "EPISODE_STATS_MISSING",
-        });
-      }
-
-      return stats;
+      const stats = fromEpisodeStatsRow(row);
+      return {
+        ...stats,
+        episode_id: parseEpisodeId(String(stats.episode_id)),
+      };
     });
   }
 
@@ -661,12 +754,20 @@ export class EpisodicRepository {
       distanceType: "cosine",
       where: this.buildVisibilityWhereClause(options.audienceEntityId, options.crossAudience),
     });
+    const ranked = rows.map((row) => {
+      const episode = fromEpisodeRow(row);
+      return {
+        episode,
+        similarity: toSimilarity(getDistance(row)),
+      };
+    });
+    const statsById = this.getStatsMany(ranked.map((item) => item.episode.id));
     const results: EpisodeSearchCandidate[] = [];
 
-    for (const row of rows) {
-      const episode = fromEpisodeRow(row);
-      const stats = this.getStats(episode.id) ?? defaultEpisodeStats(episode);
-      const similarity = toSimilarity(getDistance(row));
+    for (const item of ranked) {
+      const episode = item.episode;
+      const stats = statsById.get(episode.id) ?? defaultEpisodeStats(episode);
+      const similarity = item.similarity;
 
       if (options.minSimilarity !== undefined && similarity < options.minSimilarity) {
         continue;
@@ -722,6 +823,119 @@ export class EpisodicRepository {
     }
 
     return results;
+  }
+
+  async searchByTimeRange(
+    range: { start: number; end: number },
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "Search limit");
+    const timeWhere = combineWhereClauses(
+      Number.isFinite(range.end) ? `start_time <= ${range.end}` : undefined,
+      Number.isFinite(range.start) ? `end_time >= ${range.start}` : undefined,
+    );
+    const episodes = (
+      await this.listEpisodesWhere(
+        combineWhereClauses(
+          this.buildVisibilityWhereClause(options.audienceEntityId, options.crossAudience),
+          timeWhere,
+        ),
+      )
+    )
+      .filter((episode) => episode.start_time <= range.end && episode.end_time >= range.start)
+      .sort(compareEpisodes)
+      .slice(0, limit);
+    const statsById = this.getStatsMany(episodes.map((episode) => episode.id));
+    return this.hydrateSearchCandidates(episodes, statsById);
+  }
+
+  async listByAudience(
+    audienceEntityId: EntityId,
+    options: {
+      limit?: number;
+      orderBy: "recent" | "heat";
+      visibleEpisodes?: readonly Episode[];
+    },
+  ): Promise<EpisodeSearchCandidate[]> {
+    const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "List limit");
+    // TODO: replace this visible-corpus scan with an audience index once LanceDB can
+    // efficiently filter and order scoped episodes without a client-side pass.
+    const episodes = (
+      options.visibleEpisodes ??
+      (await this.listVisibleEpisodes({
+        audienceEntityId,
+      }))
+    ).filter((episode) => episode.audience_entity_id === audienceEntityId);
+    const statsById = this.getStatsMany(episodes.map((episode) => episode.id));
+    const ranked =
+      options.orderBy === "heat"
+        ? this.rankEpisodesByHeat(episodes, statsById)
+        : [...episodes].sort(compareEpisodes);
+
+    return this.hydrateSearchCandidates(ranked.slice(0, limit), statsById);
+  }
+
+  async searchByParticipantsOrTags(
+    terms: readonly string[],
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+      visibleEpisodes?: readonly Episode[];
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "Search limit");
+    const normalizedTerms = new Set(
+      terms.map((term) => normalizeTerm(term)).filter((term) => term.length > 0),
+    );
+
+    if (normalizedTerms.size === 0) {
+      return [];
+    }
+
+    // TODO: add normalized participant/tag indexing so entity retrieval can avoid scanning
+    // the visible episode set and support aliases/stemming in a later sprint.
+    const episodes = (options.visibleEpisodes ?? (await this.listVisibleEpisodes(options)))
+      .filter((episode) => {
+        const participants = episode.participants.map((participant) => normalizeTerm(participant));
+        const tags = episode.tags.map((tag) => normalizeTerm(tag));
+        return [...participants, ...tags].some((value) => normalizedTerms.has(value));
+      })
+      .sort(compareEpisodes)
+      .slice(0, limit);
+    const statsById = this.getStatsMany(episodes.map((episode) => episode.id));
+    return this.hydrateSearchCandidates(episodes, statsById);
+  }
+
+  async listRecent(
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+      visibleEpisodes?: readonly Episode[];
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "List limit");
+    // TODO: replace this visible-corpus scan with a recency-friendly ordering path once
+    // LanceDB or a side index can serve recent visible episodes directly.
+    const episodes = [...(options.visibleEpisodes ?? (await this.listVisibleEpisodes(options)))]
+      .sort(compareEpisodes)
+      .slice(0, limit);
+    const statsById = this.getStatsMany(episodes.map((episode) => episode.id));
+    return this.hydrateSearchCandidates(episodes, statsById);
+  }
+
+  async listHottest(
+    options: EpisodeVisibilityOptions & {
+      limit?: number;
+      visibleEpisodes?: readonly Episode[];
+    } = {},
+  ): Promise<EpisodeSearchCandidate[]> {
+    const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "List limit");
+    // TODO: materialize heat or add supporting indexes so "hot" ranking does not require
+    // scanning the visible episode set on every retrieval call.
+    const episodes = options.visibleEpisodes ?? (await this.listVisibleEpisodes(options));
+    const statsById = this.getStatsMany(episodes.map((episode) => episode.id));
+    const ranked = this.rankEpisodesByHeat(episodes, statsById).slice(0, limit);
+    return this.hydrateSearchCandidates(ranked, statsById);
   }
 
   async list(options: EpisodeListOptions = {}): Promise<EpisodeListResult> {

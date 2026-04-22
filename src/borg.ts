@@ -478,6 +478,74 @@ export class Borg {
       return this.deps.entityRepository.resolve(options.audience);
     };
 
+    const resolveEpisodeAudienceTerms = (
+      options: BorgEpisodeSearchOptions | undefined,
+      audienceEntityId: EntityId | null | undefined,
+    ): readonly string[] | undefined => {
+      if (options?.audienceTerms !== undefined) {
+        return options.audienceTerms;
+      }
+
+      if (audienceEntityId === null || audienceEntityId === undefined) {
+        return typeof options?.audience === "string" ? [options.audience] : undefined;
+      }
+
+      const audienceEntity = this.deps.entityRepository.get(audienceEntityId);
+
+      if (audienceEntity === null) {
+        return typeof options?.audience === "string" ? [options.audience] : undefined;
+      }
+
+      return [
+        audienceEntity.canonical_name,
+        ...audienceEntity.aliases,
+        ...(typeof options?.audience === "string" ? [options.audience] : []),
+      ];
+    };
+
+    const resolveEpisodeSearchOptions = (
+      options: BorgEpisodeSearchOptions | undefined,
+    ): RetrievalSearchOptions => {
+      const audienceEntityId = resolveEpisodeAudienceEntityId(options);
+      const audienceProfile =
+        options?.audienceProfile !== undefined
+          ? options.audienceProfile
+          : audienceEntityId === null || audienceEntityId === undefined
+            ? undefined
+            : this.deps.socialRepository.getProfile(audienceEntityId) ?? undefined;
+      const audienceTerms = resolveEpisodeAudienceTerms(options, audienceEntityId);
+      const hasTemporalSignal =
+        options?.temporalCue !== undefined ||
+        options?.timeRange !== undefined;
+      const hasEntitySignal =
+        options?.entityTerms !== undefined && options.entityTerms.length > 0;
+
+      return {
+        ...options,
+        audienceEntityId,
+        audienceProfile,
+        audienceTerms,
+        strictTimeRange: options?.strictTimeRange ?? (options?.timeRange !== undefined),
+        attentionWeights:
+          options?.attentionWeights ??
+          (options?.scoreWeights !== undefined
+            ? undefined
+            : {
+                semantic: 0.35,
+                goal_relevance:
+                  options?.goalDescriptions !== undefined && options.goalDescriptions.length > 0
+                    ? 0.1
+                    : 0,
+                mood: 0,
+                time: hasTemporalSignal ? 0.2 : 0,
+                social: audienceTerms !== undefined && audienceTerms.length > 0 ? 0.15 : 0,
+                entity: hasEntitySignal ? 0.2 : 0,
+                heat: 0.45,
+                suppression_penalty: 0.5,
+              }),
+      };
+    };
+
     const defaultDreamProcesses = (): OfflineProcessName[] =>
       Object.entries({
         consolidator: this.deps.config.offline.consolidator.enabled,
@@ -522,10 +590,7 @@ export class Borg {
           crossAudience: options.crossAudience,
         }),
       search: (query, options = {}) =>
-        this.deps.retrievalPipeline.search(query, {
-          ...options,
-          audienceEntityId: resolveEpisodeAudienceEntityId(options),
-        }),
+        this.deps.retrievalPipeline.search(query, resolveEpisodeSearchOptions(options)),
       extract: async (options = {}) => {
         const extractor = new EpisodicExtractor({
           dataDir: this.deps.config.dataDir,

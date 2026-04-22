@@ -14,6 +14,7 @@ const DEFAULT_WEIGHTS: AttentionWeights = {
   mood: 0,
   time: 0,
   social: 0,
+  entity: 0.2,
   heat: 0.1,
   suppression_penalty: 0.5,
 };
@@ -31,6 +32,7 @@ export function computeWeights(mode: CognitiveMode, state: AttentionState): Atte
       goal_relevance: hasGoals ? 0.1 : 0,
       mood: moodWeight,
       time: hasTemporalCue ? 0.1 : 0,
+      entity: 0.25,
       heat: 0.15,
     };
   }
@@ -43,6 +45,7 @@ export function computeWeights(mode: CognitiveMode, state: AttentionState): Atte
       social: Math.max(0.2, socialBase),
       goal_relevance: hasGoals ? 0.05 : 0,
       time: hasTemporalCue ? 0.05 : 0,
+      entity: 0.25,
     };
   }
 
@@ -53,6 +56,7 @@ export function computeWeights(mode: CognitiveMode, state: AttentionState): Atte
       goal_relevance: hasGoals ? 0.2 : 0,
       mood: moodWeight,
       time: hasTemporalCue ? 0.1 : 0,
+      entity: 0.2,
       heat: 0.05,
     };
   }
@@ -64,6 +68,7 @@ export function computeWeights(mode: CognitiveMode, state: AttentionState): Atte
     mood: moodWeight,
     social: socialBase,
     time: hasTemporalCue ? 0.05 : 0,
+    entity: 0.1,
     heat: 0.05,
   };
 }

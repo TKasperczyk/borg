@@ -136,6 +136,8 @@ export type EpisodeSearchOptions = {
   };
 };
 
+export type EpisodeVisibilityOptions = Pick<EpisodeSearchOptions, "audienceEntityId" | "crossAudience">;
+
 export type EpisodeSearchCandidate = {
   episode: Episode;
   stats: EpisodeStats;

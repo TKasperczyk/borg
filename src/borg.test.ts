@@ -15,6 +15,7 @@ import { retrievalMigrations } from "./retrieval/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, SqliteDatabase } from "./storage/sqlite/index.js";
 import { ManualClock } from "./util/clock.js";
+import { createEpisodeId, createStreamEntryId } from "./util/ids.js";
 import { Borg } from "./borg.js";
 
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
@@ -223,6 +224,209 @@ describe("Borg", () => {
         (await borg.episodic.get("ep_privateprivate01" as never, { crossAudience: true }))?.episode
           .id,
       ).toBe("ep_privateprivate01");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("lets the public episodic search API rescue explicit entity matches", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        ...episodicMigrations,
+        ...selfMigrations,
+        ...retrievalMigrations,
+        ...commitmentMigrations,
+      ],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    for (let index = 0; index < 12; index += 1) {
+      await repo.insert({
+        id: `ep_publicentity${String(index).padStart(4, "0")}` as never,
+        title: `Decoy ${index}`,
+        narrative: "A strong semantic match that lacks the entity cue.",
+        participants: ["team"],
+        location: null,
+        start_time: 1 + index,
+        end_time: 2 + index,
+        source_stream_ids: [`strm_publicentity${String(index).padStart(4, "0")}` as never],
+        significance: 0.2,
+        tags: ["decoy"],
+        confidence: 0.9,
+        lineage: {
+          derived_from: [],
+          supersedes: [],
+        },
+        audience_entity_id: null,
+        shared: true,
+        embedding: Float32Array.from([1, 0, 0, 0]),
+        created_at: 1 + index,
+        updated_at: 1 + index,
+      });
+    }
+
+    const rescuedId = "ep_entityrescue0001" as never;
+    await repo.insert({
+      id: rescuedId,
+      title: "Atlas entity rescue",
+      narrative: "A hot Atlas note that should be rescued by explicit entity terms.",
+      participants: ["team"],
+      location: null,
+      start_time: 500,
+      end_time: 600,
+      source_stream_ids: ["strm_entityrescue0001" as never],
+      significance: 1,
+      tags: ["Atlas"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      audience_entity_id: null,
+      shared: true,
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      created_at: 500,
+      updated_at: clock.now(),
+    });
+    repo.updateStats(rescuedId, {
+      retrieval_count: 12,
+      win_rate: 0.9,
+      last_retrieved: clock.now() - 1_000,
+    });
+    db.close();
+    await store.close();
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      expect(
+        (await borg.episodic.search("deploy", { limit: 3, entityTerms: ["atlas"] })).map(
+          (item) => item.episode.id,
+        ),
+      ).toContain(rescuedId);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("treats explicit public API timeRange as a strict filter", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(10_000_000_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        ...episodicMigrations,
+        ...selfMigrations,
+        ...retrievalMigrations,
+        ...commitmentMigrations,
+      ],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    const hotOutOfRangeId = createEpisodeId();
+    await repo.insert({
+      id: hotOutOfRangeId,
+      title: "Hot out-of-range deploy note",
+      narrative: "A recent hot semantic match outside the requested time window.",
+      participants: ["team"],
+      location: null,
+      start_time: 900_000,
+      end_time: 901_000,
+      source_stream_ids: [createStreamEntryId()],
+      significance: 1,
+      tags: ["deploy"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      audience_entity_id: null,
+      shared: true,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: clock.now(),
+      updated_at: clock.now(),
+    });
+    repo.updateStats(hotOutOfRangeId, {
+      retrieval_count: 12,
+      win_rate: 0.9,
+      last_retrieved: clock.now() - 1_000,
+    });
+
+    const inRangeId = createEpisodeId();
+    await repo.insert({
+      id: inRangeId,
+      title: "In-range deploy incident",
+      narrative: "An older in-range note that should survive the strict time filter.",
+      participants: ["team"],
+      location: null,
+      start_time: 150_000,
+      end_time: 160_000,
+      source_stream_ids: [createStreamEntryId()],
+      significance: 1,
+      tags: ["incident"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      audience_entity_id: null,
+      shared: true,
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      created_at: 10,
+      updated_at: 10,
+    });
+    db.close();
+    await store.close();
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const results = await borg.episodic.search("deploy", {
+        limit: 3,
+        timeRange: {
+          start: 140_000,
+          end: 170_000,
+        },
+      });
+
+      expect(results.map((item) => item.episode.id)).toEqual([inRangeId]);
     } finally {
       await borg.close();
     }

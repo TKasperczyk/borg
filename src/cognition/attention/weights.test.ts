@@ -27,6 +27,7 @@ describe("attention weights", () => {
 
     expect(reflective.goal_relevance).toBeGreaterThan(0);
     expect(reflective.time).toBeGreaterThan(0);
+    expect(reflective.entity).toBeGreaterThan(idle.entity);
     expect(idle.semantic).toBeLessThan(reflective.semantic);
   });
 

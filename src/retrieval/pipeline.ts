@@ -44,6 +44,11 @@ type SuppressionLookup = {
   isSuppressed(id: string): boolean;
 };
 
+type ResolvedTimeRange = {
+  start: number;
+  end: number;
+};
+
 export type RetrievedEpisode = {
   episode: Episode;
   score: number;
@@ -55,6 +60,7 @@ export type RetrievedEpisode = {
     timeRelevance: number;
     moodBoost: number;
     socialRelevance: number;
+    entityRelevance: number;
     suppressionPenalty: number;
   };
   citationChain: StreamEntry[];
@@ -82,6 +88,13 @@ export type RetrievedContext = {
   semantic: RetrievedSemantic;
   open_questions: OpenQuestion[];
   contradiction_present: boolean;
+};
+
+type EpisodeCandidateSource = "vector" | "temporal" | "audience" | "entity" | "recent" | "heat";
+
+type MergedEpisodeCandidate = {
+  candidate: EpisodeSearchCandidate;
+  sources: Set<EpisodeCandidateSource>;
 };
 
 export type RetrievalPipelineOptions = {
@@ -139,6 +152,7 @@ function buildResult(
   timeRelevance: number,
   moodBoost: number,
   socialRelevance: number,
+  entityRelevance: number,
   suppressionPenalty: number,
   score: number,
   citationChain: StreamEntry[],
@@ -154,6 +168,7 @@ function buildResult(
       timeRelevance,
       moodBoost,
       socialRelevance,
+      entityRelevance,
       suppressionPenalty,
     },
     citationChain,
@@ -171,6 +186,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   attentionWeights?: AttentionWeights;
   goalDescriptions?: readonly string[];
   temporalCue?: TemporalCue | null;
+  strictTimeRange?: boolean;
   suppressionSet?: SuppressionLookup;
   graphWalkDepth?: number;
   maxGraphNodes?: number;
@@ -179,6 +195,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   moodState?: MoodState | null;
   audienceProfile?: SocialProfile | null;
   audienceTerms?: readonly string[];
+  entityTerms?: readonly string[];
 };
 
 export type RetrievalGetEpisodeOptions = {
@@ -190,17 +207,50 @@ function normalizeHeat(heat: number): number {
   return clamp(heat / 20, 0, 1);
 }
 
+function resolveTemporalCueTimeRange(
+  temporalCue: TemporalCue | null | undefined,
+): ResolvedTimeRange | null {
+  if (temporalCue === null || temporalCue === undefined) {
+    return null;
+  }
+
+  return {
+    start: temporalCue.sinceTs ?? Number.NEGATIVE_INFINITY,
+    end: temporalCue.untilTs ?? Number.POSITIVE_INFINITY,
+  };
+}
+
+function resolveTimeSignals(
+  options: Pick<RetrievalSearchOptions, "timeRange" | "temporalCue" | "strictTimeRange">,
+): {
+  scoringRange: ResolvedTimeRange | null;
+  strictFilterRange: ResolvedTimeRange | null;
+} {
+  const temporalCueRange = resolveTemporalCueTimeRange(options.temporalCue);
+  const explicitRange = options.timeRange ?? null;
+
+  return {
+    scoringRange: explicitRange ?? temporalCueRange,
+    strictFilterRange: options.strictTimeRange === true ? explicitRange : null,
+  };
+}
+
+function overlapsTimeRange(
+  episode: Episode,
+  range: ResolvedTimeRange,
+): boolean {
+  return episode.start_time <= range.end && episode.end_time >= range.start;
+}
+
 function computeTimeRelevance(
   episode: Episode,
-  temporalCue: TemporalCue | null | undefined,
+  timeRange: ResolvedTimeRange | null,
 ): number {
-  if (temporalCue === null || temporalCue === undefined) {
+  if (timeRange === null) {
     return 0;
   }
 
-  const sinceTs = temporalCue.sinceTs ?? Number.NEGATIVE_INFINITY;
-  const untilTs = temporalCue.untilTs ?? Number.POSITIVE_INFINITY;
-  return episode.start_time <= untilTs && episode.end_time >= sinceTs ? 1 : 0;
+  return overlapsTimeRange(episode, timeRange) ? 1 : 0;
 }
 
 function normalizeTerm(value: string): string {
@@ -255,6 +305,29 @@ function computeSocialRelevance(
   return audienceProfile !== null && audienceProfile !== undefined && audienceProfile.trust > 0.7
     ? 0.25
     : 0.2;
+}
+
+function computeEntityRelevance(
+  episode: Episode,
+  entityTerms: readonly string[] | undefined,
+): number {
+  if (entityTerms === undefined || entityTerms.length === 0) {
+    return 0;
+  }
+
+  const normalizedTerms = new Set(
+    entityTerms.map((term) => normalizeTerm(term)).filter((term) => term.length > 0),
+  );
+
+  if (normalizedTerms.size === 0) {
+    return 0;
+  }
+
+  return [...episode.participants, ...episode.tags].some((value) =>
+    normalizedTerms.has(normalizeTerm(value)),
+  )
+    ? 1
+    : 0;
 }
 
 export class RetrievalPipeline {
@@ -584,10 +657,111 @@ export class RetrievalPipeline {
     return scored.slice(0, limit).map((item) => item.question);
   }
 
+  private tagCandidates(
+    source: EpisodeCandidateSource,
+    candidates: readonly EpisodeSearchCandidate[],
+  ): MergedEpisodeCandidate[] {
+    return candidates.map((candidate) => ({
+      candidate,
+      sources: new Set([source]),
+    }));
+  }
+
+  private mergeCandidates(
+    candidateSets: readonly MergedEpisodeCandidate[][],
+  ): MergedEpisodeCandidate[] {
+    const merged = new Map<string, MergedEpisodeCandidate>();
+
+    for (const candidateSet of candidateSets) {
+      for (const entry of candidateSet) {
+        const existing = merged.get(entry.candidate.episode.id);
+
+        if (existing === undefined) {
+          merged.set(entry.candidate.episode.id, {
+            candidate: {
+              ...entry.candidate,
+            },
+            sources: new Set(entry.sources),
+          });
+          continue;
+        }
+
+        existing.candidate = {
+          ...existing.candidate,
+          similarity: Math.max(existing.candidate.similarity, entry.candidate.similarity),
+          stats: entry.candidate.stats,
+        };
+
+        for (const source of entry.sources) {
+          existing.sources.add(source);
+        }
+      }
+    }
+
+    return [...merged.values()];
+  }
+
+  private async generateAudienceCandidates(
+    audienceEntityId: EntityId,
+    limit: number,
+    visibleEpisodes: Promise<readonly Episode[]>,
+  ): Promise<MergedEpisodeCandidate[]> {
+    const recentLimit = Math.max(1, Math.ceil(limit / 2));
+    const heatLimit = Math.max(1, limit - recentLimit);
+    const sharedVisibleEpisodes = await visibleEpisodes;
+    const [recent, hottest] = await Promise.all([
+      this.options.episodicRepository.listByAudience(audienceEntityId, {
+        limit: recentLimit,
+        orderBy: "recent",
+        visibleEpisodes: sharedVisibleEpisodes,
+      }),
+      this.options.episodicRepository.listByAudience(audienceEntityId, {
+        limit: heatLimit,
+        orderBy: "heat",
+        visibleEpisodes: sharedVisibleEpisodes,
+      }),
+    ]);
+
+    return this.mergeCandidates([
+      this.tagCandidates("audience", recent),
+      this.tagCandidates("audience", hottest),
+    ]);
+  }
+
+  private async generateRecentAndHeatCandidates(
+    options: RetrievalSearchOptions,
+    limit: number,
+    visibleEpisodes: Promise<readonly Episode[]>,
+  ): Promise<MergedEpisodeCandidate[]> {
+    const recentLimit = Math.max(1, Math.ceil(limit / 2));
+    const heatLimit = Math.max(1, limit - recentLimit);
+    const sharedVisibleEpisodes = await visibleEpisodes;
+    const [recent, hottest] = await Promise.all([
+      this.options.episodicRepository.listRecent({
+        limit: recentLimit,
+        audienceEntityId: options.audienceEntityId,
+        crossAudience: options.crossAudience,
+        visibleEpisodes: sharedVisibleEpisodes,
+      }),
+      this.options.episodicRepository.listHottest({
+        limit: heatLimit,
+        audienceEntityId: options.audienceEntityId,
+        crossAudience: options.crossAudience,
+        visibleEpisodes: sharedVisibleEpisodes,
+      }),
+    ]);
+
+    return this.mergeCandidates([
+      this.tagCandidates("recent", recent),
+      this.tagCandidates("heat", hottest),
+    ]);
+  }
+
   private scoreCandidate(
     candidate: EpisodeSearchCandidate,
     searchOptions: RetrievalSearchOptions,
     nowMs: number,
+    scoringTimeRange: ResolvedTimeRange | null,
   ): {
     decayedSalience: number;
     heat: number;
@@ -595,6 +769,7 @@ export class RetrievalPipeline {
     timeRelevance: number;
     moodBoost: number;
     socialRelevance: number;
+    entityRelevance: number;
     suppressionPenalty: number;
     score: number;
   } {
@@ -612,13 +787,14 @@ export class RetrievalPipeline {
       searchOptions.goalDescriptions ?? [],
       candidate.episode,
     );
-    const timeRelevance = computeTimeRelevance(candidate.episode, searchOptions.temporalCue);
+    const timeRelevance = computeTimeRelevance(candidate.episode, scoringTimeRange);
     const moodBoost = computeMoodBoost(candidate.episode, searchOptions.moodState);
     const socialRelevance = computeSocialRelevance(
       candidate.episode,
       searchOptions.audienceTerms,
       searchOptions.audienceProfile,
     );
+    const entityRelevance = computeEntityRelevance(candidate.episode, searchOptions.entityTerms);
     const suppressionPenalty =
       searchOptions.suppressionSet?.isSuppressed(candidate.episode.id) === true ? 1 : 0;
 
@@ -634,12 +810,14 @@ export class RetrievalPipeline {
         timeRelevance,
         moodBoost,
         socialRelevance,
+        entityRelevance,
         suppressionPenalty,
         score:
           semanticScore +
           weights.goal_relevance * goalRelevance +
           weights.mood * moodBoost +
           weights.social * socialRelevance +
+          weights.entity * entityRelevance +
           weights.time * timeRelevance +
           weights.heat * normalizeHeat(heat) -
           weights.suppression_penalty * suppressionPenalty,
@@ -655,8 +833,12 @@ export class RetrievalPipeline {
       timeRelevance,
       moodBoost,
       socialRelevance,
+      entityRelevance,
       suppressionPenalty,
-      score: weights.similarity * candidate.similarity + weights.salience * decay.decayedSalience,
+      score:
+        weights.similarity * candidate.similarity +
+        weights.salience * decay.decayedSalience +
+        entityRelevance * 0.15,
     };
   }
 
@@ -667,20 +849,91 @@ export class RetrievalPipeline {
     const nowMs = this.clock.now();
     const limit = Math.max(1, options.limit ?? 5);
     const queryVector = await this.options.embeddingClient.embed(query);
-    const candidates = await this.options.episodicRepository.searchByVector(queryVector, {
-      ...options,
-      limit: Math.max(limit * 3, limit),
+    const vectorBudget = Math.max(limit * 2, 12);
+    const temporalBudget = Math.max(limit * 2, 8);
+    const audienceBudget = Math.max(limit * 2, 8);
+    const entityBudget = Math.max(limit * 2, 8);
+    const recentHeatBudget = Math.max(limit, 4);
+    const timeSignals = resolveTimeSignals(options);
+    const visibleEpisodes = this.options.episodicRepository.listVisibleEpisodes({
+      audienceEntityId: options.audienceEntityId,
+      crossAudience: options.crossAudience,
     });
-    const scored = candidates.map((candidate) => {
-      const score = this.scoreCandidate(candidate, options, nowMs);
+    const vectorSearchOptions: EpisodeSearchOptions = {
+      ...options,
+      timeRange: timeSignals.strictFilterRange ?? undefined,
+    };
+    const generatorCalls: Array<Promise<MergedEpisodeCandidate[]>> = [
+      this.options.episodicRepository
+        .searchByVector(queryVector, {
+          ...vectorSearchOptions,
+          limit: vectorBudget,
+        })
+        .then((candidates) => this.tagCandidates("vector", candidates)),
+      this.generateRecentAndHeatCandidates(options, recentHeatBudget, visibleEpisodes),
+    ];
+
+    if (timeSignals.scoringRange !== null) {
+      generatorCalls.push(
+        this.options.episodicRepository
+          .searchByTimeRange(timeSignals.scoringRange, {
+            limit: temporalBudget,
+            audienceEntityId: options.audienceEntityId,
+            crossAudience: options.crossAudience,
+          })
+          .then((candidates) => this.tagCandidates("temporal", candidates)),
+      );
+    }
+
+    if (
+      options.audienceEntityId !== null &&
+      options.audienceEntityId !== undefined &&
+      options.crossAudience !== true
+    ) {
+      generatorCalls.push(
+        this.generateAudienceCandidates(options.audienceEntityId, audienceBudget, visibleEpisodes),
+      );
+    }
+
+    if (options.entityTerms !== undefined && options.entityTerms.length > 0) {
+      generatorCalls.push(
+        this.options.episodicRepository
+          .searchByParticipantsOrTags(options.entityTerms, {
+            limit: entityBudget,
+            audienceEntityId: options.audienceEntityId,
+            crossAudience: options.crossAudience,
+            visibleEpisodes: await visibleEpisodes,
+          })
+          .then((candidates) => this.tagCandidates("entity", candidates)),
+      );
+    }
+
+    const candidates = this.mergeCandidates(await Promise.all(generatorCalls)).filter((entry) =>
+      timeSignals.strictFilterRange === null
+        ? true
+        : overlapsTimeRange(entry.candidate.episode, timeSignals.strictFilterRange),
+    );
+    const scored = candidates.map((entry) => {
+      const candidate = entry.candidate;
+      const score = this.scoreCandidate(candidate, options, nowMs, timeSignals.scoringRange);
 
       return {
+        ...entry,
         candidate,
         ...score,
       };
     });
+    const preMmrLimit = Math.max(limit * 4, 24);
+    const trimmed = [...scored]
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          right.candidate.similarity - left.candidate.similarity ||
+          right.candidate.episode.updated_at - left.candidate.episode.updated_at,
+      )
+      .slice(0, preMmrLimit);
     const selected = applyMmr(
-      scored.map((item) => ({
+      trimmed.map((item) => ({
         item,
         vector: item.candidate.episode.embedding,
         relevanceScore: item.score,
@@ -717,6 +970,7 @@ export class RetrievalPipeline {
         item.timeRelevance,
         item.moodBoost,
         item.socialRelevance,
+        item.entityRelevance,
         item.suppressionPenalty,
         clamp(item.score, 0, 1),
         citationChain,
@@ -780,7 +1034,7 @@ export class RetrievalPipeline {
       stats,
       similarity: 1,
     };
-    const scored = this.scoreCandidate(candidate, {}, nowMs);
+    const scored = this.scoreCandidate(candidate, {}, nowMs, null);
     const citationEntries = await this.resolveCitationEntries(episode.source_stream_ids);
     const citationChain = this.resolveCitationChainFromMap(
       episode.source_stream_ids,
@@ -795,6 +1049,7 @@ export class RetrievalPipeline {
       scored.timeRelevance,
       scored.moodBoost,
       scored.socialRelevance,
+      scored.entityRelevance,
       scored.suppressionPenalty,
       1,
       citationChain,
