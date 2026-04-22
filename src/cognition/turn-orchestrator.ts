@@ -229,6 +229,7 @@ export class TurnOrchestrator {
           llmClient: optionalPerceptionLlm,
           model: this.options.config.anthropic.models.background,
           useLlmFallback: this.options.config.perception.useLlmFallback,
+          modeWhenLlmAbsent: this.options.config.perception.modeWhenLlmAbsent,
           affectiveUseLlmFallback: this.options.config.affective.useLlmFallback,
           detectAffectiveSignal: this.options.affectiveSignalDetector,
           onAffectiveError: (error) =>

@@ -72,6 +72,7 @@ function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
       },
       embedding: {
         baseUrl: "http://localhost:1234/v1",

@@ -1,6 +1,6 @@
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { LLMClient } from "../../llm/index.js";
-import { perceptionResultSchema, type PerceptionResult } from "../types.js";
+import { perceptionResultSchema, type CognitiveMode, type PerceptionResult } from "../types.js";
 import {
   createNeutralAffectiveSignal,
   type AffectiveSignal,
@@ -18,6 +18,13 @@ export type PerceiverOptions = {
   clock?: Clock;
   detectAffectiveSignal?: typeof detectAffectiveSignal;
   onAffectiveError?: (error: unknown) => Promise<void> | void;
+  /**
+   * Mode returned when LLM-based mode detection isn't firing (either the
+   * fallback is disabled or no LLM client is configured). Test harnesses
+   * that run with fake LLMs typically use this to pick the mode they want
+   * to exercise without scripting a tool-call response.
+   */
+  modeWhenLlmAbsent?: CognitiveMode;
 };
 
 export class Perceiver {
@@ -46,6 +53,7 @@ export class Perceiver {
       llmClient: options.llmClient,
       model: options.model,
       useLlmFallback: options.useLlmFallback,
+      defaultMode: options.modeWhenLlmAbsent,
     });
   }
 

@@ -277,6 +277,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -398,6 +399,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "reflective",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -522,6 +524,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -576,6 +579,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -637,6 +641,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -701,6 +706,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "reflective",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -786,6 +792,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
         },
         affective: {
           useLlmFallback: false,
@@ -873,6 +880,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "relational",
         },
         affective: {
           useLlmFallback: false,
@@ -969,6 +977,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
         },
         affective: {
           useLlmFallback: false,
@@ -1101,6 +1110,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",

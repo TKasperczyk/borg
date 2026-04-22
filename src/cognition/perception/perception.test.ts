@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { FakeLLMClient } from "../../llm/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { EntityExtractor, extractEntitiesHeuristically } from "./entity-extractor.js";
-import { ModeDetector, detectModeHeuristically } from "./mode-detector.js";
+import { ModeDetector } from "./mode-detector.js";
 import { Perceiver } from "./perceive.js";
 import { detectTemporalCue } from "./temporal-cue.js";
 
@@ -19,23 +19,16 @@ describe("perception", () => {
     ).toEqual(["@alice", "Project Atlas", "Jane Doe", "ACME"]);
   });
 
-  it("detects modes heuristically", () => {
-    expect(detectModeHeuristically("pnpm build throws an error trace")).toBe("problem_solving");
-    expect(detectModeHeuristically("Thanks, can you help me word this for @sam?")).toBe(
-      "relational",
-    );
-    expect(detectModeHeuristically("Why do I keep avoiding this about myself?")).toBe("reflective");
-    expect(detectModeHeuristically("ok")).toBe("idle");
+  it("defaults to idle when no LLM client is configured", async () => {
+    // The heuristic tier was removed; without an LLM, the safe neutral
+    // default is "idle" (skips S2 planning, uses default retrieval weights).
+    const detector = new ModeDetector({ useLlmFallback: false });
+    expect(await detector.detectMode("pnpm build throws an error trace")).toBe("idle");
+    expect(await detector.detectMode("Why do I keep avoiding this?")).toBe("idle");
+    expect(await detector.detectMode("ok")).toBe("idle");
   });
 
-  it("treats self-introductions as relational", () => {
-    expect(detectModeHeuristically("I'm Tom, the creator of borg.")).toBe("relational");
-    expect(detectModeHeuristically("My name is Tom.")).toBe("relational");
-    expect(detectModeHeuristically("Call me Tom.")).toBe("relational");
-    expect(detectModeHeuristically("This is Tom.")).toBe("relational");
-  });
-
-  it("uses llm fallback when heuristics yield nothing", async () => {
+  it("classifies every message via the LLM when configured", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {

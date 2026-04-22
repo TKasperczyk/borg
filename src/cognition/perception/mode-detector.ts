@@ -40,118 +40,63 @@ function parseModeFallback(result: LLMCompleteResult): CognitiveMode {
   return parsed.data.mode;
 }
 
-const IDLE_PATTERNS = [/^(ok|okay|k|thanks|thank you|cool|got it|sure|yep|nope|hi|hello)[.!?]*$/i];
-const PROBLEM_PATTERNS = [
-  /\berror\b/i,
-  /\bstack\b/i,
-  /\btrace\b/i,
-  /\bexception\b/i,
-  /\bpnpm\b/i,
-  /\bnpm\b/i,
-  /\btsc\b/i,
-  /\btraceback\b/i,
-  /command not found/i,
-  /```/,
-];
-const RELATIONAL_PATTERNS = [
-  /\bthank(s| you)?\b/i,
-  /\bsorry\b/i,
-  /\bplease\b/i,
-  /\bfeel\b/i,
-  /\bhope\b/i,
-  /@[a-zA-Z0-9_]+/,
-];
-const RELATIONAL_INTRODUCTION_PATTERNS = [
-  /\bI(?:'m| am)\s+[A-Z]\w+/,
-  /\bmy name is\b/i,
-  /\bcall me\b\s+\w+/i,
-  /\b(?:This is|this is)\s+[A-Z][a-z]+\b/,
-];
-const REFLECTIVE_PATTERNS = [
-  /\bI feel\b/i,
-  /\bwho am I\b/i,
-  /\babout myself\b/i,
-  /\bwhy do I\b/i,
-  /\bmy pattern\b/i,
-  /\bwhat kind of person\b/i,
-];
-
-export function detectModeHeuristically(
-  text: string,
-  recentHistory: readonly string[] = [],
-): CognitiveMode | null {
-  const normalized = text.trim();
-
-  if (
-    normalized.length === 0 ||
-    normalized.length <= 4 ||
-    IDLE_PATTERNS.some((pattern) => pattern.test(normalized))
-  ) {
-    return "idle";
-  }
-
-  const matches = new Set<CognitiveMode>();
-
-  if (PROBLEM_PATTERNS.some((pattern) => pattern.test(text))) {
-    matches.add("problem_solving");
-  }
-
-  if (REFLECTIVE_PATTERNS.some((pattern) => pattern.test(text))) {
-    matches.add("reflective");
-  }
-
-  if (RELATIONAL_INTRODUCTION_PATTERNS.some((pattern) => pattern.test(text))) {
-    matches.add("relational");
-  }
-
-  if (
-    RELATIONAL_PATTERNS.some((pattern) => pattern.test(text)) &&
-    (/\byou\b/i.test(text) || recentHistory.some((entry) => /\byou\b/i.test(entry)))
-  ) {
-    matches.add("relational");
-  }
-
-  if (matches.size === 1) {
-    const [mode] = matches;
-    return mode ?? null;
-  }
-
-  if (matches.size > 1) {
-    return null;
-  }
-
-  return normalized.endsWith("?") ? "reflective" : null;
-}
-
 export type ModeDetectorOptions = {
   llmClient?: LLMClient;
   model?: string;
+  /**
+   * If true (default) and an LLM client + model are configured, the detector
+   * classifies every message by asking the LLM. If false, or if no LLM is
+   * configured, the detector returns `defaultMode` (which itself defaults
+   * to "idle") as a neutral classification.
+   *
+   * Rationale: a pattern-based heuristic tier existed in earlier revisions.
+   * It was brittle by construction -- every novel phrasing required a new
+   * regex, and the patch-work drifted into the same class of overfit the
+   * rest of the cognition loop was deliberately avoiding. The LLM
+   * classification path has always existed as a fallback; this removes the
+   * heuristic and lets the LLM do the work on every turn.
+   */
   useLlmFallback?: boolean;
+  /**
+   * Mode returned when no LLM classification happens (either fallback
+   * disabled or no client configured). Defaults to "idle". Test harnesses
+   * that want a specific mode without wiring a scripted fake LLM can set
+   * this -- there is no production reason to override it.
+   */
+  defaultMode?: CognitiveMode;
 };
 
 export class ModeDetector {
   private readonly useLlmFallback: boolean;
+  private readonly defaultMode: CognitiveMode;
 
   constructor(private readonly options: ModeDetectorOptions = {}) {
     this.useLlmFallback = options.useLlmFallback ?? true;
+    this.defaultMode = options.defaultMode ?? "idle";
   }
 
   async detectMode(text: string, recentHistory: readonly string[] = []): Promise<CognitiveMode> {
-    const heuristic = detectModeHeuristically(text, recentHistory);
-
     if (
-      heuristic !== null ||
       !this.useLlmFallback ||
       this.options.llmClient === undefined ||
       this.options.model === undefined
     ) {
-      return heuristic ?? "idle";
+      return this.defaultMode;
     }
 
     try {
       const response = await this.options.llmClient.complete({
         model: this.options.model,
-        system: "Classify the message into problem_solving, relational, reflective, or idle.",
+        system: [
+          "Classify the user's message into exactly one cognitive mode. The mode steers retrieval weighting and deliberation depth downstream, so pick the one that fits best, not the safest one.",
+          "",
+          "- problem_solving: the user is working through a technical or practical problem -- errors, debugging, commands, code, tool output, configuration, troubleshooting a specific thing.",
+          "- relational: introductions, greetings by name, talk about specific people, emotional or interpersonal content, anything scoped to the person-to-person dynamic rather than a task.",
+          "- reflective: the user is thinking out loud, questioning themselves, asking meta or identity questions, exploring patterns in their own behavior, or asking open-ended questions about the being they are talking to.",
+          "- idle: trivial acknowledgments, filler, brief greetings with no topic, nothing substantive to engage with.",
+          "",
+          'When ambiguous, prefer the more engaged mode ("reflective" over "idle", "problem_solving" over "relational", etc.). "idle" is only for genuinely contentless input like "ok", "thanks", "hmm".',
+        ].join("\n"),
         messages: [
           {
             role: "user",

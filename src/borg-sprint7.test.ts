@@ -160,6 +160,7 @@ describe("Borg Sprint 7", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
         },
         affective: {
           ...DEFAULT_CONFIG.affective,

@@ -14,6 +14,9 @@ const configFileSchema = z
     perception: z
       .object({
         useLlmFallback: z.boolean().optional(),
+        modeWhenLlmAbsent: z
+          .enum(["problem_solving", "relational", "reflective", "idle"])
+          .optional(),
       })
       .partial()
       .optional(),
@@ -129,6 +132,9 @@ export const configSchema = z.object({
   dataDir: z.string().min(1),
   perception: z.object({
     useLlmFallback: z.boolean(),
+    modeWhenLlmAbsent: z
+      .enum(["problem_solving", "relational", "reflective", "idle"])
+      .optional(),
   }),
   affective: z.object({
     useLlmFallback: z.boolean(),
@@ -457,6 +463,9 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         readOptionalEnvBoolean(env, "BORG_PERCEPTION_USE_LLM_FALLBACK") ??
         fileConfig.perception?.useLlmFallback ??
         DEFAULT_CONFIG.perception.useLlmFallback,
+      modeWhenLlmAbsent:
+        fileConfig.perception?.modeWhenLlmAbsent ??
+        DEFAULT_CONFIG.perception.modeWhenLlmAbsent,
     },
     affective: {
       useLlmFallback:
