@@ -221,7 +221,9 @@ export class SemanticExtractor {
       const embedding = await this.options.embeddingClient.embed(
         `${candidate.label}\n${candidate.description}\n${candidate.aliases.join(" ")}`,
       );
-      const byLabel = await this.options.nodeRepository.findByLabelOrAlias(candidate.label, 5);
+      const byLabel = await this.options.nodeRepository.findByLabelOrAlias(candidate.label, 5, {
+        includeArchived: true,
+      });
       const byVector = await this.options.nodeRepository.searchByVector(embedding, {
         limit: 3,
         minSimilarity: this.dedupThreshold,
@@ -352,7 +354,9 @@ export class SemanticExtractor {
     }
 
     for (const candidate of parsed.nodes) {
-      const matches = await this.options.nodeRepository.findByLabelOrAlias(candidate.label, 3);
+      const matches = await this.options.nodeRepository.findByLabelOrAlias(candidate.label, 3, {
+        includeArchived: true,
+      });
 
       for (const match of matches) {
         existingNodes.set(match.label.toLowerCase(), match);

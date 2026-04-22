@@ -1,10 +1,22 @@
 import type { EpisodicExtractor, ExtractFromStreamResult } from "../../memory/episodic/index.js";
-import { StreamReader, type StreamEntry, type StreamWatermarkRepository } from "../../stream/index.js";
+import {
+  StreamReader,
+  type StreamCursor,
+  type StreamEntry,
+  type StreamWatermarkRepository,
+} from "../../stream/index.js";
 import { BorgError } from "../../util/errors.js";
 import { type Clock, SystemClock } from "../../util/clock.js";
 import type { SessionId } from "../../util/ids.js";
 
 const EPISODIC_PROCESS_NAME = "episodic-extractor";
+
+export type LegacyFallbackNotice = {
+  processName: typeof EPISODIC_PROCESS_NAME;
+  sessionId: SessionId;
+  sinceTs: number;
+  message: string;
+};
 
 function isFileMissingError(error: unknown): boolean {
   if (error instanceof BorgError && error.cause !== undefined) {
@@ -35,6 +47,12 @@ export type StreamIngestionCoordinatorOptions = {
    * surface to the user). Pass a hook to log or rethrow.
    */
   onError?: (error: unknown) => void | Promise<void>;
+  /**
+   * Called when resuming from a legacy watermark that has a timestamp but no
+   * entry id. Defaults to console.warn so the fallback is observable without
+   * polluting the stream.
+   */
+  onLegacyFallback?: (notice: LegacyFallbackNotice) => void | Promise<void>;
 };
 
 export type IngestionResult = {
@@ -51,6 +69,12 @@ export type IngestOptions = {
    * ingested.
    */
   minEntriesThreshold?: number;
+};
+
+type ResumeOptions = {
+  sinceTs?: number;
+  sinceCursor?: StreamCursor;
+  usedLegacyFallback: boolean;
 };
 
 /**
@@ -96,16 +120,55 @@ export class StreamIngestionCoordinator {
     return promise;
   }
 
+  private resolveResumeOptions(sessionId: SessionId): ResumeOptions {
+    const watermark = this.options.watermarkRepository.get(EPISODIC_PROCESS_NAME, sessionId);
+
+    if (watermark === null) {
+      return {
+        usedLegacyFallback: false,
+      };
+    }
+
+    const lastEntryId = watermark.lastEntryId;
+
+    if (lastEntryId === null) {
+      return {
+        sinceTs: watermark.lastTs + 1,
+        usedLegacyFallback: true,
+      };
+    }
+
+    return {
+      sinceCursor: {
+        ts: watermark.lastTs,
+        entryId: lastEntryId as StreamCursor["entryId"],
+      },
+      usedLegacyFallback: false,
+    };
+  }
+
+  private async reportLegacyFallback(sessionId: SessionId, sinceTs: number): Promise<void> {
+    const notice: LegacyFallbackNotice = {
+      processName: EPISODIC_PROCESS_NAME,
+      sessionId,
+      sinceTs,
+      message: `legacy watermark fallback used for ${EPISODIC_PROCESS_NAME}; lastEntryId missing, resumed with sinceTs=${sinceTs}`,
+    };
+    const reporter =
+      this.options.onLegacyFallback ??
+      ((fallbackNotice: LegacyFallbackNotice) => {
+        console.warn(fallbackNotice.message);
+      });
+
+    await reporter(notice);
+  }
+
   private async ingestInternal(
     sessionId: SessionId,
     ingestOptions: IngestOptions,
   ): Promise<IngestionResult> {
     const threshold = ingestOptions.minEntriesThreshold ?? this.minEntriesThreshold;
-    const watermark = this.options.watermarkRepository.get(EPISODIC_PROCESS_NAME, sessionId);
-    // sinceTs is inclusive in the reader; bump by 1 ms past the watermark to
-    // exclude the entry already marked as done. Brand-new sessions read from
-    // the beginning of the stream.
-    const sinceTs = watermark === null ? undefined : watermark.lastTs + 1;
+    const resumeOptions = this.resolveResumeOptions(sessionId);
 
     const reader = new StreamReader({
       dataDir: this.options.dataDir,
@@ -115,7 +178,10 @@ export class StreamIngestionCoordinator {
     const newEntries: StreamEntry[] = [];
 
     try {
-      for await (const entry of reader.iterate({ sinceTs })) {
+      for await (const entry of reader.iterate({
+        sinceTs: resumeOptions.sinceTs,
+        sinceCursor: resumeOptions.sinceCursor,
+      })) {
         newEntries.push(entry);
       }
     } catch (error) {
@@ -134,19 +200,24 @@ export class StreamIngestionCoordinator {
     }
 
     try {
+      if (resumeOptions.usedLegacyFallback && resumeOptions.sinceTs !== undefined) {
+        try {
+          await this.reportLegacyFallback(sessionId, resumeOptions.sinceTs);
+        } catch {
+          // Best-effort observability only.
+        }
+      }
+
       const extractionResult = await this.options.extractor.extractFromStream({
         session: sessionId,
-        sinceTs,
+        sinceTs: resumeOptions.sinceTs,
+        sinceCursor: resumeOptions.sinceCursor,
       });
-      const newestTs = newEntries.reduce(
-        (acc, entry) => Math.max(acc, entry.timestamp),
-        watermark?.lastTs ?? 0,
-      );
-      const newestEntry = newEntries[newEntries.length - 1];
+      const lastProcessedEntry = newEntries[newEntries.length - 1];
 
       this.options.watermarkRepository.set(EPISODIC_PROCESS_NAME, sessionId, {
-        lastTs: newestTs,
-        lastEntryId: newestEntry?.id ?? null,
+        lastTs: lastProcessedEntry?.timestamp ?? 0,
+        lastEntryId: lastProcessedEntry?.id ?? null,
       });
 
       return {

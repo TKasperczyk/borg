@@ -297,6 +297,7 @@ export {
   streamEntrySchema,
   type SessionId,
   type StreamEntry,
+  type StreamCursor,
   type StreamEntryInput,
   type StreamEntryKind,
   type StreamIterateOptions,

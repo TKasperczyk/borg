@@ -225,7 +225,9 @@ export class ReviewQueueRepository {
     }
 
     const parsedNodeIds = rawNodeIds.map((value) => semanticNodeIdSchema.parse(value));
-    const nodes = await this.options.semanticNodeRepository.getMany(parsedNodeIds);
+    const nodes = await this.options.semanticNodeRepository.getMany(parsedNodeIds, {
+      includeArchived: true,
+    });
     const first = nodes[0];
     const second = nodes[1];
 

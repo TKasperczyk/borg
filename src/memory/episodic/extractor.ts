@@ -7,7 +7,7 @@ import {
 } from "../../llm/index.js";
 import { analyzeAffectiveSignalHeuristically, type EmotionalArc } from "../affective/index.js";
 import type { EntityRepository } from "../commitments/index.js";
-import { StreamReader, type StreamEntry } from "../../stream/index.js";
+import { StreamReader, type StreamCursor, type StreamEntry } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { EmbeddingError, LLMError, StorageError } from "../../util/errors.js";
 import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
@@ -55,6 +55,7 @@ export type EpisodicExtractorOptions = {
 export type ExtractFromStreamOptions = {
   session?: SessionId;
   sinceTs?: number;
+  sinceCursor?: StreamCursor;
   untilTs?: number;
 };
 
@@ -332,6 +333,7 @@ export class EpisodicExtractor {
 
     for await (const entry of reader.iterate({
       sinceTs: extractOptions.sinceTs,
+      sinceCursor: extractOptions.sinceCursor,
       untilTs: extractOptions.untilTs,
     })) {
       streamEntries.push(entry);

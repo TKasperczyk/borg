@@ -464,7 +464,10 @@ export class SemanticNodeRepository {
     return row === undefined ? null : nodeFromRow(row);
   }
 
-  async getMany(ids: readonly SemanticNodeId[]): Promise<Array<SemanticNode | null>> {
+  async getMany(
+    ids: readonly SemanticNodeId[],
+    options: { includeArchived?: boolean } = {},
+  ): Promise<Array<SemanticNode | null>> {
     if (ids.length === 0) {
       return [];
     }
@@ -474,10 +477,27 @@ export class SemanticNodeRepository {
       where,
     });
     const byId = new Map(rows.map((row) => [String(row.id), nodeFromRow(row)]));
-    return ids.map((id) => byId.get(id) ?? null);
+
+    return ids.map((id) => {
+      const node = byId.get(id) ?? null;
+
+      if (node === null) {
+        return null;
+      }
+
+      if (options.includeArchived !== true && node.archived) {
+        return null;
+      }
+
+      return node;
+    });
   }
 
-  async findByLabelOrAlias(query: string, limit = 10): Promise<SemanticNode[]> {
+  async findByLabelOrAlias(
+    query: string,
+    limit = 10,
+    options: { includeArchived?: boolean } = {},
+  ): Promise<SemanticNode[]> {
     const normalized = query.trim().toLowerCase();
 
     if (normalized.length === 0) {
@@ -497,6 +517,12 @@ export class SemanticNodeRepository {
     const matchedIds: SemanticNodeId[] = [];
 
     for (const row of rows) {
+      const archived = row.archived === true || Number(row.archived) === 1;
+
+      if (options.includeArchived !== true && archived) {
+        continue;
+      }
+
       const label = String(row.label ?? "").toLowerCase();
       const aliases = parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases").map((value) =>
         value.toLowerCase(),
@@ -516,7 +542,7 @@ export class SemanticNodeRepository {
       }
     }
 
-    return (await this.getMany(matchedIds)).filter(
+    return (await this.getMany(matchedIds, options)).filter(
       (value): value is SemanticNode => value !== null,
     );
   }

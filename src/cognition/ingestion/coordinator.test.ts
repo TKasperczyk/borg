@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import {
+  StreamReader,
   StreamWatermarkRepository,
   StreamWriter,
   streamWatermarkMigrations,
@@ -18,6 +19,10 @@ import { StreamIngestionCoordinator } from "./coordinator.js";
 type ExtractCall = {
   session?: unknown;
   sinceTs?: number;
+  sinceCursor?: {
+    ts: number;
+    entryId: string;
+  };
   untilTs?: number;
 };
 
@@ -131,9 +136,11 @@ describe("StreamIngestionCoordinator", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0]?.session).toBe(DEFAULT_SESSION_ID);
       expect(calls[0]?.sinceTs).toBeUndefined();
+      expect(calls[0]?.sinceCursor).toBeUndefined();
 
       const watermark = repo.get("episodic-extractor", DEFAULT_SESSION_ID);
       expect(watermark?.lastTs).toBe(110);
+      expect(watermark?.lastEntryId).not.toBeNull();
     } finally {
       close();
     }
@@ -158,7 +165,9 @@ describe("StreamIngestionCoordinator", () => {
     try {
       await coordinator.ingest(DEFAULT_SESSION_ID);
       expect(calls).toHaveLength(1);
-      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(110);
+      const firstWatermark = repo.get("episodic-extractor", DEFAULT_SESSION_ID);
+      expect(firstWatermark?.lastTs).toBe(110);
+      expect(firstWatermark?.lastEntryId).not.toBeNull();
 
       // Add two more entries -- a new turn.
       await seedStream(dataDir, [
@@ -168,9 +177,179 @@ describe("StreamIngestionCoordinator", () => {
 
       await coordinator.ingest(DEFAULT_SESSION_ID);
       expect(calls).toHaveLength(2);
-      // Second call should have sinceTs = previousLastTs + 1 = 111.
-      expect(calls[1]?.sinceTs).toBe(111);
+      expect(calls[1]?.sinceTs).toBeUndefined();
+      expect(calls[1]?.sinceCursor).toEqual({
+        ts: firstWatermark?.lastTs,
+        entryId: firstWatermark?.lastEntryId,
+      });
       expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(210);
+    } finally {
+      close();
+    }
+  });
+
+  it("stores the last processed entry pair and resumes later same-ms appends with a cursor", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "first", ts: 100 },
+      { kind: "agent_msg", content: "reply", ts: 100 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      await coordinator.ingest(DEFAULT_SESSION_ID);
+      const firstWatermark = repo.get("episodic-extractor", DEFAULT_SESSION_ID);
+      const initialTail = new StreamReader({
+        dataDir,
+        sessionId: DEFAULT_SESSION_ID,
+      }).tail(2);
+      const secondEntry = initialTail[1];
+
+      expect(firstWatermark?.lastTs).toBe(100);
+      expect(firstWatermark?.lastEntryId).toBe(secondEntry?.id ?? null);
+
+      await seedStream(dataDir, [{ kind: "user_msg", content: "late same-ms", ts: 100 }]);
+      await coordinator.ingest(DEFAULT_SESSION_ID);
+
+      expect(calls[1]?.sinceCursor).toEqual({
+        ts: 100,
+        entryId: secondEntry?.id,
+      });
+
+      const secondWatermark = repo.get("episodic-extractor", DEFAULT_SESSION_ID);
+      const latestEntry = new StreamReader({
+        dataDir,
+        sessionId: DEFAULT_SESSION_ID,
+      }).tail(1)[0];
+
+      expect(secondWatermark?.lastTs).toBe(100);
+      expect(secondWatermark?.lastEntryId).toBe(latestEntry?.id ?? null);
+    } finally {
+      close();
+    }
+  });
+
+  it("falls back to sinceTs without polluting the stream or reprocessing leftovers", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "first", ts: 101 },
+      { kind: "agent_msg", content: "reply", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    repo.set("episodic-extractor", DEFAULT_SESSION_ID, {
+      lastTs: 100,
+      lastEntryId: null,
+    });
+    const extractedContents: string[][] = [];
+    const extractedKinds: string[][] = [];
+    const fallbackNotices: string[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: {
+        async extractFromStream(options: ExtractCall): Promise<{
+          inserted: number;
+          updated: number;
+          skipped: number;
+        }> {
+          const reader = new StreamReader({
+            dataDir,
+            sessionId: DEFAULT_SESSION_ID,
+          });
+          const batchContents: string[] = [];
+          const batchKinds: string[] = [];
+
+          for await (const entry of reader.iterate({
+            sinceTs: options.sinceTs,
+            sinceCursor: options.sinceCursor,
+            untilTs: options.untilTs,
+          })) {
+            batchContents.push(String(entry.content));
+            batchKinds.push(entry.kind);
+          }
+
+          extractedContents.push(batchContents);
+          extractedKinds.push(batchKinds);
+
+          return {
+            inserted: batchContents.length,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+      } as unknown as never,
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+      onLegacyFallback: (notice) => {
+        fallbackNotices.push(notice.message);
+      },
+    });
+
+    try {
+      const first = await coordinator.ingest(DEFAULT_SESSION_ID);
+      expect(first.ran).toBe(true);
+      expect(first.processedEntries).toBe(2);
+      expect(extractedContents).toEqual([["first", "reply"]]);
+      expect(extractedKinds).toEqual([["user_msg", "agent_msg"]]);
+      expect(fallbackNotices).toHaveLength(1);
+      expect(fallbackNotices[0]).toContain("legacy watermark fallback used");
+
+      const second = await coordinator.flush(DEFAULT_SESSION_ID);
+      expect(second.ran).toBe(false);
+      expect(second.processedEntries).toBe(0);
+      expect(extractedContents).toHaveLength(1);
+
+      const tail = new StreamReader({
+        dataDir,
+        sessionId: DEFAULT_SESSION_ID,
+      }).tail(10);
+
+      expect(tail.map((entry) => entry.kind)).toEqual(["user_msg", "agent_msg"]);
+    } finally {
+      close();
+    }
+  });
+
+  it("continues ingestion when legacy fallback reporting throws", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "first", ts: 101 },
+      { kind: "agent_msg", content: "reply", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    repo.set("episodic-extractor", DEFAULT_SESSION_ID, {
+      lastTs: 100,
+      lastEntryId: null,
+    });
+    const calls: ExtractCall[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+      onLegacyFallback: () => {
+        throw new Error("observer failed");
+      },
+    });
+
+    try {
+      const result = await coordinator.ingest(DEFAULT_SESSION_ID);
+
+      expect(result.ran).toBe(true);
+      expect(result.processedEntries).toBe(2);
+      expect(calls[0]?.sinceTs).toBe(101);
+      expect(calls[0]?.sinceCursor).toBeUndefined();
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(110);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastEntryId).not.toBeNull();
     } finally {
       close();
     }

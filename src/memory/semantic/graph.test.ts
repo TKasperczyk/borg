@@ -150,4 +150,144 @@ describe("semantic graph", () => {
       expect.arrayContaining([expect.objectContaining({ id: beta.id })]),
     );
   });
+
+  it("treats is_a as outbound by default and excludes archived neighbors", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const graph = new SemanticGraph({
+      nodeRepository,
+      edgeRepository,
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const episodeIds = ["ep_aaaaaaaaaaaaaaaa" as EpisodeId];
+    const atlas = await nodeRepository.insert({
+      ...{
+        id: createSemanticNodeId(),
+        kind: "entity" as const,
+        label: "Atlas",
+        description: "Atlas entity",
+        aliases: [],
+        confidence: 0.8,
+        source_episode_ids: episodeIds,
+        created_at: 1_000,
+        updated_at: 1_000,
+        last_verified_at: 1_000,
+        embedding: Float32Array.from([1, 0, 0, 0]),
+        archived: false,
+        superseded_by: null,
+      },
+    });
+    const service = await nodeRepository.insert({
+      ...{
+        id: createSemanticNodeId(),
+        kind: "concept" as const,
+        label: "Service",
+        description: "Service category",
+        aliases: [],
+        confidence: 0.8,
+        source_episode_ids: episodeIds,
+        created_at: 1_000,
+        updated_at: 1_000,
+        last_verified_at: 1_000,
+        embedding: Float32Array.from([1, 0, 0, 0]),
+        archived: false,
+        superseded_by: null,
+      },
+    });
+    const instance = await nodeRepository.insert({
+      ...{
+        id: createSemanticNodeId(),
+        kind: "entity" as const,
+        label: "Atlas Instance",
+        description: "Inbound instance node",
+        aliases: [],
+        confidence: 0.8,
+        source_episode_ids: episodeIds,
+        created_at: 1_000,
+        updated_at: 1_000,
+        last_verified_at: 1_000,
+        embedding: Float32Array.from([1, 0, 0, 0]),
+        archived: false,
+        superseded_by: null,
+      },
+    });
+    const archivedCategory = await nodeRepository.insert({
+      ...{
+        id: createSemanticNodeId(),
+        kind: "concept" as const,
+        label: "Archived Category",
+        description: "Archived category node",
+        aliases: [],
+        confidence: 0.2,
+        source_episode_ids: episodeIds,
+        created_at: 1_000,
+        updated_at: 1_000,
+        last_verified_at: 1_000,
+        embedding: Float32Array.from([1, 0, 0, 0]),
+        archived: true,
+        superseded_by: null,
+      },
+    });
+
+    edgeRepository.addEdge({
+      from_node_id: atlas.id,
+      to_node_id: service.id,
+      relation: "is_a",
+      confidence: 0.8,
+      evidence_episode_ids: episodeIds,
+      created_at: 1_000,
+      last_verified_at: 1_000,
+    });
+    edgeRepository.addEdge({
+      from_node_id: instance.id,
+      to_node_id: atlas.id,
+      relation: "is_a",
+      confidence: 0.8,
+      evidence_episode_ids: episodeIds,
+      created_at: 1_000,
+      last_verified_at: 1_000,
+    });
+    edgeRepository.addEdge({
+      from_node_id: atlas.id,
+      to_node_id: archivedCategory.id,
+      relation: "is_a",
+      confidence: 0.5,
+      evidence_episode_ids: episodeIds,
+      created_at: 1_000,
+      last_verified_at: 1_000,
+    });
+
+    const walked = await graph.walk(atlas.id, {
+      relations: ["is_a"],
+      depth: 1,
+      maxNodes: 8,
+    });
+
+    expect(walked.map((step) => step.node.id)).toEqual([service.id]);
+  });
 });

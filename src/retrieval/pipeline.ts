@@ -75,6 +75,16 @@ export type RetrievedEpisode = {
  */
 export type RetrievedSemantic = SemanticContext & {
   matched_node_ids: SemanticNode["id"][];
+  matched_nodes: SemanticNode[];
+  support_hits: RetrievedSemanticHit[];
+  contradiction_hits: RetrievedSemanticHit[];
+  category_hits: RetrievedSemanticHit[];
+};
+
+export type RetrievedSemanticHit = {
+  root_node_id: SemanticNode["id"];
+  node: SemanticNode;
+  edgePath: SemanticWalkStep["edgePath"];
 };
 
 /**
@@ -468,6 +478,10 @@ export class RetrievalPipeline {
     context: SemanticContext;
     contradictionPresent: boolean;
     matchedNodeIds: SemanticNode["id"][];
+    matchedNodes: SemanticNode[];
+    supportHits: RetrievedSemanticHit[];
+    contradictionHits: RetrievedSemanticHit[];
+    categoryHits: RetrievedSemanticHit[];
   }> {
     if (
       this.options.semanticNodeRepository === undefined ||
@@ -481,6 +495,10 @@ export class RetrievalPipeline {
         },
         contradictionPresent: false,
         matchedNodeIds: [],
+        matchedNodes: [],
+        supportHits: [],
+        contradictionHits: [],
+        categoryHits: [],
       };
     }
 
@@ -518,46 +536,52 @@ export class RetrievalPipeline {
     const categories = new Map<string, SemanticNode>();
     const walkDepth = options.graphWalkDepth ?? 2;
     const maxGraphNodes = options.maxGraphNodes ?? 16;
-    const supportNeighbors: SemanticWalkStep[] = [];
-    const contradictionNeighbors: SemanticWalkStep[] = [];
-    const categoryNeighbors: SemanticWalkStep[] = [];
+    const supportNeighbors: Array<{ rootNodeId: SemanticNode["id"]; step: SemanticWalkStep }> = [];
+    const contradictionNeighbors: Array<{ rootNodeId: SemanticNode["id"]; step: SemanticWalkStep }> = [];
+    const categoryNeighbors: Array<{ rootNodeId: SemanticNode["id"]; step: SemanticWalkStep }> = [];
+    const supportHits: RetrievedSemanticHit[] = [];
+    const contradictionHits: RetrievedSemanticHit[] = [];
+    const categoryHits: RetrievedSemanticHit[] = [];
 
     for (const node of uniqueNodes.values()) {
-      supportNeighbors.push(
-        ...(await this.options.semanticGraph.walk(node.id, {
-          relations: ["supports"],
-          depth: walkDepth,
-          maxNodes: maxGraphNodes,
-        })),
-      );
+      const walkedSupports = await this.options.semanticGraph.walk(node.id, {
+        relations: ["supports"],
+        direction: "both",
+        depth: walkDepth,
+        maxNodes: maxGraphNodes,
+      });
+      const walkedContradictions = await this.options.semanticGraph.walk(node.id, {
+        relations: ["contradicts"],
+        direction: "both",
+        depth: walkDepth,
+        maxNodes: maxGraphNodes,
+      });
+      const walkedCategories = await this.options.semanticGraph.walk(node.id, {
+        relations: ["is_a"],
+        direction: "out",
+        depth: walkDepth,
+        maxNodes: maxGraphNodes,
+      });
+
+      supportNeighbors.push(...walkedSupports.map((step) => ({ rootNodeId: node.id, step })));
       contradictionNeighbors.push(
-        ...(await this.options.semanticGraph.walk(node.id, {
-          relations: ["contradicts"],
-          depth: walkDepth,
-          maxNodes: maxGraphNodes,
-        })),
+        ...walkedContradictions.map((step) => ({ rootNodeId: node.id, step })),
       );
-      categoryNeighbors.push(
-        ...(await this.options.semanticGraph.walk(node.id, {
-          relations: ["is_a"],
-          depth: walkDepth,
-          maxNodes: maxGraphNodes,
-        })),
-      );
+      categoryNeighbors.push(...walkedCategories.map((step) => ({ rootNodeId: node.id, step })));
     }
 
     const semanticVisibility = await this.resolveVisibleEpisodeIds(
       [
         ...[...uniqueNodes.values()].flatMap((node) => node.source_episode_ids),
-        ...supportNeighbors.flatMap((step) => [
+        ...supportNeighbors.flatMap(({ step }) => [
           ...step.node.source_episode_ids,
           ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
         ]),
-        ...contradictionNeighbors.flatMap((step) => [
+        ...contradictionNeighbors.flatMap(({ step }) => [
           ...step.node.source_episode_ids,
           ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
         ]),
-        ...categoryNeighbors.flatMap((step) => [
+        ...categoryNeighbors.flatMap(({ step }) => [
           ...step.node.source_episode_ids,
           ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
         ]),
@@ -565,28 +589,47 @@ export class RetrievalPipeline {
       options,
     );
 
+    const visibleMatchedNodes = [...uniqueNodes.values()].filter((node) =>
+      this.isSemanticNodeVisible(node, semanticVisibility),
+    );
+
     for (const item of supportNeighbors) {
-      if (!this.isSemanticWalkStepVisible(item, semanticVisibility)) {
+      if (!this.isSemanticWalkStepVisible(item.step, semanticVisibility)) {
         continue;
       }
 
-      supports.set(item.node.id, item.node);
+      supports.set(item.step.node.id, item.step.node);
+      supportHits.push({
+        root_node_id: item.rootNodeId,
+        node: item.step.node,
+        edgePath: item.step.edgePath,
+      });
     }
 
     for (const item of contradictionNeighbors) {
-      if (!this.isSemanticWalkStepVisible(item, semanticVisibility)) {
+      if (!this.isSemanticWalkStepVisible(item.step, semanticVisibility)) {
         continue;
       }
 
-      contradicts.set(item.node.id, item.node);
+      contradicts.set(item.step.node.id, item.step.node);
+      contradictionHits.push({
+        root_node_id: item.rootNodeId,
+        node: item.step.node,
+        edgePath: item.step.edgePath,
+      });
     }
 
     for (const item of categoryNeighbors) {
-      if (!this.isSemanticWalkStepVisible(item, semanticVisibility)) {
+      if (!this.isSemanticWalkStepVisible(item.step, semanticVisibility)) {
         continue;
       }
 
-      categories.set(item.node.id, item.node);
+      categories.set(item.step.node.id, item.step.node);
+      categoryHits.push({
+        root_node_id: item.rootNodeId,
+        node: item.step.node,
+        edgePath: item.step.edgePath,
+      });
     }
 
     return {
@@ -596,9 +639,11 @@ export class RetrievalPipeline {
         categories: [...categories.values()],
       },
       contradictionPresent: contradicts.size > 0,
-      matchedNodeIds: [...uniqueNodes.values()]
-        .filter((node) => this.isSemanticNodeVisible(node, semanticVisibility))
-        .map((node) => node.id),
+      matchedNodeIds: visibleMatchedNodes.map((node) => node.id),
+      matchedNodes: visibleMatchedNodes,
+      supportHits,
+      contradictionHits,
+      categoryHits,
     };
   }
 
@@ -991,6 +1036,10 @@ export class RetrievalPipeline {
         contradicts: semantic.context.contradicts,
         categories: semantic.context.categories,
         matched_node_ids: semantic.matchedNodeIds,
+        matched_nodes: semantic.matchedNodes,
+        support_hits: semantic.supportHits,
+        contradiction_hits: semantic.contradictionHits,
+        category_hits: semantic.categoryHits,
       },
       open_questions: openQuestions,
       contradiction_present: semantic.contradictionPresent,

@@ -361,14 +361,55 @@ function summarizeRetrievedEpisodes(
   return lines.join("\n");
 }
 
-function summarizeSemanticNode(node: SemanticNode): string {
+function summarizeSemanticNodeDescription(node: SemanticNode): string {
   const normalizedDescription = node.description.replace(/\s+/g, " ").trim();
-  const description =
-    normalizedDescription.length > 96
-      ? `${normalizedDescription.slice(0, 93).trimEnd()}...`
-      : normalizedDescription;
+  return normalizedDescription.length > 96
+    ? `${normalizedDescription.slice(0, 93).trimEnd()}...`
+    : normalizedDescription;
+}
 
-  return `${node.label} - ${description} (conf ${node.confidence.toFixed(2)})`;
+function summarizeEpisodeIds(ids: readonly string[], limit = 3): string {
+  const displayed = ids.slice(0, limit);
+  const suffix = ids.length > limit ? `, +${ids.length - limit} more` : "";
+  return `${displayed.join(", ")}${suffix}`;
+}
+
+function summarizeSemanticNode(node: SemanticNode): string {
+  return `${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)})`;
+}
+
+function summarizeSemanticNodeWithSources(node: SemanticNode): string {
+  return `${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(node.source_episode_ids)})`;
+}
+
+function summarizeSemanticHit(
+  hit: RetrievedSemantic["support_hits"][number],
+  rootNodesById: ReadonlyMap<string, SemanticNode>,
+): string {
+  const root = rootNodesById.get(hit.root_node_id);
+  const rootLabel = root?.label ?? hit.root_node_id;
+  let currentNodeId = hit.root_node_id;
+  const pathParts: string[] = [rootLabel];
+
+  for (const [index, edge] of hit.edgePath.entries()) {
+    const evidence = summarizeEpisodeIds(edge.evidence_episode_ids);
+    const relation =
+      edge.from_node_id === currentNodeId
+        ? `-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}]->`
+        : `<-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}]-`;
+
+    pathParts.push(relation);
+
+    if (index === hit.edgePath.length - 1) {
+      pathParts.push(hit.node.label);
+      continue;
+    }
+
+    currentNodeId = edge.from_node_id === currentNodeId ? edge.to_node_id : edge.from_node_id;
+    pathParts.push("...");
+  }
+
+  return `${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}; path ${pathParts.join(" ")})`;
 }
 
 function summarizeSemanticBucket(
@@ -386,6 +427,22 @@ function summarizeSemanticBucket(
     .join("; ")}`;
 }
 
+function summarizeSemanticHitBucket(
+  label: string,
+  hits: ReadonlyArray<RetrievedSemantic["support_hits"][number]>,
+  rootNodesById: ReadonlyMap<string, SemanticNode>,
+  limit = 3,
+): string[] {
+  if (hits.length === 0) {
+    return [];
+  }
+
+  return [
+    `${label}:`,
+    ...hits.slice(0, limit).map((hit) => `- ${summarizeSemanticHit(hit, rootNodesById)}`),
+  ];
+}
+
 function summarizeSemanticContext(
   retrievedSemantic: RetrievedSemantic | null | undefined,
   maxContextTokens: number,
@@ -394,9 +451,25 @@ function summarizeSemanticContext(
     return null;
   }
 
-  const { supports, contradicts, categories } = retrievedSemantic;
+  const {
+    supports,
+    contradicts,
+    categories,
+    matched_nodes: matchedNodes,
+    support_hits: supportHits,
+    contradiction_hits: contradictionHits,
+    category_hits: categoryHits,
+  } = retrievedSemantic;
 
-  if (supports.length === 0 && contradicts.length === 0 && categories.length === 0) {
+  if (
+    matchedNodes.length === 0 &&
+    supportHits.length === 0 &&
+    contradictionHits.length === 0 &&
+    categoryHits.length === 0 &&
+    supports.length === 0 &&
+    contradicts.length === 0 &&
+    categories.length === 0
+  ) {
     return null;
   }
 
@@ -405,20 +478,39 @@ function summarizeSemanticContext(
   // bucket (at the bucket helper) and overall char budget.
   const bucketLimit = maxContextTokens <= 2_000 ? 3 : maxContextTokens <= 8_000 ? 5 : 8;
   const maxChars = Math.max(480, Math.min(maxContextTokens * 6, 6_000));
+  const rootNodesById = new Map(matchedNodes.map((node) => [node.id, node] as const));
+  const initialLine = "Related semantic context:";
+  const sections: string[] = [initialLine];
+  let totalChars = initialLine.length;
+
+  const directMatchLines =
+    matchedNodes.length === 0
+      ? []
+      : [
+          "Directly matched:",
+          ...matchedNodes
+            .slice(0, bucketLimit)
+            .map((node) => `- ${summarizeSemanticNodeWithSources(node)}`),
+        ];
 
   const bucketLines = [
-    summarizeSemanticBucket("supports", supports, bucketLimit),
-    summarizeSemanticBucket("contradicts", contradicts, bucketLimit),
-    summarizeSemanticBucket("categories", categories, bucketLimit),
-  ].filter((value): value is string => value !== null);
-
-  if (bucketLines.length === 0) {
-    return null;
-  }
-
-  const initialLine = "Related semantic context:";
-  const sections = [initialLine];
-  let totalChars = initialLine.length;
+    ...directMatchLines,
+    ...(supportHits.length > 0
+      ? summarizeSemanticHitBucket("supports", supportHits, rootNodesById, bucketLimit)
+      : [summarizeSemanticBucket("supports", supports, bucketLimit)].filter(
+          (value): value is string => value !== null,
+        )),
+    ...(contradictionHits.length > 0
+      ? summarizeSemanticHitBucket("contradicts", contradictionHits, rootNodesById, bucketLimit)
+      : [summarizeSemanticBucket("contradicts", contradicts, bucketLimit)].filter(
+          (value): value is string => value !== null,
+        )),
+    ...(categoryHits.length > 0
+      ? summarizeSemanticHitBucket("categories", categoryHits, rootNodesById, bucketLimit)
+      : [summarizeSemanticBucket("categories", categories, bucketLimit)].filter(
+          (value): value is string => value !== null,
+        )),
+  ];
 
   for (const line of bucketLines) {
     if (totalChars + line.length > maxChars) {

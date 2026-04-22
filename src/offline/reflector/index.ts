@@ -391,7 +391,9 @@ export class ReflectorProcess implements OfflineProcess {
         for (const cluster of clusters) {
           try {
             const candidate = await buildInsightCandidate(ctx, llmClient, cluster);
-            const byLabel = await ctx.semanticNodeRepository.findByLabelOrAlias(candidate.label, 3);
+            const byLabel = await ctx.semanticNodeRepository.findByLabelOrAlias(candidate.label, 3, {
+              includeArchived: true,
+            });
             const byVector = await ctx.semanticNodeRepository.searchByVector(candidate.embedding, {
               limit: 3,
               minSimilarity: DEDUP_THRESHOLD,

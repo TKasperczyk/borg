@@ -62,8 +62,14 @@ export type StreamEntryKind = z.infer<typeof streamEntryKindSchema>;
 export type StreamEntry = z.infer<typeof streamEntrySchema>;
 export type StreamEntryInput = z.infer<typeof streamEntryInputSchema>;
 
+export type StreamCursor = {
+  ts: number;
+  entryId: StreamEntryId;
+};
+
 export type StreamIterateOptions = {
   sinceTs?: number;
+  sinceCursor?: StreamCursor;
   untilTs?: number;
   kinds?: readonly StreamEntryKind[];
   limit?: number;

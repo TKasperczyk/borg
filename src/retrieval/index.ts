@@ -4,6 +4,7 @@ export {
   RetrievalPipeline,
   type RetrievedContext,
   type RetrievedEpisode,
+  type RetrievedSemanticHit,
   type RetrievedSemantic,
   type RetrievalGetEpisodeOptions,
   type RetrievalPipelineOptions,

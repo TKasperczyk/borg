@@ -112,6 +112,42 @@ describe("semantic repositories", () => {
     expect(await fixture.nodeRepository.get(inserted.id)).toBeNull();
   });
 
+  it("excludes archived nodes from getMany and label lookup by default", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const archived = await fixture.nodeRepository.insert({
+      ...buildNode(createSemanticNodeId(), "Legacy Atlas"),
+      aliases: ["atlas legacy"],
+      archived: true,
+    });
+    const active = await fixture.nodeRepository.insert({
+      ...buildNode(createSemanticNodeId(), "Legacy Atlas"),
+      aliases: ["atlas legacy"],
+      archived: false,
+    });
+
+    expect(await fixture.nodeRepository.getMany([archived.id, active.id])).toEqual([null, active]);
+    expect(await fixture.nodeRepository.findByLabelOrAlias("Legacy Atlas", 3)).toEqual([
+      expect.objectContaining({ id: active.id }),
+    ]);
+    expect(
+      await fixture.nodeRepository.findByLabelOrAlias("atlas legacy", 3, {
+        includeArchived: true,
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: active.id }),
+        expect.objectContaining({ id: archived.id }),
+      ]),
+    );
+  });
+
   it("rolls sqlite back when LanceDB insert fails and removes Lance data when sqlite insert fails", async () => {
     const fixture = await createSemanticFixture();
 

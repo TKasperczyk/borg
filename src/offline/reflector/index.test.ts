@@ -699,4 +699,87 @@ describe("reflector process", () => {
     expect(llm.requests).toHaveLength(2);
     expect(result.changes).toHaveLength(1);
   });
+
+  it("can resurrect an archived matching node by label", async () => {
+    const episodes = [
+      createEpisodeFixture(
+        {
+          title: "Pattern one",
+          tags: ["deploy-pattern"],
+          created_at: 10_000,
+          updated_at: 10_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Pattern two",
+          tags: ["deploy-pattern"],
+          created_at: 20_000,
+          updated_at: 20_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Pattern three",
+          tags: ["deploy-pattern"],
+          created_at: 30_000,
+          updated_at: 30_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectorResponse({
+          label: "Rollback plans reduce deploy stress",
+          description: "Fresh evidence says documented rollback plans reduce deploy stress.",
+          confidence: 0.7,
+          source_episode_ids: episodes.map((episode) => episode.id),
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+
+    for (const episode of episodes) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    const archived = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        kind: "proposition",
+        label: "Rollback plans reduce deploy stress",
+        description: "Archived stale insight",
+        archived: true,
+        confidence: 0.2,
+        source_episode_ids: [episodes[0]!.id],
+      }),
+    );
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+
+    const result = await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+    const nodes = await harness.semanticNodeRepository.list({
+      includeArchived: true,
+      limit: 20,
+    });
+    const matchingNodes = nodes.filter((node) => node.label === archived.label);
+
+    expect(result.errors).toEqual([]);
+    expect(matchingNodes).toHaveLength(1);
+    expect(matchingNodes[0]).toMatchObject({
+      id: archived.id,
+      archived: false,
+    });
+  });
 });

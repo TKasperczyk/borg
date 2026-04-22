@@ -181,8 +181,12 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     });
 
     expect(result.semantic.matched_node_ids).not.toContain(mixedNode.id);
+    expect(result.semantic.matched_nodes).toEqual([]);
     expect(result.semantic.supports).toEqual([]);
     expect(result.semantic.contradicts).toEqual([]);
     expect(result.semantic.categories).toEqual([]);
+    expect(result.semantic.support_hits).toEqual([]);
+    expect(result.semantic.contradiction_hits).toEqual([]);
+    expect(result.semantic.category_hits).toEqual([]);
   });
 });

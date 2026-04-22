@@ -81,11 +81,12 @@ import { retrievalMigrations, RetrievalPipeline } from "./retrieval/index.js";
 import {
   StreamReader,
   StreamWatermarkRepository,
-  StreamWriter,
-  streamWatermarkMigrations,
-  type StreamEntry,
-  type StreamEntryInput,
-} from "./stream/index.js";
+    StreamWriter,
+    streamWatermarkMigrations,
+    type StreamCursor,
+    type StreamEntry,
+    type StreamEntryInput,
+  } from "./stream/index.js";
 import { StreamIngestionCoordinator } from "./cognition/ingestion/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, type Migration, type SqliteDatabase } from "./storage/sqlite/index.js";
@@ -292,6 +293,7 @@ export class Borg {
     search: (query: string, options?: BorgEpisodeSearchOptions) => Promise<RetrievedEpisode[]>;
     extract: (options?: {
       sinceTs?: number;
+      sinceCursor?: StreamCursor;
       untilTs?: number;
       session?: SessionId;
     }) => Promise<ExtractFromStreamResult>;
@@ -605,6 +607,7 @@ export class Borg {
         return extractor.extractFromStream({
           session: options.session ?? DEFAULT_SESSION_ID,
           sinceTs: options.sinceTs,
+          sinceCursor: options.sinceCursor,
           untilTs: options.untilTs,
         });
       },

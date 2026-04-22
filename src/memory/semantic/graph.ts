@@ -14,6 +14,32 @@ export type SemanticGraphOptions = {
   edgeRepository: SemanticEdgeRepository;
 };
 
+const SYMMETRIC_WALK_RELATIONS = new Set<SemanticRelation>([
+  "contradicts",
+  "related_to",
+  "supports",
+]);
+
+function defaultDirectionForRelation(relation: SemanticRelation): "out" | "both" {
+  return SYMMETRIC_WALK_RELATIONS.has(relation) ? "both" : "out";
+}
+
+function resolveWalkDirection(
+  relations: readonly SemanticRelation[] | undefined,
+  override: "out" | "in" | "both" | undefined,
+): "out" | "in" | "both" {
+  if (override !== undefined) {
+    return override;
+  }
+
+  if (relations === undefined || relations.length === 0) {
+    return "both";
+  }
+
+  const directions = new Set(relations.map((relation) => defaultDirectionForRelation(relation)));
+  return directions.size === 1 ? [...directions][0]! : "both";
+}
+
 export class SemanticGraph {
   constructor(private readonly options: SemanticGraphOptions) {}
 
@@ -50,7 +76,9 @@ export class SemanticGraph {
     const nodeIds = filtered.map((edge) =>
       edge.from_node_id === id ? edge.to_node_id : edge.from_node_id,
     );
-    const nodes = await this.options.nodeRepository.getMany(nodeIds);
+    const nodes = await this.options.nodeRepository.getMany(nodeIds, {
+      includeArchived: false,
+    });
 
     const results: Array<{ node: SemanticNode; edge: SemanticEdge }> = [];
 
@@ -88,6 +116,7 @@ export class SemanticGraph {
       { id: fromId, depth: 0, path: [] },
     ];
     const steps: SemanticWalkStep[] = [];
+    const direction = resolveWalkDirection(options.relations, options.direction);
 
     while (queue.length > 0 && steps.length < maxNodes) {
       const next = queue.shift();
@@ -98,7 +127,7 @@ export class SemanticGraph {
 
       const neighbors = await this.neighbors(next.id, {
         relations: options.relations,
-        direction: "both",
+        direction,
       });
 
       for (const neighbor of neighbors) {

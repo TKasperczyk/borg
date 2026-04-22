@@ -128,6 +128,7 @@ export type SemanticEdgeListOptions = {
 
 export type SemanticWalkOptions = {
   relations?: readonly SemanticRelation[];
+  direction?: "out" | "in" | "both";
   depth?: number;
   maxNodes?: number;
 };

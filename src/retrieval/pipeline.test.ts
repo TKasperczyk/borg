@@ -569,6 +569,25 @@ describe("retrieval pipeline", () => {
       contradicts: [expect.objectContaining({ id: contradiction.id })],
       categories: [expect.objectContaining({ id: category.id })],
       matched_node_ids: [atlas.id],
+      matched_nodes: [expect.objectContaining({ id: atlas.id })],
+      support_hits: [
+        expect.objectContaining({
+          root_node_id: atlas.id,
+          node: expect.objectContaining({ id: support.id }),
+        }),
+      ],
+      contradiction_hits: [
+        expect.objectContaining({
+          root_node_id: atlas.id,
+          node: expect.objectContaining({ id: contradiction.id }),
+        }),
+      ],
+      category_hits: [
+        expect.objectContaining({
+          root_node_id: atlas.id,
+          node: expect.objectContaining({ id: category.id }),
+        }),
+      ],
     });
   });
 

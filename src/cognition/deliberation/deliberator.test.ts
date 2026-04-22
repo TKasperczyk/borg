@@ -470,12 +470,29 @@ describe("deliberator", () => {
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.92, ["atlas"])],
       retrievedSemantic: {
+        matched_nodes: [
+          {
+            id: "semn_rootaaaaaaaaaaaa" as never,
+            kind: "entity",
+            label: "Atlas",
+            description: "Deployment service under investigation",
+            aliases: [],
+            confidence: 0.84,
+            source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+            created_at: 0,
+            updated_at: 0,
+            last_verified_at: 0,
+            embedding: Float32Array.from([1, 0, 0, 0]),
+            archived: false,
+            superseded_by: null,
+          },
+        ],
         supports: [
           {
             id: "semn_aaaaaaaaaaaaaaaa" as never,
-            kind: "concept",
-            label: "Atlas Service",
-            description: "Primary deployment service",
+            kind: "proposition",
+            label: "Rerun install",
+            description: "Rerun pnpm install before the next deploy",
             aliases: [],
             confidence: 0.72,
             source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
@@ -492,7 +509,7 @@ describe("deliberator", () => {
             id: "semn_bbbbbbbbbbbbbbbb" as never,
             kind: "proposition",
             label: "Atlas is stable",
-            description: "Claimed stable despite deploy errors",
+            description: "A stale stability claim that conflicts with recent deploy failures",
             aliases: [],
             confidence: 0.61,
             source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
@@ -505,7 +522,72 @@ describe("deliberator", () => {
           },
         ],
         categories: [],
-        matched_node_ids: ["semn_aaaaaaaaaaaaaaaa" as never],
+        matched_node_ids: ["semn_rootaaaaaaaaaaaa" as never],
+        support_hits: [
+          {
+            root_node_id: "semn_rootaaaaaaaaaaaa" as never,
+            node: {
+              id: "semn_aaaaaaaaaaaaaaaa" as never,
+              kind: "proposition",
+              label: "Rerun install",
+              description: "Rerun pnpm install before the next deploy",
+              aliases: [],
+              confidence: 0.72,
+              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+              created_at: 0,
+              updated_at: 0,
+              last_verified_at: 0,
+              embedding: Float32Array.from([1, 0, 0, 0]),
+              archived: false,
+              superseded_by: null,
+            },
+            edgePath: [
+              {
+                id: "seme_aaaaaaaaaaaaaaaa" as never,
+                from_node_id: "semn_rootaaaaaaaaaaaa" as never,
+                to_node_id: "semn_aaaaaaaaaaaaaaaa" as never,
+                relation: "supports",
+                confidence: 0.74,
+                evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+                created_at: 0,
+                last_verified_at: 0,
+              },
+            ],
+          },
+        ],
+        contradiction_hits: [
+          {
+            root_node_id: "semn_rootaaaaaaaaaaaa" as never,
+            node: {
+              id: "semn_bbbbbbbbbbbbbbbb" as never,
+              kind: "proposition",
+              label: "Atlas is stable",
+              description: "A stale stability claim that conflicts with recent deploy failures",
+              aliases: [],
+              confidence: 0.61,
+              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+              created_at: 0,
+              updated_at: 0,
+              last_verified_at: 0,
+              embedding: Float32Array.from([1, 0, 0, 0]),
+              archived: false,
+              superseded_by: null,
+            },
+            edgePath: [
+              {
+                id: "seme_bbbbbbbbbbbbbbbb" as never,
+                from_node_id: "semn_bbbbbbbbbbbbbbbb" as never,
+                to_node_id: "semn_rootaaaaaaaaaaaa" as never,
+                relation: "contradicts",
+                confidence: 0.61,
+                evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+                created_at: 0,
+                last_verified_at: 0,
+              },
+            ],
+          },
+        ],
+        category_hits: [],
       },
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
@@ -529,11 +611,17 @@ describe("deliberator", () => {
 
     expect(result.path).toBe("system_1");
     expect(llm.requests[0]?.system).toContain("Related semantic context:");
+    expect(llm.requests[0]?.system).toContain("Directly matched:");
     expect(llm.requests[0]?.system).toContain(
-      "supports: Atlas Service - Primary deployment service (conf 0.72)",
+      "- Atlas - Deployment service under investigation (conf 0.84, sources ep_aaaaaaaaaaaaaaaa)",
     );
+    expect(llm.requests[0]?.system).toContain("supports:");
     expect(llm.requests[0]?.system).toContain(
-      "contradicts: Atlas is stable - Claimed stable despite deploy errors (conf 0.61)",
+      "Atlas -[supports conf=0.74 evidence=ep_aaaaaaaaaaaaaaaa]-> Rerun install",
+    );
+    expect(llm.requests[0]?.system).toContain("contradicts:");
+    expect(llm.requests[0]?.system).toContain(
+      "Atlas <-[contradicts conf=0.61 evidence=ep_aaaaaaaaaaaaaaaa]- Atlas is stable",
     );
     // Identity framing must:
     // - affirm the being positively ("AI being, not an assistant")

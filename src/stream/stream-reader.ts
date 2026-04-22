@@ -78,6 +78,18 @@ export class StreamReader {
     return true;
   }
 
+  private resolveCursorBuffer(
+    bufferedEntries: readonly StreamEntry[],
+    cursorEntryId: StreamEntry["id"],
+  ): StreamEntry[] {
+    const cursorIndex = bufferedEntries.findIndex((entry) => entry.id === cursorEntryId);
+    return cursorIndex === -1 ? [...bufferedEntries] : bufferedEntries.slice(cursorIndex + 1);
+  }
+
+  private matchesCursorLowerBound(entry: StreamEntry, cursorTs: number | undefined): boolean {
+    return cursorTs === undefined || entry.timestamp >= cursorTs;
+  }
+
   async *iterate(options: StreamIterateOptions = {}): AsyncGenerator<StreamEntry> {
     if (!existsSync(this.streamPath)) {
       return;
@@ -85,16 +97,64 @@ export class StreamReader {
 
     const allowedKinds =
       options.kinds === undefined ? undefined : new Set<StreamEntry["kind"]>(options.kinds);
+    const filterOptions =
+      options.sinceCursor === undefined ? options : { ...options, sinceTs: undefined };
+    const cursor = options.sinceCursor;
+    const cursorTs = cursor?.ts;
 
     const input = createReadStream(this.streamPath, { encoding: "utf8" });
     const lines = createInterface({ input, crlfDelay: Infinity });
     let emitted = 0;
+    let passedCursor = cursor === undefined;
+    let bufferingCursorTs = false;
+    let cursorBuffer: StreamEntry[] = [];
 
     try {
-      for await (const line of lines) {
+      outer: for await (const line of lines) {
         const entry = this.parseLine(line);
 
-        if (entry === undefined || !this.matchesFilters(entry, options, allowedKinds)) {
+        if (entry === undefined) {
+          continue;
+        }
+
+        if (!passedCursor && cursor !== undefined) {
+          if (entry.timestamp < cursor.ts) {
+            continue;
+          }
+
+          if (entry.timestamp === cursor.ts) {
+            bufferingCursorTs = true;
+            cursorBuffer.push(entry);
+            continue;
+          }
+
+          passedCursor = true;
+          for (const bufferedEntry of this.resolveCursorBuffer(cursorBuffer, cursor.entryId)) {
+            if (!this.matchesCursorLowerBound(bufferedEntry, cursorTs)) {
+              continue;
+            }
+
+            if (!this.matchesFilters(bufferedEntry, filterOptions, allowedKinds)) {
+              continue;
+            }
+
+            yield bufferedEntry;
+            emitted += 1;
+
+            if (options.limit !== undefined && emitted >= options.limit) {
+              break outer;
+            }
+          }
+
+          cursorBuffer = [];
+          bufferingCursorTs = false;
+        }
+
+        if (!this.matchesCursorLowerBound(entry, cursorTs)) {
+          continue;
+        }
+
+        if (!this.matchesFilters(entry, filterOptions, allowedKinds)) {
           continue;
         }
 
@@ -103,6 +163,25 @@ export class StreamReader {
 
         if (options.limit !== undefined && emitted >= options.limit) {
           break;
+        }
+      }
+
+      if (!passedCursor && cursor !== undefined && (bufferingCursorTs || cursorBuffer.length > 0)) {
+        for (const bufferedEntry of this.resolveCursorBuffer(cursorBuffer, cursor.entryId)) {
+          if (!this.matchesCursorLowerBound(bufferedEntry, cursorTs)) {
+            continue;
+          }
+
+          if (!this.matchesFilters(bufferedEntry, filterOptions, allowedKinds)) {
+            continue;
+          }
+
+          yield bufferedEntry;
+          emitted += 1;
+
+          if (options.limit !== undefined && emitted >= options.limit) {
+            break;
+          }
         }
       }
     } catch (error) {
