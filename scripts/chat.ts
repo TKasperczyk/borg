@@ -397,6 +397,11 @@ async function main(): Promise<void> {
     embeddingDimensions: selection.embeddingDimensions,
     embeddingClient: selection.embeddings,
     llmClient: selection.llm,
+    // Live episodic extraction: every completed turn walks the stream past
+    // the per-session watermark and extracts new episodes. Next turn's
+    // retrieval sees material from the turn that just ran, not just
+    // episodes from prior sessions or manual extract runs.
+    liveExtraction: selection.llmMode === "real",
   });
   const persistenceStore = new WorkingMemoryStore({
     dataDir: selection.config.dataDir,

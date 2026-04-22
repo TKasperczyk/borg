@@ -76,10 +76,13 @@ import {
 import { retrievalMigrations, RetrievalPipeline } from "./retrieval/index.js";
 import {
   StreamReader,
+  StreamWatermarkRepository,
   StreamWriter,
+  streamWatermarkMigrations,
   type StreamEntry,
   type StreamEntryInput,
 } from "./stream/index.js";
+import { StreamIngestionCoordinator } from "./cognition/ingestion/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, type Migration, type SqliteDatabase } from "./storage/sqlite/index.js";
 import { SystemClock, type Clock } from "./util/clock.js";
@@ -132,6 +135,15 @@ export type BorgOpenOptions = {
   embeddingClient?: EmbeddingClient;
   llmClient?: LLMClient;
   clock?: Clock;
+  /**
+   * When true, every completed turn triggers watermark-based episodic
+   * extraction so the next turn's retrieval sees material from the turn
+   * that just ran. Defaults to false: the existing test suite uses fake
+   * LLMs with scripted response queues, and live extraction would consume
+   * responses out of band. Production callers (scripts/chat.ts,
+   * scripts/debug.ts when using real clients) opt in explicitly.
+   */
+  liveExtraction?: boolean;
 };
 
 export type BorgDreamOptions = {
@@ -221,6 +233,7 @@ function createMigrations(): Migration[] {
     ...socialMigrations,
     ...proceduralMigrations,
     ...offlineMigrations,
+    ...streamWatermarkMigrations,
   ];
 }
 
@@ -952,6 +965,10 @@ export class Borg {
         dataDir: config.dataDir,
         clock,
       });
+      const streamWatermarkRepository = new StreamWatermarkRepository({
+        db: sqlite,
+        clock,
+      });
       const createStreamWriter = (sessionId: SessionId) =>
         new StreamWriter({
           dataDir: config.dataDir,
@@ -1033,6 +1050,42 @@ export class Borg {
         createStreamWriter: () => createStreamWriter(DEFAULT_SESSION_ID),
         processRegistry: offlineProcesses,
       });
+      const liveExtractionEnabled = options.liveExtraction ?? false;
+      // Live extractor shares the same embedding + LLM wiring as the offline
+      // consolidator process. It runs after each turn inside the ingestion
+      // coordinator so the next turn's retrieval sees this turn's material.
+      const streamIngestionCoordinator = liveExtractionEnabled
+        ? new StreamIngestionCoordinator({
+            extractor: new EpisodicExtractor({
+              dataDir: config.dataDir,
+              episodicRepository,
+              embeddingClient,
+              llmClient: lazyLlmClient,
+              model: config.anthropic.models.extraction,
+              clock,
+            }),
+            watermarkRepository: streamWatermarkRepository,
+            dataDir: config.dataDir,
+            clock,
+            onError: (error) => {
+              // Use a fresh writer: the turn's writer closes before
+              // ingestion resolves, and we must not hold onto stream handles
+              // across fire-and-forget boundaries.
+              const writer = createStreamWriter(DEFAULT_SESSION_ID);
+              void writer
+                .append({
+                  kind: "internal_event",
+                  content: `Live episodic extraction failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                })
+                .catch(() => undefined)
+                .finally(() => {
+                  writer.close();
+                });
+            },
+          })
+        : undefined;
       const turnOrchestrator = new TurnOrchestrator({
         config,
         retrievalPipeline,
@@ -1055,6 +1108,9 @@ export class Borg {
         // turn-orchestrator.ts falls back to defaults if omitted, but doing
         // it here makes the configuration visible at the composition root.
         turnContextCompiler: new TurnContextCompiler(),
+        ...(streamIngestionCoordinator === undefined
+          ? {}
+          : { streamIngestionCoordinator }),
       });
 
       return new Borg({

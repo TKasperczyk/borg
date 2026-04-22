@@ -13,3 +13,9 @@ export {
 export { getSessionStreamPath, getStreamDirectory } from "./path.js";
 export { StreamReader, type StreamReaderOptions } from "./stream-reader.js";
 export { StreamWriter, type StreamWriterOptions } from "./stream-writer.js";
+export {
+  StreamWatermarkRepository,
+  streamWatermarkMigrations,
+  type StreamWatermark,
+  type StreamWatermarkRepositoryOptions,
+} from "./watermark.js";

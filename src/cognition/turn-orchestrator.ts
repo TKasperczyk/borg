@@ -8,6 +8,7 @@ import {
 } from "./perception/affective-signal.js";
 import { Perceiver } from "./perception/index.js";
 import { TurnContextCompiler, type RecencyWindow } from "./recency/index.js";
+import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import { Reflector } from "./reflection/index.js";
 import type { RetrievalPipeline, RetrievalSearchOptions } from "../retrieval/index.js";
 import type { LLMClient } from "../llm/index.js";
@@ -110,6 +111,13 @@ export type TurnOrchestratorOptions = {
    * stream for every turn. A default is constructed if not provided.
    */
   turnContextCompiler?: TurnContextCompiler;
+  /**
+   * If provided, fires live episodic extraction after each turn so the next
+   * turn's retrieval has access to material from just-finished turns. If
+   * omitted, the orchestrator skips live extraction entirely and relies on
+   * explicit `borg.episodic.extract()` / `borg.dream.consolidate()` calls.
+   */
+  streamIngestionCoordinator?: StreamIngestionCoordinator;
   affectiveSignalDetector?: typeof detectAffectiveSignal;
 };
 
@@ -502,6 +510,15 @@ export class TurnOrchestrator {
           suppressed: suppressionSet.snapshot(),
           updated_at: this.clock.now(),
         });
+
+        // Live-extract just-finished stream entries so the next turn's
+        // retrieval sees episodes from this turn. Fire-and-forget: the
+        // coordinator dedups concurrent calls per session, watermark keeps
+        // it idempotent, and its own onError hook logs failures via its
+        // own stream writer (the turn's writer is about to close below).
+        if (this.options.streamIngestionCoordinator !== undefined) {
+          void this.options.streamIngestionCoordinator.ingest(sessionId);
+        }
 
         return {
           mode: perception.mode,

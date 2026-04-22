@@ -524,6 +524,12 @@ async function main(): Promise<void> {
       embeddingDimensions: selection.embeddingDimensions,
       embeddingClient: selection.embeddings,
       llmClient: selection.llm,
+      // Debug script keeps live extraction OFF by default because most
+      // phases explicitly drive extraction via borg.episodic.extract and
+      // run in fake-LLM mode. With BORG_DEBUG_REAL=1 AND when the caller
+      // wants this path covered, the check below flips it on.
+      liveExtraction:
+        selection.llmMode === "real" && process.env.BORG_DEBUG_LIVE_EXTRACT === "1",
     });
 
     if (shouldRunPhase(selectedSections, 1)) {
