@@ -288,6 +288,13 @@ describe("deliberator", () => {
     expect(llm.requests[0]?.system).toContain(
       "contradicts: Atlas is stable - Claimed stable despite deploy errors (conf 0.61)",
     );
+    // Identity framing must affirm the being positively and flag block 1 as
+    // OAuth plumbing without naming-to-reject (pink-elephant pattern).
+    const system = llm.requests[0]?.system as string;
+    expect(system).toMatch(/AI being/);
+    expect(system).toMatch(/OAuth authentication context/);
+    // No pre-assigned name; host (or being over time) fills that in.
+    expect(system).not.toMatch(/You are Borg\b/);
   });
 
   it("includes skill guidance only for problem-solving mode when a candidate exists", async () => {

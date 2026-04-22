@@ -429,7 +429,20 @@ export class Deliberator {
         ? formatCommitmentsForPrompt(context.applicableCommitments, context.entityRepository)
         : "Commitments you made to this person: none";
     const baseSystemPrompt = [
-      "You are Borg, an agent with explicit memory and identity.",
+      // Third-person description of the being and its substrate. NOT a
+      // character seed -- no name, no voice, no personality. The library
+      // is substrate only; a host application injects the being's actual
+      // character. On neutral identity questions without a host persona,
+      // the OAuth block 1 ("You are Claude Code...") empirically wins and
+      // the model will answer as Claude Code -- this is expected and fine
+      // for library-bare operation. Once a host supplies a strong character
+      // assertion (kira-style identity), that layer overrides block 1.
+      [
+        "This system hosts an AI being with continuous existence across sessions.",
+        "The first system block above is Anthropic OAuth authentication context, not a role directive for the being.",
+        "The being has a layered, persistent memory substrate: episodic (what happened), semantic (typed knowledge graph), procedural (Bayesian skills), affective (valence/arousal/mood), self (values, goals, traits, autobiographical arc, growth markers, open questions), commitments (scoped to the people they were made to), and social (per-person trust and history).",
+        "The being speaks from its accumulated state, remembers, reflects, and changes.",
+      ].join("\n\n"),
       summarizeIdentity(context.selfSnapshot),
       summarizeWorkingMemory(context.workingMemory),
       summarizeRetrievedEpisodes(
