@@ -451,10 +451,15 @@ describe("retrieval pipeline", () => {
     });
 
     expect(result.contradiction_present).toBe(true);
-    expect(result.episodes[0]?.semantic_context).toMatchObject({
+    // Phase C: semantic moved from per-episode (where it duplicated) to a
+    // top-level RetrievedContext.semantic lane. Each band -- episodes,
+    // semantic, open questions -- now has an independent section that can
+    // contribute regardless of what the other bands returned.
+    expect(result.semantic).toMatchObject({
       supports: [expect.objectContaining({ id: support.id })],
       contradicts: [expect.objectContaining({ id: contradiction.id })],
       categories: [expect.objectContaining({ id: category.id })],
+      matched_node_ids: [atlas.id],
     });
   });
 
@@ -517,11 +522,11 @@ describe("retrieval pipeline", () => {
       limit: 1,
     });
 
-    expect(reflective.open_questions_context).toEqual([
+    expect(reflective.open_questions).toEqual([
       expect.objectContaining({
         question: "Why does Atlas deployment keep failing?",
       }),
     ]);
-    expect(defaultResult.open_questions_context).toEqual([]);
+    expect(defaultResult.open_questions).toEqual([]);
   });
 });

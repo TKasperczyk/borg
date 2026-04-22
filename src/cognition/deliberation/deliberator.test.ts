@@ -17,16 +17,7 @@ import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import { Deliberator } from "./deliberator.js";
 
-function makeRetrievedEpisode(
-  id: string,
-  score: number,
-  tags: string[] = [],
-  semanticContext: RetrievedEpisode["semantic_context"] = {
-    supports: [],
-    contradicts: [],
-    categories: [],
-  },
-): RetrievedEpisode {
+function makeRetrievedEpisode(id: string, score: number, tags: string[] = []): RetrievedEpisode {
   return {
     episode: {
       id: id as RetrievedEpisode["episode"]["id"],
@@ -62,7 +53,6 @@ function makeRetrievedEpisode(
       suppressionPenalty: 0,
     },
     citationChain: [],
-    semantic_context: semanticContext,
   };
 }
 
@@ -379,45 +369,45 @@ describe("deliberator", () => {
         affectiveSignal: { valence: 0, arousal: 0 },
         temporalCue: null,
       },
-      retrievalResult: [
-        makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.92, ["atlas"], {
-          supports: [
-            {
-              id: "semn_aaaaaaaaaaaaaaaa" as RetrievedEpisode["semantic_context"]["supports"][number]["id"],
-              kind: "concept",
-              label: "Atlas Service",
-              description: "Primary deployment service",
-              aliases: [],
-              confidence: 0.72,
-              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
-              created_at: 0,
-              updated_at: 0,
-              last_verified_at: 0,
-              embedding: Float32Array.from([1, 0, 0, 0]),
-              archived: false,
-              superseded_by: null,
-            },
-          ],
-          contradicts: [
-            {
-              id: "semn_bbbbbbbbbbbbbbbb" as RetrievedEpisode["semantic_context"]["contradicts"][number]["id"],
-              kind: "proposition",
-              label: "Atlas is stable",
-              description: "Claimed stable despite deploy errors",
-              aliases: [],
-              confidence: 0.61,
-              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
-              created_at: 0,
-              updated_at: 0,
-              last_verified_at: 0,
-              embedding: Float32Array.from([1, 0, 0, 0]),
-              archived: false,
-              superseded_by: null,
-            },
-          ],
-          categories: [],
-        }),
-      ],
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.92, ["atlas"])],
+      retrievedSemantic: {
+        supports: [
+          {
+            id: "semn_aaaaaaaaaaaaaaaa" as never,
+            kind: "concept",
+            label: "Atlas Service",
+            description: "Primary deployment service",
+            aliases: [],
+            confidence: 0.72,
+            source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+            created_at: 0,
+            updated_at: 0,
+            last_verified_at: 0,
+            embedding: Float32Array.from([1, 0, 0, 0]),
+            archived: false,
+            superseded_by: null,
+          },
+        ],
+        contradicts: [
+          {
+            id: "semn_bbbbbbbbbbbbbbbb" as never,
+            kind: "proposition",
+            label: "Atlas is stable",
+            description: "Claimed stable despite deploy errors",
+            aliases: [],
+            confidence: 0.61,
+            source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+            created_at: 0,
+            updated_at: 0,
+            last_verified_at: 0,
+            embedding: Float32Array.from([1, 0, 0, 0]),
+            archived: false,
+            superseded_by: null,
+          },
+        ],
+        categories: [],
+        matched_node_ids: ["semn_aaaaaaaaaaaaaaaa" as never],
+      },
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,

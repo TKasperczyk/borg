@@ -51,13 +51,30 @@ export type RetrievedEpisode = {
     suppressionPenalty: number;
   };
   citationChain: StreamEntry[];
-  semantic_context: SemanticContext;
 };
 
-export type RetrievalSearchResult = {
+/**
+ * Semantic-band retrieval output: matched root nodes for the query plus
+ * nodes reached by graph walks. Lifted to the top level of RetrievedContext
+ * so the semantic lane is addressable independently of episode retrieval
+ * (pre-Phase-C it was nested inside each RetrievedEpisode with the same
+ * value duplicated across episodes).
+ */
+export type RetrievedSemantic = SemanticContext & {
+  matched_node_ids: SemanticNode["id"][];
+};
+
+/**
+ * Unified per-turn retrieval context. Each band contributes an independent
+ * section; none piggyback on another. Commitments and selected skill are
+ * retrieved by the turn orchestrator (they depend on audience/entity
+ * resolution the pipeline doesn't own) and are joined downstream.
+ */
+export type RetrievedContext = {
   episodes: RetrievedEpisode[];
+  semantic: RetrievedSemantic;
+  open_questions: OpenQuestion[];
   contradiction_present: boolean;
-  open_questions_context: OpenQuestion[];
 };
 
 export type RetrievalPipelineOptions = {
@@ -133,11 +150,6 @@ function buildResult(
       suppressionPenalty,
     },
     citationChain,
-    semantic_context: {
-      supports: [],
-      contradicts: [],
-      categories: [],
-    },
   };
 }
 
@@ -538,7 +550,7 @@ export class RetrievalPipeline {
   async searchWithContext(
     query: string,
     options: RetrievalSearchOptions = {},
-  ): Promise<RetrievalSearchResult> {
+  ): Promise<RetrievedContext> {
     const nowMs = this.clock.now();
     const limit = Math.max(1, options.limit ?? 5);
     const queryVector = await this.options.embeddingClient.embed(query);
@@ -569,7 +581,7 @@ export class RetrievalPipeline {
       selected.flatMap((choice) => choice.item.candidate.episode.source_stream_ids),
     );
     const semantic = await this.resolveSemanticContext(query, options);
-    const openQuestionsContext =
+    const openQuestions =
       options.includeOpenQuestions === true
         ? this.retrieveOpenQuestionsForQuery(query, {
             relatedSemanticNodeIds: semantic.matchedNodeIds,
@@ -596,7 +608,6 @@ export class RetrievalPipeline {
         clamp(item.score, 0, 1),
         citationChain,
       );
-      result.semantic_context = semantic.context;
 
       this.options.episodicRepository.recordRetrieval(
         item.candidate.episode.id,
@@ -608,8 +619,14 @@ export class RetrievalPipeline {
 
     return {
       episodes: results,
+      semantic: {
+        supports: semantic.context.supports,
+        contradicts: semantic.context.contradicts,
+        categories: semantic.context.categories,
+        matched_node_ids: semantic.matchedNodeIds,
+      },
+      open_questions: openQuestions,
       contradiction_present: semantic.contradictionPresent,
-      open_questions_context: openQuestionsContext,
     };
   }
 

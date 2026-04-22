@@ -369,6 +369,7 @@ export class TurnOrchestrator {
           retrievalOptions,
         );
         const retrievedEpisodes = retrieval.episodes;
+        const retrievedSemantic = retrieval.semantic;
         const selectedSkill =
           perception.mode === "problem_solving"
             ? await this.options.skillSelector.select(
@@ -390,9 +391,10 @@ export class TurnOrchestrator {
             userMessage: input.userMessage,
             perception,
             retrievalResult: retrievedEpisodes,
+            retrievedSemantic,
             contradictionPresent: retrieval.contradiction_present,
             applicableCommitments,
-            openQuestionsContext: retrieval.open_questions_context,
+            openQuestionsContext: retrieval.open_questions,
             selectedSkill,
             entityRepository: this.options.entityRepository,
             workingMemory,

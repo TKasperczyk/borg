@@ -9,7 +9,11 @@ import type { CommitmentRecord, EntityRepository } from "../../memory/commitment
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { LLMClient, LLMMessage, LLMToolCall } from "../../llm/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
-import type { RetrievedEpisode, RetrievalSearchOptions } from "../../retrieval/index.js";
+import type {
+  RetrievedEpisode,
+  RetrievedSemantic,
+  RetrievalSearchOptions,
+} from "../../retrieval/index.js";
 import { StreamWriter } from "../../stream/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { type CognitiveMode, type PerceptionResult } from "../types.js";
@@ -31,6 +35,14 @@ export type DeliberationContext = {
   userMessage: string;
   perception: PerceptionResult;
   retrievalResult: RetrievedEpisode[];
+  /**
+   * Semantic-band retrieval for this query: graph walks across supports/
+   * contradicts/is_a relations from matched semantic nodes. Previously
+   * attached per-episode with the same value duplicated; Phase C lifted
+   * it out so it can be rendered once regardless of episode count and
+   * retrieved independently of episode hits.
+   */
+  retrievedSemantic?: RetrievedSemantic | null;
   contradictionPresent?: boolean;
   applicableCommitments?: readonly CommitmentRecord[];
   openQuestionsContext?: readonly OpenQuestion[];
@@ -305,51 +317,50 @@ function summarizeSemanticBucket(
 }
 
 function summarizeSemanticContext(
-  retrievedEpisodes: readonly RetrievedEpisode[],
+  retrievedSemantic: RetrievedSemantic | null | undefined,
   maxContextTokens: number,
 ): string | null {
-  const episodesWithContext = retrievedEpisodes.filter(
-    (result) =>
-      result.semantic_context.supports.length > 0 ||
-      result.semantic_context.contradicts.length > 0 ||
-      result.semantic_context.categories.length > 0,
-  );
-
-  if (episodesWithContext.length === 0) {
+  if (retrievedSemantic === null || retrievedSemantic === undefined) {
     return null;
   }
 
-  const maxEpisodes = maxContextTokens <= 2_000 ? 4 : maxContextTokens <= 8_000 ? 6 : 8;
-  const maxChars = Math.max(960, Math.min(maxContextTokens * 6, 12_000));
+  const { supports, contradicts, categories } = retrievedSemantic;
+
+  if (supports.length === 0 && contradicts.length === 0 && categories.length === 0) {
+    return null;
+  }
+
+  // Budget: rougher than the episode-level rendering because this is a single
+  // flat block rather than one-per-episode. Still caps both node count per
+  // bucket (at the bucket helper) and overall char budget.
+  const bucketLimit = maxContextTokens <= 2_000 ? 3 : maxContextTokens <= 8_000 ? 5 : 8;
+  const maxChars = Math.max(480, Math.min(maxContextTokens * 6, 6_000));
+
+  const bucketLines = [
+    summarizeSemanticBucket("supports", supports, bucketLimit),
+    summarizeSemanticBucket("contradicts", contradicts, bucketLimit),
+    summarizeSemanticBucket("categories", categories, bucketLimit),
+  ].filter((value): value is string => value !== null);
+
+  if (bucketLines.length === 0) {
+    return null;
+  }
+
   const initialLine = "Related semantic context:";
-  const lines = [initialLine];
+  const sections = [initialLine];
   let totalChars = initialLine.length;
 
-  for (const result of episodesWithContext.slice(0, maxEpisodes)) {
-    const bucketLines = [
-      summarizeSemanticBucket("supports", result.semantic_context.supports),
-      summarizeSemanticBucket("contradicts", result.semantic_context.contradicts),
-      summarizeSemanticBucket("categories", result.semantic_context.categories),
-    ].filter((value): value is string => value !== null);
-
-    if (bucketLines.length === 0) {
-      continue;
-    }
-
-    const block = [`- ${result.episode.title}`, ...bucketLines.map((line) => `  ${line}`)].join(
-      "\n",
-    );
-
-    if (totalChars + block.length > maxChars) {
-      lines.push("- ... truncated");
+  for (const line of bucketLines) {
+    if (totalChars + line.length > maxChars) {
+      sections.push("... truncated");
       break;
     }
 
-    lines.push(block);
-    totalChars += block.length;
+    sections.push(line);
+    totalChars += line.length;
   }
 
-  return lines.join("\n");
+  return sections.join("\n");
 }
 
 function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string | null {
@@ -454,7 +465,7 @@ export class Deliberator {
         context.retrievalResult,
         retrievalContextBudget,
       ),
-      summarizeSemanticContext(context.retrievalResult, semanticContextBudget),
+      summarizeSemanticContext(context.retrievedSemantic ?? null, semanticContextBudget),
       summarizeSelectedSkill(context.perception.mode, context.selectedSkill),
       ...(context.perception.mode === "reflective"
         ? [summarizeOpenQuestions(context.openQuestionsContext ?? [])]
