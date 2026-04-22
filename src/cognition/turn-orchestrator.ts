@@ -22,6 +22,8 @@ import {
 import { SkillRepository, SkillSelector } from "../memory/procedural/index.js";
 import {
   appendInternalFailureEvent,
+  AutobiographicalRepository,
+  GrowthMarkersRepository,
   OpenQuestionsRepository,
   GoalsRepository,
   TraitsRepository,
@@ -88,6 +90,8 @@ export type TurnOrchestratorOptions = {
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
+  autobiographicalRepository?: AutobiographicalRepository;
+  growthMarkersRepository?: GrowthMarkersRepository;
   openQuestionsRepository: OpenQuestionsRepository;
   moodRepository: MoodRepository;
   socialRepository: SocialRepository;
@@ -150,11 +154,17 @@ export class TurnOrchestrator {
     const values = this.options.valuesRepository.list();
     const goals = flattenGoals(this.options.goalsRepository.list({ status: "active" }));
     const traits = this.options.traitsRepository.list();
+    const currentPeriod =
+      this.options.autobiographicalRepository?.currentPeriod() ?? null;
+    const recentGrowthMarkers =
+      this.options.growthMarkersRepository?.list({ limit: 3 }) ?? [];
 
     return {
       values,
       goals,
       traits,
+      currentPeriod,
+      recentGrowthMarkers,
     };
   }
 
@@ -398,6 +408,7 @@ export class TurnOrchestrator {
             entityRepository: this.options.entityRepository,
             workingMemory,
             selfSnapshot,
+            audienceProfile,
             recencyMessages: recencyWindow.messages,
             options: {
               stakes: input.stakes,

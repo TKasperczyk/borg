@@ -227,6 +227,102 @@ describe("deliberator", () => {
     expect(llm.requests[1]?.system).toContain("AI being, not an assistant");
   });
 
+  it("wires autobiographical period, recent growth, and audience profile into the prompt", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Situated answer",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "What's on your mind?",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0 },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      audienceProfile: {
+        entity_id: "ent_aaaaaaaaaaaaaaaa" as never,
+        trust: 0.82,
+        attachment: 0.4,
+        communication_style: "direct, short turns",
+        shared_history_summary: null,
+        last_interaction_at: 1_700_000_000_000,
+        interaction_count: 14,
+        commitment_count: 2,
+        sentiment_history: [],
+        notes: null,
+        created_at: 0,
+        updated_at: 0,
+      },
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        current_focus: null,
+        hot_entities: [],
+        pending_intents: [],
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: {
+        values: [],
+        goals: [],
+        traits: [],
+        currentPeriod: {
+          id: "abp_aaaaaaaaaaaaaaaa" as never,
+          label: "2026-Q2",
+          start_ts: 1_700_000_000_000,
+          end_ts: null,
+          narrative: "A period of working out how memory and voice interact.",
+          key_episode_ids: [],
+          themes: ["memory", "voice"],
+          created_at: 0,
+          last_updated: 0,
+        },
+        recentGrowthMarkers: [
+          {
+            id: "grw_aaaaaaaaaaaaaaaa" as never,
+            ts: 1_700_000_000_000,
+            category: "understanding",
+            what_changed: "Learned to separate identity from transport layer.",
+            before_description: null,
+            after_description: null,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+            confidence: 0.72,
+            source_process: "manual",
+            created_at: 0,
+          },
+        ],
+      },
+      options: { stakes: "low" },
+    });
+
+    const system = llm.requests[0]?.system as string;
+    expect(system).toContain("Current period: 2026-Q2");
+    expect(system).toContain("A period of working out how memory and voice interact.");
+    expect(system).toContain("themes: memory, voice");
+    expect(system).toContain("Recent learning about yourself:");
+    expect(system).toContain("[understanding] Learned to separate identity from transport layer.");
+    expect(system).toContain("Talking to: trust=0.82");
+    expect(system).toContain("interactions=14");
+    expect(system).toContain("style=direct, short turns");
+  });
+
   it("chooses system 1 when confidence is high and stakes are low", async () => {
     const llm = new FakeLLMClient({
       responses: [

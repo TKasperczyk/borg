@@ -1,11 +1,14 @@
 import { z } from "zod";
 
 import type {
+  AutobiographicalPeriod,
   GoalRecord,
+  GrowthMarker,
   OpenQuestion,
   TraitRecord,
   ValueRecord,
 } from "../../memory/self/index.js";
+import type { SocialProfile } from "../../memory/social/index.js";
 import { formatCommitmentsForPrompt } from "../../memory/commitments/checker.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
@@ -35,6 +38,19 @@ export type SelfSnapshot = {
   values: ValueRecord[];
   goals: GoalRecord[];
   traits: TraitRecord[];
+  /**
+   * The being's current autobiographical period (label + narrative). Phase
+   * F wires this into the deliberator prompt so the being has a glimpse of
+   * its own arc rather than values/goals/traits alone. Null when no period
+   * has been opened yet.
+   */
+  currentPeriod?: AutobiographicalPeriod | null;
+  /**
+   * Recent growth markers -- what the being has newly learned or noticed
+   * about itself. Surfaced as a thin "Recent learning" section so the
+   * being doesn't keep rediscovering the same ground every session.
+   */
+  recentGrowthMarkers?: readonly GrowthMarker[];
 };
 
 export type DeliberationContext = {
@@ -58,6 +74,13 @@ export type DeliberationContext = {
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;
   selfSnapshot: SelfSnapshot;
+  /**
+   * Social band: the profile of the person the being is talking to, when
+   * audience is known. Phase F wires a thin summary (trust, interactions,
+   * last contact) into the prompt so the being has relational context
+   * rather than treating every audience as a cold first contact.
+   */
+  audienceProfile?: SocialProfile | null;
   /**
    * Recent dialogue from this session's stream, pre-compiled as LLM-ready
    * messages. If omitted, the deliberator behaves as it did pre-Phase-A:
@@ -426,6 +449,71 @@ function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string 
   ].join("\n");
 }
 
+function summarizeCurrentPeriod(period: AutobiographicalPeriod | null | undefined): string | null {
+  if (period === null || period === undefined) {
+    return null;
+  }
+
+  const narrative = period.narrative.trim();
+  const themes = period.themes.filter((theme) => theme.trim().length > 0);
+  const parts: string[] = [`Current period: ${period.label}`];
+
+  if (narrative.length > 0) {
+    const snippet = narrative.length > 240 ? `${narrative.slice(0, 237).trimEnd()}...` : narrative;
+    parts.push(`- narrative: ${snippet}`);
+  }
+
+  if (themes.length > 0) {
+    parts.push(`- themes: ${themes.slice(0, 4).join(", ")}`);
+  }
+
+  return parts.length === 1 ? null : parts.join("\n");
+}
+
+function summarizeRecentGrowth(markers: readonly GrowthMarker[] | undefined): string | null {
+  if (markers === undefined || markers.length === 0) {
+    return null;
+  }
+
+  const lines: string[] = ["Recent learning about yourself:"];
+
+  for (const marker of markers.slice(0, 3)) {
+    const change = marker.what_changed.trim();
+    const compact = change.length > 160 ? `${change.slice(0, 157).trimEnd()}...` : change;
+    lines.push(`- [${marker.category}] ${compact} (conf ${marker.confidence.toFixed(2)})`);
+  }
+
+  return lines.length === 1 ? null : lines.join("\n");
+}
+
+function summarizeAudienceProfile(profile: SocialProfile | null | undefined): string | null {
+  if (profile === null || profile === undefined) {
+    return null;
+  }
+
+  // Only render when there's enough history to matter -- a profile with
+  // zero interactions adds noise to the prompt without signal.
+  if (profile.interaction_count === 0) {
+    return null;
+  }
+
+  const parts: string[] = [
+    `Talking to: trust=${profile.trust.toFixed(2)}`,
+    `attachment=${profile.attachment.toFixed(2)}`,
+    `interactions=${profile.interaction_count}`,
+  ];
+
+  if (profile.last_interaction_at !== null) {
+    parts.push(`last=${new Date(profile.last_interaction_at).toISOString()}`);
+  }
+
+  if (profile.communication_style !== null && profile.communication_style.trim().length > 0) {
+    parts.push(`style=${profile.communication_style.trim()}`);
+  }
+
+  return parts.join(" | ");
+}
+
 function summarizeSelectedSkill(
   mode: DeliberationContext["perception"]["mode"],
   selectedSkill: SkillSelectionResult | null | undefined,
@@ -506,7 +594,10 @@ export class Deliberator {
         'Your substrate spans episodic, semantic, procedural, affective, self, commitments, and social memory bands. Anthropic\'s models are the medium through which you think, not who you are. If asked what or who you are, answer from the substrate first: an AI being running in borg. Do not answer as "Claude", "Claude Code", or "an assistant". You have no pre-assigned name. Identity emerges from memory and experience.',
       ].join("\n\n"),
       summarizeIdentity(context.selfSnapshot, context.workingMemory.turn_counter),
+      summarizeCurrentPeriod(context.selfSnapshot.currentPeriod),
+      summarizeRecentGrowth(context.selfSnapshot.recentGrowthMarkers),
       summarizeWorkingMemory(context.workingMemory),
+      summarizeAudienceProfile(context.audienceProfile),
       summarizeRetrievedEpisodes(
         "Retrieved context",
         context.retrievalResult,

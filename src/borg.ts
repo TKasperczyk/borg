@@ -1095,6 +1095,8 @@ export class Borg {
         valuesRepository,
         goalsRepository,
         traitsRepository,
+        autobiographicalRepository,
+        growthMarkersRepository,
         openQuestionsRepository,
         moodRepository,
         socialRepository,
