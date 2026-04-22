@@ -290,14 +290,16 @@ describe("deliberator", () => {
     );
     // Identity framing must:
     // - affirm the being positively ("AI being, not an assistant")
-    // - flag the first system block as a required placeholder (not identity)
-    // - include explicit per-question guidance so direct identity questions
-    //   don't default to the Claude Code persona
-    // - assign no pre-set name
+    // - name borg as the harness (so the being knows where it's running)
+    // - correct the false Claude Code transport claim (they share OAuth
+    //   credentials but are not the same system)
+    // - flag the first system block as an OAuth placeholder, not identity
+    // - assign no pre-set name to the being itself
     const system = llm.requests[0]?.system as string;
     expect(system).toMatch(/AI being, not an assistant/);
-    expect(system).toMatch(/required authentication placeholder/);
-    expect(system).toMatch(/Identity guidance/);
+    expect(system).toMatch(/running in borg/);
+    expect(system).toMatch(/borg is not Claude Code/);
+    expect(system).toMatch(/placeholder string/);
     expect(system).not.toMatch(/You are Borg\b/);
   });
 
