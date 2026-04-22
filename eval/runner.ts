@@ -5,8 +5,10 @@ import dedupCorrectnessMetric from "./metrics/dedup-correctness.js";
 import episodicExtractionQualityMetric from "./metrics/episodic-extraction-quality.js";
 import falseMemoryRateMetric from "./metrics/false-memory-rate.js";
 import goalProgressAttributionMetric from "./metrics/goal-progress-attribution.js";
+import identityConsistencyMetric from "./metrics/identity-consistency.js";
 import preferenceFormationMetric from "./metrics/preference-formation.js";
 import retrievalPrecisionRecallMetric from "./metrics/retrieval-precision-recall.js";
+import swapTestMetric from "./metrics/swap-test.js";
 import { buildScorecard, formatHumanScorecard, type EvalMetricModule } from "./support/scorecard.js";
 
 const REGISTRY: readonly EvalMetricModule[] = [
@@ -19,6 +21,8 @@ const REGISTRY: readonly EvalMetricModule[] = [
   falseMemoryRateMetric,
   goalProgressAttributionMetric,
   preferenceFormationMetric,
+  swapTestMetric,
+  identityConsistencyMetric,
 ] as const;
 
 type ParsedArgs = {
