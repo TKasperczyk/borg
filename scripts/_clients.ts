@@ -313,8 +313,11 @@ export async function selectScriptClients(options: {
 }): Promise<ScriptClientSelection> {
   const env = options.env ?? process.env;
   const loaded = loadConfig({ env, dataDir: options.dataDir });
-  const usingReal =
-    options.mode === "real" || (options.mode !== "fakes" && env.BORG_DEBUG_REAL === "1");
+  // "auto" and "real" both attempt real clients (falling back to fakes with a
+  // visible warning on failure). "fakes" opts out. Callers that want a
+  // different default (e.g. the debug smoke script) resolve to "fakes" BEFORE
+  // calling this helper rather than gating in here.
+  const usingReal = options.mode !== "fakes";
   const warn = options.warn ?? (() => {});
   let llmMode: ScriptClientMode = "fake";
   let embeddingMode: ScriptClientMode = "fake";

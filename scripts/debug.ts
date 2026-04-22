@@ -488,9 +488,12 @@ async function main(): Promise<void> {
   const keepDataDir = process.env.BORG_DEBUG_KEEP === "1";
   const selectedSections = parseSections(process.env.BORG_DEBUG_SECTIONS);
   const dataDir = mkdtempSync(join(tmpdir(), "borg-debug-"));
+  // debug stays fake-by-default; opt into real clients with BORG_DEBUG_REAL=1.
+  // Chat (and any other interactive user-facing entry) should pass "auto"
+  // directly and let _clients.ts try real first.
   const selection = await selectScriptClients({
     dataDir,
-    mode: "auto",
+    mode: process.env.BORG_DEBUG_REAL === "1" ? "auto" : "fakes",
     warn,
   });
   let borg: Borg | undefined;
