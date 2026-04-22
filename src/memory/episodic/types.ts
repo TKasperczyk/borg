@@ -2,7 +2,13 @@ import { z } from "zod";
 
 import { emotionalArcSchema, type EmotionalArc } from "../affective/types.js";
 import type { StreamEntryId } from "../../util/ids.js";
-import { episodeIdHelpers, streamEntryIdHelpers, type EpisodeId } from "../../util/ids.js";
+import {
+  entityIdHelpers,
+  episodeIdHelpers,
+  streamEntryIdHelpers,
+  type EpisodeId,
+  type EntityId,
+} from "../../util/ids.js";
 
 export const EPISODE_TIERS = ["T1", "T2", "T3", "T4"] as const;
 
@@ -19,6 +25,13 @@ export const streamEntryIdSchema = z
     message: "Invalid stream entry id",
   })
   .transform((value) => value as StreamEntryId);
+
+export const episodeAudienceEntityIdSchema = z
+  .string()
+  .refine((value) => entityIdHelpers.is(value), {
+    message: "Invalid episode audience entity id",
+  })
+  .transform((value) => value as EntityId);
 
 export const episodeTierSchema = z.enum(EPISODE_TIERS);
 
@@ -45,6 +58,8 @@ const episodeShape = z.object({
   confidence: z.number().min(0).max(1),
   lineage: episodeLineageSchema,
   emotional_arc: emotionalArcSchema.nullable().default(null),
+  audience_entity_id: episodeAudienceEntityIdSchema.nullable().optional(),
+  shared: z.boolean().optional(),
   embedding: float32ArraySchema,
   created_at: z.number().finite(),
   updated_at: z.number().finite(),
@@ -113,6 +128,8 @@ export type EpisodeSearchOptions = {
   minSimilarity?: number;
   tagFilter?: readonly string[];
   tierFilter?: readonly EpisodeTier[];
+  audienceEntityId?: EntityId | null;
+  crossAudience?: boolean;
   timeRange?: {
     start: number;
     end: number;

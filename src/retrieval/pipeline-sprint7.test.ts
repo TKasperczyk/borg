@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createEpisodeFixture, createOfflineTestHarness } from "../offline/test-support.js";
+import {
+  createEpisodeFixture,
+  createOfflineTestHarness,
+  createSemanticNodeFixture,
+} from "../offline/test-support.js";
 
 describe("RetrievalPipeline Sprint 7 scoring", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;
@@ -100,5 +104,83 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
 
     expect(results[0]?.episode.id).toBe(withAudience.id);
     expect(results[0]?.scoreBreakdown.socialRelevance ?? 0).toBeGreaterThan(0);
+  });
+
+  it("hard-excludes audience-scoped episodes from other audiences", async () => {
+    harness = await createOfflineTestHarness();
+    const sam = harness.entityRepository.resolve("Sam");
+    const alex = harness.entityRepository.resolve("Alex");
+    const privateEpisode = createEpisodeFixture({
+      title: "Sam-only architecture review",
+      tags: ["architecture"],
+      audience_entity_id: sam,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(privateEpisode);
+
+    const results = await harness.retrievalPipeline.search("architecture", {
+      limit: 3,
+      audienceEntityId: alex,
+    });
+
+    expect(results).toEqual([]);
+  });
+
+  it("keeps public episodes visible for any audience", async () => {
+    harness = await createOfflineTestHarness();
+    const alex = harness.entityRepository.resolve("Alex");
+    const publicEpisode = createEpisodeFixture({
+      title: "Public architecture note",
+      tags: ["architecture"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    await harness.episodicRepository.insert(publicEpisode);
+
+    const results = await harness.retrievalPipeline.search("architecture", {
+      limit: 3,
+      audienceEntityId: alex,
+    });
+
+    expect(results.map((result) => result.episode.id)).toContain(publicEpisode.id);
+  });
+
+  it("filters semantic nodes whose source episodes include hidden evidence", async () => {
+    harness = await createOfflineTestHarness();
+    const sam = harness.entityRepository.resolve("Sam");
+    const alex = harness.entityRepository.resolve("Alex");
+    const publicEpisode = createEpisodeFixture({
+      title: "Atlas public note",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    const hiddenEpisode = createEpisodeFixture({
+      title: "Atlas Sam-only note",
+      tags: ["atlas"],
+      audience_entity_id: sam,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.insert(hiddenEpisode);
+    const mixedNode = createSemanticNodeFixture({
+      kind: "entity",
+      label: "Atlas Audience Scoped",
+      description: "Atlas node backed by both public and hidden evidence.",
+      source_episode_ids: [publicEpisode.id, hiddenEpisode.id],
+    });
+    await harness.semanticNodeRepository.insert(mixedNode);
+
+    const result = await harness.retrievalPipeline.searchWithContext("Atlas Audience Scoped", {
+      limit: 2,
+      audienceEntityId: alex,
+      graphWalkDepth: 1,
+      maxGraphNodes: 4,
+    });
+
+    expect(result.semantic.matched_node_ids).not.toContain(mixedNode.id);
+    expect(result.semantic.supports).toEqual([]);
+    expect(result.semantic.contradicts).toEqual([]);
+    expect(result.semantic.categories).toEqual([]);
   });
 });

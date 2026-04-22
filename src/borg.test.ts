@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG } from "./config/index.js";
 import type { EmbeddingClient } from "./embeddings/index.js";
 import { FakeLLMClient } from "./llm/index.js";
+import { EntityRepository, commitmentMigrations } from "./memory/commitments/index.js";
 import { episodicMigrations } from "./memory/episodic/index.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "./memory/episodic/repository.js";
 import { selfMigrations, type OpenQuestionsRepository } from "./memory/self/index.js";
@@ -114,6 +115,114 @@ describe("Borg", () => {
           id: value.id,
         }),
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("defaults episodic public APIs to public-only visibility unless audience access is explicit", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        ...episodicMigrations,
+        ...selfMigrations,
+        ...retrievalMigrations,
+        ...commitmentMigrations,
+      ],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+    const entities = new EntityRepository({
+      db,
+      clock,
+    });
+    const alice = entities.resolve("Alice");
+
+    await repo.insert({
+      id: "ep_publicpublicpub1" as never,
+      title: "Public planning note",
+      narrative: "A public planning note.",
+      participants: ["team"],
+      location: null,
+      start_time: 1,
+      end_time: 2,
+      source_stream_ids: ["strm_publicpublic0001" as never],
+      significance: 0.8,
+      tags: ["planning"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      audience_entity_id: null,
+      shared: true,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 1,
+      updated_at: 1,
+    });
+    await repo.insert({
+      id: "ep_privateprivate01" as never,
+      title: "Alice planning note",
+      narrative: "A planning note only for Alice.",
+      participants: ["Alice"],
+      location: null,
+      start_time: 3,
+      end_time: 4,
+      source_stream_ids: ["strm_privateprivate01" as never],
+      significance: 0.8,
+      tags: ["planning"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      audience_entity_id: alice,
+      shared: false,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 3,
+      updated_at: 3,
+    });
+    db.close();
+    await store.close();
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      expect((await borg.episodic.search("planning", { limit: 5 })).map((item) => item.episode.id)).toEqual([
+        "ep_publicpublicpub1",
+      ]);
+      expect((await borg.episodic.get("ep_privateprivate01" as never))?.episode.id).toBeUndefined();
+      expect(
+        (await borg.episodic.search("planning", { limit: 5, audience: "Alice" })).map(
+          (item) => item.episode.id,
+        ),
+      ).toContain("ep_privateprivate01");
+      expect(
+        (await borg.episodic.get("ep_privateprivate01" as never, { audience: "Alice" }))?.episode
+          .id,
+      ).toBe("ep_privateprivate01");
+      expect(
+        (await borg.episodic.get("ep_privateprivate01" as never, { crossAudience: true }))?.episode
+          .id,
+      ).toBe("ep_privateprivate01");
     } finally {
       await borg.close();
     }

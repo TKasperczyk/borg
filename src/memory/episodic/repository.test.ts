@@ -145,6 +145,37 @@ describe("episodic repository", () => {
     expect(await harness.repo.get(second.id)).toBeNull();
   });
 
+  it("defaults vector search to public-only visibility unless cross-audience is explicit", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+
+    const publicEpisode = createEpisode("ep_publicpublicpub1", harness.clock.now(), {
+      source_stream_ids: ["strm_publicpublic0001" as Episode["source_stream_ids"][number]],
+    });
+    const scopedEpisode = createEpisode("ep_scopedscopedsc12", harness.clock.now() + 1_000, {
+      source_stream_ids: ["strm_scopedscoped0000" as Episode["source_stream_ids"][number]],
+      audience_entity_id: "ent_aaaaaaaaaaaaaaaa" as never,
+      shared: false,
+    });
+
+    await harness.repo.insert(publicEpisode);
+    await harness.repo.insert(scopedEpisode);
+
+    const defaultSearch = await harness.repo.searchByVector(Float32Array.from([1, 0, 0, 0]), {
+      limit: 5,
+    });
+    const crossAudienceSearch = await harness.repo.searchByVector(Float32Array.from([1, 0, 0, 0]), {
+      limit: 5,
+      crossAudience: true,
+    });
+
+    expect(defaultSearch.map((item) => item.episode.id)).toEqual([publicEpisode.id]);
+    expect(crossAudienceSearch).toHaveLength(2);
+    expect(crossAudienceSearch.map((item) => item.episode.id)).toEqual(
+      expect.arrayContaining([publicEpisode.id, scopedEpisode.id]),
+    );
+  });
+
   it("rejects inserts without citation anchors", async () => {
     const harness = await createHarness();
     closers.push(harness.close);
@@ -250,6 +281,96 @@ describe("episodic repository", () => {
     expect((await repo.get("ep_legacyyyyyyyyyyy" as Episode["id"]))?.emotional_arc).toEqual(
       emotionalArc,
     );
+  });
+
+  it("matches legacy rows by normalized source ids when source_fingerprint is missing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const clock = new ManualClock(1_700_000_000_000);
+    const legacyStore = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+
+    closers.push(async () => {
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const legacySchema = schema([
+      utf8Field("id"),
+      utf8Field("title"),
+      utf8Field("narrative"),
+      utf8Field("participants"),
+      utf8Field("location", true),
+      float64Field("start_time"),
+      float64Field("end_time"),
+      utf8Field("source_stream_ids"),
+      float64Field("significance"),
+      utf8Field("tags"),
+      float64Field("confidence"),
+      utf8Field("lineage_derived_from"),
+      utf8Field("lineage_supersedes"),
+      vectorField("embedding", 4),
+      float64Field("created_at"),
+      float64Field("updated_at"),
+    ]);
+    const legacyTable = await legacyStore.openTable({
+      name: "episodes",
+      schema: legacySchema,
+    });
+    await legacyTable.upsert(
+      [
+        {
+          id: "ep_legacysourceord1",
+          title: "legacy source order",
+          narrative: "Legacy source ids were written in a different order.",
+          participants: JSON.stringify(["user"]),
+          location: null,
+          start_time: clock.now(),
+          end_time: clock.now() + 1_000,
+          source_stream_ids: JSON.stringify([
+            "strm_bbbbbbbbbbbbbbbb",
+            "strm_aaaaaaaaaaaaaaaa",
+          ]),
+          significance: 0.8,
+          tags: JSON.stringify(["alpha"]),
+          confidence: 0.9,
+          lineage_derived_from: JSON.stringify([]),
+          lineage_supersedes: JSON.stringify([]),
+          embedding: [1, 0, 0, 0],
+          created_at: clock.now(),
+          updated_at: clock.now(),
+        },
+      ],
+      { on: "id" },
+    );
+    legacyTable.close();
+    await legacyStore.close();
+
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    closers.push(async () => {
+      db.close();
+      await store.close();
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    const matched = await repo.findBySourceStreamIds([
+      "strm_aaaaaaaaaaaaaaaa" as Episode["source_stream_ids"][number],
+      "strm_bbbbbbbbbbbbbbbb" as Episode["source_stream_ids"][number],
+    ]);
+
+    expect(matched?.id).toBe("ep_legacysourceord1");
   });
 
   it("preserves emotional_arc when a patch omits it", async () => {

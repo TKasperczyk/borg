@@ -8,6 +8,8 @@ import {
 } from "../../llm/index.js";
 import { emotionalArcSchema } from "../../memory/affective/index.js";
 import {
+  hasSameEpisodeAccessScope,
+  normalizeEpisodeAccess,
   episodeIdSchema,
   episodeLineageSchema,
   episodeStatsSchema,
@@ -16,7 +18,7 @@ import {
   type EpisodeStats,
   type EpisodeTier,
 } from "../../memory/episodic/index.js";
-import { streamEntryIdSchema } from "../../memory/episodic/types.js";
+import { episodeAudienceEntityIdSchema, streamEntryIdSchema } from "../../memory/episodic/types.js";
 import { createEpisodeId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
@@ -55,6 +57,8 @@ const serializableEpisodeSchema = z.object({
   confidence: z.number().min(0).max(1),
   lineage: episodeLineageSchema,
   emotional_arc: emotionalArcSchema.nullable(),
+  audience_entity_id: episodeAudienceEntityIdSchema.nullable().optional(),
+  shared: z.boolean().optional(),
   embedding: z.array(z.number().finite()),
   created_at: z.number().finite(),
   updated_at: z.number().finite(),
@@ -216,6 +220,10 @@ function buildClusters(
         continue;
       }
 
+      if (!hasSameEpisodeAccessScope(left, right)) {
+        continue;
+      }
+
       const similarity = cosineSimilarity(left.embedding, right.embedding);
 
       if (similarity < similarityThreshold) {
@@ -325,9 +333,10 @@ async function buildMergedEpisode(
   const embedding = await ctx.embeddingClient.embed(
     `${merged.title}\n${merged.narrative}\n${tags.join(" ")}\n${participants.join(" ")}`,
   );
+  const access = normalizeEpisodeAccess(cluster.episodes[0] ?? {});
 
   return {
-    episode: {
+    episode: normalizeEpisodeAccess({
       id: createEpisodeId(),
       title: merged.title.trim(),
       narrative: merged.narrative.trim(),
@@ -345,10 +354,12 @@ async function buildMergedEpisode(
       },
       emotional_arc:
         cluster.episodes.find((episode) => episode.emotional_arc !== null)?.emotional_arc ?? null,
+      audience_entity_id: access.audience_entity_id,
+      shared: access.shared,
       embedding,
       created_at: nowMs,
       updated_at: nowMs,
-    },
+    }),
     inheritedTier: maxTier(cluster.stats),
   };
 }

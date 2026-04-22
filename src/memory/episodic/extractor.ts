@@ -6,10 +6,12 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import { analyzeAffectiveSignalHeuristically, type EmotionalArc } from "../affective/index.js";
+import type { EntityRepository } from "../commitments/index.js";
 import { StreamReader, type StreamEntry } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { EmbeddingError, LLMError, StorageError } from "../../util/errors.js";
 import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { normalizeEpisodeAccess } from "./access.js";
 import { EpisodicRepository } from "./repository.js";
 import { type Episode } from "./types.js";
 
@@ -31,7 +33,6 @@ const extractorResponseSchema = z.object({
 });
 
 type ExtractorCandidate = z.infer<typeof extractorCandidateSchema>;
-const DEDUP_THRESHOLD = 0.85;
 const EXTRACT_EPISODES_TOOL_NAME = "EmitEpisodeCandidates";
 export const EXTRACT_EPISODES_TOOL = {
   name: EXTRACT_EPISODES_TOOL_NAME,
@@ -45,6 +46,7 @@ export type EpisodicExtractorOptions = {
   embeddingClient: EmbeddingClient;
   llmClient: LLMClient;
   model: string;
+  entityRepository: EntityRepository;
   clock?: Clock;
   chunkTokenLimit?: number;
   maxTokens?: number;
@@ -206,12 +208,13 @@ function sourceEntriesFromCandidate(
 function buildEpisodeFromCandidate(
   candidate: ExtractorCandidate,
   sourceEntries: readonly StreamEntry[],
+  access: Pick<Episode, "audience_entity_id" | "shared">,
   embedding: Float32Array,
   nowMs: number,
 ): Episode {
   const timestamps = sourceEntries.map((entry) => entry.timestamp);
 
-  return {
+  return normalizeEpisodeAccess({
     id: createEpisodeId(),
     title: candidate.title.trim(),
     narrative: candidate.narrative.trim(),
@@ -228,31 +231,15 @@ function buildEpisodeFromCandidate(
       supersedes: [],
     },
     emotional_arc: buildEmotionalArc(sourceEntries),
+    audience_entity_id: access.audience_entity_id,
+    shared: access.shared,
     embedding,
     created_at: nowMs,
     updated_at: nowMs,
-  };
+  });
 }
 
-function episodeToPatch(episode: Episode) {
-  return {
-    title: episode.title,
-    narrative: episode.narrative,
-    participants: episode.participants,
-    location: episode.location,
-    start_time: episode.start_time,
-    end_time: episode.end_time,
-    source_stream_ids: episode.source_stream_ids,
-    significance: episode.significance,
-    tags: episode.tags,
-    confidence: episode.confidence,
-    lineage: episode.lineage,
-    embedding: episode.embedding,
-    updated_at: episode.updated_at,
-  };
-}
-
-type CandidateOutcome = "inserted" | "updated" | "skipped";
+type CandidateOutcome = "inserted" | "skipped";
 
 export class EpisodicExtractor {
   private readonly clock: Clock;
@@ -265,55 +252,65 @@ export class EpisodicExtractor {
     this.maxTokens = options.maxTokens ?? 16_000;
   }
 
+  private deriveEpisodeAccess(
+    sourceEntries: readonly StreamEntry[],
+  ): Pick<Episode, "audience_entity_id" | "shared"> | null {
+    const audiences = uniqueStrings(
+      sourceEntries.flatMap((entry) =>
+        entry.audience === undefined || entry.audience.trim().length === 0 ? [] : [entry.audience],
+      ),
+    );
+
+    if (audiences.length === 0) {
+      return {
+        audience_entity_id: null,
+        shared: true,
+      };
+    }
+
+    if (audiences.length > 1) {
+      return null;
+    }
+
+    return {
+      audience_entity_id: this.options.entityRepository.resolve(audiences[0] ?? ""),
+      shared: false,
+    };
+  }
+
   private async processCandidate(
     candidate: ExtractorCandidate,
     chunkById: Map<string, StreamEntry>,
   ): Promise<CandidateOutcome> {
     const sourceEntries = sourceEntriesFromCandidate(candidate, chunkById);
+    const access = this.deriveEpisodeAccess(sourceEntries);
+
+    if (access === null) {
+      return "skipped";
+    }
 
     try {
+      const existing = await this.options.episodicRepository.findBySourceStreamIds(
+        uniqueStreamEntryIds(sourceEntries),
+      );
+
+      if (existing !== null) {
+        return "skipped";
+      }
+
       const embedding = await this.options.embeddingClient.embed(
         `${candidate.title}\n${candidate.narrative}\n${candidate.tags.join(" ")}`,
       );
       const nowMs = this.clock.now();
-      const nextEpisode = buildEpisodeFromCandidate(candidate, sourceEntries, embedding, nowMs);
-      const matches = await this.options.episodicRepository.searchByVector(embedding, {
-        limit: 1,
-        minSimilarity: DEDUP_THRESHOLD,
-      });
-      const existing = matches[0];
-
-      if (existing === undefined || existing.similarity < DEDUP_THRESHOLD) {
-        await this.options.episodicRepository.insert(nextEpisode);
-        return "inserted";
-      }
-
-      const merged = this.options.episodicRepository.mergeEpisodeFields(existing.episode, {
-        title:
-          nextEpisode.confidence >= existing.episode.confidence
-            ? nextEpisode.title
-            : existing.episode.title,
-        narrative:
-          nextEpisode.confidence >= existing.episode.confidence
-            ? nextEpisode.narrative
-            : existing.episode.narrative,
-        participants: nextEpisode.participants,
-        location: nextEpisode.location ?? existing.episode.location,
-        start_time: Math.min(existing.episode.start_time, nextEpisode.start_time),
-        end_time: Math.max(existing.episode.end_time, nextEpisode.end_time),
-        source_stream_ids: nextEpisode.source_stream_ids,
-        significance: Math.max(existing.episode.significance, nextEpisode.significance),
-        tags: nextEpisode.tags,
-        confidence: Math.max(existing.episode.confidence, nextEpisode.confidence),
+      const nextEpisode = buildEpisodeFromCandidate(
+        candidate,
+        sourceEntries,
+        access,
         embedding,
-        lineage: existing.episode.lineage,
-      });
-      const updatedEpisode = await this.options.episodicRepository.update(
-        existing.episode.id,
-        episodeToPatch(merged),
+        nowMs,
       );
-
-      return updatedEpisode === null ? "skipped" : "updated";
+      await this.options.episodicRepository.insert(nextEpisode);
+      return "inserted";
     } catch (error) {
       if (error instanceof EmbeddingError || error instanceof StorageError) {
         return "skipped";
@@ -379,12 +376,7 @@ export class EpisodicExtractor {
           continue;
         }
 
-        if (outcome === "skipped") {
-          skipped += 1;
-          continue;
-        }
-
-        updated += 1;
+        skipped += 1;
       }
     }
 

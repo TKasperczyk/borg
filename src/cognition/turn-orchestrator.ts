@@ -348,6 +348,7 @@ export class TurnOrchestrator {
         });
         const retrievalOptions: RetrievalSearchOptions = {
           limit: computeRetrievalLimit(perception.mode),
+          audienceEntityId,
           attentionWeights,
           goalDescriptions: selfSnapshot.goals.map((goal) => goal.description),
           temporalCue: perception.temporalCue,

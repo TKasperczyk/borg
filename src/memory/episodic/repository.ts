@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 
 import {
   LanceDbTable,
+  booleanField,
   float64Field,
   schema,
   utf8Field,
@@ -11,8 +12,9 @@ import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
-import { parseEpisodeId, type EpisodeId } from "../../util/ids.js";
+import { parseEntityId, parseEpisodeId, type EntityId, type EpisodeId } from "../../util/ids.js";
 import { createNeutralEmotionalArc, emotionalArcSchema } from "../affective/types.js";
+import { isEpisodeVisibleToAudience, normalizeEpisodeAccess } from "./access.js";
 
 import {
   type Episode,
@@ -44,6 +46,9 @@ type EpisodeRow = {
   confidence: number;
   lineage_derived_from: string;
   lineage_supersedes: string;
+  source_fingerprint: string | null;
+  audience_entity_id: string | null;
+  shared: boolean | number | null;
   emotional_arc: string | null;
   embedding: number[];
   created_at: number;
@@ -75,6 +80,10 @@ function quoteSqlString(value: string): string {
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+function buildSourceFingerprint(sourceStreamIds: readonly string[]): string {
+  return [...new Set(sourceStreamIds)].sort().join("\n");
 }
 
 function parseJsonArray<T>(value: string, label: string): T[] {
@@ -199,25 +208,30 @@ function toFloat32Array(vector: unknown): Float32Array {
 }
 
 function toEpisodeRow(episode: Episode): EpisodeRow {
+  const normalized = normalizeEpisodeAccess(episode);
+
   return {
-    id: episode.id,
-    title: episode.title,
-    narrative: episode.narrative,
-    participants: serializeJsonValue(episode.participants),
-    location: episode.location,
-    start_time: episode.start_time,
-    end_time: episode.end_time,
-    source_stream_ids: serializeJsonValue(episode.source_stream_ids),
-    significance: episode.significance,
-    tags: serializeJsonValue(episode.tags),
-    confidence: episode.confidence,
-    lineage_derived_from: serializeJsonValue(episode.lineage.derived_from),
-    lineage_supersedes: serializeJsonValue(episode.lineage.supersedes),
+    id: normalized.id,
+    title: normalized.title,
+    narrative: normalized.narrative,
+    participants: serializeJsonValue(normalized.participants),
+    location: normalized.location,
+    start_time: normalized.start_time,
+    end_time: normalized.end_time,
+    source_stream_ids: serializeJsonValue(normalized.source_stream_ids),
+    significance: normalized.significance,
+    tags: serializeJsonValue(normalized.tags),
+    confidence: normalized.confidence,
+    lineage_derived_from: serializeJsonValue(normalized.lineage.derived_from),
+    lineage_supersedes: serializeJsonValue(normalized.lineage.supersedes),
+    source_fingerprint: buildSourceFingerprint(normalized.source_stream_ids),
+    audience_entity_id: normalized.audience_entity_id,
+    shared: normalized.shared,
     emotional_arc:
-      episode.emotional_arc === null ? null : serializeJsonValue(episode.emotional_arc),
-    embedding: Array.from(episode.embedding),
-    created_at: episode.created_at,
-    updated_at: episode.updated_at,
+      normalized.emotional_arc === null ? null : serializeJsonValue(normalized.emotional_arc),
+    embedding: Array.from(normalized.embedding),
+    created_at: normalized.created_at,
+    updated_at: normalized.updated_at,
   };
 }
 
@@ -262,11 +276,19 @@ function fromEpisodeRow(row: Record<string, unknown>): Episode {
       ),
     },
     emotional_arc: emotionalArc,
+    audience_entity_id:
+      row.audience_entity_id === null || row.audience_entity_id === undefined
+        ? null
+        : parseEntityId(String(row.audience_entity_id)),
+    shared:
+      row.shared === null || row.shared === undefined
+        ? row.audience_entity_id === null || row.audience_entity_id === undefined
+        : row.shared === true || Number(row.shared) === 1,
     embedding: toFloat32Array(row.embedding),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
   };
-  const parsed = episodeSchema.safeParse(candidate);
+  const parsed = episodeSchema.safeParse(normalizeEpisodeAccess(candidate));
 
   if (!parsed.success) {
     throw new StorageError("Episode row failed validation", {
@@ -319,6 +341,9 @@ export function createEpisodesTableSchema(dimensions: number) {
     float64Field("confidence"),
     utf8Field("lineage_derived_from"),
     utf8Field("lineage_supersedes"),
+    utf8Field("source_fingerprint", true),
+    utf8Field("audience_entity_id", true),
+    booleanField("shared", true),
     utf8Field("emotional_arc", true),
     vectorField("embedding", dimensions),
     float64Field("created_at"),
@@ -345,6 +370,23 @@ export class EpisodicRepository {
 
   private get db(): SqliteDatabase {
     return this.options.db;
+  }
+
+  private buildVisibilityWhereClause(
+    audienceEntityId: EntityId | null | undefined,
+    crossAudience = false,
+  ): string | undefined {
+    if (crossAudience) {
+      return undefined;
+    }
+
+    if (audienceEntityId === null || audienceEntityId === undefined) {
+      return "(audience_entity_id IS NULL OR shared = true)";
+    }
+
+    return `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
+      audienceEntityId,
+    )} OR shared = true)`;
   }
 
   private upsertStats(stats: EpisodeStats): void {
@@ -390,7 +432,7 @@ export class EpisodicRepository {
   }
 
   async insert(episode: Episode): Promise<Episode> {
-    const parsed = episodeInsertSchema.safeParse(episode);
+    const parsed = episodeInsertSchema.safeParse(normalizeEpisodeAccess(episode));
 
     if (!parsed.success) {
       throw new StorageError("Invalid episode payload", {
@@ -449,7 +491,7 @@ export class EpisodicRepository {
     }
 
     const patchIncludesEmotionalArc = Object.prototype.hasOwnProperty.call(patch, "emotional_arc");
-    const merged = {
+    const merged = normalizeEpisodeAccess({
       ...current,
       ...parsedPatch.data,
       emotional_arc: patchIncludesEmotionalArc
@@ -460,7 +502,7 @@ export class EpisodicRepository {
         ...parsedPatch.data.lineage,
       },
       updated_at: this.clock.now(),
-    };
+    });
     const parsedEpisode = episodeSchema.safeParse(merged);
 
     if (!parsedEpisode.success) {
@@ -617,6 +659,7 @@ export class EpisodicRepository {
       limit: searchLimit,
       vectorColumn: "embedding",
       distanceType: "cosine",
+      where: this.buildVisibilityWhereClause(options.audienceEntityId, options.crossAudience),
     });
     const results: EpisodeSearchCandidate[] = [];
 
@@ -626,6 +669,14 @@ export class EpisodicRepository {
       const similarity = toSimilarity(getDistance(row));
 
       if (options.minSimilarity !== undefined && similarity < options.minSimilarity) {
+        continue;
+      }
+
+      if (
+        !isEpisodeVisibleToAudience(episode, options.audienceEntityId, {
+          crossAudience: options.crossAudience,
+        })
+      ) {
         continue;
       }
 
@@ -721,7 +772,7 @@ export class EpisodicRepository {
   }
 
   mergeEpisodeFields(current: Episode, patch: Partial<Episode>): Episode {
-    const merged = {
+    const merged = normalizeEpisodeAccess({
       ...current,
       ...patch,
       participants:
@@ -745,8 +796,39 @@ export class EpisodicRepository {
         ]) as Episode["lineage"]["supersedes"],
       },
       updated_at: this.clock.now(),
-    };
+    });
 
     return episodeSchema.parse(merged);
+  }
+
+  async findBySourceStreamIds(
+    sourceStreamIds: ReadonlyArray<Episode["source_stream_ids"][number]>,
+  ): Promise<Episode | null> {
+    const fingerprint = buildSourceFingerprint(sourceStreamIds);
+    const byFingerprint = await this.table.list({
+      where: `source_fingerprint = ${quoteSqlString(fingerprint)}`,
+      limit: 1,
+    });
+    const fingerprintMatch = byFingerprint[0];
+
+    if (fingerprintMatch !== undefined) {
+      return fromEpisodeRow(fingerprintMatch);
+    }
+
+    const legacyRows = await this.table.list();
+
+    for (const row of legacyRows) {
+      if (row.source_fingerprint !== null && row.source_fingerprint !== undefined) {
+        continue;
+      }
+
+      const episode = fromEpisodeRow(row);
+
+      if (buildSourceFingerprint(episode.source_stream_ids) === fingerprint) {
+        return episode;
+      }
+    }
+
+    return null;
   }
 }

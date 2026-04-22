@@ -3,7 +3,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeLLMClient } from "../../llm/index.js";
 
-import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
+import {
+  createEpisodeFixture,
+  createOfflineTestHarness,
+  createSemanticNodeFixture,
+} from "../test-support.js";
 import { ReflectorProcess } from "./index.js";
 
 const REFLECTOR_TOOL_NAME = "EmitReflectorInsights";
@@ -241,6 +245,255 @@ describe("reflector process", () => {
         limit: 10,
       }),
     ).toEqual([]);
+  });
+
+  it("partitions reflection clusters by audience scope", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const sam = harness.entityRepository.resolve("Sam");
+
+    const publicEpisodes = [
+      createEpisodeFixture(
+        {
+          title: "Public deploy note one",
+          tags: ["scope-reflect"],
+          audience_entity_id: null,
+          shared: true,
+          created_at: 10_000,
+          updated_at: 10_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Public deploy note two",
+          tags: ["scope-reflect"],
+          audience_entity_id: null,
+          shared: true,
+          created_at: 20_000,
+          updated_at: 20_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Public deploy note three",
+          tags: ["scope-reflect"],
+          audience_entity_id: null,
+          shared: true,
+          created_at: 30_000,
+          updated_at: 30_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+    const scopedEpisodes = [
+      createEpisodeFixture(
+        {
+          title: "Sam deploy note one",
+          tags: ["scope-reflect"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 40_000,
+          updated_at: 40_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Sam deploy note two",
+          tags: ["scope-reflect"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 50_000,
+          updated_at: 50_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Sam deploy note three",
+          tags: ["scope-reflect"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 60_000,
+          updated_at: 60_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+
+    llm.pushResponse(
+      createReflectorResponse({
+        label: "Sam deploy insight",
+        description: "Sam-only deploy episodes imply a private deploy habit.",
+        confidence: 0.6,
+        source_episode_ids: scopedEpisodes.map((episode) => episode.id),
+      }),
+    );
+    llm.pushResponse(
+      createReflectorResponse({
+        label: "Public deploy insight",
+        description: "Public deploy episodes imply a reusable deploy habit.",
+        confidence: 0.6,
+        source_episode_ids: publicEpisodes.map((episode) => episode.id),
+      }),
+    );
+
+    for (const episode of [...publicEpisodes, ...scopedEpisodes]) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const result = await process.run(harness.createContext(), {
+      dryRun: true,
+    });
+
+    expect(result.changes).toHaveLength(2);
+    expect(result.changes.map((change) => change.targets.cluster)).toEqual(
+      expect.arrayContaining(["public:shared|tag:scope-reflect", `${sam}:private|tag:scope-reflect`]),
+    );
+  });
+
+  it("does not update an existing semantic node from an incompatible audience scope", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const sam = harness.entityRepository.resolve("Sam");
+
+    const publicEpisodes = [
+      createEpisodeFixture(
+        {
+          title: "Public pattern one",
+          tags: ["scope-update"],
+          audience_entity_id: null,
+          shared: true,
+          created_at: 10_000,
+          updated_at: 10_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Public pattern two",
+          tags: ["scope-update"],
+          audience_entity_id: null,
+          shared: true,
+          created_at: 20_000,
+          updated_at: 20_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Public pattern three",
+          tags: ["scope-update"],
+          audience_entity_id: null,
+          shared: true,
+          created_at: 30_000,
+          updated_at: 30_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+    const scopedEpisodes = [
+      createEpisodeFixture(
+        {
+          title: "Sam pattern one",
+          tags: ["scope-update"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 40_000,
+          updated_at: 40_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Sam pattern two",
+          tags: ["scope-update"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 50_000,
+          updated_at: 50_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Sam pattern three",
+          tags: ["scope-update"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 60_000,
+          updated_at: 60_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+
+    for (const episode of [...publicEpisodes, ...scopedEpisodes]) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    const existingNode = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Shared label insight",
+        description: "Public insight description.",
+        source_episode_ids: publicEpisodes.map((episode) => episode.id),
+      }),
+    );
+
+    llm.pushResponse(
+      createReflectorResponse({
+        label: "Shared label insight",
+        description: "Sam insight description.",
+        confidence: 0.6,
+        source_episode_ids: scopedEpisodes.map((episode) => episode.id),
+      }),
+    );
+    llm.pushResponse(
+      createReflectorResponse({
+        label: "Shared label insight",
+        description: "Public insight description.",
+        confidence: 0.6,
+        source_episode_ids: publicEpisodes.map((episode) => episode.id),
+      }),
+    );
+
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+
+    const nodes = await harness.semanticNodeRepository.list({
+      includeArchived: true,
+      limit: 20,
+    });
+    const sharedLabelNodes = nodes.filter((node) => node.label === "Shared label insight");
+
+    expect(sharedLabelNodes).toHaveLength(2);
+    expect(sharedLabelNodes.find((node) => node.id === existingNode.id)?.description).toBe(
+      "Public insight description.",
+    );
+    expect(
+      sharedLabelNodes.find((node) => node.id !== existingNode.id)?.source_episode_ids,
+    ).toEqual(scopedEpisodes.map((episode) => episode.id));
   });
 
   it("halts further llm work after budget exhaustion", async () => {

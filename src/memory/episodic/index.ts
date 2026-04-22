@@ -1,5 +1,12 @@
 export { applyEpisodeDecay, type DecayOptions, type DecayResult } from "./decay.js";
 export {
+  episodeAccessScopeKey,
+  hasSameEpisodeAccessScope,
+  isEpisodeVisibleToAudience,
+  normalizeEpisodeAccess,
+  type EpisodeAccessLike,
+} from "./access.js";
+export {
   EpisodicExtractor,
   type EpisodicExtractorOptions,
   type ExtractFromStreamOptions,

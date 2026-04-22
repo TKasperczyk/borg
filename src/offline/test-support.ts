@@ -411,6 +411,8 @@ export function createEpisodeFixture(
       supersedes: [],
     },
     emotional_arc: overrides.emotional_arc ?? null,
+    audience_entity_id: overrides.audience_entity_id,
+    shared: overrides.shared,
     embedding: overrides.embedding ?? Float32Array.from(vector),
     created_at: nowMs,
     updated_at: overrides.updated_at ?? nowMs,

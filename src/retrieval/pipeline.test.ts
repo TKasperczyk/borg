@@ -148,6 +148,61 @@ describe("retrieval pipeline", () => {
     expect(repo.getStats("ep_aaaaaaaaaaaaaaaa" as Episode["id"])?.retrieval_count).toBe(1);
   });
 
+  it("defaults search to public-only visibility unless cross-audience is explicit", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(5_000),
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await repo.insert(
+      createEpisode("ep_publicvisible000", "strm_publicvisible000" as never, [1, 0, 0, 0]),
+    );
+    await repo.insert({
+      ...createEpisode("ep_scopehidden00001", "strm_scopehidden00001" as never, [1, 0, 0, 0]),
+      audience_entity_id: "ent_bbbbbbbbbbbbbbbb" as never,
+      shared: false,
+    });
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: repo,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    const defaultResults = await pipeline.search("planning", {
+      limit: 5,
+    });
+    const crossAudienceResults = await pipeline.search("planning", {
+      limit: 5,
+      crossAudience: true,
+    });
+
+    expect(defaultResults.map((result) => result.episode.id)).toEqual(["ep_publicvisible000"]);
+    expect(crossAudienceResults).toHaveLength(2);
+    expect(crossAudienceResults.map((result) => result.episode.id)).toEqual(
+      expect.arrayContaining(["ep_publicvisible000", "ep_scopehidden00001"]),
+    );
+  });
+
   it("batches citation resolution into a single stream scan per session", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
@@ -203,6 +258,60 @@ describe("retrieval pipeline", () => {
 
     expect(results).toHaveLength(2);
     expect(iterateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides scoped episodes by id unless the caller provides audience access or cross-audience mode", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(5_000),
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await repo.insert({
+      ...createEpisode("ep_privateepisode01", "strm_privateepisode01" as never, [1, 0, 0, 0]),
+      audience_entity_id: "ent_cccccccccccccccc" as never,
+      shared: false,
+    });
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: repo,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    expect(await pipeline.getEpisode("ep_privateepisode01" as Episode["id"])).toBeNull();
+    expect(
+      (
+        await pipeline.getEpisode("ep_privateepisode01" as Episode["id"], {
+          audienceEntityId: "ent_cccccccccccccccc" as never,
+        })
+      )?.episode.id,
+    ).toBe("ep_privateepisode01");
+    expect(
+      (
+        await pipeline.getEpisode("ep_privateepisode01" as Episode["id"], {
+          crossAudience: true,
+        })
+      )?.episode.id,
+    ).toBe("ep_privateepisode01");
   });
 
   it("rescales results with attention weights and suppression", async () => {

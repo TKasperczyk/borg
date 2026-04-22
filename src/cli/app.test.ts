@@ -8,6 +8,7 @@ import { Borg } from "../borg.js";
 import { DEFAULT_CONFIG } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient } from "../llm/index.js";
+import { EntityRepository, commitmentMigrations } from "../memory/commitments/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
 import { episodicMigrations } from "../memory/episodic/migrations.js";
@@ -238,7 +239,12 @@ describe("cli", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+      migrations: [
+        ...episodicMigrations,
+        ...selfMigrations,
+        ...retrievalMigrations,
+        ...commitmentMigrations,
+      ],
     });
     const table = await store.openTable({
       name: "episodes",
@@ -364,6 +370,143 @@ describe("cli", () => {
       id: value.id,
       affirmed: true,
     });
+  });
+
+  it("defaults episode show/search to public-only and exposes explicit audience flags", async () => {
+    const tempDir = createCliTempDir(tempDirs);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        ...episodicMigrations,
+        ...selfMigrations,
+        ...retrievalMigrations,
+        ...commitmentMigrations,
+      ],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+    });
+    const entities = new EntityRepository({
+      db,
+    });
+    const sam = entities.resolve("Sam");
+
+    await repo.insert({
+      id: "ep_publicepisode001" as never,
+      title: "Public planning note",
+      narrative: "A public planning note.",
+      participants: ["team"],
+      location: null,
+      start_time: 1,
+      end_time: 2,
+      source_stream_ids: ["strm_publicepisode001" as never],
+      significance: 0.8,
+      tags: ["planning"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      audience_entity_id: null,
+      shared: true,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 1,
+      updated_at: 1,
+    });
+    await repo.insert({
+      id: "ep_scopedepisode001" as never,
+      title: "Sam planning note",
+      narrative: "A scoped planning note.",
+      participants: ["Sam"],
+      location: null,
+      start_time: 3,
+      end_time: 4,
+      source_stream_ids: ["strm_scopedepisode001" as never],
+      significance: 0.8,
+      tags: ["planning"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      audience_entity_id: sam,
+      shared: false,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 3,
+      updated_at: 3,
+    });
+    db.close();
+    await store.close();
+    const openBorg = () => openTestBorg(tempDir);
+
+    const defaultSearchOut = createOutputBuffer();
+    const defaultSearchErr = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "episode", "search", "planning"], {
+        stdout: defaultSearchOut.stream,
+        stderr: defaultSearchErr.stream,
+        dataDir: tempDir,
+        openBorg,
+      }),
+    ).toBe(0);
+    expect(
+      (JSON.parse(defaultSearchOut.read()) as Array<{ episode: { id: string } }>).map(
+        (item) => item.episode.id,
+      ),
+    ).toEqual(["ep_publicepisode001"]);
+    expect(defaultSearchErr.read()).toBe("");
+
+    const audienceShowOut = createOutputBuffer();
+    expect(
+      await runCli(
+        ["node", "borg", "episode", "show", "ep_scopedepisode001", "--audience", "Sam"],
+        {
+          stdout: audienceShowOut.stream,
+          stderr: createOutputBuffer().stream,
+          dataDir: tempDir,
+          openBorg,
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(audienceShowOut.read())).toMatchObject({
+      episode: {
+        id: "ep_scopedepisode001",
+      },
+    });
+
+    const allSearchOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "episode", "search", "planning", "--all"], {
+        stdout: allSearchOut.stream,
+        stderr: createOutputBuffer().stream,
+        dataDir: tempDir,
+        openBorg,
+      }),
+    ).toBe(0);
+    expect(
+      (JSON.parse(allSearchOut.read()) as Array<{ episode: { id: string } }>).map(
+        (item) => item.episode.id,
+      ),
+    ).toContain("ep_scopedepisode001");
+
+    const hiddenShowOut = createOutputBuffer();
+    const hiddenShowErr = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "episode", "show", "ep_scopedepisode001"], {
+        stdout: hiddenShowOut.stream,
+        stderr: hiddenShowErr.stream,
+        dataDir: tempDir,
+        openBorg,
+      }),
+    ).toBe(1);
+    expect(hiddenShowErr.read()).toContain("Episode not found");
   });
 
   it("manages autobiographical periods, growth markers, and open questions", async () => {

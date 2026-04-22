@@ -141,6 +141,7 @@ describe("AffectiveExtractor", () => {
       embeddingClient: harness.embeddingClient,
       llmClient: harness.llmClient,
       model: "haiku",
+      entityRepository: harness.entityRepository,
       clock: harness.clock,
     });
 

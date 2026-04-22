@@ -4,7 +4,14 @@
 
 export const VERSION = "0.1.0";
 
-export { Borg, type BorgDreamOptions, type BorgDreamRunner, type BorgOpenOptions } from "./borg.js";
+export {
+  Borg,
+  type BorgDreamOptions,
+  type BorgDreamRunner,
+  type BorgEpisodeGetOptions,
+  type BorgEpisodeSearchOptions,
+  type BorgOpenOptions,
+} from "./borg.js";
 export {
   TurnOrchestrator,
   computeRetrievalLimit,

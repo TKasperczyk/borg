@@ -5,6 +5,7 @@ export {
   type RetrievedContext,
   type RetrievedEpisode,
   type RetrievedSemantic,
+  type RetrievalGetEpisodeOptions,
   type RetrievalPipelineOptions,
   type RetrievalSearchOptions,
 } from "./pipeline.js";

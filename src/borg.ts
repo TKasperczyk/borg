@@ -41,7 +41,11 @@ import {
   type SemanticNode,
   type SemanticNodeSearchCandidate,
 } from "./memory/semantic/index.js";
-import type { RetrievedEpisode, RetrievalSearchOptions } from "./retrieval/index.js";
+import type {
+  RetrievedEpisode,
+  RetrievalGetEpisodeOptions,
+  RetrievalSearchOptions,
+} from "./retrieval/index.js";
 import {
   AutobiographicalRepository,
   GoalsRepository,
@@ -89,6 +93,7 @@ import { SystemClock, type Clock } from "./util/clock.js";
 import {
   DEFAULT_SESSION_ID,
   type AuditId,
+  type EntityId,
   type MaintenanceRunId,
   createSemanticNodeId,
   type EpisodeId,
@@ -182,6 +187,16 @@ export type BorgDreamRunner = ((options?: BorgDreamOptions) => Promise<Orchestra
   }) => Promise<OrchestratorResult>;
 };
 
+export type BorgEpisodeSearchOptions = Omit<RetrievalSearchOptions, "audienceEntityId"> & {
+  audience?: string | null;
+  audienceEntityId?: EntityId | null;
+};
+
+export type BorgEpisodeGetOptions = Omit<RetrievalGetEpisodeOptions, "audienceEntityId"> & {
+  audience?: string | null;
+  audienceEntityId?: EntityId | null;
+};
+
 function createEmbeddingClient(config: Config): EmbeddingClient {
   return new OpenAICompatibleEmbeddingClient({
     baseUrl: config.embedding.baseUrl,
@@ -273,8 +288,8 @@ export class Borg {
   };
 
   readonly episodic: {
-    get: (id: EpisodeId) => Promise<RetrievedEpisode | null>;
-    search: (query: string, options?: RetrievalSearchOptions) => Promise<RetrievedEpisode[]>;
+    get: (id: EpisodeId, options?: BorgEpisodeGetOptions) => Promise<RetrievedEpisode | null>;
+    search: (query: string, options?: BorgEpisodeSearchOptions) => Promise<RetrievedEpisode[]>;
     extract: (options?: {
       sinceTs?: number;
       untilTs?: number;
@@ -440,6 +455,29 @@ export class Borg {
   };
 
   private constructor(private readonly deps: BorgDependencies) {
+    const resolveEpisodeAudienceEntityId = (
+      options:
+        | {
+            audience?: string | null;
+            audienceEntityId?: EntityId | null;
+          }
+        | undefined,
+    ): EntityId | null | undefined => {
+      if (options?.audienceEntityId !== undefined) {
+        return options.audienceEntityId;
+      }
+
+      if (options?.audience === undefined) {
+        return undefined;
+      }
+
+      if (options.audience === null) {
+        return null;
+      }
+
+      return this.deps.entityRepository.resolve(options.audience);
+    };
+
     const defaultDreamProcesses = (): OfflineProcessName[] =>
       Object.entries({
         consolidator: this.deps.config.offline.consolidator.enabled,
@@ -478,8 +516,16 @@ export class Borg {
         }),
     };
     this.episodic = {
-      get: (id) => this.deps.retrievalPipeline.getEpisode(id),
-      search: (query, options) => this.deps.retrievalPipeline.search(query, options),
+      get: (id, options = {}) =>
+        this.deps.retrievalPipeline.getEpisode(id, {
+          audienceEntityId: resolveEpisodeAudienceEntityId(options),
+          crossAudience: options.crossAudience,
+        }),
+      search: (query, options = {}) =>
+        this.deps.retrievalPipeline.search(query, {
+          ...options,
+          audienceEntityId: resolveEpisodeAudienceEntityId(options),
+        }),
       extract: async (options = {}) => {
         const extractor = new EpisodicExtractor({
           dataDir: this.deps.config.dataDir,
@@ -487,6 +533,7 @@ export class Borg {
           embeddingClient: this.deps.embeddingClient,
           llmClient: this.deps.llmFactory(),
           model: this.deps.config.anthropic.models.extraction,
+          entityRepository: this.deps.entityRepository,
           clock: this.deps.clock,
         });
 
@@ -1062,6 +1109,7 @@ export class Borg {
               embeddingClient,
               llmClient: lazyLlmClient,
               model: config.anthropic.models.extraction,
+              entityRepository,
               clock,
             }),
             watermarkRepository: streamWatermarkRepository,

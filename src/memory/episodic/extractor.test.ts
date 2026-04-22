@@ -12,6 +12,7 @@ import { openDatabase } from "../../storage/sqlite/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { EmbeddingError, LLMError } from "../../util/errors.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
+import { EntityRepository } from "../commitments/index.js";
 import { selfMigrations } from "../self/migrations.js";
 import { episodicMigrations } from "./migrations.js";
 import { EpisodicExtractor } from "./extractor.js";
@@ -85,7 +86,7 @@ describe("episodic extractor", () => {
     }
   });
 
-  it("extracts episodes from the stream and deduplicates similar candidates", async () => {
+  it("keeps repeated similar episodes on different days as distinct episodes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new ManualClock(1_000);
     const store = new LanceDbStore({
@@ -103,6 +104,10 @@ describe("episodic extractor", () => {
       db,
       clock,
     });
+    const entityRepository = new EntityRepository({
+      db,
+      clock,
+    });
     const writer = new StreamWriter({
       dataDir: tempDir,
       clock,
@@ -117,18 +122,18 @@ describe("episodic extractor", () => {
 
     const first = await writer.append({
       kind: "user_msg",
-      content: "We planned the sprint backlog.",
+      content: "We reviewed the borg architecture and memory bands together.",
     });
     const llm = new FakeLLMClient({
       responses: [
         createEpisodeToolResponse([
           {
-            title: "Planning sync",
+            title: "Reviewed borg architecture",
             narrative:
-              "The team planned the sprint backlog together. They aligned on the first deliverables.",
+              "We reviewed the borg architecture and discussed the memory bands. The conversation focused on how the pieces fit together.",
             source_stream_ids: [first.id],
             participants: ["team"],
-            tags: ["planning"],
+            tags: ["architecture", "borg"],
             confidence: 0.8,
             significance: 0.7,
           },
@@ -141,24 +146,25 @@ describe("episodic extractor", () => {
       embeddingClient: new TitleEmbeddingClient(),
       llmClient: llm,
       model: "claude-haiku",
+      entityRepository,
       clock,
     });
 
     const firstRun = await extractor.extractFromStream();
-    clock.advance(1_000);
+    clock.advance(4 * 24 * 60 * 60 * 1_000);
     const second = await writer.append({
       kind: "agent_msg",
-      content: "We refined the sprint plan after review.",
+      content: "We reviewed the borg architecture again and compared the retrieval pipeline changes.",
     });
     llm.pushResponse(
       createEpisodeToolResponse([
         {
-          title: "Planning sync",
+          title: "Reviewed borg architecture",
           narrative:
-            "The team refined the sprint plan and captured next actions. The same meeting gained a little more detail.",
+            "We revisited the borg architecture and compared the retrieval pipeline changes. This was a later review, not the original conversation.",
           source_stream_ids: [second.id],
           participants: ["team", "pm"],
-          tags: ["planning", "review"],
+          tags: ["architecture", "retrieval"],
           confidence: 0.9,
           significance: 0.9,
         },
@@ -167,7 +173,106 @@ describe("episodic extractor", () => {
     const secondRun = await extractor.extractFromStream({
       sinceTs: second.timestamp,
     });
-    const listed = await repo.list();
+    const listed = await repo.listAll();
+
+    expect(firstRun).toEqual({
+      inserted: 1,
+      updated: 0,
+      skipped: 0,
+    });
+    expect(secondRun).toEqual({
+      inserted: 1,
+      updated: 0,
+      skipped: 0,
+    });
+    expect(listed).toHaveLength(2);
+    expect(listed.map((episode) => episode.source_stream_ids)).toEqual(
+      expect.arrayContaining([[first.id], [second.id]]),
+    );
+    expect(listed.map((episode) => episode.start_time)).toEqual(
+      expect.arrayContaining([first.timestamp, second.timestamp]),
+    );
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: EPISODE_TOOL_NAME,
+    });
+  });
+
+  it("treats replayed chunks as idempotent no-ops keyed by source stream ids", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+    const entityRepository = new EntityRepository({
+      db,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const first = await writer.append({
+      kind: "user_msg",
+      content: "We reviewed the retrieval boundary.",
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: tempDir,
+      episodicRepository: repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createEpisodeToolResponse([
+            {
+              title: "Retrieval boundary review",
+              narrative: "We reviewed the retrieval boundary and hard audience scoping.",
+              source_stream_ids: [first.id],
+              participants: ["team"],
+              tags: ["retrieval"],
+              confidence: 0.8,
+              significance: 0.7,
+            },
+          ]),
+          createEpisodeToolResponse([
+            {
+              title: "Retrieval boundary review",
+              narrative: "We reviewed the retrieval boundary and hard audience scoping.",
+              source_stream_ids: [first.id],
+              participants: ["team"],
+              tags: ["retrieval"],
+              confidence: 0.8,
+              significance: 0.7,
+            },
+          ]),
+        ],
+      }),
+      model: "claude-haiku",
+      entityRepository,
+      clock,
+    });
+
+    const firstRun = await extractor.extractFromStream();
+    const secondRun = await extractor.extractFromStream();
 
     expect(firstRun).toEqual({
       inserted: 1,
@@ -176,18 +281,10 @@ describe("episodic extractor", () => {
     });
     expect(secondRun).toEqual({
       inserted: 0,
-      updated: 1,
-      skipped: 0,
+      updated: 0,
+      skipped: 1,
     });
-    expect(listed.items).toHaveLength(1);
-    expect(listed.items[0]?.source_stream_ids).toEqual(
-      expect.arrayContaining([first.id, second.id]),
-    );
-    expect(listed.items[0]?.tags).toEqual(expect.arrayContaining(["planning", "review"]));
-    expect(llm.requests[0]?.tool_choice).toEqual({
-      type: "tool",
-      name: EPISODE_TOOL_NAME,
-    });
+    expect((await repo.listAll()).map((episode) => episode.source_stream_ids)).toEqual([[first.id]]);
   });
 
   it("rejects hallucinated source stream ids", async () => {
@@ -204,6 +301,9 @@ describe("episodic extractor", () => {
     });
     const repo = new EpisodicRepository({
       table,
+      db,
+    });
+    const entityRepository = new EntityRepository({
       db,
     });
     const writer = new StreamWriter({
@@ -242,6 +342,7 @@ describe("episodic extractor", () => {
         ],
       }),
       model: "claude-haiku",
+      entityRepository,
     });
 
     await expect(extractor.extractFromStream()).rejects.toBeInstanceOf(LLMError);
@@ -261,6 +362,9 @@ describe("episodic extractor", () => {
     });
     const repo = new EpisodicRepository({
       table,
+      db,
+    });
+    const entityRepository = new EntityRepository({
       db,
     });
     const writer = new StreamWriter({
@@ -295,6 +399,7 @@ describe("episodic extractor", () => {
         ],
       }),
       model: "claude-haiku",
+      entityRepository,
     });
 
     await expect(extractor.extractFromStream()).rejects.toMatchObject({
@@ -318,6 +423,10 @@ describe("episodic extractor", () => {
     });
     const repo = new EpisodicRepository({
       table,
+      db,
+      clock,
+    });
+    const entityRepository = new EntityRepository({
       db,
       clock,
     });
@@ -370,6 +479,7 @@ describe("episodic extractor", () => {
         ],
       }),
       model: "claude-haiku",
+      entityRepository,
       clock,
     });
 

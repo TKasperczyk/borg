@@ -188,6 +188,7 @@ async function planResolution(
 ): Promise<RuminatorPlan["items"][number] | null> {
   const retrieval = await ctx.retrievalPipeline.searchWithContext(question.question, {
     limit: Math.max(3, maxQuestionsPerRun),
+    crossAudience: true,
     attentionWeights: buildReflectionWeights(ctx),
     goalDescriptions: ctx.goalsRepository
       .list({ status: "active" })

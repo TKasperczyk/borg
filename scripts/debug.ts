@@ -224,6 +224,7 @@ async function runPhase3(borg: Borg, state: DebugState): Promise<void> {
   header(3, "Retrieval & turn");
   const results = await borg.episodic.search("pgvector", {
     limit: 3,
+    crossAudience: true,
   });
 
   if (results.length === 0) {

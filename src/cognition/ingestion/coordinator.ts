@@ -55,8 +55,9 @@ export type IngestOptions = {
 
 /**
  * Fires episodic extraction after a turn completes, gated by a stream
- * watermark so each entry is processed at most once (dedup in the extractor
- * itself makes it safe if the watermark is behind reality).
+ * watermark so each entry is processed at most once (the extractor keeps an
+ * exact replay check on source stream ids, which makes late watermark
+ * advancement safe without cross-turn merging).
  *
  * Callers should NOT await this in the critical path -- extraction calls
  * the LLM and adds latency. Instead: `void coordinator.ingest(sessionId)`

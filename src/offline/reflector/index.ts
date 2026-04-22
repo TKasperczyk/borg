@@ -6,7 +6,11 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
+import {
+  episodeAccessScopeKey,
+  episodeIdSchema,
+  type Episode,
+} from "../../memory/episodic/index.js";
 import { semanticNodeIdSchema, type SemanticNode } from "../../memory/semantic/index.js";
 import { semanticRelationSchema } from "../../memory/semantic/types.js";
 import { createSemanticEdgeId, createSemanticNodeId } from "../../util/ids.js";
@@ -188,7 +192,7 @@ function collectReflectionClusters(
 
   for (const episode of episodes) {
     for (const tag of episode.tags) {
-      const key = `tag:${tag.toLowerCase()}`;
+      const key = `${episodeAccessScopeKey(episode)}|tag:${tag.toLowerCase()}`;
       byKey.set(key, [...(byKey.get(key) ?? []), episode]);
     }
 
@@ -203,7 +207,7 @@ function collectReflectionClusters(
         continue;
       }
 
-      const key = `goal:${description.toLowerCase()}`;
+      const key = `${episodeAccessScopeKey(episode)}|goal:${description.toLowerCase()}`;
       byKey.set(key, [...(byKey.get(key) ?? []), episode]);
     }
   }
@@ -220,6 +224,20 @@ function collectReflectionClusters(
     .filter((cluster) => cluster.episodes.length >= minSupport)
     .sort((left, right) => right.episodes.length - left.episodes.length)
     .slice(0, maxInsightsPerRun);
+}
+
+async function semanticNodeMatchesClusterScope(
+  ctx: OfflineContext,
+  node: SemanticNode,
+  cluster: ReflectionCluster,
+): Promise<boolean> {
+  const scopeKey = episodeAccessScopeKey(cluster.episodes[0] ?? {});
+  const sourceEpisodes = await ctx.episodicRepository.getMany(node.source_episode_ids);
+
+  return (
+    sourceEpisodes.length === node.source_episode_ids.length &&
+    sourceEpisodes.every((episode) => episodeAccessScopeKey(episode) === scopeKey)
+  );
 }
 
 async function buildInsightCandidate(
@@ -380,7 +398,23 @@ export class ReflectorProcess implements OfflineProcess {
               kindFilter: ["proposition"],
               includeArchived: false,
             });
-            const existing = byLabel[0] ?? byVector[0]?.node;
+            const eligibleByLabel: SemanticNode[] = [];
+
+            for (const node of byLabel) {
+              if (await semanticNodeMatchesClusterScope(ctx, node, cluster)) {
+                eligibleByLabel.push(node);
+              }
+            }
+
+            const eligibleByVector: SemanticNode[] = [];
+
+            for (const item of byVector) {
+              if (await semanticNodeMatchesClusterScope(ctx, item.node, cluster)) {
+                eligibleByVector.push(item.node);
+              }
+            }
+
+            const existing = eligibleByLabel[0] ?? eligibleByVector[0];
             const timestamp = ctx.clock.now();
             const target =
               existing === undefined

@@ -9,7 +9,12 @@ import type { MoodState } from "../memory/affective/index.js";
 import type { OpenQuestion, OpenQuestionsRepository } from "../memory/self/index.js";
 import { SemanticGraph } from "../memory/semantic/graph.js";
 import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
-import type { SemanticContext, SemanticNode, SemanticRelation } from "../memory/semantic/types.js";
+import type {
+  SemanticContext,
+  SemanticNode,
+  SemanticRelation,
+  SemanticWalkStep,
+} from "../memory/semantic/types.js";
 import type { SocialProfile } from "../memory/social/index.js";
 import { StreamReader, getStreamDirectory, type StreamEntry } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
@@ -18,11 +23,13 @@ import { tokenizeText } from "../util/text/tokenize.js";
 import {
   DEFAULT_SESSION_ID,
   parseSessionId,
+  type EntityId,
   type SessionId,
   type StreamEntryId,
 } from "../util/ids.js";
 import { applyEpisodeDecay, type DecayOptions } from "../memory/episodic/decay.js";
 import { computeEpisodeHeat } from "../memory/episodic/heat.js";
+import { isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
 import {
   type Episode,
   type EpisodeSearchCandidate,
@@ -172,6 +179,11 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   moodState?: MoodState | null;
   audienceProfile?: SocialProfile | null;
   audienceTerms?: readonly string[];
+};
+
+export type RetrievalGetEpisodeOptions = {
+  audienceEntityId?: EntityId | null;
+  crossAudience?: boolean;
 };
 
 function normalizeHeat(heat: number): number {
@@ -326,6 +338,56 @@ export class RetrievalPipeline {
       .filter((entry): entry is StreamEntry => entry !== undefined);
   }
 
+  private async resolveVisibleEpisodeIds(
+    episodeIds: readonly Episode["id"][],
+    visibility: RetrievalGetEpisodeOptions,
+  ): Promise<Set<string> | null> {
+    if (visibility.crossAudience === true) {
+      return null;
+    }
+
+    const uniqueEpisodeIds = [...new Set(episodeIds)];
+
+    if (uniqueEpisodeIds.length === 0) {
+      return new Set<string>();
+    }
+
+    const episodes = await this.options.episodicRepository.getMany(uniqueEpisodeIds);
+
+    return new Set(
+      episodes
+        .filter((episode) =>
+          isEpisodeVisibleToAudience(episode, visibility.audienceEntityId, {
+            crossAudience: visibility.crossAudience,
+          }),
+        )
+        .map((episode) => episode.id),
+    );
+  }
+
+  private isSemanticNodeVisible(
+    node: SemanticNode,
+    visibleEpisodeIds: ReadonlySet<string> | null,
+  ): boolean {
+    return (
+      visibleEpisodeIds === null ||
+      node.source_episode_ids.every((episodeId) => visibleEpisodeIds.has(episodeId))
+    );
+  }
+
+  private isSemanticWalkStepVisible(
+    step: SemanticWalkStep,
+    visibleEpisodeIds: ReadonlySet<string> | null,
+  ): boolean {
+    return (
+      this.isSemanticNodeVisible(step.node, visibleEpisodeIds) &&
+      (visibleEpisodeIds === null ||
+        step.edgePath.every((edge) =>
+          edge.evidence_episode_ids.every((episodeId) => visibleEpisodeIds.has(episodeId)),
+        ))
+    );
+  }
+
   private async resolveSemanticContext(
     query: string,
     options: RetrievalSearchOptions,
@@ -368,41 +430,90 @@ export class RetrievalPipeline {
       matchedNodes.push(...byVector.map((item) => item.node));
     }
 
-    const uniqueNodes = new Map(matchedNodes.map((node) => [node.id, node]));
+    const matchedNodeCandidates = [...new Map(matchedNodes.map((node) => [node.id, node])).values()];
+    const matchedNodeVisibility = await this.resolveVisibleEpisodeIds(
+      matchedNodeCandidates.flatMap((node) => node.source_episode_ids),
+      options,
+    );
+    const uniqueNodes = new Map(
+      matchedNodeCandidates
+        .filter((node) => this.isSemanticNodeVisible(node, matchedNodeVisibility))
+        .map((node) => [node.id, node] as const),
+    );
     const supports = new Map<string, SemanticNode>();
     const contradicts = new Map<string, SemanticNode>();
     const categories = new Map<string, SemanticNode>();
     const walkDepth = options.graphWalkDepth ?? 2;
     const maxGraphNodes = options.maxGraphNodes ?? 16;
+    const supportNeighbors: SemanticWalkStep[] = [];
+    const contradictionNeighbors: SemanticWalkStep[] = [];
+    const categoryNeighbors: SemanticWalkStep[] = [];
 
     for (const node of uniqueNodes.values()) {
-      const supportNeighbors = await this.options.semanticGraph.walk(node.id, {
-        relations: ["supports"],
-        depth: walkDepth,
-        maxNodes: maxGraphNodes,
-      });
-      const contradictionNeighbors = await this.options.semanticGraph.walk(node.id, {
-        relations: ["contradicts"],
-        depth: walkDepth,
-        maxNodes: maxGraphNodes,
-      });
-      const categoryNeighbors = await this.options.semanticGraph.walk(node.id, {
-        relations: ["is_a"],
-        depth: walkDepth,
-        maxNodes: maxGraphNodes,
-      });
+      supportNeighbors.push(
+        ...(await this.options.semanticGraph.walk(node.id, {
+          relations: ["supports"],
+          depth: walkDepth,
+          maxNodes: maxGraphNodes,
+        })),
+      );
+      contradictionNeighbors.push(
+        ...(await this.options.semanticGraph.walk(node.id, {
+          relations: ["contradicts"],
+          depth: walkDepth,
+          maxNodes: maxGraphNodes,
+        })),
+      );
+      categoryNeighbors.push(
+        ...(await this.options.semanticGraph.walk(node.id, {
+          relations: ["is_a"],
+          depth: walkDepth,
+          maxNodes: maxGraphNodes,
+        })),
+      );
+    }
 
-      for (const item of supportNeighbors) {
-        supports.set(item.node.id, item.node);
+    const semanticVisibility = await this.resolveVisibleEpisodeIds(
+      [
+        ...[...uniqueNodes.values()].flatMap((node) => node.source_episode_ids),
+        ...supportNeighbors.flatMap((step) => [
+          ...step.node.source_episode_ids,
+          ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+        ]),
+        ...contradictionNeighbors.flatMap((step) => [
+          ...step.node.source_episode_ids,
+          ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+        ]),
+        ...categoryNeighbors.flatMap((step) => [
+          ...step.node.source_episode_ids,
+          ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+        ]),
+      ],
+      options,
+    );
+
+    for (const item of supportNeighbors) {
+      if (!this.isSemanticWalkStepVisible(item, semanticVisibility)) {
+        continue;
       }
 
-      for (const item of contradictionNeighbors) {
-        contradicts.set(item.node.id, item.node);
+      supports.set(item.node.id, item.node);
+    }
+
+    for (const item of contradictionNeighbors) {
+      if (!this.isSemanticWalkStepVisible(item, semanticVisibility)) {
+        continue;
       }
 
-      for (const item of categoryNeighbors) {
-        categories.set(item.node.id, item.node);
+      contradicts.set(item.node.id, item.node);
+    }
+
+    for (const item of categoryNeighbors) {
+      if (!this.isSemanticWalkStepVisible(item, semanticVisibility)) {
+        continue;
       }
+
+      categories.set(item.node.id, item.node);
     }
 
     return {
@@ -412,7 +523,9 @@ export class RetrievalPipeline {
         categories: [...categories.values()],
       },
       contradictionPresent: contradicts.size > 0,
-      matchedNodeIds: [...uniqueNodes.keys()],
+      matchedNodeIds: [...uniqueNodes.values()]
+        .filter((node) => this.isSemanticNodeVisible(node, semanticVisibility))
+        .map((node) => node.id),
     };
   }
 
@@ -635,10 +748,21 @@ export class RetrievalPipeline {
     return result.episodes;
   }
 
-  async getEpisode(id: Episode["id"]): Promise<RetrievedEpisode | null> {
+  async getEpisode(
+    id: Episode["id"],
+    options: RetrievalGetEpisodeOptions = {},
+  ): Promise<RetrievedEpisode | null> {
     const episode = await this.options.episodicRepository.get(id);
 
     if (episode === null) {
+      return null;
+    }
+
+    if (
+      !isEpisodeVisibleToAudience(episode, options.audienceEntityId, {
+        crossAudience: options.crossAudience,
+      })
+    ) {
       return null;
     }
 

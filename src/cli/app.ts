@@ -94,6 +94,26 @@ function parseRequiredText(value: unknown, flag: string): string {
   return value.trim();
 }
 
+function resolveEpisodeVisibilityOptions(commandOptions: Record<string, unknown>): {
+  audience?: string | null;
+  crossAudience?: boolean;
+} {
+  const audience =
+    typeof commandOptions.audience === "string"
+      ? parseRequiredText(commandOptions.audience, "--audience")
+      : undefined;
+  const crossAudience = commandOptions.all === true;
+
+  if (audience !== undefined && crossAudience) {
+    throw new CliError("--audience cannot be combined with --all");
+  }
+
+  return {
+    audience,
+    crossAudience,
+  };
+}
+
 function resolveSessionId(value: unknown) {
   if (typeof value !== "string" || value.trim() === "") {
     return DEFAULT_SESSION_ID;
@@ -776,13 +796,17 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
       type: [Number],
     })
     .option("--since <duration>", "Relative duration like 1h or epoch ms")
+    .option("--audience <name>", "Audience label for scoped visibility")
+    .option("--all", "Search across all audiences")
     .action(
       async (action: string, arg: string | undefined, commandOptions: Record<string, unknown>) => {
         if (action === "search") {
           const query = parseRequiredText(arg, "<query>");
           const sinceTs = parseSinceToTimestamp(commandOptions.since);
+          const visibility = resolveEpisodeVisibilityOptions(commandOptions);
           const results = await withBorg(options, async (borg) =>
             borg.episodic.search(query, {
+              ...visibility,
               limit: parseLimit(commandOptions.limit),
               timeRange:
                 sinceTs === undefined
@@ -800,7 +824,10 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
 
         if (action === "show") {
           const episodeId = resolveEpisodeId(arg);
-          const result = await withBorg(options, async (borg) => borg.episodic.get(episodeId));
+          const visibility = resolveEpisodeVisibilityOptions(commandOptions);
+          const result = await withBorg(options, async (borg) =>
+            borg.episodic.get(episodeId, visibility),
+          );
 
           if (result === null) {
             throw new CliError(`Episode not found: ${episodeId}`, {
