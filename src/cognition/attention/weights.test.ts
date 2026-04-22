@@ -18,14 +18,17 @@ describe("attention weights", () => {
           target_at: null,
         },
       ],
+      hasActiveValues: true,
       hasTemporalCue: true,
     });
     const idle = computeWeights("idle", {
       currentGoals: [],
+      hasActiveValues: false,
       hasTemporalCue: false,
     });
 
     expect(reflective.goal_relevance).toBeGreaterThan(0);
+    expect(reflective.value_alignment).toBeGreaterThan(0);
     expect(reflective.time).toBeGreaterThan(0);
     expect(reflective.entity).toBeGreaterThan(idle.entity);
     expect(idle.semantic).toBeLessThan(reflective.semantic);

@@ -38,6 +38,7 @@ describe("config", () => {
     });
     expect(config.self.autoBootstrapPeriod).toBe(true);
     expect(config.perception.useLlmFallback).toBe(true);
+    expect(config.offline.curator.traitHalfLifeDays).toBe(30);
   });
 
   it("merges config file values with environment overrides", () => {

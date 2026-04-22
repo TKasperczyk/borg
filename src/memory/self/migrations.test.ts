@@ -192,4 +192,140 @@ describe("self migrations", () => {
       db.close();
     }
   });
+
+  it("backfills evidence-backed fields from reinforcement history", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const dbPath = join(tempDir, "self.db");
+    tempDirs.push(tempDir);
+
+    const legacyDb = openDatabase(dbPath, {
+      migrations: selfMigrations.filter((migration) => migration.id < 260),
+    });
+    const relatedEpisodeIds = [
+      parseEpisodeId("ep_aaaaaaaaaaaaaaaa"),
+      parseEpisodeId("ep_bbbbbbbbbbbbbbbb"),
+      parseEpisodeId("ep_cccccccccccccccc"),
+    ];
+
+    try {
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO "values" (
+              id, label, description, priority, created_at, last_affirmed,
+              provenance_kind, provenance_episode_ids, provenance_process, state, established_at
+            ) VALUES (?, ?, ?, ?, ?, NULL, 'episodes', ?, NULL, 'established', ?)
+          `,
+        )
+        .run(
+          "val_aaaaaaaaaaaaaaaa",
+          "clarity",
+          "Prefer explicit state.",
+          1,
+          1_000,
+          JSON.stringify([relatedEpisodeIds[0]]),
+          3_000,
+        );
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO value_reinforcement_events (
+              value_id, ts, provenance_kind, provenance_episode_ids, provenance_process
+            ) VALUES (?, ?, 'episodes', ?, NULL)
+          `,
+        )
+        .run("val_aaaaaaaaaaaaaaaa", 1_000, JSON.stringify([relatedEpisodeIds[0]]));
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO value_reinforcement_events (
+              value_id, ts, provenance_kind, provenance_episode_ids, provenance_process
+            ) VALUES (?, ?, 'episodes', ?, NULL)
+          `,
+        )
+        .run("val_aaaaaaaaaaaaaaaa", 2_000, JSON.stringify([relatedEpisodeIds[1]]));
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO value_reinforcement_events (
+              value_id, ts, provenance_kind, provenance_episode_ids, provenance_process
+            ) VALUES (?, ?, 'episodes', ?, NULL)
+          `,
+        )
+        .run("val_aaaaaaaaaaaaaaaa", 3_000, JSON.stringify([relatedEpisodeIds[2]]));
+
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO traits (
+              id, label, strength, last_reinforced, last_decayed,
+              provenance_kind, provenance_episode_ids, provenance_process, state, established_at
+            ) VALUES (?, ?, ?, ?, NULL, 'episodes', ?, NULL, 'candidate', NULL)
+          `,
+        )
+        .run(
+          "trt_aaaaaaaaaaaaaaaa",
+          "warm",
+          0.4,
+          4_000,
+          JSON.stringify([relatedEpisodeIds[0]]),
+        );
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO trait_reinforcement_events (
+              trait_id, delta, ts, provenance_kind, provenance_episode_ids, provenance_process
+            ) VALUES (?, ?, ?, 'episodes', ?, NULL)
+          `,
+        )
+        .run("trt_aaaaaaaaaaaaaaaa", 0.1, 4_000, JSON.stringify([relatedEpisodeIds[0]]));
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO trait_reinforcement_events (
+              trait_id, delta, ts, provenance_kind, provenance_episode_ids, provenance_process
+            ) VALUES (?, ?, ?, 'episodes', ?, NULL)
+          `,
+        )
+        .run("trt_aaaaaaaaaaaaaaaa", 0.1, 5_000, JSON.stringify([relatedEpisodeIds[1]]));
+    } finally {
+      legacyDb.close();
+    }
+
+    const db = openDatabase(dbPath, {
+      migrations: selfMigrations,
+    });
+    const values = new ValuesRepository({ db, clock: new FixedClock(10_000) });
+    const traits = new TraitsRepository({ db, clock: new FixedClock(10_000) });
+
+    try {
+      expect(values.get("val_aaaaaaaaaaaaaaaa" as never)).toEqual(
+        expect.objectContaining({
+          support_count: 3,
+          contradiction_count: 0,
+          last_tested_at: 3_000,
+          last_contradicted_at: null,
+          confidence: 5 / 6,
+          evidence_episode_ids: [
+            relatedEpisodeIds[2],
+            relatedEpisodeIds[1],
+            relatedEpisodeIds[0],
+          ],
+        }),
+      );
+
+      expect(traits.get("trt_aaaaaaaaaaaaaaaa" as never)).toEqual(
+        expect.objectContaining({
+          support_count: 2,
+          contradiction_count: 0,
+          last_tested_at: 5_000,
+          last_contradicted_at: null,
+          confidence: 4 / 5,
+          evidence_episode_ids: [relatedEpisodeIds[1], relatedEpisodeIds[0]],
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  });
 });

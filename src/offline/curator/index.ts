@@ -12,6 +12,7 @@ import {
   type EpisodeStats,
   type EpisodeTier,
 } from "../../memory/episodic/types.js";
+import { traitIdSchema, traitSchema } from "../../memory/self/index.js";
 import { socialProfileSchema, type SocialProfile } from "../../memory/social/index.js";
 import type { Clock } from "../../util/clock.js";
 
@@ -52,10 +53,17 @@ const socialPlanItemSchema = z.object({
   next: socialProfileSchema,
 });
 
+const traitDecayPlanItemSchema = z.object({
+  action: z.literal("decay_trait"),
+  trait_id: traitIdSchema,
+  previous: traitSchema,
+});
+
 const curatorPlanItemSchema = z.discriminatedUnion("action", [
   episodePlanItemSchema,
   trimMoodHistoryPlanItemSchema,
   socialPlanItemSchema,
+  traitDecayPlanItemSchema,
 ]);
 
 export const curatorPlanSchema = z.object({
@@ -94,6 +102,20 @@ function buildEpisodeChange(item: z.infer<typeof episodePlanItemSchema>): Offlin
 function buildChange(item: CuratorPlan["items"][number]): OfflineChange {
   if ("episode_id" in item) {
     return buildEpisodeChange(item);
+  }
+
+  if ("trait_id" in item) {
+    return {
+      process: "curator",
+      action: item.action,
+      targets: {
+        trait_id: item.trait_id,
+      },
+      preview: {
+        label: item.previous.label,
+        strength: item.previous.strength,
+      },
+    };
   }
 
   if (item.action === "trim_mood_history") {
@@ -279,8 +301,30 @@ function buildSocialItems(ctx: OfflineContext): CuratorPlan["items"] {
     .filter((item): item is z.infer<typeof socialPlanItemSchema> => item !== null);
 }
 
+function buildTraitDecayItems(ctx: OfflineContext): CuratorPlan["items"] {
+  const nowMs = ctx.clock.now();
+  const staleThreshold = nowMs - 7 * DAY_MS;
+
+  return ctx.traitsRepository
+    .list()
+    .filter((trait) => {
+      const lastTouched = Math.max(trait.last_reinforced, trait.last_decayed ?? 0);
+      return trait.last_reinforced <= staleThreshold && lastTouched < nowMs;
+    })
+    .map((trait) => ({
+      action: "decay_trait",
+      trait_id: trait.id,
+      previous: trait,
+    }));
+}
+
 function buildItems(ctx: OfflineContext, episodes: readonly Episode[]): CuratorPlan["items"] {
-  return [...buildEpisodeItems(ctx, episodes), ...buildMoodItems(ctx), ...buildSocialItems(ctx)];
+  return [
+    ...buildEpisodeItems(ctx, episodes),
+    ...buildTraitDecayItems(ctx),
+    ...buildMoodItems(ctx),
+    ...buildSocialItems(ctx),
+  ];
 }
 
 export type CuratorProcessOptions = {
@@ -357,6 +401,9 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
   async apply(ctx: OfflineContext, rawPlan: CuratorPlan): Promise<OfflineResult> {
     const plan = curatorPlanSchema.parse(rawPlan);
     const previousByAction = new Map<string, EpisodeStats[]>();
+    const traitDecayIds = plan.items
+      .filter((item): item is z.infer<typeof traitDecayPlanItemSchema> => item.action === "decay_trait")
+      .map((item) => item.trait_id);
 
     for (const item of plan.items) {
       if ("episode_id" in item) {
@@ -365,6 +412,10 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
           ...(previousByAction.get(item.action) ?? []),
           item.previous,
         ]);
+        continue;
+      }
+
+      if (item.action === "decay_trait") {
         continue;
       }
 
@@ -399,6 +450,14 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
           previous: item.previous,
         },
       });
+    }
+
+    if (traitDecayIds.length > 0) {
+      ctx.traitsRepository.decay(
+        ctx.config.offline.curator.traitHalfLifeDays * 24,
+        ctx.clock.now(),
+        { traitIds: traitDecayIds },
+      );
     }
 
     for (const [action, previous] of previousByAction.entries()) {

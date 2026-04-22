@@ -21,6 +21,7 @@ export const intentRecordSchema = z.object({
 export const attentionWeightsSchema = z.object({
   semantic: z.number().min(0),
   goal_relevance: z.number().min(0),
+  value_alignment: z.number().min(0),
   mood: z.number().min(0),
   time: z.number().min(0),
   social: z.number().min(0),

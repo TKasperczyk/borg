@@ -40,6 +40,83 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function parseStoredIdArray(value: unknown): string[] {
+  if (typeof value !== "string") {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string" && item.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+const EVIDENCE_EPISODE_LIMIT = 3;
+const CONFIDENCE_ALPHA = 2;
+const CONFIDENCE_BETA = 1;
+
+function computeConfidence(supportCount: number, contradictionCount: number): number {
+  return clamp(
+    (CONFIDENCE_ALPHA + supportCount) /
+      (CONFIDENCE_ALPHA + CONFIDENCE_BETA + supportCount + contradictionCount),
+    0,
+    1,
+  );
+}
+
+function toRecentDistinctEpisodeIds(events: Array<{ ts: number; provenance: Provenance }>): EpisodeId[] {
+  const latestEpisodeTs = new Map<EpisodeId, number>();
+
+  for (const event of events) {
+    if (!isEpisodeProvenance(event.provenance)) {
+      continue;
+    }
+
+    for (const episodeId of event.provenance.episode_ids) {
+      const currentTs = latestEpisodeTs.get(episodeId) ?? Number.NEGATIVE_INFINITY;
+      if (event.ts > currentTs) {
+        latestEpisodeTs.set(episodeId, event.ts);
+      }
+    }
+  }
+
+  return [...latestEpisodeTs.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, EVIDENCE_EPISODE_LIMIT)
+    .map(([episodeId]) => episodeId);
+}
+
+type EvidenceSummary = {
+  supportCount: number;
+  contradictionCount: number;
+  lastTestedAt: number | null;
+  lastContradictedAt: number | null;
+  evidenceEpisodeIds: EpisodeId[];
+};
+
+function summarizeEvidence(
+  supportEvents: Array<{ ts: number; provenance: Provenance }>,
+  contradictionEvents: Array<{ ts: number; provenance: Provenance }>,
+): EvidenceSummary {
+  const episodeSupportEvents = supportEvents.filter((event) => isEpisodeProvenance(event.provenance));
+
+  return {
+    supportCount: episodeSupportEvents.length,
+    contradictionCount: contradictionEvents.length,
+    lastTestedAt:
+      episodeSupportEvents.length === 0 ? null : Math.max(...episodeSupportEvents.map((event) => event.ts)),
+    lastContradictedAt:
+      contradictionEvents.length === 0
+        ? null
+        : Math.max(...contradictionEvents.map((event) => event.ts)),
+    evidenceEpisodeIds: toRecentDistinctEpisodeIds(episodeSupportEvents),
+  };
+}
+
 function mapGoalRow(row: Record<string, unknown>): GoalRecord {
   return goalSchema.parse({
     id: row.id,
@@ -78,6 +155,18 @@ function mapValueRow(row: Record<string, unknown>): ValueRecord {
       row.established_at === null || row.established_at === undefined
         ? null
         : Number(row.established_at),
+    confidence: Number(row.confidence),
+    last_tested_at:
+      row.last_tested_at === null || row.last_tested_at === undefined
+        ? null
+        : Number(row.last_tested_at),
+    last_contradicted_at:
+      row.last_contradicted_at === null || row.last_contradicted_at === undefined
+        ? null
+        : Number(row.last_contradicted_at),
+    support_count: Number(row.support_count),
+    contradiction_count: Number(row.contradiction_count),
+    evidence_episode_ids: parseStoredIdArray(row.evidence_episode_ids),
     provenance: parseStoredProvenance({
       provenance_kind: row.provenance_kind,
       provenance_episode_ids: row.provenance_episode_ids,
@@ -99,6 +188,18 @@ function mapTraitRow(row: Record<string, unknown>): TraitRecord {
       row.established_at === null || row.established_at === undefined
         ? null
         : Number(row.established_at),
+    confidence: Number(row.confidence),
+    last_tested_at:
+      row.last_tested_at === null || row.last_tested_at === undefined
+        ? null
+        : Number(row.last_tested_at),
+    last_contradicted_at:
+      row.last_contradicted_at === null || row.last_contradicted_at === undefined
+        ? null
+        : Number(row.last_contradicted_at),
+    support_count: Number(row.support_count),
+    contradiction_count: Number(row.contradiction_count),
+    evidence_episode_ids: parseStoredIdArray(row.evidence_episode_ids),
     provenance: parseStoredProvenance({
       provenance_kind: row.provenance_kind,
       provenance_episode_ids: row.provenance_episode_ids,
@@ -213,6 +314,14 @@ export type ValueReinforcementEvent = {
   provenance: Provenance;
 };
 
+export type ValueContradictionEvent = {
+  id: number;
+  value_id: ValueId;
+  ts: number;
+  provenance: Provenance;
+  weight: number;
+};
+
 export class ValuesRepository {
   private readonly clock: Clock;
 
@@ -234,7 +343,8 @@ export class ValuesRepository {
         `
           SELECT
             id, label, description, priority, created_at, last_affirmed, state, established_at,
-            provenance_kind, provenance_episode_ids, provenance_process
+            confidence, last_tested_at, last_contradicted_at, support_count, contradiction_count,
+            evidence_episode_ids, provenance_kind, provenance_episode_ids, provenance_process
           FROM "values"
           WHERE id = ?
         `,
@@ -272,6 +382,39 @@ export class ValuesRepository {
     };
   }
 
+  private insertContradictionEvent(
+    valueId: ValueId,
+    provenance: Provenance,
+    weight: number,
+    timestamp: number,
+  ): ValueContradictionEvent {
+    const storedProvenance = toStoredProvenance(provenance);
+    const result = this.db
+      .prepare(
+        `
+          INSERT INTO value_contradiction_events (
+            value_id, ts, weight, provenance_kind, provenance_episode_ids, provenance_process
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        valueId,
+        timestamp,
+        weight,
+        storedProvenance.provenance_kind,
+        storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_process,
+      );
+
+    return {
+      id: Number(result.lastInsertRowid),
+      value_id: valueId,
+      ts: timestamp,
+      provenance,
+      weight,
+    };
+  }
+
   private getPromotionMetadata(
     valueId: ValueId,
   ): PromotionMetadata {
@@ -298,6 +441,9 @@ export class ValuesRepository {
     const provenance = requireProvenance(input.provenance, "Value");
     const createdAt = input.createdAt ?? this.clock.now();
     const initialState = resolveValueInitialState(provenance, createdAt);
+    const initialEvidenceEpisodeIds = isEpisodeProvenance(provenance)
+      ? [...new Set(provenance.episode_ids)].slice(0, EVIDENCE_EPISODE_LIMIT)
+      : [];
     const value = valueSchema.parse({
       id: input.id ?? createValueId(),
       label: input.label,
@@ -307,6 +453,15 @@ export class ValuesRepository {
       last_affirmed: input.lastAffirmed ?? null,
       state: initialState.state,
       established_at: initialState.established_at,
+      confidence: computeConfidence(
+        isEpisodeProvenance(provenance) ? 1 : 0,
+        0,
+      ),
+      last_tested_at: isEpisodeProvenance(provenance) ? createdAt : null,
+      last_contradicted_at: null,
+      support_count: isEpisodeProvenance(provenance) ? 1 : 0,
+      contradiction_count: 0,
+      evidence_episode_ids: initialEvidenceEpisodeIds,
       provenance,
     });
     const storedProvenance = toStoredProvenance(value.provenance);
@@ -316,8 +471,9 @@ export class ValuesRepository {
         `
           INSERT INTO "values" (
             id, label, description, priority, created_at, last_affirmed, provenance_kind,
-            provenance_episode_ids, provenance_process, state, established_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            provenance_episode_ids, provenance_process, state, established_at, confidence,
+            last_tested_at, last_contradicted_at, support_count, contradiction_count, evidence_episode_ids
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -332,6 +488,12 @@ export class ValuesRepository {
         storedProvenance.provenance_process,
         value.state,
         value.established_at,
+        value.confidence,
+        value.last_tested_at,
+        value.last_contradicted_at,
+        value.support_count,
+        value.contradiction_count,
+        JSON.stringify(value.evidence_episode_ids),
       );
 
     if (isEpisodeProvenance(provenance)) {
@@ -368,7 +530,8 @@ export class ValuesRepository {
           `
             SELECT
               id, label, description, priority, created_at, last_affirmed, state, established_at,
-              provenance_kind, provenance_episode_ids, provenance_process
+              confidence, last_tested_at, last_contradicted_at, support_count, contradiction_count,
+              evidence_episode_ids, provenance_kind, provenance_episode_ids, provenance_process
             FROM "values"
             ORDER BY priority DESC, created_at ASC
           `,
@@ -424,7 +587,12 @@ export class ValuesRepository {
     }
 
     const promotion = this.getPromotionMetadata(valueId);
+    const evidence = summarizeEvidence(
+      this.listReinforcementEvents(valueId),
+      this.listContradictionEvents(valueId),
+    );
     const isPromoted = current.state !== "established" && promotion.state === "established";
+    const nextState = current.state === "established" ? current.state : promotion.state;
     const nextProvenance: Provenance =
       isPromoted && promotion.promotionProvenance !== null
         ? promotion.promotionProvenance
@@ -439,9 +607,14 @@ export class ValuesRepository {
     const next = valueSchema.parse({
       ...current,
       provenance: nextProvenance,
-      state: current.state === "established" ? current.state : promotion.state,
-      established_at:
-        current.state === "established" ? current.established_at : promotion.established_at,
+      state: nextState,
+      established_at: current.state === "established" ? current.established_at : promotion.established_at,
+      confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
+      last_tested_at: evidence.lastTestedAt,
+      last_contradicted_at: evidence.lastContradictedAt,
+      support_count: evidence.supportCount,
+      contradiction_count: evidence.contradictionCount,
+      evidence_episode_ids: evidence.evidenceEpisodeIds,
     });
     const storedProvenance = toStoredProvenance(next.provenance);
 
@@ -449,7 +622,9 @@ export class ValuesRepository {
       .prepare(
         `
           UPDATE "values"
-          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, state = ?, established_at = ?
+          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, state = ?, established_at = ?,
+              confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+              contradiction_count = ?, evidence_episode_ids = ?
           WHERE id = ?
         `,
       )
@@ -459,6 +634,12 @@ export class ValuesRepository {
         storedProvenance.provenance_process,
         next.state,
         next.established_at,
+        next.confidence,
+        next.last_tested_at,
+        next.last_contradicted_at,
+        next.support_count,
+        next.contradiction_count,
+        JSON.stringify(next.evidence_episode_ids),
         valueId,
       );
 
@@ -472,6 +653,72 @@ export class ValuesRepository {
         provenance: parsedProvenance,
       });
     }
+
+    return next;
+  }
+
+  recordContradiction(input: {
+    valueId: ValueId;
+    provenance: Provenance;
+    weight?: number;
+    timestamp?: number;
+  }): ValueRecord {
+    const current = this.get(input.valueId);
+
+    if (current === null) {
+      throw new StorageError(`Unknown value id: ${input.valueId}`, {
+        code: "VALUE_NOT_FOUND",
+      });
+    }
+
+    const timestamp = input.timestamp ?? this.clock.now();
+    const provenance = requireProvenance(input.provenance, "Value contradiction");
+    const weight = Number.isFinite(input.weight) && input.weight !== undefined ? input.weight : 1;
+    const normalizedWeight = clamp(weight, 0, Number.POSITIVE_INFINITY);
+    this.insertContradictionEvent(input.valueId, provenance, normalizedWeight, timestamp);
+
+    const evidence = summarizeEvidence(
+      this.listReinforcementEvents(input.valueId),
+      this.listContradictionEvents(input.valueId),
+    );
+    const next = valueSchema.parse({
+      ...current,
+      confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
+      last_tested_at: evidence.lastTestedAt,
+      last_contradicted_at: evidence.lastContradictedAt,
+      support_count: evidence.supportCount,
+      contradiction_count: evidence.contradictionCount,
+      evidence_episode_ids: evidence.evidenceEpisodeIds,
+    });
+
+    this.db
+      .prepare(
+        `
+          UPDATE "values"
+          SET confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+              contradiction_count = ?, evidence_episode_ids = ?
+          WHERE id = ?
+        `,
+      )
+      .run(
+        next.confidence,
+        next.last_tested_at,
+        next.last_contradicted_at,
+        next.support_count,
+        next.contradiction_count,
+        JSON.stringify(next.evidence_episode_ids),
+        input.valueId,
+      );
+
+    this.identityEventRepository?.record({
+      record_type: "value",
+      record_id: input.valueId,
+      action: "contradict",
+      old_value: current,
+      new_value: next,
+      provenance,
+      ts: timestamp,
+    });
 
     return next;
   }
@@ -515,7 +762,9 @@ export class ValuesRepository {
         `
           UPDATE "values"
           SET label = ?, description = ?, priority = ?, last_affirmed = ?, state = ?, established_at = ?,
-              provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?
+              confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+              contradiction_count = ?, evidence_episode_ids = ?, provenance_kind = ?,
+              provenance_episode_ids = ?, provenance_process = ?
           WHERE id = ?
         `,
       )
@@ -526,6 +775,12 @@ export class ValuesRepository {
         next.last_affirmed,
         next.state,
         next.established_at,
+        next.confidence,
+        next.last_tested_at,
+        next.last_contradicted_at,
+        next.support_count,
+        next.contradiction_count,
+        JSON.stringify(next.evidence_episode_ids),
         storedProvenance.provenance_kind,
         storedProvenance.provenance_episode_ids,
         storedProvenance.provenance_process,
@@ -563,6 +818,31 @@ export class ValuesRepository {
       id: Number(row.id),
       value_id: row.value_id as ValueId,
       ts: Number(row.ts),
+      provenance: parseStoredProvenance({
+        provenance_kind: row.provenance_kind,
+        provenance_episode_ids: row.provenance_episode_ids,
+        provenance_process: row.provenance_process,
+      }),
+    }));
+  }
+
+  listContradictionEvents(valueId: ValueId): ValueContradictionEvent[] {
+    return (
+      this.db
+        .prepare(
+          `
+            SELECT id, value_id, ts, weight, provenance_kind, provenance_episode_ids, provenance_process
+            FROM value_contradiction_events
+            WHERE value_id = ?
+            ORDER BY ts ASC, id ASC
+          `,
+        )
+        .all(valueId) as Record<string, unknown>[]
+    ).map((row) => ({
+      id: Number(row.id),
+      value_id: row.value_id as ValueId,
+      ts: Number(row.ts),
+      weight: Number(row.weight),
       provenance: parseStoredProvenance({
         provenance_kind: row.provenance_kind,
         provenance_episode_ids: row.provenance_episode_ids,
@@ -915,6 +1195,14 @@ export type TraitReinforcementEvent = {
   provenance: Provenance;
 };
 
+export type TraitContradictionEvent = {
+  id: number;
+  trait_id: TraitId;
+  ts: number;
+  provenance: Provenance;
+  weight: number;
+};
+
 export class TraitsRepository {
   private readonly clock: Clock;
 
@@ -935,7 +1223,8 @@ export class TraitsRepository {
       .prepare(
         `
           SELECT id, label, strength, last_reinforced, last_decayed, state, established_at,
-                 provenance_kind, provenance_episode_ids, provenance_process
+                 confidence, last_tested_at, last_contradicted_at, support_count, contradiction_count,
+                 evidence_episode_ids, provenance_kind, provenance_episode_ids, provenance_process
           FROM traits
           WHERE id = ?
         `,
@@ -948,7 +1237,8 @@ export class TraitsRepository {
       .prepare(
         `
           SELECT id, label, strength, last_reinforced, last_decayed, state, established_at,
-                 provenance_kind, provenance_episode_ids, provenance_process
+                 confidence, last_tested_at, last_contradicted_at, support_count, contradiction_count,
+                 evidence_episode_ids, provenance_kind, provenance_episode_ids, provenance_process
           FROM traits
           WHERE label = ?
         `,
@@ -963,6 +1253,39 @@ export class TraitsRepository {
       this.listReinforcementEvents(traitId),
       TRAIT_PROMOTION_THRESHOLD,
     );
+  }
+
+  private insertContradictionEvent(
+    traitId: TraitId,
+    provenance: Provenance,
+    weight: number,
+    timestamp: number,
+  ): TraitContradictionEvent {
+    const storedProvenance = toStoredProvenance(provenance);
+    const result = this.db
+      .prepare(
+        `
+          INSERT INTO trait_contradiction_events (
+            trait_id, ts, weight, provenance_kind, provenance_episode_ids, provenance_process
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        traitId,
+        timestamp,
+        weight,
+        storedProvenance.provenance_kind,
+        storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_process,
+      );
+
+    return {
+      id: Number(result.lastInsertRowid),
+      trait_id: traitId,
+      ts: timestamp,
+      provenance,
+      weight,
+    };
   }
 
   get(traitId: TraitId): TraitRecord | null {
@@ -987,6 +1310,10 @@ export class TraitsRepository {
     );
     const traitId = existing === undefined ? createTraitId() : current!.id;
     const aggregateProvenance = existing === undefined ? provenance : current!.provenance;
+    const currentEvidenceEpisodeIds =
+      current === null
+        ? []
+        : current.evidence_episode_ids;
     const currentState =
       current === null
         ? {
@@ -1004,9 +1331,10 @@ export class TraitsRepository {
       `
         INSERT INTO traits (
           id, label, strength, last_reinforced, last_decayed, provenance_kind,
-          provenance_episode_ids, provenance_process, state, established_at
+          provenance_episode_ids, provenance_process, state, established_at, confidence,
+          last_tested_at, last_contradicted_at, support_count, contradiction_count, evidence_episode_ids
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (label) DO UPDATE SET
           strength = excluded.strength,
           last_reinforced = excluded.last_reinforced,
@@ -1024,7 +1352,9 @@ export class TraitsRepository {
       `
         UPDATE traits
         SET state = ?, established_at = ?,
-            provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?
+            provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, confidence = ?,
+            last_tested_at = ?, last_contradicted_at = ?, support_count = ?, contradiction_count = ?,
+            evidence_episode_ids = ?
         WHERE id = ?
       `,
     );
@@ -1040,6 +1370,12 @@ export class TraitsRepository {
         storedAggregateProvenance.provenance_process,
         currentState.state,
         currentState.established_at,
+        current === null ? computeConfidence(0, 0) : current.confidence,
+        current?.last_tested_at ?? null,
+        current?.last_contradicted_at ?? null,
+        current?.support_count ?? 0,
+        current?.contradiction_count ?? 0,
+        JSON.stringify(currentEvidenceEpisodeIds),
       );
       insertEvent.run(
         traitId,
@@ -1050,17 +1386,28 @@ export class TraitsRepository {
         storedEventProvenance.provenance_process,
       );
       const promotion = this.getPromotionMetadata(traitId);
+      const evidence = summarizeEvidence(
+        this.listReinforcementEvents(traitId),
+        this.listContradictionEvents(traitId),
+      );
+      const nextState = currentState.state === "established" ? currentState.state : promotion.state;
       const finalProvenance =
         currentState.state !== "established" && promotion.state === "established"
           ? (promotion.promotionProvenance ?? aggregateProvenance)
           : aggregateProvenance;
       const storedFinalProvenance = toStoredProvenance(finalProvenance);
       updatePromotion.run(
-        currentState.state === "established" ? currentState.state : promotion.state,
+        nextState,
         currentState.state === "established" ? currentState.established_at : promotion.established_at,
         storedFinalProvenance.provenance_kind,
         storedFinalProvenance.provenance_episode_ids,
         storedFinalProvenance.provenance_process,
+        computeConfidence(evidence.supportCount, evidence.contradictionCount),
+        evidence.lastTestedAt,
+        evidence.lastContradictedAt,
+        evidence.supportCount,
+        evidence.contradictionCount,
+        JSON.stringify(evidence.evidenceEpisodeIds),
         traitId,
       );
     });
@@ -1101,59 +1448,142 @@ export class TraitsRepository {
     return next;
   }
 
-  decay(halfLifeHours: number, nowMs = this.clock.now()): TraitRecord[] {
+  recordContradiction(input: {
+    label: string;
+    provenance: Provenance;
+    weight?: number;
+    timestamp?: number;
+  }): TraitRecord {
+    const existing = this.getByLabel(input.label);
+
+    if (existing === undefined) {
+      throw new StorageError(`Unknown trait label: ${input.label}`, {
+        code: "TRAIT_NOT_FOUND",
+      });
+    }
+
+    const current = mapTraitRow(existing);
+    const timestamp = input.timestamp ?? this.clock.now();
+    const provenance = requireProvenance(input.provenance, "Trait contradiction");
+    const weight = Number.isFinite(input.weight) && input.weight !== undefined ? input.weight : 1;
+    this.insertContradictionEvent(
+      current.id,
+      provenance,
+      clamp(weight, 0, Number.POSITIVE_INFINITY),
+      timestamp,
+    );
+
+    const evidence = summarizeEvidence(
+      this.listReinforcementEvents(current.id),
+      this.listContradictionEvents(current.id),
+    );
+    const next = traitSchema.parse({
+      ...current,
+      confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
+      last_tested_at: evidence.lastTestedAt,
+      last_contradicted_at: evidence.lastContradictedAt,
+      support_count: evidence.supportCount,
+      contradiction_count: evidence.contradictionCount,
+      evidence_episode_ids: evidence.evidenceEpisodeIds,
+    });
+
+    this.db
+      .prepare(
+        `
+          UPDATE traits
+          SET confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+              contradiction_count = ?, evidence_episode_ids = ?
+          WHERE id = ?
+        `,
+      )
+      .run(
+        next.confidence,
+        next.last_tested_at,
+        next.last_contradicted_at,
+        next.support_count,
+        next.contradiction_count,
+        JSON.stringify(next.evidence_episode_ids),
+        current.id,
+      );
+
+    this.identityEventRepository?.record({
+      record_type: "trait",
+      record_id: current.id,
+      action: "contradict",
+      old_value: current,
+      new_value: next,
+      provenance,
+      ts: timestamp,
+    });
+
+    return next;
+  }
+
+  decay(
+    halfLifeHours: number,
+    nowMs = this.clock.now(),
+    options: {
+      traitIds?: TraitId[];
+    } = {},
+  ): TraitRecord[] {
     if (!Number.isFinite(halfLifeHours) || halfLifeHours <= 0) {
       throw new StorageError("Trait half-life must be positive", {
         code: "TRAIT_DECAY_INVALID",
       });
     }
 
+    const traitIds = options.traitIds ?? null;
+    const placeholders = traitIds?.map(() => "?").join(", ") ?? "";
     const rows = this.db
       .prepare(
         `
           SELECT id, label, strength, last_reinforced, last_decayed, provenance_kind,
-                 provenance_episode_ids, provenance_process, state, established_at
+                 provenance_episode_ids, provenance_process, state, established_at, confidence,
+                 last_tested_at, last_contradicted_at, support_count, contradiction_count,
+                 evidence_episode_ids
           FROM traits
+          ${traitIds === null || traitIds.length === 0 ? "" : `WHERE id IN (${placeholders})`}
         `,
       )
-      .all() as Record<string, unknown>[];
+      .all(...(traitIds ?? [])) as Record<string, unknown>[];
     const update = this.db.prepare(
       "UPDATE traits SET strength = ?, last_decayed = ? WHERE label = ?",
     );
     const records: TraitRecord[] = [];
 
     for (const row of rows) {
+      const current = mapTraitRow(row);
       const lastTouched = Math.max(
-        Number(row.last_reinforced),
-        row.last_decayed === null || row.last_decayed === undefined ? 0 : Number(row.last_decayed),
+        current.last_reinforced,
+        current.last_decayed ?? 0,
       );
       const elapsedHours = Math.max(0, nowMs - lastTouched) / 3_600_000;
       const nextStrength = clamp(
-        Number(row.strength) * Math.pow(0.5, elapsedHours / halfLifeHours),
+        current.strength * Math.pow(0.5, elapsedHours / halfLifeHours),
         0,
         1,
       );
 
-      update.run(nextStrength, nowMs, row.label);
-      records.push(
-        traitSchema.parse({
-          id: row.id,
-          label: row.label,
-          strength: nextStrength,
-          last_reinforced: Number(row.last_reinforced),
-          last_decayed: nowMs,
-          state: row.state,
-          established_at:
-            row.established_at === null || row.established_at === undefined
-              ? null
-              : Number(row.established_at),
-          provenance: parseStoredProvenance({
-            provenance_kind: row.provenance_kind,
-            provenance_episode_ids: row.provenance_episode_ids,
-            provenance_process: row.provenance_process,
-          }),
-        }),
-      );
+      const next = traitSchema.parse({
+        ...current,
+        strength: nextStrength,
+        last_decayed: nowMs,
+      });
+
+      update.run(next.strength, nowMs, next.label);
+      records.push(next);
+
+      if (Math.abs(next.strength - current.strength) > Number.EPSILON) {
+        this.identityEventRepository?.record({
+          record_type: "trait",
+          record_id: current.id,
+          action: "decay",
+          old_value: current,
+          new_value: next,
+          provenance: current.provenance,
+          ts: nowMs,
+        });
+      }
     }
 
     return records;
@@ -1198,7 +1628,9 @@ export class TraitsRepository {
         `
           UPDATE traits
           SET label = ?, strength = ?, last_reinforced = ?, last_decayed = ?, state = ?, established_at = ?,
-              provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?
+              confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+              contradiction_count = ?, evidence_episode_ids = ?, provenance_kind = ?,
+              provenance_episode_ids = ?, provenance_process = ?
           WHERE id = ?
         `,
       )
@@ -1209,6 +1641,12 @@ export class TraitsRepository {
         next.last_decayed,
         next.state,
         next.established_at,
+        next.confidence,
+        next.last_tested_at,
+        next.last_contradicted_at,
+        next.support_count,
+        next.contradiction_count,
+        JSON.stringify(next.evidence_episode_ids),
         storedProvenance.provenance_kind,
         storedProvenance.provenance_episode_ids,
         storedProvenance.provenance_process,
@@ -1241,7 +1679,9 @@ export class TraitsRepository {
         .prepare(
           `
             SELECT id, label, strength, last_reinforced, last_decayed, provenance_kind,
-                   provenance_episode_ids, provenance_process, state, established_at
+                   provenance_episode_ids, provenance_process, state, established_at, confidence,
+                   last_tested_at, last_contradicted_at, support_count, contradiction_count,
+                   evidence_episode_ids
             FROM traits
             ORDER BY strength DESC, label ASC
           `,
@@ -1267,6 +1707,31 @@ export class TraitsRepository {
       trait_id: row.trait_id as TraitId,
       delta: Number(row.delta),
       ts: Number(row.ts),
+      provenance: parseStoredProvenance({
+        provenance_kind: row.provenance_kind,
+        provenance_episode_ids: row.provenance_episode_ids,
+        provenance_process: row.provenance_process,
+      }),
+    }));
+  }
+
+  listContradictionEvents(traitId: TraitId): TraitContradictionEvent[] {
+    return (
+      this.db
+        .prepare(
+          `
+            SELECT id, trait_id, ts, weight, provenance_kind, provenance_episode_ids, provenance_process
+            FROM trait_contradiction_events
+            WHERE trait_id = ?
+            ORDER BY ts ASC, id ASC
+          `,
+        )
+        .all(traitId) as Record<string, unknown>[]
+    ).map((row) => ({
+      id: Number(row.id),
+      trait_id: row.trait_id as TraitId,
+      ts: Number(row.ts),
+      weight: Number(row.weight),
       provenance: parseStoredProvenance({
         provenance_kind: row.provenance_kind,
         provenance_episode_ids: row.provenance_episode_ids,

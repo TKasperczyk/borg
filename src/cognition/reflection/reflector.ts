@@ -21,6 +21,7 @@ import type { ActionResult } from "../action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import { SuppressionSet } from "../attention/index.js";
 import type { PerceptionResult } from "../types.js";
+import { MODE_TRAIT_MAP } from "./trait-signals.js";
 
 export type ReflectionContext = {
   userMessage: string;
@@ -182,6 +183,8 @@ export class Reflector {
 
   async reflect(context: ReflectionContext, streamWriter: StreamWriter): Promise<WorkingMemory> {
     const reflectionProvenance = buildReflectionProvenance(context.retrievedEpisodes);
+    const effectiveMode = context.perception?.mode ?? context.workingMemory.mode ?? "idle";
+    const reflectedTrait = MODE_TRAIT_MAP[effectiveMode];
 
     if (
       context.deliberationResult.thoughts.length > 0 &&
@@ -195,12 +198,14 @@ export class Reflector {
       );
     }
 
-    context.traitsRepository.reinforce({
-      label: "engaged",
-      delta: 0.05,
-      provenance: reflectionProvenance,
-      timestamp: this.clock.now(),
-    });
+    if (context.retrievedEpisodes.length > 0 && reflectedTrait !== null) {
+      context.traitsRepository.reinforce({
+        label: reflectedTrait,
+        delta: 0.05,
+        provenance: reflectionProvenance,
+        timestamp: this.clock.now(),
+      });
+    }
 
     for (const goal of context.selfSnapshot.goals) {
       if (!goalMentioned(goal, context.userMessage, context.actionResult.response)) {

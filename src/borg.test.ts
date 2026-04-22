@@ -670,7 +670,7 @@ describe("Borg", () => {
     }
   });
 
-  it("uses offline reflector provenance for durable reflection updates when no episodes are retrieved", async () => {
+  it("does not reinforce a trait when no episodes are retrieved", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
 
@@ -740,13 +740,7 @@ describe("Borg", () => {
       });
 
       expect(result.retrievedEpisodeIds).toEqual([]);
-      expect(borg.self.traits.list()[0]).toMatchObject({
-        label: "engaged",
-        provenance: {
-          kind: "offline",
-          process: "reflector",
-        },
-      });
+      expect(borg.self.traits.list()).toEqual([]);
     } finally {
       await borg.close();
     }

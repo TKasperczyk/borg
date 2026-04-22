@@ -1027,4 +1027,206 @@ describe("reflector", () => {
     expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
     expect(secondTurnMemory.last_selected_skill_id).toBe(skill.id);
   });
+
+  it("does not reinforce traits when no episodes were retrieved", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+
+    await reflector.reflect(
+      {
+        userMessage: "Thinking out loud.",
+        perception: {
+          entities: [],
+          mode: "reflective",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: null,
+          hot_entities: [],
+          pending_intents: [],
+          suppressed: [],
+          mood: null,
+          last_selected_skill_id: null,
+          last_selected_skill_turn: null,
+          mode: "reflective",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Staying with it.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Staying with it.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: null,
+            hot_entities: [],
+            pending_intents: [],
+            suppressed: [],
+            mood: null,
+            last_selected_skill_id: null,
+            last_selected_skill_turn: null,
+            mode: "reflective",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.traitsRepository.list()).toEqual([]);
+  });
+
+  it("maps reflective mode reinforcement onto the introspective trait", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const episode = createEpisodeFixture({
+      title: "Reflective walk",
+      narrative: "A slow reflective walk helped untangle a hard feeling.",
+      tags: ["reflection"],
+    });
+    await harness.episodicRepository.insert(episode);
+
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+    const retrieved: RetrievedEpisode = {
+      episode,
+      score: 0.7,
+      scoreBreakdown: {
+        similarity: 0.7,
+        decayedSalience: 0.4,
+        heat: 0.2,
+        goalRelevance: 0,
+        valueAlignment: 0,
+        timeRelevance: 0,
+        moodBoost: 0,
+        socialRelevance: 0,
+        suppressionPenalty: 0,
+      },
+      citationChain: [],
+      semantic_context: {
+        supports: [],
+        contradicts: [],
+        categories: [],
+      },
+    };
+
+    await reflector.reflect(
+      {
+        userMessage: "I want to sit with this feeling for a minute.",
+        perception: {
+          entities: [],
+          mode: "reflective",
+          affectiveSignal: {
+            valence: -0.2,
+            arousal: 0.1,
+            dominant_emotion: "sadness",
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: null,
+          hot_entities: [],
+          pending_intents: [],
+          suppressed: [],
+          mood: null,
+          last_selected_skill_id: null,
+          last_selected_skill_turn: null,
+          mode: "reflective",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_2",
+          response: "Let me stay with it and trace what keeps resurfacing.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [retrieved],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Let me stay with it and trace what keeps resurfacing.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: null,
+            hot_entities: [],
+            pending_intents: [],
+            suppressed: [],
+            mood: null,
+            last_selected_skill_id: null,
+            last_selected_skill_turn: null,
+            mode: "reflective",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.traitsRepository.list()[0]).toMatchObject({
+      label: "introspective",
+      provenance: {
+        kind: "episodes",
+        episode_ids: [episode.id],
+      },
+    });
+  });
 });

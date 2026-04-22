@@ -2,11 +2,12 @@ import { existsSync, readdirSync } from "node:fs";
 import { basename } from "node:path";
 
 import { computeGoalRelevance } from "../cognition/attention/goal-relevance.js";
+import { computeValueAlignment } from "../cognition/attention/value-alignment.js";
 import { extractEntitiesHeuristically } from "../cognition/perception/entity-extractor.js";
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { MoodState } from "../memory/affective/index.js";
-import type { OpenQuestion, OpenQuestionsRepository } from "../memory/self/index.js";
+import type { OpenQuestion, OpenQuestionsRepository, ValueRecord } from "../memory/self/index.js";
 import { SemanticGraph } from "../memory/semantic/graph.js";
 import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
 import type {
@@ -57,6 +58,7 @@ export type RetrievedEpisode = {
     decayedSalience: number;
     heat: number;
     goalRelevance: number;
+    valueAlignment: number;
     timeRelevance: number;
     moodBoost: number;
     socialRelevance: number;
@@ -159,6 +161,7 @@ function buildResult(
   decayedSalience: number,
   heat: number,
   goalRelevance: number,
+  valueAlignment: number,
   timeRelevance: number,
   moodBoost: number,
   socialRelevance: number,
@@ -175,6 +178,7 @@ function buildResult(
       decayedSalience,
       heat,
       goalRelevance,
+      valueAlignment,
       timeRelevance,
       moodBoost,
       socialRelevance,
@@ -195,6 +199,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   decayOptions?: Omit<DecayOptions, "nowMs">;
   attentionWeights?: AttentionWeights;
   goalDescriptions?: readonly string[];
+  activeValues?: readonly ValueRecord[];
   temporalCue?: TemporalCue | null;
   strictTimeRange?: boolean;
   suppressionSet?: SuppressionLookup;
@@ -215,6 +220,17 @@ export type RetrievalGetEpisodeOptions = {
 
 function normalizeHeat(heat: number): number {
   return clamp(heat / 20, 0, 1);
+}
+
+function normalizeAttentionWeights(weights: AttentionWeights): AttentionWeights {
+  return {
+    ...weights,
+    value_alignment:
+      Number.isFinite((weights as Partial<AttentionWeights>).value_alignment) &&
+      (weights as Partial<AttentionWeights>).value_alignment !== undefined
+        ? weights.value_alignment
+        : 0,
+  };
 }
 
 function resolveTemporalCueTimeRange(
@@ -811,6 +827,7 @@ export class RetrievalPipeline {
     decayedSalience: number;
     heat: number;
     goalRelevance: number;
+    valueAlignment: number;
     timeRelevance: number;
     moodBoost: number;
     socialRelevance: number;
@@ -832,6 +849,10 @@ export class RetrievalPipeline {
       searchOptions.goalDescriptions ?? [],
       candidate.episode,
     );
+    const valueAlignment = computeValueAlignment(
+      searchOptions.activeValues ?? [],
+      candidate.episode,
+    );
     const timeRelevance = computeTimeRelevance(candidate.episode, scoringTimeRange);
     const moodBoost = computeMoodBoost(candidate.episode, searchOptions.moodState);
     const socialRelevance = computeSocialRelevance(
@@ -844,7 +865,7 @@ export class RetrievalPipeline {
       searchOptions.suppressionSet?.isSuppressed(candidate.episode.id) === true ? 1 : 0;
 
     if (searchOptions.attentionWeights !== undefined) {
-      const weights = searchOptions.attentionWeights;
+      const weights = normalizeAttentionWeights(searchOptions.attentionWeights);
       const semanticScore =
         weights.semantic * candidate.similarity + (1 - weights.semantic) * decay.decayedSalience;
 
@@ -852,6 +873,7 @@ export class RetrievalPipeline {
         decayedSalience: decay.decayedSalience,
         heat,
         goalRelevance,
+        valueAlignment,
         timeRelevance,
         moodBoost,
         socialRelevance,
@@ -860,6 +882,7 @@ export class RetrievalPipeline {
         score:
           semanticScore +
           weights.goal_relevance * goalRelevance +
+          weights.value_alignment * valueAlignment +
           weights.mood * moodBoost +
           weights.social * socialRelevance +
           weights.entity * entityRelevance +
@@ -875,6 +898,7 @@ export class RetrievalPipeline {
       decayedSalience: decay.decayedSalience,
       heat,
       goalRelevance,
+      valueAlignment,
       timeRelevance,
       moodBoost,
       socialRelevance,
@@ -883,6 +907,7 @@ export class RetrievalPipeline {
       score:
         weights.similarity * candidate.similarity +
         weights.salience * decay.decayedSalience +
+        valueAlignment * 0.15 +
         entityRelevance * 0.15,
     };
   }
@@ -1012,6 +1037,7 @@ export class RetrievalPipeline {
         item.decayedSalience,
         item.heat,
         item.goalRelevance,
+        item.valueAlignment,
         item.timeRelevance,
         item.moodBoost,
         item.socialRelevance,
@@ -1095,6 +1121,7 @@ export class RetrievalPipeline {
       scored.decayedSalience,
       scored.heat,
       scored.goalRelevance,
+      scored.valueAlignment,
       scored.timeRelevance,
       scored.moodBoost,
       scored.socialRelevance,

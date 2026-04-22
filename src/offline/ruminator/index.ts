@@ -176,6 +176,7 @@ function buildChange(item: RuminatorPlan["items"][number]): OfflineChange {
 function buildReflectionWeights(ctx: OfflineContext) {
   return computeWeights("reflective", {
     currentGoals: ctx.goalsRepository.list({ status: "active" }),
+    hasActiveValues: ctx.valuesRepository.list().some((value) => value.state === "established"),
     hasTemporalCue: false,
   });
 }

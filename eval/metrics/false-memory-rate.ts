@@ -14,6 +14,7 @@ const EMBEDDING_DIMS = 64;
 const RETRIEVAL_WEIGHTS = {
   semantic: 1,
   goal_relevance: 0,
+  value_alignment: 0,
   mood: 0,
   time: 0,
   social: 0,

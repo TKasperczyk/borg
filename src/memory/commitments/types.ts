@@ -56,7 +56,8 @@ export const commitmentPatchSchema = commitmentSchema
     id: true,
     created_at: true,
   })
-  .partial();
+  .partial()
+  .strict();
 
 export type EntityRecord = z.infer<typeof entityRecordSchema>;
 export type CommitmentRecord = z.infer<typeof commitmentSchema>;

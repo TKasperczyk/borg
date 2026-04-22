@@ -572,6 +572,7 @@ export class Borg {
                   options?.goalDescriptions !== undefined && options.goalDescriptions.length > 0
                     ? 0.1
                     : 0,
+                value_alignment: 0,
                 mood: 0,
                 time: hasTemporalSignal ? 0.2 : 0,
                 social: audienceTerms !== undefined && audienceTerms.length > 0 ? 0.15 : 0,

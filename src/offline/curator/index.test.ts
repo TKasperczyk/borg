@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { IdentityEventRepository } from "../../memory/identity/index.js";
+import { TraitsRepository } from "../../memory/self/index.js";
 import { FixedClock } from "../../util/clock.js";
 
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
@@ -162,5 +164,60 @@ describe("curator process", () => {
     expect(first.changes.map((change) => change.action)).toContain("trim_mood_history");
     expect(second.changes.map((change) => change.action)).not.toContain("trim_mood_history");
     expect(harness.moodRepository.historyBefore(nowMs - 90 * DAY_MS)).toEqual([]);
+  });
+
+  it("decays stale traits through curator and records a trait identity event", async () => {
+    const nowMs = 100 * DAY_MS;
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+    });
+    cleanup.push(harness.cleanup);
+
+    const identityEvents = new IdentityEventRepository({
+      db: harness.db,
+      clock: harness.clock,
+    });
+    const auditedTraits = new TraitsRepository({
+      db: harness.db,
+      clock: harness.clock,
+      identityEventRepository: identityEvents,
+    });
+
+    const staleTrait = auditedTraits.reinforce({
+      label: "warm",
+      delta: 0.8,
+      provenance: {
+        kind: "episodes",
+        episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+      },
+      timestamp: nowMs - 10 * DAY_MS,
+    });
+    expect(staleTrait.strength).toBe(0.8);
+
+    const process = new CuratorProcess({
+      episodicRepository: harness.episodicRepository,
+      registry: harness.registry,
+    });
+
+    const result = await process.run(
+      {
+        ...harness.createContext(),
+        traitsRepository: auditedTraits,
+      },
+      {
+        dryRun: false,
+      },
+    );
+
+    const decayedTrait = auditedTraits.list()[0];
+    expect(result.changes.map((change) => change.action)).toContain("decay_trait");
+    expect(decayedTrait?.strength ?? 1).toBeLessThan(0.8);
+    expect(identityEvents.list({ recordType: "trait", recordId: decayedTrait?.id ?? "" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "decay",
+        }),
+      ]),
+    );
   });
 });

@@ -29,6 +29,7 @@ import {
   TraitsRepository,
   ValuesRepository,
   type GoalRecord,
+  type ValueRecord,
 } from "../memory/self/index.js";
 import { ReviewQueueRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
@@ -60,6 +61,16 @@ function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>)
   }
 
   return flattened;
+}
+
+function selectActiveValues(values: readonly ValueRecord[], candidateLimit = 2): ValueRecord[] {
+  const established = values.filter((value) => value.state === "established");
+  const candidates = values
+    .filter((value) => value.state !== "established")
+    .sort((left, right) => right.priority - left.priority || left.created_at - right.created_at)
+    .slice(0, candidateLimit);
+
+  return [...established, ...candidates];
 }
 
 export type TurnInput = {
@@ -358,9 +369,11 @@ export class TurnOrchestrator {
             return correctionAudience === null || correctionAudience === audienceEntityId;
           });
         const currentMood = this.options.moodRepository.current(sessionId);
+        const activeValues = selectActiveValues(selfSnapshot.values);
 
         const attentionWeights = computeWeights(perception.mode, {
           currentGoals: selfSnapshot.goals,
+          hasActiveValues: activeValues.length > 0,
           hasTemporalCue: perception.temporalCue !== null,
           moodActive: Math.abs(currentMood.valence) + Math.abs(currentMood.arousal) > 0.3,
           audienceTrust: audienceProfile?.trust ?? null,
@@ -370,6 +383,7 @@ export class TurnOrchestrator {
           audienceEntityId,
           attentionWeights,
           goalDescriptions: selfSnapshot.goals.map((goal) => goal.description),
+          activeValues,
           temporalCue: perception.temporalCue,
           moodState: currentMood,
           audienceProfile,

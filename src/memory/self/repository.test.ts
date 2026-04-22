@@ -348,4 +348,110 @@ describe("self repositories", () => {
       db.close();
     }
   });
+
+  it("tracks evidence-backed confidence and contradictions for values and traits", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const clock = new ManualClock(1_000);
+    const values = new ValuesRepository({ db, clock });
+    const traits = new TraitsRepository({ db, clock });
+
+    try {
+      const zeroEvidenceValue = values.add({
+        label: "stability",
+        description: "Prefer calm, predictable responses.",
+        priority: 3,
+        provenance: manualProvenance,
+        createdAt: 500,
+      });
+
+      expect(zeroEvidenceValue.confidence).toBeCloseTo(2 / 3, 6);
+
+      const value = values.add({
+        label: "clarity",
+        description: "Prefer explicit state.",
+        priority: 5,
+        provenance: {
+          kind: "episodes",
+          episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+        },
+        createdAt: 1_000,
+      });
+
+      values.reinforce(
+        value.id,
+        {
+          kind: "episodes",
+          episode_ids: ["ep_bbbbbbbbbbbbbbbb" as never],
+        },
+        2_000,
+      );
+      const establishedValue = values.reinforce(
+        value.id,
+        {
+          kind: "episodes",
+          episode_ids: ["ep_cccccccccccccccc" as never],
+        },
+        3_000,
+      );
+
+      expect(establishedValue).toMatchObject({
+        state: "established",
+        support_count: 3,
+        contradiction_count: 0,
+        last_tested_at: 3_000,
+        evidence_episode_ids: [
+          "ep_cccccccccccccccc",
+          "ep_bbbbbbbbbbbbbbbb",
+          "ep_aaaaaaaaaaaaaaaa",
+        ],
+      });
+      expect(establishedValue.confidence).toBeCloseTo(5 / 6, 6);
+
+      const contradictedValue = values.recordContradiction({
+        valueId: value.id,
+        provenance: { kind: "manual" },
+        timestamp: 4_000,
+      });
+
+      expect(contradictedValue).toMatchObject({
+        contradiction_count: 1,
+        last_contradicted_at: 4_000,
+      });
+      expect(contradictedValue.confidence).toBeCloseTo(5 / 7, 6);
+
+      const reinforcedTrait = traits.reinforce({
+        label: "introspective",
+        delta: 0.2,
+        provenance: {
+          kind: "episodes",
+          episode_ids: ["ep_dddddddddddddddd" as never],
+        },
+        timestamp: 5_000,
+      });
+
+      expect(reinforcedTrait).toMatchObject({
+        support_count: 1,
+        contradiction_count: 0,
+        last_tested_at: 5_000,
+        evidence_episode_ids: ["ep_dddddddddddddddd"],
+      });
+      expect(reinforcedTrait.confidence).toBeCloseTo(0.75, 6);
+
+      const contradictedTrait = traits.recordContradiction({
+        label: "introspective",
+        provenance: { kind: "offline", process: "reflector" },
+        timestamp: 6_000,
+      });
+
+      expect(contradictedTrait).toMatchObject({
+        contradiction_count: 1,
+        last_contradicted_at: 6_000,
+      });
+      expect(contradictedTrait.confidence).toBeCloseTo(0.6, 6);
+    } finally {
+      db.close();
+    }
+  });
 });

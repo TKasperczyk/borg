@@ -26,6 +26,36 @@ function tableHasColumn(db: SqliteDatabase, table: string, column: string): bool
   return columns.some((entry) => entry.name === column);
 }
 
+function getRecentDistinctEpisodeIds(
+  rows: Array<{ ts: number; provenance_episode_ids: unknown }>,
+  limit: number,
+): string[] {
+  const latestEpisodeTs = new Map<string, number>();
+
+  for (const row of rows) {
+    for (const episodeId of parseStoredIdArray(row.provenance_episode_ids)) {
+      const ts = Number(row.ts);
+      const currentTs = latestEpisodeTs.get(episodeId) ?? Number.NEGATIVE_INFINITY;
+      if (ts > currentTs) {
+        latestEpisodeTs.set(episodeId, ts);
+      }
+    }
+  }
+
+  return [...latestEpisodeTs.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([episodeId]) => episodeId);
+}
+
+const CONFIDENCE_ALPHA = 2;
+const CONFIDENCE_BETA = 1;
+
+function computeEvidenceConfidence(supportCount: number, contradictionCount: number): number {
+  return (CONFIDENCE_ALPHA + supportCount) /
+    (CONFIDENCE_ALPHA + CONFIDENCE_BETA + supportCount + contradictionCount);
+}
+
 export const selfMigrations = [
   {
     id: 110,
@@ -579,6 +609,154 @@ export const selfMigrations = [
         updateTraitState.run(
           establishedAt === null ? "candidate" : "established",
           establishedAt,
+          row.id,
+        );
+      }
+    },
+  },
+  {
+    id: 260,
+    name: "add-self-evidence-claims",
+    up: (db) => {
+      for (const table of ["values", "traits"] as const) {
+        if (!tableHasColumn(db, table, "confidence")) {
+          db.exec(`ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN confidence REAL`);
+        }
+        if (!tableHasColumn(db, table, "last_tested_at")) {
+          db.exec(`ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN last_tested_at INTEGER`);
+        }
+        if (!tableHasColumn(db, table, "last_contradicted_at")) {
+          db.exec(
+            `ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN last_contradicted_at INTEGER`,
+          );
+        }
+        if (!tableHasColumn(db, table, "support_count")) {
+          db.exec(`ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN support_count INTEGER`);
+        }
+        if (!tableHasColumn(db, table, "contradiction_count")) {
+          db.exec(
+            `ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN contradiction_count INTEGER`,
+          );
+        }
+        if (!tableHasColumn(db, table, "evidence_episode_ids")) {
+          db.exec(
+            `ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN evidence_episode_ids TEXT`,
+          );
+        }
+      }
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS value_contradiction_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          value_id TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          weight REAL NOT NULL DEFAULT 1,
+          provenance_kind TEXT NOT NULL CHECK (
+            provenance_kind IN ('episodes', 'manual', 'system', 'offline')
+          ),
+          provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
+          provenance_process TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_value_contradiction_events_value_ts
+          ON value_contradiction_events (value_id, ts DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS trait_contradiction_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trait_id TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          weight REAL NOT NULL DEFAULT 1,
+          provenance_kind TEXT NOT NULL CHECK (
+            provenance_kind IN ('episodes', 'manual', 'system', 'offline')
+          ),
+          provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
+          provenance_process TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_trait_contradiction_events_trait_ts
+          ON trait_contradiction_events (trait_id, ts DESC, id DESC);
+      `);
+
+      const valueRows = db
+        .prepare(
+          `
+            SELECT id, state
+            FROM "values"
+            ORDER BY created_at ASC, id ASC
+          `,
+        )
+        .all() as Array<{ id: string; state: string | null }>;
+      const valueSupportRows = db.prepare(
+        `
+          SELECT ts, provenance_episode_ids
+          FROM value_reinforcement_events
+          WHERE value_id = ? AND provenance_kind = 'episodes'
+          ORDER BY ts DESC, id DESC
+        `,
+      );
+      const updateValueEvidence = db.prepare(
+        `
+          UPDATE "values"
+          SET confidence = ?, last_tested_at = ?, last_contradicted_at = NULL,
+              support_count = ?, contradiction_count = 0, evidence_episode_ids = ?
+          WHERE id = ?
+        `,
+      );
+
+      for (const row of valueRows) {
+        const supportRows = valueSupportRows.all(row.id) as Array<{
+          ts: number;
+          provenance_episode_ids: unknown;
+        }>;
+        const supportCount = supportRows.length;
+        const lastTestedAt = supportCount === 0 ? null : Number(supportRows[0]?.ts ?? 0);
+        const confidence = computeEvidenceConfidence(supportCount, 0);
+        updateValueEvidence.run(
+          confidence,
+          lastTestedAt,
+          supportCount,
+          JSON.stringify(getRecentDistinctEpisodeIds(supportRows, 3)),
+          row.id,
+        );
+      }
+
+      const traitRows = db
+        .prepare(
+          `
+            SELECT id, state
+            FROM traits
+            ORDER BY label ASC
+          `,
+        )
+        .all() as Array<{ id: string; state: string | null }>;
+      const traitSupportRows = db.prepare(
+        `
+          SELECT ts, provenance_episode_ids
+          FROM trait_reinforcement_events
+          WHERE trait_id = ? AND provenance_kind = 'episodes'
+          ORDER BY ts DESC, id DESC
+        `,
+      );
+      const updateTraitEvidence = db.prepare(
+        `
+          UPDATE traits
+          SET confidence = ?, last_tested_at = ?, last_contradicted_at = NULL,
+              support_count = ?, contradiction_count = 0, evidence_episode_ids = ?
+          WHERE id = ?
+        `,
+      );
+
+      for (const row of traitRows) {
+        const supportRows = traitSupportRows.all(row.id) as Array<{
+          ts: number;
+          provenance_episode_ids: unknown;
+        }>;
+        const supportCount = supportRows.length;
+        const lastTestedAt = supportCount === 0 ? null : Number(supportRows[0]?.ts ?? 0);
+        const confidence = computeEvidenceConfidence(supportCount, 0);
+        updateTraitEvidence.run(
+          confidence,
+          lastTestedAt,
+          supportCount,
+          JSON.stringify(getRecentDistinctEpisodeIds(supportRows, 3)),
           row.id,
         );
       }

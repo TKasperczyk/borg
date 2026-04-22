@@ -90,6 +90,7 @@ const configFileSchema = z
             t3DemoteHeat: z.number().positive().optional(),
             archiveAgeDays: z.number().positive().optional(),
             archiveMinHeat: z.number().nonnegative().optional(),
+            traitHalfLifeDays: z.number().positive().optional(),
           })
           .partial()
           .optional(),
@@ -194,6 +195,7 @@ export const configSchema = z.object({
       t3DemoteHeat: z.number().positive(),
       archiveAgeDays: z.number().positive(),
       archiveMinHeat: z.number().nonnegative(),
+      traitHalfLifeDays: z.number().positive(),
     }),
     overseer: z.object({
       enabled: z.boolean(),
@@ -273,6 +275,7 @@ export const DEFAULT_CONFIG: Config = {
       t3DemoteHeat: 3,
       archiveAgeDays: 45,
       archiveMinHeat: 1,
+      traitHalfLifeDays: 30,
     },
     overseer: {
       enabled: true,
@@ -610,6 +613,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_ARCHIVE_MIN_HEAT") ??
           fileConfig.offline?.curator?.archiveMinHeat ??
           DEFAULT_CONFIG.offline.curator.archiveMinHeat,
+        traitHalfLifeDays:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_TRAIT_HALF_LIFE_DAYS") ??
+          fileConfig.offline?.curator?.traitHalfLifeDays ??
+          DEFAULT_CONFIG.offline.curator.traitHalfLifeDays,
       },
       overseer: {
         enabled:

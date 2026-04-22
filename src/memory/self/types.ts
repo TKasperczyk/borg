@@ -52,6 +52,12 @@ export const valueSchema = z.object({
   last_affirmed: z.number().finite().nullable(),
   state: identityStateSchema,
   established_at: z.number().finite().nullable(),
+  confidence: z.number().min(0).max(1),
+  last_tested_at: z.number().finite().nullable(),
+  last_contradicted_at: z.number().finite().nullable(),
+  support_count: z.number().int().min(0),
+  contradiction_count: z.number().int().min(0),
+  evidence_episode_ids: z.array(valueSourceEpisodeIdSchema).max(3),
   provenance: provenanceSchema,
 });
 
@@ -59,8 +65,15 @@ export const valuePatchSchema = valueSchema
   .omit({
     id: true,
     created_at: true,
+    confidence: true,
+    last_tested_at: true,
+    last_contradicted_at: true,
+    support_count: true,
+    contradiction_count: true,
+    evidence_episode_ids: true,
   })
-  .partial();
+  .partial()
+  .strict();
 
 export const goalSchema = z.object({
   id: goalIdSchema,
@@ -82,21 +95,35 @@ export const traitSchema = z.object({
   last_decayed: z.number().finite().nullable(),
   state: identityStateSchema,
   established_at: z.number().finite().nullable(),
+  confidence: z.number().min(0).max(1),
+  last_tested_at: z.number().finite().nullable(),
+  last_contradicted_at: z.number().finite().nullable(),
+  support_count: z.number().int().min(0),
+  contradiction_count: z.number().int().min(0),
+  evidence_episode_ids: z.array(valueSourceEpisodeIdSchema).max(3),
   provenance: provenanceSchema,
 });
 
 export const traitPatchSchema = traitSchema
   .omit({
     id: true,
+    confidence: true,
+    last_tested_at: true,
+    last_contradicted_at: true,
+    support_count: true,
+    contradiction_count: true,
+    evidence_episode_ids: true,
   })
-  .partial();
+  .partial()
+  .strict();
 
 export const goalPatchSchema = goalSchema
   .omit({
     id: true,
     created_at: true,
   })
-  .partial();
+  .partial()
+  .strict();
 
 export type ValueRecord = z.infer<typeof valueSchema>;
 export type GoalRecord = z.infer<typeof goalSchema>;

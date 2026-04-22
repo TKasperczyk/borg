@@ -31,6 +31,7 @@ import {
   ValuesRepository,
   selfMigrations,
 } from "../memory/self/index.js";
+import { identityMigrations } from "../memory/identity/index.js";
 import {
   appendOpenQuestionHookFailureEvent,
   enqueueOpenQuestionForReview,
@@ -201,6 +202,7 @@ export async function createOfflineTestHarness(
       ...commitmentMigrations,
       ...socialMigrations,
       ...proceduralMigrations,
+      ...identityMigrations,
       ...offlineMigrations,
     ],
   });
