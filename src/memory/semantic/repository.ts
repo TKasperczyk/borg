@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import {
   LanceDbTable,
   booleanField,
@@ -11,6 +13,11 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { SemanticError, StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import {
+  type LLMClient,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../../llm/index.js";
+import {
   createSemanticEdgeId,
   createSemanticNodeId,
   parseEpisodeId,
@@ -20,8 +27,20 @@ import {
   type SemanticEdgeId,
   type SemanticNodeId,
 } from "../../util/ids.js";
-import { tokenizeText } from "../../util/text/tokenize.js";
 import type { ReviewQueueInsertInput } from "./review-queue.js";
+
+const CONTRADICTION_JUDGE_TOOL_NAME = "EmitContradictionJudgment";
+const contradictionJudgeSchema = z.object({
+  contradicts: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  reason: z.string().min(1).optional(),
+});
+const CONTRADICTION_JUDGE_TOOL = {
+  name: CONTRADICTION_JUDGE_TOOL_NAME,
+  description:
+    "Judge whether two semantic propositions genuinely contradict each other (a direct or morphological negation, an opposite quantifier, a stated fact vs. its denial). Reinforcements, variants, elaborations, and merely similar statements are NOT contradictions.",
+  inputSchema: toToolInputSchema(contradictionJudgeSchema),
+} satisfies LLMToolDefinition;
 import {
   semanticEdgePatchSchema,
   semanticEdgeSchema,
@@ -217,30 +236,51 @@ function edgeFromRow(row: Record<string, unknown>): SemanticEdge {
   return parsed.data;
 }
 
-function hasNegationConflict(
+async function judgeContradiction(
   left: Pick<SemanticNode, "label" | "description">,
   right: Pick<SemanticNode, "label" | "description">,
-): boolean {
-  const leftText = `${left.label} ${left.description}`.toLowerCase();
-  const rightText = `${right.label} ${right.description}`.toLowerCase();
-  const leftNegated = /\b(no|not|never|without|cannot|can't|won't)\b/.test(leftText);
-  const rightNegated = /\b(no|not|never|without|cannot|can't|won't)\b/.test(rightText);
+  llmClient: LLMClient,
+  model: string,
+): Promise<boolean> {
+  try {
+    const response = await llmClient.complete({
+      model,
+      system:
+        "You judge whether two semantic propositions genuinely contradict each other. Contradictions include direct negation (X is true vs X is not true), morphological negation (important vs unimportant), opposite quantifiers (always vs sometimes, never vs often), and stated-fact vs its denial. Reinforcements, refinements, variants, elaborations, and merely similar statements are NOT contradictions. Default to contradicts=false when unsure.",
+      messages: [
+        {
+          role: "user",
+          content: [
+            `Proposition A: ${left.label} -- ${left.description}`,
+            `Proposition B: ${right.label} -- ${right.description}`,
+          ].join("\n"),
+        },
+      ],
+      tools: [CONTRADICTION_JUDGE_TOOL],
+      tool_choice: { type: "tool", name: CONTRADICTION_JUDGE_TOOL_NAME },
+      max_tokens: 400,
+      budget: "semantic-contradiction-judge",
+    });
 
-  if (leftNegated === rightNegated) {
+    const call = response.tool_calls.find(
+      (toolCall) => toolCall.name === CONTRADICTION_JUDGE_TOOL_NAME,
+    );
+    if (call === undefined) {
+      return false;
+    }
+
+    const parsed = contradictionJudgeSchema.safeParse(call.input);
+    if (!parsed.success) {
+      return false;
+    }
+
+    return parsed.data.contradicts && parsed.data.confidence >= 0.5;
+  } catch {
+    // If the judge call fails for any reason, default to not flagging a
+    // contradiction. Worst case: a genuine contradiction slips through; it
+    // can still be caught by an explicit user-driven review later.
     return false;
   }
-
-  const leftTokens = tokenizeText(leftText);
-  const rightTokens = tokenizeText(rightText);
-  let overlap = 0;
-
-  for (const token of leftTokens) {
-    if (rightTokens.has(token)) {
-      overlap += 1;
-    }
-  }
-
-  return overlap >= 2;
 }
 
 export function createSemanticNodesTableSchema(dimensions: number) {
@@ -266,6 +306,14 @@ export type SemanticNodeRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
   enqueueReview?: (input: ReviewQueueInsertInput) => ReviewQueueInsertInput | unknown;
+  /**
+   * Optional LLM client used at node-insert time to judge whether a
+   * near-duplicate proposition genuinely contradicts the new one. Without
+   * it, duplicate-review enqueueing is skipped on near-dup inserts
+   * (conservative -- may miss genuine contradictions, never false-flags).
+   */
+  llmClient?: LLMClient;
+  contradictionJudgeModel?: string;
 };
 
 export class SemanticNodeRepository {
@@ -288,7 +336,12 @@ export class SemanticNodeRepository {
   }
 
   private async detectDuplicateReview(node: SemanticNode): Promise<void> {
-    if (this.options.enqueueReview === undefined || node.kind !== "proposition") {
+    if (
+      this.options.enqueueReview === undefined ||
+      this.options.llmClient === undefined ||
+      this.options.contradictionJudgeModel === undefined ||
+      node.kind !== "proposition"
+    ) {
       return;
     }
 
@@ -308,7 +361,18 @@ export class SemanticNodeRepository {
         match.node.label.toLowerCase() !== node.label.toLowerCase() ||
         match.node.description.toLowerCase() !== node.description.toLowerCase();
 
-      if (!substantiveDifference || !hasNegationConflict(node, match.node)) {
+      if (!substantiveDifference) {
+        continue;
+      }
+
+      const contradicts = await judgeContradiction(
+        node,
+        match.node,
+        this.options.llmClient,
+        this.options.contradictionJudgeModel,
+      );
+
+      if (!contradicts) {
         continue;
       }
 

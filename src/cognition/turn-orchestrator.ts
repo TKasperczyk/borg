@@ -231,6 +231,10 @@ export class TurnOrchestrator {
           useLlmFallback: this.options.config.perception.useLlmFallback,
           modeWhenLlmAbsent: this.options.config.perception.modeWhenLlmAbsent,
           affectiveUseLlmFallback: this.options.config.affective.useLlmFallback,
+          // Temporal cue uses the same LLM gate as mode detection: both rely
+          // on the perception-bound LLM client. Turning off perception LLM
+          // fallback turns off temporal extraction too (degrades to null).
+          temporalCueUseLlmFallback: this.options.config.perception.useLlmFallback,
           detectAffectiveSignal: this.options.affectiveSignalDetector,
           onAffectiveError: (error) =>
             this.appendHookFailureEvent(streamWriter, "affective_extraction", error),

@@ -1,58 +1,107 @@
+import { z } from "zod";
+
+import {
+  toToolInputSchema,
+  type LLMClient,
+  type LLMToolDefinition,
+} from "../../llm/index.js";
 import type { TemporalCue } from "../types.js";
 
-const DAY_MS = 24 * 60 * 60 * 1_000;
+const temporalCueJudgeSchema = z.object({
+  has_cue: z.boolean(),
+  since_ts: z.number().nullable().optional(),
+  until_ts: z.number().nullable().optional(),
+  label: z.string().min(1).nullable().optional(),
+});
+const TEMPORAL_CUE_TOOL_NAME = "EmitTemporalCue";
+const TEMPORAL_CUE_TOOL = {
+  name: TEMPORAL_CUE_TOOL_NAME,
+  description:
+    "Extract a temporal reference from the user's message. Emit has_cue=true only if the message refers to a specific past/future time window. Fill since_ts and until_ts as Unix milliseconds relative to the supplied 'now' timestamp.",
+  inputSchema: toToolInputSchema(temporalCueJudgeSchema),
+} satisfies LLMToolDefinition;
 
-function startOfDay(timestamp: number): number {
-  const date = new Date(timestamp);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
-}
+export type TemporalCueDetectorOptions = {
+  llmClient?: LLMClient;
+  model?: string;
+};
 
-export function detectTemporalCue(text: string, nowMs = Date.now()): TemporalCue | null {
-  const normalized = text.toLowerCase();
-
-  if (/\byesterday\b/.test(normalized)) {
-    const today = startOfDay(nowMs);
-    return {
-      sinceTs: today - DAY_MS,
-      untilTs: today,
-      label: "yesterday",
-    };
+/**
+ * Detect a temporal reference in the user's message. Returns `null` if the
+ * message doesn't refer to a specific time window, or if no LLM client is
+ * configured for extraction.
+ *
+ * Previously this module hardcoded six English phrases (yesterday, last
+ * week, this morning, this week, today, tonight) and silently returned
+ * `null` for everything else -- including very common phrasings like
+ * "last Tuesday", "earlier today", "a few days ago", "this past weekend".
+ * That patch-work has been replaced with an LLM classifier that interprets
+ * the message directly against the current clock.
+ */
+export async function detectTemporalCue(
+  text: string,
+  nowMs: number,
+  options: TemporalCueDetectorOptions = {},
+): Promise<TemporalCue | null> {
+  if (options.llmClient === undefined || options.model === undefined) {
+    return null;
   }
 
-  if (/\blast week\b/.test(normalized)) {
-    return {
-      sinceTs: nowMs - 7 * DAY_MS,
-      untilTs: nowMs,
-      label: "last week",
-    };
-  }
+  try {
+    const response = await options.llmClient.complete({
+      model: options.model,
+      system:
+        "Identify whether the user's message contains a temporal reference -- a specific past or future time window. Examples: 'yesterday', 'last Tuesday', 'earlier today', 'this morning', 'a week ago', 'tonight', 'next month'. If there is no concrete time window being referenced, return has_cue=false. When a cue is present, compute since_ts and until_ts as Unix milliseconds relative to the supplied 'now' timestamp (also in ms). Prefer narrower ranges when the phrase is specific (e.g. 'yesterday' is a 24h window, not a week). Label should be a short human-readable form of the phrase.",
+      messages: [
+        {
+          role: "user",
+          content: JSON.stringify({
+            text,
+            now_ms: nowMs,
+          }),
+        },
+      ],
+      tools: [TEMPORAL_CUE_TOOL],
+      tool_choice: { type: "tool", name: TEMPORAL_CUE_TOOL_NAME },
+      max_tokens: 400,
+      budget: "perception-temporal-cue",
+    });
 
-  if (/\bthis morning\b/.test(normalized)) {
-    const today = startOfDay(nowMs);
-    return {
-      sinceTs: today,
-      untilTs: today + 12 * 60 * 60 * 1_000,
-      label: "this morning",
-    };
-  }
+    const call = response.tool_calls.find(
+      (toolCall) => toolCall.name === TEMPORAL_CUE_TOOL_NAME,
+    );
+    if (call === undefined) {
+      return null;
+    }
 
-  if (/\bthis week\b/.test(normalized)) {
-    return {
-      sinceTs: nowMs - 7 * DAY_MS,
-      untilTs: nowMs,
-      label: "this week",
-    };
-  }
+    const parsed = temporalCueJudgeSchema.safeParse(call.input);
+    if (!parsed.success || !parsed.data.has_cue) {
+      return null;
+    }
 
-  if (/\btoday\b/.test(normalized) || /\btonight\b/.test(normalized)) {
-    const today = startOfDay(nowMs);
-    return {
-      sinceTs: today,
-      untilTs: today + DAY_MS,
-      label: /\btonight\b/.test(normalized) ? "tonight" : "today",
-    };
-  }
+    const sinceTs = parsed.data.since_ts ?? undefined;
+    const untilTs = parsed.data.until_ts ?? undefined;
+    const label = parsed.data.label ?? undefined;
 
-  return null;
+    // If the judge returns no actionable window, treat as no cue.
+    if (sinceTs === undefined && untilTs === undefined) {
+      return null;
+    }
+
+    const cue: TemporalCue = {};
+    if (sinceTs !== undefined) {
+      cue.sinceTs = sinceTs;
+    }
+    if (untilTs !== undefined) {
+      cue.untilTs = untilTs;
+    }
+    if (label !== undefined) {
+      cue.label = label;
+    }
+    return cue;
+  } catch {
+    // Any failure on this cheap enrichment path degrades gracefully to
+    // "no temporal filter" rather than breaking the turn.
+    return null;
+  }
 }

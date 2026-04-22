@@ -82,17 +82,58 @@ describe("perception", () => {
     });
   });
 
-  it("detects temporal cues and produces a perception result", async () => {
+  it("produces a perception result with null temporal cue when no LLM is configured", async () => {
+    // Previously this module had a hardcoded "yesterday" -> 24h-window
+    // pattern. With the heuristic tier removed, temporal extraction is
+    // LLM-only; without an LLM client the cue is null and retrieval
+    // simply doesn't get a time filter -- which is the safe default.
     const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
     const perceiver = new Perceiver({
       useLlmFallback: false,
       clock: new FixedClock(nowMs),
     });
     const perceived = await perceiver.perceive("Jane Doe said yesterday was rough");
-    const cue = detectTemporalCue("yesterday", nowMs);
 
     expect(perceived.entities).toContain("Jane Doe");
-    expect(perceived.temporalCue).toEqual(cue);
+    expect(perceived.temporalCue).toBeNull();
     expect(perceived.mode).toBe("idle");
+  });
+
+  it("extracts a temporal cue via the LLM when one is configured", async () => {
+    const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
+    const sinceTs = nowMs - 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_temporal",
+              name: "EmitTemporalCue",
+              input: {
+                has_cue: true,
+                since_ts: sinceTs,
+                until_ts: nowMs,
+                label: "yesterday",
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const cue = await detectTemporalCue("Jane said yesterday was rough", nowMs, {
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    expect(cue).toEqual({
+      sinceTs,
+      untilTs: nowMs,
+      label: "yesterday",
+    });
   });
 });

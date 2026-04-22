@@ -840,11 +840,26 @@ export class Borg {
       const enqueueReview = (input: Parameters<ReviewQueueRepository["enqueue"]>[0]) => {
         return reviewQueueRepository?.enqueue(input);
       };
+      // llmFactory is declared later in this scope (line ~947) because other
+      // construction depends on it, but the semantic repo only uses the LLM
+      // lazily -- at duplicate-review time. We can defer creation by passing
+      // options.llmClient if present, else undefined. If not present, the
+      // later factory will fabricate one from config, but for near-dup
+      // contradiction judging we only need the SAME LLM client later. Use
+      // a closure that will resolve once llmFactory exists.
+      let deferredLlm: LLMClient | undefined;
       const semanticNodeRepository = new SemanticNodeRepository({
         table: semanticNodesTable,
         db: sqlite,
         clock,
         enqueueReview,
+        // Accessed lazily -- deferredLlm is populated below once llmFactory
+        // is built. Until then the field remains undefined and the repo
+        // simply skips duplicate-review on inserts (safe default).
+        get llmClient(): LLMClient | undefined {
+          return deferredLlm;
+        },
+        contradictionJudgeModel: config.anthropic.models.background,
       });
       reviewQueueRepository = new ReviewQueueRepository({
         db: sqlite,
@@ -944,6 +959,10 @@ export class Borg {
         });
       const llmFactory = createLlmFactory(config, options.llmClient, options.env, clock);
       const lazyLlmClient = createLazyLlmClient(llmFactory);
+      // Resolve the deferred LLM client for semantic-repo duplicate review
+      // now that llmFactory exists. Before this point the repo's getter
+      // returns undefined and near-dup inserts simply skip review.
+      deferredLlm = llmFactory();
       const reverserRegistry = new ReverserRegistry();
       const auditLog = new AuditLog({
         db: sqlite,

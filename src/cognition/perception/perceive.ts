@@ -15,6 +15,14 @@ export type PerceiverOptions = {
   model?: string;
   useLlmFallback?: boolean;
   affectiveUseLlmFallback?: boolean;
+  /**
+   * If true (default) and an LLM client + model are configured, temporal
+   * cue extraction runs an LLM classifier every turn. Previously this was
+   * a hardcoded 6-phrase regex list that missed most real temporal
+   * phrasings ("last Tuesday", "earlier today", "a few days ago"). With
+   * fakes or no LLM, degrades to "no temporal filter".
+   */
+  temporalCueUseLlmFallback?: boolean;
   clock?: Clock;
   detectAffectiveSignal?: typeof detectAffectiveSignal;
   onAffectiveError?: (error: unknown) => Promise<void> | void;
@@ -34,6 +42,7 @@ export class Perceiver {
   private readonly llmClient?: LLMClient;
   private readonly model?: string;
   private readonly affectiveUseLlmFallback: boolean;
+  private readonly temporalCueUseLlmFallback: boolean;
   private readonly detectAffectiveSignal: typeof detectAffectiveSignal;
   private readonly onAffectiveError?: (error: unknown) => Promise<void> | void;
 
@@ -42,6 +51,7 @@ export class Perceiver {
     this.llmClient = options.llmClient;
     this.model = options.model;
     this.affectiveUseLlmFallback = options.affectiveUseLlmFallback ?? false;
+    this.temporalCueUseLlmFallback = options.temporalCueUseLlmFallback ?? true;
     this.detectAffectiveSignal = options.detectAffectiveSignal ?? detectAffectiveSignal;
     this.onAffectiveError = options.onAffectiveError;
     this.entityExtractor = new EntityExtractor({
@@ -78,17 +88,25 @@ export class Perceiver {
   }
 
   async perceive(text: string, recentHistory: readonly string[] = []): Promise<PerceptionResult> {
-    const [entities, mode, affectiveSignal] = await Promise.all([
+    const nowMs = this.clock.now();
+    const [entities, mode, affectiveSignal, temporalCue] = await Promise.all([
       this.entityExtractor.extractEntities(text),
       this.modeDetector.detectMode(text, recentHistory),
       this.detectAffectiveSignalSafely(text, recentHistory),
+      // Temporal cue extraction is now LLM-backed; degrades to null when
+      // no LLM client is configured. Runs in parallel with the rest of
+      // perception so it doesn't add serial latency.
+      detectTemporalCue(text, nowMs, {
+        llmClient: this.temporalCueUseLlmFallback ? this.llmClient : undefined,
+        model: this.temporalCueUseLlmFallback ? this.model : undefined,
+      }),
     ]);
 
     return perceptionResultSchema.parse({
       entities,
       mode,
       affectiveSignal,
-      temporalCue: detectTemporalCue(text, this.clock.now()),
+      temporalCue,
     });
   }
 }
