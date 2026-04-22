@@ -6,17 +6,11 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { WorkingMemoryError } from "../../util/errors.js";
 import type { SessionId } from "../../util/ids.js";
 
-import {
-  createWorkingMemory,
-  pushRecentThought,
-  type WorkingMemory,
-  workingMemorySchema,
-} from "./types.js";
+import { createWorkingMemory, type WorkingMemory, workingMemorySchema } from "./types.js";
 
 export type WorkingMemoryStoreOptions = {
   dataDir?: string;
   clock?: Clock;
-  maxRecentThoughts?: number;
 };
 
 function cloneWorkingMemory(state: WorkingMemory): WorkingMemory {
@@ -25,12 +19,10 @@ function cloneWorkingMemory(state: WorkingMemory): WorkingMemory {
 
 export class WorkingMemoryStore {
   private readonly clock: Clock;
-  private readonly maxRecentThoughts: number;
   private readonly states = new Map<SessionId, WorkingMemory>();
 
   constructor(private readonly options: WorkingMemoryStoreOptions = {}) {
     this.clock = options.clock ?? new SystemClock();
-    this.maxRecentThoughts = options.maxRecentThoughts ?? 10;
   }
 
   private get workingDirectory(): string | undefined {
@@ -63,10 +55,7 @@ export class WorkingMemoryStore {
   }
 
   save(state: WorkingMemory): WorkingMemory {
-    const parsed = workingMemorySchema.safeParse({
-      ...state,
-      recent_thoughts: state.recent_thoughts.slice(-this.maxRecentThoughts),
-    });
+    const parsed = workingMemorySchema.safeParse(state);
 
     if (!parsed.success) {
       throw new WorkingMemoryError("Invalid working memory state", {
@@ -104,11 +93,6 @@ export class WorkingMemoryStore {
         code: "WORKING_MEMORY_CLEAR_FAILED",
       });
     }
-  }
-
-  addRecentThought(sessionId: SessionId, thought: string): WorkingMemory {
-    const current = this.load(sessionId);
-    return this.save(pushRecentThought(current, thought, this.maxRecentThoughts));
   }
 
   private readPersisted(sessionId: SessionId): WorkingMemory | undefined {

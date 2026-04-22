@@ -25,34 +25,34 @@ describe("working memory store", () => {
     const store = new WorkingMemoryStore({
       dataDir: tempDir,
       clock: new FixedClock(100),
-      maxRecentThoughts: 3,
     });
     const initial = store.load(DEFAULT_SESSION_ID);
 
     expect(initial).toMatchObject({
       session_id: DEFAULT_SESSION_ID,
       turn_counter: 0,
-      recent_thoughts: [],
+      current_focus: null,
+      hot_entities: [],
+      pending_intents: [],
     });
 
     store.save({
       ...initial,
       turn_counter: 2,
-      scratchpad: "thinking",
-      recent_thoughts: ["a", "b", "c", "d"],
+      current_focus: "Atlas",
+      hot_entities: ["Atlas"],
       updated_at: 200,
     });
 
     const reloaded = new WorkingMemoryStore({
       dataDir: tempDir,
       clock: new FixedClock(300),
-      maxRecentThoughts: 3,
     }).load(DEFAULT_SESSION_ID);
 
     expect(reloaded).toMatchObject({
       turn_counter: 2,
-      scratchpad: "thinking",
-      recent_thoughts: ["b", "c", "d"],
+      current_focus: "Atlas",
+      hot_entities: ["Atlas"],
     });
 
     store.clear(DEFAULT_SESSION_ID);

@@ -110,9 +110,7 @@ describe("deliberator", () => {
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 2,
-        scratchpad: "",
         current_focus: null,
-        recent_thoughts: [],
         hot_entities: [],
         pending_intents: [],
         suppressed: [],
@@ -194,9 +192,7 @@ describe("deliberator", () => {
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 2,
-        scratchpad: "",
         current_focus: null,
-        recent_thoughts: [],
         hot_entities: [],
         pending_intents: [],
         suppressed: [],
@@ -262,9 +258,7 @@ describe("deliberator", () => {
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
-        scratchpad: "",
         current_focus: null,
-        recent_thoughts: [],
         hot_entities: [],
         pending_intents: [],
         suppressed: [],
@@ -324,9 +318,7 @@ describe("deliberator", () => {
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
-        scratchpad: "",
         current_focus: null,
-        recent_thoughts: [],
         hot_entities: [],
         pending_intents: [],
         suppressed: [],
@@ -422,9 +414,7 @@ describe("deliberator", () => {
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
-        scratchpad: "",
         current_focus: null,
-        recent_thoughts: [],
         hot_entities: [],
         pending_intents: [],
         suppressed: [],
@@ -505,9 +495,7 @@ describe("deliberator", () => {
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 2,
-        scratchpad: "",
         current_focus: null,
-        recent_thoughts: [],
         hot_entities: [],
         pending_intents: [],
         suppressed: [],
@@ -613,9 +601,7 @@ describe("deliberator", () => {
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
-        scratchpad: "",
         current_focus: null,
-        recent_thoughts: [],
         hot_entities: [],
         pending_intents: [],
         suppressed: [],
@@ -669,9 +655,7 @@ describe("deliberator", () => {
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
-        scratchpad: "",
         current_focus: null,
-        recent_thoughts: [],
         hot_entities: [],
         pending_intents: [],
         suppressed: [],
@@ -747,9 +731,7 @@ describe("deliberator", () => {
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
-        scratchpad: "",
         current_focus: "Atlas",
-        recent_thoughts: [],
         hot_entities: ["Atlas"],
         pending_intents: [],
         suppressed: [],
@@ -809,9 +791,7 @@ describe("deliberator", () => {
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
-        scratchpad: "",
         current_focus: null,
-        recent_thoughts: [],
         hot_entities: [],
         pending_intents: [],
         suppressed: [],
@@ -888,9 +868,7 @@ describe("deliberator", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          scratchpad: "",
           current_focus: null,
-          recent_thoughts: [],
           hot_entities: [],
           pending_intents: [],
           suppressed: [],
@@ -976,9 +954,7 @@ describe("deliberator", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            scratchpad: "",
             current_focus: null,
-            recent_thoughts: [],
             hot_entities: [],
             pending_intents: [],
             suppressed: [],

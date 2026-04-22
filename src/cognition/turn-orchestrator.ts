@@ -289,7 +289,6 @@ export class TurnOrchestrator {
         workingMemory = {
           ...workingMemory,
           turn_counter: workingMemory.turn_counter + 1,
-          scratchpad: "",
           current_focus: perception.entities[0] ?? (input.userMessage.slice(0, 80) || null),
           hot_entities: perception.entities,
           mood: perception.affectiveSignal,
@@ -414,7 +413,6 @@ export class TurnOrchestrator {
 
         workingMemory = {
           ...workingMemory,
-          scratchpad: deliberation.thoughts.join("\n"),
           updated_at: this.clock.now(),
         };
         const commitmentChecker = new CommitmentChecker({

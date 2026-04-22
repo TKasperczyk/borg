@@ -13,7 +13,7 @@ import {
   appendOpenQuestionHookFailureEvent,
 } from "../../memory/self/review-open-question-hook.js";
 import { EpisodicRepository } from "../../memory/episodic/index.js";
-import { pushRecentThought, type WorkingMemory } from "../../memory/working/index.js";
+import type { WorkingMemory } from "../../memory/working/index.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 import type { SkillId } from "../../util/ids.js";
 
@@ -238,13 +238,8 @@ export class Reflector {
 
     let nextWorkingMemory: WorkingMemory = {
       ...context.actionResult.workingMemory,
-      scratchpad: "",
       updated_at: this.clock.now(),
     };
-
-    for (const thought of context.deliberationResult.thoughts) {
-      nextWorkingMemory = pushRecentThought(nextWorkingMemory, thought);
-    }
 
     const carrySkillId = context.workingMemory.last_selected_skill_id;
     const carrySkillTurn = context.workingMemory.last_selected_skill_turn;

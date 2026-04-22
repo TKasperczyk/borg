@@ -38,9 +38,7 @@ export const workingSkillIdSchema = z
 export const workingMemorySchema = z.object({
   session_id: workingSessionIdSchema,
   turn_counter: z.number().int().nonnegative(),
-  scratchpad: z.string(),
   current_focus: z.string().min(1).nullable(),
-  recent_thoughts: z.array(z.string()),
   hot_entities: z.array(z.string().min(1)),
   pending_intents: z.array(intentRecordSchema),
   suppressed: z.array(suppressedEntrySchema).default([]),
@@ -53,13 +51,19 @@ export const workingMemorySchema = z.object({
 
 export type WorkingMemory = z.infer<typeof workingMemorySchema>;
 
+/**
+ * Derived live-state only. Phase E removed `scratchpad` (S2 planner output
+ * -- the stream now persists that as a structured `plan:` thought entry)
+ * and `recent_thoughts` (agent self-talk, redundant with the stream's
+ * `thought` entries and never a source of recent dialogue). If cognition
+ * needs discourse state later (thread summary, active threads), derive it
+ * from the stream per-turn rather than caching it here.
+ */
 export function createWorkingMemory(sessionId: SessionId, timestamp: number): WorkingMemory {
   return {
     session_id: sessionId,
     turn_counter: 0,
-    scratchpad: "",
     current_focus: null,
-    recent_thoughts: [],
     hot_entities: [],
     pending_intents: [],
     suppressed: [],
@@ -68,25 +72,6 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
     last_selected_skill_turn: null,
     mode: null,
     updated_at: timestamp,
-  };
-}
-
-export function pushRecentThought(
-  workingMemory: WorkingMemory,
-  thought: string,
-  limit = 10,
-): WorkingMemory {
-  const trimmed = thought.trim();
-
-  if (trimmed.length === 0) {
-    return workingMemory;
-  }
-
-  const recentThoughts = [...workingMemory.recent_thoughts, trimmed].slice(-limit);
-
-  return {
-    ...workingMemory,
-    recent_thoughts: recentThoughts,
   };
 }
 

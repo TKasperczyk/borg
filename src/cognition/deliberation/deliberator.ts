@@ -268,9 +268,15 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): str
 }
 
 function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
+  // Phase E: working memory no longer caches raw agent self-talk
+  // (recent_thoughts) or transient planner scratchpad. Recent dialogue
+  // reaches cognition via the recency lane (Phase A); persistent thoughts
+  // live in the stream. What's left here is derived live-turn state
+  // (current focus, hot entities, mood) that the model uses to anchor
+  // the turn in the *right now*.
   const mood = workingMemory.mood;
 
-  return `Working memory: focus=${workingMemory.current_focus ?? "none"}; thoughts=${workingMemory.recent_thoughts.slice(-3).join(" | ") || "none"}; entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${mood === null || mood === undefined ? "neutral" : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`}`;
+  return `Working memory: focus=${workingMemory.current_focus ?? "none"}; entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${mood === null || mood === undefined ? "neutral" : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`}`;
 }
 
 function estimatePromptTokens(text: string): number {

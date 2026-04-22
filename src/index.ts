@@ -228,7 +228,6 @@ export {
 export {
   WorkingMemoryStore,
   createWorkingMemory,
-  pushRecentThought,
   workingMemorySchema,
   type WorkingMemory,
   type WorkingMemoryStoreOptions,

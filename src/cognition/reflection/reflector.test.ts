@@ -142,9 +142,7 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          scratchpad: "thinking",
           current_focus: "Atlas",
-          recent_thoughts: [],
           hot_entities: ["Atlas"],
           pending_intents: [],
           suppressed: [],
@@ -177,9 +175,7 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            scratchpad: "brief thought",
             current_focus: "Atlas",
-            recent_thoughts: [],
             hot_entities: ["Atlas"],
             pending_intents: [],
             suppressed: [],
@@ -204,8 +200,12 @@ describe("reflector", () => {
     expect(traitsRepository.list()[0]?.label).toBe("engaged");
     expect(suppressionSet.isSuppressed(episode.id)).toBe(true);
     expect(suppressionSet.isSuppressed("ep_stale")).toBe(false);
-    expect(reflected.scratchpad).toBe("");
-    expect(reflected.recent_thoughts).toContain("brief thought");
+    // Phase E removed scratchpad/recent_thoughts from working memory. The
+    // reflector no longer clears scratchpad or pushes thoughts into the
+    // cache; thoughts live in the stream (persisted by the deliberator),
+    // and working memory holds derived live-turn state only.
+    expect(reflected.turn_counter).toBe(1);
+    expect(reflected.current_focus).toBe("Atlas");
   });
 
   it("counts an episode as used when the response echoes title or narrative tokens", async () => {
@@ -300,9 +300,7 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          scratchpad: "",
           current_focus: null,
-          recent_thoughts: [],
           hot_entities: [],
           pending_intents: [],
           suppressed: [],
@@ -335,9 +333,7 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            scratchpad: "",
             current_focus: null,
-            recent_thoughts: [],
             hot_entities: [],
             pending_intents: [],
             suppressed: [],
@@ -450,9 +446,7 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          scratchpad: "",
           current_focus: "Atlas",
-          recent_thoughts: [],
           hot_entities: ["Atlas"],
           pending_intents: [],
           suppressed: [],
@@ -485,9 +479,7 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            scratchpad: "",
             current_focus: "Atlas",
-            recent_thoughts: [],
             hot_entities: ["Atlas"],
             pending_intents: [],
             suppressed: [],
@@ -604,9 +596,7 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          scratchpad: "",
           current_focus: "Atlas",
-          recent_thoughts: [],
           hot_entities: ["Atlas"],
           pending_intents: [],
           suppressed: [],
@@ -639,9 +629,7 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            scratchpad: "",
             current_focus: "Atlas",
-            recent_thoughts: [],
             hot_entities: ["Atlas"],
             pending_intents: [],
             suppressed: [],
@@ -664,7 +652,7 @@ describe("reflector", () => {
       sessionId: DEFAULT_SESSION_ID,
     }).tail(1);
 
-    expect(reflected.scratchpad).toBe("");
+    expect(reflected.turn_counter).toBe(1);
     expect(entries[0]).toMatchObject({
       kind: "internal_event",
       content: {
@@ -729,9 +717,7 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          scratchpad: "",
           current_focus: "Rust",
-          recent_thoughts: [],
           hot_entities: ["Rust"],
           pending_intents: [],
           suppressed: [],
@@ -767,9 +753,7 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            scratchpad: "",
             current_focus: "Rust",
-            recent_thoughts: [],
             hot_entities: ["Rust"],
             pending_intents: [],
             suppressed: [],
@@ -918,9 +902,7 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          scratchpad: "",
           current_focus: "Rust",
-          recent_thoughts: [],
           hot_entities: ["Rust"],
           pending_intents: [],
           suppressed: [],
@@ -956,9 +938,7 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            scratchpad: "",
             current_focus: "Rust",
-            recent_thoughts: [],
             hot_entities: ["Rust"],
             pending_intents: [],
             suppressed: [],
