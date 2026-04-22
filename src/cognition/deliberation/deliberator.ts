@@ -31,6 +31,7 @@ import { type CognitiveMode, type PerceptionResult } from "../types.js";
 import type { SessionId } from "../../util/ids.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 import type { SemanticNode } from "../../memory/semantic/index.js";
+import { summarizeProvenanceForPrompt, type Provenance } from "../../memory/common/index.js";
 
 export type TurnStakes = "low" | "medium" | "high";
 
@@ -313,9 +314,16 @@ function chooseDeliberationPath(
 }
 
 function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): string {
-  const values = selfSnapshot.values.map((value) => value.label);
-  const goals = selfSnapshot.goals.map((goal) => goal.description);
-  const traits = selfSnapshot.traits.map((trait) => `${trait.label}:${trait.strength.toFixed(2)}`);
+  const values = selfSnapshot.values.map(
+    (value) => `${value.label} ${summarizeProvenanceForPrompt(value.provenance)}`,
+  );
+  const goals = selfSnapshot.goals.map(
+    (goal) => `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}`,
+  );
+  const traits = selfSnapshot.traits.map(
+    (trait) =>
+      `${trait.label}:${trait.strength.toFixed(2)} ${summarizeProvenanceForPrompt(trait.provenance)}`,
+  );
 
   if (values.length === 0 && goals.length === 0 && traits.length === 0) {
     return turnCounter > 1
@@ -331,6 +339,23 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): str
     .filter((part): part is string => part !== null)
     .join(" | ")
     .replace(/^/, "Self snapshot: ");
+}
+
+function renderOptionalProvenance(provenance: Provenance | null | undefined): string {
+  return provenance === null || provenance === undefined ? "" : ` ${summarizeProvenanceForPrompt(provenance)}`;
+}
+
+function renderEpisodeDerivedProvenance(episodeIds: readonly string[]): string {
+  if (episodeIds.length === 0) {
+    return "";
+  }
+
+  return ` ${summarizeProvenanceForPrompt({
+    kind: "episodes",
+    episode_ids: [...episodeIds] as Provenance extends { kind: "episodes"; episode_ids: infer T }
+      ? T
+      : never,
+  })}`;
 }
 
 function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
@@ -579,7 +604,11 @@ function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string 
       .slice(0, 3)
       .map(
         (question) =>
-          `- ${question.question} (urgency=${question.urgency.toFixed(2)}, source=${question.source})`,
+          `- ${question.question} (urgency=${question.urgency.toFixed(2)}, source=${question.source})${
+            question.provenance === null
+              ? renderEpisodeDerivedProvenance(question.related_episode_ids)
+              : renderOptionalProvenance(question.provenance)
+          }`,
       ),
   ].join("\n");
 }
@@ -591,7 +620,7 @@ function summarizeCurrentPeriod(period: AutobiographicalPeriod | null | undefine
 
   const narrative = period.narrative.trim();
   const themes = period.themes.filter((theme) => theme.trim().length > 0);
-  const parts: string[] = [`Current period: ${period.label}`];
+  const parts: string[] = [`Current period: ${period.label}${renderOptionalProvenance(period.provenance)}`];
 
   if (narrative.length > 0) {
     const snippet = narrative.length > 240 ? `${narrative.slice(0, 237).trimEnd()}...` : narrative;

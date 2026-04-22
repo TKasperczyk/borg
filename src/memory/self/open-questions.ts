@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { StorageError } from "../../util/errors.js";
+import { ProvenanceError, StorageError } from "../../util/errors.js";
 import {
   createOpenQuestionId,
   openQuestionIdHelpers,
@@ -14,6 +14,7 @@ import { serializeJsonValue } from "../../util/json-value.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 import { episodeIdSchema } from "../episodic/types.js";
 import { semanticNodeIdSchema } from "../semantic/types.js";
+import { parseStoredProvenance, provenanceSchema, toStoredProvenance } from "../common/provenance.js";
 
 export const OPEN_QUESTION_STATUSES = ["open", "resolved", "abandoned"] as const;
 export const OPEN_QUESTION_SOURCES = [
@@ -41,6 +42,7 @@ export const openQuestionSchema = z.object({
   status: openQuestionStatusSchema,
   related_episode_ids: z.array(episodeIdSchema),
   related_semantic_node_ids: z.array(semanticNodeIdSchema),
+  provenance: provenanceSchema.nullable(),
   source: openQuestionSourceSchema,
   created_at: z.number().finite(),
   last_touched: z.number().finite(),
@@ -49,7 +51,17 @@ export const openQuestionSchema = z.object({
   resolved_at: z.number().finite().nullable(),
   abandoned_reason: z.string().nullable(),
   abandoned_at: z.number().finite().nullable(),
-});
+}).refine(
+  (value) =>
+    value.related_episode_ids.length > 0 ||
+    value.related_semantic_node_ids.length > 0 ||
+    value.provenance !== null,
+  {
+    message:
+      "Open question requires related_episode_ids, related_semantic_node_ids, or explicit provenance",
+    path: ["provenance"],
+  },
+);
 
 export type OpenQuestion = z.infer<typeof openQuestionSchema>;
 export type OpenQuestionStatus = z.infer<typeof openQuestionStatusSchema>;
@@ -122,6 +134,14 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
       semanticNodeIdSchema,
       "open question related_semantic_node_ids",
     ),
+    provenance:
+      row.provenance_kind === null || row.provenance_kind === undefined
+        ? null
+        : parseStoredProvenance({
+            provenance_kind: row.provenance_kind,
+            provenance_episode_ids: row.provenance_episode_ids,
+            provenance_process: row.provenance_process,
+          }),
     source: row.source,
     created_at: Number(row.created_at),
     last_touched: Number(row.last_touched),
@@ -178,23 +198,25 @@ export class OpenQuestionsRepository {
     urgency: number;
     related_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
     related_semantic_node_ids?: readonly z.infer<typeof semanticNodeIdSchema>[];
+    provenance?: z.infer<typeof provenanceSchema> | null;
     source: OpenQuestionSource;
     created_at?: number;
     last_touched?: number;
   }): OpenQuestion {
     const relatedEpisodeIds = input.related_episode_ids ?? [];
     const relatedSemanticNodeIds = input.related_semantic_node_ids ?? [];
-    const key = buildOpenQuestionDedupeKey({
-      question: input.question,
-      relatedEpisodeIds,
-      relatedSemanticNodeIds,
-    });
-    const existing = this.getByDedupeKey(key);
-
-    if (existing !== null) {
-      return existing;
+    if (
+      relatedEpisodeIds.length === 0 &&
+      relatedSemanticNodeIds.length === 0 &&
+      input.provenance === undefined
+    ) {
+      throw new ProvenanceError(
+        "Open question requires related ids or explicit provenance",
+        {
+          code: "PROVENANCE_REQUIRED",
+        },
+      );
     }
-
     const nowMs = this.clock.now();
     const question = openQuestionSchema.parse({
       id: input.id ?? createOpenQuestionId(),
@@ -203,6 +225,7 @@ export class OpenQuestionsRepository {
       status: "open",
       related_episode_ids: relatedEpisodeIds,
       related_semantic_node_ids: relatedSemanticNodeIds,
+      provenance: input.provenance ?? null,
       source: input.source,
       created_at: input.created_at ?? nowMs,
       last_touched: input.last_touched ?? nowMs,
@@ -212,15 +235,28 @@ export class OpenQuestionsRepository {
       abandoned_reason: null,
       abandoned_at: null,
     });
+    const key = buildOpenQuestionDedupeKey({
+      question: question.question,
+      relatedEpisodeIds: question.related_episode_ids,
+      relatedSemanticNodeIds: question.related_semantic_node_ids,
+    });
+    const existing = this.getByDedupeKey(key);
+
+    if (existing !== null) {
+      return existing;
+    }
+    const storedProvenance =
+      question.provenance === null ? null : toStoredProvenance(question.provenance);
 
     this.db
       .prepare(
         `
           INSERT INTO open_questions (
             id, question, dedupe_key, urgency, status, related_episode_ids, related_semantic_node_ids,
-            source, created_at, last_touched, resolution_episode_id, resolution_note, resolved_at,
-            abandoned_reason, abandoned_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)
+            provenance_kind, provenance_episode_ids, provenance_process, source, created_at,
+            last_touched, resolution_episode_id, resolution_note, resolved_at, abandoned_reason,
+            abandoned_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -231,9 +267,17 @@ export class OpenQuestionsRepository {
         question.status,
         serializeJsonValue(question.related_episode_ids),
         serializeJsonValue(question.related_semantic_node_ids),
+        storedProvenance?.provenance_kind ?? null,
+        storedProvenance?.provenance_episode_ids ?? null,
+        storedProvenance?.provenance_process ?? null,
         question.source,
         question.created_at,
         question.last_touched,
+        question.resolution_episode_id,
+        question.resolution_note,
+        question.resolved_at,
+        question.abandoned_reason,
+        question.abandoned_at,
       );
 
     return question;

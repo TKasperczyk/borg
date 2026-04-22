@@ -129,6 +129,19 @@ function averageRetrievalConfidence(results: readonly RetrievedEpisode[]): numbe
   return results.reduce((sum, result) => sum + result.score, 0) / results.length;
 }
 
+function buildReflectionProvenance(retrievedEpisodes: readonly RetrievedEpisode[]) {
+  const episodeIds = [...new Set(retrievedEpisodes.slice(0, 3).map((result) => result.episode.id))];
+  return episodeIds.length > 0
+    ? ({
+        kind: "episodes" as const,
+        episode_ids: episodeIds,
+      })
+    : ({
+        kind: "offline" as const,
+        process: "reflector",
+      });
+}
+
 function buildReflectionQuestion(userMessage: string, entities: readonly string[]): string {
   const anchor = entities
     .map((entity) => entity.trim())
@@ -168,6 +181,8 @@ export class Reflector {
   }
 
   async reflect(context: ReflectionContext, streamWriter: StreamWriter): Promise<WorkingMemory> {
+    const reflectionProvenance = buildReflectionProvenance(context.retrievedEpisodes);
+
     if (
       context.deliberationResult.thoughts.length > 0 &&
       !context.deliberationResult.thoughtsPersisted
@@ -180,7 +195,12 @@ export class Reflector {
       );
     }
 
-    context.traitsRepository.reinforce("engaged", 0.05, this.clock.now());
+    context.traitsRepository.reinforce({
+      label: "engaged",
+      delta: 0.05,
+      provenance: reflectionProvenance,
+      timestamp: this.clock.now(),
+    });
 
     for (const goal of context.selfSnapshot.goals) {
       if (!goalMentioned(goal, context.userMessage, context.actionResult.response)) {
@@ -189,7 +209,7 @@ export class Reflector {
 
       const note = `[${this.clock.now()}] Heuristic turn progress from response overlap`;
       const nextProgress = goal.progress_notes === null ? note : `${goal.progress_notes}\n${note}`;
-      context.goalsRepository.updateProgress(goal.id, nextProgress);
+      context.goalsRepository.updateProgress(goal.id, nextProgress, reflectionProvenance);
     }
 
     for (const result of context.retrievedEpisodes) {
@@ -227,6 +247,13 @@ export class Reflector {
           related_episode_ids: context.retrievedEpisodes
             .slice(0, 3)
             .map((result) => result.episode.id),
+          provenance:
+            context.retrievedEpisodes.length === 0
+              ? {
+                  kind: "offline",
+                  process: "reflector",
+                }
+              : null,
           source: "reflection",
         });
       } catch (error) {

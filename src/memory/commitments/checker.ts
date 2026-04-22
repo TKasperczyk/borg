@@ -5,6 +5,7 @@ import {
   type LLMClient,
   type LLMToolDefinition,
 } from "../../llm/index.js";
+import { summarizeProvenanceForPrompt } from "../common/provenance.js";
 import { parseCommitmentId, type CommitmentId, type EntityId } from "../../util/ids.js";
 import { EntityRepository } from "./repository.js";
 import type { CommitmentRecord } from "./types.js";
@@ -71,7 +72,7 @@ export function formatCommitmentsForPrompt(
     ...commitments.map((commitment) => {
       const audience = entityName(entityRepository, commitment.restricted_audience);
       const about = entityName(entityRepository, commitment.about_entity);
-      return `- [${commitment.type}] ${commitment.directive}${audience === null ? "" : ` audience=${audience}`}${about === null ? "" : ` about=${about}`}`;
+      return `- [${commitment.type}] ${commitment.directive}${audience === null ? "" : ` audience=${audience}`}${about === null ? "" : ` about=${about}`} ${summarizeProvenanceForPrompt(commitment.provenance)}`;
     }),
   ].join("\n");
 }

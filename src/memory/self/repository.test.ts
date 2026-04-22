@@ -2,10 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
+import { ProvenanceError } from "../../util/errors.js";
 import { selfMigrations } from "./migrations.js";
 import { GoalsRepository, TraitsRepository, ValuesRepository } from "./repository.js";
 
 describe("self repositories", () => {
+  const manualProvenance = { kind: "manual" } as const;
+  const episodeProvenance = {
+    kind: "episodes",
+    episode_ids: ["ep_aaaaaaaaaaaaaaaa" as const],
+  } as const;
+
   it("manages values and episode bindings", () => {
     const db = openDatabase(":memory:", {
       migrations: [...selfMigrations],
@@ -20,6 +27,7 @@ describe("self repositories", () => {
         label: "curiosity",
         description: "Prefer learning over stasis.",
         priority: 10,
+        provenance: manualProvenance,
       });
 
       values.bindToEpisode(value.id, "ep_aaaaaaaaaaaaaaaa" as never);
@@ -30,7 +38,7 @@ describe("self repositories", () => {
           id: value.id,
           label: "curiosity",
           last_affirmed: 200,
-          source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+          provenance: episodeProvenance,
         }),
       ]);
 
@@ -54,15 +62,17 @@ describe("self repositories", () => {
       const parent = goals.add({
         description: "Ship Sprint 2",
         priority: 10,
+        provenance: manualProvenance,
       });
       const child = goals.add({
         description: "Write extractor tests",
         priority: 8,
         parentId: parent.id,
+        provenance: manualProvenance,
       });
 
-      goals.updateProgress(child.id, "Covered happy path and dedup.");
-      goals.updateStatus(child.id, "done");
+      goals.updateProgress(child.id, "Covered happy path and dedup.", manualProvenance);
+      goals.updateStatus(child.id, "done", manualProvenance);
 
       expect(goals.list()).toEqual([
         expect.objectContaining({
@@ -72,6 +82,7 @@ describe("self repositories", () => {
               id: child.id,
               status: "done",
               progress_notes: "Covered happy path and dedup.",
+              provenance: manualProvenance,
             }),
           ],
         }),
@@ -97,15 +108,26 @@ describe("self repositories", () => {
     });
 
     try {
-      traits.reinforce("patient", 0.8, 0);
+      traits.reinforce({
+        label: "patient",
+        delta: 0.8,
+        provenance: manualProvenance,
+        timestamp: 0,
+      });
       clock.advance(24 * 3_600_000);
       traits.decay(24, clock.now());
-      traits.reinforce("decisive", 0.2, clock.now());
+      traits.reinforce({
+        label: "decisive",
+        delta: 0.2,
+        provenance: episodeProvenance,
+        timestamp: clock.now(),
+      });
 
       const listed = traits.list();
       expect(listed[0]).toEqual(
         expect.objectContaining({
           label: "patient",
+          provenance: manualProvenance,
         }),
       );
       expect(listed.find((trait) => trait.label === "patient")?.strength).toBeLessThan(0.8);
@@ -120,7 +142,7 @@ describe("self repositories", () => {
     }
   });
 
-  it("rejects invalid stored value source episode ids", () => {
+  it("rejects invalid stored value provenance episode ids", () => {
     const db = openDatabase(":memory:", {
       migrations: [...selfMigrations],
     });
@@ -134,14 +156,63 @@ describe("self repositories", () => {
         label: "clarity",
         description: "Prefer explicit state.",
         priority: 1,
+        provenance: manualProvenance,
       });
 
-      db.prepare("INSERT INTO value_sources (value_id, episode_id) VALUES (?, ?)").run(
+      db.prepare(
+        `
+          UPDATE "values"
+          SET provenance_kind = 'episodes', provenance_episode_ids = ?
+          WHERE id = ?
+        `,
+      ).run(
+        '["not-an-episode-id"]',
         value.id,
-        "not-an-episode-id",
       );
 
       expect(() => values.list()).toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects provenance-less creates and updates", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const values = new ValuesRepository({ db, clock: new FixedClock(100) });
+    const goals = new GoalsRepository({ db, clock: new FixedClock(100) });
+    const traits = new TraitsRepository({ db, clock: new FixedClock(100) });
+
+    try {
+      expect(() =>
+        values.add({
+          label: "clarity",
+          description: "Prefer explicit state.",
+          priority: 1,
+          provenance: undefined as never,
+        }),
+      ).toThrow(ProvenanceError);
+
+      const goal = goals.add({
+        description: "Ship Sprint 6",
+        priority: 1,
+        provenance: manualProvenance,
+      });
+
+      expect(() =>
+        goals.updateProgress(goal.id, "Updated", undefined as never),
+      ).toThrow(ProvenanceError);
+      expect(() =>
+        goals.updateStatus(goal.id, "done", undefined as never),
+      ).toThrow(ProvenanceError);
+      expect(() =>
+        traits.reinforce({
+          label: "patient",
+          delta: 0.2,
+          provenance: undefined as never,
+        }),
+      ).toThrow(ProvenanceError);
     } finally {
       db.close();
     }

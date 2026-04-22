@@ -2,11 +2,10 @@ import { z } from "zod";
 
 import {
   DEFAULT_SESSION_ID,
-  episodeIdHelpers,
   sessionIdHelpers,
-  type EpisodeId,
   type SessionId,
 } from "../../util/ids.js";
+import { provenanceSchema } from "../common/provenance.js";
 
 export const affectiveSessionIdSchema = z
   .string()
@@ -14,13 +13,6 @@ export const affectiveSessionIdSchema = z
     message: "Invalid session id",
   })
   .transform((value) => value as SessionId);
-
-export const affectiveEpisodeIdSchema = z
-  .string()
-  .refine((value) => episodeIdHelpers.is(value), {
-    message: "Invalid episode id",
-  })
-  .transform((value) => value as EpisodeId);
 
 export const DOMINANT_EMOTIONS = [
   "joy",
@@ -68,8 +60,8 @@ export const moodHistoryEntrySchema = z.object({
   ts: z.number().finite(),
   valence: z.number().min(-1).max(1),
   arousal: z.number().min(0).max(1),
-  trigger_episode_id: affectiveEpisodeIdSchema.nullable(),
   trigger_reason: z.string().min(1).nullable(),
+  provenance: provenanceSchema,
 });
 
 export type DominantEmotion = z.infer<typeof dominantEmotionSchema>;

@@ -9,6 +9,8 @@ import { GrowthMarkersRepository } from "./growth-markers.js";
 import { selfMigrations } from "./migrations.js";
 
 describe("GrowthMarkersRepository", () => {
+  const offlineNarratorProvenance = { kind: "offline", process: "self-narrator" } as const;
+
   it("adds markers, filters them, and summarizes by period", () => {
     const clock = new FixedClock(10_000);
     const db = openDatabase(":memory:", {
@@ -30,6 +32,7 @@ describe("GrowthMarkersRepository", () => {
       narrative: "A growth period.",
       key_episode_ids: [episodeId],
       themes: ["learning"],
+      provenance: offlineNarratorProvenance,
     });
 
     repository.add({

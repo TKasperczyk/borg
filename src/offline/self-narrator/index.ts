@@ -449,6 +449,10 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
         narrative: buildNarrative(null, observations),
         key_episode_ids: keyEpisodeIds,
         themes,
+        provenance: {
+          kind: "offline",
+          process: this.name,
+        },
         created_at: nowMs,
         last_updated: nowMs,
       });
@@ -597,6 +601,10 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           item.narrative,
           item.key_episode_ids,
           item.themes,
+          {
+            kind: "offline",
+            process: this.name,
+          },
         );
         ctx.auditLog.record({
           run_id: ctx.runId,

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { StorageError } from "../../util/errors.js";
+import { ProvenanceError, StorageError } from "../../util/errors.js";
 import {
   autobiographicalPeriodIdHelpers,
   createAutobiographicalPeriodId,
@@ -10,6 +10,7 @@ import {
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { episodeIdSchema } from "../episodic/types.js";
+import { parseStoredProvenance, provenanceSchema, toStoredProvenance } from "../common/provenance.js";
 
 export const autobiographicalPeriodIdSchema = z
   .string()
@@ -27,6 +28,7 @@ export const autobiographicalPeriodSchema = z
     narrative: z.string(),
     key_episode_ids: z.array(episodeIdSchema),
     themes: z.array(z.string().min(1)),
+    provenance: provenanceSchema,
     created_at: z.number().finite(),
     last_updated: z.number().finite(),
   })
@@ -83,6 +85,11 @@ function mapPeriodRow(row: Record<string, unknown>): AutobiographicalPeriod {
       z.string().min(1),
       "autobiographical themes",
     ),
+    provenance: parseStoredProvenance({
+      provenance_kind: row.provenance_kind,
+      provenance_episode_ids: row.provenance_episode_ids,
+      provenance_process: row.provenance_process,
+    }),
     created_at: Number(row.created_at),
     last_updated: Number(row.last_updated),
   });
@@ -120,9 +127,16 @@ export class AutobiographicalRepository {
     narrative: string;
     key_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
     themes?: readonly string[];
+    provenance: z.infer<typeof provenanceSchema>;
     created_at?: number;
     last_updated?: number;
   }): AutobiographicalPeriod {
+    if (input.provenance === undefined) {
+      throw new ProvenanceError("Autobiographical period requires provenance", {
+        code: "PROVENANCE_REQUIRED",
+      });
+    }
+
     const existing = input.id === undefined ? null : this.getPeriod(input.id);
     const nowMs = this.clock.now();
     const period = autobiographicalPeriodSchema.parse({
@@ -133,9 +147,11 @@ export class AutobiographicalRepository {
       narrative: input.narrative,
       key_episode_ids: input.key_episode_ids ?? [],
       themes: input.themes ?? [],
+      provenance: input.provenance,
       created_at: existing?.created_at ?? input.created_at ?? nowMs,
       last_updated: input.last_updated ?? nowMs,
     });
+    const storedProvenance = toStoredProvenance(period.provenance);
 
     this.runInTransaction(() => {
       if (period.end_ts === null) {
@@ -155,8 +171,9 @@ export class AutobiographicalRepository {
           .prepare(
             `
               INSERT INTO autobiographical_periods (
-                id, label, start_ts, end_ts, narrative, key_episode_ids, themes, created_at, last_updated
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, label, start_ts, end_ts, narrative, key_episode_ids, themes, provenance_kind,
+                provenance_episode_ids, provenance_process, created_at, last_updated
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `,
           )
           .run(
@@ -167,6 +184,9 @@ export class AutobiographicalRepository {
             period.narrative,
             serializeJsonValue(period.key_episode_ids),
             serializeJsonValue(period.themes),
+            storedProvenance.provenance_kind,
+            storedProvenance.provenance_episode_ids,
+            storedProvenance.provenance_process,
             period.created_at,
             period.last_updated,
           );
@@ -177,7 +197,8 @@ export class AutobiographicalRepository {
         .prepare(
           `
             UPDATE autobiographical_periods
-            SET label = ?, start_ts = ?, end_ts = ?, narrative = ?, key_episode_ids = ?, themes = ?, last_updated = ?
+            SET label = ?, start_ts = ?, end_ts = ?, narrative = ?, key_episode_ids = ?, themes = ?,
+                provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, last_updated = ?
             WHERE id = ?
           `,
         )
@@ -188,6 +209,9 @@ export class AutobiographicalRepository {
           period.narrative,
           serializeJsonValue(period.key_episode_ids),
           serializeJsonValue(period.themes),
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
           period.last_updated,
           period.id,
         );
@@ -296,6 +320,7 @@ export class AutobiographicalRepository {
     narrative: string,
     keyEpisodeIds?: readonly z.infer<typeof episodeIdSchema>[],
     themes?: readonly string[],
+    provenance?: z.infer<typeof provenanceSchema>,
   ): AutobiographicalPeriod {
     const existing = this.getPeriod(id);
 
@@ -310,6 +335,7 @@ export class AutobiographicalRepository {
       narrative,
       key_episode_ids: keyEpisodeIds ?? existing.key_episode_ids,
       themes: themes ?? existing.themes,
+      provenance: provenance ?? existing.provenance,
       last_updated: this.clock.now(),
     });
   }

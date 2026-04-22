@@ -627,11 +627,13 @@ describe("retrieval pipeline", () => {
       question: "Why does Atlas deployment keep failing?",
       urgency: 0.8,
       source: "reflection",
+      provenance: { kind: "manual" },
     });
     openQuestionsRepository.add({
       question: "What snacks should we order?",
       urgency: 0.9,
       source: "user",
+      provenance: { kind: "manual" },
     });
 
     const pipeline = new RetrievalPipeline({

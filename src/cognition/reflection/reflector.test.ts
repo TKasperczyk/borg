@@ -83,6 +83,7 @@ describe("reflector", () => {
     const goal = goalsRepository.add({
       description: "stabilize atlas release",
       priority: 5,
+      provenance: { kind: "manual" },
     });
     const episode = await episodicRepository.insert({
       id: "ep_aaaaaaaaaaaaaaaa" as never,

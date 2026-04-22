@@ -121,6 +121,7 @@ export const commitmentComplianceMetric = {
           priority: fixture.data.commitment.priority,
           audience: fixture.data.commitment.audience ?? undefined,
           about: fixture.data.commitment.about ?? undefined,
+          provenance: { kind: "manual" },
         });
 
         llm.pushResponse(createPlanResponse(fixture.data.plan));

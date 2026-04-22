@@ -1,4 +1,12 @@
-import type { Migration } from "../../storage/sqlite/index.js";
+import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
+
+function tableHasColumn(db: SqliteDatabase, table: string, column: string): boolean {
+  const escapedTable = table.replaceAll('"', '""');
+  const columns = db.prepare(`PRAGMA table_info("${escapedTable}")`).all() as Array<{
+    name: string;
+  }>;
+  return columns.some((entry) => entry.name === column);
+}
 
 export const commitmentMigrations: Migration[] = [
   {
@@ -35,5 +43,48 @@ export const commitmentMigrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS commitments_about_idx
         ON commitments(about_entity);
     `,
+  },
+  {
+    id: 210,
+    name: "add-commitment-provenance",
+    up: (db) => {
+      if (!tableHasColumn(db, "commitments", "provenance_kind")) {
+        db.exec("ALTER TABLE commitments ADD COLUMN provenance_kind TEXT");
+      }
+      if (!tableHasColumn(db, "commitments", "provenance_episode_ids")) {
+        db.exec("ALTER TABLE commitments ADD COLUMN provenance_episode_ids TEXT");
+      }
+      if (!tableHasColumn(db, "commitments", "provenance_process")) {
+        db.exec("ALTER TABLE commitments ADD COLUMN provenance_process TEXT");
+      }
+
+      const rows = db
+        .prepare(
+          `
+            SELECT id, source_episode_ids
+            FROM commitments
+            ORDER BY created_at ASC, id ASC
+          `,
+        )
+        .all() as Array<Record<string, unknown>>;
+      const update = db.prepare(
+        `
+          UPDATE commitments
+          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = NULL
+          WHERE id = ?
+        `,
+      );
+
+      for (const row of rows) {
+        const parsed =
+          typeof row.source_episode_ids === "string"
+            ? (JSON.parse(row.source_episode_ids) as unknown)
+            : [];
+        const episodeIds = Array.isArray(parsed)
+          ? parsed.filter((value): value is string => typeof value === "string" && value.length > 0)
+          : [];
+        update.run(episodeIds.length > 0 ? "episodes" : "system", JSON.stringify(episodeIds), row.id);
+      }
+    },
   },
 ];

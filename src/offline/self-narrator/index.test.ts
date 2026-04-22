@@ -163,6 +163,7 @@ describe("SelfNarratorProcess", () => {
         start_ts: Date.UTC(2026, 0, 1),
         narrative: "Planning quarter.",
         themes: ["planning"],
+        provenance: { kind: "offline", process: "self-narrator" },
       });
       await harness.episodicRepository.insert(
         createEpisodeFixture({

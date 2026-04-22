@@ -1,5 +1,5 @@
-import type { Migration } from "../../storage/sqlite/index.js";
-import { parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
+import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
+import { createTraitId, parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
 
 import { buildOpenQuestionDedupeKey } from "./open-questions.js";
 
@@ -16,6 +16,14 @@ function parseStoredIdArray(value: unknown): string[] {
   } catch {
     return [];
   }
+}
+
+function tableHasColumn(db: SqliteDatabase, table: string, column: string): boolean {
+  const escapedTable = table.replaceAll('"', '""');
+  const columns = db.prepare(`PRAGMA table_info("${escapedTable}")`).all() as Array<{
+    name: string;
+  }>;
+  return columns.some((entry) => entry.name === column);
 }
 
 export const selfMigrations = [
@@ -241,6 +249,179 @@ export const selfMigrations = [
           ON autobiographical_periods (CASE WHEN end_ts IS NULL THEN 1 END)
           WHERE end_ts IS NULL;
       `);
+    },
+  },
+  {
+    id: 220,
+    name: "add-self-provenance",
+    up: (db) => {
+      if (!tableHasColumn(db, "values", "provenance_kind")) {
+        db.exec("ALTER TABLE \"values\" ADD COLUMN provenance_kind TEXT");
+      }
+      if (!tableHasColumn(db, "values", "provenance_episode_ids")) {
+        db.exec("ALTER TABLE \"values\" ADD COLUMN provenance_episode_ids TEXT");
+      }
+      if (!tableHasColumn(db, "values", "provenance_process")) {
+        db.exec("ALTER TABLE \"values\" ADD COLUMN provenance_process TEXT");
+      }
+      if (!tableHasColumn(db, "goals", "provenance_kind")) {
+        db.exec("ALTER TABLE goals ADD COLUMN provenance_kind TEXT");
+      }
+      if (!tableHasColumn(db, "goals", "provenance_episode_ids")) {
+        db.exec("ALTER TABLE goals ADD COLUMN provenance_episode_ids TEXT");
+      }
+      if (!tableHasColumn(db, "goals", "provenance_process")) {
+        db.exec("ALTER TABLE goals ADD COLUMN provenance_process TEXT");
+      }
+      if (!tableHasColumn(db, "traits", "id")) {
+        db.exec("ALTER TABLE traits ADD COLUMN id TEXT");
+      }
+      if (!tableHasColumn(db, "traits", "provenance_kind")) {
+        db.exec("ALTER TABLE traits ADD COLUMN provenance_kind TEXT");
+      }
+      if (!tableHasColumn(db, "traits", "provenance_episode_ids")) {
+        db.exec("ALTER TABLE traits ADD COLUMN provenance_episode_ids TEXT");
+      }
+      if (!tableHasColumn(db, "traits", "provenance_process")) {
+        db.exec("ALTER TABLE traits ADD COLUMN provenance_process TEXT");
+      }
+      if (!tableHasColumn(db, "autobiographical_periods", "provenance_kind")) {
+        db.exec("ALTER TABLE autobiographical_periods ADD COLUMN provenance_kind TEXT");
+      }
+      if (!tableHasColumn(db, "autobiographical_periods", "provenance_episode_ids")) {
+        db.exec("ALTER TABLE autobiographical_periods ADD COLUMN provenance_episode_ids TEXT");
+      }
+      if (!tableHasColumn(db, "autobiographical_periods", "provenance_process")) {
+        db.exec("ALTER TABLE autobiographical_periods ADD COLUMN provenance_process TEXT");
+      }
+      if (!tableHasColumn(db, "open_questions", "provenance_kind")) {
+        db.exec("ALTER TABLE open_questions ADD COLUMN provenance_kind TEXT");
+      }
+      if (!tableHasColumn(db, "open_questions", "provenance_episode_ids")) {
+        db.exec("ALTER TABLE open_questions ADD COLUMN provenance_episode_ids TEXT");
+      }
+      if (!tableHasColumn(db, "open_questions", "provenance_process")) {
+        db.exec("ALTER TABLE open_questions ADD COLUMN provenance_process TEXT");
+      }
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS trait_reinforcement_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trait_id TEXT NOT NULL,
+          delta REAL NOT NULL,
+          ts INTEGER NOT NULL,
+          provenance_kind TEXT NOT NULL CHECK (
+            provenance_kind IN ('episodes', 'manual', 'system', 'offline')
+          ),
+          provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
+          provenance_process TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_trait_reinforcement_events_trait_ts
+          ON trait_reinforcement_events (trait_id, ts DESC, id DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_traits_id
+          ON traits (id)
+          WHERE id IS NOT NULL;
+      `);
+
+      const valueRows = db
+        .prepare(
+          `
+            SELECT id
+            FROM "values"
+            ORDER BY created_at ASC, id ASC
+          `,
+        )
+        .all() as Array<{ id: string }>;
+      const valueSourcesStatement = db.prepare(
+        `
+          SELECT episode_id
+          FROM value_sources
+          WHERE value_id = ?
+          ORDER BY episode_id ASC
+        `,
+      );
+      const updateValueStatement = db.prepare(
+        `
+          UPDATE "values"
+          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = NULL
+          WHERE id = ?
+        `,
+      );
+
+      for (const row of valueRows) {
+        const sources = (valueSourcesStatement.all(row.id) as Array<{ episode_id: string }>).map(
+          (entry) => entry.episode_id,
+        );
+        updateValueStatement.run(
+          sources.length > 0 ? "episodes" : "system",
+          JSON.stringify(sources),
+          row.id,
+        );
+      }
+
+      db.exec(`
+        UPDATE goals
+        SET provenance_kind = COALESCE(provenance_kind, 'system'),
+            provenance_episode_ids = COALESCE(provenance_episode_ids, '[]'),
+            provenance_process = NULL;
+
+        UPDATE autobiographical_periods
+        SET provenance_kind = COALESCE(provenance_kind, 'system'),
+            provenance_episode_ids = COALESCE(provenance_episode_ids, '[]'),
+            provenance_process = NULL;
+      `);
+
+      const openQuestionRows = db
+        .prepare(
+          `
+            SELECT id, related_episode_ids
+            FROM open_questions
+            ORDER BY created_at ASC, id ASC
+          `,
+        )
+        .all() as Array<Record<string, unknown>>;
+      const updateOpenQuestionStatement = db.prepare(
+        `
+          UPDATE open_questions
+          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = NULL
+          WHERE id = ?
+        `,
+      );
+
+      for (const row of openQuestionRows) {
+        const relatedEpisodeIds = parseStoredIdArray(row.related_episode_ids).filter(
+          (value) => value.length > 0,
+        );
+        updateOpenQuestionStatement.run(
+          relatedEpisodeIds.length > 0 ? "episodes" : "system",
+          JSON.stringify(relatedEpisodeIds),
+          row.id,
+        );
+      }
+
+      const traitRows = db
+        .prepare(
+          `
+            SELECT label
+            FROM traits
+            ORDER BY label ASC
+          `,
+        )
+        .all() as Array<{ label: string }>;
+      const updateTraitStatement = db.prepare(
+        `
+          UPDATE traits
+          SET id = COALESCE(id, ?),
+              provenance_kind = COALESCE(provenance_kind, 'system'),
+              provenance_episode_ids = COALESCE(provenance_episode_ids, '[]'),
+              provenance_process = NULL
+          WHERE label = ?
+        `,
+      );
+
+      for (const row of traitRows) {
+        updateTraitStatement.run(createTraitId(), row.label);
+      }
     },
   },
 ] as const satisfies readonly Migration[];

@@ -34,6 +34,10 @@ export function enqueueOpenQuestionForReview(
       question: `Which of these claims is right: ${summary}?`,
       urgency: 0.7,
       related_semantic_node_ids: nodeIds.slice(0, 2),
+      provenance: {
+        kind: "offline",
+        process: "overseer",
+      },
       source: "contradiction",
     });
     return;
@@ -57,6 +61,13 @@ export function enqueueOpenQuestionForReview(
       urgency: 0.55,
       related_episode_ids: relatedEpisodeIds,
       related_semantic_node_ids: relatedSemanticNodeIds,
+      provenance:
+        relatedEpisodeIds.length === 0 && relatedSemanticNodeIds.length === 0
+          ? {
+              kind: "offline",
+              process: "overseer",
+            }
+          : null,
       source: "overseer",
     });
   }

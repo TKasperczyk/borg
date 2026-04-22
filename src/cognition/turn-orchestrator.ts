@@ -333,7 +333,7 @@ export class TurnOrchestrator {
         const audienceProfile =
           audienceEntityId === null
             ? null
-            : this.options.socialRepository.upsertProfile(audienceEntityId);
+            : this.options.socialRepository.getProfile(audienceEntityId);
         const applicableCommitments = this.collectApplicableCommitments(
           audienceEntityId,
           perception.entities,
@@ -465,6 +465,9 @@ export class TurnOrchestrator {
             valence: perception.affectiveSignal.valence,
             arousal: perception.affectiveSignal.arousal,
             reason: input.userMessage.slice(0, 120),
+            provenance: {
+              kind: "system",
+            },
           });
           moodSnapshot = {
             valence: nextMood.valence,
@@ -480,6 +483,9 @@ export class TurnOrchestrator {
             this.options.socialRepository.recordInteraction(audienceEntityId, {
               valence: responseSignal.valence,
               now: this.clock.now(),
+              provenance: {
+                kind: "system",
+              },
             });
           } catch (error) {
             await this.appendHookFailureEvent(streamWriter, "social_update", error);

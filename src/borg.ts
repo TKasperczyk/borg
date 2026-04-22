@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "./config/
 import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "./embeddings/index.js";
 import { AnthropicLLMClient, type LLMClient } from "./llm/index.js";
 import { MoodRepository, affectiveMigrations } from "./memory/affective/index.js";
+import type { Provenance } from "./memory/common/index.js";
 import {
   CommitmentRepository,
   EntityRepository,
@@ -381,7 +382,11 @@ export class Borg {
       entity: string,
       interaction: Parameters<SocialRepository["recordInteraction"]>[1],
     ) => ReturnType<SocialRepository["recordInteraction"]>;
-    adjustTrust: (entity: string, delta: number) => ReturnType<SocialRepository["adjustTrust"]>;
+    adjustTrust: (
+      entity: string,
+      delta: number,
+      provenance: Provenance,
+    ) => ReturnType<SocialRepository["adjustTrust"]>;
   };
   readonly semantic: {
     nodes: {
@@ -426,7 +431,7 @@ export class Borg {
       madeTo?: string | null;
       audience?: string | null;
       about?: string | null;
-      sourceEpisodeIds?: EpisodeId[];
+      provenance: Provenance;
       expiresAt?: number | null;
     }) => ReturnType<CommitmentRepository["add"]>;
     revoke: (
@@ -661,8 +666,12 @@ export class Borg {
           this.deps.entityRepository.resolve(entity),
           interaction,
         ),
-      adjustTrust: (entity, delta) =>
-        this.deps.socialRepository.adjustTrust(this.deps.entityRepository.resolve(entity), delta),
+      adjustTrust: (entity, delta, provenance) =>
+        this.deps.socialRepository.adjustTrust(
+          this.deps.entityRepository.resolve(entity),
+          delta,
+          provenance,
+        ),
     };
     this.semantic = {
       nodes: {
@@ -733,7 +742,7 @@ export class Borg {
             input.about === undefined || input.about === null
               ? null
               : this.deps.entityRepository.resolve(input.about),
-          sourceEpisodeIds: input.sourceEpisodeIds,
+          provenance: input.provenance,
           expiresAt: input.expiresAt ?? null,
         }),
       revoke: (...args) => this.deps.commitmentRepository.revoke(...args),
@@ -1040,6 +1049,9 @@ export class Borg {
           narrative: "",
           key_episode_ids: [],
           themes: [],
+          provenance: {
+            kind: "system",
+          },
         });
       }
       const growthMarkersRepository = new GrowthMarkersRepository({

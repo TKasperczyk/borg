@@ -837,6 +837,7 @@ describe("cli", () => {
       question: "Why does Atlas fail?",
       urgency: 0.8,
       source: "user",
+      provenance: { kind: "manual" },
     });
     await seedBorg.close();
 
@@ -1524,6 +1525,7 @@ describe("cli", () => {
       valence: -0.4,
       arousal: 0.5,
       reason: "seeded",
+      provenance: { kind: "system" },
     });
     await borg.close();
 

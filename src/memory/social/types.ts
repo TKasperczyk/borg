@@ -1,11 +1,14 @@
 import { z } from "zod";
 
 import { entityIdSchema } from "../commitments/types.js";
+import { provenanceSchema } from "../common/provenance.js";
 
 export const socialSentimentPointSchema = z.object({
   ts: z.number().finite(),
   valence: z.number().min(-1).max(1),
 });
+
+export const socialEventKindSchema = z.enum(["interaction", "trust_adjustment", "baseline"]);
 
 export const socialProfileSchema = z.object({
   entity_id: entityIdSchema,
@@ -22,5 +25,18 @@ export const socialProfileSchema = z.object({
   updated_at: z.number().finite(),
 });
 
+export const socialEventSchema = z.object({
+  id: z.number().int().positive(),
+  entity_id: entityIdSchema,
+  ts: z.number().finite(),
+  kind: socialEventKindSchema,
+  provenance: provenanceSchema,
+  trust_delta: z.number().finite(),
+  attachment_delta: z.number().finite(),
+  interaction_delta: z.number().int(),
+  valence: z.number().min(-1).max(1).nullable(),
+});
+
 export type SocialSentimentPoint = z.infer<typeof socialSentimentPointSchema>;
 export type SocialProfile = z.infer<typeof socialProfileSchema>;
+export type SocialEvent = z.infer<typeof socialEventSchema>;

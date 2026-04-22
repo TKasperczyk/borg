@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { ProvenanceError } from "../../util/errors.js";
 import { createEpisodeId } from "../../util/ids.js";
 
 import { AutobiographicalRepository } from "./autobiographical.js";
 import { selfMigrations } from "./migrations.js";
 
 describe("AutobiographicalRepository", () => {
+  const offlineNarratorProvenance = { kind: "offline", process: "self-narrator" } as const;
+
   it("upserts, lists, closes, and updates periods", () => {
     const clock = new FixedClock(10_000);
     const db = openDatabase(":memory:", {
@@ -24,6 +27,7 @@ describe("AutobiographicalRepository", () => {
       narrative: "A planning-heavy quarter began.",
       key_episode_ids: [createEpisodeId()],
       themes: ["planning"],
+      provenance: offlineNarratorProvenance,
     });
 
     expect(repository.currentPeriod()?.id).toBe(initial.id);
@@ -64,11 +68,13 @@ describe("AutobiographicalRepository", () => {
       label: "2026-Q1",
       start_ts: 1_000,
       narrative: "First quarter arc.",
+      provenance: offlineNarratorProvenance,
     });
     const second = repository.upsertPeriod({
       label: "2026-Q1",
       start_ts: 5_000,
       narrative: "A fresh chapter with the same human label.",
+      provenance: offlineNarratorProvenance,
     });
 
     const periods = repository.listPeriods({
@@ -91,8 +97,9 @@ describe("AutobiographicalRepository", () => {
     db.prepare(
       `
         INSERT INTO autobiographical_periods (
-          id, label, start_ts, end_ts, narrative, key_episode_ids, themes, created_at, last_updated
-        ) VALUES (?, ?, ?, NULL, ?, '[]', '[]', ?, ?)
+          id, label, start_ts, end_ts, narrative, key_episode_ids, themes, provenance_kind,
+          provenance_episode_ids, provenance_process, created_at, last_updated
+        ) VALUES (?, ?, ?, NULL, ?, '[]', '[]', 'system', '[]', NULL, ?, ?)
       `,
     ).run("abp_aaaaaaaaaaaaaaaa", "2026-Q1", 1_000, "First open period", 1_000, 1_000);
 
@@ -101,13 +108,37 @@ describe("AutobiographicalRepository", () => {
         .prepare(
           `
             INSERT INTO autobiographical_periods (
-              id, label, start_ts, end_ts, narrative, key_episode_ids, themes, created_at, last_updated
-            ) VALUES (?, ?, ?, NULL, ?, '[]', '[]', ?, ?)
+              id, label, start_ts, end_ts, narrative, key_episode_ids, themes, provenance_kind,
+              provenance_episode_ids, provenance_process, created_at, last_updated
+            ) VALUES (?, ?, ?, NULL, ?, '[]', '[]', 'system', '[]', NULL, ?, ?)
           `,
         )
         .run("abp_bbbbbbbbbbbbbbbb", "2026-Q2", 2_000, "Second open period", 2_000, 2_000),
     ).toThrow();
 
     db.close();
+  });
+
+  it("rejects provenance-less period creation", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new AutobiographicalRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      expect(() =>
+        repository.upsertPeriod({
+          label: "2026-Q2",
+          start_ts: 1_000,
+          narrative: "A planning-heavy quarter began.",
+          provenance: undefined as never,
+        }),
+      ).toThrow(ProvenanceError);
+    } finally {
+      db.close();
+    }
   });
 });

@@ -130,6 +130,7 @@ describe("curator process", () => {
       valence: -0.6,
       arousal: 0.4,
       reason: "recent frustration",
+      provenance: { kind: "system" },
     });
     harness.moodRepository.restoreHistory([
       {
@@ -138,8 +139,8 @@ describe("curator process", () => {
         ts: nowMs - 120 * DAY_MS,
         valence: -0.7,
         arousal: 0.5,
-        trigger_episode_id: null,
         trigger_reason: "old mood",
+        provenance: { kind: "system" },
       },
     ]);
     const beforeState = harness.moodRepository.listStoredStates()[0];

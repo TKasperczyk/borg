@@ -1,8 +1,9 @@
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { StorageError } from "../../util/errors.js";
+import { ProvenanceError, StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
-import { parseEpisodeId, type EpisodeId, type SessionId } from "../../util/ids.js";
+import { type SessionId } from "../../util/ids.js";
+import { parseStoredProvenance, provenanceSchema, toStoredProvenance, type Provenance } from "../common/provenance.js";
 
 import {
   moodHistoryEntrySchema,
@@ -64,14 +65,15 @@ function mapMoodHistoryRow(row: Record<string, unknown>): MoodHistoryEntry {
     ts: Number(row.ts),
     valence: Number(row.valence),
     arousal: Number(row.arousal),
-    trigger_episode_id:
-      row.trigger_episode_id === null || row.trigger_episode_id === undefined
-        ? null
-        : parseEpisodeId(String(row.trigger_episode_id)),
     trigger_reason:
       row.trigger_reason === null || row.trigger_reason === undefined
         ? null
         : String(row.trigger_reason),
+    provenance: parseStoredProvenance({
+      provenance_kind: row.provenance_kind,
+      provenance_episode_ids: row.provenance_episode_ids,
+      provenance_process: row.provenance_process,
+    }),
   });
 
   if (!parsed.success) {
@@ -104,6 +106,16 @@ export class MoodRepository {
 
   private get db(): SqliteDatabase {
     return this.options.db;
+  }
+
+  private requireProvenance(provenance: Provenance | undefined): Provenance {
+    if (provenance === undefined) {
+      throw new ProvenanceError("Mood update requires provenance", {
+        code: "PROVENANCE_REQUIRED",
+      });
+    }
+
+    return provenanceSchema.parse(provenance);
   }
 
   current(sessionId: SessionId): MoodState {
@@ -164,12 +176,13 @@ export class MoodRepository {
     input: {
       valence: number;
       arousal: number;
-      trigger_episode_id?: EpisodeId;
       reason?: string;
+      provenance: Provenance;
     },
   ): MoodState {
     const nowMs = this.clock.now();
     const current = this.current(sessionId);
+    const provenance = this.requireProvenance(input.provenance);
     const nextValence = clamp(
       current.valence * (1 - this.incomingWeight) +
         clamp(input.valence, -1, 1) * this.incomingWeight,
@@ -191,14 +204,16 @@ export class MoodRepository {
       half_life_hours: current.half_life_hours || this.defaultHalfLifeHours,
       recent_triggers: nextTriggers,
     });
+    const storedProvenance = toStoredProvenance(provenance);
 
     this.db.transaction(() => {
       this.db
         .prepare(
           `
             INSERT INTO mood_history (
-              session_id, ts, valence, arousal, trigger_episode_id, trigger_reason
-            ) VALUES (?, ?, ?, ?, ?, ?)
+              session_id, ts, valence, arousal, trigger_reason, provenance_kind,
+              provenance_episode_ids, provenance_process
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -206,8 +221,10 @@ export class MoodRepository {
           nowMs,
           clamp(input.valence, -1, 1),
           clamp(input.arousal, 0, 1),
-          input.trigger_episode_id ?? null,
           input.reason ?? null,
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
         );
       this.db
         .prepare(
@@ -293,20 +310,24 @@ export class MoodRepository {
     const insert = this.db.prepare(
       `
         INSERT OR IGNORE INTO mood_history (
-          id, session_id, ts, valence, arousal, trigger_episode_id, trigger_reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          id, session_id, ts, valence, arousal, trigger_reason, provenance_kind,
+          provenance_episode_ids, provenance_process
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
     );
 
     for (const entry of entries) {
+      const storedProvenance = toStoredProvenance(entry.provenance);
       insert.run(
         entry.id,
         entry.session_id,
         entry.ts,
         entry.valence,
         entry.arousal,
-        entry.trigger_episode_id,
         entry.trigger_reason,
+        storedProvenance.provenance_kind,
+        storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_process,
       );
     }
   }

@@ -82,7 +82,12 @@ export const goalProgressAttributionMetric = {
       });
 
       try {
-        const goals = fixture.data.goals.map((goal) => borg.self.goals.add(goal));
+        const goals = fixture.data.goals.map((goal) =>
+          borg.self.goals.add({
+            ...goal,
+            provenance: { kind: "manual" },
+          }),
+        );
         await borg.turn({
           userMessage: fixture.data.user_message,
         });

@@ -1,10 +1,9 @@
 import { z } from "zod";
 
-import { episodeIdSchema } from "../episodic/types.js";
+import { provenanceSchema, type Provenance } from "../common/provenance.js";
 import {
   commitmentIdHelpers,
   entityIdHelpers,
-  type EpisodeId,
   type CommitmentId,
   type EntityId,
 } from "../../util/ids.js";
@@ -42,7 +41,7 @@ export const commitmentSchema = z.object({
   made_to_entity: entityIdSchema.nullable(),
   restricted_audience: entityIdSchema.nullable(),
   about_entity: entityIdSchema.nullable(),
-  source_episode_ids: z.array(episodeIdSchema),
+  provenance: provenanceSchema,
   created_at: z.number().finite(),
   expires_at: z.number().finite().nullable(),
   revoked_at: z.number().finite().nullable(),
@@ -60,6 +59,7 @@ export type EntityRecord = z.infer<typeof entityRecordSchema>;
 export type CommitmentRecord = z.infer<typeof commitmentSchema>;
 export type CommitmentPatch = z.infer<typeof commitmentPatchSchema>;
 export type CommitmentType = z.infer<typeof commitmentTypeSchema>;
+export type CommitmentProvenance = Provenance;
 
 export type CommitmentListOptions = {
   activeOnly?: boolean;

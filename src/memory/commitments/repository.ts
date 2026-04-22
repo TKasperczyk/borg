@@ -1,5 +1,5 @@
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { CommitmentError } from "../../util/errors.js";
+import { CommitmentError, ProvenanceError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import {
   createCommitmentId,
@@ -12,6 +12,11 @@ import {
   type EntityId,
 } from "../../util/ids.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
+import {
+  parseStoredProvenance,
+  provenanceSchema,
+  toStoredProvenance,
+} from "../common/provenance.js";
 import {
   commitmentPatchSchema,
   commitmentSchema,
@@ -75,10 +80,11 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
       row.about_entity === null || row.about_entity === undefined
         ? null
         : parseEntityId(String(row.about_entity)),
-    source_episode_ids: parseJsonArray<string>(
-      String(row.source_episode_ids ?? "[]"),
-      "source_episode_ids",
-    ).map((value) => parseEpisodeId(value)),
+    provenance: parseStoredProvenance({
+      provenance_kind: row.provenance_kind,
+      provenance_episode_ids: row.provenance_episode_ids,
+      provenance_process: row.provenance_process,
+    }),
     created_at: Number(row.created_at),
     expires_at:
       row.expires_at === null || row.expires_at === undefined ? null : Number(row.expires_at),
@@ -234,10 +240,16 @@ export class CommitmentRepository {
     madeToEntity?: EntityId | null;
     restrictedAudience?: EntityId | null;
     aboutEntity?: EntityId | null;
-    sourceEpisodeIds?: EpisodeId[];
+    provenance: CommitmentRecord["provenance"];
     createdAt?: number;
     expiresAt?: number | null;
   }): CommitmentRecord {
+    if (input.provenance === undefined) {
+      throw new ProvenanceError("Commitment requires provenance", {
+        code: "PROVENANCE_REQUIRED",
+      });
+    }
+
     const record = commitmentSchema.parse({
       id: input.id ?? createCommitmentId(),
       type: input.type,
@@ -246,20 +258,22 @@ export class CommitmentRepository {
       made_to_entity: input.madeToEntity ?? null,
       restricted_audience: input.restrictedAudience ?? null,
       about_entity: input.aboutEntity ?? null,
-      source_episode_ids: input.sourceEpisodeIds ?? [],
+      provenance: provenanceSchema.parse(input.provenance),
       created_at: input.createdAt ?? this.clock.now(),
       expires_at: input.expiresAt ?? null,
       revoked_at: null,
       superseded_by: null,
     });
+    const storedProvenance = toStoredProvenance(record.provenance);
 
     this.db
       .prepare(
         `
           INSERT INTO commitments (
             id, type, directive, priority, made_to_entity, restricted_audience, about_entity,
-            source_episode_ids, created_at, expires_at, revoked_at, superseded_by
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
+            created_at, expires_at, revoked_at, superseded_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -270,7 +284,12 @@ export class CommitmentRepository {
         record.made_to_entity,
         record.restricted_audience,
         record.about_entity,
-        serializeJsonValue(record.source_episode_ids),
+        serializeJsonValue(
+          record.provenance.kind === "episodes" ? record.provenance.episode_ids : [],
+        ),
+        storedProvenance.provenance_kind,
+        storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_process,
         record.created_at,
         record.expires_at,
         record.revoked_at,

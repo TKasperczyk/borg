@@ -1186,6 +1186,169 @@ describe("deliberator", () => {
     expect(result.decision_reason).toContain("Retrieved-context contradiction");
   });
 
+  it("renders compact provenance suffixes in the prompt", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({
+      db,
+      clock,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+    });
+    const sam = entities.resolve("Sam");
+    const atlas = entities.resolve("Atlas");
+    const commitment = commitments.add({
+      type: "boundary",
+      directive: "Do not discuss Atlas with Sam",
+      priority: 9,
+      restrictedAudience: sam,
+      aboutEntity: atlas,
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Plan briefly.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        {
+          text: "Boundaried answer",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    try {
+      await deliberator.run({
+        sessionId: DEFAULT_SESSION_ID,
+        userMessage: "Can you update Sam about Atlas?",
+        audience: "Sam",
+        perception: {
+          entities: ["Atlas", "Sam"],
+          mode: "reflective",
+          affectiveSignal: { valence: 0, arousal: 0 },
+          temporalCue: null,
+        },
+        retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
+        applicableCommitments: [commitment],
+        openQuestionsContext: [
+          {
+            id: "oq_aaaaaaaaaaaaaaaa" as never,
+            question: "Why does Atlas fail after rollback?",
+            urgency: 0.8,
+            status: "open",
+            related_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+            related_semantic_node_ids: [],
+            provenance: null,
+            source: "reflection",
+            created_at: 0,
+            last_touched: 0,
+            resolution_episode_id: null,
+            resolution_note: null,
+            resolved_at: null,
+            abandoned_reason: null,
+            abandoned_at: null,
+          },
+        ],
+        entityRepository: entities,
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 2,
+          current_focus: "Atlas",
+          hot_entities: ["Atlas", "Sam"],
+          pending_intents: [],
+          suppressed: [],
+          mode: "reflective",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [
+            {
+              id: "val_aaaaaaaaaaaaaaaa" as never,
+              label: "clarity",
+              description: "Prefer explicit state.",
+              priority: 0.8,
+              created_at: 0,
+              last_affirmed: null,
+              provenance: {
+                kind: "episodes",
+                episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+              },
+            },
+          ],
+          goals: [
+            {
+              id: "goal_aaaaaaaaaaaaaaaa" as never,
+              description: "Ship Sprint 6",
+              priority: 0.9,
+              parent_goal_id: null,
+              status: "active",
+              progress_notes: null,
+              created_at: 0,
+              target_at: null,
+              provenance: { kind: "manual" },
+            },
+          ],
+          traits: [
+            {
+              id: "trt_aaaaaaaaaaaaaaaa" as never,
+              label: "engaged",
+              strength: 0.8,
+              last_reinforced: 0,
+              last_decayed: null,
+              provenance: { kind: "offline", process: "reflector" },
+            },
+          ],
+          currentPeriod: {
+            id: "abp_aaaaaaaaaaaaaaaa" as never,
+            label: "2026-Q2",
+            start_ts: 0,
+            end_ts: null,
+            narrative: "Implementation quarter.",
+            key_episode_ids: [],
+            themes: ["implementation"],
+            provenance: { kind: "offline", process: "self-narrator" },
+            created_at: 0,
+            last_updated: 0,
+          },
+        },
+        options: {
+          stakes: "low",
+        },
+      });
+
+      const system = llm.requests.at(-1)?.system as string;
+
+      expect(system).toContain("values clarity (from ep_aaaaaaaaaaaaaaaa)");
+      expect(system).toContain("goals Ship Sprint 6 (manual)");
+      expect(system).toContain("traits engaged:0.80 (offline: reflector)");
+      expect(system).toContain("Current period: 2026-Q2 (offline: self-narrator)");
+      expect(system).toContain(
+        "- Why does Atlas fail after rollback? (urgency=0.80, source=reflection) (from ep_aaaaaaaaaaaaaaaa)",
+      );
+      expect(system).toContain(
+        "- [boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it("injects applicable commitments into the system prompt", async () => {
     const db = openDatabase(":memory:", {
       migrations: commitmentMigrations,
@@ -1207,6 +1370,7 @@ describe("deliberator", () => {
       priority: 9,
       restrictedAudience: sam,
       aboutEntity: atlas,
+      provenance: { kind: "manual" },
     });
     const llm = new FakeLLMClient({
       responses: [
@@ -1266,6 +1430,7 @@ describe("deliberator", () => {
       expect(system).toContain("<borg_commitment_records>");
       expect(system).toContain("Commitments you made to this person:");
       expect(system).toContain("Do not discuss Atlas with Sam");
+      expect(system).toContain("- [boundary] Do not discuss Atlas with Sam audience=Sam about=Atlas (manual)");
       expect(system).toContain("</borg_commitment_records>");
       expect(llm.requests[0]?.system).toContain("audience=Sam");
       expect(llm.requests[0]?.system).toContain("about=Atlas");

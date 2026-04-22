@@ -382,11 +382,11 @@ function parseReviewResolution(value: unknown) {
   return parsed.data;
 }
 
-function parseIdList(
+function parseIdList<T extends string>(
   value: unknown,
-  itemParser: (value: string) => string,
+  itemParser: (value: string) => T,
   flag: string,
-): string[] {
+): T[] {
   if (value === undefined) {
     return [];
   }
@@ -1196,6 +1196,9 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
               priority: parsePriority(commandOptions.priority),
               parentId:
                 commandOptions.parent === undefined ? null : resolveGoalId(commandOptions.parent),
+              provenance: {
+                kind: "manual",
+              },
             }),
           );
 
@@ -1216,7 +1219,9 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
         if (action === "done") {
           const goalId = resolveGoalId(arg);
           await withBorg(options, async (borg) => {
-            borg.self.goals.updateStatus(goalId, "done");
+            borg.self.goals.updateStatus(goalId, "done", {
+              kind: "manual",
+            });
           });
           writeLine(stdout, JSON.stringify({ id: goalId, status: "done" }));
           return;
@@ -1225,7 +1230,9 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
         if (action === "block") {
           const goalId = resolveGoalId(arg);
           await withBorg(options, async (borg) => {
-            borg.self.goals.updateStatus(goalId, "blocked");
+            borg.self.goals.updateStatus(goalId, "blocked", {
+              kind: "manual",
+            });
           });
           writeLine(stdout, JSON.stringify({ id: goalId, status: "blocked" }));
           return;
@@ -1235,7 +1242,9 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
           const goalId = resolveGoalId(arg);
           const note = parseRequiredText(commandOptions.note, "--note");
           await withBorg(options, async (borg) => {
-            borg.self.goals.updateProgress(goalId, note);
+            borg.self.goals.updateProgress(goalId, note, {
+              kind: "manual",
+            });
           });
           writeLine(stdout, JSON.stringify({ id: goalId, progress_notes: note }));
           return;
@@ -1260,6 +1269,9 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
               label: parseRequiredText(commandOptions.label, "--label"),
               description: parseRequiredText(commandOptions.description, "--description"),
               priority: parsePriority(commandOptions.priority),
+              provenance: {
+                kind: "manual",
+              },
             }),
           );
 
@@ -1318,6 +1330,9 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
               label: parseRequiredText(arg, "<label>"),
               start_ts: Date.now(),
               narrative: "A new autobiographical period began.",
+              provenance: {
+                kind: "manual",
+              },
             }),
           );
           writeLine(stdout, JSON.stringify(period, null, 2));
@@ -1439,6 +1454,9 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
             borg.self.openQuestions.add({
               question: parseRequiredText(arg1, "<question>"),
               urgency: 0.4,
+              provenance: {
+                kind: "manual",
+              },
               source: "user",
             }),
           );
@@ -1608,7 +1626,9 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
 
         if (action === "adjust-trust") {
           const profile = await withBorg(options, async (borg) =>
-            borg.social.adjustTrust(entityName, parseFiniteNumber(delta, "<delta>")),
+            borg.social.adjustTrust(entityName, parseFiniteNumber(delta, "<delta>"), {
+              kind: "manual",
+            }),
           );
           writeLine(stdout, JSON.stringify(profile, null, 2));
           return;
@@ -1644,11 +1664,21 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
                 typeof (commandOptions.madeTo ?? commandOptions["made-to"]) === "string"
                   ? String(commandOptions.madeTo ?? commandOptions["made-to"])
                   : undefined,
-              sourceEpisodeIds: parseIdList(
-                commandOptions.sourceEpisodes ?? commandOptions["source-episodes"],
-                (value) => parseEpisodeId(value),
-                "--source-episodes",
-              ) as ReturnType<typeof parseIdList> as never,
+              provenance: ((() => {
+                const sourceEpisodeIds = parseIdList(
+                  commandOptions.sourceEpisodes ?? commandOptions["source-episodes"],
+                  (value) => parseEpisodeId(value),
+                  "--source-episodes",
+                );
+                return sourceEpisodeIds.length > 0
+                  ? {
+                      kind: "episodes" as const,
+                      episode_ids: sourceEpisodeIds,
+                    }
+                  : {
+                      kind: "manual" as const,
+                    };
+              })()),
             }),
           );
           writeLine(stdout, JSON.stringify(commitment, null, 2));

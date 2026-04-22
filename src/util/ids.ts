@@ -14,6 +14,7 @@ export type SessionId = BrandedId<"SessionId">;
 export type EpisodeId = BrandedId<"EpisodeId">;
 export type GoalId = BrandedId<"GoalId">;
 export type ValueId = BrandedId<"ValueId">;
+export type TraitId = BrandedId<"TraitId">;
 export type AutobiographicalPeriodId = BrandedId<"AutobiographicalPeriodId">;
 export type GrowthMarkerId = BrandedId<"GrowthMarkerId">;
 export type OpenQuestionId = BrandedId<"OpenQuestionId">;
@@ -58,6 +59,7 @@ export const sessionIdHelpers = createIdHelpers<"SessionId">("sess");
 export const episodeIdHelpers = createIdHelpers<"EpisodeId">("ep");
 export const goalIdHelpers = createIdHelpers<"GoalId">("goal");
 export const valueIdHelpers = createIdHelpers<"ValueId">("val");
+export const traitIdHelpers = createIdHelpers<"TraitId">("trt");
 export const autobiographicalPeriodIdHelpers = createIdHelpers<"AutobiographicalPeriodId">("abp");
 export const growthMarkerIdHelpers = createIdHelpers<"GrowthMarkerId">("grw");
 export const openQuestionIdHelpers = createIdHelpers<"OpenQuestionId">("oq");
@@ -73,6 +75,7 @@ export const createSessionId = (): SessionId => sessionIdHelpers.create();
 export const createEpisodeId = (): EpisodeId => episodeIdHelpers.create();
 export const createGoalId = (): GoalId => goalIdHelpers.create();
 export const createValueId = (): ValueId => valueIdHelpers.create();
+export const createTraitId = (): TraitId => traitIdHelpers.create();
 export const createAutobiographicalPeriodId = (): AutobiographicalPeriodId =>
   autobiographicalPeriodIdHelpers.create();
 export const createGrowthMarkerId = (): GrowthMarkerId => growthMarkerIdHelpers.create();
@@ -106,6 +109,10 @@ export function parseGoalId(value: string): GoalId {
 
 export function parseValueId(value: string): ValueId {
   return valueIdHelpers.parse(value);
+}
+
+export function parseTraitId(value: string): TraitId {
+  return traitIdHelpers.parse(value);
 }
 
 export function parseAutobiographicalPeriodId(value: string): AutobiographicalPeriodId {

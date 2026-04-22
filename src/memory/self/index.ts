@@ -46,6 +46,7 @@ export {
   goalIdSchema,
   goalSchema,
   goalStatusSchema,
+  traitIdSchema,
   traitSchema,
   valueIdSchema,
   valueSchema,

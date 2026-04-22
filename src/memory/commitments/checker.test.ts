@@ -57,6 +57,7 @@ describe("commitment checker", () => {
       priority: 10,
       restrictedAudience: sam,
       aboutEntity: atlas,
+      provenance: { kind: "manual" },
     });
     const llm = new FakeLLMClient({
       responses: [judgeResponse([])],
@@ -95,6 +96,7 @@ describe("commitment checker", () => {
       priority: 10,
       restrictedAudience: sam,
       aboutEntity: atlas,
+      provenance: { kind: "manual" },
     });
     const llm = new FakeLLMClient({
       responses: [
@@ -144,6 +146,7 @@ describe("commitment checker", () => {
       type: "promise",
       directive: "I will not promise a public launch date",
       priority: 8,
+      provenance: { kind: "manual" },
     });
     const llm = new FakeLLMClient({
       responses: [
@@ -191,6 +194,7 @@ describe("commitment checker", () => {
       type: "boundary",
       directive: "Do not discuss Atlas",
       priority: 10,
+      provenance: { kind: "manual" },
     });
     const llm = new FakeLLMClient({
       responses: [
@@ -231,6 +235,7 @@ describe("commitment checker", () => {
       type: "boundary",
       directive: "Do not discuss Atlas",
       priority: 10,
+      provenance: { kind: "manual" },
     });
     const llm = new FakeLLMClient({
       responses: [

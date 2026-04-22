@@ -142,12 +142,14 @@ describe("RuminatorProcess", () => {
         source: "user",
         created_at: 0,
         last_touched: 0,
+        provenance: { kind: "manual" },
       });
       const agingQuestion = harness.openQuestionsRepository.add({
         question: "Should I revisit Atlas logging?",
         urgency: 0.4,
         source: "reflection",
         created_at: 0,
+        provenance: { kind: "manual" },
         last_touched: 0,
       });
 
@@ -222,12 +224,14 @@ describe("RuminatorProcess", () => {
         source: "reflection",
         created_at: 1_000_000,
         last_touched: 1_000_000,
+        provenance: { kind: "manual" },
       });
       harness.openQuestionsRepository.add({
         question: "Why does Atlas deploy fail again?",
         urgency: 0.65,
         source: "reflection",
         created_at: 1_000_000,
+        provenance: { kind: "manual" },
         last_touched: 1_000_000,
       });
 

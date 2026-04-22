@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { ProvenanceError } from "../../util/errors.js";
 import { commitmentMigrations } from "./migrations.js";
 import { CommitmentRepository, EntityRepository } from "./repository.js";
 
 describe("commitment repository", () => {
+  const manualProvenance = { kind: "manual" } as const;
+
   it("filters by audience and supports revoke/supersede", () => {
     const db = openDatabase(":memory:", {
       migrations: commitmentMigrations,
@@ -27,16 +30,19 @@ describe("commitment repository", () => {
       priority: 10,
       restrictedAudience: audience,
       aboutEntity: about,
+      provenance: manualProvenance,
     });
     const second = commitments.add({
       type: "promise",
       directive: "Follow up tomorrow",
       priority: 5,
+      provenance: manualProvenance,
     });
     const replacement = commitments.add({
       type: "promise",
       directive: "Follow up next week",
       priority: 6,
+      provenance: manualProvenance,
     });
 
     expect(
@@ -63,5 +69,28 @@ describe("commitment repository", () => {
     ).toEqual([replacement]);
 
     db.close();
+  });
+
+  it("rejects provenance-less commitment creation", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    try {
+      expect(() =>
+        commitments.add({
+          type: "rule",
+          directive: "Keep sources attached",
+          priority: 1,
+          provenance: undefined as never,
+        }),
+      ).toThrow(ProvenanceError);
+    } finally {
+      db.close();
+    }
   });
 });

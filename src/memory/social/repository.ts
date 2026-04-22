@@ -1,13 +1,17 @@
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { StorageError } from "../../util/errors.js";
+import { ProvenanceError, StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import type { CommitmentRepository } from "../commitments/index.js";
 import type { EntityId } from "../../util/ids.js";
+import { parseStoredProvenance, provenanceSchema, toStoredProvenance, type Provenance } from "../common/provenance.js";
 
 import {
+  socialEventSchema,
+  socialEventKindSchema,
   socialProfileSchema,
   socialSentimentPointSchema,
+  type SocialEvent,
   type SocialProfile,
   type SocialSentimentPoint,
 } from "./types.js";
@@ -73,6 +77,34 @@ function mapProfileRow(row: Record<string, unknown>): SocialProfile {
   }
 
   return parsed.data;
+}
+
+function mapEventRow(row: Record<string, unknown>): SocialEvent {
+  return socialEventSchema.parse({
+    id: Number(row.id),
+    entity_id: row.entity_id,
+    ts: Number(row.ts),
+    kind: row.kind,
+    provenance: parseStoredProvenance({
+      provenance_kind: row.provenance_kind,
+      provenance_episode_ids: row.provenance_episode_ids,
+      provenance_process: row.provenance_process,
+    }),
+    trust_delta: Number(row.trust_delta),
+    attachment_delta: Number(row.attachment_delta),
+    interaction_delta: Number(row.interaction_delta),
+    valence: row.valence === null || row.valence === undefined ? null : Number(row.valence),
+  });
+}
+
+function requireProvenance(provenance: Provenance | undefined, label: string): Provenance {
+  if (provenance === undefined) {
+    throw new ProvenanceError(`${label} requires provenance`, {
+      code: "PROVENANCE_REQUIRED",
+    });
+  }
+
+  return provenanceSchema.parse(provenance);
 }
 
 export type SocialRepositoryOptions = {
@@ -183,13 +215,14 @@ export class SocialRepository {
   recordInteraction(
     entityId: EntityId,
     input: {
-      episode_id?: string;
+      provenance: Provenance;
       valence?: number;
       now?: number;
     },
   ): SocialProfile {
     const existing = this.upsertProfile(entityId);
     const nowMs = input.now ?? this.clock.now();
+    const provenance = requireProvenance(input.provenance, "Social interaction");
     const sentimentHistory =
       input.valence === undefined
         ? existing.sentiment_history
@@ -200,6 +233,29 @@ export class SocialRepository {
               valence: clamp(input.valence, -1, 1),
             }),
           ].slice(-50);
+    const storedProvenance = toStoredProvenance(provenance);
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO social_events (
+            entity_id, ts, kind, provenance_kind, provenance_episode_ids, provenance_process,
+            trust_delta, attachment_delta, interaction_delta, valence
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        entityId,
+        nowMs,
+        socialEventKindSchema.parse("interaction"),
+        storedProvenance.provenance_kind,
+        storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_process,
+        0,
+        0,
+        1,
+        input.valence === undefined ? null : clamp(input.valence, -1, 1),
+      );
 
     return this.writeProfile({
       ...existing,
@@ -210,13 +266,38 @@ export class SocialRepository {
     });
   }
 
-  adjustTrust(entityId: EntityId, delta: number): SocialProfile {
+  adjustTrust(entityId: EntityId, delta: number, provenance: Provenance): SocialProfile {
     const existing = this.upsertProfile(entityId);
+    const parsedProvenance = requireProvenance(provenance, "Social trust adjustment");
+    const storedProvenance = toStoredProvenance(parsedProvenance);
+    const nowMs = this.clock.now();
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO social_events (
+            entity_id, ts, kind, provenance_kind, provenance_episode_ids, provenance_process,
+            trust_delta, attachment_delta, interaction_delta, valence
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        entityId,
+        nowMs,
+        socialEventKindSchema.parse("trust_adjustment"),
+        storedProvenance.provenance_kind,
+        storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_process,
+        delta,
+        0,
+        0,
+        null,
+      );
 
     return this.writeProfile({
       ...existing,
       trust: clamp(existing.trust + delta, 0, 1),
-      updated_at: this.clock.now(),
+      updated_at: nowMs,
     });
   }
 
@@ -243,5 +324,31 @@ export class SocialRepository {
 
   restoreProfile(profile: SocialProfile): SocialProfile {
     return this.writeProfile(profile);
+  }
+
+  listEvents(entityId?: EntityId): SocialEvent[] {
+    const rows =
+      entityId === undefined
+        ? (this.db
+            .prepare(
+              `
+                SELECT *
+                FROM social_events
+                ORDER BY ts DESC, id DESC
+              `,
+            )
+            .all() as Record<string, unknown>[])
+        : (this.db
+            .prepare(
+              `
+                SELECT *
+                FROM social_events
+                WHERE entity_id = ?
+                ORDER BY ts DESC, id DESC
+              `,
+            )
+            .all(entityId) as Record<string, unknown>[]);
+
+    return rows.map((row) => mapEventRow(row));
   }
 }

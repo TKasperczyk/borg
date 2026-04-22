@@ -106,6 +106,7 @@ describe("Borg", () => {
         label: "clarity",
         description: "Prefer explicit, auditable state.",
         priority: 5,
+        provenance: { kind: "manual" },
       });
 
       expect(extracted.inserted).toBe(1);
@@ -629,6 +630,7 @@ describe("Borg", () => {
       const goal = borg.self.goals.add({
         description: "stabilize atlas release",
         priority: 5,
+        provenance: { kind: "manual" },
       });
       const result = await borg.turn({
         userMessage: "Project Atlas has a pnpm error and this is high stakes.",
@@ -645,7 +647,17 @@ describe("Borg", () => {
       expect(borg.self.goals.list({ status: "active" })[0]?.progress_notes).toContain(
         "Heuristic turn progress",
       );
-      expect(borg.self.traits.list()[0]?.label).toBe("engaged");
+      expect(borg.self.goals.list({ status: "active" })[0]?.provenance).toEqual({
+        kind: "episodes",
+        episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+      });
+      expect(borg.self.traits.list()[0]).toMatchObject({
+        label: "engaged",
+        provenance: {
+          kind: "episodes",
+          episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+        },
+      });
       // Phase D: the planner's EmitTurnPlan tool-call shows up as a
       // compact "plan: ..." thought entry persisted before the agent_msg.
       expect(borg.stream.tail(3).map((entry) => entry.kind)).toEqual([
@@ -653,6 +665,88 @@ describe("Borg", () => {
         "thought",
         "agent_msg",
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("uses offline reflector provenance for durable reflection updates when no episodes are retrieved", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_1",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "the best rerun order",
+                verification_steps: ["check pnpm lockfile"],
+                tensions: [],
+                voice_note: "",
+              },
+            },
+          ],
+        },
+        {
+          text: "Try the deployment again after checking the lockfile.",
+          input_tokens: 20,
+          output_tokens: 10,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: llm,
+    });
+
+    try {
+      const result = await borg.turn({
+        userMessage: "The deployment is flaky again.",
+        stakes: "high",
+      });
+
+      expect(result.retrievedEpisodeIds).toEqual([]);
+      expect(borg.self.traits.list()[0]).toMatchObject({
+        label: "engaged",
+        provenance: {
+          kind: "offline",
+          process: "reflector",
+        },
+      });
     } finally {
       await borg.close();
     }
@@ -772,6 +866,7 @@ describe("Borg", () => {
         priority: 10,
         audience: "Sam",
         about: "Atlas",
+        provenance: { kind: "manual" },
       });
       borg.commitments.add({
         type: "boundary",
@@ -779,6 +874,7 @@ describe("Borg", () => {
         priority: 9,
         audience: "Sam",
         about: "Borealis",
+        provenance: { kind: "manual" },
       });
 
       const result = await borg.turn({
@@ -883,6 +979,7 @@ describe("Borg", () => {
         priority: 10,
         audience: "Sam",
         about: "Atlas",
+        provenance: { kind: "manual" },
       });
       llm.pushResponse({
         text: "Atlas is down right now.",

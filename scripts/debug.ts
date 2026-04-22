@@ -111,23 +111,31 @@ async function ensurePhase1(borg: Borg, state: DebugState): Promise<void> {
     label: "safety",
     description: "Prefer grounded, reversible debugging steps.",
     priority: 10,
+    provenance: { kind: "manual" },
   });
   borg.self.values.add({
     label: "clarity",
     description: "Make hidden failure modes explicit.",
     priority: 8,
+    provenance: { kind: "manual" },
   });
   borg.self.goals.add({
     description: "Stabilize pgvector similarity in production",
     priority: 9,
     status: "active",
+    provenance: { kind: "manual" },
   });
   borg.self.goals.add({
     description: "Ship a risky SIMD rewrite",
     priority: 3,
     status: "blocked",
+    provenance: { kind: "manual" },
   });
-  borg.self.traits.reinforce("curious", 0.3);
+  borg.self.traits.reinforce({
+    label: "curious",
+    delta: 0.3,
+    provenance: { kind: "manual" },
+  });
 
   state.valuesCount = borg.self.values.list().length;
   state.goalsCount = borg.self.goals.list().length;
@@ -263,7 +271,10 @@ async function runPhase4(borg: Borg, state: DebugState): Promise<void> {
     directive: "don't suggest unsafe code",
     priority: 10,
     audience: "default",
-    sourceEpisodeIds: firstEpisodeId === undefined ? undefined : [firstEpisodeId],
+    provenance:
+      firstEpisodeId === undefined
+        ? { kind: "manual" }
+        : { kind: "episodes", episode_ids: [firstEpisodeId] },
   });
 
   const turn = await borg.turn({
@@ -329,6 +340,7 @@ async function ensurePhase6(
       label: quarterLabel(nowMs),
       start_ts: nowMs,
       narrative: "A focused period of debugging memory-system infrastructure.",
+      provenance: { kind: "manual" },
     });
 
   const evidenceEpisodeId = state.episodes[0]?.id;
@@ -351,6 +363,7 @@ async function ensurePhase6(
       question: "What is the safest checklist for pgvector drift after a rollback?",
       urgency: 0.18,
       related_episode_ids: evidenceEpisodeId === undefined ? [] : [evidenceEpisodeId],
+      provenance: evidenceEpisodeId === undefined ? { kind: "manual" } : null,
       source: "user",
       created_at: oldTimestamp,
       last_touched: oldTimestamp,
@@ -429,11 +442,13 @@ async function ensurePhase7(
   const mood = borg.mood.current(state.sessionId);
   borg.social.upsertProfile("tom");
   borg.social.recordInteraction("tom", {
-    episode_id: sourceEpisodeId,
+    provenance: { kind: "episodes", episode_ids: [sourceEpisodeId] },
     valence: 0.25,
     now: nowMs(),
   });
-  const profile = borg.social.adjustTrust("tom", 0.15);
+  const profile = borg.social.adjustTrust("tom", 0.15, {
+    kind: "manual",
+  });
   state.phase7Lines = {
     skillLine: `skill selected=${selected.skill.id} sampled=${selected.sampledValue.toFixed(3)} candidates=${selected.evaluatedCandidates
       .map(

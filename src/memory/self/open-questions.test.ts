@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { ProvenanceError } from "../../util/errors.js";
 import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
 
 import { selfMigrations } from "./migrations.js";
 import { OpenQuestionsRepository } from "./open-questions.js";
 
 describe("OpenQuestionsRepository", () => {
+  const manualProvenance = { kind: "manual" } as const;
+
   it("dedupes by normalized question and related ids", () => {
     const clock = new FixedClock(10_000);
     const db = openDatabase(":memory:", {
@@ -50,6 +53,41 @@ describe("OpenQuestionsRepository", () => {
     db.close();
   });
 
+  it("validates duplicate adds before dedupe short-circuiting", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const episodeId = createEpisodeId();
+
+    try {
+      repository.add({
+        question: "Why is Atlas failing?",
+        urgency: 0.4,
+        related_episode_ids: [episodeId],
+        source: "user",
+      });
+
+      expect(() =>
+        repository.add({
+          question: "Why is atlas failing",
+          urgency: 0.9,
+          related_episode_ids: [episodeId],
+          provenance: {
+            kind: "episodes",
+            episode_ids: [],
+          },
+          source: "user",
+        }),
+      ).toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
   it("rejects invalid resolve and abandon transitions", () => {
     const clock = new FixedClock(10_000);
     const db = openDatabase(":memory:", {
@@ -64,11 +102,13 @@ describe("OpenQuestionsRepository", () => {
       question: "How did Atlas stabilize?",
       urgency: 0.5,
       source: "user",
+      provenance: manualProvenance,
     });
     const abandonedQuestion = repository.add({
       question: "Should I revisit old Borealis notes?",
       urgency: 0.3,
       source: "reflection",
+      provenance: manualProvenance,
     });
 
     repository.resolve(resolvedQuestion.id, {
@@ -125,5 +165,26 @@ describe("OpenQuestionsRepository", () => {
     expect(duplicate.id).toBe(inserted[999]?.id);
 
     db.close();
+  });
+
+  it("rejects questions without evidence or explicit provenance", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+    });
+
+    try {
+      expect(() =>
+        repository.add({
+          question: "What do I believe here?",
+          urgency: 0.5,
+          source: "user",
+        }),
+      ).toThrow(ProvenanceError);
+    } finally {
+      db.close();
+    }
   });
 });

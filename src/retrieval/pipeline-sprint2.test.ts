@@ -159,7 +159,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     harness = await createHarness();
     const sam = harness.entityRepository.resolve("Sam");
     harness.socialRepository.upsertProfile(sam);
-    harness.socialRepository.adjustTrust(sam, 0.3);
+    harness.socialRepository.adjustTrust(sam, 0.3, { kind: "manual" });
     await insertHotVectorDecoys(harness, 80);
 
     const rescued = createEpisodeFixture(

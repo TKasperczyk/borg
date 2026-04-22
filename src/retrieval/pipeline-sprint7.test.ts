@@ -74,7 +74,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
   it("boosts audience-relevant episodes when a trusted audience profile is present", async () => {
     harness = await createOfflineTestHarness();
     const audienceId = harness.entityRepository.resolve("Sam");
-    harness.socialRepository.adjustTrust(audienceId, 0.3);
+    harness.socialRepository.adjustTrust(audienceId, 0.3, { kind: "manual" });
     const withAudience = createEpisodeFixture({
       title: "Sam architecture discussion",
       participants: ["Sam"],
