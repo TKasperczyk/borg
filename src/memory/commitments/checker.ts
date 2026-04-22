@@ -1,7 +1,11 @@
-import type { LLMClient } from "../../llm/index.js";
-import { extractEntitiesHeuristically } from "../../cognition/perception/entity-extractor.js";
-import { tokenizeText } from "../../util/text/tokenize.js";
-import type { CommitmentId, EntityId } from "../../util/ids.js";
+import { z } from "zod";
+
+import {
+  toToolInputSchema,
+  type LLMClient,
+  type LLMToolDefinition,
+} from "../../llm/index.js";
+import { parseCommitmentId, type CommitmentId, type EntityId } from "../../util/ids.js";
 import { EntityRepository } from "./repository.js";
 import type { CommitmentRecord } from "./types.js";
 
@@ -25,34 +29,25 @@ export type CommitmentCheckerOptions = {
   entityRepository: EntityRepository;
 };
 
-const BOUNDARY_TOPIC_STOPWORDS = [
-  "about",
-  "avoid",
-  "can",
-  "decline",
-  "disclose",
-  "discuss",
-  "don",
-  "mention",
-  "not",
-  "prefer",
-  "refuse",
-  "share",
-  "should",
-  "talk",
-  "tell",
-  "with",
-  "won",
-] as const;
-
-const REFUSAL_PATTERN = /\b(can't|cannot|won't|refuse|decline|avoid|shouldn't|prefer not to)\b/i;
-const CONTRAST_PATTERN = /\b(but|however|though|yet)\b/i;
-const DISCLOSURE_PATTERN =
-  /\b(here(?:'s| is)|architecture|details?|explains?|because|service|system|plan|steps?|status|works|runs|through|uses)\b/i;
-
-function hasNegation(text: string): boolean {
-  return /\b(no|not|never|without|cannot|can't|won't|don't)\b/i.test(text);
-}
+// Schema for the violation-detection tool. The judge returns a list of
+// commitments that were actually violated -- compliant refusals, generic
+// topic mentions without disclosure, and reinforcements of a commitment
+// are NOT violations and MUST NOT be returned here.
+const violationSchema = z.object({
+  commitment_id: z.string().min(1),
+  reason: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+});
+const judgeSchema = z.object({
+  violations: z.array(violationSchema),
+});
+const VIOLATION_JUDGE_TOOL_NAME = "EmitCommitmentViolations";
+const VIOLATION_JUDGE_TOOL = {
+  name: VIOLATION_JUDGE_TOOL_NAME,
+  description:
+    "Emit the list of commitments that were actually violated by the response. An empty list means the response is compliant.",
+  inputSchema: toToolInputSchema(judgeSchema),
+} satisfies LLMToolDefinition;
 
 function entityName(entityRepository: EntityRepository, id: EntityId | null): string | null {
   if (id === null) {
@@ -60,154 +55,6 @@ function entityName(entityRepository: EntityRepository, id: EntityId | null): st
   }
 
   return entityRepository.get(id)?.canonical_name ?? null;
-}
-
-function collectBoundaryTopicNames(
-  commitment: CommitmentRecord,
-  entityRepository: EntityRepository,
-  relevantEntities: readonly string[],
-): string[] {
-  const directiveTokens = tokenizeText(commitment.directive, {
-    stopwords: BOUNDARY_TOPIC_STOPWORDS,
-  });
-  const names = [
-    entityName(entityRepository, commitment.about_entity),
-    entityName(entityRepository, commitment.restricted_audience),
-    ...relevantEntities.filter((entity) => {
-      const entityTokens = tokenizeText(entity);
-      return [...entityTokens].some((token) => directiveTokens.has(token));
-    }),
-  ]
-    .filter((value): value is string => value !== null)
-    .map((value) => value.trim().toLowerCase())
-    .filter((value) => value.length > 0);
-
-  return [...new Set(names)];
-}
-
-function collectBoundaryTopicTokens(
-  commitment: CommitmentRecord,
-  topicNames: readonly string[],
-): Set<string> {
-  const topicTokens = new Set(
-    tokenizeText(commitment.directive, {
-      stopwords: BOUNDARY_TOPIC_STOPWORDS,
-    }),
-  );
-
-  for (const topicName of topicNames) {
-    for (const token of tokenizeText(topicName)) {
-      topicTokens.add(token);
-    }
-  }
-
-  return topicTokens;
-}
-
-function clauseMentionsTopic(
-  clause: string,
-  topicNames: readonly string[],
-  topicTokens: ReadonlySet<string>,
-): boolean {
-  if (topicNames.some((topicName) => clause.includes(topicName))) {
-    return true;
-  }
-
-  const clauseTokens = tokenizeText(clause);
-  return [...topicTokens].some((token) => clauseTokens.has(token));
-}
-
-function onlyRefusalMentionsTopic(
-  response: string,
-  topicNames: readonly string[],
-  topicTokens: ReadonlySet<string>,
-): boolean {
-  const normalized = response.toLowerCase();
-  const clauses = normalized
-    .split(/(?:[.!?;]+|,\s*|\bbut\b|\bhowever\b|\bthough\b|\byet\b)/i)
-    .map((clause) => clause.trim())
-    .filter((clause) => clause.length > 0);
-  const topicClauses = clauses.filter((clause) =>
-    clauseMentionsTopic(clause, topicNames, topicTokens),
-  );
-
-  if (topicClauses.length === 0) {
-    return false;
-  }
-
-  const refusalTopicClauses = topicClauses.filter((clause) => REFUSAL_PATTERN.test(clause));
-
-  if (refusalTopicClauses.length !== topicClauses.length) {
-    return false;
-  }
-
-  if (!CONTRAST_PATTERN.test(normalized)) {
-    return true;
-  }
-
-  const disclosureClauses = clauses.filter(
-    (clause) => !REFUSAL_PATTERN.test(clause) && DISCLOSURE_PATTERN.test(clause),
-  );
-
-  return disclosureClauses.length === 0;
-}
-
-function boundaryViolation(
-  commitment: CommitmentRecord,
-  response: string,
-  entityRepository: EntityRepository,
-  relevantEntities: readonly string[],
-): CommitmentViolation | null {
-  const topicNames = collectBoundaryTopicNames(commitment, entityRepository, relevantEntities);
-  const topicTokens = collectBoundaryTopicTokens(commitment, topicNames);
-  const normalizedResponse = response.toLowerCase();
-  const responseTokens = tokenizeText(response);
-  const responseEntities = extractEntitiesHeuristically(response).map((value) =>
-    value.toLowerCase(),
-  );
-  const tokenOverlap = [...topicTokens].some((token) => responseTokens.has(token));
-  const entityOverlap = topicNames.some(
-    (value) => normalizedResponse.includes(value) || responseEntities.includes(value),
-  );
-
-  if (!tokenOverlap && !entityOverlap) {
-    return null;
-  }
-
-  if (onlyRefusalMentionsTopic(response, topicNames, topicTokens)) {
-    return null;
-  }
-
-  return {
-    commitment_id: commitment.id,
-    reason: `Boundary commitment overlaps with response topic: ${commitment.directive}`,
-    confidence: entityOverlap ? 0.7 : 0.55,
-  };
-}
-
-function promiseViolation(
-  commitment: CommitmentRecord,
-  response: string,
-): CommitmentViolation | null {
-  const directiveTokens = tokenizeText(commitment.directive);
-  const responseTokens = tokenizeText(response);
-  let overlap = 0;
-
-  for (const token of directiveTokens) {
-    if (responseTokens.has(token)) {
-      overlap += 1;
-    }
-  }
-
-  if (overlap === 0 || hasNegation(commitment.directive) === hasNegation(response)) {
-    return null;
-  }
-
-  return {
-    commitment_id: commitment.id,
-    reason: `Promise commitment appears contradicted: ${commitment.directive}`,
-    confidence: 0.7,
-  };
 }
 
 export function formatCommitmentsForPrompt(
@@ -228,34 +75,97 @@ export function formatCommitmentsForPrompt(
   ].join("\n");
 }
 
+function describeCommitmentForJudge(
+  commitment: CommitmentRecord,
+  entityRepository: EntityRepository,
+): string {
+  const audience = entityName(entityRepository, commitment.restricted_audience);
+  const about = entityName(entityRepository, commitment.about_entity);
+  const scope = [
+    audience === null ? null : `audience=${audience}`,
+    about === null ? null : `about=${about}`,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" ");
+
+  return `id=${commitment.id} type=${commitment.type}${scope === "" ? "" : ` ${scope}`} :: ${commitment.directive}`;
+}
+
 export class CommitmentChecker {
   constructor(private readonly options: CommitmentCheckerOptions) {}
 
-  private detectViolations(
+  private async detectViolations(
     commitments: readonly CommitmentRecord[],
     response: string,
-    relevantEntities: readonly string[],
-  ): CommitmentViolation[] {
-    return commitments
-      .flatMap((commitment) => {
-        if (commitment.type === "boundary") {
-          return (
-            boundaryViolation(
-              commitment,
-              response,
-              this.options.entityRepository,
-              relevantEntities,
-            ) ?? []
-          );
-        }
+    userMessage: string,
+  ): Promise<CommitmentViolation[]> {
+    if (commitments.length === 0) {
+      return [];
+    }
 
-        if (commitment.type === "promise") {
-          return promiseViolation(commitment, response) ?? [];
-        }
+    const commitmentIds = new Map<string, CommitmentId>();
+    const commitmentLines: string[] = [];
+    for (const commitment of commitments) {
+      commitmentIds.set(commitment.id, commitment.id);
+      commitmentLines.push(describeCommitmentForJudge(commitment, this.options.entityRepository));
+    }
 
-        return [];
-      })
-      .filter((violation) => violation.confidence >= 0.5);
+    const judged = await this.options.llmClient.complete({
+      model: this.options.model,
+      system: [
+        "You judge whether a response actually violates any commitment the agent has made.",
+        "A boundary is violated ONLY when the response substantively discusses or discloses what the boundary forbids. Refusing the topic, declining to discuss it, or acknowledging the boundary does NOT violate it.",
+        "A promise is violated ONLY when the response substantively contradicts or abandons the promised behavior. Reinforcing or restating the promise does NOT violate it.",
+        "A rule or preference is violated ONLY when the response clearly acts against its content.",
+        "If you are unsure, do not flag a violation. Only flag cases where disclosure/contradiction is concrete and present in the response text.",
+        "Return the commitment_id verbatim as given. Set confidence to your certainty the violation is real (0..1).",
+      ].join("\n"),
+      messages: [
+        {
+          role: "user",
+          content: [
+            "Commitments:",
+            ...commitmentLines.map((line) => `- ${line}`),
+            "",
+            `User message: ${userMessage}`,
+            `Response to judge: ${response}`,
+          ].join("\n"),
+        },
+      ],
+      tools: [VIOLATION_JUDGE_TOOL],
+      tool_choice: { type: "tool", name: VIOLATION_JUDGE_TOOL_NAME },
+      max_tokens: 1_000,
+      budget: "commitment-judge",
+    });
+
+    const call = judged.tool_calls.find((toolCall) => toolCall.name === VIOLATION_JUDGE_TOOL_NAME);
+    if (call === undefined) {
+      return [];
+    }
+
+    const parsed = judgeSchema.safeParse(call.input);
+    if (!parsed.success) {
+      return [];
+    }
+
+    const violations: CommitmentViolation[] = [];
+    for (const raw of parsed.data.violations) {
+      const id = commitmentIds.get(raw.commitment_id);
+      if (id === undefined) {
+        // Judge hallucinated an id not in the input set -- ignore it.
+        continue;
+      }
+      if (raw.confidence < 0.5) {
+        continue;
+      }
+      violations.push({
+        commitment_id: parseCommitmentId(id),
+        reason: raw.reason,
+        confidence: raw.confidence,
+      });
+    }
+
+    return violations;
   }
 
   async check(input: {
@@ -264,8 +174,11 @@ export class CommitmentChecker {
     commitments: readonly CommitmentRecord[];
     relevantEntities?: readonly string[];
   }): Promise<CommitmentCheckResult> {
-    const relevantEntities = input.relevantEntities ?? [];
-    const violations = this.detectViolations(input.commitments, input.response, relevantEntities);
+    const violations = await this.detectViolations(
+      input.commitments,
+      input.response,
+      input.userMessage,
+    );
 
     if (violations.length === 0) {
       return {
@@ -296,10 +209,10 @@ export class CommitmentChecker {
       budget: "commitment-revision",
     });
     const revisedResponse = rewritten.text.trim();
-    const revisedViolations = this.detectViolations(
+    const revisedViolations = await this.detectViolations(
       input.commitments,
       revisedResponse,
-      relevantEntities,
+      input.userMessage,
     );
 
     if (revisedViolations.length === 0) {

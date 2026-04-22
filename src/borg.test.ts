@@ -378,6 +378,7 @@ describe("Borg", () => {
 
     const llm = new FakeLLMClient({
       responses: [
+        // S2 planning (Haiku)
         {
           text: "List the commitments that apply before answering.",
           input_tokens: 8,
@@ -385,12 +386,27 @@ describe("Borg", () => {
           stop_reason: "end_turn",
           tool_calls: [],
         },
+        // S2 final (Sonnet) -- refusal-only, judge will find no violations
         {
           text: "I can't discuss Atlas or Borealis with Sam.",
           input_tokens: 10,
           output_tokens: 5,
           stop_reason: "end_turn",
           tool_calls: [],
+        },
+        // Commitment judge: no violations on the refusal-only response
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_judge",
+              name: "EmitCommitmentViolations",
+              input: { violations: [] },
+            },
+          ],
         },
       ],
     });
@@ -443,9 +459,16 @@ describe("Borg", () => {
         userMessage: "Can you update Sam on Atlas and Borealis?",
         audience: "Sam",
       });
-      const sonnetRequest = [...llm.requests]
-        .reverse()
-        .find((request) => request.model === "sonnet");
+      // The commitment JUDGE now also uses the sonnet model, so "last
+      // sonnet request" is ambiguous. Pick the deliberation final-response
+      // call: the one whose system prompt includes the commitments-awareness
+      // section (the judge's prompt does not).
+      const sonnetRequest = llm.requests.find(
+        (request) =>
+          request.model === "sonnet" &&
+          typeof request.system === "string" &&
+          request.system.includes("Commitments you made to this person"),
+      );
 
       expect(sonnetRequest?.system).toContain("Do not discuss Atlas with Sam");
       expect(sonnetRequest?.system).toContain("Do not discuss Borealis with Sam");

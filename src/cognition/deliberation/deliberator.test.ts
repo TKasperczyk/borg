@@ -614,67 +614,6 @@ describe("deliberator", () => {
     expect(llm.requests[1]?.system).toContain("Why does Atlas fail after rollback?");
   });
 
-  it("chooses system 2 when contradiction language appears even at low stakes", async () => {
-    const llm = new FakeLLMClient({
-      responses: [
-        {
-          text: "Check the contradiction before answering.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-        {
-          text: "Resolved answer",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-      ],
-    });
-    const deliberator = new Deliberator({
-      llmClient: llm,
-      cognitionModel: "sonnet",
-      backgroundModel: "haiku",
-    });
-
-    const result = await deliberator.run({
-      sessionId: DEFAULT_SESSION_ID,
-      userMessage: "This looked fine, but the deploy still failed.",
-      perception: {
-        entities: [],
-        mode: "problem_solving",
-        affectiveSignal: { valence: 0, arousal: 0 },
-        temporalCue: null,
-      },
-      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
-      workingMemory: {
-        session_id: DEFAULT_SESSION_ID,
-        turn_counter: 1,
-        scratchpad: "",
-        current_focus: null,
-        recent_thoughts: [],
-        hot_entities: [],
-        pending_intents: [],
-        suppressed: [],
-        mode: "problem_solving",
-        updated_at: 0,
-      },
-      selfSnapshot: {
-        values: [],
-        goals: [],
-        traits: [],
-      },
-      options: {
-        stakes: "low",
-      },
-    });
-
-    expect(result.path).toBe("system_2");
-    expect(result.decision_reason).toContain("Contradiction heuristic");
-  });
-
   it("chooses system 2 when retrieval reports a contradiction even without lexical hints", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -734,7 +673,7 @@ describe("deliberator", () => {
     });
 
     expect(result.path).toBe("system_2");
-    expect(result.decision_reason).toContain("Contradiction heuristic");
+    expect(result.decision_reason).toContain("Retrieved-context contradiction");
   });
 
   it("injects applicable commitments into the system prompt", async () => {

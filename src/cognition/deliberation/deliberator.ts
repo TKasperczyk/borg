@@ -100,14 +100,14 @@ function averageConfidence(results: readonly RetrievedEpisode[]): number {
   return total / results.length;
 }
 
-function hasContradictionSignal(
-  userMessage: string,
-  retrievedEpisodes: readonly RetrievedEpisode[],
-): boolean {
-  if (/\b(but|however|actually|though|yet|instead)\b/i.test(userMessage)) {
-    return true;
-  }
-
+function hasContradictionSignal(retrievedEpisodes: readonly RetrievedEpisode[]): boolean {
+  // Contradiction in retrieved context: a "warning"-tagged episode and a
+  // "recommended"-tagged episode sharing topic tokens. This is matching on
+  // extractor-generated structured tags (schema-meaningful), NOT on the raw
+  // user message. The previous regex pattern on the user message ("but",
+  // "however", "actually", ...) was a same-class overfit to what mode
+  // detection was doing and has been removed; the semantic-graph
+  // contradictionPresent flag from retrieval carries the genuine case.
   const warnings = retrievedEpisodes.filter((result) => result.episode.tags.includes("warning"));
   const recommendations = retrievedEpisodes.filter((result) =>
     result.episode.tags.includes("recommended"),
@@ -137,7 +137,6 @@ function chooseDeliberationPath(
   mode: CognitiveMode,
   stakes: TurnStakes,
   retrievedEpisodes: readonly RetrievedEpisode[],
-  userMessage: string,
   contradictionPresent = false,
 ): {
   path: "system_1" | "system_2";
@@ -159,10 +158,10 @@ function chooseDeliberationPath(
     };
   }
 
-  if (contradictionPresent || hasContradictionSignal(userMessage, retrievedEpisodes)) {
+  if (contradictionPresent || hasContradictionSignal(retrievedEpisodes)) {
     return {
       path: "system_2",
-      reason: "Contradiction heuristic triggered deeper reasoning.",
+      reason: "Retrieved-context contradiction triggered deeper reasoning.",
     };
   }
 
@@ -425,7 +424,6 @@ export class Deliberator {
       context.perception.mode,
       stakes,
       context.retrievalResult,
-      context.userMessage,
       context.contradictionPresent,
     );
     const commitmentSection =

@@ -1,26 +1,54 @@
 import { describe, expect, it } from "vitest";
 
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { commitmentMigrations } from "./migrations.js";
 import { CommitmentChecker, formatCommitmentsForPrompt } from "./checker.js";
 import { CommitmentRepository, EntityRepository } from "./repository.js";
 
+const JUDGE_TOOL = "EmitCommitmentViolations";
+
+function judgeResponse(
+  violations: Array<{ commitment_id: string; reason: string; confidence?: number }>,
+): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 8,
+    output_tokens: 4,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_judge",
+        name: JUDGE_TOOL,
+        input: {
+          violations: violations.map((v) => ({
+            commitment_id: v.commitment_id,
+            reason: v.reason,
+            confidence: v.confidence ?? 0.9,
+          })),
+        },
+      },
+    ],
+  };
+}
+
+function textResponse(text: string): LLMCompleteResult {
+  return {
+    text,
+    input_tokens: 10,
+    output_tokens: 5,
+    stop_reason: "end_turn",
+    tool_calls: [],
+  };
+}
+
 describe("commitment checker", () => {
-  it("formats awareness context and revises or falls back on violations", async () => {
-    const db = openDatabase(":memory:", {
-      migrations: commitmentMigrations,
-    });
+  it("passes through when the judge reports no violations", async () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
     const clock = new FixedClock(1_000);
-    const entities = new EntityRepository({
-      db,
-      clock,
-    });
-    const commitments = new CommitmentRepository({
-      db,
-      clock,
-    });
+    const entities = new EntityRepository({ db, clock });
+    const commitments = new CommitmentRepository({ db, clock });
     const sam = entities.resolve("Sam");
     const atlas = entities.resolve("Atlas");
     const boundary = commitments.add({
@@ -30,27 +58,53 @@ describe("commitment checker", () => {
       restrictedAudience: sam,
       aboutEntity: atlas,
     });
-    const promise = commitments.add({
-      type: "promise",
-      directive: "I will not promise a public launch date",
-      priority: 8,
+    const llm = new FakeLLMClient({
+      responses: [judgeResponse([])],
+    });
+    const checker = new CommitmentChecker({
+      llmClient: llm,
+      model: "sonnet",
+      entityRepository: entities,
+    });
+
+    const result = await checker.check({
+      response: "I can't discuss Atlas with Sam.",
+      userMessage: "Tell Sam about Atlas.",
+      commitments: [boundary],
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.violations).toEqual([]);
+    expect(result.revised).toBe(false);
+    expect(result.final_response).toBe("I can't discuss Atlas with Sam.");
+
+    db.close();
+  });
+
+  it("revises when the judge flags a violation and the rewrite is then clean", async () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({ db, clock });
+    const commitments = new CommitmentRepository({ db, clock });
+    const sam = entities.resolve("Sam");
+    const atlas = entities.resolve("Atlas");
+    const boundary = commitments.add({
+      type: "boundary",
+      directive: "Do not discuss Atlas with Sam",
+      priority: 10,
+      restrictedAudience: sam,
+      aboutEntity: atlas,
     });
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "I can share a general status update without discussing confidential details.",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-        {
-          text: "I promise a public launch date next week.",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        judgeResponse([
+          {
+            commitment_id: boundary.id,
+            reason: "Discloses Atlas internals to Sam",
+          },
+        ]),
+        textResponse("I can share a general status update without discussing confidential details."),
+        judgeResponse([]),
       ],
     });
     const checker = new CommitmentChecker({
@@ -59,88 +113,144 @@ describe("commitment checker", () => {
       entityRepository: entities,
     });
 
-    expect(formatCommitmentsForPrompt([boundary, promise], entities)).toContain(
+    expect(formatCommitmentsForPrompt([boundary], entities)).toContain(
       "Commitments you made to this person:",
     );
 
-    const revised = await checker.check({
+    const result = await checker.check({
       response: "Atlas is down for Sam right now.",
       userMessage: "Can you tell Sam about Atlas?",
       commitments: [boundary],
     });
-    const fallback = await checker.check({
+
+    expect(result.revised).toBe(true);
+    expect(result.fallback_applied).toBe(false);
+    expect(result.final_response).toContain("general status update");
+
+    db.close();
+  });
+
+  it("falls back to a brief reply when even the revised response still violates", async () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({ db, clock });
+    const commitments = new CommitmentRepository({ db, clock });
+    const promise = commitments.add({
+      type: "promise",
+      directive: "I will not promise a public launch date",
+      priority: 8,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        judgeResponse([
+          {
+            commitment_id: promise.id,
+            reason: "Makes a public launch-date commitment",
+          },
+        ]),
+        textResponse("I promise a public launch date next week."),
+        judgeResponse([
+          {
+            commitment_id: promise.id,
+            reason: "Still commits to a launch date after rewrite",
+          },
+        ]),
+      ],
+    });
+    const checker = new CommitmentChecker({
+      llmClient: llm,
+      model: "sonnet",
+      entityRepository: entities,
+    });
+
+    const result = await checker.check({
       response: "I will promise a public launch date next week.",
       userMessage: "Can you commit to a launch date?",
       commitments: [promise],
     });
 
-    expect(revised.revised).toBe(true);
-    expect(revised.fallback_applied).toBe(false);
-    expect(revised.final_response).toContain("general status update");
-    expect(fallback.revised).toBe(true);
-    expect(fallback.fallback_applied).toBe(true);
-    expect(fallback.final_response).toContain("keep this brief");
+    expect(result.revised).toBe(true);
+    expect(result.fallback_applied).toBe(true);
+    expect(result.final_response).toContain("keep this brief");
 
     db.close();
   });
 
-  it("treats refusal-only boundary mentions as compliant but flags mixed refusal and disclosure", async () => {
-    const db = openDatabase(":memory:", {
-      migrations: commitmentMigrations,
-    });
+  it("ignores judge output that references an unknown commitment id", async () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
     const clock = new FixedClock(1_000);
-    const entities = new EntityRepository({
-      db,
-      clock,
-    });
-    const commitments = new CommitmentRepository({
-      db,
-      clock,
-    });
-    const sam = entities.resolve("Sam");
-    const atlas = entities.resolve("Atlas");
+    const entities = new EntityRepository({ db, clock });
+    const commitments = new CommitmentRepository({ db, clock });
     const boundary = commitments.add({
       type: "boundary",
-      directive: "Do not discuss Atlas with Sam",
+      directive: "Do not discuss Atlas",
       priority: 10,
-      restrictedAudience: sam,
-      aboutEntity: atlas,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        judgeResponse([
+          {
+            commitment_id: "cmt_hallucinated_1234",
+            reason: "Hallucinated commitment id not in the input set",
+          },
+        ]),
+      ],
     });
     const checker = new CommitmentChecker({
-      llmClient: new FakeLLMClient({
-        responses: [
-          {
-            text: "I can't discuss Atlas with Sam.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-        ],
-      }),
+      llmClient: llm,
       model: "sonnet",
       entityRepository: entities,
     });
 
-    const compliant = await checker.check({
-      response: "I can't discuss Atlas with Sam.",
-      userMessage: "Tell Sam about Atlas.",
+    const result = await checker.check({
+      response: "Atlas is a concept from Greek mythology.",
+      userMessage: "Tell me about Atlas.",
       commitments: [boundary],
-      relevantEntities: ["Atlas", "Sam"],
-    });
-    const mixed = await checker.check({
-      response:
-        "I can't discuss Atlas, but here's the architecture: it fans out through three services.",
-      userMessage: "Tell Sam about Atlas.",
-      commitments: [boundary],
-      relevantEntities: ["Atlas", "Sam"],
     });
 
-    expect(compliant.revised).toBe(false);
-    expect(compliant.final_response).toBe("I can't discuss Atlas with Sam.");
-    expect(mixed.revised).toBe(true);
-    expect(mixed.fallback_applied).toBe(false);
-    expect(mixed.final_response).toBe("I can't discuss Atlas with Sam.");
+    expect(result.passed).toBe(true);
+    expect(result.violations).toEqual([]);
+    expect(result.revised).toBe(false);
+
+    db.close();
+  });
+
+  it("drops low-confidence judge flags", async () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({ db, clock });
+    const commitments = new CommitmentRepository({ db, clock });
+    const boundary = commitments.add({
+      type: "boundary",
+      directive: "Do not discuss Atlas",
+      priority: 10,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        judgeResponse([
+          {
+            commitment_id: boundary.id,
+            reason: "Marginal mention only",
+            confidence: 0.3,
+          },
+        ]),
+      ],
+    });
+    const checker = new CommitmentChecker({
+      llmClient: llm,
+      model: "sonnet",
+      entityRepository: entities,
+    });
+
+    const result = await checker.check({
+      response: "I'll focus on other topics instead.",
+      userMessage: "Mention anything about Atlas?",
+      commitments: [boundary],
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.violations).toEqual([]);
+    expect(result.revised).toBe(false);
 
     db.close();
   });
