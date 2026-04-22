@@ -257,11 +257,22 @@ describe("Borg", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: "Check Atlas release assumptions before answering.",
+          text: "",
           input_tokens: 10,
           output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_1",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "the best rerun order",
+                verification_steps: ["check pnpm lockfile"],
+                tensions: [],
+                voice_note: "",
+              },
+            },
+          ],
         },
         {
           text: "To stabilize the Atlas release, rerun pnpm install. Next step: rerun the deploy.",
@@ -322,6 +333,8 @@ describe("Borg", () => {
         "Heuristic turn progress",
       );
       expect(borg.self.traits.list()[0]?.label).toBe("engaged");
+      // Phase D: the planner's EmitTurnPlan tool-call shows up as a
+      // compact "plan: ..." thought entry persisted before the agent_msg.
       expect(borg.stream.tail(3).map((entry) => entry.kind)).toEqual([
         "user_msg",
         "thought",
@@ -753,11 +766,22 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           {
-            text: "Need more evidence before answering.",
+            text: "",
             input_tokens: 8,
             output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_plan_open_q",
+                name: "EmitTurnPlan",
+                input: {
+                  uncertainty: "why the open-question hook would fire",
+                  verification_steps: ["compare Atlas evidence"],
+                  tensions: [],
+                  voice_note: "",
+                },
+              },
+            ],
           },
           {
             text: "I need to compare more evidence before answering.",

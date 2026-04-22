@@ -135,11 +135,22 @@ describe("deliberator", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: "Plan: check the prior fix first.",
+          text: "",
           input_tokens: 8,
           output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_1",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+              },
+            },
+          ],
         },
         {
           text: "Final answer that respects earlier turn.",
@@ -196,28 +207,28 @@ describe("deliberator", () => {
       options: { stakes: "low" },
     });
 
-    // Planner (requests[0]) sees the recent dialogue AND a final user payload
-    // framing the planning task.
-    const plannerMessages = llm.requests[0]?.messages;
-    expect(plannerMessages?.[0]).toEqual({ role: "user", content: "We hit a drift in prod." });
-    expect(plannerMessages?.[1]).toEqual({
-      role: "assistant",
-      content: "Confirmed -- it's the index order.",
-    });
-    expect(plannerMessages?.[2]?.role).toBe("user");
-    expect(plannerMessages?.[2]?.content).toContain(
-      "User message: What does that mean for the rollback plan?",
-    );
-
-    // Finalizer (requests[1]) sees the same recent dialogue with the raw
-    // current user message as the trailing entry -- no planning framing,
-    // so the voice of the final answer is grounded in the actual user turn.
-    const finalMessages = llm.requests[1]?.messages;
-    expect(finalMessages).toEqual([
+    // Phase D: planner and finalizer BOTH get the same dialogue messages
+    // (recent + current user as plain text). The planner no longer wraps
+    // the user turn in a "User message: ..." payload -- it sees the turn
+    // directly and emits a structured plan via tool-use instead.
+    const expectedDialogue = [
       { role: "user", content: "We hit a drift in prod." },
       { role: "assistant", content: "Confirmed -- it's the index order." },
       { role: "user", content: "What does that mean for the rollback plan?" },
-    ]);
+    ];
+    expect(llm.requests[0]?.messages).toEqual(expectedDialogue);
+    expect(llm.requests[1]?.messages).toEqual(expectedDialogue);
+
+    // Planner pins tool_choice to EmitTurnPlan so the call produces a
+    // structured plan, not free-form text. Finalizer has no tool_choice --
+    // it emits natural response text.
+    expect(llm.requests[0]?.tool_choice).toEqual({ type: "tool", name: "EmitTurnPlan" });
+    expect(llm.requests[1]?.tool_choice).toBeUndefined();
+
+    // Both calls share the identity/voice framing so voice lands
+    // consistently across plan and response.
+    expect(llm.requests[0]?.system).toContain("AI being, not an assistant");
+    expect(llm.requests[1]?.system).toContain("AI being, not an assistant");
   });
 
   it("chooses system 1 when confidence is high and stakes are low", async () => {
@@ -906,18 +917,29 @@ describe("deliberator", () => {
     }
   });
 
-  it("chooses system 2 for high stakes and persists scratchpad thoughts", async () => {
+  it("chooses system 2 for high stakes and persists a formatted plan as the thought", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
 
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: "Check the failure mode first.",
+          text: "",
           input_tokens: 10,
           output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "whether the rollback is safe",
+                verification_steps: ["check failure mode first", "confirm rollback path"],
+                tensions: [],
+                voice_note: "",
+              },
+            },
+          ],
         },
         {
           text: "Careful answer. Next step: rerun the deploy.",
@@ -982,7 +1004,11 @@ describe("deliberator", () => {
       const thoughtEntries = reader.tail(1);
 
       expect(result.path).toBe("system_2");
-      expect(result.thoughts).toEqual(["Check the failure mode first."]);
+      // Phase D: thought is now a compact rendering of the structured plan
+      // that the planner tool-call emitted, not the plan's free-form text.
+      expect(result.thoughts).toHaveLength(1);
+      expect(result.thoughts[0]).toContain("uncertainty: whether the rollback is safe");
+      expect(result.thoughts[0]).toContain("verify: check failure mode first");
       expect(result.thoughtsPersisted).toBe(true);
       expect(result.usage.input_tokens).toBe(30);
       expect(result.retrievedEpisodes.map((episode) => episode.episode.id)).toEqual([

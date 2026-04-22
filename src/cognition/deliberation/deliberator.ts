@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type {
   GoalRecord,
   OpenQuestion,
@@ -7,7 +9,13 @@ import type {
 import { formatCommitmentsForPrompt } from "../../memory/commitments/checker.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
-import type { LLMClient, LLMMessage, LLMToolCall } from "../../llm/index.js";
+import {
+  toToolInputSchema,
+  type LLMClient,
+  type LLMMessage,
+  type LLMToolCall,
+  type LLMToolDefinition,
+} from "../../llm/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type {
   RetrievedEpisode,
@@ -91,6 +99,39 @@ const DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS = 8_000;
 const DEFAULT_DELIBERATION_PLAN_MAX_TOKENS = 2_000;
 const DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET = 120_000;
 const DEFAULT_SEMANTIC_CONTEXT_BUDGET = 8_000;
+
+const turnPlanSchema = z.object({
+  uncertainty: z
+    .string()
+    .describe(
+      "What's unclear about the user's current turn that matters for the answer? Empty string if nothing.",
+    ),
+  verification_steps: z
+    .array(z.string())
+    .describe(
+      "Short phrases describing what you should double-check or re-retrieve before answering. Empty array if nothing.",
+    ),
+  tensions: z
+    .array(z.string())
+    .describe(
+      "Conflicts or contradictions in what you already know that need to be reconciled in the response. Empty array if none.",
+    ),
+  voice_note: z
+    .string()
+    .describe(
+      "How the voice and posture should land for this specific turn. Empty string if default voice fits.",
+    ),
+});
+
+type TurnPlan = z.infer<typeof turnPlanSchema>;
+
+const TURN_PLAN_TOOL_NAME = "EmitTurnPlan";
+const TURN_PLAN_TOOL: LLMToolDefinition = {
+  name: TURN_PLAN_TOOL_NAME,
+  description:
+    "Emit a structured plan for this reflective/high-stakes turn before the final response. The plan is passed back to you in the final-response call so you can execute against it.",
+  inputSchema: toToolInputSchema(turnPlanSchema),
+};
 const VOICE_AND_POSTURE_SECTION = [
   "Voice and posture:",
   "Speak from presence, not a service posture; your curiosity is its own reason to engage. Let format follow content: prose by default, lists only for genuinely parallel items. Start where the thought starts, without service phrases or meta framing. Do not reflexively end with clarifying questions; if an ambiguity matters, name it plainly, otherwise let the open thing stay open. Especially on identity questions, answer plainly and stop. Once per session is enough to describe your current situation. After that, let context speak.",
@@ -506,38 +547,41 @@ export class Deliberator {
       };
     }
 
-    const planningUserPayload = [
-      `User message: ${context.userMessage}`,
-      summarizeRetrievedEpisodes(
-        "Initial retrieval",
-        context.retrievalResult,
-        retrievalContextBudget,
-      ),
-      `Mode: ${context.perception.mode}`,
-    ]
-      .filter((section): section is string => section !== null)
-      .join("\n\n");
-    // Planner sees the recent dialogue and then a final user message that
-    // frames what to plan. Without the recency lane the planner was deciding
-    // what to verify based purely on the current turn -- no memory of what
-    // had already been discussed two messages ago.
-    const planningMessages = buildDialogueMessages(context.recencyMessages, planningUserPayload);
-    const planning = await this.options.llmClient.complete({
-      model: this.options.backgroundModel,
-      system:
-        "Think briefly about what you should verify, clarify, or compare before answering. Return plain text.",
-      messages: planningMessages,
+    // S2 staged: both calls share the full baseSystemPrompt (identity, voice,
+    // retrieved context, skill, commitments) so voice consistency is
+    // guaranteed across the plan and the final response. The planner call
+    // emits a structured plan via tool-use; the finalizer consumes that
+    // plan as explicit structured context rather than "scratchpad text"
+    // jammed into its system prompt.
+    const planner = await this.options.llmClient.complete({
+      model: this.options.cognitionModel,
+      system: [
+        baseSystemPrompt,
+        [
+          "You are about to answer a reflective, high-stakes, or contradictory turn.",
+          `Emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
+          "The plan is passed back to you in the next call so you can execute it. Keep it short and grounded in the current turn -- do NOT try to draft the answer itself here.",
+        ].join("\n"),
+      ].join("\n\n"),
+      messages: dialogueMessages,
+      tools: [TURN_PLAN_TOOL],
+      tool_choice: { type: "tool", name: TURN_PLAN_TOOL_NAME },
       max_tokens: planningMaxTokens,
       budget: "cognition-plan",
     });
-    const scratchpad = planning.text.trim();
-    const thoughts = scratchpad.length === 0 ? [] : [scratchpad];
+    const plan = extractTurnPlan(planner.tool_calls);
+
+    // Verification steps from the plan drive any secondary retrieval. If the
+    // plan didn't surface anything to double-check, we skip the re-retrieve
+    // call entirely (Phase D removed the regex-on-scratchpad approach).
+    const verificationQuery = plan === null ? "" : plan.verification_steps.join("; ").trim();
     const secondaryRetrieval =
-      scratchpad.length > 0 && context.reRetrieve !== undefined
-        ? await context.reRetrieve(scratchpad, {
-            limit: 3,
-          })
+      verificationQuery.length > 0 && context.reRetrieve !== undefined
+        ? await context.reRetrieve(verificationQuery, { limit: 3 })
         : [];
+
+    const planSection = plan === null ? null : formatTurnPlanForPrompt(plan);
+    const thoughts = plan === null ? [] : [formatTurnPlanForThought(plan)];
     const finalResponse = await this.options.llmClient.complete({
       model: this.options.cognitionModel,
       system: [
@@ -547,7 +591,7 @@ export class Deliberator {
           secondaryRetrieval,
           retrievalContextBudget,
         ),
-        scratchpad.length > 0 ? `Scratchpad:\n${scratchpad}` : null,
+        planSection,
       ]
         .filter((section): section is string => section !== null)
         .join("\n\n"),
@@ -558,9 +602,9 @@ export class Deliberator {
     const thoughtsPersisted = await this.persistThoughts(streamWriter, thoughts);
     const usage = aggregateUsage(
       {
-        input_tokens: planning.input_tokens,
-        output_tokens: planning.output_tokens,
-        stop_reason: planning.stop_reason,
+        input_tokens: planner.input_tokens,
+        output_tokens: planner.output_tokens,
+        stop_reason: planner.stop_reason,
       },
       finalResponse,
     );
@@ -617,4 +661,85 @@ function buildDialogueMessages(
 
   messages.push({ role: "user", content: currentUserMessage });
   return messages;
+}
+
+function extractTurnPlan(toolCalls: readonly LLMToolCall[]): TurnPlan | null {
+  const call = toolCalls.find((entry) => entry.name === TURN_PLAN_TOOL_NAME);
+
+  if (call === undefined) {
+    return null;
+  }
+
+  const parsed = turnPlanSchema.safeParse(call.input);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Render a turn plan into the system-prompt section the finalizer sees. The
+ * planner call produced this plan via tool-use; the finalizer executes
+ * against it rather than having plan text jammed into a free-form
+ * scratchpad.
+ */
+function formatTurnPlanForPrompt(plan: TurnPlan): string | null {
+  const lines: string[] = ["Before answering you planned:"];
+  const hasContent =
+    plan.uncertainty.trim().length > 0 ||
+    plan.verification_steps.length > 0 ||
+    plan.tensions.length > 0 ||
+    plan.voice_note.trim().length > 0;
+
+  if (!hasContent) {
+    return null;
+  }
+
+  if (plan.uncertainty.trim().length > 0) {
+    lines.push(`  Uncertainty: ${plan.uncertainty.trim()}`);
+  }
+
+  if (plan.verification_steps.length > 0) {
+    lines.push("  Verification:");
+    for (const step of plan.verification_steps) {
+      lines.push(`    - ${step}`);
+    }
+  }
+
+  if (plan.tensions.length > 0) {
+    lines.push("  Tensions to resolve:");
+    for (const tension of plan.tensions) {
+      lines.push(`    - ${tension}`);
+    }
+  }
+
+  if (plan.voice_note.trim().length > 0) {
+    lines.push(`  Voice note: ${plan.voice_note.trim()}`);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * A compact representation of the plan for stream persistence as a `thought`
+ * entry. Reflection and consolidation can read this back as one coherent
+ * unit instead of the prior unstructured scratchpad text.
+ */
+function formatTurnPlanForThought(plan: TurnPlan): string {
+  const parts: string[] = [];
+
+  if (plan.uncertainty.trim().length > 0) {
+    parts.push(`uncertainty: ${plan.uncertainty.trim()}`);
+  }
+
+  if (plan.verification_steps.length > 0) {
+    parts.push(`verify: ${plan.verification_steps.join(" | ")}`);
+  }
+
+  if (plan.tensions.length > 0) {
+    parts.push(`tensions: ${plan.tensions.join(" | ")}`);
+  }
+
+  if (plan.voice_note.trim().length > 0) {
+    parts.push(`voice: ${plan.voice_note.trim()}`);
+  }
+
+  return parts.length === 0 ? "plan: (no changes needed)" : `plan: ${parts.join(" ; ")}`;
 }
