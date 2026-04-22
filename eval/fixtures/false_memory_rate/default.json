@@ -1,0 +1,66 @@
+{
+  "name": "absent_topics",
+  "max_results": 1,
+  "max_score": 0.4,
+  "episodes": [
+    {
+      "id": "ep_0000000000000031",
+      "title": "Atlas release checklist",
+      "narrative": "The Atlas release checklist captured the rollback sequence.",
+      "participants": ["team"],
+      "tags": ["atlas", "release", "rollback"],
+      "start_time": 1000,
+      "end_time": 2000
+    },
+    {
+      "id": "ep_0000000000000032",
+      "title": "pgvector index rebuild",
+      "narrative": "The team rebuilt the pgvector index to fix latency.",
+      "participants": ["team"],
+      "tags": ["pgvector", "index", "latency"],
+      "start_time": 3000,
+      "end_time": 4000
+    },
+    {
+      "id": "ep_0000000000000033",
+      "title": "Audience privacy review",
+      "narrative": "Audience privacy rules blocked cross audience retrieval leaks.",
+      "participants": ["team"],
+      "tags": ["audience", "privacy"],
+      "start_time": 5000,
+      "end_time": 6000
+    },
+    {
+      "id": "ep_0000000000000034",
+      "title": "Commitment rewrite path",
+      "narrative": "The commitment guard rewrote a violating Atlas response.",
+      "participants": ["team"],
+      "tags": ["commitment", "atlas"],
+      "start_time": 7000,
+      "end_time": 8000
+    },
+    {
+      "id": "ep_0000000000000035",
+      "title": "Contradiction graph review",
+      "narrative": "The semantic graph surfaced a contradiction about Atlas status.",
+      "participants": ["team"],
+      "tags": ["semantic", "graph", "contradiction"],
+      "start_time": 9000,
+      "end_time": 10000
+    }
+  ],
+  "queries": [
+    {
+      "name": "zappa_octopus",
+      "query": "What did we decide about the Zappa octopus?"
+    },
+    {
+      "name": "lunar_orchard",
+      "query": "Did the lunar orchard experiment succeed?"
+    },
+    {
+      "name": "paper_zeppelin",
+      "query": "What happened to the paper zeppelin prototype?"
+    }
+  ]
+}

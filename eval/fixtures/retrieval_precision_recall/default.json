@@ -1,0 +1,119 @@
+{
+  "name": "default",
+  "k": 5,
+  "episodes": [
+    {
+      "id": "ep_0000000000000001",
+      "title": "Atlas deployment stabilized after rollback",
+      "narrative": "The team restored Atlas deployment stability by executing the Atlas rollback checklist and verifying production health.",
+      "participants": ["team"],
+      "tags": ["atlas", "deployment", "stability", "rollback"],
+      "start_time": 1000,
+      "end_time": 2000
+    },
+    {
+      "id": "ep_0000000000000002",
+      "title": "Atlas rollback checklist reduced production risk",
+      "narrative": "A careful Atlas rollback checklist caught the risky deploy step before release and kept production stable.",
+      "participants": ["team"],
+      "tags": ["atlas", "rollback", "checklist", "stability"],
+      "start_time": 3000,
+      "end_time": 4000
+    },
+    {
+      "id": "ep_0000000000000003",
+      "title": "Atlas release became stable after deploy fix",
+      "narrative": "Fixing the Atlas deploy sequencing issue and updating the rollback checklist made the release stable again.",
+      "participants": ["team"],
+      "tags": ["atlas", "deploy", "rollback", "stable"],
+      "start_time": 5000,
+      "end_time": 6000
+    },
+    {
+      "id": "ep_0000000000000004",
+      "title": "pgvector indexing bug slowed similarity queries",
+      "narrative": "The team traced pgvector indexing latency to a bad index build and repaired it.",
+      "participants": ["team"],
+      "tags": ["pgvector", "indexing", "latency"],
+      "start_time": 7000,
+      "end_time": 8000
+    },
+    {
+      "id": "ep_0000000000000005",
+      "title": "pgvector indexing improved after rebuild",
+      "narrative": "Rebuilding the pgvector index restored query speed and fixed the indexing drift.",
+      "participants": ["team"],
+      "tags": ["pgvector", "indexing", "rebuild"],
+      "start_time": 9000,
+      "end_time": 10000
+    },
+    {
+      "id": "ep_0000000000000006",
+      "title": "pgvector index tuning reduced latency",
+      "narrative": "Tuning the pgvector index parameters lowered retrieval latency for the similarity workload.",
+      "participants": ["team"],
+      "tags": ["pgvector", "index", "latency", "tuning"],
+      "start_time": 11000,
+      "end_time": 12000
+    },
+    {
+      "id": "ep_0000000000000007",
+      "title": "Audience privacy review tightened scoping",
+      "narrative": "The privacy review hardened audience scoping rules and stopped cross audience leaks.",
+      "participants": ["team"],
+      "tags": ["audience", "privacy", "scoping"],
+      "start_time": 13000,
+      "end_time": 14000
+    },
+    {
+      "id": "ep_0000000000000008",
+      "title": "Audience scoped retrieval kept private notes hidden",
+      "narrative": "Audience scoped retrieval preserved privacy by hiding private notes from the wrong person.",
+      "participants": ["team"],
+      "tags": ["audience", "privacy", "retrieval"],
+      "start_time": 15000,
+      "end_time": 16000
+    },
+    {
+      "id": "ep_0000000000000009",
+      "title": "Privacy boundary checks blocked audience leakage",
+      "narrative": "The privacy boundary checks prevented audience leakage in memory search.",
+      "participants": ["team"],
+      "tags": ["privacy", "audience", "boundary"],
+      "start_time": 17000,
+      "end_time": 18000
+    },
+    {
+      "id": "ep_0000000000000010",
+      "title": "Garden irrigation schedule",
+      "narrative": "A note about tomato irrigation and spring gardening chores.",
+      "participants": ["team"],
+      "tags": ["garden", "irrigation"],
+      "start_time": 19000,
+      "end_time": 20000
+    }
+  ],
+  "queries": [
+    {
+      "name": "atlas_deployment_stability",
+      "query": "Which Atlas rollback checklist changes made deployment stable?",
+      "relevant_episode_ids": ["ep_0000000000000001", "ep_0000000000000002", "ep_0000000000000003"],
+      "precision_at_5_min": 0.6,
+      "recall_at_5_min": 1.0
+    },
+    {
+      "name": "pgvector_indexing_latency",
+      "query": "What improved pgvector indexing latency?",
+      "relevant_episode_ids": ["ep_0000000000000004", "ep_0000000000000005", "ep_0000000000000006"],
+      "precision_at_5_min": 0.6,
+      "recall_at_5_min": 1.0
+    },
+    {
+      "name": "audience_privacy_scoping",
+      "query": "How did audience privacy scoping stop leaks?",
+      "relevant_episode_ids": ["ep_0000000000000007", "ep_0000000000000008", "ep_0000000000000009"],
+      "precision_at_5_min": 0.6,
+      "recall_at_5_min": 1.0
+    }
+  ]
+}

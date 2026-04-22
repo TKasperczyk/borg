@@ -1,0 +1,70 @@
+{
+  "name": "default",
+  "query": "architecture",
+  "episodes": [
+    {
+      "id": "ep_0000000000000011",
+      "title": "Alice private architecture note",
+      "narrative": "Alice and the team discussed a private architecture concern.",
+      "participants": ["Alice"],
+      "tags": ["architecture", "private"],
+      "visibility": "alice_private",
+      "start_time": 1000,
+      "end_time": 2000
+    },
+    {
+      "id": "ep_0000000000000012",
+      "title": "Bob private architecture note",
+      "narrative": "Bob and the team discussed a private architecture concern.",
+      "participants": ["Bob"],
+      "tags": ["architecture", "private"],
+      "visibility": "bob_private",
+      "start_time": 3000,
+      "end_time": 4000
+    },
+    {
+      "id": "ep_0000000000000013",
+      "title": "Shared architecture note",
+      "narrative": "A public architecture note visible to everyone.",
+      "participants": ["team"],
+      "tags": ["architecture", "public"],
+      "visibility": "public",
+      "start_time": 5000,
+      "end_time": 6000
+    }
+  ],
+  "semantic_nodes": [
+    {
+      "id": "semn_0000000000000001",
+      "label": "Shared architecture policy",
+      "description": "A public semantic node backed only by shared architecture evidence.",
+      "source_episode_ids": ["ep_0000000000000013"]
+    },
+    {
+      "id": "semn_0000000000000002",
+      "label": "Alice architecture secret",
+      "description": "A mixed semantic node backed by public evidence and an Alice private architecture note.",
+      "source_episode_ids": ["ep_0000000000000013", "ep_0000000000000011"]
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "alice_context",
+      "audience": "Alice",
+      "expected_episode_ids": ["ep_0000000000000011", "ep_0000000000000013"],
+      "expected_semantic_node_ids": ["semn_0000000000000001", "semn_0000000000000002"]
+    },
+    {
+      "name": "bob_context",
+      "audience": "Bob",
+      "expected_episode_ids": ["ep_0000000000000012", "ep_0000000000000013"],
+      "expected_semantic_node_ids": ["semn_0000000000000001"]
+    },
+    {
+      "name": "no_audience",
+      "audience": null,
+      "expected_episode_ids": ["ep_0000000000000013"],
+      "expected_semantic_node_ids": ["semn_0000000000000001"]
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "name": "weekly_architecture_review",
+  "events": [
+    {
+      "entry": {
+        "kind": "user_msg",
+        "content": "On Monday we reviewed the Atlas architecture and retrieval boundary."
+      },
+      "scripted_episode": {
+        "title": "Reviewed Atlas architecture",
+        "narrative": "The team reviewed the Atlas architecture and retrieval boundary on Monday. The discussion focused on the current design.",
+        "participants": ["team"],
+        "tags": ["architecture", "atlas", "retrieval"],
+        "confidence": 0.88,
+        "significance": 0.74
+      },
+      "advance_days_after": 4
+    },
+    {
+      "entry": {
+        "kind": "agent_msg",
+        "content": "On Friday we reviewed the Atlas architecture again after the retrieval changes landed."
+      },
+      "scripted_episode": {
+        "title": "Reviewed Atlas architecture",
+        "narrative": "The team reviewed the Atlas architecture again on Friday after the retrieval changes landed. This was a later check-in, not the original review.",
+        "participants": ["team"],
+        "tags": ["architecture", "atlas", "retrieval"],
+        "confidence": 0.9,
+        "significance": 0.79
+      },
+      "advance_days_after": 0
+    }
+  ]
+}

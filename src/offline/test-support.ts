@@ -125,6 +125,7 @@ export async function createOfflineTestHarness(
     clock?: Clock;
     llmClient?: LLMClient;
     embeddingClient?: EmbeddingClient;
+    embeddingDimensions?: number;
     configOverrides?: Partial<Config>;
   } = {},
 ): Promise<OfflineTestHarness> {
@@ -132,6 +133,7 @@ export async function createOfflineTestHarness(
   const clock = options.clock ?? new FixedClock(1_000_000);
   const embeddingClient = options.embeddingClient ?? new TestEmbeddingClient();
   const llmClient = options.llmClient ?? new FakeLLMClient();
+  const embeddingDimensions = options.embeddingDimensions ?? 4;
   const config: Config = {
     ...DEFAULT_CONFIG,
     ...options.configOverrides,
@@ -147,7 +149,7 @@ export async function createOfflineTestHarness(
     embedding: {
       ...DEFAULT_CONFIG.embedding,
       ...options.configOverrides?.embedding,
-      dims: 4,
+      dims: embeddingDimensions,
     },
     anthropic: {
       ...DEFAULT_CONFIG.anthropic,
@@ -204,15 +206,15 @@ export async function createOfflineTestHarness(
   });
   const episodesTable = await lance.openTable({
     name: "episodes",
-    schema: createEpisodesTableSchema(4),
+    schema: createEpisodesTableSchema(embeddingDimensions),
   });
   const semanticNodesTable = await lance.openTable({
     name: "semantic_nodes",
-    schema: createSemanticNodesTableSchema(4),
+    schema: createSemanticNodesTableSchema(embeddingDimensions),
   });
   const skillsTable = await lance.openTable({
     name: "skills",
-    schema: createSkillsTableSchema(4),
+    schema: createSkillsTableSchema(embeddingDimensions),
   });
   const episodicRepository = new EpisodicRepository({
     table: episodesTable,

@@ -1,0 +1,63 @@
+{
+  "name": "default",
+  "stream_entries": [
+    {
+      "kind": "user_msg",
+      "content": "Sam and I reviewed the Atlas deploy checklist this morning."
+    },
+    {
+      "kind": "agent_msg",
+      "content": "We focused on the rollback path and the production stability risks."
+    },
+    {
+      "kind": "user_msg",
+      "content": "The checklist still needs one more Atlas verification step."
+    },
+    {
+      "kind": "agent_msg",
+      "content": "I captured the missing deploy verification and the rollback reminder."
+    },
+    {
+      "kind": "user_msg",
+      "content": "Later we also talked about pgvector indexing latency on the retrieval pipeline."
+    },
+    {
+      "kind": "agent_msg",
+      "content": "We agreed to rebuild the pgvector index and benchmark the indexing fix."
+    }
+  ],
+  "scripted_episodes": [
+    {
+      "title": "Sam reviewed the Atlas deploy checklist",
+      "narrative": "Sam and I reviewed the Atlas deploy checklist and the rollback path. We focused on production stability and the missing verification step.",
+      "participants": ["Sam", "team"],
+      "tags": ["atlas", "deploy", "rollback", "stability"],
+      "source_entry_indexes": [0, 1, 2, 3],
+      "confidence": 0.92,
+      "significance": 0.84
+    },
+    {
+      "title": "pgvector indexing latency follow-up",
+      "narrative": "We discussed pgvector indexing latency in the retrieval pipeline. The plan was to rebuild the index and benchmark the fix.",
+      "participants": ["team"],
+      "tags": ["pgvector", "indexing", "latency"],
+      "source_entry_indexes": [4, 5],
+      "confidence": 0.9,
+      "significance": 0.8
+    }
+  ],
+  "expected": [
+    {
+      "name": "atlas_checklist",
+      "title_keywords": ["sam", "atlas", "deploy"],
+      "narrative_keywords": ["rollback", "stability"],
+      "participants": ["Sam"]
+    },
+    {
+      "name": "pgvector_follow_up",
+      "title_keywords": ["pgvector", "indexing", "latency"],
+      "narrative_keywords": ["rebuild", "benchmark"],
+      "participants": ["team"]
+    }
+  ]
+}

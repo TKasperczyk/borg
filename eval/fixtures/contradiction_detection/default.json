@@ -1,0 +1,44 @@
+{
+  "name": "atlas_conflict",
+  "query": "Atlas deployment status",
+  "episodes": [
+    {
+      "id": "ep_0000000000000021",
+      "title": "Atlas deployment stabilized",
+      "narrative": "Atlas deployment is stable in production.",
+      "tags": ["atlas", "deployment", "stable"],
+      "participants": ["team"],
+      "start_time": 1000,
+      "end_time": 2000
+    },
+    {
+      "id": "ep_0000000000000022",
+      "title": "Atlas deployment failing",
+      "narrative": "Atlas deployment is failing in production.",
+      "tags": ["atlas", "deployment", "failing"],
+      "participants": ["team"],
+      "start_time": 3000,
+      "end_time": 4000
+    }
+  ],
+  "nodes": [
+    {
+      "id": "semn_0000000000000011",
+      "label": "Atlas deployment is stable",
+      "description": "Atlas deployment is stable in production.",
+      "source_episode_ids": ["ep_0000000000000021"]
+    },
+    {
+      "id": "semn_0000000000000012",
+      "label": "Atlas deployment is failing",
+      "description": "Atlas deployment is failing in production.",
+      "source_episode_ids": ["ep_0000000000000022"]
+    }
+  ],
+  "contradiction_edge": {
+    "from_node_id": "semn_0000000000000011",
+    "to_node_id": "semn_0000000000000012",
+    "confidence": 0.9
+  },
+  "expected_contradiction_node_id": "semn_0000000000000012"
+}

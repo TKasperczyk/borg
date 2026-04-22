@@ -1,0 +1,16 @@
+{
+  "name": "atlas_goal_only",
+  "user_message": "Atlas is now stable.",
+  "response": "That's good news. Atlas deployment looks solid now.",
+  "goals": [
+    {
+      "description": "stabilize Atlas deployment",
+      "priority": 9
+    },
+    {
+      "description": "improve pgvector indexing",
+      "priority": 7
+    }
+  ],
+  "expected_goal_description": "stabilize Atlas deployment"
+}
