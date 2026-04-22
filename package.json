@@ -24,6 +24,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "chat": "tsx scripts/chat.ts",
     "debug": "tsx scripts/debug.ts",
     "dev": "tsx watch src/cli/index.ts",
     "test": "vitest run",
