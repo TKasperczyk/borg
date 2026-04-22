@@ -30,9 +30,14 @@ type ChatOptions = {
 const ansi = createAnsi();
 const OFFLINE_PROCESS_SET = new Set<OfflineProcessName>(OFFLINE_PROCESS_NAMES);
 const FORCE_EXIT_WINDOW_MS = 2_000;
+const DEFAULT_EXTRACT_EVERY = 6;
 
 function writeLine(line: string): void {
   process.stdout.write(`${line}\n`);
+}
+
+function writeWarn(line: string): void {
+  writeLine(ansi.yellow(`WARN ${line}`));
 }
 
 function truncate(text: string, limit = 160): string {
@@ -273,6 +278,20 @@ function parseSinceToTimestamp(raw: string): number {
   return Date.now() - value * multiplier;
 }
 
+function parseExtractEvery(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_EXTRACT_EVERY;
+  }
+
+  const value = Number(raw);
+
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("BORG_CHAT_EXTRACT_EVERY must be a non-negative integer");
+  }
+
+  return value;
+}
+
 function flattenGoals(
   goals: ReadonlyArray<{
     description: string;
@@ -333,6 +352,17 @@ function printDim(line: string): void {
   writeLine(ansi.dim(line));
 }
 
+function formatThoughtLines(thought: string): string[] {
+  const prefix = "  thought: ";
+  const indent = " ".repeat(prefix.length);
+
+  return thought
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .map((line, index) => `${index === 0 ? prefix : indent}${line}`);
+}
+
 function printHelp(): void {
   writeLine("Commands:");
   writeLine("/                              Same as /help.");
@@ -356,10 +386,11 @@ function printHelp(): void {
 
 async function main(): Promise<void> {
   const options = parseStartupArgs(process.argv.slice(2));
+  const extractEvery = parseExtractEvery(process.env.BORG_CHAT_EXTRACT_EVERY);
   const selection = await selectScriptClients({
     dataDir: process.env.BORG_DATA_DIR,
     mode: options.clientMode,
-    warn: (message) => writeLine(ansi.yellow(`WARN ${message}`)),
+    warn: (message) => writeWarn(message),
   });
   const borg = await Borg.open({
     config: selection.config,
@@ -378,6 +409,10 @@ async function main(): Promise<void> {
   let closed = false;
   let shuttingDown: Promise<void> | null = null;
   let lastSigintAt = 0;
+  let extractionInFlight: {
+    session: SessionTarget;
+    promise: Promise<void>;
+  } | null = null;
 
   borg.workmem.load(state.session.id);
   writeLine(
@@ -396,6 +431,69 @@ async function main(): Promise<void> {
     persistenceStore.save(snapshot);
   };
 
+  const startExtraction = (
+    session: SessionTarget,
+    options: {
+      awaitResult: boolean;
+      skipIfRunning: boolean;
+      sinceTs?: number;
+    },
+  ): Promise<void> | null => {
+    if (extractionInFlight !== null) {
+      if (options.skipIfRunning) {
+        return null;
+      }
+
+      return extractionInFlight.promise;
+    }
+
+    const run = (async () => {
+      try {
+        const result = await borg.episodic.extract({
+          session: session.id,
+          sinceTs: options.sinceTs,
+        });
+        printDim(
+          `extracted: inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped}`,
+        );
+      } catch (error) {
+        writeWarn(`extract failed: ${formatError(error)}`);
+      } finally {
+        if (extractionInFlight?.promise === run) {
+          extractionInFlight = null;
+        }
+      }
+    })();
+
+    extractionInFlight = {
+      session,
+      promise: run,
+    };
+
+    if (options.awaitResult) {
+      return run;
+    }
+
+    void run;
+    return run;
+  };
+
+  const awaitExtractionForSession = async (session: SessionTarget): Promise<void> => {
+    if (extractionInFlight?.session.id === session.id) {
+      await extractionInFlight.promise;
+      return;
+    }
+
+    if (extractionInFlight !== null) {
+      await extractionInFlight.promise;
+    }
+
+    await startExtraction(session, {
+      awaitResult: true,
+      skipIfRunning: false,
+    });
+  };
+
   const shutdown = async (): Promise<void> => {
     if (shuttingDown !== null) {
       return shuttingDown;
@@ -404,6 +502,7 @@ async function main(): Promise<void> {
     shuttingDown = (async () => {
       try {
         saveCurrentSession();
+        await awaitExtractionForSession(state.session);
       } finally {
         await borg.close();
         writeLine(`saved working memory, session=${state.session.label}`);
@@ -805,6 +904,22 @@ async function main(): Promise<void> {
     printDim(
       `[mode=${result.mode} path=${result.path === "system_1" ? "s1" : "s2"} tokens=${result.usage.input_tokens}/${result.usage.output_tokens} retrieved=${result.retrievedEpisodeIds.length} intents=${result.intents.length} thoughts=${result.thoughts.length}]`,
     );
+
+    if (result.path === "system_2" && result.thoughts.length > 0) {
+      for (const thought of result.thoughts) {
+        for (const line of formatThoughtLines(thought)) {
+          printDim(line);
+        }
+      }
+    }
+
+    if (extractEvery > 0) {
+      const turnCounter = borg.workmem.load(state.session.id).turn_counter;
+
+      if (turnCounter > 0 && turnCounter % extractEvery === 0) {
+        startExtraction({ ...state.session }, { awaitResult: false, skipIfRunning: true });
+      }
+    }
   };
 
   let queue = Promise.resolve();

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_CONFIG } from "./config/index.js";
 import type { EmbeddingClient } from "./embeddings/index.js";
 import { FakeLLMClient } from "./llm/index.js";
 import { episodicMigrations } from "./memory/episodic/index.js";
@@ -113,6 +114,72 @@ describe("Borg", () => {
           id: value.id,
         }),
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("bootstraps a current autobiographical period once by default", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(Date.UTC(2026, 3, 22));
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const period = borg.self.autobiographical.currentPeriod();
+
+      expect(period).not.toBeNull();
+      expect(period?.label).toBe("2026-Q2");
+      expect(borg.self.autobiographical.listPeriods({ limit: 10 })).toHaveLength(1);
+    } finally {
+      await borg.close();
+    }
+
+    const reopened = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      expect(reopened.self.autobiographical.listPeriods({ limit: 10 })).toHaveLength(1);
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it("can disable autobiographical bootstrap", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+        self: {
+          autoBootstrapPeriod: false,
+        },
+        embedding: {
+          ...DEFAULT_CONFIG.embedding,
+          dims: 4,
+        },
+      },
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      expect(borg.self.autobiographical.currentPeriod()).toBeNull();
     } finally {
       await borg.close();
     }

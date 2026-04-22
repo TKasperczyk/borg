@@ -413,6 +413,10 @@ export async function selectScriptClients(options: {
         ...loaded.anthropic.models,
       },
     },
+    self: {
+      ...DEFAULT_CONFIG.self,
+      ...loaded.self,
+    },
     offline: {
       ...DEFAULT_CONFIG.offline,
       ...loaded.offline,

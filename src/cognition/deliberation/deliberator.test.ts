@@ -189,7 +189,12 @@ describe("deliberator", () => {
 
     expect(result.path).toBe("system_2");
     expect(result.decision_reason).toContain("Reflective mode");
-    expect(llm.requests[1]?.system ?? llm.requests[0]?.system).not.toContain("Skill you might try");
+    // The S2 final-response Sonnet call (requests[1]) uses baseSystemPrompt.
+    // The S2 plan call (requests[0]) is a minimal Haiku directive and does
+    // NOT carry identity framing -- planning stays neutral and cheap.
+    expect(llm.requests[1]?.system).toContain("borg is not Claude Code");
+    expect(llm.requests[1]?.system).toContain("AI being, not an assistant");
+    expect(llm.requests[1]?.system).not.toContain("Skill you might try");
   });
 
   it("includes related semantic context in the Sonnet prompt", async () => {
@@ -300,7 +305,78 @@ describe("deliberator", () => {
     expect(system).toMatch(/running in borg/);
     expect(system).toMatch(/borg is not Claude Code/);
     expect(system).toMatch(/placeholder string/);
+    expect(system).toMatch(/Voice and posture:/);
     expect(system).not.toMatch(/You are Borg\b/);
+  });
+
+  it("omits empty prompt sections and compresses an empty self snapshot after the first turn", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Plan briefly.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        {
+          text: "Compressed answer",
+          input_tokens: 12,
+          output_tokens: 6,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "what are you?",
+      perception: {
+        entities: [],
+        mode: "reflective",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      retrievalResult: [],
+      applicableCommitments: [],
+      openQuestionsContext: [],
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 2,
+        scratchpad: "",
+        current_focus: null,
+        recent_thoughts: [],
+        hot_entities: [],
+        pending_intents: [],
+        suppressed: [],
+        mode: "reflective",
+        updated_at: 0,
+      },
+      selfSnapshot: {
+        values: [],
+        goals: [],
+        traits: [],
+      },
+      options: {
+        stakes: "medium",
+      },
+    });
+
+    const system = llm.requests[1]?.system as string;
+
+    expect(system).toContain("Self snapshot: still forming");
+    expect(system).toContain("Voice and posture:");
+    expect(system).not.toContain("Retrieved context:");
+    expect(system).not.toContain("Related semantic context:");
+    expect(system).not.toContain("Open questions you're carrying:");
+    expect(system).not.toContain("Commitments you made to this person:");
+    expect(system).not.toContain("values none; goals none; traits none");
   });
 
   it("includes skill guidance only for problem-solving mode when a candidate exists", async () => {

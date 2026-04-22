@@ -36,6 +36,7 @@ describe("config", () => {
       background: "claude-opus-4-7",
       extraction: "claude-opus-4-7",
     });
+    expect(config.self.autoBootstrapPeriod).toBe(true);
     expect(config.perception.useLlmFallback).toBe(true);
   });
 
@@ -85,6 +86,20 @@ describe("config", () => {
         },
       }),
     ).toThrow(ConfigError);
+  });
+
+  it("allows disabling self period bootstrap via environment", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_SELF_AUTO_BOOTSTRAP_PERIOD: "false",
+      },
+    });
+
+    expect(config.self.autoBootstrapPeriod).toBe(false);
   });
 
   it("throws config errors for invalid numeric environment values", () => {

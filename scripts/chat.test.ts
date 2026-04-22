@@ -76,6 +76,7 @@ describe("chat script", () => {
       expect(result.stdout).toContain("Commands:");
       expect(result.stdout).toContain("borg >");
       expect(result.stdout).toContain("session=chat audience=user");
+      expect(result.stdout).toContain("extracted: inserted=");
       expect(result.stdout).toContain("saved working memory");
     },
     30_000,

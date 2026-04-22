@@ -61,6 +61,12 @@ const RELATIONAL_PATTERNS = [
   /\bhope\b/i,
   /@[a-zA-Z0-9_]+/,
 ];
+const RELATIONAL_INTRODUCTION_PATTERNS = [
+  /\bI(?:'m| am)\s+[A-Z]\w+/,
+  /\bmy name is\b/i,
+  /\bcall me\b\s+\w+/i,
+  /\b(?:This is|this is)\s+[A-Z][a-z]+\b/,
+];
 const REFLECTIVE_PATTERNS = [
   /\bI feel\b/i,
   /\bwho am I\b/i,
@@ -92,6 +98,10 @@ export function detectModeHeuristically(
 
   if (REFLECTIVE_PATTERNS.some((pattern) => pattern.test(text))) {
     matches.add("reflective");
+  }
+
+  if (RELATIONAL_INTRODUCTION_PATTERNS.some((pattern) => pattern.test(text))) {
+    matches.add("relational");
   }
 
   if (

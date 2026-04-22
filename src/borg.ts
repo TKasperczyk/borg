@@ -223,6 +223,13 @@ function createMigrations(): Migration[] {
   ];
 }
 
+function quarterLabel(timestamp: number): string {
+  const date = new Date(timestamp);
+  const year = date.getUTCFullYear();
+  const quarter = Math.floor(date.getUTCMonth() / 3) + 1;
+  return `${year}-Q${quarter}`;
+}
+
 async function closeBestEffort(
   sqlite: SqliteDatabase | undefined,
   lance: LanceDbStore | undefined,
@@ -755,6 +762,10 @@ export class Borg {
             ...rawConfig.anthropic?.models,
           },
         },
+        self: {
+          ...DEFAULT_CONFIG.self,
+          ...(rawConfig as Partial<Config>).self,
+        },
         offline: {
           ...DEFAULT_CONFIG.offline,
           ...rawConfig.offline,
@@ -876,6 +887,17 @@ export class Borg {
         db: sqlite,
         clock,
       });
+      if (config.self.autoBootstrapPeriod && autobiographicalRepository.currentPeriod() === null) {
+        const nowMs = clock.now();
+        autobiographicalRepository.upsertPeriod({
+          label: quarterLabel(nowMs),
+          start_ts: nowMs,
+          end_ts: null,
+          narrative: "",
+          key_episode_ids: [],
+          themes: [],
+        });
+      }
       const growthMarkersRepository = new GrowthMarkersRepository({
         db: sqlite,
         clock,

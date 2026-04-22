@@ -50,6 +50,12 @@ const configFileSchema = z
       })
       .partial()
       .optional(),
+    self: z
+      .object({
+        autoBootstrapPeriod: z.boolean().optional(),
+      })
+      .partial()
+      .optional(),
     offline: z
       .object({
         consolidator: z
@@ -155,6 +161,9 @@ export const configSchema = z.object({
         });
       }
     }),
+  self: z.object({
+    autoBootstrapPeriod: z.boolean(),
+  }),
   offline: z.object({
     consolidator: z.object({
       enabled: z.boolean(),
@@ -229,6 +238,9 @@ export const DEFAULT_CONFIG: Config = {
       background: "claude-opus-4-7",
       extraction: "claude-opus-4-7",
     },
+  },
+  self: {
+    autoBootstrapPeriod: true,
   },
   offline: {
     consolidator: {
@@ -506,6 +518,12 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           DEFAULT_CONFIG.anthropic.models.extraction,
       },
     },
+    self: {
+      autoBootstrapPeriod:
+        readOptionalEnvBoolean(env, "BORG_SELF_AUTO_BOOTSTRAP_PERIOD") ??
+        fileConfig.self?.autoBootstrapPeriod ??
+        DEFAULT_CONFIG.self.autoBootstrapPeriod,
+    },
     offline: {
       consolidator: {
         enabled:
@@ -677,6 +695,9 @@ export function redactConfig(config: Config): Config {
     anthropic: {
       ...config.anthropic,
       apiKey: redactSecret(config.anthropic.apiKey),
+    },
+    self: {
+      ...config.self,
     },
     offline: {
       ...config.offline,

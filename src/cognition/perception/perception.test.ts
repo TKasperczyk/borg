@@ -28,6 +28,13 @@ describe("perception", () => {
     expect(detectModeHeuristically("ok")).toBe("idle");
   });
 
+  it("treats self-introductions as relational", () => {
+    expect(detectModeHeuristically("I'm Tom, the creator of borg.")).toBe("relational");
+    expect(detectModeHeuristically("My name is Tom.")).toBe("relational");
+    expect(detectModeHeuristically("Call me Tom.")).toBe("relational");
+    expect(detectModeHeuristically("This is Tom.")).toBe("relational");
+  });
+
   it("uses llm fallback when heuristics yield nothing", async () => {
     const llm = new FakeLLMClient({
       responses: [
