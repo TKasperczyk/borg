@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
-import { loadConfig, redactConfig } from "./index.js";
+import { DEFAULT_CONFIG, loadConfig, redactConfig } from "./index.js";
 
 describe("config", () => {
   const tempDirs: string[] = [];
@@ -33,8 +33,8 @@ describe("config", () => {
     expect(config.anthropic.apiKey).toBeUndefined();
     expect(config.anthropic.models).toEqual({
       cognition: "claude-opus-4-7",
-      background: "claude-opus-4-7",
-      extraction: "claude-opus-4-7",
+      background: "claude-haiku-4-5-20251001",
+      extraction: "claude-sonnet-4-6",
     });
     expect(config.self.autoBootstrapPeriod).toBe(true);
     expect(config.perception.useLlmFallback).toBe(true);
@@ -72,6 +72,14 @@ describe("config", () => {
     expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBe("secret");
     expect(config.anthropic.models.cognition).toBe("file-cognition");
+  });
+
+  it("exposes sprint 4 anthropic model defaults", () => {
+    expect(DEFAULT_CONFIG.anthropic.models).toEqual({
+      cognition: "claude-opus-4-7",
+      background: "claude-haiku-4-5-20251001",
+      extraction: "claude-sonnet-4-6",
+    });
   });
 
   it("requires an api key when anthropic auth mode is api-key", () => {

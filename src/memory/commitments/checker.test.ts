@@ -63,7 +63,8 @@ describe("commitment checker", () => {
     });
     const checker = new CommitmentChecker({
       llmClient: llm,
-      model: "sonnet",
+      detectionModel: "haiku",
+      rewriteModel: "sonnet",
       entityRepository: entities,
     });
 
@@ -109,7 +110,8 @@ describe("commitment checker", () => {
     });
     const checker = new CommitmentChecker({
       llmClient: llm,
-      model: "sonnet",
+      detectionModel: "haiku",
+      rewriteModel: "sonnet",
       entityRepository: entities,
     });
 
@@ -126,6 +128,9 @@ describe("commitment checker", () => {
     expect(result.revised).toBe(true);
     expect(result.fallback_applied).toBe(false);
     expect(result.final_response).toContain("general status update");
+    expect(llm.requests[0]?.model).toBe("haiku");
+    expect(llm.requests[1]?.model).toBe("sonnet");
+    expect(llm.requests[2]?.model).toBe("haiku");
 
     db.close();
   });
@@ -159,7 +164,8 @@ describe("commitment checker", () => {
     });
     const checker = new CommitmentChecker({
       llmClient: llm,
-      model: "sonnet",
+      detectionModel: "haiku",
+      rewriteModel: "sonnet",
       entityRepository: entities,
     });
 
@@ -198,7 +204,8 @@ describe("commitment checker", () => {
     });
     const checker = new CommitmentChecker({
       llmClient: llm,
-      model: "sonnet",
+      detectionModel: "haiku",
+      rewriteModel: "sonnet",
       entityRepository: entities,
     });
 
@@ -238,7 +245,8 @@ describe("commitment checker", () => {
     });
     const checker = new CommitmentChecker({
       llmClient: llm,
-      model: "sonnet",
+      detectionModel: "haiku",
+      rewriteModel: "sonnet",
       entityRepository: entities,
     });
 

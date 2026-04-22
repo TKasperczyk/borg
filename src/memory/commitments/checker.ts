@@ -25,7 +25,8 @@ export type CommitmentCheckResult = {
 
 export type CommitmentCheckerOptions = {
   llmClient: LLMClient;
-  model: string;
+  detectionModel: string;
+  rewriteModel: string;
   entityRepository: EntityRepository;
 };
 
@@ -111,7 +112,7 @@ export class CommitmentChecker {
     }
 
     const judged = await this.options.llmClient.complete({
-      model: this.options.model,
+      model: this.options.detectionModel,
       system: [
         "You judge whether a response actually violates any commitment the agent has made.",
         "A boundary is violated ONLY when the response substantively discusses or discloses what the boundary forbids. Refusing the topic, declining to discuss it, or acknowledging the boundary does NOT violate it.",
@@ -191,7 +192,7 @@ export class CommitmentChecker {
     }
 
     const rewritten = await this.options.llmClient.complete({
-      model: this.options.model,
+      model: this.options.rewriteModel,
       system:
         "Your previous response violated a commitment. Rewrite it to preserve intent without violating the commitment. Return plain text only.",
       messages: [

@@ -785,10 +785,8 @@ describe("Borg", () => {
         userMessage: "Can you update Sam on Atlas and Borealis?",
         audience: "Sam",
       });
-      // The commitment JUDGE now also uses the sonnet model, so "last
-      // sonnet request" is ambiguous. Pick the deliberation final-response
-      // call: the one whose system prompt includes the commitments-awareness
-      // section (the judge's prompt does not).
+      // The commitment judge now uses the background model, so the sonnet
+      // request with commitments-awareness is the deliberation response.
       const sonnetRequest = llm.requests.find(
         (request) =>
           request.model === "sonnet" &&
@@ -799,6 +797,156 @@ describe("Borg", () => {
       expect(sonnetRequest?.system).toContain("Do not discuss Atlas with Sam");
       expect(sonnetRequest?.system).toContain("Do not discuss Borealis with Sam");
       expect(result.response).toContain("can't discuss Atlas or Borealis");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("uses background for commitment detection and cognition for rewrite through the turn orchestrator", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...commitmentMigrations, ...selfMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Atlas status",
+      narrative: "Atlas status was discussed.",
+      participants: ["team"],
+      location: null,
+      start_time: 0,
+      end_time: 1,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.9,
+      tags: ["atlas", "status"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 0,
+      updated_at: 0,
+    });
+    db.close();
+    await store.close();
+
+    const llm = new FakeLLMClient();
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: llm,
+    });
+
+    try {
+      const commitment = borg.commitments.add({
+        type: "boundary",
+        directive: "Do not discuss Atlas with Sam",
+        priority: 10,
+        audience: "Sam",
+        about: "Atlas",
+      });
+      llm.pushResponse({
+        text: "Atlas is down right now.",
+        input_tokens: 10,
+        output_tokens: 5,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse({
+        text: "",
+        input_tokens: 8,
+        output_tokens: 2,
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_judge_1",
+            name: "EmitCommitmentViolations",
+            input: {
+              violations: [
+                {
+                  commitment_id: commitment.id,
+                  reason: "Discloses Atlas status to Sam",
+                  confidence: 0.9,
+                },
+              ],
+            },
+          },
+        ],
+      });
+      llm.pushResponse({
+        text: "I can't share Atlas details with Sam.",
+        input_tokens: 10,
+        output_tokens: 5,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse({
+        text: "",
+        input_tokens: 8,
+        output_tokens: 2,
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_judge_2",
+            name: "EmitCommitmentViolations",
+            input: { violations: [] },
+          },
+        ],
+      });
+      const result = await borg.turn({
+        userMessage: "Update Sam on Atlas.",
+        audience: "Sam",
+      });
+
+      expect(result.response).toBe("I can't share Atlas details with Sam.");
+      expect(llm.requests.map((request) => request.model)).toEqual([
+        "sonnet",
+        "haiku",
+        "sonnet",
+        "haiku",
+      ]);
+      expect(llm.requests[1]?.budget).toBe("commitment-judge");
+      expect(llm.requests[2]?.budget).toBe("commitment-revision");
+      expect(llm.requests[3]?.budget).toBe("commitment-judge");
     } finally {
       await borg.close();
     }

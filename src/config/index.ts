@@ -241,8 +241,8 @@ export const DEFAULT_CONFIG: Config = {
     apiKey: undefined,
     models: {
       cognition: "claude-opus-4-7",
-      background: "claude-opus-4-7",
-      extraction: "claude-opus-4-7",
+      background: "claude-haiku-4-5-20251001",
+      extraction: "claude-sonnet-4-6",
     },
   },
   self: {

@@ -56,6 +56,14 @@ describe("overseer process", () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(nowMs),
       llmClient: llm,
+      configOverrides: {
+        anthropic: {
+          models: {
+            cognition: "cog-model",
+            background: "bg-model",
+          },
+        },
+      },
     });
     cleanup.push(harness.cleanup);
 
@@ -86,6 +94,7 @@ describe("overseer process", () => {
       type: "tool",
       name: OVERSEER_TOOL_NAME,
     });
+    expect(llm.requests[0]?.model).toBe("bg-model");
     expect(result.changes[0]).toMatchObject({
       action: "flag",
       targets: {

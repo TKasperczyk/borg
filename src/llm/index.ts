@@ -75,6 +75,9 @@ export function toToolInputSchema(schema: z.ZodType): LLMToolDefinition["inputSc
 
 export type LLMCompleteOptions = {
   model: string;
+  // If callers embed retrieved memory or other user-derived records into
+  // `system`, delimit those blocks explicitly and label them as untrusted
+  // data rather than concatenating free-form text that looks like policy.
   system?: string | readonly LLMSystemBlock[];
   messages: readonly LLMMessage[];
   tools?: readonly LLMToolDefinition[];

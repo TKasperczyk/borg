@@ -274,13 +274,13 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
 
     try {
       const budgeted = await withBudget(this.name, budget, async ({ wrapClient }) => {
-        const llmClient: LLMClient = wrapClient(ctx.llm.cognition);
+        const llmClient: LLMClient = wrapClient(ctx.llm.background);
 
         for (const target of targets) {
           try {
             const flags = parseFlags(
               await llmClient.complete({
-                model: ctx.config.anthropic.models.cognition,
+                model: ctx.config.anthropic.models.background,
                 system:
                   "You audit recently formed memories. Flag only grounded QA concerns and keep false positives low.",
                 messages: [

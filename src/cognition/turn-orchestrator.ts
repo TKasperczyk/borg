@@ -423,7 +423,8 @@ export class TurnOrchestrator {
         };
         const commitmentChecker = new CommitmentChecker({
           llmClient,
-          model: this.options.config.anthropic.models.cognition,
+          detectionModel: this.options.config.anthropic.models.background,
+          rewriteModel: this.options.config.anthropic.models.cognition,
           entityRepository: this.options.entityRepository,
         });
         const commitmentCheck = await commitmentChecker.check({
