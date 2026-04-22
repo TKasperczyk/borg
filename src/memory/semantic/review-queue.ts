@@ -15,8 +15,16 @@ export const REVIEW_KINDS = [
   "misattribution",
   "temporal_drift",
   "identity_inconsistency",
+  "correction",
 ] as const;
-export const REVIEW_RESOLUTIONS = ["keep_both", "supersede", "invalidate", "dismiss"] as const;
+export const REVIEW_RESOLUTIONS = [
+  "keep_both",
+  "supersede",
+  "invalidate",
+  "dismiss",
+  "accept",
+  "reject",
+] as const;
 
 export const reviewKindSchema = z.enum(REVIEW_KINDS);
 export const reviewResolutionSchema = z.enum(REVIEW_RESOLUTIONS);
@@ -45,9 +53,35 @@ export type ReviewQueueRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
   semanticNodeRepository?: SemanticNodeRepository;
+  applyCorrection?: (item: ReviewQueueItem) => Promise<void> | void;
   onEnqueue?: (item: ReviewQueueItem, input: ReviewQueueInsertInput) => void;
   onEnqueueError?: (error: unknown, item: ReviewQueueItem, input: ReviewQueueInsertInput) => void;
 };
+
+const SEMANTIC_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
+  "keep_both",
+  "supersede",
+  "invalidate",
+  "dismiss",
+]);
+const LIFECYCLE_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject", "dismiss"]);
+const CORRECTION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject"]);
+
+function isResolutionCompatible(kind: ReviewKind, resolution: ReviewResolution): boolean {
+  switch (kind) {
+    case "correction":
+      return CORRECTION_REVIEW_RESOLUTIONS.has(resolution);
+    case "contradiction":
+    case "duplicate":
+    case "new_insight":
+      return SEMANTIC_REVIEW_RESOLUTIONS.has(resolution);
+    case "stale":
+    case "misattribution":
+    case "temporal_drift":
+    case "identity_inconsistency":
+      return LIFECYCLE_REVIEW_RESOLUTIONS.has(resolution);
+  }
+}
 
 function parseRefs(value: string): Record<string, unknown> {
   try {
@@ -196,6 +230,15 @@ export class ReviewQueueRepository {
       return item;
     }
 
+    if (!isResolutionCompatible(item.kind, decision)) {
+      throw new SemanticError(
+        `Resolution "${decision}" is incompatible with review kind "${item.kind}"`,
+        {
+          code: "REVIEW_QUEUE_RESOLUTION_INVALID",
+        },
+      );
+    }
+
     await this.applyResolution(item, decision);
     const resolvedAt = this.clock.now();
     this.db
@@ -210,6 +253,20 @@ export class ReviewQueueRepository {
   }
 
   private async applyResolution(item: ReviewQueueItem, decision: ReviewResolution): Promise<void> {
+    if (item.kind === "correction") {
+      if (decision === "accept") {
+        if (this.options.applyCorrection === undefined) {
+          throw new SemanticError("No correction applier configured for review queue", {
+            code: "REVIEW_QUEUE_CORRECTION_UNSUPPORTED",
+          });
+        }
+
+        await this.options.applyCorrection(item);
+      }
+
+      return;
+    }
+
     if (
       this.options.semanticNodeRepository === undefined ||
       (decision !== "supersede" && decision !== "invalidate")

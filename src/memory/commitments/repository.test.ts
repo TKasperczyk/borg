@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
+import { identityMigrations, IdentityEventRepository } from "../identity/index.js";
 import { commitmentMigrations } from "./migrations.js";
 import { CommitmentRepository, EntityRepository } from "./repository.js";
 
@@ -11,9 +12,13 @@ describe("commitment repository", () => {
 
   it("filters by audience and supports revoke/supersede", () => {
     const db = openDatabase(":memory:", {
-      migrations: commitmentMigrations,
+      migrations: [...commitmentMigrations, ...identityMigrations],
     });
     const clock = new FixedClock(1_000);
+    const identityEvents = new IdentityEventRepository({
+      db,
+      clock,
+    });
     const entities = new EntityRepository({
       db,
       clock,
@@ -21,6 +26,7 @@ describe("commitment repository", () => {
     const commitments = new CommitmentRepository({
       db,
       clock,
+      identityEventRepository: identityEvents,
     });
     const audience = entities.resolve("Sam");
     const about = entities.resolve("Atlas");
@@ -60,7 +66,9 @@ describe("commitment repository", () => {
       }),
     ).toEqual(expect.arrayContaining([second, replacement]));
 
-    expect(commitments.revoke(first.id)?.revoked_at).toBe(1_000);
+    expect(commitments.revoke(first.id, "user revoked it", manualProvenance)?.revoked_at).toBe(
+      1_000,
+    );
     expect(commitments.supersede(second.id, replacement.id)?.superseded_by).toBe(replacement.id);
     expect(
       commitments.list({
@@ -69,6 +77,55 @@ describe("commitment repository", () => {
     ).toEqual([replacement]);
 
     db.close();
+  });
+
+  it("materializes expiration and records an identity event", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...commitmentMigrations, ...identityMigrations],
+    });
+    const clock = new FixedClock(1_000);
+    const identityEvents = new IdentityEventRepository({
+      db,
+      clock,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+      identityEventRepository: identityEvents,
+    });
+
+    try {
+      const expiring = commitments.add({
+        type: "promise",
+        directive: "Reply before noon",
+        priority: 4,
+        provenance: manualProvenance,
+        createdAt: 100,
+        expiresAt: 900,
+      });
+
+      expect(
+        commitments.getApplicable({
+          nowMs: 1_000,
+        }),
+      ).toEqual([]);
+      expect(commitments.get(expiring.id)?.expired_at).toBe(900);
+      expect(
+        identityEvents.list({
+          recordType: "commitment",
+          recordId: expiring.id,
+        }),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "expire",
+            ts: 900,
+          }),
+        ]),
+      );
+    } finally {
+      db.close();
+    }
   });
 
   it("rejects provenance-less commitment creation", () => {

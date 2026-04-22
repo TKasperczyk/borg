@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { TurnOrchestrator, type TurnInput, type TurnResult } from "./cognition/index.js";
 import { TurnContextCompiler } from "./cognition/recency/index.js";
 import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "./config/index.js";
+import { CorrectionService } from "./correction/index.js";
 import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "./embeddings/index.js";
 import { AnthropicLLMClient, type LLMClient } from "./llm/index.js";
 import { MoodRepository, affectiveMigrations } from "./memory/affective/index.js";
@@ -26,6 +27,11 @@ import {
   proceduralMigrations,
   type SkillSelectionResult,
 } from "./memory/procedural/index.js";
+import {
+  IdentityEventRepository,
+  IdentityService,
+  identityMigrations,
+} from "./memory/identity/index.js";
 import {
   ReviewQueueRepository,
   SemanticEdgeRepository,
@@ -82,12 +88,12 @@ import { retrievalMigrations, RetrievalPipeline } from "./retrieval/index.js";
 import {
   StreamReader,
   StreamWatermarkRepository,
-    StreamWriter,
-    streamWatermarkMigrations,
-    type StreamCursor,
-    type StreamEntry,
-    type StreamEntryInput,
-  } from "./stream/index.js";
+  StreamWriter,
+  streamWatermarkMigrations,
+  type StreamCursor,
+  type StreamEntry,
+  type StreamEntryInput,
+} from "./stream/index.js";
 import { StreamIngestionCoordinator } from "./cognition/ingestion/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, type Migration, type SqliteDatabase } from "./storage/sqlite/index.js";
@@ -111,6 +117,8 @@ type BorgDependencies = {
   semanticEdgeRepository: SemanticEdgeRepository;
   semanticGraph: SemanticGraph;
   reviewQueueRepository: ReviewQueueRepository;
+  identityEventRepository: IdentityEventRepository;
+  identityService: IdentityService;
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
@@ -121,6 +129,7 @@ type BorgDependencies = {
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  correctionService: CorrectionService;
   skillRepository: SkillRepository;
   skillSelector: SkillSelector;
   retrievalPipeline: RetrievalPipeline;
@@ -243,6 +252,7 @@ function createMigrations(): Migration[] {
   return [
     ...episodicMigrations,
     ...selfMigrations,
+    ...identityMigrations,
     ...affectiveMigrations,
     ...retrievalMigrations,
     ...semanticMigrations,
@@ -442,6 +452,25 @@ export class Borg {
       audience?: string | null;
       aboutEntity?: string | null;
     }) => ReturnType<CommitmentRepository["list"]>;
+  };
+  readonly identity: {
+    updateValue: (...args: Parameters<IdentityService["updateValue"]>) => ReturnType<IdentityService["updateValue"]>;
+    updateTrait: (...args: Parameters<IdentityService["updateTrait"]>) => ReturnType<IdentityService["updateTrait"]>;
+    updateCommitment: (
+      ...args: Parameters<IdentityService["updateCommitment"]>
+    ) => ReturnType<IdentityService["updateCommitment"]>;
+    listEvents: (...args: Parameters<IdentityService["listEvents"]>) => ReturnType<IdentityService["listEvents"]>;
+  };
+  readonly correction: {
+    forget: (...args: Parameters<CorrectionService["forget"]>) => ReturnType<CorrectionService["forget"]>;
+    why: (...args: Parameters<CorrectionService["why"]>) => ReturnType<CorrectionService["why"]>;
+    correct: (...args: Parameters<CorrectionService["correct"]>) => ReturnType<CorrectionService["correct"]>;
+    rememberAboutMe: (
+      ...args: Parameters<CorrectionService["rememberAboutMe"]>
+    ) => ReturnType<CorrectionService["rememberAboutMe"]>;
+    listIdentityEvents: (
+      ...args: Parameters<CorrectionService["listIdentityEvents"]>
+    ) => ReturnType<CorrectionService["listIdentityEvents"]>;
   };
   readonly review: {
     list: (options?: { kind?: ReviewKind; openOnly?: boolean }) => ReviewQueueItem[];
@@ -759,6 +788,19 @@ export class Borg {
               : this.deps.entityRepository.resolve(options.aboutEntity),
         }),
     };
+    this.identity = {
+      updateValue: (...args) => this.deps.identityService.updateValue(...args),
+      updateTrait: (...args) => this.deps.identityService.updateTrait(...args),
+      updateCommitment: (...args) => this.deps.identityService.updateCommitment(...args),
+      listEvents: (...args) => this.deps.identityService.listEvents(...args),
+    };
+    this.correction = {
+      forget: (...args) => this.deps.correctionService.forget(...args),
+      why: (...args) => this.deps.correctionService.why(...args),
+      correct: (...args) => this.deps.correctionService.correct(...args),
+      rememberAboutMe: (...args) => this.deps.correctionService.rememberAboutMe(...args),
+      listIdentityEvents: (...args) => this.deps.correctionService.listIdentityEvents(...args),
+    };
     this.review = {
       list: (options = {}) => this.deps.reviewQueueRepository.list(options),
       resolve: (id, decision) => this.deps.reviewQueueRepository.resolve(id, decision),
@@ -880,6 +922,7 @@ export class Borg {
         ...DEFAULT_CONFIG,
         ...rawConfig,
         dataDir: options.dataDir ?? rawConfig.dataDir ?? DEFAULT_CONFIG.dataDir,
+        defaultUser: rawConfig.defaultUser ?? DEFAULT_CONFIG.defaultUser,
         perception: {
           ...DEFAULT_CONFIG.perception,
           ...rawConfig.perception,
@@ -965,6 +1008,7 @@ export class Borg {
           clock,
         });
       let reviewQueueRepository: ReviewQueueRepository | undefined;
+      let applyCorrectionReview: ((item: ReviewQueueItem) => Promise<void>) | undefined;
       const openQuestionsRepository = new OpenQuestionsRepository({
         db: sqlite,
         clock,
@@ -1003,6 +1047,13 @@ export class Borg {
         db: sqlite,
         clock,
         semanticNodeRepository,
+        applyCorrection: (item) => {
+          if (applyCorrectionReview === undefined) {
+            throw new Error("Correction service not initialized");
+          }
+
+          return applyCorrectionReview(item);
+        },
         onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
         onEnqueueError: (error) => {
           const writer = createDefaultStreamWriter();
@@ -1024,17 +1075,24 @@ export class Borg {
         nodeRepository: semanticNodeRepository,
         edgeRepository: semanticEdgeRepository,
       });
+      const identityEventRepository = new IdentityEventRepository({
+        db: sqlite,
+        clock,
+      });
       const valuesRepository = new ValuesRepository({
         db: sqlite,
         clock,
+        identityEventRepository,
       });
       const goalsRepository = new GoalsRepository({
         db: sqlite,
         clock,
+        identityEventRepository,
       });
       const traitsRepository = new TraitsRepository({
         db: sqlite,
         clock,
+        identityEventRepository,
       });
       const autobiographicalRepository = new AutobiographicalRepository({
         db: sqlite,
@@ -1069,6 +1127,13 @@ export class Borg {
       const commitmentRepository = new CommitmentRepository({
         db: sqlite,
         clock,
+        identityEventRepository,
+      });
+      const identityService = new IdentityService({
+        valuesRepository,
+        traitsRepository,
+        commitmentRepository,
+        identityEventRepository,
       });
       const skillRepository = new SkillRepository({
         table: skillsTable,
@@ -1088,6 +1153,25 @@ export class Borg {
         dataDir: config.dataDir,
         clock,
       });
+      const correctionService = new CorrectionService({
+        config,
+        retrievalPipeline,
+        episodicRepository,
+        semanticNodeRepository,
+        semanticEdgeRepository,
+        semanticGraph,
+        valuesRepository,
+        goalsRepository,
+        traitsRepository,
+        openQuestionsRepository,
+        socialRepository,
+        entityRepository,
+        commitmentRepository,
+        reviewQueueRepository,
+        identityService,
+        identityEventRepository,
+      });
+      applyCorrectionReview = (item) => correctionService.applyCorrectionReview(item);
       const workingMemoryStore = new WorkingMemoryStore({
         dataDir: config.dataDir,
         clock,
@@ -1220,6 +1304,7 @@ export class Borg {
         episodicRepository,
         entityRepository,
         commitmentRepository,
+        reviewQueueRepository,
         valuesRepository,
         goalsRepository,
         traitsRepository,
@@ -1252,6 +1337,8 @@ export class Borg {
         semanticEdgeRepository,
         semanticGraph,
         reviewQueueRepository,
+        identityEventRepository,
+        identityService,
         valuesRepository,
         goalsRepository,
         traitsRepository,
@@ -1262,6 +1349,7 @@ export class Borg {
         socialRepository,
         entityRepository,
         commitmentRepository,
+        correctionService,
         skillRepository,
         skillSelector,
         retrievalPipeline,

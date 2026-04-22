@@ -30,6 +30,7 @@ import {
   ValuesRepository,
   type GoalRecord,
 } from "../memory/self/index.js";
+import { ReviewQueueRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
@@ -99,6 +100,7 @@ export type TurnOrchestratorOptions = {
   skillSelector: SkillSelector;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  reviewQueueRepository: ReviewQueueRepository;
   workingMemoryStore: WorkingMemoryStore;
   llmFactory: () => LLMClient;
   clock?: Clock;
@@ -338,6 +340,23 @@ export class TurnOrchestrator {
           audienceEntityId,
           perception.entities,
         );
+        const pendingCorrections = this.options.reviewQueueRepository
+          .list({
+            kind: "correction",
+            openOnly: true,
+          })
+          .filter((item) => {
+            const correctionAudience =
+              typeof item.refs.audience_entity_id === "string"
+                ? item.refs.audience_entity_id
+                : null;
+
+            if (audienceEntityId === null) {
+              return correctionAudience === null;
+            }
+
+            return correctionAudience === null || correctionAudience === audienceEntityId;
+          });
         const currentMood = this.options.moodRepository.current(sessionId);
 
         const attentionWeights = computeWeights(perception.mode, {
@@ -399,6 +418,7 @@ export class TurnOrchestrator {
             contradictionPresent: retrieval.contradiction_present,
             applicableCommitments,
             openQuestionsContext: retrieval.open_questions,
+            pendingCorrectionsContext: pendingCorrections,
             selectedSkill,
             entityRepository: this.options.entityRepository,
             workingMemory,

@@ -13,6 +13,7 @@ import {
 import { provenanceSchema, type Provenance } from "../common/provenance.js";
 
 export const goalStatusSchema = z.enum(["active", "done", "abandoned", "blocked"]);
+export const identityStateSchema = z.enum(["candidate", "established"]);
 
 export const valueIdSchema = z
   .string()
@@ -49,8 +50,17 @@ export const valueSchema = z.object({
   priority: z.number().finite(),
   created_at: z.number().finite(),
   last_affirmed: z.number().finite().nullable(),
+  state: identityStateSchema,
+  established_at: z.number().finite().nullable(),
   provenance: provenanceSchema,
 });
+
+export const valuePatchSchema = valueSchema
+  .omit({
+    id: true,
+    created_at: true,
+  })
+  .partial();
 
 export const goalSchema = z.object({
   id: goalIdSchema,
@@ -70,14 +80,30 @@ export const traitSchema = z.object({
   strength: z.number().min(0).max(1),
   last_reinforced: z.number().finite(),
   last_decayed: z.number().finite().nullable(),
+  state: identityStateSchema,
+  established_at: z.number().finite().nullable(),
   provenance: provenanceSchema,
 });
+
+export const traitPatchSchema = traitSchema
+  .omit({
+    id: true,
+  })
+  .partial();
+
+export const goalPatchSchema = goalSchema
+  .omit({
+    id: true,
+    created_at: true,
+  })
+  .partial();
 
 export type ValueRecord = z.infer<typeof valueSchema>;
 export type GoalRecord = z.infer<typeof goalSchema>;
 export type GoalStatus = z.infer<typeof goalStatusSchema>;
 export type TraitRecord = z.infer<typeof traitSchema>;
 export type SelfProvenance = Provenance;
+export type IdentityState = z.infer<typeof identityStateSchema>;
 
 export type GoalTreeNode = GoalRecord & {
   children: GoalTreeNode[];

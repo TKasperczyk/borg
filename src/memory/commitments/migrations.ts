@@ -87,4 +87,34 @@ export const commitmentMigrations: Migration[] = [
       }
     },
   },
+  {
+    id: 211,
+    name: "add-commitment-lifecycle-columns",
+    up: (db) => {
+      if (!tableHasColumn(db, "commitments", "expired_at")) {
+        db.exec("ALTER TABLE commitments ADD COLUMN expired_at INTEGER");
+      }
+      if (!tableHasColumn(db, "commitments", "revoked_reason")) {
+        db.exec("ALTER TABLE commitments ADD COLUMN revoked_reason TEXT");
+      }
+      if (!tableHasColumn(db, "commitments", "revoke_provenance_kind")) {
+        db.exec("ALTER TABLE commitments ADD COLUMN revoke_provenance_kind TEXT");
+      }
+      if (!tableHasColumn(db, "commitments", "revoke_provenance_episode_ids")) {
+        db.exec("ALTER TABLE commitments ADD COLUMN revoke_provenance_episode_ids TEXT");
+      }
+      if (!tableHasColumn(db, "commitments", "revoke_provenance_process")) {
+        db.exec("ALTER TABLE commitments ADD COLUMN revoke_provenance_process TEXT");
+      }
+
+      db.exec(`
+        UPDATE commitments
+        SET expired_at = expires_at
+        WHERE expired_at IS NULL
+          AND expires_at IS NOT NULL
+          AND revoked_at IS NULL
+          AND superseded_by IS NULL
+      `);
+    },
+  },
 ];

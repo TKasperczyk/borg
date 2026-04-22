@@ -44,7 +44,10 @@ export const commitmentSchema = z.object({
   provenance: provenanceSchema,
   created_at: z.number().finite(),
   expires_at: z.number().finite().nullable(),
+  expired_at: z.number().finite().nullable(),
   revoked_at: z.number().finite().nullable(),
+  revoked_reason: z.string().nullable(),
+  revoke_provenance: provenanceSchema.nullable(),
   superseded_by: commitmentIdSchema.nullable(),
 });
 
@@ -65,6 +68,7 @@ export type CommitmentListOptions = {
   activeOnly?: boolean;
   audience?: EntityId | null;
   aboutEntity?: EntityId | null;
+  nowMs?: number;
 };
 
 export type CommitmentApplicableOptions = {

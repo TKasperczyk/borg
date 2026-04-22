@@ -1464,11 +1464,14 @@ describe("cli", () => {
 
     const revokeCommitmentOut = createOutputBuffer();
     expect(
-      await runCli(["node", "borg", "commitment", "revoke", commitment.id], {
-        stdout: revokeCommitmentOut.stream,
-        stderr: createOutputBuffer().stream,
-        ...cliOptions,
-      }),
+      await runCli(
+        ["node", "borg", "commitment", "revoke", commitment.id, "--reason", "No longer active"],
+        {
+          stdout: revokeCommitmentOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
     ).toBe(0);
     expect(JSON.parse(revokeCommitmentOut.read())).toMatchObject({
       id: commitment.id,

@@ -424,4 +424,164 @@ export const selfMigrations = [
       }
     },
   },
+  {
+    id: 221,
+    name: "add-self-identity-state",
+    up: (db) => {
+      if (!tableHasColumn(db, "values", "state")) {
+        db.exec("ALTER TABLE \"values\" ADD COLUMN state TEXT");
+      }
+      if (!tableHasColumn(db, "values", "established_at")) {
+        db.exec("ALTER TABLE \"values\" ADD COLUMN established_at INTEGER");
+      }
+      if (!tableHasColumn(db, "traits", "state")) {
+        db.exec("ALTER TABLE traits ADD COLUMN state TEXT");
+      }
+      if (!tableHasColumn(db, "traits", "established_at")) {
+        db.exec("ALTER TABLE traits ADD COLUMN established_at INTEGER");
+      }
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS value_reinforcement_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          value_id TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          provenance_kind TEXT NOT NULL CHECK (
+            provenance_kind IN ('episodes', 'manual', 'system', 'offline')
+          ),
+          provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
+          provenance_process TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_value_reinforcement_events_value_ts
+          ON value_reinforcement_events (value_id, ts DESC, id DESC);
+      `);
+
+      const valueRows = db
+        .prepare(
+          `
+            SELECT id, created_at, last_affirmed, provenance_kind
+            FROM "values"
+            ORDER BY created_at ASC, id ASC
+          `,
+        )
+        .all() as Array<Record<string, unknown>>;
+      const valueSourcesStatement = db.prepare(
+        `
+          SELECT episode_id
+          FROM value_sources
+          WHERE value_id = ?
+          ORDER BY episode_id ASC
+        `,
+      );
+      const existingValueEventCount = Number(
+        (db.prepare("SELECT COUNT(*) AS count FROM value_reinforcement_events").get() as {
+          count: number;
+        }).count,
+      );
+      const insertValueEvent = db.prepare(
+        `
+          INSERT INTO value_reinforcement_events (
+            value_id, ts, provenance_kind, provenance_episode_ids, provenance_process
+          ) VALUES (?, ?, ?, ?, NULL)
+        `,
+      );
+      const updateValueState = db.prepare(
+        `
+          UPDATE "values"
+          SET state = ?, established_at = ?
+          WHERE id = ?
+        `,
+      );
+
+      if (existingValueEventCount === 0) {
+        for (const row of valueRows) {
+          const episodeIds = (valueSourcesStatement.all(row.id) as Array<{ episode_id: string }>).map(
+            (entry) => entry.episode_id,
+          );
+
+          for (const episodeId of episodeIds) {
+            insertValueEvent.run(
+              row.id,
+              Number(row.created_at),
+              "episodes",
+              JSON.stringify([episodeId]),
+            );
+          }
+        }
+      }
+
+      for (const row of valueRows) {
+        const storedKind = String(row.provenance_kind ?? "system");
+        const sourceEpisodeIds = (valueSourcesStatement.all(row.id) as Array<{ episode_id: string }>).map(
+          (entry) => entry.episode_id,
+        );
+        const distinctEpisodeCount = new Set(sourceEpisodeIds).size;
+        const establishedAt =
+          Number(row.last_affirmed ?? row.created_at ?? 0) || Number(row.created_at ?? 0);
+
+        if (storedKind === "manual" || storedKind === "system") {
+          updateValueState.run("established", establishedAt, row.id);
+          continue;
+        }
+
+        updateValueState.run(
+          distinctEpisodeCount >= 3 ? "established" : "candidate",
+          distinctEpisodeCount >= 3 ? Number(row.created_at) : null,
+          row.id,
+        );
+      }
+
+      const traitRows = db
+        .prepare(
+          `
+            SELECT id
+            FROM traits
+            ORDER BY label ASC
+          `,
+        )
+        .all() as Array<{ id: string }>;
+      const traitEventRowsStatement = db.prepare(
+        `
+          SELECT ts, provenance_kind, provenance_episode_ids
+          FROM trait_reinforcement_events
+          WHERE trait_id = ?
+          ORDER BY ts ASC, id ASC
+        `,
+      );
+      const updateTraitState = db.prepare(
+        `
+          UPDATE traits
+          SET state = ?, established_at = ?
+          WHERE id = ?
+        `,
+      );
+
+      for (const row of traitRows) {
+        const events = traitEventRowsStatement.all(row.id) as Array<Record<string, unknown>>;
+        const seenEpisodes = new Set<string>();
+        let establishedAt: number | null = null;
+
+        for (const event of events) {
+          if (event.provenance_kind !== "episodes") {
+            continue;
+          }
+
+          for (const episodeId of parseStoredIdArray(event.provenance_episode_ids)) {
+            seenEpisodes.add(episodeId);
+          }
+
+          if (seenEpisodes.size >= 5) {
+            establishedAt = Number(event.ts);
+            break;
+          }
+        }
+
+        updateTraitState.run(
+          establishedAt === null ? "candidate" : "established",
+          establishedAt,
+          row.id,
+        );
+      }
+    },
+  },
 ] as const satisfies readonly Migration[];

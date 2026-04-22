@@ -18,6 +18,10 @@ export {
   type StoredProvenance,
 } from "./memory/common/index.js";
 export {
+  CorrectionService,
+  type CorrectionServiceOptions,
+} from "./correction/index.js";
+export {
   Borg,
   type BorgDreamOptions,
   type BorgDreamRunner,
@@ -117,6 +121,19 @@ export {
   type ExtractFromStreamOptions,
   type ExtractFromStreamResult,
 } from "./memory/episodic/index.js";
+export {
+  IdentityEventRepository,
+  IdentityGuard,
+  IdentityService,
+  IDENTITY_RECORD_TYPES,
+  identityEventSchema,
+  identityMigrations,
+  identityRecordTypeSchema,
+  type IdentityEvent,
+  type IdentityRecordType,
+  type IdentityUpdateOptions,
+  type IdentityUpdateResult,
+} from "./memory/identity/index.js";
 export {
   SkillRepository,
   SkillSelector,

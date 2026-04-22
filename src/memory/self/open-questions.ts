@@ -63,7 +63,24 @@ export const openQuestionSchema = z.object({
   },
 );
 
+export const openQuestionPatchSchema = z.object({
+  question: z.string().min(1).optional(),
+  urgency: z.number().min(0).max(1).optional(),
+  status: openQuestionStatusSchema.optional(),
+  related_episode_ids: z.array(episodeIdSchema).optional(),
+  related_semantic_node_ids: z.array(semanticNodeIdSchema).optional(),
+  provenance: provenanceSchema.nullable().optional(),
+  source: openQuestionSourceSchema.optional(),
+  last_touched: z.number().finite().optional(),
+  resolution_episode_id: episodeIdSchema.nullable().optional(),
+  resolution_note: z.string().nullable().optional(),
+  resolved_at: z.number().finite().nullable().optional(),
+  abandoned_reason: z.string().nullable().optional(),
+  abandoned_at: z.number().finite().nullable().optional(),
+});
+
 export type OpenQuestion = z.infer<typeof openQuestionSchema>;
+export type OpenQuestionPatch = z.infer<typeof openQuestionPatchSchema>;
 export type OpenQuestionStatus = z.infer<typeof openQuestionStatusSchema>;
 export type OpenQuestionSource = z.infer<typeof openQuestionSourceSchema>;
 
@@ -327,6 +344,63 @@ export class OpenQuestionsRepository {
       | undefined;
 
     return row === undefined ? null : mapOpenQuestionRow(row);
+  }
+
+  update(id: OpenQuestionId, patch: OpenQuestionPatch): OpenQuestion {
+    const existing = this.get(id);
+
+    if (existing === null) {
+      throw new StorageError(`Unknown open question id: ${id}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
+      });
+    }
+
+    const parsedPatch = openQuestionPatchSchema.parse(patch);
+    const next = openQuestionSchema.parse({
+      ...existing,
+      ...parsedPatch,
+      last_touched: this.clock.now(),
+    });
+    const dedupeKey = buildOpenQuestionDedupeKey({
+      question: next.question,
+      relatedEpisodeIds: next.related_episode_ids,
+      relatedSemanticNodeIds: next.related_semantic_node_ids,
+    });
+    const storedProvenance =
+      next.provenance === null ? null : toStoredProvenance(next.provenance);
+
+    this.db
+      .prepare(
+        `
+          UPDATE open_questions
+          SET question = ?, urgency = ?, status = ?, related_episode_ids = ?, related_semantic_node_ids = ?,
+              provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, source = ?,
+              last_touched = ?, resolution_episode_id = ?, resolution_note = ?, resolved_at = ?,
+              abandoned_reason = ?, abandoned_at = ?, dedupe_key = ?
+          WHERE id = ?
+        `,
+      )
+      .run(
+        next.question,
+        next.urgency,
+        next.status,
+        serializeJsonValue(next.related_episode_ids),
+        serializeJsonValue(next.related_semantic_node_ids),
+        storedProvenance?.provenance_kind ?? null,
+        storedProvenance?.provenance_episode_ids ?? null,
+        storedProvenance?.provenance_process ?? null,
+        next.source,
+        next.last_touched,
+        next.resolution_episode_id,
+        next.resolution_note,
+        next.resolved_at,
+        next.abandoned_reason,
+        next.abandoned_at,
+        dedupeKey,
+        id,
+      );
+
+    return next;
   }
 
   touch(id: OpenQuestionId, now = this.clock.now()): OpenQuestion {

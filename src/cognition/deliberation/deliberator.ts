@@ -32,6 +32,7 @@ import type { SessionId } from "../../util/ids.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 import type { SemanticNode } from "../../memory/semantic/index.js";
 import { summarizeProvenanceForPrompt, type Provenance } from "../../memory/common/index.js";
+import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 
 export type TurnStakes = "low" | "medium" | "high";
 
@@ -71,6 +72,7 @@ export type DeliberationContext = {
   contradictionPresent?: boolean;
   applicableCommitments?: readonly CommitmentRecord[];
   openQuestionsContext?: readonly OpenQuestion[];
+  pendingCorrectionsContext?: readonly ReviewQueueItem[];
   selectedSkill?: SkillSelectionResult | null;
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;
@@ -315,14 +317,15 @@ function chooseDeliberationPath(
 
 function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): string {
   const values = selfSnapshot.values.map(
-    (value) => `${value.label} ${summarizeProvenanceForPrompt(value.provenance)}`,
+    (value) =>
+      `${value.label} (${value.state})${renderOptionalProvenance(value.provenance)}`,
   );
   const goals = selfSnapshot.goals.map(
     (goal) => `${goal.description} ${summarizeProvenanceForPrompt(goal.provenance)}`,
   );
   const traits = selfSnapshot.traits.map(
     (trait) =>
-      `${trait.label}:${trait.strength.toFixed(2)} ${summarizeProvenanceForPrompt(trait.provenance)}`,
+      `${trait.label}:${trait.strength.toFixed(2)} (${trait.state})${renderOptionalProvenance(trait.provenance)}`,
   );
 
   if (values.length === 0 && goals.length === 0 && traits.length === 0) {
@@ -613,6 +616,24 @@ function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string 
   ].join("\n");
 }
 
+function summarizePendingCorrections(items: readonly ReviewQueueItem[]): string | null {
+  if (items.length === 0) {
+    return null;
+  }
+
+  const lines = ["Pending corrections:"];
+
+  for (const item of items.slice(0, 4)) {
+    const summary =
+      typeof item.refs.prompt_summary === "string" && item.refs.prompt_summary.trim().length > 0
+        ? item.refs.prompt_summary.trim()
+        : `user proposed a correction for ${typeof item.refs.target_id === "string" ? item.refs.target_id : "an existing record"}`;
+    lines.push(`- ${summary}`);
+  }
+
+  return lines.join("\n");
+}
+
 function summarizeCurrentPeriod(period: AutobiographicalPeriod | null | undefined): string | null {
   if (period === null || period === undefined) {
     return null;
@@ -789,6 +810,10 @@ export class Deliberator {
           context.perception.mode === "reflective"
             ? summarizeOpenQuestions(context.openQuestionsContext ?? [])
             : null,
+      },
+      {
+        tag: "borg_pending_corrections",
+        content: summarizePendingCorrections(context.pendingCorrectionsContext ?? []),
       },
     ]);
     const trustedGuidanceBlock = renderTaggedPromptBlock(TRUSTED_GUIDANCE_PREAMBLE, [

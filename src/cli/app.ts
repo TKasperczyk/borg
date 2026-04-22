@@ -7,6 +7,7 @@ import {
 } from "../auth/claude-oauth.js";
 import { Borg, VERSION, loadConfig, redactConfig, type BorgOpenOptions } from "../index.js";
 import { commitmentTypeSchema } from "../memory/commitments/index.js";
+import { identityRecordTypeSchema } from "../memory/identity/index.js";
 import {
   goalStatusSchema,
   growthMarkerCategorySchema,
@@ -358,6 +359,21 @@ function parseCommitmentType(value: unknown) {
   return parsed.data;
 }
 
+function parseIdentityRecordType(value: unknown) {
+  const parsed = identityRecordTypeSchema.safeParse(value);
+
+  if (!parsed.success) {
+    throw new CliError(
+      `--record-type must be one of: ${identityRecordTypeSchema.options.join(", ")}`,
+      {
+        cause: parsed.error,
+      },
+    );
+  }
+
+  return parsed.data;
+}
+
 function parseReviewKind(value: unknown) {
   const parsed = reviewKindSchema.safeParse(value);
 
@@ -374,9 +390,12 @@ function parseReviewResolution(value: unknown) {
   const parsed = reviewResolutionSchema.safeParse(value);
 
   if (!parsed.success) {
-    throw new CliError("--decision must be one of: keep_both, supersede, invalidate, dismiss", {
-      cause: parsed.error,
-    });
+    throw new CliError(
+      `--decision must be one of: ${reviewResolutionSchema.options.join(", ")}`,
+      {
+        cause: parsed.error,
+      },
+    );
   }
 
   return parsed.data;
@@ -450,6 +469,26 @@ function parseFiniteNumber(value: unknown, label: string): number {
   }
 
   return numeric;
+}
+
+function parseJsonObject(value: unknown, flag: string): Record<string, unknown> {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new CliError(`${flag} must be a JSON object`);
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new TypeError("value must be a JSON object");
+    }
+
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    throw new CliError(`${flag} must be a valid JSON object`, {
+      cause: error,
+    });
+  }
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1649,6 +1688,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     .option("--about <entity>", "About-entity name")
     .option("--made-to <entity>", "Made-to entity name")
     .option("--source-episodes <ids>", "Comma-separated episode ids")
+    .option("--reason <text>", "Revocation reason")
     .action(
       async (action: string, arg: string | undefined, commandOptions: Record<string, unknown>) => {
         if (action === "add") {
@@ -1687,7 +1727,13 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
 
         if (action === "revoke") {
           const revoked = await withBorg(options, async (borg) =>
-            borg.commitments.revoke(resolveCommitmentId(arg)),
+            borg.commitments.revoke(
+              resolveCommitmentId(arg),
+              parseRequiredText(commandOptions.reason, "--reason"),
+              {
+                kind: "manual",
+              },
+            ),
           );
           writeLine(stdout, JSON.stringify(revoked, null, 2));
           return;
@@ -1712,6 +1758,8 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   cli
     .command("review <action> [arg1] [arg2]", "Inspect and resolve review items")
     .option("--kind <kind>", "Review item kind")
+    .option("--accept", "Accept a correction review item")
+    .option("--reject", "Reject a correction review item")
     .action(
       async (
         action: string,
@@ -1740,14 +1788,100 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
             throw new CliError("Review item id must be a positive integer");
           }
 
+          if (commandOptions.accept === true && commandOptions.reject === true) {
+            throw new CliError("--accept and --reject cannot be combined");
+          }
+
+          const decision =
+            commandOptions.accept === true
+              ? "accept"
+              : commandOptions.reject === true
+                ? "reject"
+                : parseReviewResolution(arg2);
+
           const resolved = await withBorg(options, async (borg) =>
-            borg.review.resolve(itemId, parseReviewResolution(arg2)),
+            borg.review.resolve(itemId, decision),
           );
           writeLine(stdout, JSON.stringify(resolved, null, 2));
           return;
         }
 
         throw new CliError(`Unknown review action: ${action}`);
+      },
+    );
+
+  cli
+    .command("correction <action> [arg]", "Manage corrections and identity audit")
+    .option("--patch <json>", "JSON patch object")
+    .option("--entity <name>", "Entity name")
+    .option("--limit <count>", "Maximum number of events", {
+      default: 20,
+      type: [Number],
+    })
+    .option("--record-type <type>", "Identity event record type")
+    .option("--record-id <id>", "Identity event record id")
+    .action(
+      async (action: string, arg: string | undefined, commandOptions: Record<string, unknown>) => {
+        if (action === "forget") {
+          const result = await withBorg(options, async (borg) =>
+            borg.correction.forget(parseRequiredText(arg, "<id>")),
+          );
+          writeLine(stdout, JSON.stringify(result, null, 2));
+          return;
+        }
+
+        if (action === "why") {
+          const result = await withBorg(options, async (borg) =>
+            borg.correction.why(parseRequiredText(arg, "<id>")),
+          );
+          writeLine(stdout, JSON.stringify(result, null, 2));
+          return;
+        }
+
+        if (action === "correct") {
+          const result = await withBorg(options, async (borg) =>
+            borg.correction.correct(
+              parseRequiredText(arg, "<id>"),
+              parseJsonObject(commandOptions.patch, "--patch"),
+            ),
+          );
+          writeLine(stdout, JSON.stringify(result, null, 2));
+          return;
+        }
+
+        if (action === "about-me") {
+          const result = await withBorg(options, async (borg) =>
+            borg.correction.rememberAboutMe({
+              entity:
+                typeof commandOptions.entity === "string" ? commandOptions.entity : undefined,
+            }),
+          );
+          writeLine(stdout, JSON.stringify(result, null, 2));
+          return;
+        }
+
+        if (action === "events") {
+          const result = await withBorg(options, async (borg) =>
+            borg.correction.listIdentityEvents({
+              limit: parseLimit(commandOptions.limit),
+              recordType:
+                commandOptions.recordType === undefined &&
+                commandOptions["record-type"] === undefined
+                  ? undefined
+                  : parseIdentityRecordType(
+                      commandOptions.recordType ?? commandOptions["record-type"],
+                    ),
+              recordId:
+                typeof (commandOptions.recordId ?? commandOptions["record-id"]) === "string"
+                  ? String(commandOptions.recordId ?? commandOptions["record-id"])
+                  : undefined,
+            }),
+          );
+          writeLine(stdout, JSON.stringify(result, null, 2));
+          return;
+        }
+
+        throw new CliError(`Unknown correction action: ${action}`);
       },
     );
 

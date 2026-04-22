@@ -247,4 +247,60 @@ describe("review queue", () => {
       },
     });
   });
+
+  it("rejects incompatible review decisions and allows valid pairings", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...semanticMigrations],
+    });
+    const reviewQueue = new ReviewQueueRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    try {
+      const correction = reviewQueue.enqueue({
+        kind: "correction",
+        refs: {
+          record_id: "val_aaaaaaaaaaaaaaaa",
+          patch: {
+            description: "Prefer grounded claims.",
+          },
+        },
+        reason: "user corrected the record",
+      });
+      const contradiction = reviewQueue.enqueue({
+        kind: "contradiction",
+        refs: {
+          node_ids: ["semn_aaaaaaaaaaaaaaaa", "semn_bbbbbbbbbbbbbbbb"],
+        },
+        reason: "conflicting support paths",
+      });
+      const stale = reviewQueue.enqueue({
+        kind: "stale",
+        refs: {
+          node_id: "semn_cccccccccccccccc",
+        },
+        reason: "needs refresh",
+      });
+
+      await expect(reviewQueue.resolve(correction.id, "keep_both")).rejects.toMatchObject({
+        name: "SemanticError",
+        code: "REVIEW_QUEUE_RESOLUTION_INVALID",
+      });
+      await expect(reviewQueue.resolve(contradiction.id, "accept")).rejects.toMatchObject({
+        name: "SemanticError",
+        code: "REVIEW_QUEUE_RESOLUTION_INVALID",
+      });
+
+      const rejectedCorrection = await reviewQueue.resolve(correction.id, "reject");
+      const dismissedContradiction = await reviewQueue.resolve(contradiction.id, "dismiss");
+      const acceptedStale = await reviewQueue.resolve(stale.id, "accept");
+
+      expect(rejectedCorrection?.resolution).toBe("reject");
+      expect(dismissedContradiction?.resolution).toBe("dismiss");
+      expect(acceptedStale?.resolution).toBe("accept");
+    } finally {
+      db.close();
+    }
+  });
 });

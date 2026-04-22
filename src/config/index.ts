@@ -11,6 +11,7 @@ const anthropicAuthModeSchema = z.enum(["auto", "oauth", "api-key"]);
 const configFileSchema = z
   .object({
     dataDir: z.string().min(1).optional(),
+    defaultUser: z.string().min(1).optional(),
     perception: z
       .object({
         useLlmFallback: z.boolean().optional(),
@@ -130,6 +131,7 @@ const configFileSchema = z
 
 export const configSchema = z.object({
   dataDir: z.string().min(1),
+  defaultUser: z.string().min(1).optional(),
   perception: z.object({
     useLlmFallback: z.boolean(),
     modeWhenLlmAbsent: z
@@ -221,6 +223,7 @@ export type Config = z.infer<typeof configSchema>;
 
 export const DEFAULT_CONFIG: Config = {
   dataDir: expandPath(DEFAULT_DATA_DIR),
+  defaultUser: undefined,
   perception: {
     useLlmFallback: true,
   },
@@ -458,6 +461,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         fileConfig.dataDir ??
         DEFAULT_CONFIG.dataDir,
     ),
+    defaultUser:
+      readOptionalEnvString(env, "BORG_DEFAULT_USER") ??
+      fileConfig.defaultUser ??
+      DEFAULT_CONFIG.defaultUser,
     perception: {
       useLlmFallback:
         readOptionalEnvBoolean(env, "BORG_PERCEPTION_USE_LLM_FALLBACK") ??

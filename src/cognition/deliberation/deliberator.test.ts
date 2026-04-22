@@ -1285,6 +1285,8 @@ describe("deliberator", () => {
               priority: 0.8,
               created_at: 0,
               last_affirmed: null,
+              state: "candidate",
+              established_at: null,
               provenance: {
                 kind: "episodes",
                 episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
@@ -1311,6 +1313,8 @@ describe("deliberator", () => {
               strength: 0.8,
               last_reinforced: 0,
               last_decayed: null,
+              state: "established",
+              established_at: 0,
               provenance: { kind: "offline", process: "reflector" },
             },
           ],
@@ -1334,9 +1338,9 @@ describe("deliberator", () => {
 
       const system = llm.requests.at(-1)?.system as string;
 
-      expect(system).toContain("values clarity (from ep_aaaaaaaaaaaaaaaa)");
+      expect(system).toContain("values clarity (candidate) (from ep_aaaaaaaaaaaaaaaa)");
       expect(system).toContain("goals Ship Sprint 6 (manual)");
-      expect(system).toContain("traits engaged:0.80 (offline: reflector)");
+      expect(system).toContain("traits engaged:0.80 (established) (offline: reflector)");
       expect(system).toContain("Current period: 2026-Q2 (offline: self-narrator)");
       expect(system).toContain(
         "- Why does Atlas fail after rollback? (urgency=0.80, source=reflection) (from ep_aaaaaaaaaaaaaaaa)",
@@ -1440,6 +1444,75 @@ describe("deliberator", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("renders pending corrections in an untrusted prompt block", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Correction-aware answer",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+
+    await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "What still needs review?",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0 },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      pendingCorrectionsContext: [
+        {
+          id: 7,
+          kind: "correction",
+          refs: {
+            prompt_summary: "user proposed changing value clarity to description=\"Prefer explicit state and revision.\" (review pending)",
+          },
+          reason: "user corrected val_aaaaaaaaaaaaaaaa at 2026-04-22T00:00:00.000Z",
+          created_at: 0,
+          resolved_at: null,
+          resolution: null,
+        },
+      ],
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        current_focus: null,
+        hot_entities: [],
+        pending_intents: [],
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: {
+        values: [],
+        goals: [],
+        traits: [],
+      },
+      options: {
+        stakes: "low",
+      },
+    });
+
+    const system = llm.requests[0]?.system as string;
+
+    expect(system).toContain("<borg_pending_corrections>");
+    expect(system).toContain("Pending corrections:");
+    expect(system).toContain("user proposed changing value clarity");
+    expect(system).toContain("</borg_pending_corrections>");
   });
 
   it("chooses system 2 for high stakes and persists a formatted plan as the thought", async () => {

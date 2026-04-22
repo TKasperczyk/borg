@@ -142,6 +142,137 @@ describe("self repositories", () => {
     }
   });
 
+  it("promotes traits only after five distinct episode-backed reinforcements", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    const episodeIds = [
+      "ep_aaaaaaaaaaaaaaaa",
+      "ep_bbbbbbbbbbbbbbbb",
+      "ep_cccccccccccccccc",
+      "ep_dddddddddddddddd",
+      "ep_eeeeeeeeeeeeeeee",
+    ] as const;
+
+    try {
+      for (const episodeId of episodeIds.slice(0, 4)) {
+        traits.reinforce({
+          label: "engaged",
+          delta: 0.05,
+          provenance: {
+            kind: "episodes",
+            episode_ids: [episodeId],
+          },
+        });
+      }
+
+      traits.reinforce({
+        label: "engaged",
+        delta: 0.05,
+        provenance: {
+          kind: "offline",
+          process: "reflector",
+        },
+      });
+
+      expect(traits.list()[0]).toEqual(
+        expect.objectContaining({
+          label: "engaged",
+          state: "candidate",
+          established_at: null,
+        }),
+      );
+
+      traits.reinforce({
+        label: "engaged",
+        delta: 0.05,
+        provenance: {
+          kind: "episodes",
+          episode_ids: [episodeIds[4]],
+        },
+      });
+
+      expect(traits.list()[0]).toEqual(
+        expect.objectContaining({
+          label: "engaged",
+          state: "established",
+        }),
+      );
+      expect(traits.list()[0]?.established_at).not.toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("tracks value candidate and established state transitions", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const values = new ValuesRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    const episodeIds = [
+      "ep_aaaaaaaaaaaaaaaa",
+      "ep_bbbbbbbbbbbbbbbb",
+      "ep_cccccccccccccccc",
+    ] as const;
+
+    try {
+      const manual = values.add({
+        label: "clarity",
+        description: "Prefer explicit state.",
+        priority: 5,
+        provenance: manualProvenance,
+      });
+      const candidate = values.add({
+        label: "patience",
+        description: "Stay steady under pressure.",
+        priority: 4,
+        provenance: {
+          kind: "episodes",
+          episode_ids: [episodeIds[0]],
+        },
+      });
+
+      expect(manual.state).toBe("established");
+      expect(candidate.state).toBe("candidate");
+
+      values.reinforce(candidate.id, {
+        kind: "episodes",
+        episode_ids: [episodeIds[1]],
+      });
+
+      expect(values.get(candidate.id)?.state).toBe("candidate");
+
+      values.reinforce(candidate.id, {
+        kind: "episodes",
+        episode_ids: [episodeIds[2]],
+      });
+
+      expect(values.get(candidate.id)).toEqual(
+        expect.objectContaining({
+          state: "established",
+          provenance: {
+            kind: "episodes",
+            episode_ids: [
+              "ep_aaaaaaaaaaaaaaaa",
+              "ep_bbbbbbbbbbbbbbbb",
+              "ep_cccccccccccccccc",
+            ],
+          },
+        }),
+      );
+      expect(values.get(candidate.id)?.established_at).not.toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
   it("rejects invalid stored value provenance episode ids", () => {
     const db = openDatabase(":memory:", {
       migrations: [...selfMigrations],
