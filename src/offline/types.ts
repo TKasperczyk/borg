@@ -4,6 +4,7 @@ import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
+import type { IdentityService } from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
 import type {
   AutobiographicalRepository,
@@ -82,6 +83,7 @@ export type OfflineContext = {
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
   reviewQueueRepository: ReviewQueueRepository;
+  identityService: IdentityService;
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;

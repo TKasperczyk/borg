@@ -734,6 +734,10 @@ export class ValuesRepository {
     });
   }
 
+  /**
+   * @internal Prefer IdentityService.updateValue() so episode-backed established
+   * records cannot bypass review gating.
+   */
   update(
     valueId: ValueId,
     patch: z.infer<typeof valuePatchSchema>,
@@ -1120,6 +1124,10 @@ export class GoalsRepository {
     });
   }
 
+  /**
+   * @internal Prefer IdentityService.updateGoal() so episode-backed established
+   * records cannot bypass review gating.
+   */
   update(
     goalId: GoalId,
     patch: z.infer<typeof goalPatchSchema>,
@@ -1620,6 +1628,10 @@ export class TraitsRepository {
     return result.changes;
   }
 
+  /**
+   * @internal Prefer IdentityService.updateTrait() so episode-backed established
+   * records cannot bypass review gating.
+   */
   update(
     traitId: TraitId,
     patch: z.infer<typeof traitPatchSchema>,

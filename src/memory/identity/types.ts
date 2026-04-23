@@ -9,6 +9,8 @@ export const IDENTITY_RECORD_TYPES = [
   "goal",
   "trait",
   "commitment",
+  "autobiographical_period",
+  "growth_marker",
   "open_question",
 ] as const;
 

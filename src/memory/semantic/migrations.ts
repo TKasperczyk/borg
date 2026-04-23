@@ -58,4 +58,39 @@ export const semanticMigrations: Migration[] = [
         ON review_queue(resolved_at);
     `,
   },
+  {
+    id: 131,
+    name: "backfill-review-queue-proposed-provenance",
+    up: (db) => {
+      const rows = db
+        .prepare("SELECT id, refs FROM review_queue ORDER BY id ASC")
+        .all() as Array<{ id: number; refs: string | null }>;
+      const update = db.prepare("UPDATE review_queue SET refs = ? WHERE id = ?");
+
+      for (const row of rows) {
+        let refs: Record<string, unknown>;
+
+        try {
+          const parsed = JSON.parse(row.refs ?? "{}") as unknown;
+          refs =
+            parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+              ? (parsed as Record<string, unknown>)
+              : {};
+        } catch {
+          refs = {};
+        }
+
+        if (refs.proposed_provenance !== undefined) {
+          continue;
+        }
+
+        refs.proposed_provenance =
+          refs.provenance ??
+          ({
+            kind: "manual",
+          } satisfies { kind: "manual" });
+        update.run(JSON.stringify(refs), row.id);
+      }
+    },
+  },
 ];

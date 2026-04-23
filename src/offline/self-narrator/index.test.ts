@@ -210,6 +210,99 @@ describe("SelfNarratorProcess", () => {
     }
   });
 
+  it("replays the planned successor period when a reviewed rollover is accepted", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          observation: {
+            category: "skill",
+            what_changed: "Atlas operations became the main focus.",
+            before_description: "Planning dominated the period.",
+            after_description: "Operational debugging dominates now.",
+            confidence: 0.8,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+          },
+        }),
+      ],
+    });
+    const rolloverTs = Date.UTC(2026, 6, 15);
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock: {
+        now: () => rolloverTs,
+      },
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const currentPeriod = harness.autobiographicalRepository.upsertPeriod({
+        label: "2026-Q1",
+        start_ts: Date.UTC(2026, 0, 1),
+        narrative: "Planning quarter.",
+        key_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never, "ep_bbbbbbbbbbbbbbbb" as never],
+        themes: ["planning"],
+        provenance: {
+          kind: "episodes",
+          episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never, "ep_bbbbbbbbbbbbbbbb" as never],
+        },
+      });
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          title: "Atlas incident",
+          narrative: "Atlas incident required live debugging.",
+          tags: ["atlas"],
+          created_at: Date.UTC(2026, 6, 10),
+          updated_at: Date.UTC(2026, 6, 10),
+        }),
+      );
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          title: "Atlas follow-up",
+          narrative: "Atlas debugging continued.",
+          tags: ["atlas"],
+          created_at: Date.UTC(2026, 6, 11),
+          updated_at: Date.UTC(2026, 6, 11),
+        }),
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+      const nextPeriod = plan.items.find((item) => item.action === "open_period")?.period;
+
+      expect(nextPeriod).toBeDefined();
+
+      await process.apply(harness.createContext(), plan);
+
+      const reviewItem = harness.reviewQueueRepository.getOpen()[0];
+
+      expect(reviewItem).toEqual(
+        expect.objectContaining({
+          kind: "identity_inconsistency",
+          refs: expect.objectContaining({
+            target_type: "autobiographical_period",
+            target_id: currentPeriod.id,
+            next_period_open_payload: expect.objectContaining({
+              id: nextPeriod?.id,
+            }),
+          }),
+        }),
+      );
+      expect(harness.autobiographicalRepository.currentPeriod()?.id).toBe(currentPeriod.id);
+
+      await harness.reviewQueueRepository.resolve(reviewItem!.id, "accept");
+
+      expect(harness.autobiographicalRepository.currentPeriod()?.id).toBe(nextPeriod?.id);
+      expect(harness.autobiographicalRepository.getPeriod(currentPeriod.id)?.end_ts).toBe(rolloverTs);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("skips invalid observations that do not cite enough supporting episodes", async () => {
     const llm = new FakeLLMClient({
       responses: [

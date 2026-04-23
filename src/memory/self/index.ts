@@ -1,8 +1,10 @@
 export {
   AutobiographicalRepository,
   autobiographicalPeriodIdSchema,
+  autobiographicalPeriodPatchSchema,
   autobiographicalPeriodSchema,
   type AutobiographicalPeriod,
+  type AutobiographicalPeriodPatch,
   type AutobiographicalRepositoryOptions,
 } from "./autobiographical.js";
 export {
@@ -10,9 +12,11 @@ export {
   GrowthMarkersRepository,
   growthMarkerCategorySchema,
   growthMarkerIdSchema,
+  growthMarkerPatchSchema,
   growthMarkerSchema,
   type GrowthMarker,
   type GrowthMarkerCategory,
+  type GrowthMarkerPatch,
   type GrowthMarkersRepositoryOptions,
   type GrowthMarkersSummary,
 } from "./growth-markers.js";
@@ -22,10 +26,12 @@ export {
   OPEN_QUESTION_STATUSES,
   OpenQuestionsRepository,
   openQuestionIdSchema,
+  openQuestionPatchSchema,
   openQuestionSchema,
   openQuestionSourceSchema,
   openQuestionStatusSchema,
   type OpenQuestion,
+  type OpenQuestionPatch,
   type OpenQuestionSource,
   type OpenQuestionsRepositoryOptions,
   type OpenQuestionStatus,
@@ -44,15 +50,21 @@ export {
 } from "./review-open-question-hook.js";
 export {
   goalIdSchema,
+  goalPatchSchema,
   goalSchema,
   goalStatusSchema,
   traitIdSchema,
+  traitPatchSchema,
   traitSchema,
   valueIdSchema,
+  valuePatchSchema,
   valueSchema,
   type GoalRecord,
+  type GoalPatch,
   type GoalStatus,
   type GoalTreeNode,
+  type TraitPatch,
   type TraitRecord,
+  type ValuePatch,
   type ValueRecord,
 } from "./types.js";

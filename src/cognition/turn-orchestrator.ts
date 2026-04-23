@@ -35,6 +35,7 @@ import { ReviewQueueRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
+import { type IdentityService } from "../memory/identity/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
 import { ConfigError, SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
@@ -115,6 +116,7 @@ export type TurnOrchestratorOptions = {
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   reviewQueueRepository: ReviewQueueRepository;
+  identityService: IdentityService;
   workingMemoryStore: WorkingMemoryStore;
   llmFactory: () => LLMClient;
   clock?: Clock;
@@ -571,6 +573,8 @@ export class TurnOrchestrator {
             goalsRepository: this.options.goalsRepository,
             traitsRepository: this.options.traitsRepository,
             openQuestionsRepository: this.options.openQuestionsRepository,
+            identityService: this.options.identityService,
+            reviewQueueRepository: this.options.reviewQueueRepository,
             skillRepository: this.options.skillRepository,
             selectedSkillId: selectedSkill?.skill.id ?? null,
             suppressionSet,

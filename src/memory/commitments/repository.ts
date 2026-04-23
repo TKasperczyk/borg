@@ -507,6 +507,10 @@ export class CommitmentRepository {
     return next;
   }
 
+  /**
+   * @internal Prefer IdentityService.updateCommitment() so episode-backed
+   * established records cannot bypass review gating.
+   */
   update(
     id: CommitmentId,
     patch: CommitmentPatch,

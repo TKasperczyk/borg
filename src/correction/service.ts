@@ -12,6 +12,11 @@ import {
 } from "../util/ids.js";
 import type { Config } from "../config/index.js";
 import {
+  parseReviewProvenance,
+  provenanceSchema,
+  type Provenance,
+} from "../memory/common/provenance.js";
+import {
   type EpisodePatch,
   type EpisodicRepository,
 } from "../memory/episodic/index.js";
@@ -601,6 +606,7 @@ export class CorrectionService {
   async correct(
     id: string,
     patch: Record<string, unknown>,
+    provenance: Provenance = MANUAL_PROVENANCE,
   ): Promise<ReviewQueueItem> {
     if (!isRecord(patch)) {
       throw new StorageError("Correction patch must be a JSON object", {
@@ -618,7 +624,7 @@ export class CorrectionService {
         target_id: id,
         target_type: target.type,
         patch,
-        provenance: MANUAL_PROVENANCE,
+        proposed_provenance: provenanceSchema.parse(provenance),
         audience_entity_id: metadata.audienceEntityId,
         prompt_summary: reviewPromptSummary(target.type, metadata.targetLabel, patch),
       },
@@ -699,6 +705,7 @@ export class CorrectionService {
   async applyCorrectionReview(item: ReviewQueueItem): Promise<void> {
     const targetId = typeof item.refs.target_id === "string" ? item.refs.target_id : null;
     const patch = item.refs.patch;
+    const proposedProvenance = parseReviewProvenance(item.refs);
 
     if (targetId === null) {
       throw new StorageError("Correction review item is missing target_id", {
@@ -735,7 +742,7 @@ export class CorrectionService {
           old_value: toIdentityJsonValue(current),
           new_value: next === null ? null : toIdentityJsonValue(next),
           reason: item.reason,
-          provenance: MANUAL_PROVENANCE,
+          provenance: proposedProvenance,
           review_item_id: item.id,
         });
         return;
@@ -760,13 +767,13 @@ export class CorrectionService {
           old_value: toIdentityJsonValue(current),
           new_value: next === null ? null : toIdentityJsonValue(next),
           reason: item.reason,
-          provenance: MANUAL_PROVENANCE,
+          provenance: proposedProvenance,
           review_item_id: item.id,
         });
         return;
       }
       case "value": {
-        const result = this.options.identityService.updateValue(target.id, patch, MANUAL_PROVENANCE, {
+        const result = this.options.identityService.updateValue(target.id, patch, proposedProvenance, {
           throughReview: true,
           reason: item.reason,
           reviewItemId: item.id,
@@ -781,16 +788,22 @@ export class CorrectionService {
         return;
       }
       case "goal": {
-        const next = this.options.goalsRepository.update(target.id, patch, MANUAL_PROVENANCE, {
+        const next = this.options.identityService.updateGoal(target.id, patch, proposedProvenance, {
+          throughReview: true,
           reason: item.reason,
           reviewItemId: item.id,
         });
 
-        void next;
+        if (next.status !== "applied") {
+          throw new StorageError(`Correction for goal ${target.id} still requires review`, {
+            code: "IDENTITY_REVIEW_REQUIRED",
+          });
+        }
+
         return;
       }
       case "trait": {
-        const result = this.options.identityService.updateTrait(target.id, patch, MANUAL_PROVENANCE, {
+        const result = this.options.identityService.updateTrait(target.id, patch, proposedProvenance, {
           throughReview: true,
           reason: item.reason,
           reviewItemId: item.id,
@@ -808,7 +821,7 @@ export class CorrectionService {
         const result = this.options.identityService.updateCommitment(
           target.id,
           patch,
-          MANUAL_PROVENANCE,
+          proposedProvenance,
           {
             throughReview: true,
             reason: item.reason,
@@ -825,28 +838,22 @@ export class CorrectionService {
         return;
       }
       case "open_question": {
-        const current = this.options.openQuestionsRepository.get(target.id);
-
-        if (current === null) {
-          throw new StorageError(`Unknown open question id: ${target.id}`, {
-            code: "OPEN_QUESTION_NOT_FOUND",
-          });
-        }
-
-        const next = this.options.openQuestionsRepository.update(
+        const next = this.options.identityService.updateOpenQuestion(
           target.id,
           openQuestionPatchSchema.parse(patch) as OpenQuestionPatch,
+          proposedProvenance,
+          {
+            throughReview: true,
+            reason: item.reason,
+            reviewItemId: item.id,
+          },
         );
-        this.options.identityEventRepository.record({
-          record_type: "open_question",
-          record_id: target.id,
-          action: "correction_apply",
-          old_value: current,
-          new_value: next,
-          reason: item.reason,
-          provenance: MANUAL_PROVENANCE,
-          review_item_id: item.id,
-        });
+
+        if (next.status !== "applied") {
+          throw new StorageError(`Correction for open question ${target.id} still requires review`, {
+            code: "IDENTITY_REVIEW_REQUIRED",
+          });
+        }
       }
     }
   }

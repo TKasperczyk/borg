@@ -480,10 +480,20 @@ export class Borg {
   };
   readonly identity: {
     updateValue: (...args: Parameters<IdentityService["updateValue"]>) => ReturnType<IdentityService["updateValue"]>;
+    updateGoal: (...args: Parameters<IdentityService["updateGoal"]>) => ReturnType<IdentityService["updateGoal"]>;
     updateTrait: (...args: Parameters<IdentityService["updateTrait"]>) => ReturnType<IdentityService["updateTrait"]>;
     updateCommitment: (
       ...args: Parameters<IdentityService["updateCommitment"]>
     ) => ReturnType<IdentityService["updateCommitment"]>;
+    updatePeriod: (
+      ...args: Parameters<IdentityService["updatePeriod"]>
+    ) => ReturnType<IdentityService["updatePeriod"]>;
+    updateGrowthMarker: (
+      ...args: Parameters<IdentityService["updateGrowthMarker"]>
+    ) => ReturnType<IdentityService["updateGrowthMarker"]>;
+    updateOpenQuestion: (
+      ...args: Parameters<IdentityService["updateOpenQuestion"]>
+    ) => ReturnType<IdentityService["updateOpenQuestion"]>;
     listEvents: (...args: Parameters<IdentityService["listEvents"]>) => ReturnType<IdentityService["listEvents"]>;
   };
   readonly correction: {
@@ -819,8 +829,12 @@ export class Borg {
     };
     this.identity = {
       updateValue: (...args) => this.deps.identityService.updateValue(...args),
+      updateGoal: (...args) => this.deps.identityService.updateGoal(...args),
       updateTrait: (...args) => this.deps.identityService.updateTrait(...args),
       updateCommitment: (...args) => this.deps.identityService.updateCommitment(...args),
+      updatePeriod: (...args) => this.deps.identityService.updatePeriod(...args),
+      updateGrowthMarker: (...args) => this.deps.identityService.updateGrowthMarker(...args),
+      updateOpenQuestion: (...args) => this.deps.identityService.updateOpenQuestion(...args),
       listEvents: (...args) => this.deps.identityService.listEvents(...args),
     };
     this.correction = {
@@ -1095,29 +1109,6 @@ export class Borg {
         },
         contradictionJudgeModel: config.anthropic.models.background,
       });
-      reviewQueueRepository = new ReviewQueueRepository({
-        db: sqlite,
-        clock,
-        semanticNodeRepository,
-        applyCorrection: (item) => {
-          if (applyCorrectionReview === undefined) {
-            throw new Error("Correction service not initialized");
-          }
-
-          return applyCorrectionReview(item);
-        },
-        onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
-        onEnqueueError: (error) => {
-          const writer = createDefaultStreamWriter();
-          void appendOpenQuestionHookFailureEvent(
-            writer,
-            "review_queue_open_question",
-            error,
-          ).finally(() => {
-            writer.close();
-          });
-        },
-      });
       const semanticEdgeRepository = new SemanticEdgeRepository({
         db: sqlite,
         clock,
@@ -1183,9 +1174,43 @@ export class Borg {
       });
       const identityService = new IdentityService({
         valuesRepository,
+        goalsRepository,
         traitsRepository,
+        autobiographicalRepository,
+        growthMarkersRepository,
+        openQuestionsRepository,
         commitmentRepository,
         identityEventRepository,
+      });
+      reviewQueueRepository = new ReviewQueueRepository({
+        db: sqlite,
+        clock,
+        episodicRepository,
+        semanticNodeRepository,
+        valuesRepository,
+        goalsRepository,
+        traitsRepository,
+        autobiographicalRepository,
+        commitmentRepository,
+        identityService,
+        applyCorrection: (item) => {
+          if (applyCorrectionReview === undefined) {
+            throw new Error("Correction service not initialized");
+          }
+
+          return applyCorrectionReview(item);
+        },
+        onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
+        onEnqueueError: (error) => {
+          const writer = createDefaultStreamWriter();
+          void appendOpenQuestionHookFailureEvent(
+            writer,
+            "review_queue_open_question",
+            error,
+          ).finally(() => {
+            writer.close();
+          });
+        },
       });
       const skillRepository = new SkillRepository({
         table: skillsTable,
@@ -1336,6 +1361,7 @@ export class Borg {
           semanticNodeRepository,
           semanticEdgeRepository,
           reviewQueueRepository,
+          identityService,
           valuesRepository,
           goalsRepository,
           traitsRepository,
@@ -1397,6 +1423,7 @@ export class Borg {
         entityRepository,
         commitmentRepository,
         reviewQueueRepository,
+        identityService,
         valuesRepository,
         goalsRepository,
         traitsRepository,

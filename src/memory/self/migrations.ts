@@ -883,4 +883,71 @@ export const selfMigrations = [
       `);
     },
   },
+  {
+    id: 263,
+    name: "add-growth-marker-provenance",
+    up: (db) => {
+      if (!tableHasColumn(db, "growth_markers", "provenance_kind")) {
+        db.exec("ALTER TABLE growth_markers ADD COLUMN provenance_kind TEXT");
+      }
+
+      if (!tableHasColumn(db, "growth_markers", "provenance_episode_ids")) {
+        db.exec("ALTER TABLE growth_markers ADD COLUMN provenance_episode_ids TEXT");
+      }
+
+      if (!tableHasColumn(db, "growth_markers", "provenance_process")) {
+        db.exec("ALTER TABLE growth_markers ADD COLUMN provenance_process TEXT");
+      }
+
+      const rows = db
+        .prepare(
+          `
+            SELECT id, evidence_episode_ids, source_process, provenance_kind
+            FROM growth_markers
+            ORDER BY created_at ASC, id ASC
+          `,
+        )
+        .all() as Array<Record<string, unknown>>;
+      const updateGrowthMarkerProvenance = db.prepare(
+        `
+          UPDATE growth_markers
+          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, source_process = ?
+          WHERE id = ?
+        `,
+      );
+
+      for (const row of rows) {
+        if (typeof row.provenance_kind === "string" && row.provenance_kind.length > 0) {
+          continue;
+        }
+
+        const evidenceEpisodeIds = parseStoredIdArray(row.evidence_episode_ids).filter(
+          (value) => value.length > 0,
+        );
+        const sourceProcess =
+          typeof row.source_process === "string" && row.source_process.trim().length > 0
+            ? row.source_process.trim()
+            : null;
+
+        if (evidenceEpisodeIds.length > 0) {
+          updateGrowthMarkerProvenance.run(
+            "episodes",
+            JSON.stringify(evidenceEpisodeIds),
+            null,
+            sourceProcess ?? "growth-marker-detector",
+            row.id,
+          );
+          continue;
+        }
+
+        updateGrowthMarkerProvenance.run(
+          "offline",
+          "[]",
+          sourceProcess ?? "growth-marker-detector",
+          sourceProcess ?? "growth-marker-detector",
+          row.id,
+        );
+      }
+    },
+  },
 ] as const satisfies readonly Migration[];

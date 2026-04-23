@@ -10,6 +10,7 @@ import { parseEpisodeId } from "../../util/ids.js";
 import { identityMigrations } from "../identity/index.js";
 
 import { AutobiographicalRepository } from "./autobiographical.js";
+import { GrowthMarkersRepository } from "./growth-markers.js";
 import { selfMigrations } from "./migrations.js";
 import { OpenQuestionsRepository, buildOpenQuestionDedupeKey } from "./open-questions.js";
 import { GoalsRepository, TraitsRepository, ValuesRepository } from "./repository.js";
@@ -442,6 +443,116 @@ describe("self migrations", () => {
       expect(goals.get("goal_bbbbbbbbbbbbbbbb" as never)).toEqual(
         expect.objectContaining({
           last_progress_ts: null,
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("backfills growth marker provenance from evidence episodes and source process", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const dbPath = join(tempDir, "self.db");
+    tempDirs.push(tempDir);
+
+    const legacyDb = openDatabase(dbPath, {
+      migrations: selfMigrations.filter((migration) => migration.id < 263),
+    });
+    const evidenceEpisodeId = parseEpisodeId("ep_aaaaaaaaaaaaaaaa");
+
+    try {
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO growth_markers (
+              id, ts, category, what_changed, before_description, after_description,
+              evidence_episode_ids, confidence, source_process, created_at
+            ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          "grw_aaaaaaaaaaaaaaaa",
+          1_000,
+          "understanding",
+          "Episode-backed marker",
+          JSON.stringify([evidenceEpisodeId]),
+          0.7,
+          "self-narrator",
+          1_000,
+        );
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO growth_markers (
+              id, ts, category, what_changed, before_description, after_description,
+              evidence_episode_ids, confidence, source_process, created_at
+            ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          "grw_bbbbbbbbbbbbbbbb",
+          2_000,
+          "habit",
+          "Offline-only marker",
+          "[]",
+          0.5,
+          "ruminator",
+          2_000,
+        );
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO growth_markers (
+              id, ts, category, what_changed, before_description, after_description,
+              evidence_episode_ids, confidence, source_process, created_at
+            ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          "grw_cccccccccccccccc",
+          3_000,
+          "skill",
+          "Fallback marker",
+          "[]",
+          0.4,
+          "",
+          3_000,
+        );
+    } finally {
+      legacyDb.close();
+    }
+
+    const db = openDatabase(dbPath, {
+      migrations: selfMigrations,
+    });
+    const markers = new GrowthMarkersRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      expect(markers.get("grw_aaaaaaaaaaaaaaaa" as never)).toEqual(
+        expect.objectContaining({
+          provenance: {
+            kind: "episodes",
+            episode_ids: [evidenceEpisodeId],
+          },
+        }),
+      );
+      expect(markers.get("grw_bbbbbbbbbbbbbbbb" as never)).toEqual(
+        expect.objectContaining({
+          provenance: {
+            kind: "offline",
+            process: "ruminator",
+          },
+        }),
+      );
+      expect(markers.get("grw_cccccccccccccccc" as never)).toEqual(
+        expect.objectContaining({
+          provenance: {
+            kind: "offline",
+            process: "growth-marker-detector",
+          },
         }),
       );
     } finally {

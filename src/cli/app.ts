@@ -1444,6 +1444,9 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
               evidence_episode_ids: [resolveEpisodeId(commandOptions.episode)],
               confidence: 0.6,
               source_process: "manual",
+              provenance: {
+                kind: "manual",
+              },
             }),
           );
           writeLine(stdout, JSON.stringify(marker, null, 2));

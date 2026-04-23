@@ -39,6 +39,10 @@ export type StoredProvenance = {
   provenance_process: string | null;
 };
 
+const DEFAULT_MANUAL_PROVENANCE = {
+  kind: "manual" as const,
+};
+
 export function isEpisodeProvenance(
   provenance: Provenance,
 ): provenance is Extract<Provenance, { kind: "episodes" }> {
@@ -93,6 +97,12 @@ export function parseStoredProvenance(input: {
         }
       : {}),
   });
+}
+
+export function parseReviewProvenance(refs: Record<string, unknown>): Provenance {
+  return provenanceSchema.parse(
+    refs.proposed_provenance ?? refs.provenance ?? DEFAULT_MANUAL_PROVENANCE,
+  );
 }
 
 export function parseStoredProvenanceEpisodeIds(value: unknown): EpisodeId[] {

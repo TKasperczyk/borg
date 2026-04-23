@@ -10,6 +10,7 @@ import {
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { episodeIdSchema } from "../episodic/types.js";
+import { parseStoredProvenance, provenanceSchema, toStoredProvenance } from "../common/provenance.js";
 
 export const GROWTH_MARKER_CATEGORIES = [
   "skill",
@@ -35,14 +36,24 @@ export const growthMarkerSchema = z.object({
   what_changed: z.string().min(1),
   before_description: z.string().nullable(),
   after_description: z.string().nullable(),
-  evidence_episode_ids: z.array(episodeIdSchema).min(1),
+  evidence_episode_ids: z.array(episodeIdSchema),
   confidence: z.number().min(0).max(1),
   source_process: z.string().min(1),
+  provenance: provenanceSchema,
   created_at: z.number().finite(),
 });
 
+export const growthMarkerPatchSchema = growthMarkerSchema
+  .omit({
+    id: true,
+    created_at: true,
+  })
+  .partial()
+  .strict();
+
 export type GrowthMarker = z.infer<typeof growthMarkerSchema>;
 export type GrowthMarkerCategory = z.infer<typeof growthMarkerCategorySchema>;
+export type GrowthMarkerPatch = z.infer<typeof growthMarkerPatchSchema>;
 
 export type GrowthMarkersSummary = {
   counts: Record<GrowthMarkerCategory, number>;
@@ -95,6 +106,11 @@ function mapGrowthMarkerRow(row: Record<string, unknown>): GrowthMarker {
     evidence_episode_ids: parseEpisodeIds(String(row.evidence_episode_ids ?? "[]")),
     confidence: Number(row.confidence),
     source_process: row.source_process,
+    provenance: parseStoredProvenance({
+      provenance_kind: row.provenance_kind,
+      provenance_episode_ids: row.provenance_episode_ids,
+      provenance_process: row.provenance_process,
+    }),
     created_at: Number(row.created_at),
   });
 
@@ -129,8 +145,15 @@ export class GrowthMarkersRepository {
     evidence_episode_ids: readonly z.infer<typeof episodeIdSchema>[];
     confidence: number;
     source_process: string;
+    provenance: z.infer<typeof provenanceSchema>;
     created_at?: number;
   }): GrowthMarker {
+    if (input.evidence_episode_ids.length === 0) {
+      throw new StorageError("Growth marker requires at least one evidence episode", {
+        code: "GROWTH_MARKER_INVALID",
+      });
+    }
+
     const marker = growthMarkerSchema.parse({
       id: input.id ?? createGrowthMarkerId(),
       ts: input.ts,
@@ -141,16 +164,19 @@ export class GrowthMarkersRepository {
       evidence_episode_ids: input.evidence_episode_ids,
       confidence: input.confidence,
       source_process: input.source_process,
+      provenance: input.provenance,
       created_at: input.created_at ?? this.clock.now(),
     });
+    const storedProvenance = toStoredProvenance(marker.provenance);
 
     this.db
       .prepare(
         `
           INSERT INTO growth_markers (
             id, ts, category, what_changed, before_description, after_description,
-            evidence_episode_ids, confidence, source_process, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            evidence_episode_ids, confidence, source_process, provenance_kind,
+            provenance_episode_ids, provenance_process, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -163,6 +189,9 @@ export class GrowthMarkersRepository {
         serializeJsonValue(marker.evidence_episode_ids),
         marker.confidence,
         marker.source_process,
+        storedProvenance.provenance_kind,
+        storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_process,
         marker.created_at,
       );
 
@@ -219,6 +248,49 @@ export class GrowthMarkersRepository {
       | undefined;
 
     return row === undefined ? null : mapGrowthMarkerRow(row);
+  }
+
+  update(id: GrowthMarkerId, patch: GrowthMarkerPatch): GrowthMarker {
+    const existing = this.get(id);
+
+    if (existing === null) {
+      throw new StorageError(`Unknown growth marker id: ${id}`, {
+        code: "GROWTH_MARKER_NOT_FOUND",
+      });
+    }
+
+    const next = growthMarkerSchema.parse({
+      ...existing,
+      ...growthMarkerPatchSchema.parse(patch),
+    });
+    const storedProvenance = toStoredProvenance(next.provenance);
+
+    this.db
+      .prepare(
+        `
+          UPDATE growth_markers
+          SET ts = ?, category = ?, what_changed = ?, before_description = ?, after_description = ?,
+              evidence_episode_ids = ?, confidence = ?, source_process = ?, provenance_kind = ?,
+              provenance_episode_ids = ?, provenance_process = ?
+          WHERE id = ?
+        `,
+      )
+      .run(
+        next.ts,
+        next.category,
+        next.what_changed,
+        next.before_description,
+        next.after_description,
+        serializeJsonValue(next.evidence_episode_ids),
+        next.confidence,
+        next.source_process,
+        storedProvenance.provenance_kind,
+        storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_process,
+        id,
+      );
+
+    return next;
   }
 
   delete(id: GrowthMarkerId): boolean {

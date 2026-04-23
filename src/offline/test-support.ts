@@ -292,22 +292,7 @@ export async function createOfflineTestHarness(
     defaultHalfLifeHours: config.affective.moodHalfLifeHours,
     incomingWeight: config.affective.incomingMoodWeight,
   });
-  const reviewQueueRepository = new ReviewQueueRepository({
-    db,
-    clock,
-    semanticNodeRepository,
-    onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
-    onEnqueueError: (error) => {
-      const promise = appendOpenQuestionHookFailureEvent(
-        streamWriter,
-        "review_queue_open_question",
-        error,
-      ).finally(() => {
-        pendingHookLogs.delete(promise);
-      });
-      pendingHookLogs.add(promise);
-    },
-  });
+  let reviewQueueRepository: ReviewQueueRepository;
   const semanticEdgeRepository = new SemanticEdgeRepository({
     db,
     clock,
@@ -359,9 +344,36 @@ export async function createOfflineTestHarness(
   });
   const identityService = new IdentityService({
     valuesRepository,
+    goalsRepository,
     traitsRepository,
+    autobiographicalRepository,
+    growthMarkersRepository,
+    openQuestionsRepository,
     commitmentRepository,
     identityEventRepository,
+  });
+  reviewQueueRepository = new ReviewQueueRepository({
+    db,
+    clock,
+    episodicRepository,
+    semanticNodeRepository,
+    valuesRepository,
+    goalsRepository,
+    traitsRepository,
+    autobiographicalRepository,
+    commitmentRepository,
+    identityService,
+    onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
+    onEnqueueError: (error) => {
+      const promise = appendOpenQuestionHookFailureEvent(
+        streamWriter,
+        "review_queue_open_question",
+        error,
+      ).finally(() => {
+        pendingHookLogs.delete(promise);
+      });
+      pendingHookLogs.add(promise);
+    },
   });
   const skillRepository = new SkillRepository({
     table: skillsTable,
@@ -431,10 +443,10 @@ export async function createOfflineTestHarness(
       episodicRepository,
       semanticNodeRepository,
       semanticEdgeRepository,
-    reviewQueueRepository,
-    identityEventRepository,
-    identityService,
-    valuesRepository,
+      reviewQueueRepository,
+      identityService,
+      identityEventRepository,
+      valuesRepository,
       goalsRepository,
       traitsRepository,
       autobiographicalRepository,

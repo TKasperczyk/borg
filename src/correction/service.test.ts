@@ -101,6 +101,86 @@ describe("correction service", () => {
     }
   });
 
+  it("preserves proposer provenance when a reviewed correction is accepted", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const borg = await Borg.open({
+      config: {
+        ...DEFAULT_CONFIG,
+        dataDir: tempDir,
+        defaultUser: "Sam",
+        embedding: {
+          ...DEFAULT_CONFIG.embedding,
+          dims: 4,
+        },
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock: new FixedClock(1_500),
+      embeddingDimensions: 4,
+      embeddingClient: new TestEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const value = borg.self.values.add({
+        label: "groundedness",
+        description: "Stay anchored to evidence.",
+        priority: 6,
+        provenance: {
+          kind: "manual",
+        },
+      });
+
+      const queued = await borg.correction.correct(
+        value.id,
+        {
+          description: "Stay anchored to lived evidence.",
+        },
+        {
+          kind: "offline",
+          process: "reflector",
+        },
+      );
+
+      await borg.review.resolve(queued.id, "accept");
+
+      expect(borg.self.values.get(value.id)?.provenance).toEqual({
+        kind: "offline",
+        process: "reflector",
+      });
+      expect(
+        borg.correction.listIdentityEvents({
+          recordType: "value",
+          recordId: value.id,
+        }),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "correction_apply",
+            provenance: {
+              kind: "offline",
+              process: "reflector",
+            },
+          }),
+        ]),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("supports forgetting records and remembering the default user", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

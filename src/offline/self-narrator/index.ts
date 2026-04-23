@@ -384,6 +384,10 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                   response.observation.confidence,
                 ),
                 source_process: "self-narrator",
+                provenance: {
+                  kind: "offline",
+                  process: "self-narrator",
+                },
                 created_at: nowMs,
               }),
             );
@@ -520,39 +524,68 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
   async apply(ctx: OfflineContext, rawPlan: SelfNarratorPlan): Promise<OfflineResult> {
     const plan = selfNarratorPlanSchema.parse(rawPlan);
     const changes: OfflineChange[] = [];
+    const processProvenance = {
+      kind: "offline" as const,
+      process: this.name,
+    };
 
     for (let index = 0; index < plan.items.length; index += 1) {
       const item = plan.items[index]!;
       const nextItem = plan.items[index + 1];
 
       if (item.action === "close_period" && nextItem?.action === "open_period") {
-        ctx.autobiographicalRepository.runInTransaction(() => {
-          ctx.autobiographicalRepository.closePeriod(item.previous.id, item.end_ts);
-          ctx.auditLog.record({
-            run_id: ctx.runId,
-            process: this.name,
-            action: "close_period",
-            targets: {
-              period_id: item.previous.id,
-              label: item.previous.label,
+        const result = ctx.identityService.updatePeriod(
+          item.previous.id,
+          {
+            end_ts: item.end_ts,
+          },
+          processProvenance,
+        );
+
+        if (result.status === "requires_review") {
+          ctx.reviewQueueRepository.enqueue({
+            kind: "identity_inconsistency",
+            refs: {
+              target_type: "autobiographical_period",
+              target_id: item.previous.id,
+              repair_op: "patch",
+              patch: {
+                end_ts: item.end_ts,
+              },
+              proposed_provenance: processProvenance,
+              // Keep rollover close+open coupled so accepting the review applies both together.
+              next_period_open_payload: nextItem.period,
             },
-            reversal: {
-              previous: item.previous,
-            } satisfies SelfNarratorReversal,
+            reason: `self-narrator proposed closing autobiographical period ${item.previous.id}`,
           });
-          ctx.autobiographicalRepository.upsertPeriod(nextItem.period);
-          ctx.auditLog.record({
-            run_id: ctx.runId,
-            process: this.name,
-            action: "open_period",
-            targets: {
-              period_id: nextItem.period.id,
-              label: nextItem.period.label,
-            },
-            reversal: {
-              period_id: nextItem.period.id,
-            } satisfies SelfNarratorReversal,
-          });
+          index += 1;
+          continue;
+        }
+
+        ctx.auditLog.record({
+          run_id: ctx.runId,
+          process: this.name,
+          action: "close_period",
+          targets: {
+            period_id: item.previous.id,
+            label: item.previous.label,
+          },
+          reversal: {
+            previous: item.previous,
+          } satisfies SelfNarratorReversal,
+        });
+        ctx.autobiographicalRepository.upsertPeriod(nextItem.period);
+        ctx.auditLog.record({
+          run_id: ctx.runId,
+          process: this.name,
+          action: "open_period",
+          targets: {
+            period_id: nextItem.period.id,
+            label: nextItem.period.label,
+          },
+          reversal: {
+            period_id: nextItem.period.id,
+          } satisfies SelfNarratorReversal,
         });
         changes.push(buildChange(item), buildChange(nextItem));
         index += 1;
@@ -578,7 +611,31 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       }
 
       if (item.action === "close_period") {
-        ctx.autobiographicalRepository.closePeriod(item.previous.id, item.end_ts);
+        const result = ctx.identityService.updatePeriod(
+          item.previous.id,
+          {
+            end_ts: item.end_ts,
+          },
+          processProvenance,
+        );
+
+        if (result.status === "requires_review") {
+          ctx.reviewQueueRepository.enqueue({
+            kind: "identity_inconsistency",
+            refs: {
+              target_type: "autobiographical_period",
+              target_id: item.previous.id,
+              repair_op: "patch",
+              patch: {
+                end_ts: item.end_ts,
+              },
+              proposed_provenance: processProvenance,
+            },
+            reason: `self-narrator proposed closing autobiographical period ${item.previous.id}`,
+          });
+          continue;
+        }
+
         ctx.auditLog.record({
           run_id: ctx.runId,
           process: this.name,
@@ -596,16 +653,36 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       }
 
       if (item.action === "update_period_narrative") {
-        ctx.autobiographicalRepository.updateNarrative(
+        const result = ctx.identityService.updatePeriod(
           item.period_id,
-          item.narrative,
-          item.key_episode_ids,
-          item.themes,
           {
-            kind: "offline",
-            process: this.name,
+            narrative: item.narrative,
+            key_episode_ids: item.key_episode_ids,
+            themes: item.themes,
           },
+          processProvenance,
         );
+
+        if (result.status === "requires_review") {
+          ctx.reviewQueueRepository.enqueue({
+            kind: "identity_inconsistency",
+            refs: {
+              target_type: "autobiographical_period",
+              target_id: item.period_id,
+              repair_op: "patch",
+              patch: {
+                narrative: item.narrative,
+                key_episode_ids: item.key_episode_ids,
+                themes: item.themes,
+              },
+              proposed_provenance: processProvenance,
+              evidence_episode_ids: item.key_episode_ids,
+            },
+            reason: `self-narrator proposed revising autobiographical period ${item.period_id}`,
+          });
+          continue;
+        }
+
         ctx.auditLog.record({
           run_id: ctx.runId,
           process: this.name,

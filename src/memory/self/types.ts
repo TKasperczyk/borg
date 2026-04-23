@@ -127,9 +127,12 @@ export const goalPatchSchema = goalSchema
   .strict();
 
 export type ValueRecord = z.infer<typeof valueSchema>;
+export type ValuePatch = z.infer<typeof valuePatchSchema>;
 export type GoalRecord = z.infer<typeof goalSchema>;
+export type GoalPatch = z.infer<typeof goalPatchSchema>;
 export type GoalStatus = z.infer<typeof goalStatusSchema>;
 export type TraitRecord = z.infer<typeof traitSchema>;
+export type TraitPatch = z.infer<typeof traitPatchSchema>;
 export type SelfProvenance = Provenance;
 export type IdentityState = z.infer<typeof identityStateSchema>;
 

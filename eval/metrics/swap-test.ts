@@ -302,6 +302,9 @@ async function seedBaseSnapshot(tempDir: string): Promise<void> {
       evidence_episode_ids: [reviewEpisode.id],
       confidence: 0.82,
       source_process: "manual",
+      provenance: {
+        kind: "manual",
+      },
       created_at: BASE_TS - 120,
     });
     borg.self.openQuestions.add({

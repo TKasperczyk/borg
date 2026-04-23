@@ -1,5 +1,6 @@
 export {
   getEpisodeProvenanceIds,
+  parseReviewProvenance,
   isEpisodeProvenance,
   parseStoredProvenance,
   parseStoredProvenanceEpisodeIds,

@@ -317,6 +317,9 @@ describe("deliberator", () => {
             evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
             confidence: 0.72,
             source_process: "manual",
+            provenance: {
+              kind: "manual",
+            },
             created_at: 0,
           },
         ],

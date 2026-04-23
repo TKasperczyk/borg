@@ -209,6 +209,102 @@ describe("reflector", () => {
     expect(reflected.current_focus).toBe("Atlas");
   });
 
+  it("queues review instead of silently overwriting episode-backed active goals from offline reflection", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(4_000),
+    });
+    cleanup.push(harness.cleanup);
+
+    const goal = harness.goalsRepository.add({
+      description: "stabilize atlas release",
+      priority: 5,
+      provenance: {
+        kind: "episodes",
+        episode_ids: ["ep_aaaaaaaaaaaaaaaa" as const],
+      },
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+
+    await reflector.reflect(
+      {
+        userMessage: "We need to stabilize the Atlas release",
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: "Atlas",
+          hot_entities: ["Atlas"],
+          pending_intents: [],
+          suppressed: [],
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: harness.valuesRepository.list(),
+          goals: [goal],
+          traits: harness.traitsRepository.list(),
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "To stabilize the Atlas release, update the deployment checklist.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          thoughtsPersisted: true,
+        },
+        actionResult: {
+          response: "To stabilize the Atlas release, update the deployment checklist.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: "Atlas",
+            hot_entities: ["Atlas"],
+            pending_intents: [],
+            suppressed: [],
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        identityService: harness.identityService,
+        reviewQueueRepository: harness.reviewQueueRepository,
+        suppressionSet: new SuppressionSet(),
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
+    expect(harness.reviewQueueRepository.getOpen()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "identity_inconsistency",
+          refs: expect.objectContaining({
+            target_type: "goal",
+            target_id: goal.id,
+            repair_op: "patch",
+            proposed_provenance: {
+              kind: "offline",
+              process: "reflector",
+            },
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("counts an episode as used when the response echoes title or narrative tokens", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new FixedClock(1_000);
@@ -501,6 +597,11 @@ describe("reflector", () => {
     expect(openQuestionsRepository.list({ status: "open" })).toEqual([
       expect.objectContaining({
         source: "reflection",
+        related_episode_ids: [episode.id],
+        provenance: {
+          kind: "episodes",
+          episode_ids: [episode.id],
+        },
       }),
     ]);
   });

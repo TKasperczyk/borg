@@ -353,6 +353,9 @@ async function ensurePhase6(
       evidence_episode_ids: [evidenceEpisodeId],
       confidence: 0.72,
       source_process: "manual",
+      provenance: {
+        kind: "manual",
+      },
     });
     state.manualGrowthMarkerId = marker.id;
   }

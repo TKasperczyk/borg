@@ -7,6 +7,8 @@ import {
   TraitsRepository,
   type GoalRecord,
 } from "../../memory/self/index.js";
+import type { IdentityService } from "../../memory/identity/index.js";
+import type { ReviewQueueRepository } from "../../memory/semantic/index.js";
 import { SkillRepository } from "../../memory/procedural/index.js";
 import {
   appendInternalFailureEvent,
@@ -35,6 +37,8 @@ export type ReflectionContext = {
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
   openQuestionsRepository: OpenQuestionsRepository;
+  identityService?: Pick<IdentityService, "updateGoal">;
+  reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
   skillRepository?: SkillRepository;
   selectedSkillId?: SkillId | null;
   suppressionSet: SuppressionSet;
@@ -170,6 +174,25 @@ function inferSkillOutcomeFromUserFollowUp(userMessage: string): boolean | null 
   return null;
 }
 
+function buildIdentityPatchReviewRefs(
+  targetId: string,
+  patch: Record<string, unknown>,
+  provenance: ReturnType<typeof buildReflectionProvenance>,
+) {
+  return {
+    target_type: "goal" as const,
+    target_id: targetId,
+    repair_op: "patch" as const,
+    patch,
+    proposed_provenance: provenance,
+    ...(provenance.kind === "episodes"
+      ? {
+          evidence_episode_ids: provenance.episode_ids,
+        }
+      : {}),
+  };
+}
+
 export type ReflectorOptions = {
   clock?: Clock;
 };
@@ -214,7 +237,25 @@ export class Reflector {
 
       const note = `[${this.clock.now()}] Heuristic turn progress from response overlap`;
       const nextProgress = goal.progress_notes === null ? note : `${goal.progress_notes}\n${note}`;
-      context.goalsRepository.updateProgress(goal.id, nextProgress, reflectionProvenance);
+      const patch = {
+        progress_notes: nextProgress,
+        last_progress_ts: this.clock.now(),
+      };
+
+      if (context.identityService === undefined || context.reviewQueueRepository === undefined) {
+        context.goalsRepository.update(goal.id, patch, reflectionProvenance);
+        continue;
+      }
+
+      const result = context.identityService.updateGoal(goal.id, patch, reflectionProvenance);
+
+      if (result.status === "requires_review") {
+        context.reviewQueueRepository.enqueue({
+          kind: "identity_inconsistency",
+          refs: buildIdentityPatchReviewRefs(goal.id, patch, reflectionProvenance),
+          reason: `reflector proposed updating goal ${goal.id}`,
+        });
+      }
     }
 
     for (const result of context.retrievedEpisodes) {
@@ -243,22 +284,17 @@ export class Reflector {
       averageRetrievalConfidence(context.retrievedEpisodes) < OPEN_QUESTION_CONFIDENCE_THRESHOLD
     ) {
       try {
+        const relatedEpisodeIds =
+          reflectionProvenance.kind === "episodes" ? reflectionProvenance.episode_ids : [];
+
         context.openQuestionsRepository.add({
           question: buildReflectionQuestion(
             context.userMessage,
             context.workingMemory.hot_entities,
           ),
           urgency: 0.45,
-          related_episode_ids: context.retrievedEpisodes
-            .slice(0, 3)
-            .map((result) => result.episode.id),
-          provenance:
-            context.retrievedEpisodes.length === 0
-              ? {
-                  kind: "offline",
-                  process: "reflector",
-                }
-              : null,
+          related_episode_ids: relatedEpisodeIds,
+          provenance: reflectionProvenance,
           source: "reflection",
         });
       } catch (error) {

@@ -42,6 +42,9 @@ describe("GrowthMarkersRepository", () => {
       evidence_episode_ids: [episodeId],
       confidence: 0.6,
       source_process: "manual",
+      provenance: {
+        kind: "manual",
+      },
     });
     repository.add({
       ts: 6_000,
@@ -50,6 +53,9 @@ describe("GrowthMarkersRepository", () => {
       evidence_episode_ids: [createEpisodeId()],
       confidence: 0.5,
       source_process: "manual",
+      provenance: {
+        kind: "manual",
+      },
     });
 
     expect(repository.list({ category: "understanding" })).toHaveLength(1);
@@ -79,6 +85,9 @@ describe("GrowthMarkersRepository", () => {
         evidence_episode_ids: [],
         confidence: 0.4,
         source_process: "manual",
+        provenance: {
+          kind: "manual",
+        },
       }),
     ).toThrow();
 

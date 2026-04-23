@@ -45,11 +45,11 @@ export class IdentityGuard {
       };
     }
 
-    if (input.provenance.kind === "system" || input.provenance.kind === "offline") {
+    if (input.provenance.kind === "episodes") {
       return {
         allowed: true,
         requires_review: false,
-        overwrite_without_review: true,
+        overwrite_without_review: false,
       };
     }
 

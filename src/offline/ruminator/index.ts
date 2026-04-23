@@ -252,6 +252,10 @@ async function planResolution(
           evidence_episode_ids: [strongEvidence.episode.id],
           confidence: Math.min(GROWTH_MARKER_CONFIDENCE_CEILING, response.growth_marker.confidence),
           source_process: "ruminator",
+          provenance: {
+            kind: "offline",
+            process: "ruminator",
+          },
           created_at: ctx.clock.now(),
         });
 

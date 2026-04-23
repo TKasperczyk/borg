@@ -37,7 +37,20 @@ export const autobiographicalPeriodSchema = z
     path: ["end_ts"],
   });
 
+export const autobiographicalPeriodPatchSchema = z
+  .object({
+    label: z.string().min(1).optional(),
+    start_ts: z.number().finite().optional(),
+    end_ts: z.number().finite().nullable().optional(),
+    narrative: z.string().optional(),
+    key_episode_ids: z.array(episodeIdSchema).optional(),
+    themes: z.array(z.string().min(1)).optional(),
+    provenance: provenanceSchema.optional(),
+  })
+  .strict();
+
 export type AutobiographicalPeriod = z.infer<typeof autobiographicalPeriodSchema>;
+export type AutobiographicalPeriodPatch = z.infer<typeof autobiographicalPeriodPatchSchema>;
 
 export type AutobiographicalRepositoryOptions = {
   db: SqliteDatabase;

@@ -34,6 +34,16 @@ const reviewFlagSchema = z.object({
   kind: overseerFlagKindSchema,
   reason: z.string().min(1),
   confidence: z.number().min(0).max(1),
+  patch: z.record(z.string(), z.unknown()).optional(),
+  corrected_start_time: z.number().finite().optional(),
+  corrected_end_time: z.number().finite().optional(),
+  patch_description: z.string().min(1).optional(),
+  repair_target_type: z
+    .enum(["trait", "value", "commitment", "goal", "autobiographical_period"])
+    .optional(),
+  repair_target_id: z.string().min(1).optional(),
+  repair_op: z.enum(["reinforce", "contradict", "patch"]).optional(),
+  evidence_episode_ids: z.array(z.string().min(1)).optional(),
 });
 
 const overseerResponseSchema = z.object({
@@ -63,6 +73,16 @@ const overseerPlanItemBaseSchema = z.object({
   kind: overseerFlagKindSchema,
   reason: z.string().min(1),
   confidence: z.number().min(0).max(1),
+  patch: z.record(z.string(), z.unknown()).optional(),
+  corrected_start_time: z.number().finite().optional(),
+  corrected_end_time: z.number().finite().optional(),
+  patch_description: z.string().min(1).optional(),
+  repair_target_type: z
+    .enum(["trait", "value", "commitment", "goal", "autobiographical_period"])
+    .optional(),
+  repair_target_id: z.string().min(1).optional(),
+  repair_op: z.enum(["reinforce", "contradict", "patch"]).optional(),
+  evidence_episode_ids: z.array(z.string().min(1)).optional(),
 });
 
 const overseerPlanItemSchema = z
@@ -128,20 +148,32 @@ function summarizeSelfState(ctx: OfflineContext): string {
   const values =
     ctx.valuesRepository
       .list()
-      .map((value) => value.label)
+      .map((value) => `${value.id}:${value.label}`)
       .join(", ") || "none";
   const goals =
     ctx.goalsRepository
       .list({ status: "active" })
-      .map((goal) => goal.description)
+      .map((goal) => `${goal.id}:${goal.description}`)
       .join(" | ") || "none";
   const traits =
     ctx.traitsRepository
       .list()
-      .map((trait) => `${trait.label}:${trait.strength.toFixed(2)}`)
+      .map((trait) => `${trait.id}:${trait.label}:${trait.strength.toFixed(2)}`)
       .join(", ") || "none";
+  const commitments =
+    ctx.commitmentRepository
+      .list({ activeOnly: true })
+      .map((commitment) => `${commitment.id}:${commitment.directive}`)
+      .join(" | ") || "none";
+  const currentPeriod = ctx.autobiographicalRepository.currentPeriod();
 
-  return `Values: ${values}\nGoals: ${goals}\nTraits: ${traits}`;
+  return [
+    `Values: ${values}`,
+    `Goals: ${goals}`,
+    `Traits: ${traits}`,
+    `Commitments: ${commitments}`,
+    `CurrentPeriod: ${currentPeriod === null ? "none" : `${currentPeriod.id}:${currentPeriod.label}`}`,
+  ].join("\n");
 }
 
 function buildPrompt(target: OverseerTarget, ctx: OfflineContext): string {
@@ -181,6 +213,10 @@ function buildPrompt(target: OverseerTarget, ctx: OfflineContext): string {
 
   return [
     "Check the memory item for misattribution, temporal drift, and identity inconsistency.",
+    "If you flag an issue, include the concrete repair payload needed to fix it.",
+    "For misattribution, provide patch fields that directly correct the target memory.",
+    "For temporal drift, provide corrected timestamps and/or a replacement description.",
+    "For identity inconsistency, target a specific value, goal, trait, commitment, or autobiographical period by id and propose reinforce, contradict, or patch.",
     `Emit your result by calling the ${OVERSEER_TOOL_NAME} tool exactly once.`,
     summarizeSelfState(ctx),
     "Memory item:",
@@ -238,6 +274,17 @@ function buildChange(item: OverseerPlan["items"][number]): OfflineChange {
     preview: {
       reason: item.reason,
       confidence: item.confidence,
+      ...(item.patch === undefined ? {} : { patch: item.patch }),
+      ...(item.patch_description === undefined
+        ? {}
+        : { patch_description: item.patch_description }),
+      ...(item.repair_target_type === undefined
+        ? {}
+        : {
+            repair_target_type: item.repair_target_type,
+            repair_target_id: item.repair_target_id,
+            repair_op: item.repair_op,
+          }),
     },
   };
 }
@@ -304,6 +351,26 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   kind: flag.kind,
                   reason: flag.reason,
                   confidence: flag.confidence,
+                  ...(flag.patch === undefined ? {} : { patch: flag.patch }),
+                  ...(flag.corrected_start_time === undefined
+                    ? {}
+                    : { corrected_start_time: flag.corrected_start_time }),
+                  ...(flag.corrected_end_time === undefined
+                    ? {}
+                    : { corrected_end_time: flag.corrected_end_time }),
+                  ...(flag.patch_description === undefined
+                    ? {}
+                    : { patch_description: flag.patch_description }),
+                  ...(flag.repair_target_type === undefined
+                    ? {}
+                    : {
+                        repair_target_type: flag.repair_target_type,
+                        repair_target_id: flag.repair_target_id,
+                        repair_op: flag.repair_op,
+                      }),
+                  ...(flag.evidence_episode_ids === undefined
+                    ? {}
+                    : { evidence_episode_ids: flag.evidence_episode_ids }),
                 });
               } else {
                 items.push({
@@ -312,6 +379,26 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   kind: flag.kind,
                   reason: flag.reason,
                   confidence: flag.confidence,
+                  ...(flag.patch === undefined ? {} : { patch: flag.patch }),
+                  ...(flag.corrected_start_time === undefined
+                    ? {}
+                    : { corrected_start_time: flag.corrected_start_time }),
+                  ...(flag.corrected_end_time === undefined
+                    ? {}
+                    : { corrected_end_time: flag.corrected_end_time }),
+                  ...(flag.patch_description === undefined
+                    ? {}
+                    : { patch_description: flag.patch_description }),
+                  ...(flag.repair_target_type === undefined
+                    ? {}
+                    : {
+                        repair_target_type: flag.repair_target_type,
+                        repair_target_id: flag.repair_target_id,
+                        repair_op: flag.repair_op,
+                      }),
+                  ...(flag.evidence_episode_ids === undefined
+                    ? {}
+                    : { evidence_episode_ids: flag.evidence_episode_ids }),
                 });
               }
             }
@@ -365,14 +452,55 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
   async apply(ctx: OfflineContext, rawPlan: OverseerPlan): Promise<OfflineResult> {
     const plan = overseerPlanSchema.parse(rawPlan);
     const changes: OfflineChange[] = [];
+    const proposedProvenance = {
+      kind: "offline" as const,
+      process: this.name,
+    };
 
     for (const item of plan.items) {
+      const refs =
+        item.kind === "identity_inconsistency"
+          ? {
+              target_type: item.repair_target_type ?? item.target_type,
+              target_id: item.repair_target_id ?? item.target_id,
+              repair_op: item.repair_op ?? "patch",
+              ...(item.patch === undefined ? {} : { patch: item.patch }),
+              ...(item.evidence_episode_ids === undefined
+                ? {}
+                : { evidence_episode_ids: item.evidence_episode_ids }),
+              proposed_provenance: proposedProvenance,
+              source_target_type: item.target_type,
+              source_target_id: item.target_id,
+            }
+          : item.kind === "misattribution"
+            ? {
+                target_type: item.target_type,
+                target_id: item.target_id,
+                ...(item.patch === undefined ? {} : { patch: item.patch }),
+                proposed_provenance: proposedProvenance,
+              }
+            : item.kind === "temporal_drift"
+              ? {
+                  target_type: item.target_type,
+                  target_id: item.target_id,
+                  ...(item.corrected_start_time === undefined
+                    ? {}
+                    : { corrected_start_time: item.corrected_start_time }),
+                  ...(item.corrected_end_time === undefined
+                    ? {}
+                    : { corrected_end_time: item.corrected_end_time }),
+                  ...(item.patch_description === undefined
+                    ? {}
+                    : { patch_description: item.patch_description }),
+                  proposed_provenance: proposedProvenance,
+                }
+              : {
+                  target_type: item.target_type,
+                  target_id: item.target_id,
+                };
       const reviewItem = ctx.reviewQueueRepository.enqueue({
         kind: item.kind,
-        refs: {
-          target_type: item.target_type,
-          target_id: item.target_id,
-        },
+        refs,
         reason: item.reason,
       });
 
