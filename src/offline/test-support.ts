@@ -23,6 +23,11 @@ import {
   proceduralMigrations,
 } from "../memory/procedural/index.js";
 import {
+  IdentityEventRepository,
+  IdentityService,
+  identityMigrations,
+} from "../memory/identity/index.js";
+import {
   AutobiographicalRepository,
   GoalsRepository,
   GrowthMarkersRepository,
@@ -31,7 +36,6 @@ import {
   ValuesRepository,
   selfMigrations,
 } from "../memory/self/index.js";
-import { identityMigrations } from "../memory/identity/index.js";
 import {
   appendOpenQuestionHookFailureEvent,
   enqueueOpenQuestionForReview,
@@ -48,7 +52,7 @@ import {
 import { SocialRepository, socialMigrations } from "../memory/social/index.js";
 import { retrievalMigrations } from "../retrieval/index.js";
 import { RetrievalPipeline } from "../retrieval/index.js";
-import { StreamWriter } from "../stream/index.js";
+import { StreamWriter, streamWatermarkMigrations } from "../stream/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
@@ -101,6 +105,8 @@ export type OfflineTestHarness = {
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
   reviewQueueRepository: ReviewQueueRepository;
+  identityEventRepository: IdentityEventRepository;
+  identityService: IdentityService;
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
@@ -188,6 +194,26 @@ export async function createOfflineTestHarness(
         ...options.configOverrides?.offline?.selfNarrator,
       },
     },
+    autonomy: {
+      ...DEFAULT_CONFIG.autonomy,
+      ...options.configOverrides?.autonomy,
+      triggers: {
+        ...DEFAULT_CONFIG.autonomy.triggers,
+        ...options.configOverrides?.autonomy?.triggers,
+        commitmentExpiring: {
+          ...DEFAULT_CONFIG.autonomy.triggers.commitmentExpiring,
+          ...options.configOverrides?.autonomy?.triggers?.commitmentExpiring,
+        },
+        openQuestionDormant: {
+          ...DEFAULT_CONFIG.autonomy.triggers.openQuestionDormant,
+          ...options.configOverrides?.autonomy?.triggers?.openQuestionDormant,
+        },
+        scheduledReflection: {
+          ...DEFAULT_CONFIG.autonomy.triggers.scheduledReflection,
+          ...options.configOverrides?.autonomy?.triggers?.scheduledReflection,
+        },
+      },
+    },
   };
   const lance = new LanceDbStore({
     uri: join(tempDir, "lancedb"),
@@ -204,6 +230,7 @@ export async function createOfflineTestHarness(
       ...proceduralMigrations,
       ...identityMigrations,
       ...offlineMigrations,
+      ...streamWatermarkMigrations,
     ],
   });
   const episodesTable = await lance.openTable({
@@ -270,17 +297,24 @@ export async function createOfflineTestHarness(
     nodeRepository: semanticNodeRepository,
     edgeRepository: semanticEdgeRepository,
   });
+  const identityEventRepository = new IdentityEventRepository({
+    db,
+    clock,
+  });
   const valuesRepository = new ValuesRepository({
     db,
     clock,
+    identityEventRepository,
   });
   const goalsRepository = new GoalsRepository({
     db,
     clock,
+    identityEventRepository,
   });
   const traitsRepository = new TraitsRepository({
     db,
     clock,
+    identityEventRepository,
   });
   const autobiographicalRepository = new AutobiographicalRepository({
     db,
@@ -301,6 +335,13 @@ export async function createOfflineTestHarness(
   const commitmentRepository = new CommitmentRepository({
     db,
     clock,
+    identityEventRepository,
+  });
+  const identityService = new IdentityService({
+    valuesRepository,
+    traitsRepository,
+    commitmentRepository,
+    identityEventRepository,
   });
   const skillRepository = new SkillRepository({
     table: skillsTable,
@@ -337,6 +378,8 @@ export async function createOfflineTestHarness(
     semanticNodeRepository,
     semanticEdgeRepository,
     reviewQueueRepository,
+    identityEventRepository,
+    identityService,
     valuesRepository,
     goalsRepository,
     traitsRepository,
@@ -368,8 +411,10 @@ export async function createOfflineTestHarness(
       episodicRepository,
       semanticNodeRepository,
       semanticEdgeRepository,
-      reviewQueueRepository,
-      valuesRepository,
+    reviewQueueRepository,
+    identityEventRepository,
+    identityService,
+    valuesRepository,
       goalsRepository,
       traitsRepository,
       autobiographicalRepository,

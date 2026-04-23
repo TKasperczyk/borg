@@ -25,6 +25,7 @@
   "scripts": {
     "build": "tsup",
     "chat": "tsx scripts/chat.ts",
+    "daemon": "tsx scripts/daemon.ts",
     "debug": "tsx scripts/debug.ts",
     "dev": "tsx watch src/cli/index.ts",
     "eval": "tsx eval/runner.ts",

@@ -23,6 +23,7 @@ export const OPEN_QUESTION_SOURCES = [
   "contradiction",
   "ruminator",
   "overseer",
+  "autonomy",
 ] as const;
 
 export const openQuestionIdSchema = z

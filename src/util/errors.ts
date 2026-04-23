@@ -114,3 +114,21 @@ export class AuthError extends BorgError {
     super(options.code ?? "BORG_AUTH_ERROR", message, options);
   }
 }
+
+export class ToolError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_TOOL_ERROR", message, options);
+  }
+}
+
+export class AutonomyError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_AUTONOMY_ERROR", message, options);
+  }
+}
+
+export class SessionBusyError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_SESSION_BUSY", message, options);
+  }
+}

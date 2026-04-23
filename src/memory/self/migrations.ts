@@ -762,4 +762,83 @@ export const selfMigrations = [
       }
     },
   },
+  {
+    id: 261,
+    name: "allow-autonomy-open-question-source",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE open_questions__next (
+          id TEXT PRIMARY KEY,
+          question TEXT NOT NULL,
+          urgency REAL NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'abandoned')),
+          related_episode_ids TEXT NOT NULL,
+          related_semantic_node_ids TEXT NOT NULL,
+          source TEXT NOT NULL CHECK (
+            source IN ('user', 'reflection', 'contradiction', 'ruminator', 'overseer', 'autonomy')
+          ),
+          created_at INTEGER NOT NULL,
+          last_touched INTEGER NOT NULL,
+          resolution_episode_id TEXT,
+          resolution_note TEXT,
+          resolved_at INTEGER,
+          abandoned_reason TEXT,
+          abandoned_at INTEGER,
+          dedupe_key TEXT,
+          provenance_kind TEXT,
+          provenance_episode_ids TEXT,
+          provenance_process TEXT
+        );
+
+        INSERT INTO open_questions__next (
+          id,
+          question,
+          urgency,
+          status,
+          related_episode_ids,
+          related_semantic_node_ids,
+          source,
+          created_at,
+          last_touched,
+          resolution_episode_id,
+          resolution_note,
+          resolved_at,
+          abandoned_reason,
+          abandoned_at,
+          dedupe_key,
+          provenance_kind,
+          provenance_episode_ids,
+          provenance_process
+        )
+        SELECT
+          id,
+          question,
+          urgency,
+          status,
+          related_episode_ids,
+          related_semantic_node_ids,
+          source,
+          created_at,
+          last_touched,
+          resolution_episode_id,
+          resolution_note,
+          resolved_at,
+          abandoned_reason,
+          abandoned_at,
+          dedupe_key,
+          provenance_kind,
+          provenance_episode_ids,
+          provenance_process
+        FROM open_questions;
+
+        DROP TABLE open_questions;
+        ALTER TABLE open_questions__next RENAME TO open_questions;
+
+        CREATE INDEX IF NOT EXISTS idx_open_questions_status_urgency
+          ON open_questions (status, urgency DESC, last_touched DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_open_questions_dedupe_key
+          ON open_questions (dedupe_key);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

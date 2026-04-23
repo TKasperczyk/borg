@@ -111,6 +111,55 @@ describe("TurnContextCompiler", () => {
     expect(window.messages[1]?.content).toBe("looking");
   });
 
+  it("filters self-addressed turns by default", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+
+    try {
+      await writer.append({ kind: "user_msg", content: "scheduled reflection", audience: "self" });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "I reflected on recent changes.", audience: "self" });
+      clock.advance(10);
+      await writer.append({ kind: "user_msg", content: "hello" });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "hi there" });
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler().compile(makeReader(dataDir));
+
+    expect(window.messages.map((message) => message.content)).toEqual(["hello", "hi there"]);
+  });
+
+  it("can include self-addressed turns when requested", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+
+    try {
+      await writer.append({ kind: "user_msg", content: "scheduled reflection", audience: "self" });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "I reflected on recent changes.", audience: "self" });
+      clock.advance(10);
+      await writer.append({ kind: "user_msg", content: "another self prompt", audience: "self" });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "Another self response.", audience: "self" });
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler({ includeSelfTurns: true }).compile(makeReader(dataDir));
+
+    expect(window.messages.map((message) => message.content)).toEqual([
+      "scheduled reflection",
+      "I reflected on recent changes.",
+      "another self prompt",
+      "Another self response.",
+    ]);
+  });
+
   it("drops a trailing user entry so the caller's current user msg won't collide", async () => {
     const dataDir = createTempDir();
     const clock = new ManualClock(1_000);

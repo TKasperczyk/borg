@@ -27,6 +27,13 @@ type EvalConfigOverrides = {
     ruminator?: Partial<Config["offline"]["ruminator"]>;
     selfNarrator?: Partial<Config["offline"]["selfNarrator"]>;
   };
+  autonomy?: Partial<Omit<Config["autonomy"], "triggers">> & {
+    triggers?: Partial<Config["autonomy"]["triggers"]> & {
+      commitmentExpiring?: Partial<Config["autonomy"]["triggers"]["commitmentExpiring"]>;
+      openQuestionDormant?: Partial<Config["autonomy"]["triggers"]["openQuestionDormant"]>;
+      scheduledReflection?: Partial<Config["autonomy"]["triggers"]["scheduledReflection"]>;
+    };
+  };
 };
 
 export type CreateEvalBorgOptions = {
@@ -103,6 +110,26 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
       selfNarrator: {
         ...DEFAULT_CONFIG.offline.selfNarrator,
         ...options.config?.offline?.selfNarrator,
+      },
+    },
+    autonomy: {
+      ...DEFAULT_CONFIG.autonomy,
+      ...options.config?.autonomy,
+      triggers: {
+        ...DEFAULT_CONFIG.autonomy.triggers,
+        ...options.config?.autonomy?.triggers,
+        commitmentExpiring: {
+          ...DEFAULT_CONFIG.autonomy.triggers.commitmentExpiring,
+          ...options.config?.autonomy?.triggers?.commitmentExpiring,
+        },
+        openQuestionDormant: {
+          ...DEFAULT_CONFIG.autonomy.triggers.openQuestionDormant,
+          ...options.config?.autonomy?.triggers?.openQuestionDormant,
+        },
+        scheduledReflection: {
+          ...DEFAULT_CONFIG.autonomy.triggers.scheduledReflection,
+          ...options.config?.autonomy?.triggers?.scheduledReflection,
+        },
       },
     },
   };

@@ -17,6 +17,12 @@ export {
 export { Perceiver, perceive } from "./perception/index.js";
 export { Reflector, type ReflectionContext, type ReflectorOptions } from "./reflection/index.js";
 export {
+  SessionLock,
+  type SessionLockAcquireOptions,
+  type SessionLockLease,
+  type SessionLockOptions,
+} from "./session-lock.js";
+export {
   TurnOrchestrator,
   type TurnInput,
   type TurnOrchestratorOptions,

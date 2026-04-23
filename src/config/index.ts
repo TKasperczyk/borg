@@ -127,6 +127,40 @@ const configFileSchema = z
       })
       .partial()
       .optional(),
+    autonomy: z
+      .object({
+        enabled: z.boolean().optional(),
+        intervalMs: z.number().int().positive().optional(),
+        maxWakesPerHour: z.number().int().positive().optional(),
+        triggers: z
+          .object({
+            commitmentExpiring: z
+              .object({
+                enabled: z.boolean().optional(),
+                lookaheadMs: z.number().int().positive().optional(),
+              })
+              .partial()
+              .optional(),
+            openQuestionDormant: z
+              .object({
+                enabled: z.boolean().optional(),
+                dormantMs: z.number().int().positive().optional(),
+              })
+              .partial()
+              .optional(),
+            scheduledReflection: z
+              .object({
+                enabled: z.boolean().optional(),
+                intervalMs: z.number().int().positive().optional(),
+              })
+              .partial()
+              .optional(),
+          })
+          .partial()
+          .optional(),
+      })
+      .partial()
+      .optional(),
   })
   .partial();
 
@@ -219,6 +253,25 @@ export const configSchema = z.object({
       cadenceHintDays: z.number().positive(),
     }),
   }),
+  autonomy: z.object({
+    enabled: z.boolean(),
+    intervalMs: z.number().int().positive(),
+    maxWakesPerHour: z.number().int().positive(),
+    triggers: z.object({
+      commitmentExpiring: z.object({
+        enabled: z.boolean(),
+        lookaheadMs: z.number().int().positive(),
+      }),
+      openQuestionDormant: z.object({
+        enabled: z.boolean(),
+        dormantMs: z.number().int().positive(),
+      }),
+      scheduledReflection: z.object({
+        enabled: z.boolean(),
+        intervalMs: z.number().int().positive(),
+      }),
+    }),
+  }),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -297,6 +350,25 @@ export const DEFAULT_CONFIG: Config = {
       maxObservationsPerRun: 4,
       minSupportEpisodes: 2,
       cadenceHintDays: 7,
+    },
+  },
+  autonomy: {
+    enabled: false,
+    intervalMs: 60_000,
+    maxWakesPerHour: 6,
+    triggers: {
+      commitmentExpiring: {
+        enabled: true,
+        lookaheadMs: 86_400_000,
+      },
+      openQuestionDormant: {
+        enabled: true,
+        dormantMs: 604_800_000,
+      },
+      scheduledReflection: {
+        enabled: false,
+        intervalMs: 14_400_000,
+      },
     },
   },
 };
@@ -685,6 +757,52 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           DEFAULT_CONFIG.offline.selfNarrator.cadenceHintDays,
       },
     },
+    autonomy: {
+      enabled:
+        readOptionalEnvBoolean(env, "BORG_AUTONOMY_ENABLED") ??
+        fileConfig.autonomy?.enabled ??
+        DEFAULT_CONFIG.autonomy.enabled,
+      intervalMs:
+        readOptionalEnvNumber(env, "BORG_AUTONOMY_INTERVAL_MS") ??
+        fileConfig.autonomy?.intervalMs ??
+        DEFAULT_CONFIG.autonomy.intervalMs,
+      maxWakesPerHour:
+        readOptionalEnvNumber(env, "BORG_AUTONOMY_MAX_WAKES_PER_HOUR") ??
+        fileConfig.autonomy?.maxWakesPerHour ??
+        DEFAULT_CONFIG.autonomy.maxWakesPerHour,
+      triggers: {
+        commitmentExpiring: {
+          enabled:
+            readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_COMMITMENT_EXPIRING_ENABLED") ??
+            fileConfig.autonomy?.triggers?.commitmentExpiring?.enabled ??
+            DEFAULT_CONFIG.autonomy.triggers.commitmentExpiring.enabled,
+          lookaheadMs:
+            readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_COMMITMENT_EXPIRING_LOOKAHEAD_MS") ??
+            fileConfig.autonomy?.triggers?.commitmentExpiring?.lookaheadMs ??
+            DEFAULT_CONFIG.autonomy.triggers.commitmentExpiring.lookaheadMs,
+        },
+        openQuestionDormant: {
+          enabled:
+            readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_OPEN_QUESTION_DORMANT_ENABLED") ??
+            fileConfig.autonomy?.triggers?.openQuestionDormant?.enabled ??
+            DEFAULT_CONFIG.autonomy.triggers.openQuestionDormant.enabled,
+          dormantMs:
+            readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_OPEN_QUESTION_DORMANT_MS") ??
+            fileConfig.autonomy?.triggers?.openQuestionDormant?.dormantMs ??
+            DEFAULT_CONFIG.autonomy.triggers.openQuestionDormant.dormantMs,
+        },
+        scheduledReflection: {
+          enabled:
+            readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_SCHEDULED_REFLECTION_ENABLED") ??
+            fileConfig.autonomy?.triggers?.scheduledReflection?.enabled ??
+            DEFAULT_CONFIG.autonomy.triggers.scheduledReflection.enabled,
+          intervalMs:
+            readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_SCHEDULED_REFLECTION_INTERVAL_MS") ??
+            fileConfig.autonomy?.triggers?.scheduledReflection?.intervalMs ??
+            DEFAULT_CONFIG.autonomy.triggers.scheduledReflection.intervalMs,
+        },
+      },
+    },
   };
 
   const parsed = configSchema.safeParse(candidate);
@@ -724,6 +842,21 @@ export function redactConfig(config: Config): Config {
     },
     offline: {
       ...config.offline,
+    },
+    autonomy: {
+      ...config.autonomy,
+      triggers: {
+        ...config.autonomy.triggers,
+        commitmentExpiring: {
+          ...config.autonomy.triggers.commitmentExpiring,
+        },
+        openQuestionDormant: {
+          ...config.autonomy.triggers.openQuestionDormant,
+        },
+        scheduledReflection: {
+          ...config.autonomy.triggers.scheduledReflection,
+        },
+      },
     },
   };
 }

@@ -36,11 +36,12 @@ import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
-import { ConfigError } from "../util/errors.js";
+import { ConfigError, SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
 import type { LLMToolCall } from "../llm/index.js";
+import { SessionLock } from "./session-lock.js";
 
 function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>): GoalRecord[] {
   const flattened: GoalRecord[] = [];
@@ -78,6 +79,7 @@ export type TurnInput = {
   audience?: string;
   stakes?: TurnStakes;
   sessionId?: SessionId;
+  origin?: "user" | "autonomous";
 };
 
 export type TurnResult = {
@@ -93,6 +95,7 @@ export type TurnResult = {
   retrievedEpisodeIds: string[];
   intents: IntentRecord[];
   toolCalls: LLMToolCall[];
+  agentMessageId?: string;
 };
 
 export type TurnOrchestratorOptions = {
@@ -136,16 +139,23 @@ export type TurnOrchestratorOptions = {
    */
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   affectiveSignalDetector?: typeof detectAffectiveSignal;
+  sessionLock?: SessionLock;
 };
 
 export class TurnOrchestrator {
   private readonly clock: Clock;
   private readonly turnContextCompiler: TurnContextCompiler;
   private readonly createStreamReader: (sessionId: SessionId) => StreamReader;
+  private readonly sessionLock: SessionLock;
 
   constructor(private readonly options: TurnOrchestratorOptions) {
     this.clock = options.clock ?? new SystemClock();
     this.turnContextCompiler = options.turnContextCompiler ?? new TurnContextCompiler();
+    this.sessionLock =
+      options.sessionLock ??
+      new SessionLock({
+        dataDir: options.config.dataDir,
+      });
     this.createStreamReader =
       options.createStreamReader ??
       ((sessionId) =>
@@ -270,6 +280,18 @@ export class TurnOrchestrator {
 
   async run(input: TurnInput): Promise<TurnResult> {
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
+    const isSelfAudience = input.audience === "self";
+    const lease =
+      input.origin === "autonomous"
+        ? await this.sessionLock.tryAcquire(sessionId)
+        : await this.sessionLock.acquire(sessionId);
+
+    if (lease === null) {
+      throw new SessionBusyError(`Session ${sessionId} is busy`, {
+        code: "SESSION_TURN_BUSY",
+      });
+    }
+
     const streamWriter = this.options.createStreamWriter(sessionId);
 
     try {
@@ -303,6 +325,9 @@ export class TurnOrchestrator {
         // {role:"user", content: currentUserMessage}.
         const recencyWindow: RecencyWindow = this.turnContextCompiler.compile(
           this.createStreamReader(sessionId),
+          {
+            includeSelfTurns: isSelfAudience,
+          },
         );
         const recentHistoryStrings = recencyWindow.messages.map(
           (message) => `${message.role}: ${message.content}`,
@@ -338,7 +363,7 @@ export class TurnOrchestrator {
         await streamWriter.append(userEntry);
 
         const audienceEntityId =
-          input.audience === undefined
+          input.audience === undefined || isSelfAudience
             ? null
             : this.options.entityRepository.resolve(input.audience);
         const audienceEntity =
@@ -388,7 +413,9 @@ export class TurnOrchestrator {
           moodState: currentMood,
           audienceProfile,
           audienceTerms:
-            audienceEntity === null
+            isSelfAudience
+              ? []
+              : audienceEntity === null
               ? input.audience === undefined
                 ? []
                 : [input.audience]
@@ -490,7 +517,7 @@ export class TurnOrchestrator {
           ...(input.audience === undefined ? {} : { audience: input.audience }),
         } satisfies Parameters<StreamWriter["append"]>[0];
 
-        await streamWriter.append(agentEntry);
+        const persistedAgentEntry = await streamWriter.append(agentEntry);
         const responseSignal = detectAffectiveSignalHeuristically(actionResult.response);
         let moodSnapshot = perception.affectiveSignal;
 
@@ -576,6 +603,7 @@ export class TurnOrchestrator {
           retrievedEpisodeIds: deliberation.retrievedEpisodes.map((result) => result.episode.id),
           intents: actionResult.intents,
           toolCalls: [...actionResult.tool_calls],
+          agentMessageId: persistedAgentEntry.id,
         };
       } catch (error) {
         await this.appendFailureEvent(streamWriter, error, sessionId);
@@ -583,6 +611,7 @@ export class TurnOrchestrator {
       }
     } finally {
       streamWriter.close();
+      await lease.release();
     }
   }
 }

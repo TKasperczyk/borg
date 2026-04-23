@@ -1,7 +1,18 @@
 import { join } from "node:path";
 
-import { TurnOrchestrator, type TurnInput, type TurnResult } from "./cognition/index.js";
+import {
+  SessionLock,
+  TurnOrchestrator,
+  type TurnInput,
+  type TurnResult,
+} from "./cognition/index.js";
 import { TurnContextCompiler } from "./cognition/recency/index.js";
+import {
+  AutonomyScheduler,
+  createCommitmentExpiringTrigger,
+  createOpenQuestionDormantTrigger,
+  createScheduledReflectionTrigger,
+} from "./autonomy/index.js";
 import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "./config/index.js";
 import { CorrectionService } from "./correction/index.js";
 import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "./embeddings/index.js";
@@ -97,6 +108,14 @@ import {
 import { StreamIngestionCoordinator } from "./cognition/ingestion/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, type Migration, type SqliteDatabase } from "./storage/sqlite/index.js";
+import {
+  ToolDispatcher,
+  createCommitmentsListTool,
+  createEpisodicSearchTool,
+  createIdentityEventsListTool,
+  createOpenQuestionsCreateTool,
+  createSemanticWalkTool,
+} from "./tools/index.js";
 import { SystemClock, type Clock } from "./util/clock.js";
 import {
   DEFAULT_SESSION_ID,
@@ -135,6 +154,7 @@ type BorgDependencies = {
   retrievalPipeline: RetrievalPipeline;
   workingMemoryStore: WorkingMemoryStore;
   turnOrchestrator: TurnOrchestrator;
+  autonomyScheduler: AutonomyScheduler;
   auditLog: AuditLog;
   maintenanceOrchestrator: MaintenanceOrchestrator;
   offlineProcesses: Record<OfflineProcessName, OfflineProcess>;
@@ -485,6 +505,9 @@ export class Borg {
     revert: (id: AuditId, revertedBy?: string) => ReturnType<AuditLog["revert"]>;
   };
   readonly dream: BorgDreamRunner;
+  readonly autonomy: {
+    scheduler: AutonomyScheduler;
+  };
   readonly workmem: {
     load: (sessionId?: SessionId) => WorkingMemory;
     clear: (sessionId?: SessionId) => void;
@@ -899,6 +922,9 @@ export class Borg {
           }),
       },
     ) satisfies BorgDreamRunner;
+    this.autonomy = {
+      scheduler: this.deps.autonomyScheduler,
+    };
     this.workmem = {
       load: (sessionId = DEFAULT_SESSION_ID) => this.deps.workingMemoryStore.load(sessionId),
       clear: (sessionId = DEFAULT_SESSION_ID) => {
@@ -974,6 +1000,26 @@ export class Borg {
           selfNarrator: {
             ...DEFAULT_CONFIG.offline.selfNarrator,
             ...rawConfig.offline?.selfNarrator,
+          },
+        },
+        autonomy: {
+          ...DEFAULT_CONFIG.autonomy,
+          ...rawConfig.autonomy,
+          triggers: {
+            ...DEFAULT_CONFIG.autonomy.triggers,
+            ...rawConfig.autonomy?.triggers,
+            commitmentExpiring: {
+              ...DEFAULT_CONFIG.autonomy.triggers.commitmentExpiring,
+              ...rawConfig.autonomy?.triggers?.commitmentExpiring,
+            },
+            openQuestionDormant: {
+              ...DEFAULT_CONFIG.autonomy.triggers.openQuestionDormant,
+              ...rawConfig.autonomy?.triggers?.openQuestionDormant,
+            },
+            scheduledReflection: {
+              ...DEFAULT_CONFIG.autonomy.triggers.scheduledReflection,
+              ...rawConfig.autonomy?.triggers?.scheduledReflection,
+            },
           },
         },
       });
@@ -1177,6 +1223,9 @@ export class Borg {
         dataDir: config.dataDir,
         clock,
       });
+      const sessionLock = new SessionLock({
+        dataDir: config.dataDir,
+      });
       const streamWatermarkRepository = new StreamWatermarkRepository({
         db: sqlite,
         clock,
@@ -1187,6 +1236,43 @@ export class Borg {
           sessionId,
           clock,
         });
+      const toolDispatcher = new ToolDispatcher({
+        createStreamWriter,
+        clock,
+      });
+      toolDispatcher
+        .register(
+          createEpisodicSearchTool({
+            searchEpisodes: (query, limit) =>
+              retrievalPipeline.search(query, {
+                limit,
+                crossAudience: true,
+              }),
+          }),
+        )
+        .register(
+          createSemanticWalkTool({
+            walkGraph: (fromId, walkOptions) => semanticGraph.walk(fromId, walkOptions),
+          }),
+        )
+        .register(
+          createCommitmentsListTool({
+            listCommitments: () =>
+              commitmentRepository.list({
+                activeOnly: true,
+              }),
+          }),
+        )
+        .register(
+          createOpenQuestionsCreateTool({
+            createOpenQuestion: (input) => openQuestionsRepository.add(input),
+          }),
+        )
+        .register(
+          createIdentityEventsListTool({
+            listEvents: (listOptions) => identityService.listEvents(listOptions),
+          }),
+        );
       const llmFactory = createLlmFactory(config, options.llmClient, options.env, clock);
       const lazyLlmClient = createLazyLlmClient(llmFactory);
       // Resolve the deferred LLM client for semantic-repo duplicate review
@@ -1318,6 +1404,7 @@ export class Borg {
         skillSelector,
         workingMemoryStore,
         llmFactory,
+        sessionLock,
         clock,
         createStreamWriter,
         // Explicit so borg.ts wires a single compiler instance per process;
@@ -1327,6 +1414,48 @@ export class Borg {
         ...(streamIngestionCoordinator === undefined
           ? {}
           : { streamIngestionCoordinator }),
+      });
+      const autonomyTriggers = [
+        ...(config.autonomy.triggers.commitmentExpiring.enabled
+          ? [
+              createCommitmentExpiringTrigger({
+                commitmentRepository,
+                watermarkRepository: streamWatermarkRepository,
+                lookaheadMs: config.autonomy.triggers.commitmentExpiring.lookaheadMs,
+                clock,
+              }),
+            ]
+          : []),
+        ...(config.autonomy.triggers.openQuestionDormant.enabled
+          ? [
+              createOpenQuestionDormantTrigger({
+                openQuestionsRepository,
+                watermarkRepository: streamWatermarkRepository,
+                dormantMs: config.autonomy.triggers.openQuestionDormant.dormantMs,
+                clock,
+              }),
+            ]
+          : []),
+        ...(config.autonomy.triggers.scheduledReflection.enabled
+          ? [
+              createScheduledReflectionTrigger({
+                watermarkRepository: streamWatermarkRepository,
+                intervalMs: config.autonomy.triggers.scheduledReflection.intervalMs,
+                clock,
+              }),
+            ]
+          : []),
+      ];
+      const autonomyScheduler = new AutonomyScheduler({
+        enabled: config.autonomy.enabled,
+        intervalMs: config.autonomy.intervalMs,
+        maxWakesPerHour: config.autonomy.maxWakesPerHour,
+        clock,
+        createStreamWriter,
+        watermarkRepository: streamWatermarkRepository,
+        turnOrchestrator,
+        toolDispatcher,
+        triggers: autonomyTriggers,
       });
 
       return new Borg({
@@ -1356,6 +1485,7 @@ export class Borg {
         retrievalPipeline,
         workingMemoryStore,
         turnOrchestrator,
+        autonomyScheduler,
         auditLog,
         maintenanceOrchestrator,
         offlineProcesses,

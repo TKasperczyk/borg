@@ -5,6 +5,20 @@
 export const VERSION = "0.1.0";
 
 export {
+  AutonomyScheduler,
+  AUTONOMY_TRIGGER_NAMES,
+  createCommitmentExpiringTrigger,
+  createOpenQuestionDormantTrigger,
+  createScheduledReflectionTrigger,
+  type AutonomySchedulerObserver,
+  type AutonomySchedulerOptions,
+  type AutonomyTickEventResult,
+  type AutonomyTrigger,
+  type AutonomyTriggerName,
+  type DueEvent,
+  type TickResult,
+} from "./autonomy/index.js";
+export {
   getEpisodeProvenanceIds,
   isEpisodeProvenance,
   parseStoredProvenance,
@@ -73,6 +87,20 @@ export {
   type TokenUsageEvent,
   type TokenUsageSink,
 } from "./llm/index.js";
+export {
+  ToolDispatcher,
+  createCommitmentsListTool,
+  createEpisodicSearchTool,
+  createIdentityEventsListTool,
+  createOpenQuestionsCreateTool,
+  createSemanticWalkTool,
+  type ToolDefinition,
+  type ToolDispatchCall,
+  type ToolDispatchResult,
+  type ToolDispatcherOptions,
+  type ToolInvocationContext,
+  type ToolOrigin,
+} from "./tools/index.js";
 export {
   AffectiveExtractor,
   MoodRepository,
@@ -323,9 +351,11 @@ export {
   DEFAULT_SESSION_ID,
   STREAM_ENTRY_KINDS,
   StreamReader,
+  StreamWatermarkRepository,
   StreamWriter,
   getSessionStreamPath,
   getStreamDirectory,
+  streamWatermarkMigrations,
   streamEntryInputSchema,
   streamEntryKindSchema,
   streamEntrySchema,
@@ -335,6 +365,8 @@ export {
   type StreamEntryInput,
   type StreamEntryKind,
   type StreamIterateOptions,
+  type StreamWatermark,
+  type StreamWatermarkRepositoryOptions,
 } from "./stream/index.js";
 export {
   LanceDbStore,
@@ -365,6 +397,7 @@ export { FixedClock, ManualClock, SystemClock, type Clock } from "./util/clock.j
 export {
   ConfigError,
   BorgError,
+  AutonomyError,
   CognitionError,
   EmbeddingError,
   LLMError,
@@ -376,6 +409,8 @@ export {
   BudgetExceededError,
   WorkingMemoryError,
   AuthError,
+  SessionBusyError,
+  ToolError,
   type BorgErrorJSON,
   type BorgErrorOptions,
 } from "./util/errors.js";

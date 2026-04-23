@@ -15,6 +15,12 @@ export type TurnContextCompilerOptions = {
    * but large enough that a typical multi-turn session survives intact.
    */
   maxChars?: number;
+  /**
+   * Include self-addressed autonomous turns (`audience === "self"`) in the
+   * compiled recency window. Defaults to false so normal user turns do not
+   * see scheduler-generated self-conversation in their dialogue context.
+   */
+  includeSelfTurns?: boolean;
 };
 
 const DEFAULT_MAX_MESSAGES = 16;
@@ -72,13 +78,19 @@ function streamKindToRole(kind: StreamEntry["kind"]): RecencyMessage["role"] | n
 export class TurnContextCompiler {
   private readonly maxMessages: number;
   private readonly maxChars: number;
+  private readonly includeSelfTurns: boolean;
 
   constructor(options: TurnContextCompilerOptions = {}) {
     this.maxMessages = options.maxMessages ?? DEFAULT_MAX_MESSAGES;
     this.maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
+    this.includeSelfTurns = options.includeSelfTurns ?? false;
   }
 
-  compile(streamReader: StreamReader): RecencyWindow {
+  compile(
+    streamReader: StreamReader,
+    options: Pick<TurnContextCompilerOptions, "includeSelfTurns"> = {},
+  ): RecencyWindow {
+    const includeSelfTurns = options.includeSelfTurns ?? this.includeSelfTurns;
     const tailSize = Math.max(this.maxMessages * TAIL_MULTIPLIER, this.maxMessages);
     const recent = streamReader.tail(tailSize);
 
@@ -92,6 +104,10 @@ export class TurnContextCompiler {
       const role = streamKindToRole(entry.kind);
 
       if (role === null) {
+        continue;
+      }
+
+      if (!includeSelfTurns && entry.audience === "self") {
         continue;
       }
 
