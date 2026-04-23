@@ -33,8 +33,8 @@ describe("config", () => {
     expect(config.anthropic.apiKey).toBeUndefined();
     expect(config.anthropic.models).toEqual({
       cognition: "claude-opus-4-7",
-      background: "claude-haiku-4-5-20251001",
-      extraction: "claude-sonnet-4-6",
+      background: "claude-opus-4-7",
+      extraction: "claude-opus-4-7",
     });
     expect(config.self.autoBootstrapPeriod).toBe(true);
     expect(config.perception.useLlmFallback).toBe(true);
@@ -75,11 +75,11 @@ describe("config", () => {
     expect(config.anthropic.models.cognition).toBe("file-cognition");
   });
 
-  it("exposes sprint 4 anthropic model defaults", () => {
+  it("defaults all anthropic model slots to opus 4.7", () => {
     expect(DEFAULT_CONFIG.anthropic.models).toEqual({
       cognition: "claude-opus-4-7",
-      background: "claude-haiku-4-5-20251001",
-      extraction: "claude-sonnet-4-6",
+      background: "claude-opus-4-7",
+      extraction: "claude-opus-4-7",
     });
   });
 

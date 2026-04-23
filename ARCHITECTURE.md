@@ -414,7 +414,7 @@ Ranked by value / cost.
 
 ## Part 7: Honest Tradeoffs & Pushback
 
-**LLM call budget.** Dream cycles, mood-tagging extractions, affective re-ranking, reflection passes, overseer checks -- easily $20-50/day for a single user. Batch aggressively and cheap-model (Haiku) everything that isn't user-facing.
+**LLM call budget.** borg runs under OAuth subscription (shared Claude Code credentials), not per-token API billing, so the original "cheap-model the background" pressure is gone. All three slots (cognition, extraction, background) default to Opus 4.7. Dream cycles, mood extractions, affective re-ranking, reflection passes, and overseer checks all run on the best model available. The three slots are still separate in config so a deployment CAN downshift extraction/background if it ever needs to (e.g., hitting rate limits, or switching off subscription), but the default is quality-everywhere.
 
 **Schema rigidity.** Multiple memory bands means multiple schemas, retrieval paths, and migration stories. Start with **Stream + Episodic + Semantic + Self**, get those solid, then add the rest.
 

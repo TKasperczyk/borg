@@ -353,9 +353,16 @@ export const DEFAULT_CONFIG: Config = {
     auth: "auto",
     apiKey: undefined,
     models: {
+      // All slots default to Opus 4.7. borg runs under OAuth subscription
+      // (not per-token billing), so cost optimization is not a concern. We
+      // accept the latency hit on synchronous classifier fallbacks in
+      // exchange for consistent quality across extraction, reflection, and
+      // all offline maintenance. The three slots still exist so individual
+      // deployments CAN split them via config or env vars if they ever
+      // need to.
       cognition: "claude-opus-4-7",
-      background: "claude-haiku-4-5-20251001",
-      extraction: "claude-sonnet-4-6",
+      background: "claude-opus-4-7",
+      extraction: "claude-opus-4-7",
     },
   },
   self: {
