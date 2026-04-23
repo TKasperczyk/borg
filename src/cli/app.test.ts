@@ -1228,7 +1228,7 @@ describe("cli", () => {
           "--description",
           "Atlas service",
           "--domain",
-          "tech",
+          " Technology ",
           "--source-episodes",
           "ep_aaaaaaaaaaaaaaaa",
         ],

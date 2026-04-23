@@ -16,6 +16,7 @@ import {
   SemanticEdgeRepository,
   SemanticNodeRepository,
 } from "./repository.js";
+import { canonicalizeDomain } from "./domain.js";
 import {
   semanticNodeKindSchema,
   semanticRelationSchema,
@@ -88,7 +89,7 @@ function buildPrompt(episodes: readonly Episode[]): string {
     "Each edge must use from_label and to_label values that match node labels exactly.",
     "Only use relation values allowed by the tool schema.",
     "Edges may only reference nodes that already exist or are extracted in this batch.",
-    'Emit a free-form domain string for each node when it helps disambiguate homonyms (examples: "tech", "people", "food", "places"). Use null for broadly general nodes.',
+    'Emit a free-form domain string for each node when it helps disambiguate homonyms. Prefer stable canonical buckets when they fit (examples: "tech", "people", "places", "food", "process"). Use null for broadly general nodes.',
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
     ...episodes.map((episode) =>
@@ -196,17 +197,12 @@ function buildNodeEmbeddingText(input: {
   return `${input.label}\n${input.description}\n${input.aliases.join(" ")}`;
 }
 
-function normalizeDomain(value: string | null | undefined): string | null {
-  const trimmed = value?.trim().toLowerCase() ?? "";
-  return trimmed.length > 0 ? trimmed : null;
-}
-
 function hasCompatibleDomain(
   left: string | null | undefined,
   right: string | null | undefined,
 ): boolean {
-  const normalizedLeft = normalizeDomain(left);
-  const normalizedRight = normalizeDomain(right);
+  const normalizedLeft = canonicalizeDomain(left);
+  const normalizedRight = canonicalizeDomain(right);
 
   return normalizedLeft !== null && normalizedRight !== null && normalizedLeft === normalizedRight;
 }
@@ -325,7 +321,7 @@ export class SemanticExtractor {
           kind: candidate.kind,
           label: candidateLabel,
           description: candidateDescription,
-          domain: normalizeDomain(candidate.domain),
+          domain: canonicalizeDomain(candidate.domain),
           aliases: candidateAliases,
           confidence: Math.min(candidate.confidence, this.confidenceCeiling),
           source_episode_ids: sourceEpisodeIds,
@@ -355,7 +351,7 @@ export class SemanticExtractor {
       );
       const updated = await this.options.nodeRepository.update(existing.id, {
         description: nextDescription,
-        domain: existing.domain ?? normalizeDomain(candidate.domain),
+        domain: existing.domain ?? canonicalizeDomain(candidate.domain),
         aliases: nextAliases,
         confidence: Math.max(
           existing.confidence * 0.99,

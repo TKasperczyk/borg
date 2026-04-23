@@ -162,7 +162,7 @@ describe("semantic extractor", () => {
               kind: "entity",
               label: "Atlas",
               description: "Atlas updated node",
-              domain: "tech",
+              domain: " Technology ",
               aliases: ["Atlas service"],
               confidence: 0.7,
               source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
@@ -213,9 +213,12 @@ describe("semantic extractor", () => {
       insertedEdges: 1,
       skippedEdges: 0,
     });
-    expect((await nodeRepository.list()).map((node) => node.label)).toEqual(
+    const nodesAfterMerge = await nodeRepository.list();
+
+    expect(nodesAfterMerge.map((node) => node.label)).toEqual(
       expect.arrayContaining(["Atlas", "Rollback"]),
     );
+    expect(nodesAfterMerge.find((node) => node.label === "Atlas")?.domain).toBe("tech");
     expect(edgeRepository.listEdges()).toHaveLength(1);
     expect(nodeInsertSpy).toHaveBeenCalled();
     expect(edgeAddSpy).toHaveBeenCalled();
@@ -630,5 +633,73 @@ describe("semantic extractor", () => {
     expect(afterSpecificCandidate.map((node) => node.domain)).toEqual(
       expect.arrayContaining([null, null, "people"]),
     );
+  });
+
+  it("stores unknown domains as trimmed lowercase free-form strings", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Craft fair note", {
+      narrative: "The note discussed artisanal craft details.",
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "concept",
+                label: "Artisanal craft",
+                description: "A handmade craft category.",
+                domain: "  Artisanal-Craft  ",
+                aliases: [],
+                confidence: 0.7,
+                source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+              },
+            ],
+            edges: [],
+          }),
+        ],
+      }),
+      model: "haiku",
+      clock,
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await extractor.extractFromEpisodes([episode]);
+
+    expect(await nodeRepository.list()).toEqual([
+      expect.objectContaining({
+        label: "Artisanal craft",
+        domain: "artisanal-craft",
+      }),
+    ]);
   });
 });

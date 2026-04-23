@@ -1007,12 +1007,11 @@ describe("Borg", () => {
         kind: "episodes",
         episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
       });
-      expect(borg.self.traits.list()[0]).toMatchObject({
-        label: "engaged",
-        provenance: {
-          kind: "episodes",
-          episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
-        },
+      expect(borg.self.traits.list()).toEqual([]);
+      expect(borg.workmem.load().pending_trait_attribution).toMatchObject({
+        trait_label: "engaged",
+        source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+        audience_entity_id: null,
       });
       // Phase D: the planner's EmitTurnPlan tool-call shows up as a
       // compact "plan: ..." thought entry persisted before the agent_msg.
@@ -1098,6 +1097,7 @@ describe("Borg", () => {
 
       expect(result.retrievedEpisodeIds).toEqual([]);
       expect(borg.self.traits.list()).toEqual([]);
+      expect(borg.workmem.load().pending_trait_attribution).toBeNull();
     } finally {
       await borg.close();
     }
@@ -2336,6 +2336,913 @@ describe("Borg", () => {
           valence: -1,
         },
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("reinforces a pending trait from the next positive user turn with episode-backed provenance", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Atlas status update",
+      narrative: "Atlas needed a warmer explanation.",
+      participants: ["team"],
+      location: null,
+      start_time: 0,
+      end_time: 1,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.9,
+      tags: ["atlas", "tone"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 0,
+      updated_at: 0,
+    });
+    db.close();
+    await store.close();
+
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "relational",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Here is a warmer Atlas update.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Glad that helped.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Can you make the Atlas update sound warmer?",
+      });
+
+      expect(borg.self.traits.list()).toEqual([]);
+      expect(borg.workmem.load().pending_trait_attribution).toMatchObject({
+        trait_label: "warm",
+        source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+        turn_completed_ts: 1_000,
+        audience_entity_id: null,
+      });
+
+      clock.advance(1_000);
+      await borg.turn({
+        userMessage: "Thanks!",
+      });
+
+      const [trait] = borg.self.traits.list();
+
+      expect(trait).toMatchObject({
+        label: "warm",
+        strength: 0.05,
+        support_count: 1,
+        evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+      });
+      expect(borg.self.traits.listReinforcementEvents(trait!.id)).toEqual([
+        expect.objectContaining({
+          delta: 0.05,
+          ts: 2_000,
+          provenance: {
+            kind: "episodes",
+            episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+          },
+        }),
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("clears pending trait attribution without reinforcement on a non-positive follow-up", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Atlas status update",
+      narrative: "Atlas needed a warmer explanation.",
+      participants: ["team"],
+      location: null,
+      start_time: 0,
+      end_time: 1,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.9,
+      tags: ["atlas", "tone"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 0,
+      updated_at: 0,
+    });
+    db.close();
+    await store.close();
+
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "relational",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Here is a warmer Atlas update.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Understood.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Can you make the Atlas update sound warmer?",
+      });
+
+      clock.advance(1_000);
+      await borg.turn({
+        userMessage: "Okay.",
+      });
+
+      expect(borg.self.traits.list()).toEqual([]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("preserves pending trait attribution when reinforcement fails and logs an internal event", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Atlas status update",
+      narrative: "Atlas needed a warmer explanation.",
+      participants: ["team"],
+      location: null,
+      start_time: 0,
+      end_time: 1,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.9,
+      tags: ["atlas", "tone"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 0,
+      updated_at: 0,
+    });
+    db.close();
+    await store.close();
+
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "relational",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Here is a warmer Atlas update.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Still here.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Can you make the Atlas update sound warmer?",
+      });
+
+      const pendingAfterFirst = borg.workmem.load().pending_trait_attribution;
+      expect(pendingAfterFirst).not.toBeNull();
+
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              traitsRepository: {
+                reinforce: (input: unknown) => unknown;
+              };
+            };
+          };
+        };
+      };
+      vi.spyOn(internal.deps.turnOrchestrator.options.traitsRepository, "reinforce").mockImplementation(
+        () => {
+          throw new Error("trait exploded");
+        },
+      );
+
+      clock.advance(1_000);
+      await borg.turn({
+        userMessage: "Thanks!",
+      });
+
+      expect(borg.self.traits.list()).toEqual([]);
+      expect(borg.workmem.load().pending_trait_attribution).toEqual(pendingAfterFirst);
+      expect(borg.stream.tail(8)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "internal_event",
+            content: expect.objectContaining({
+              hook: "trait_update",
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("keeps pending trait attribution across an autonomous wake until the next user reply", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Atlas status update",
+      narrative: "Atlas needed a warmer explanation.",
+      participants: ["team"],
+      location: null,
+      start_time: 0,
+      end_time: 1,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.9,
+      tags: ["atlas", "tone"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 0,
+      updated_at: 0,
+    });
+    db.close();
+    await store.close();
+
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "relational",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+        autonomy: {
+          enabled: true,
+          intervalMs: 60_000,
+          maxWakesPerHour: 6,
+          triggers: {
+            commitmentExpiring: {
+              enabled: false,
+              lookaheadMs: 86_400_000,
+            },
+            openQuestionDormant: {
+              enabled: false,
+              dormantMs: 604_800_000,
+            },
+            scheduledReflection: {
+              enabled: true,
+              intervalMs: 60_000,
+            },
+            goalFollowupDue: {
+              enabled: false,
+              lookaheadMs: 604_800_000,
+              staleMs: 1_209_600_000,
+            },
+          },
+          conditions: {
+            commitmentRevoked: {
+              enabled: false,
+            },
+            moodValenceDrop: {
+              enabled: false,
+              threshold: -0.5,
+              windowN: 5,
+              activationPeriodMs: 86_400_000,
+            },
+            openQuestionUrgencyBump: {
+              enabled: false,
+              threshold: 0.9,
+            },
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Here is a warmer Atlas update.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Autonomous reflection.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Glad that helped.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Can you make the Atlas update sound warmer?",
+      });
+
+      const pendingAfterFirst = borg.workmem.load().pending_trait_attribution;
+      expect(pendingAfterFirst).not.toBeNull();
+
+      clock.advance(1_000);
+      const wakeResult = await borg.autonomy.scheduler.tick();
+      expect(wakeResult.firedEvents).toBe(1);
+      expect(borg.workmem.load().pending_trait_attribution).toEqual(pendingAfterFirst);
+      expect(borg.self.traits.list()).toEqual([]);
+
+      clock.advance(1_000);
+      await borg.turn({
+        userMessage: "I appreciate that, it was helpful.",
+      });
+
+      expect(borg.self.traits.list()[0]).toMatchObject({
+        label: "warm",
+        evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("drops expired pending trait attribution and logs an internal event", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Atlas status update",
+      narrative: "Atlas needed a warmer explanation.",
+      participants: ["team"],
+      location: null,
+      start_time: 0,
+      end_time: 1,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.9,
+      tags: ["atlas", "tone"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 0,
+      updated_at: 0,
+    });
+    db.close();
+    await store.close();
+
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "relational",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Here is a warmer Atlas update.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Glad that helped.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Can you make the Atlas update sound warmer?",
+      });
+
+      clock.advance(60 * 60 * 1_000 + 1);
+      await borg.turn({
+        userMessage: "I appreciate that, it was helpful.",
+      });
+
+      expect(borg.self.traits.list()).toEqual([]);
+      expect(borg.stream.tail(8)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "internal_event",
+            content: expect.objectContaining({
+              kind: "trait_attribution_drop",
+              reason: "expired",
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("drops pending trait attribution on audience mismatch and logs an internal event", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+
+    await repo.insert({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Atlas status update",
+      narrative: "Atlas needed a warmer explanation.",
+      participants: ["team"],
+      location: null,
+      start_time: 0,
+      end_time: 1,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+      significance: 0.9,
+      tags: ["atlas", "tone"],
+      confidence: 0.9,
+      lineage: {
+        derived_from: [],
+        supersedes: [],
+      },
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      created_at: 0,
+      updated_at: 0,
+    });
+    db.close();
+    await store.close();
+
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "relational",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Here is a warmer Atlas update for Sam.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Glad that helped.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Can you make the Atlas update sound warmer?",
+        audience: "Sam",
+      });
+
+      clock.advance(1_000);
+      await borg.turn({
+        userMessage: "I appreciate that, it was helpful.",
+        audience: "Alex",
+      });
+
+      expect(borg.self.traits.list()).toEqual([]);
+      expect(borg.stream.tail(10)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "internal_event",
+            content: expect.objectContaining({
+              kind: "trait_attribution_drop",
+              reason: "audience_mismatch",
+            }),
+          }),
+        ]),
+      );
     } finally {
       await borg.close();
     }

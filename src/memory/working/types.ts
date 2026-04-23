@@ -8,9 +8,13 @@ import {
 } from "../../cognition/types.js";
 import { affectiveSignalSchema } from "../affective/types.js";
 import {
+  entityIdHelpers,
+  episodeIdHelpers,
   isSessionId,
   parseSessionId,
   skillIdHelpers,
+  type EntityId,
+  type EpisodeId,
   type SessionId,
   type SkillId,
 } from "../../util/ids.js";
@@ -35,11 +39,32 @@ export const workingSkillIdSchema = z
   })
   .transform((value) => value as SkillId);
 
+export const workingEpisodeIdSchema = z
+  .string()
+  .refine((value) => episodeIdHelpers.is(value), {
+    message: "Invalid episode id",
+  })
+  .transform((value) => value as EpisodeId);
+
+export const workingEntityIdSchema = z
+  .string()
+  .refine((value) => entityIdHelpers.is(value), {
+    message: "Invalid entity id",
+  })
+  .transform((value) => value as EntityId);
+
 export const pendingSocialAttributionSchema = z.object({
   entity_id: z.string().min(1),
   interaction_id: z.number().int().positive(),
   agent_response_summary: z.string().min(1).nullable(),
   turn_completed_ts: z.number().finite(),
+});
+
+export const pendingTraitAttributionSchema = z.object({
+  trait_label: z.string().min(1),
+  source_episode_ids: z.array(workingEpisodeIdSchema).min(1),
+  turn_completed_ts: z.number().finite(),
+  audience_entity_id: workingEntityIdSchema.nullable(),
 });
 
 export const workingMemorySchema = z.object({
@@ -49,6 +74,7 @@ export const workingMemorySchema = z.object({
   hot_entities: z.array(z.string().min(1)),
   pending_intents: z.array(intentRecordSchema),
   pending_social_attribution: pendingSocialAttributionSchema.nullable().default(null),
+  pending_trait_attribution: pendingTraitAttributionSchema.nullable().default(null),
   suppressed: z.array(suppressedEntrySchema).default([]),
   mood: affectiveSignalSchema.nullable().default(null),
   last_selected_skill_id: workingSkillIdSchema.nullable().default(null),
@@ -59,6 +85,7 @@ export const workingMemorySchema = z.object({
 
 export type WorkingMemory = z.infer<typeof workingMemorySchema>;
 export type PendingSocialAttribution = z.infer<typeof pendingSocialAttributionSchema>;
+export type PendingTraitAttribution = z.infer<typeof pendingTraitAttributionSchema>;
 
 /**
  * Derived live-state only. Phase E removed `scratchpad` (S2 planner output
@@ -76,6 +103,7 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
     hot_entities: [],
     pending_intents: [],
     pending_social_attribution: null,
+    pending_trait_attribution: null,
     suppressed: [],
     mood: null,
     last_selected_skill_id: null,

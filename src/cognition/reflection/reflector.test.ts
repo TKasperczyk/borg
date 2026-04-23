@@ -33,7 +33,7 @@ describe("reflector", () => {
     }
   });
 
-  it("bumps goal progress, marks episode use, and ticks suppression", async () => {
+  it("bumps goal progress, stashes pending trait attribution, marks episode use, and ticks suppression", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new FixedClock(1_000);
     const store = new LanceDbStore({
@@ -146,6 +146,7 @@ describe("reflector", () => {
           current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
+          pending_trait_attribution: null,
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -179,6 +180,7 @@ describe("reflector", () => {
             current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
+            pending_trait_attribution: null,
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -198,7 +200,12 @@ describe("reflector", () => {
       "Heuristic turn progress",
     );
     expect(episodicRepository.getStats(episode.id)?.use_count).toBe(1);
-    expect(traitsRepository.list()[0]?.label).toBe("engaged");
+    expect(traitsRepository.list()).toEqual([]);
+    expect(reflected.pending_trait_attribution).toMatchObject({
+      trait_label: "engaged",
+      source_episode_ids: [episode.id],
+      audience_entity_id: null,
+    });
     expect(suppressionSet.isSuppressed(episode.id)).toBe(true);
     expect(suppressionSet.isSuppressed("ep_stale")).toBe(false);
     // Phase E removed scratchpad/recent_thoughts from working memory. The
@@ -1156,6 +1163,7 @@ describe("reflector", () => {
           current_focus: null,
           hot_entities: [],
           pending_intents: [],
+          pending_trait_attribution: null,
           suppressed: [],
           mood: null,
           last_selected_skill_id: null,
@@ -1192,6 +1200,7 @@ describe("reflector", () => {
             current_focus: null,
             hot_entities: [],
             pending_intents: [],
+            pending_trait_attribution: null,
             suppressed: [],
             mood: null,
             last_selected_skill_id: null,
@@ -1213,7 +1222,7 @@ describe("reflector", () => {
     expect(harness.traitsRepository.list()).toEqual([]);
   });
 
-  it("maps reflective mode reinforcement onto the introspective trait", async () => {
+  it("maps reflective mode reinforcement onto introspective pending attribution", async () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
@@ -1249,7 +1258,7 @@ describe("reflector", () => {
       },
     };
 
-    await reflector.reflect(
+    const reflected = await reflector.reflect(
       {
         userMessage: "I want to sit with this feeling for a minute.",
         perception: {
@@ -1268,6 +1277,7 @@ describe("reflector", () => {
           current_focus: null,
           hot_entities: [],
           pending_intents: [],
+          pending_trait_attribution: null,
           suppressed: [],
           mood: null,
           last_selected_skill_id: null,
@@ -1304,6 +1314,7 @@ describe("reflector", () => {
             current_focus: null,
             hot_entities: [],
             pending_intents: [],
+            pending_trait_attribution: null,
             suppressed: [],
             mood: null,
             last_selected_skill_id: null,
@@ -1322,12 +1333,127 @@ describe("reflector", () => {
       harness.streamWriter,
     );
 
-    expect(harness.traitsRepository.list()[0]).toMatchObject({
-      label: "introspective",
-      provenance: {
-        kind: "episodes",
-        episode_ids: [episode.id],
-      },
+    expect(harness.traitsRepository.list()).toEqual([]);
+    expect(reflected.pending_trait_attribution).toMatchObject({
+      trait_label: "introspective",
+      source_episode_ids: [episode.id],
+      audience_entity_id: null,
     });
+  });
+
+  it("does not queue pending trait attribution for autonomous turns", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        title: "Internal reflective note",
+        narrative: "A private autonomous reflection about an earlier feeling.",
+      }),
+    );
+    const retrieved: RetrievedEpisode = {
+      episode,
+      score: 0.7,
+      scoreBreakdown: {
+        similarity: 0.7,
+        decayedSalience: 0.4,
+        heat: 0.2,
+        goalRelevance: 0,
+        valueAlignment: 0,
+        timeRelevance: 0,
+        moodBoost: 0,
+        socialRelevance: 0,
+        entityRelevance: 0,
+        suppressionPenalty: 0,
+      },
+      citationChain: [],
+      semantic_context: {
+        supports: [],
+        contradicts: [],
+        categories: [],
+      },
+    };
+
+    const reflected = await reflector.reflect(
+      {
+        origin: "autonomous",
+        userMessage: "Let me sit with this for a moment.",
+        perception: {
+          entities: [],
+          mode: "reflective",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0.1,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: null,
+          hot_entities: [],
+          pending_intents: [],
+          pending_trait_attribution: null,
+          suppressed: [],
+          mood: null,
+          last_selected_skill_id: null,
+          last_selected_skill_turn: null,
+          mode: "reflective",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_2",
+          response: "I'll keep tracing this privately.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [retrieved],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "I'll keep tracing this privately.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: null,
+            hot_entities: [],
+            pending_intents: [],
+            pending_trait_attribution: null,
+            suppressed: [],
+            mood: null,
+            last_selected_skill_id: null,
+            last_selected_skill_turn: null,
+            mode: "reflective",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.traitsRepository.list()).toEqual([]);
+    expect(reflected.pending_trait_attribution).toBeNull();
   });
 });

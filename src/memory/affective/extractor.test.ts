@@ -35,6 +35,15 @@ describe("AffectiveExtractor", () => {
     expect(intense.valence).toBeLessThan(0);
   });
 
+  it("treats short gratitude follow-ups as positive enough for lagged attribution", async () => {
+    const extractor = new AffectiveExtractor();
+
+    expect((await extractor.analyze("thanks")).valence).toBeGreaterThan(0.2);
+    expect((await extractor.analyze("thanks!")).valence).toBeGreaterThan(0.2);
+    expect((await extractor.analyze("okay, thanks")).valence).toBeGreaterThan(0.2);
+    expect((await extractor.analyze("okay")).valence).toBeLessThan(0.2);
+  });
+
   it("falls back to the llm for long ambiguous text when enabled", async () => {
     const llm = new FakeLLMClient({
       responses: [

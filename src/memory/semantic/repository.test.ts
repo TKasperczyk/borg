@@ -112,6 +112,57 @@ describe("semantic repositories", () => {
     expect(await fixture.nodeRepository.get(inserted.id)).toBeNull();
   });
 
+  it("canonicalizes the final stored domain on update even when the patch omits domain", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const inserted = await fixture.nodeRepository.insert({
+      ...buildNode(createSemanticNodeId(), "Atlas deploy"),
+      domain: "tech",
+    });
+
+    await fixture.table.upsert(
+      [
+        {
+          id: inserted.id,
+          kind: inserted.kind,
+          label: inserted.label,
+          description: inserted.description,
+          domain: "technology",
+          aliases: JSON.stringify(inserted.aliases),
+          confidence: inserted.confidence,
+          source_episode_ids: JSON.stringify(inserted.source_episode_ids),
+          created_at: inserted.created_at,
+          updated_at: inserted.updated_at,
+          last_verified_at: inserted.last_verified_at,
+          embedding: Array.from(inserted.embedding),
+          archived: inserted.archived ? 1 : 0,
+          superseded_by: inserted.superseded_by,
+        },
+      ],
+      {
+        on: "id",
+      },
+    );
+    fixture.db
+      .prepare("UPDATE semantic_nodes SET domain = ? WHERE id = ?")
+      .run("technology", inserted.id);
+
+    const updated = await fixture.nodeRepository.update(inserted.id, {
+      aliases: ["deploy issue"],
+    });
+
+    expect(updated).toMatchObject({
+      id: inserted.id,
+      domain: "tech",
+    });
+  });
+
   it("excludes archived nodes from getMany and label lookup by default", async () => {
     const fixture = await createSemanticFixture();
 

@@ -115,6 +115,12 @@ const EMOTION_LEXICONS: Record<DominantEmotion, Set<string>> = {
   curiosity: new Set(["curious", "explore", "interesting", "wonder", "why"]),
   neutral: new Set(),
 };
+const GRATITUDE_PATTERNS = [
+  /\bthanks\b/i,
+  /\bthank\s+you\b/i,
+  /\bthx\b/i,
+  /\bty\b/i,
+] as const;
 const AFFECTIVE_FALLBACK_TOOL_NAME = "EmitAffectiveSignal";
 const affectiveFallbackSchema = z.object({
   valence: z.number().min(-1).max(1),
@@ -157,6 +163,10 @@ function dominantEmotionFromCounts(counts: Record<DominantEmotion, number>): Dom
   return bestScore === 0 ? "neutral" : best;
 }
 
+function gratitudeBoostForText(text: string): number {
+  return GRATITUDE_PATTERNS.some((pattern) => pattern.test(text)) ? 0.35 : 0;
+}
+
 function heuristicAnalysis(text: string): { signal: AffectiveSignal; confidence: number } {
   const tokens = tokenizeText(text);
   const positiveCount = countMatches(tokens, POSITIVE_WORDS);
@@ -169,8 +179,10 @@ function heuristicAnalysis(text: string): { signal: AffectiveSignal; confidence:
   ) as Record<DominantEmotion, number>;
   const dominantEmotion = dominantEmotionFromCounts(emotionCounts);
   const sentimentTotal = positiveCount + negativeCount;
+  const gratitudeBoost = gratitudeBoostForText(text);
   const rawValence =
-    sentimentTotal === 0 ? 0 : (positiveCount - negativeCount) / Math.max(1, sentimentTotal);
+    (sentimentTotal === 0 ? 0 : (positiveCount - negativeCount) / Math.max(1, sentimentTotal)) +
+    gratitudeBoost;
   const exclamationBoost = Math.min(0.4, (text.match(/!/g) ?? []).length * 0.08);
   const ellipsisPenalty = Math.min(0.2, (text.match(/\.{3,}/g) ?? []).length * 0.05);
   const letters = [...text].filter((char) => /[a-z]/i.test(char));
@@ -189,7 +201,11 @@ function heuristicAnalysis(text: string): { signal: AffectiveSignal; confidence:
     0,
     1,
   );
-  const confidence = clamp(sentimentTotal / 3 + exclamationBoost + capsRatio * 0.5, 0, 1);
+  const confidence = clamp(
+    sentimentTotal / 3 + gratitudeBoost + exclamationBoost + capsRatio * 0.5,
+    0,
+    1,
+  );
 
   return {
     signal: affectiveSignalSchema.parse({

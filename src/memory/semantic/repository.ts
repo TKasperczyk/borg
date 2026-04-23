@@ -56,6 +56,7 @@ import {
   type SemanticNodeSearchOptions,
   type SemanticRelation,
 } from "./types.js";
+import { canonicalizeDomain } from "./domain.js";
 
 type SemanticNodeRow = {
   id: string;
@@ -432,7 +433,11 @@ export class SemanticNodeRepository {
 
   async insert(input: z.input<typeof semanticNodeSchema>): Promise<SemanticNode> {
     const parsed = semanticNodeSchema.parse(input);
-    const row = nodeToRow(parsed);
+    const normalizedNode = semanticNodeSchema.parse({
+      ...parsed,
+      domain: canonicalizeDomain(parsed.domain),
+    });
+    const row = nodeToRow(normalizedNode);
 
     try {
       await this.table.upsert([row], {
@@ -441,23 +446,23 @@ export class SemanticNodeRepository {
 
       try {
         const apply = this.db.transaction(() => {
-          this.upsertSqlRow(parsed);
+          this.upsertSqlRow(normalizedNode);
         });
 
         apply();
       } catch (error) {
-        await this.table.remove(`id = ${quoteSqlString(parsed.id)}`);
+        await this.table.remove(`id = ${quoteSqlString(normalizedNode.id)}`);
         throw error;
       }
     } catch (error) {
-      throw new SemanticError(`Failed to insert semantic node ${parsed.id}`, {
+      throw new SemanticError(`Failed to insert semantic node ${normalizedNode.id}`, {
         cause: error,
         code: "SEMANTIC_NODE_INSERT_FAILED",
       });
     }
 
-    this.maybeQueueDuplicateReview(parsed);
-    return parsed;
+    this.maybeQueueDuplicateReview(normalizedNode);
+    return normalizedNode;
   }
 
   async get(id: SemanticNodeId): Promise<SemanticNode | null> {
@@ -642,6 +647,7 @@ export class SemanticNodeRepository {
     const next = semanticNodeSchema.parse({
       ...current,
       ...parsedPatch,
+      domain: canonicalizeDomain(parsedPatch.domain ?? current.domain),
       aliases:
         parsedPatch.aliases === undefined
           ? current.aliases

@@ -17,7 +17,7 @@ import {
 import { EpisodicRepository } from "../../memory/episodic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
-import type { SkillId } from "../../util/ids.js";
+import type { EntityId, SkillId } from "../../util/ids.js";
 
 import type { ActionResult } from "../action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
@@ -26,6 +26,7 @@ import type { PerceptionResult } from "../types.js";
 import { MODE_TRAIT_MAP } from "./trait-signals.js";
 
 export type ReflectionContext = {
+  origin?: "user" | "autonomous";
   userMessage: string;
   perception?: PerceptionResult;
   workingMemory: WorkingMemory;
@@ -41,6 +42,7 @@ export type ReflectionContext = {
   reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
   skillRepository?: SkillRepository;
   selectedSkillId?: SkillId | null;
+  audienceEntityId?: EntityId | null;
   suppressionSet: SuppressionSet;
 };
 
@@ -221,15 +223,6 @@ export class Reflector {
       );
     }
 
-    if (context.retrievedEpisodes.length > 0 && reflectedTrait !== null) {
-      context.traitsRepository.reinforce({
-        label: reflectedTrait,
-        delta: 0.05,
-        provenance: reflectionProvenance,
-        timestamp: this.clock.now(),
-      });
-    }
-
     for (const goal of context.selfSnapshot.goals) {
       if (!goalMentioned(goal, context.userMessage, context.actionResult.response)) {
         continue;
@@ -308,6 +301,26 @@ export class Reflector {
       ...context.actionResult.workingMemory,
       updated_at: this.clock.now(),
     };
+
+    if (
+      // Lagged trait attribution must only come from user-visible turns.
+      // Autonomous/self-talk turns are not shown to the user, so a later
+      // user reply must not be treated as evidence about them.
+      context.origin !== "autonomous" &&
+      nextWorkingMemory.pending_trait_attribution === null &&
+      reflectedTrait !== null &&
+      reflectionProvenance.kind === "episodes"
+    ) {
+      nextWorkingMemory = {
+        ...nextWorkingMemory,
+        pending_trait_attribution: {
+          trait_label: reflectedTrait,
+          source_episode_ids: reflectionProvenance.episode_ids,
+          turn_completed_ts: this.clock.now(),
+          audience_entity_id: context.audienceEntityId ?? null,
+        },
+      };
+    }
 
     const carrySkillId = context.workingMemory.last_selected_skill_id;
     const carrySkillTurn = context.workingMemory.last_selected_skill_turn;

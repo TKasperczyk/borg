@@ -45,6 +45,8 @@ import type { CognitiveMode, IntentRecord } from "./types.js";
 import { SessionLock } from "./session-lock.js";
 
 const PENDING_SOCIAL_ATTRIBUTION_TTL_MS = 60 * 60 * 1_000;
+const PENDING_TRAIT_ATTRIBUTION_TTL_MS = PENDING_SOCIAL_ATTRIBUTION_TTL_MS;
+const TRAIT_ATTRIBUTION_POSITIVE_VALENCE_THRESHOLD = 0.2;
 
 function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>): GoalRecord[] {
   const flattened: GoalRecord[] = [];
@@ -374,6 +376,7 @@ export class TurnOrchestrator {
           workingMemory.turn_counter,
         );
         let pendingSocialAttribution = workingMemory.pending_social_attribution;
+        let pendingTraitAttribution = workingMemory.pending_trait_attribution;
 
         if (isUserTurn && pendingSocialAttribution !== null) {
           const nowMs = this.clock.now();
@@ -412,9 +415,53 @@ export class TurnOrchestrator {
           }
         }
 
+        if (isUserTurn && pendingTraitAttribution !== null) {
+          const nowMs = this.clock.now();
+          const expired =
+            nowMs - pendingTraitAttribution.turn_completed_ts > PENDING_TRAIT_ATTRIBUTION_TTL_MS;
+          const audienceMatches =
+            pendingTraitAttribution.audience_entity_id === audienceEntityId;
+
+          if (expired || !audienceMatches) {
+            await streamWriter.append({
+              kind: "internal_event",
+              content: {
+                kind: "trait_attribution_drop",
+                reason: expired ? "expired" : "audience_mismatch",
+                pending_trait_label: pendingTraitAttribution.trait_label,
+                pending_audience_entity_id: pendingTraitAttribution.audience_entity_id,
+                current_audience_entity_id: audienceEntityId,
+                turn_completed_ts: pendingTraitAttribution.turn_completed_ts,
+                source_episode_ids: pendingTraitAttribution.source_episode_ids,
+              },
+            });
+            pendingTraitAttribution = null;
+          } else if (
+            perception.affectiveSignal.valence > TRAIT_ATTRIBUTION_POSITIVE_VALENCE_THRESHOLD
+          ) {
+            try {
+              this.options.traitsRepository.reinforce({
+                label: pendingTraitAttribution.trait_label,
+                delta: 0.05,
+                provenance: {
+                  kind: "episodes",
+                  episode_ids: pendingTraitAttribution.source_episode_ids,
+                },
+                timestamp: nowMs,
+              });
+              pendingTraitAttribution = null;
+            } catch (error) {
+              await this.appendHookFailureEvent(streamWriter, "trait_update", error);
+            }
+          } else {
+            pendingTraitAttribution = null;
+          }
+        }
+
         workingMemory = this.options.workingMemoryStore.save({
           ...workingMemory,
           pending_social_attribution: pendingSocialAttribution,
+          pending_trait_attribution: pendingTraitAttribution,
           suppressed: suppressionSet.snapshot(),
           updated_at: this.clock.now(),
         });
@@ -639,6 +686,7 @@ export class TurnOrchestrator {
         });
         const reflectedWorkingMemory = await reflector.reflect(
           {
+            origin: input.origin ?? "user",
             userMessage: input.userMessage,
             perception,
             workingMemory: {
@@ -657,6 +705,7 @@ export class TurnOrchestrator {
             reviewQueueRepository: this.options.reviewQueueRepository,
             skillRepository: this.options.skillRepository,
             selectedSkillId: selectedSkill?.skill.id ?? null,
+            audienceEntityId,
             suppressionSet,
           },
           streamWriter,
