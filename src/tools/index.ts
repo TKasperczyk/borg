@@ -6,7 +6,9 @@ export {
   type ToolDispatcherOptions,
   type ToolInvocationContext,
   type ToolOrigin,
+  type ToolSkippedCall,
 } from "./dispatcher.js";
+export { toAnthropicToolDefinitions } from "./anthropic.js";
 export {
   createCommitmentsListTool,
   createEpisodicSearchTool,

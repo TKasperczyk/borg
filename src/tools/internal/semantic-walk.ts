@@ -42,6 +42,8 @@ export function createSemanticWalkTool(
   return {
     name: "tool.semantic.walk",
     description: "Walk the semantic graph from a node across one relation family.",
+    allowedOrigins: ["autonomous", "deliberator"],
+    writeScope: "read",
     inputSchema: semanticWalkInputSchema,
     outputSchema: semanticWalkOutputSchema,
     async invoke(input) {

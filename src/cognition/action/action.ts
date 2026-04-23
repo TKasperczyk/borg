@@ -1,10 +1,10 @@
-import type { LLMToolCall } from "../../llm/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
+import type { ToolLoopCallRecord } from "./tool-loop.js";
 
 export type ActionContext = {
   response: string;
-  toolCalls: LLMToolCall[];
+  toolCalls: ToolLoopCallRecord[];
   audience?: string;
   perception: PerceptionResult;
   workingMemory: WorkingMemory;
@@ -12,21 +12,12 @@ export type ActionContext = {
 
 export type ActionResult = {
   response: string;
-  tool_calls: LLMToolCall[];
+  tool_calls: ToolLoopCallRecord[];
   intents: IntentRecord[];
   workingMemory: WorkingMemory;
 };
 
-function inferIntent(response: string, toolCalls: readonly LLMToolCall[]): IntentRecord[] {
-  if (toolCalls.length > 0) {
-    return [
-      {
-        description: `Prepare tool call ${toolCalls[0]?.name ?? "tool"}`,
-        next_action: toolCalls[0]?.name ?? null,
-      },
-    ];
-  }
-
+function inferIntent(response: string): IntentRecord[] {
   const nextStepMatch = response.match(/\bnext (?:step|action)\b[:\s-]+([^.!\n]+)/i);
 
   if (nextStepMatch?.[1] !== undefined) {
@@ -55,7 +46,7 @@ function inferIntent(response: string, toolCalls: readonly LLMToolCall[]): Inten
 }
 
 export async function performAction(context: ActionContext): Promise<ActionResult> {
-  const intents = inferIntent(context.response, context.toolCalls);
+  const intents = inferIntent(context.response);
 
   return {
     response: context.response,

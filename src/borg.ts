@@ -276,6 +276,9 @@ function createLazyLlmClient(factory: () => LLMClient): LLMClient {
     complete(options) {
       return factory().complete(options);
     },
+    converse(options) {
+      return factory().converse(options);
+    },
   };
 }
 
@@ -1477,6 +1480,7 @@ export class Borg {
         skillSelector,
         workingMemoryStore,
         llmFactory,
+        toolDispatcher,
         sessionLock,
         clock,
         createStreamWriter,

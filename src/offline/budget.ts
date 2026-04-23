@@ -55,6 +55,16 @@ export function wrapLlmClientWithSink(client: LLMClient, sink: TokenUsageSink): 
       });
       return result;
     },
+    async converse(options) {
+      const result = await client.converse(options);
+      await sink({
+        budget: options.budget,
+        model: options.model,
+        input_tokens: result.input_tokens,
+        output_tokens: result.output_tokens,
+      });
+      return result;
+    },
   };
 }
 

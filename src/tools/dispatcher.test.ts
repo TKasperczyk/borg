@@ -37,6 +37,8 @@ describe("ToolDispatcher", () => {
     dispatcher.register({
       name: "tool.test.echo",
       description: "Echo test input.",
+      allowedOrigins: ["autonomous", "deliberator"],
+      writeScope: "read",
       inputSchema: z.object({
         value: z.string().min(1),
       }),
@@ -100,6 +102,8 @@ describe("ToolDispatcher", () => {
     dispatcher.register({
       name: "tool.test.echo",
       description: "Echo test input.",
+      allowedOrigins: ["autonomous", "deliberator"],
+      writeScope: "read",
       inputSchema: z.object({
         value: z.string().min(1),
       }),
@@ -151,6 +155,8 @@ describe("ToolDispatcher", () => {
     dispatcher.register({
       name: "tool.test.fast",
       description: "Fast tool.",
+      allowedOrigins: ["autonomous", "deliberator"],
+      writeScope: "read",
       inputSchema: z.object({
         value: z.string().min(1),
       }),
@@ -175,5 +181,54 @@ describe("ToolDispatcher", () => {
 
     expect(result.ok).toBe(true);
     expect(clearTimeoutSpy).toHaveBeenCalled();
+  });
+
+  it("filters listed tools by origin and rejects disallowed origins at dispatch time", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(4_000);
+    const dispatcher = new ToolDispatcher({
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: tempDir,
+          sessionId,
+          clock,
+        }),
+    });
+
+    dispatcher.register({
+      name: "tool.test.deliberator-only",
+      description: "Deliberator-only tool.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "write",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({
+        ok: z.literal(true),
+      }),
+      async invoke() {
+        return { ok: true } as const;
+      },
+    });
+
+    expect(dispatcher.getDefinition("tool.test.deliberator-only")).toMatchObject({
+      name: "tool.test.deliberator-only",
+      writeScope: "write",
+    });
+    expect(dispatcher.listTools("deliberator").map((tool) => tool.name)).toEqual([
+      "tool.test.deliberator-only",
+    ]);
+    expect(dispatcher.listTools("autonomous")).toEqual([]);
+
+    const result = await dispatcher.dispatch({
+      toolName: "tool.test.deliberator-only",
+      input: {},
+      origin: "autonomous",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "Tool tool.test.deliberator-only is not allowed for origin autonomous",
+    });
   });
 });

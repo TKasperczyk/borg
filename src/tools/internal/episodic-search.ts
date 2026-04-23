@@ -31,6 +31,8 @@ export function createEpisodicSearchTool(
   return {
     name: "tool.episodic.search",
     description: "Search episodic memory for relevant episodes.",
+    allowedOrigins: ["autonomous", "deliberator"],
+    writeScope: "read",
     inputSchema: episodicSearchInputSchema,
     outputSchema: episodicSearchOutputSchema,
     async invoke(input) {

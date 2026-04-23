@@ -1,6 +1,6 @@
 import type { Config } from "../config/index.js";
 import { SuppressionSet, computeRetrievalLimit, computeWeights } from "./attention/index.js";
-import { performAction } from "./action/index.js";
+import { performAction, type ToolLoopCallRecord } from "./action/index.js";
 import { formatAutonomyTriggerContext, type AutonomyTriggerContext } from "./autonomy-trigger.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
 import {
@@ -37,11 +37,11 @@ import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { type IdentityService } from "../memory/identity/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
+import type { ToolDispatcher } from "../tools/index.js";
 import { ConfigError, SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
-import type { LLMToolCall } from "../llm/index.js";
 import { SessionLock } from "./session-lock.js";
 
 const PENDING_SOCIAL_ATTRIBUTION_TTL_MS = 60 * 60 * 1_000;
@@ -98,7 +98,7 @@ export type TurnResult = {
   };
   retrievedEpisodeIds: string[];
   intents: IntentRecord[];
-  toolCalls: LLMToolCall[];
+  toolCalls: ToolLoopCallRecord[];
   agentMessageId?: string;
 };
 
@@ -122,6 +122,7 @@ export type TurnOrchestratorOptions = {
   identityService: IdentityService;
   workingMemoryStore: WorkingMemoryStore;
   llmFactory: () => LLMClient;
+  toolDispatcher: ToolDispatcher;
   clock?: Clock;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
   /**
@@ -424,7 +425,7 @@ export class TurnOrchestrator {
           ...(input.audience === undefined ? {} : { audience: input.audience }),
         } satisfies Parameters<StreamWriter["append"]>[0];
 
-        await streamWriter.append(userEntry);
+        const persistedUserEntry = await streamWriter.append(userEntry);
         await streamWriter.append({
           kind: "perception",
           content: {
@@ -509,6 +510,7 @@ export class TurnOrchestrator {
             : null;
         const deliberator = new Deliberator({
           llmClient,
+          toolDispatcher: this.options.toolDispatcher,
           cognitionModel: this.options.config.anthropic.models.cognition,
           backgroundModel: this.options.config.anthropic.models.background,
         });
@@ -517,6 +519,7 @@ export class TurnOrchestrator {
             sessionId,
             audience: input.audience,
             userMessage: input.userMessage,
+            userEntryId: persistedUserEntry.id,
             autonomyTrigger: input.autonomyTrigger ?? null,
             perception,
             retrievalResult: retrievedEpisodes,

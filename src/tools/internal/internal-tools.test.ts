@@ -232,6 +232,32 @@ describe("internal tools", () => {
     }
   });
 
+  it("creates open questions with deliberator provenance", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const borg = await openTestBorg(tempDir);
+
+    try {
+      const tool = createOpenQuestionsCreateTool({
+        createOpenQuestion: (input) => borg.self.openQuestions.add(input),
+      });
+      const result = await tool.invoke(
+        {
+          question: "What should I clarify before answering the user?",
+        },
+        {
+          sessionId: DEFAULT_SESSION_ID,
+          origin: "deliberator",
+        },
+      );
+
+      expect(result.openQuestion.source).toBe("deliberator");
+      expect(result.openQuestion.question).toContain("clarify before answering");
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("lists identity events", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

@@ -10,6 +10,9 @@ import {
   type EmbeddingClient,
   type Episode,
   type LLMClient,
+  type LLMContentBlock,
+  type LLMConverseOptions,
+  type LLMConverseResult,
   type LLMCompleteOptions,
   type LLMCompleteResult,
 } from "../src/index.ts";
@@ -83,12 +86,47 @@ function buildToolResult(options: LLMCompleteOptions, input: unknown): LLMComple
   ]);
 }
 
+function flattenConversationBlocks(blocks: readonly LLMContentBlock[]): string {
+  return blocks
+    .map((block) => {
+      if (block.type === "text") {
+        return block.text;
+      }
+
+      if (block.type === "tool_use") {
+        return `[tool_use ${block.name}]`;
+      }
+
+      if (typeof block.content === "string") {
+        return block.content;
+      }
+
+      return block.content.map((item) => item.text).join("");
+    })
+    .join("");
+}
+
+function toCompleteOptions(options: LLMConverseOptions): LLMCompleteOptions {
+  return {
+    ...options,
+    messages: options.messages.map((message) => ({
+      role: message.role,
+      content: flattenConversationBlocks(message.content),
+    })),
+  };
+}
+
 export class ScriptedDebugLLM implements LLMClient {
   private readonly inner = new FakeLLMClient();
 
   async complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
     this.inner.pushResponse(() => this.respond(options));
     return this.inner.complete(options);
+  }
+
+  async converse(options: LLMConverseOptions): Promise<LLMConverseResult> {
+    this.inner.pushResponse(() => this.respond(toCompleteOptions(options)));
+    return this.inner.converse(options);
   }
 
   private respond(options: LLMCompleteOptions): LLMCompleteResult {

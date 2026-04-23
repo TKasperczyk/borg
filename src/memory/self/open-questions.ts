@@ -24,6 +24,7 @@ export const OPEN_QUESTION_SOURCES = [
   "ruminator",
   "overseer",
   "autonomy",
+  "deliberator",
 ] as const;
 
 export const openQuestionIdSchema = z

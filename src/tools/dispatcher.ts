@@ -16,6 +16,8 @@ export type ToolInvocationContext = {
 export type ToolDefinition<Input = unknown, Output = unknown> = {
   name: string;
   description: string;
+  allowedOrigins: readonly ToolOrigin[];
+  writeScope: "read" | "write";
   inputSchema: z.ZodType<Input>;
   outputSchema: z.ZodType<Output>;
   invoke(input: Input, context: ToolInvocationContext): Promise<Output>;
@@ -29,6 +31,17 @@ export type ToolDispatchCall = {
   origin: ToolOrigin;
   provenance?: unknown;
   timeoutMs?: number;
+};
+
+export type ToolSkippedCall = {
+  callId?: string;
+  toolName: string;
+  input: unknown;
+  sessionId?: SessionId;
+  origin: ToolOrigin;
+  provenance?: unknown;
+  skipReason: string;
+  error?: string;
 };
 
 export type ToolDispatchResult<Output = unknown> =
@@ -120,6 +133,56 @@ export class ToolDispatcher {
     return this;
   }
 
+  listTools(origin: ToolOrigin): ToolDefinition[] {
+    return [...this.tools.values()].filter((tool) => tool.allowedOrigins.includes(origin));
+  }
+
+  getDefinition(name: string): ToolDefinition | null {
+    return this.tools.get(name) ?? null;
+  }
+
+  async recordSkippedCall(call: ToolSkippedCall): Promise<ToolDispatchResult> {
+    const sessionId = call.sessionId ?? DEFAULT_SESSION_ID;
+    const callId = call.callId ?? createStreamEntryId();
+    const writer = this.options.createStreamWriter(sessionId);
+    const error = call.error ?? call.skipReason;
+
+    try {
+      await writer.append({
+        kind: "tool_call",
+        content: {
+          call_id: callId,
+          tool_name: call.toolName,
+          input: call.input,
+          origin: call.origin,
+          ...(call.provenance === undefined ? {} : { provenance: call.provenance }),
+          skipped: true,
+          skip_reason: call.skipReason,
+        },
+      });
+
+      await writer.append({
+        kind: "tool_result",
+        content: {
+          call_id: callId,
+          ok: false,
+          error,
+          duration_ms: 0,
+        },
+      });
+
+      return {
+        callId,
+        toolName: call.toolName,
+        ok: false,
+        error,
+        durationMs: 0,
+      };
+    } finally {
+      writer.close();
+    }
+  }
+
   async dispatch(call: ToolDispatchCall): Promise<ToolDispatchResult> {
     const tool = this.tools.get(call.toolName);
     const sessionId = call.sessionId ?? DEFAULT_SESSION_ID;
@@ -146,6 +209,16 @@ export class ToolDispatcher {
           callId,
           call.toolName,
           "Unknown tool",
+          startedAt,
+        );
+      }
+
+      if (!tool.allowedOrigins.includes(call.origin)) {
+        return await this.appendErrorResult(
+          writer,
+          callId,
+          call.toolName,
+          `Tool ${call.toolName} is not allowed for origin ${call.origin}`,
           startedAt,
         );
       }

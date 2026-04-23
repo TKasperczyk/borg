@@ -35,6 +35,8 @@ export function createIdentityEventsListTool(
   return {
     name: "tool.identityEvents.list",
     description: "List recent identity events.",
+    allowedOrigins: ["autonomous", "deliberator"],
+    writeScope: "read",
     inputSchema: identityEventsListInputSchema,
     outputSchema: identityEventsListOutputSchema,
     async invoke(input) {

@@ -26,7 +26,7 @@ export type OpenQuestionsCreateToolOptions = {
     related_episode_ids: readonly z.infer<typeof episodeIdSchema>[];
     related_semantic_node_ids: readonly z.infer<typeof semanticNodeIdSchema>[];
     provenance: { kind: "system" };
-    source: "autonomy";
+    source: "autonomy" | "deliberator";
   }) => OpenQuestion;
 };
 
@@ -39,9 +39,11 @@ export function createOpenQuestionsCreateTool(
   return {
     name: "tool.openQuestions.create",
     description: "Create a new open question in self-memory.",
+    allowedOrigins: ["autonomous", "deliberator"],
+    writeScope: "write",
     inputSchema: openQuestionsCreateInputSchema,
     outputSchema: openQuestionsCreateOutputSchema,
-    async invoke(input) {
+    async invoke(input, context) {
       return {
         openQuestion: options.createOpenQuestion({
           question: input.question,
@@ -51,7 +53,7 @@ export function createOpenQuestionsCreateTool(
           provenance: {
             kind: "system",
           },
-          source: "autonomy",
+          source: context.origin === "deliberator" ? "deliberator" : "autonomy",
         }),
       };
     },

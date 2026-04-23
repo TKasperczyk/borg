@@ -1103,6 +1103,136 @@ describe("Borg", () => {
     }
   });
 
+  it("logs deliberator tool calls between the user and agent messages on a normal turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const llm = new FakeLLMClient();
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "problem_solving",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: llm,
+      liveExtraction: false,
+    });
+
+    try {
+      const seedEntry = await borg.stream.append({
+        kind: "user_msg",
+        content: "planning sync notes",
+      });
+
+      llm.pushResponse({
+        text: "",
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_extract_1",
+            name: EPISODE_TOOL_NAME,
+            input: {
+              episodes: [
+                {
+                  title: "Planning sync",
+                  narrative: "The team aligned on the sprint plan and follow-up work.",
+                  source_stream_ids: [seedEntry.id],
+                  participants: ["team"],
+                  location: null,
+                  tags: ["planning"],
+                  confidence: 0.8,
+                  significance: 0.8,
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      await borg.episodic.extract({
+        sinceTs: seedEntry.timestamp,
+      });
+
+      llm.pushResponse([
+        {
+          type: "tool_use",
+          id: "toolu_1",
+          name: "tool.episodic.search",
+          input: {
+            query: "planning sync",
+          },
+        },
+      ]);
+      llm.pushResponse("I found the planning sync in memory.");
+
+      const result = await borg.turn({
+        userMessage: "What do you remember about the planning sync?",
+      });
+
+      expect(result.response).toBe("I found the planning sync in memory.");
+      expect(result.toolCalls).toMatchObject([
+        {
+          callId: "toolu_1",
+          name: "tool.episodic.search",
+          input: {
+            query: "planning sync",
+          },
+          ok: true,
+        },
+      ]);
+      const entries = borg.stream.tail(5);
+      expect(entries.map((entry) => entry.kind)).toEqual([
+        "user_msg",
+        "perception",
+        "tool_call",
+        "tool_result",
+        "agent_msg",
+      ]);
+      expect(entries[2]?.content).toMatchObject({
+        tool_name: "tool.episodic.search",
+        origin: "deliberator",
+      });
+      expect(entries[3]?.content).toMatchObject({
+        ok: true,
+      });
+      expect(entries[4]?.tool_calls).toMatchObject([
+        {
+          callId: "toolu_1",
+          name: "tool.episodic.search",
+          input: {
+            query: "planning sync",
+          },
+          ok: true,
+        },
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("pulls commitments for all perceived entities in a turn", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
+  ContentBlockParam,
   Message,
   MessageParam,
   TextBlock,
@@ -7,7 +8,9 @@ import type {
   ThinkingConfigParam,
   Tool,
   ToolChoice,
+  ToolResultBlockParam,
   ToolUseBlock,
+  ToolUseBlockParam,
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { z } from "zod";
 
@@ -28,6 +31,32 @@ export const CLAUDE_CODE_IDENTITY_BLOCK_TEXT =
 export type LLMMessage = {
   role: "user" | "assistant";
   content: string;
+};
+
+export type LLMTextBlock = {
+  type: "text";
+  text: string;
+};
+
+export type LLMToolUseBlock = {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: unknown;
+};
+
+export type LLMToolResultBlock = {
+  type: "tool_result";
+  tool_use_id: string;
+  content: string | readonly LLMTextBlock[];
+  is_error?: boolean;
+};
+
+export type LLMContentBlock = LLMTextBlock | LLMToolUseBlock | LLMToolResultBlock;
+
+export type LLMContentBlockMessage = {
+  role: "user" | "assistant";
+  content: readonly LLMContentBlock[];
 };
 
 export type LLMSystemBlock = {
@@ -53,7 +82,10 @@ export type LLMToolCall = {
 };
 
 export function toToolInputSchema(schema: z.ZodType): LLMToolDefinition["inputSchema"] {
-  const jsonSchema = z.toJSONSchema(schema);
+  const jsonSchema = z.toJSONSchema(schema, {
+    io: "input",
+    unrepresentable: "any",
+  });
 
   if (jsonSchema.type !== "object") {
     throw new TypeError("Tool input schema must serialize to a top-level object schema");
@@ -62,13 +94,12 @@ export function toToolInputSchema(schema: z.ZodType): LLMToolDefinition["inputSc
   return jsonSchema as LLMToolDefinition["inputSchema"];
 }
 
-export type LLMCompleteOptions = {
+type LLMCallOptions = {
   model: string;
   // If callers embed retrieved memory or other user-derived records into
   // `system`, delimit those blocks explicitly and label them as untrusted
   // data rather than concatenating free-form text that looks like policy.
   system?: string | readonly LLMSystemBlock[];
-  messages: readonly LLMMessage[];
   tools?: readonly LLMToolDefinition[];
   tool_choice?: { type: "tool"; name: string } | { type: "any" } | { type: "auto" };
   max_tokens?: number;
@@ -77,12 +108,27 @@ export type LLMCompleteOptions = {
   budget: string;
 };
 
+export type LLMCompleteOptions = LLMCallOptions & {
+  messages: readonly LLMMessage[];
+};
+
 export type LLMCompleteResult = {
   text: string;
   input_tokens: number;
   output_tokens: number;
   stop_reason: string | null;
   tool_calls: LLMToolCall[];
+};
+
+export type LLMConverseOptions = LLMCallOptions & {
+  messages: readonly LLMContentBlockMessage[];
+};
+
+export type LLMConverseResult = {
+  messageBlocks: LLMContentBlock[];
+  input_tokens: number;
+  output_tokens: number;
+  stop_reason: string | null;
 };
 
 export type TokenUsageEvent = {
@@ -96,6 +142,7 @@ export type TokenUsageSink = (event: TokenUsageEvent) => void | Promise<void>;
 
 export type LLMClient = {
   complete(options: LLMCompleteOptions): Promise<LLMCompleteResult>;
+  converse(options: LLMConverseOptions): Promise<LLMConverseResult>;
 };
 
 type AnthropicClientLike = {
@@ -133,9 +180,12 @@ export type AnthropicLLMClientOptions = {
   clock?: Clock;
 };
 
+type FakeLLMResponseValue = string | readonly LLMContentBlock[] | LLMCompleteResult | LLMConverseResult;
+
 export type FakeLLMResponse =
-  | LLMCompleteResult
-  | ((options: LLMCompleteOptions) => LLMCompleteResult | Promise<LLMCompleteResult>);
+  | FakeLLMResponseValue
+  | ((options: LLMCompleteOptions) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>)
+  | ((options: LLMConverseOptions) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>);
 
 export type FakeLLMClientOptions = {
   responses?: FakeLLMResponse[];
@@ -149,6 +199,53 @@ function toAnthropicMessages(messages: readonly LLMMessage[]): MessageParam[] {
   }));
 }
 
+function toAnthropicToolResultContent(
+  content: LLMToolResultBlock["content"],
+): ToolResultBlockParam["content"] {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return content.map((block) => ({
+    type: "text",
+    text: block.text,
+  }));
+}
+
+function toAnthropicContentBlock(block: LLMContentBlock): ContentBlockParam {
+  if (block.type === "text") {
+    return {
+      type: "text",
+      text: block.text,
+    } satisfies TextBlockParam;
+  }
+
+  if (block.type === "tool_use") {
+    return {
+      type: "tool_use",
+      id: block.id,
+      name: block.name,
+      input: block.input,
+    } satisfies ToolUseBlockParam;
+  }
+
+  return {
+    type: "tool_result",
+    tool_use_id: block.tool_use_id,
+    content: toAnthropicToolResultContent(block.content),
+    ...(block.is_error === undefined ? {} : { is_error: block.is_error }),
+  } satisfies ToolResultBlockParam;
+}
+
+function toAnthropicConversationMessages(
+  messages: readonly LLMContentBlockMessage[],
+): MessageParam[] {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content.map((block) => toAnthropicContentBlock(block)),
+  }));
+}
+
 function toAnthropicTools(tools: readonly LLMToolDefinition[] | undefined): Tool[] | undefined {
   return tools?.map((tool) => ({
     name: tool.name,
@@ -157,9 +254,7 @@ function toAnthropicTools(tools: readonly LLMToolDefinition[] | undefined): Tool
   }));
 }
 
-function toAnthropicToolChoice(
-  toolChoice: LLMCompleteOptions["tool_choice"],
-): ToolChoice | undefined {
+function toAnthropicToolChoice(toolChoice: LLMCallOptions["tool_choice"]): ToolChoice | undefined {
   return toolChoice;
 }
 
@@ -186,6 +281,31 @@ function extractText(message: Message): string {
     .join("");
 }
 
+function extractMessageBlocks(message: Message): LLMContentBlock[] {
+  const blocks: LLMContentBlock[] = [];
+
+  for (const block of message.content) {
+    if (isTextBlock(block)) {
+      blocks.push({
+        type: "text",
+        text: block.text,
+      });
+      continue;
+    }
+
+    if (isToolUseBlock(block)) {
+      blocks.push({
+        type: "tool_use",
+        id: block.id,
+        name: block.name,
+        input: block.input,
+      });
+    }
+  }
+
+  return blocks;
+}
+
 function transformToolNameForOAuth(name: string): string {
   if (!name) {
     return name;
@@ -199,7 +319,9 @@ function transformToolNameForOAuth(name: string): string {
     return name;
   }
 
-  return name.charAt(0).toUpperCase() + name.slice(1);
+  const normalized = name.replace(/[^A-Za-z0-9_]/g, "_");
+
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
 function mutateToolUseNames(
@@ -475,7 +597,7 @@ function isOpusModel(model: string): boolean {
   return /^claude-opus-4(?:[-._].+)?$/i.test(model.trim());
 }
 
-function resolveMaxTokens(options: LLMCompleteOptions): number {
+function resolveMaxTokens(options: Pick<LLMCallOptions, "max_tokens" | "model">): number {
   return options.max_tokens ?? getModelMaxOutputTokens(options.model);
 }
 
@@ -485,7 +607,7 @@ function shouldOmitTemperature(model: string): boolean {
 
 function shouldOmitThinking(
   auth: ResolvedAnthropicAuth | undefined,
-  options: LLMCompleteOptions,
+  options: Pick<LLMCallOptions, "model" | "tool_choice">,
 ): boolean {
   if (isOpusModel(options.model)) {
     return true;
@@ -628,10 +750,11 @@ export class AnthropicLLMClient implements LLMClient {
     this.initialization = Promise.resolve();
   }
 
-  private async createMessage(
-    options: LLMCompleteOptions,
+  private async createRawMessage(
+    options: LLMCallOptions,
+    messages: MessageParam[],
     retrying = false,
-  ): Promise<LLMCompleteResult> {
+  ): Promise<Message> {
     await this.ensureInitialized();
 
     const client = this.client;
@@ -641,10 +764,10 @@ export class AnthropicLLMClient implements LLMClient {
     }
 
     try {
-      const response = await client.messages.create({
+      return await client.messages.create({
         model: options.model,
         system: this.resolveSystemPrompt(options.system),
-        messages: toAnthropicMessages(options.messages),
+        messages,
         tools: toAnthropicTools(options.tools),
         tool_choice: toAnthropicToolChoice(options.tool_choice),
         max_tokens: resolveMaxTokens(options),
@@ -655,25 +778,6 @@ export class AnthropicLLMClient implements LLMClient {
           ? { thinking: options.thinking }
           : {}),
       });
-
-      const result = {
-        text: extractText(response),
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens,
-        stop_reason: response.stop_reason,
-        tool_calls: extractToolCalls(response),
-      } satisfies LLMCompleteResult;
-
-      if (this.usageSink !== undefined) {
-        await this.usageSink({
-          budget: options.budget,
-          model: options.model,
-          input_tokens: result.input_tokens,
-          output_tokens: result.output_tokens,
-        });
-      }
-
-      return result;
     } catch (error) {
       if (!retrying && this.auth?.kind === "oauth" && isAuthenticationFailure(error)) {
         try {
@@ -690,7 +794,7 @@ export class AnthropicLLMClient implements LLMClient {
           });
         }
 
-        return this.createMessage(options, true);
+        return this.createRawMessage(options, messages, true);
       }
 
       if (isAuthenticationFailure(error) && this.auth?.kind === "oauth") {
@@ -712,14 +816,204 @@ export class AnthropicLLMClient implements LLMClient {
     }
   }
 
+  private async emitUsage(
+    options: Pick<LLMCallOptions, "budget" | "model">,
+    result: Pick<LLMCompleteResult, "input_tokens" | "output_tokens">,
+  ): Promise<void> {
+    if (this.usageSink === undefined) {
+      return;
+    }
+
+    await this.usageSink({
+      budget: options.budget,
+      model: options.model,
+      input_tokens: result.input_tokens,
+      output_tokens: result.output_tokens,
+    });
+  }
+
+  private async createMessage(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
+    const response = await this.createRawMessage(options, toAnthropicMessages(options.messages));
+    const result = {
+      text: extractText(response),
+      input_tokens: response.usage.input_tokens,
+      output_tokens: response.usage.output_tokens,
+      stop_reason: response.stop_reason,
+      tool_calls: extractToolCalls(response),
+    } satisfies LLMCompleteResult;
+    await this.emitUsage(options, result);
+    return result;
+  }
+
+  private async createConversation(options: LLMConverseOptions): Promise<LLMConverseResult> {
+    const response = await this.createRawMessage(
+      options,
+      toAnthropicConversationMessages(options.messages),
+    );
+    const result = {
+      messageBlocks: extractMessageBlocks(response),
+      input_tokens: response.usage.input_tokens,
+      output_tokens: response.usage.output_tokens,
+      stop_reason: response.stop_reason,
+    } satisfies LLMConverseResult;
+    await this.emitUsage(options, result);
+    return result;
+  }
+
   complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
     return this.createMessage(options);
   }
+
+  converse(options: LLMConverseOptions): Promise<LLMConverseResult> {
+    return this.createConversation(options);
+  }
+}
+
+function inferStopReasonFromBlocks(blocks: readonly LLMContentBlock[]): string | null {
+  return blocks.some((block) => block.type === "tool_use") ? "tool_use" : "end_turn";
+}
+
+function blocksFromCompleteResult(result: LLMCompleteResult): LLMContentBlock[] {
+  const blocks: LLMContentBlock[] = [];
+
+  if (result.text.length > 0) {
+    blocks.push({
+      type: "text",
+      text: result.text,
+    });
+  }
+
+  for (const call of result.tool_calls) {
+    blocks.push({
+      type: "tool_use",
+      id: call.id,
+      name: call.name,
+      input: call.input,
+    });
+  }
+
+  return blocks;
+}
+
+function isFakeBlockArray(response: FakeLLMResponseValue): response is readonly LLMContentBlock[] {
+  return Array.isArray(response);
+}
+
+function isFakeConverseResult(response: FakeLLMResponseValue): response is LLMConverseResult {
+  return typeof response === "object" && response !== null && "messageBlocks" in response;
+}
+
+function normalizeFakeConverseResponse(response: FakeLLMResponseValue): LLMConverseResult {
+  if (typeof response === "string") {
+    return {
+      messageBlocks: [
+        {
+          type: "text",
+          text: response,
+        },
+      ],
+      input_tokens: 0,
+      output_tokens: 0,
+      stop_reason: "end_turn",
+    };
+  }
+
+  if (isFakeBlockArray(response)) {
+    return {
+      messageBlocks: [...response],
+      input_tokens: 0,
+      output_tokens: 0,
+      stop_reason: inferStopReasonFromBlocks(response),
+    };
+  }
+
+  if (isFakeConverseResult(response)) {
+    return response;
+  }
+
+  return {
+    messageBlocks: blocksFromCompleteResult(response),
+    input_tokens: response.input_tokens,
+    output_tokens: response.output_tokens,
+    stop_reason: response.stop_reason,
+  };
+}
+
+function normalizeFakeCompleteResponse(response: FakeLLMResponseValue): LLMCompleteResult {
+  if (typeof response === "string") {
+    return {
+      text: response,
+      input_tokens: 0,
+      output_tokens: 0,
+      stop_reason: "end_turn",
+      tool_calls: [],
+    };
+  }
+
+  if (isFakeBlockArray(response)) {
+    return {
+      text: response
+        .filter((block): block is LLMTextBlock => block.type === "text")
+        .map((block) => block.text)
+        .join(""),
+      input_tokens: 0,
+      output_tokens: 0,
+      stop_reason: inferStopReasonFromBlocks(response),
+      tool_calls: response
+        .filter((block): block is LLMToolUseBlock => block.type === "tool_use")
+        .map((block) => ({
+          id: block.id,
+          name: block.name,
+          input: block.input,
+        })),
+    };
+  }
+
+  if (isFakeConverseResult(response)) {
+    return normalizeFakeCompleteResponse(response.messageBlocks);
+  }
+
+  return response;
+}
+
+function flattenBlockContentForCompatibility(content: LLMToolResultBlock["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return content.map((block) => block.text).join("");
+}
+
+function flattenMessageBlocksForCompatibility(blocks: readonly LLMContentBlock[]): string {
+  return blocks
+    .map((block) => {
+      if (block.type === "text") {
+        return block.text;
+      }
+
+      if (block.type === "tool_use") {
+        return `[tool_use ${block.name}]`;
+      }
+
+      return flattenBlockContentForCompatibility(block.content);
+    })
+    .join("");
+}
+
+function toCompleteCompatibleRequest(options: LLMConverseOptions): LLMCompleteOptions {
+  return {
+    ...options,
+    messages: options.messages.map((message) => ({
+      role: message.role,
+      content: flattenMessageBlocksForCompatibility(message.content),
+    })),
+  };
 }
 
 export class FakeLLMClient implements LLMClient {
   private readonly usageSink?: TokenUsageSink;
   readonly requests: LLMCompleteOptions[] = [];
+  readonly converseRequests: LLMConverseOptions[] = [];
   private readonly responses: FakeLLMResponse[];
 
   constructor(options: FakeLLMClientOptions = {}) {
@@ -739,17 +1033,52 @@ export class FakeLLMClient implements LLMClient {
       throw new LLMError("FakeLLMClient has no scripted response available");
     }
 
-    const resolved = typeof response === "function" ? await response(options) : response;
+    const resolved =
+      typeof response === "function"
+        ? await (response as (options: LLMCompleteOptions) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>)(
+            options,
+          )
+        : response;
+    const normalized = normalizeFakeCompleteResponse(resolved);
 
     if (this.usageSink !== undefined) {
       await this.usageSink({
         budget: options.budget,
         model: options.model,
-        input_tokens: resolved.input_tokens,
-        output_tokens: resolved.output_tokens,
+        input_tokens: normalized.input_tokens,
+        output_tokens: normalized.output_tokens,
       });
     }
 
-    return resolved;
+    return normalized;
+  }
+
+  async converse(options: LLMConverseOptions): Promise<LLMConverseResult> {
+    this.converseRequests.push(options);
+    this.requests.push(toCompleteCompatibleRequest(options));
+    const response = this.responses.shift();
+
+    if (response === undefined) {
+      throw new LLMError("FakeLLMClient has no scripted response available");
+    }
+
+    const resolved =
+      typeof response === "function"
+        ? await (response as (options: LLMConverseOptions) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>)(
+            options,
+          )
+        : response;
+    const normalized = normalizeFakeConverseResponse(resolved);
+
+    if (this.usageSink !== undefined) {
+      await this.usageSink({
+        budget: options.budget,
+        model: options.model,
+        input_tokens: normalized.input_tokens,
+        output_tokens: normalized.output_tokens,
+      });
+    }
+
+    return normalized;
   }
 }

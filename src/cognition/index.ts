@@ -1,4 +1,9 @@
-export { performAction, type ActionContext, type ActionResult } from "./action/index.js";
+export {
+  performAction,
+  type ActionContext,
+  type ActionResult,
+  type ToolLoopCallRecord,
+} from "./action/index.js";
 export {
   computeRetrievalLimit,
   computeWeights,

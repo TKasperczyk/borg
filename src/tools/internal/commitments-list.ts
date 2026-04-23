@@ -22,6 +22,8 @@ export function createCommitmentsListTool(
   return {
     name: "tool.commitments.list",
     description: "List active commitments.",
+    allowedOrigins: ["autonomous", "deliberator"],
+    writeScope: "read",
     inputSchema: commitmentsListInputSchema,
     outputSchema: commitmentsListOutputSchema,
     async invoke() {

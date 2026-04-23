@@ -17,6 +17,7 @@ import { formatCommitmentsForPrompt } from "../../memory/commitments/checker.js"
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import {
+  type LLMContentBlockMessage,
   toToolInputSchema,
   type LLMClient,
   type LLMMessage,
@@ -30,6 +31,7 @@ import type {
   RetrievalSearchOptions,
 } from "../../retrieval/index.js";
 import { StreamWriter } from "../../stream/index.js";
+import type { ToolDispatcher } from "../../tools/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { type CognitiveMode, type PerceptionResult } from "../types.js";
 import type { SessionId } from "../../util/ids.js";
@@ -37,6 +39,7 @@ import { tokenizeText } from "../../util/text/tokenize.js";
 import type { SemanticNode } from "../../memory/semantic/index.js";
 import { summarizeProvenanceForPrompt, type Provenance } from "../../memory/common/index.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
+import { executeToolLoop, type ToolLoopCallRecord } from "../action/index.js";
 
 export type TurnStakes = "low" | "medium" | "high";
 
@@ -63,6 +66,7 @@ export type DeliberationContext = {
   sessionId: SessionId;
   audience?: string;
   userMessage: string;
+  userEntryId?: string;
   autonomyTrigger?: AutonomyTriggerContext | null;
   perception: PerceptionResult;
   retrievalResult: RetrievedEpisode[];
@@ -113,7 +117,7 @@ export type DeliberationResult = {
   path: "system_1" | "system_2";
   response: string;
   thoughts: string[];
-  tool_calls: LLMToolCall[];
+  tool_calls: ToolLoopCallRecord[];
   usage: DeliberationUsage;
   decision_reason: string;
   retrievedEpisodes: RetrievedEpisode[];
@@ -122,6 +126,7 @@ export type DeliberationResult = {
 
 export type DeliberatorOptions = {
   llmClient: LLMClient;
+  toolDispatcher: ToolDispatcher;
   cognitionModel: string;
   backgroundModel: string;
 };
@@ -954,17 +959,27 @@ export class Deliberator {
       context.recencyMessages,
       context.userMessage,
     );
+    const dialogueBlockMessages = toContentBlockMessages(dialogueMessages);
     const plannerVoiceAnchors = renderTaggedPromptSection(
       "borg_voice_anchors",
       summarizeVoiceAnchors(context.selfSnapshot),
     );
+    const deliberatorTools = this.options.toolDispatcher.listTools("deliberator");
+    const toolProvenance =
+      context.userEntryId === undefined ? undefined : { user_entry_id: context.userEntryId };
 
     if (decision.path === "system_1") {
-      const response = await this.options.llmClient.complete({
+      const response = await executeToolLoop({
+        llmClient: this.options.llmClient,
+        dispatcher: this.options.toolDispatcher,
+        sessionId: context.sessionId,
         model: this.options.cognitionModel,
-        system: baseSystemPrompt,
-        messages: dialogueMessages,
-        max_tokens: systemOneMaxTokens,
+        systemPrompt: baseSystemPrompt,
+        initialMessages: dialogueBlockMessages,
+        tools: deliberatorTools,
+        origin: "deliberator",
+        provenance: toolProvenance,
+        maxTokens: systemOneMaxTokens,
         budget: "cognition-system-1",
       });
 
@@ -972,12 +987,8 @@ export class Deliberator {
         path: "system_1",
         response: response.text,
         thoughts: [],
-        tool_calls: response.tool_calls,
-        usage: {
-          input_tokens: response.input_tokens,
-          output_tokens: response.output_tokens,
-          stop_reason: response.stop_reason,
-        },
+        tool_calls: response.toolCallsMade,
+        usage: response.usage,
         decision_reason: decision.reason,
         retrievedEpisodes: [...context.retrievalResult],
         thoughtsPersisted: false,
@@ -1032,17 +1043,23 @@ export class Deliberator {
         ),
       },
     ]);
-    const finalResponse = await this.options.llmClient.complete({
+    const finalResponse = await executeToolLoop({
+      llmClient: this.options.llmClient,
+      dispatcher: this.options.toolDispatcher,
+      sessionId: context.sessionId,
       model: this.options.cognitionModel,
-      system: [
+      systemPrompt: [
         baseSystemPrompt,
         additionalRetrievalBlock,
         planSection,
       ]
         .filter((section): section is string => section !== null)
         .join("\n\n"),
-      messages: dialogueMessages,
-      max_tokens: systemTwoMaxTokens,
+      initialMessages: dialogueBlockMessages,
+      tools: deliberatorTools,
+      origin: "deliberator",
+      provenance: toolProvenance,
+      maxTokens: systemTwoMaxTokens,
       budget: "cognition-system-2",
     });
     const thoughtsPersisted = await this.persistThoughts(streamWriter, thoughts);
@@ -1052,14 +1069,14 @@ export class Deliberator {
         output_tokens: planner.output_tokens,
         stop_reason: planner.stop_reason,
       },
-      finalResponse,
+      finalResponse.usage,
     );
 
     return {
       path: "system_2",
       response: finalResponse.text,
       thoughts,
-      tool_calls: finalResponse.tool_calls,
+      tool_calls: finalResponse.toolCallsMade,
       usage,
       decision_reason: decision.reason,
       retrievedEpisodes: dedupeRetrievedEpisodes([
@@ -1107,6 +1124,18 @@ function buildDialogueMessages(
 
   messages.push({ role: "user", content: currentUserMessage });
   return messages;
+}
+
+function toContentBlockMessages(messages: readonly LLMMessage[]): LLMContentBlockMessage[] {
+  return messages.map((message) => ({
+    role: message.role,
+    content: [
+      {
+        type: "text",
+        text: message.content,
+      },
+    ],
+  }));
 }
 
 function extractTurnPlan(toolCalls: readonly LLMToolCall[]): TurnPlan | null {

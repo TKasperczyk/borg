@@ -252,6 +252,53 @@ describe("llm", () => {
     });
   });
 
+  it("rewrites dotted OAuth tool names on request and restores them on JSON responses", async () => {
+    const fetchMock = vi.fn(
+      async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const url = new URL(String(input));
+        expect(url.pathname).toBe("/v1/messages");
+        expect(url.searchParams.getAll("beta")).toEqual(["true"]);
+
+        const body = JSON.parse(String(init?.body)) as {
+          tools: Array<{ name: string }>;
+          tool_choice: { name: string };
+        };
+        expect(body.tools[0]?.name).toBe("Tool_episodic_search");
+        expect(body.tool_choice.name).toBe("Tool_episodic_search");
+
+        return jsonResponse(
+          createMessageBody({
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_1",
+                caller: { type: "direct" },
+                name: "Tool_episodic_search",
+                input: { query: "planning" },
+              },
+            ],
+            stop_reason: "tool_use",
+          }),
+        );
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const oauthFetch = createOAuthFetch();
+    const response = await oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({
+        tools: [{ name: "tool.episodic.search" }],
+        tool_choice: { type: "tool", name: "tool.episodic.search" },
+      }),
+    });
+
+    expect(((await response.json()) as Message).content[0]).toMatchObject({
+      type: "tool_use",
+      name: "tool.episodic.search",
+    });
+  });
+
   it("rewrites mixed OAuth tool batches per name instead of lowercasing everything", async () => {
     vi.stubGlobal(
       "fetch",
@@ -742,5 +789,155 @@ describe("llm", () => {
       input_tokens: 1,
       output_tokens: 2,
     });
+  });
+
+  it("forwards block-typed converse messages without flattening them", async () => {
+    const create = vi.fn().mockResolvedValue(
+      createMessageBody({
+        content: [
+          { type: "text", text: "Checking", citations: null },
+          {
+            type: "tool_use",
+            id: "toolu_1",
+            caller: { type: "direct" },
+            name: "lookup",
+            input: { id: 1 },
+          },
+        ],
+        stop_reason: "tool_use",
+      }),
+    );
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: { create },
+      },
+    });
+
+    const result = await client.converse({
+      model: "claude-sonnet-4-5",
+      system: "be concise",
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "hello" }],
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_prev",
+              name: "lookup",
+              input: { id: 7 },
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_prev",
+              content: '{"value":7}',
+            },
+          ],
+        },
+      ],
+      tools: [
+        {
+          name: "lookup",
+          inputSchema: {
+            type: "object",
+            properties: { id: { type: "number" } },
+            required: ["id"],
+          },
+        },
+      ],
+      max_tokens: 128,
+      budget: "test",
+    });
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "hello" }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_prev", name: "lookup", input: { id: 7 } }],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_prev",
+              content: '{"value":7}',
+            },
+          ],
+        },
+      ],
+    });
+    expect(result).toEqual({
+      messageBlocks: [
+        { type: "text", text: "Checking" },
+        { type: "tool_use", id: "toolu_1", name: "lookup", input: { id: 1 } },
+      ],
+      input_tokens: 12,
+      output_tokens: 7,
+      stop_reason: "tool_use",
+    });
+  });
+
+  it("supports scripted fake llm block conversations", async () => {
+    const client = new FakeLLMClient({
+      responses: [
+        [
+          {
+            type: "tool_use",
+            id: "toolu_1",
+            name: "tool.episodic.search",
+            input: { query: "planning" },
+          },
+        ],
+        [
+          {
+            type: "text",
+            text: "done",
+          },
+        ],
+      ],
+    });
+
+    const first = await client.converse({
+      model: "fake",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      max_tokens: 8,
+      budget: "test",
+    });
+    const second = await client.converse({
+      model: "fake",
+      messages: [{ role: "user", content: [{ type: "text", text: "continue" }] }],
+      max_tokens: 8,
+      budget: "test",
+    });
+
+    expect(first).toEqual({
+      messageBlocks: [
+        {
+          type: "tool_use",
+          id: "toolu_1",
+          name: "tool.episodic.search",
+          input: { query: "planning" },
+        },
+      ],
+      input_tokens: 0,
+      output_tokens: 0,
+      stop_reason: "tool_use",
+    });
+    expect(second.messageBlocks).toEqual([{ type: "text", text: "done" }]);
+    expect(client.converseRequests).toHaveLength(2);
   });
 });
