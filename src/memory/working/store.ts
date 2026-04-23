@@ -13,8 +13,80 @@ export type WorkingMemoryStoreOptions = {
   clock?: Clock;
 };
 
+const PENDING_INTENTS_LIMIT = 16;
+const HOT_ENTITIES_LIMIT = 32;
+
 function cloneWorkingMemory(state: WorkingMemory): WorkingMemory {
   return structuredClone(state) as WorkingMemory;
+}
+
+function normalizePendingIntents(
+  intents: WorkingMemory["pending_intents"],
+): WorkingMemory["pending_intents"] {
+  const deduped: WorkingMemory["pending_intents"] = [];
+  const seenNextActions = new Set<string>();
+
+  for (let index = intents.length - 1; index >= 0; index -= 1) {
+    const intent = intents[index];
+
+    if (intent === undefined) {
+      continue;
+    }
+
+    const nextAction = intent.next_action?.trim().toLowerCase();
+
+    if (nextAction !== undefined && nextAction.length > 0) {
+      if (seenNextActions.has(nextAction)) {
+        continue;
+      }
+
+      seenNextActions.add(nextAction);
+    }
+
+    deduped.push(intent);
+
+    if (deduped.length >= PENDING_INTENTS_LIMIT) {
+      break;
+    }
+  }
+
+  return deduped.reverse();
+}
+
+function normalizeHotEntities(hotEntities: readonly string[]): string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  for (const entity of hotEntities) {
+    const trimmed = entity.trim();
+
+    if (trimmed.length === 0) {
+      continue;
+    }
+
+    const key = trimmed.toLowerCase();
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    normalized.push(trimmed);
+
+    if (normalized.length >= HOT_ENTITIES_LIMIT) {
+      break;
+    }
+  }
+
+  return normalized;
+}
+
+function normalizeWorkingMemory(state: WorkingMemory): WorkingMemory {
+  return {
+    ...state,
+    hot_entities: normalizeHotEntities(state.hot_entities),
+    pending_intents: normalizePendingIntents(state.pending_intents),
+  };
 }
 
 export class WorkingMemoryStore {
@@ -55,7 +127,7 @@ export class WorkingMemoryStore {
   }
 
   save(state: WorkingMemory): WorkingMemory {
-    const parsed = workingMemorySchema.safeParse(state);
+    const parsed = workingMemorySchema.safeParse(normalizeWorkingMemory(state));
 
     if (!parsed.success) {
       throw new WorkingMemoryError("Invalid working memory state", {

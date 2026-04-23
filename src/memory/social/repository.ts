@@ -112,6 +112,11 @@ export type SocialRepositoryOptions = {
   clock?: Clock;
 };
 
+export type SocialInteractionRecord = {
+  interaction_id: number;
+  profile: SocialProfile;
+};
+
 export class SocialRepository {
   private readonly clock: Clock;
 
@@ -220,6 +225,17 @@ export class SocialRepository {
       now?: number;
     },
   ): SocialProfile {
+    return this.recordInteractionWithId(entityId, input).profile;
+  }
+
+  recordInteractionWithId(
+    entityId: EntityId,
+    input: {
+      provenance: Provenance;
+      valence?: number;
+      now?: number;
+    },
+  ): SocialInteractionRecord {
     const existing = this.upsertProfile(entityId);
     const nowMs = input.now ?? this.clock.now();
     const provenance = requireProvenance(input.provenance, "Social interaction");
@@ -235,7 +251,7 @@ export class SocialRepository {
           ].slice(-50);
     const storedProvenance = toStoredProvenance(provenance);
 
-    this.db
+    const insertResult = this.db
       .prepare(
         `
           INSERT INTO social_events (
@@ -257,10 +273,66 @@ export class SocialRepository {
         input.valence === undefined ? null : clamp(input.valence, -1, 1),
       );
 
+    return {
+      interaction_id: Number(insertResult.lastInsertRowid),
+      profile: this.writeProfile({
+        ...existing,
+        last_interaction_at: nowMs,
+        interaction_count: existing.interaction_count + 1,
+        sentiment_history: sentimentHistory,
+        updated_at: nowMs,
+      }),
+    };
+  }
+
+  attachSentiment(
+    interactionId: number,
+    input: {
+      valence: number;
+      now?: number;
+    },
+  ): SocialProfile {
+    const row = this.db
+      .prepare(
+        `
+          SELECT entity_id, ts
+          FROM social_events
+          WHERE id = ? AND kind = 'interaction'
+        `,
+      )
+      .get(interactionId) as Record<string, unknown> | undefined;
+
+    if (row === undefined) {
+      throw new StorageError(`Missing interaction event ${interactionId}`, {
+        code: "SOCIAL_ROW_INVALID",
+      });
+    }
+
+    const entityId = String(row.entity_id) as EntityId;
+    const interactionTs = Number(row.ts);
+    const existing = this.upsertProfile(entityId);
+    const nowMs = input.now ?? this.clock.now();
+    const valence = clamp(input.valence, -1, 1);
+    const sentimentHistory = [
+      ...existing.sentiment_history,
+      socialSentimentPointSchema.parse({
+        ts: interactionTs,
+        valence,
+      }),
+    ].slice(-50);
+
+    this.db
+      .prepare(
+        `
+          UPDATE social_events
+          SET valence = ?
+          WHERE id = ?
+        `,
+      )
+      .run(valence, interactionId);
+
     return this.writeProfile({
       ...existing,
-      last_interaction_at: nowMs,
-      interaction_count: existing.interaction_count + 1,
       sentiment_history: sentimentHistory,
       updated_at: nowMs,
     });

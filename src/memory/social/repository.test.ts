@@ -56,4 +56,35 @@ describe("SocialRepository", () => {
       harness.socialRepository.adjustTrust(entityId, 0.2, undefined as never),
     ).toThrow(ProvenanceError);
   });
+
+  it("attaches lagged sentiment without incrementing interaction count", async () => {
+    harness = await createOfflineTestHarness();
+    const entityId = harness.entityRepository.resolve("Sam");
+
+    const recorded = harness.socialRepository.recordInteractionWithId(entityId, {
+      now: 1_000,
+      provenance: manualProvenance,
+    });
+    const attached = harness.socialRepository.attachSentiment(recorded.interaction_id, {
+      valence: -0.6,
+      now: 2_000,
+    });
+
+    expect(attached.interaction_count).toBe(1);
+    expect(attached.last_interaction_at).toBe(1_000);
+    expect(attached.sentiment_history).toEqual([
+      {
+        ts: 1_000,
+        valence: -0.6,
+      },
+    ]);
+    expect(harness.socialRepository.listEvents(entityId)).toEqual([
+      expect.objectContaining({
+        id: recorded.interaction_id,
+        interaction_delta: 1,
+        valence: -0.6,
+        ts: 1_000,
+      }),
+    ]);
+  });
 });

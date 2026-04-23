@@ -1,10 +1,10 @@
 import type { Config } from "../config/index.js";
 import { SuppressionSet, computeRetrievalLimit, computeWeights } from "./attention/index.js";
 import { performAction } from "./action/index.js";
+import { formatAutonomyTriggerContext, type AutonomyTriggerContext } from "./autonomy-trigger.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
 import {
   detectAffectiveSignal,
-  detectAffectiveSignalHeuristically,
 } from "./perception/affective-signal.js";
 import { Perceiver } from "./perception/index.js";
 import { TurnContextCompiler, type RecencyWindow } from "./recency/index.js";
@@ -12,7 +12,7 @@ import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import { Reflector } from "./reflection/index.js";
 import type { RetrievalPipeline, RetrievalSearchOptions } from "../retrieval/index.js";
 import type { LLMClient } from "../llm/index.js";
-import { MoodRepository } from "../memory/affective/index.js";
+import { createNeutralAffectiveSignal, MoodRepository } from "../memory/affective/index.js";
 import {
   CommitmentChecker,
   CommitmentRepository,
@@ -43,6 +43,8 @@ import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
 import type { LLMToolCall } from "../llm/index.js";
 import { SessionLock } from "./session-lock.js";
+
+const PENDING_SOCIAL_ATTRIBUTION_TTL_MS = 60 * 60 * 1_000;
 
 function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>): GoalRecord[] {
   const flattened: GoalRecord[] = [];
@@ -81,6 +83,7 @@ export type TurnInput = {
   stakes?: TurnStakes;
   sessionId?: SessionId;
   origin?: "user" | "autonomous";
+  autonomyTrigger?: AutonomyTriggerContext | null;
 };
 
 export type TurnResult = {
@@ -320,6 +323,21 @@ export class TurnOrchestrator {
         });
         const llmClient = this.options.llmFactory();
         const selfSnapshot = this.buildSelfSnapshot();
+        const isUserTurn = input.origin !== "autonomous";
+        const cognitionInput =
+          input.autonomyTrigger === null || input.autonomyTrigger === undefined
+            ? input.userMessage
+            : formatAutonomyTriggerContext(input.autonomyTrigger);
+        const audienceEntityId =
+          input.audience === undefined || isSelfAudience
+            ? null
+            : this.options.entityRepository.resolve(input.audience);
+        const audienceEntity =
+          audienceEntityId === null ? null : this.options.entityRepository.get(audienceEntityId);
+        let audienceProfile =
+          audienceEntityId === null
+            ? null
+            : this.options.socialRepository.getProfile(audienceEntityId);
         // Compile recent dialogue BEFORE appending the current user message,
         // so the window contains prior turns only. The compiler guarantees
         // the window starts with a user role and ends with an assistant
@@ -334,14 +352,18 @@ export class TurnOrchestrator {
         const recentHistoryStrings = recencyWindow.messages.map(
           (message) => `${message.role}: ${message.content}`,
         );
-        const perception = await perceiver.perceive(input.userMessage, recentHistoryStrings);
+        const perception = await perceiver.perceive(cognitionInput, recentHistoryStrings);
+        const workingMood =
+          input.origin === "autonomous"
+            ? workingMemory.mood ?? createNeutralAffectiveSignal()
+            : perception.affectiveSignal;
 
         workingMemory = {
           ...workingMemory,
           turn_counter: workingMemory.turn_counter + 1,
-          current_focus: perception.entities[0] ?? (input.userMessage.slice(0, 80) || null),
+          current_focus: perception.entities[0] ?? (cognitionInput.slice(0, 80) || null),
           hot_entities: perception.entities,
-          mood: perception.affectiveSignal,
+          mood: workingMood,
           mode: perception.mode,
           updated_at: this.clock.now(),
         };
@@ -350,8 +372,48 @@ export class TurnOrchestrator {
           workingMemory.suppressed,
           workingMemory.turn_counter,
         );
+        let pendingSocialAttribution = workingMemory.pending_social_attribution;
+
+        if (isUserTurn && pendingSocialAttribution !== null) {
+          const nowMs = this.clock.now();
+          const expired =
+            nowMs - pendingSocialAttribution.turn_completed_ts > PENDING_SOCIAL_ATTRIBUTION_TTL_MS;
+          const audienceMatches =
+            audienceEntityId !== null && pendingSocialAttribution.entity_id === audienceEntityId;
+
+          if (expired || !audienceMatches) {
+            await streamWriter.append({
+              kind: "internal_event",
+              content: {
+                kind: "social_attribution_drop",
+                reason: expired ? "expired" : "audience_mismatch",
+                pending_entity_id: pendingSocialAttribution.entity_id,
+                current_audience_entity_id: audienceEntityId,
+                turn_completed_ts: pendingSocialAttribution.turn_completed_ts,
+                agent_response_summary: pendingSocialAttribution.agent_response_summary,
+              },
+            });
+            pendingSocialAttribution = null;
+          } else {
+            try {
+              this.options.socialRepository.attachSentiment(
+                pendingSocialAttribution.interaction_id,
+                {
+                  valence: perception.affectiveSignal.valence,
+                  now: nowMs,
+                },
+              );
+              audienceProfile = this.options.socialRepository.getProfile(audienceEntityId);
+              pendingSocialAttribution = null;
+            } catch (error) {
+              await this.appendHookFailureEvent(streamWriter, "social_update", error);
+            }
+          }
+        }
+
         workingMemory = this.options.workingMemoryStore.save({
           ...workingMemory,
+          pending_social_attribution: pendingSocialAttribution,
           suppressed: suppressionSet.snapshot(),
           updated_at: this.clock.now(),
         });
@@ -363,17 +425,6 @@ export class TurnOrchestrator {
         } satisfies Parameters<StreamWriter["append"]>[0];
 
         await streamWriter.append(userEntry);
-
-        const audienceEntityId =
-          input.audience === undefined || isSelfAudience
-            ? null
-            : this.options.entityRepository.resolve(input.audience);
-        const audienceEntity =
-          audienceEntityId === null ? null : this.options.entityRepository.get(audienceEntityId);
-        const audienceProfile =
-          audienceEntityId === null
-            ? null
-            : this.options.socialRepository.getProfile(audienceEntityId);
         const applicableCommitments = this.collectApplicableCommitments(
           audienceEntityId,
           perception.entities,
@@ -431,7 +482,7 @@ export class TurnOrchestrator {
           includeOpenQuestions: perception.mode === "reflective",
         };
         const retrieval = await this.options.retrievalPipeline.searchWithContext(
-          input.userMessage,
+          cognitionInput,
           retrievalOptions,
         );
         const retrievedEpisodes = retrieval.episodes;
@@ -439,7 +490,7 @@ export class TurnOrchestrator {
         const selectedSkill =
           perception.mode === "problem_solving"
             ? await this.options.skillSelector.select(
-                perception.entities[0] ?? workingMemory.current_focus ?? input.userMessage,
+                perception.entities[0] ?? workingMemory.current_focus ?? cognitionInput,
                 {
                   k: 5,
                 },
@@ -455,6 +506,7 @@ export class TurnOrchestrator {
             sessionId,
             audience: input.audience,
             userMessage: input.userMessage,
+            autonomyTrigger: input.autonomyTrigger ?? null,
             perception,
             retrievalResult: retrievedEpisodes,
             retrievedSemantic,
@@ -490,9 +542,17 @@ export class TurnOrchestrator {
           rewriteModel: this.options.config.anthropic.models.cognition,
           entityRepository: this.options.entityRepository,
         });
+        const commitmentCheckerUserMessage =
+          input.origin === "autonomous" ? input.userMessage : cognitionInput;
         const commitmentCheck = await commitmentChecker.check({
           response: deliberation.response,
-          userMessage: input.userMessage,
+          userMessage: commitmentCheckerUserMessage,
+          untrustedContext:
+            input.origin === "autonomous" &&
+            input.autonomyTrigger !== null &&
+            input.autonomyTrigger !== undefined
+              ? cognitionInput
+              : null,
           commitments: applicableCommitments,
           relevantEntities: perception.entities,
         });
@@ -520,36 +580,42 @@ export class TurnOrchestrator {
         } satisfies Parameters<StreamWriter["append"]>[0];
 
         const persistedAgentEntry = await streamWriter.append(agentEntry);
-        const responseSignal = detectAffectiveSignalHeuristically(actionResult.response);
-        let moodSnapshot = perception.affectiveSignal;
+        let moodSnapshot = workingMood;
 
-        try {
-          const nextMood = this.options.moodRepository.update(sessionId, {
-            valence: perception.affectiveSignal.valence,
-            arousal: perception.affectiveSignal.arousal,
-            reason: input.userMessage.slice(0, 120),
-            provenance: {
-              kind: "system",
-            },
-          });
-          moodSnapshot = {
-            valence: nextMood.valence,
-            arousal: nextMood.arousal,
-            dominant_emotion: perception.affectiveSignal.dominant_emotion,
-          };
-        } catch (error) {
-          await this.appendHookFailureEvent(streamWriter, "mood_update", error);
-        }
-
-        if (audienceEntityId !== null) {
+        if (input.origin !== "autonomous") {
           try {
-            this.options.socialRepository.recordInteraction(audienceEntityId, {
-              valence: responseSignal.valence,
-              now: this.clock.now(),
+            const nextMood = this.options.moodRepository.update(sessionId, {
+              valence: perception.affectiveSignal.valence,
+              arousal: perception.affectiveSignal.arousal,
+              reason: input.userMessage.slice(0, 120),
               provenance: {
                 kind: "system",
               },
             });
+            moodSnapshot = {
+              valence: nextMood.valence,
+              arousal: nextMood.arousal,
+              dominant_emotion: perception.affectiveSignal.dominant_emotion,
+            };
+          } catch (error) {
+            await this.appendHookFailureEvent(streamWriter, "mood_update", error);
+          }
+        }
+
+        let interactionRecord:
+          | ReturnType<SocialRepository["recordInteractionWithId"]>
+          | null = null;
+        if (audienceEntityId !== null) {
+          try {
+            interactionRecord = this.options.socialRepository.recordInteractionWithId(
+              audienceEntityId,
+              {
+              now: this.clock.now(),
+              provenance: {
+                kind: "system",
+              },
+              },
+            );
           } catch (error) {
             await this.appendHookFailureEvent(streamWriter, "social_update", error);
           }
@@ -585,6 +651,20 @@ export class TurnOrchestrator {
         this.options.workingMemoryStore.save({
           ...reflectedWorkingMemory,
           mood: moodSnapshot,
+          pending_social_attribution:
+            audienceEntityId !== null &&
+            interactionRecord !== null &&
+            pendingSocialAttribution === null
+              ? {
+                  entity_id: audienceEntityId,
+                  interaction_id: interactionRecord.interaction_id,
+                  agent_response_summary:
+                    actionResult.response.trim().length === 0
+                      ? null
+                      : actionResult.response.replace(/\s+/g, " ").trim().slice(0, 240),
+                  turn_completed_ts: persistedAgentEntry.timestamp,
+                }
+              : pendingSocialAttribution,
           suppressed: suppressionSet.snapshot(),
           updated_at: this.clock.now(),
         });

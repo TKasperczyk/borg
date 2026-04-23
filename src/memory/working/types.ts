@@ -35,12 +35,20 @@ export const workingSkillIdSchema = z
   })
   .transform((value) => value as SkillId);
 
+export const pendingSocialAttributionSchema = z.object({
+  entity_id: z.string().min(1),
+  interaction_id: z.number().int().positive(),
+  agent_response_summary: z.string().min(1).nullable(),
+  turn_completed_ts: z.number().finite(),
+});
+
 export const workingMemorySchema = z.object({
   session_id: workingSessionIdSchema,
   turn_counter: z.number().int().nonnegative(),
   current_focus: z.string().min(1).nullable(),
   hot_entities: z.array(z.string().min(1)),
   pending_intents: z.array(intentRecordSchema),
+  pending_social_attribution: pendingSocialAttributionSchema.nullable().default(null),
   suppressed: z.array(suppressedEntrySchema).default([]),
   mood: affectiveSignalSchema.nullable().default(null),
   last_selected_skill_id: workingSkillIdSchema.nullable().default(null),
@@ -50,6 +58,7 @@ export const workingMemorySchema = z.object({
 });
 
 export type WorkingMemory = z.infer<typeof workingMemorySchema>;
+export type PendingSocialAttribution = z.infer<typeof pendingSocialAttributionSchema>;
 
 /**
  * Derived live-state only. Phase E removed `scratchpad` (S2 planner output
@@ -66,6 +75,7 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
     current_focus: null,
     hot_entities: [],
     pending_intents: [],
+    pending_social_attribution: null,
     suppressed: [],
     mood: null,
     last_selected_skill_id: null,

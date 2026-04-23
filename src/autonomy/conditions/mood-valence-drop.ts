@@ -2,6 +2,7 @@ import type { MoodRepository } from "../../memory/affective/index.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyCondition, DueEvent } from "../types.js";
 
 const CONDITION_NAME = "mood_valence_drop" as const;
@@ -77,12 +78,18 @@ export function createMoodValenceDropCondition(
         } satisfies DueEvent<MoodValenceDropPayload>,
       ];
     },
-    buildTurn() {
+    buildTurn(event) {
       return {
         audience: "self",
         stakes: "low",
-        userMessage:
-          "Your mood has been low for several turns. Acknowledge this and consider what's contributing.",
+        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        autonomyTrigger: {
+          source_name: event.sourceName,
+          source_type: event.sourceType,
+          event_id: event.id,
+          sort_ts: event.sortTs,
+          payload: event.payload,
+        },
       };
     },
   };

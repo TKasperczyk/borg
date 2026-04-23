@@ -1598,7 +1598,7 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "relational",
+          modeWhenLlmAbsent: "idle",
         },
         affective: {
           useLlmFallback: false,
@@ -1651,7 +1651,7 @@ describe("Borg", () => {
           turnOrchestrator: {
             options: {
               socialRepository: {
-                recordInteraction: (entityId: string, interaction: unknown) => unknown;
+                recordInteractionWithId: (entityId: string, interaction: unknown) => unknown;
               };
             };
           };
@@ -1659,7 +1659,7 @@ describe("Borg", () => {
       };
       vi.spyOn(
         internal.deps.turnOrchestrator.options.socialRepository,
-        "recordInteraction",
+        "recordInteractionWithId",
       ).mockImplementation(() => {
         throw new Error("social exploded");
       });
@@ -1669,7 +1669,7 @@ describe("Borg", () => {
         audience: "Sam",
       });
 
-      expect(result.response).toContain("short for Sam");
+      expect(result.response).toContain("clarify the tone first");
       expect(borg.stream.tail(4)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -1680,6 +1680,345 @@ describe("Borg", () => {
           }),
         ]),
       );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("attributes social sentiment from the next user turn instead of the agent response", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "relational",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Warm, supportive reply for Sam.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_social_plan",
+                name: "EmitTurnPlan",
+                input: {
+                  uncertainty: "",
+                  verification_steps: [],
+                  tensions: [],
+                  voice_note: "",
+                },
+              },
+            ],
+          },
+          {
+            text: "I hear that landed badly.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "I hear that landed badly.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Can you phrase this carefully for Sam?",
+        audience: "Sam",
+      });
+
+      const profileAfterFirst = borg.social.getProfile("Sam");
+      const pendingAfterFirst = borg.workmem.load().pending_social_attribution;
+
+      expect(profileAfterFirst?.interaction_count).toBe(1);
+      expect(profileAfterFirst?.sentiment_history).toEqual([]);
+      expect(pendingAfterFirst).not.toBeNull();
+      expect(pendingAfterFirst?.interaction_id).toBeGreaterThan(0);
+
+      clock.advance(1_000);
+      await borg.turn({
+        userMessage: "I'm frustrated and upset with how that landed.",
+        audience: "Sam",
+      });
+
+      const profileAfterSecond = borg.social.getProfile("Sam");
+      const pendingAfterSecond = borg.workmem.load().pending_social_attribution;
+
+      expect(profileAfterSecond?.interaction_count).toBe(2);
+      expect(profileAfterSecond?.sentiment_history).toEqual([
+        {
+          ts: pendingAfterFirst?.turn_completed_ts ?? 0,
+          valence: -1,
+        },
+      ]);
+      expect(profileAfterSecond?.last_interaction_at).toBe(2_000);
+      expect(pendingAfterSecond?.turn_completed_ts).toBe(2_000);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("keeps pending social attribution across an autonomous wake until the next user reply", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+        autonomy: {
+          enabled: true,
+          intervalMs: 60_000,
+          maxWakesPerHour: 6,
+          triggers: {
+            commitmentExpiring: {
+              enabled: false,
+              lookaheadMs: 86_400_000,
+            },
+            openQuestionDormant: {
+              enabled: false,
+              dormantMs: 604_800_000,
+            },
+            scheduledReflection: {
+              enabled: true,
+              intervalMs: 60_000,
+            },
+            goalFollowupDue: {
+              enabled: false,
+              lookaheadMs: 604_800_000,
+              staleMs: 1_209_600_000,
+            },
+          },
+          conditions: {
+            commitmentRevoked: {
+              enabled: false,
+            },
+            moodValenceDrop: {
+              enabled: false,
+              threshold: -0.5,
+              windowN: 5,
+              activationPeriodMs: 86_400_000,
+            },
+            openQuestionUrgencyBump: {
+              enabled: false,
+              threshold: 0.9,
+            },
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "First reply for Sam.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Autonomous reflection.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Follow-up reply for Sam.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Extra fallback.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Can you phrase this carefully for Sam?",
+        audience: "Sam",
+      });
+
+      const pendingAfterFirst = borg.workmem.load().pending_social_attribution;
+      expect(pendingAfterFirst).not.toBeNull();
+
+      clock.advance(1_000);
+      const wakeResult = await borg.autonomy.scheduler.tick();
+      expect(wakeResult.firedEvents).toBe(1);
+      expect(borg.workmem.load().pending_social_attribution).toEqual(pendingAfterFirst);
+      expect(borg.social.getProfile("Sam")?.interaction_count).toBe(1);
+
+      clock.advance(1_000);
+      await borg.turn({
+        userMessage: "I'm frustrated and upset with how that landed.",
+        audience: "Sam",
+      });
+
+      const profileAfterSecond = borg.social.getProfile("Sam");
+      expect(profileAfterSecond?.interaction_count).toBe(2);
+      expect(profileAfterSecond?.sentiment_history).toEqual([
+        {
+          ts: pendingAfterFirst?.turn_completed_ts ?? 0,
+          valence: -1,
+        },
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("keeps mood neutral when only the agent response is enthusiastic", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Amazing, great, wonderful progress! I'm thrilled this is working!",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Status update on Atlas build.",
+      });
+
+      expect(borg.mood.current("default").valence).toBe(0);
+      expect(borg.mood.history("default")[0]?.valence).toBe(0);
     } finally {
       await borg.close();
     }

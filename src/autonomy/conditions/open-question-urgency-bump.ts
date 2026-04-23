@@ -2,6 +2,7 @@ import type { OpenQuestion, OpenQuestionsRepository } from "../../memory/self/in
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyCondition, DueEvent } from "../types.js";
 
 const CONDITION_NAME = "open_question_urgency_bump" as const;
@@ -69,7 +70,14 @@ export function createOpenQuestionUrgencyBumpCondition(
       return {
         audience: "self",
         stakes: "low",
-        userMessage: `The open question '${event.payload.question}' has reached urgency ${event.payload.urgency.toFixed(2)}. Consider it now.`,
+        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        autonomyTrigger: {
+          source_name: event.sourceName,
+          source_type: event.sourceType,
+          event_id: event.id,
+          sort_ts: event.sortTs,
+          payload: event.payload,
+        },
       };
     },
   };

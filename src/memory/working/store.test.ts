@@ -87,4 +87,49 @@ describe("working memory store", () => {
 
     writeSpy.mockRestore();
   });
+
+  it("caps pending intents to the most recent unique next actions", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const store = new WorkingMemoryStore({
+      dataDir: tempDir,
+      clock: new FixedClock(100),
+    });
+    const initial = store.load(DEFAULT_SESSION_ID);
+
+    const saved = store.save({
+      ...initial,
+      pending_intents: Array.from({ length: 20 }, (_, index) => ({
+        description: `Intent ${index}`,
+        next_action: `action-${index}`,
+      })).concat([
+        {
+          description: "Older duplicate",
+          next_action: "action-19",
+        },
+      ]),
+      updated_at: 200,
+    });
+
+    expect(saved.pending_intents).toHaveLength(16);
+    expect(saved.pending_intents.map((intent) => intent.next_action)).toEqual([
+      "action-4",
+      "action-5",
+      "action-6",
+      "action-7",
+      "action-8",
+      "action-9",
+      "action-10",
+      "action-11",
+      "action-12",
+      "action-13",
+      "action-14",
+      "action-15",
+      "action-16",
+      "action-17",
+      "action-18",
+      "action-19",
+    ]);
+  });
 });

@@ -2,6 +2,7 @@ import type { IdentityEvent } from "../../memory/identity/index.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 
 const TRIGGER_NAME = "scheduled_reflection" as const;
@@ -18,20 +19,6 @@ export type ScheduledReflectionTriggerOptions = {
   clock?: Clock;
   sessionId?: SessionId;
 };
-
-function formatIdentityEvents(events: readonly IdentityEvent[] | undefined): string {
-  if (events === undefined || events.length === 0) {
-    return "Recent identity changes: none.";
-  }
-
-  return [
-    "Recent identity changes:",
-    ...events.map(
-      (event) =>
-        `- [${event.record_type}] ${event.action} ${event.record_id} at ${new Date(event.ts).toISOString()}`,
-    ),
-  ].join("\n");
-}
 
 export function createScheduledReflectionTrigger(
   options: ScheduledReflectionTriggerOptions,
@@ -67,11 +54,14 @@ export function createScheduledReflectionTrigger(
       return {
         audience: "self",
         stakes: "low",
-        userMessage: [
-          "Pause and reflect: what changed in the last few turns?",
-          `Reflection cadence: every ${Math.round(event.payload.interval_ms / 60_000)} minutes.`,
-          formatIdentityEvents(event.payload.recent_identity_events),
-        ].join("\n"),
+        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        autonomyTrigger: {
+          source_name: event.sourceName,
+          source_type: event.sourceType,
+          event_id: event.id,
+          sort_ts: event.sortTs,
+          payload: event.payload,
+        },
       };
     },
   };

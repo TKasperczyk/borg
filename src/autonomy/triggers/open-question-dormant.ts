@@ -2,6 +2,7 @@ import type { OpenQuestion, OpenQuestionsRepository } from "../../memory/self/in
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 
 const TRIGGER_NAME = "open_question_dormant" as const;
@@ -28,17 +29,6 @@ export type OpenQuestionDormantTriggerOptions = {
   clock?: Clock;
   sessionId?: SessionId;
 };
-
-function formatEpisodes(episodes: readonly EpisodicSearchHit[] | undefined): string {
-  if (episodes === undefined || episodes.length === 0) {
-    return "Fresh episodic context: none found.";
-  }
-
-  return [
-    "Fresh episodic context:",
-    ...episodes.map((episode) => `- ${episode.title} (score ${episode.score.toFixed(2)})`),
-  ].join("\n");
-}
 
 export function createOpenQuestionDormantTrigger(
   options: OpenQuestionDormantTriggerOptions,
@@ -87,14 +77,14 @@ export function createOpenQuestionDormantTrigger(
       return {
         audience: "self",
         stakes: "low",
-        userMessage: [
-          "An open question has gone dormant.",
-          `Question: ${event.payload.question}`,
-          `Urgency: ${event.payload.urgency.toFixed(2)}`,
-          `Last touched: ${new Date(event.payload.last_touched).toISOString()}`,
-          formatEpisodes(event.payload.related_episodes),
-          "Review whether anything new has emerged or what follow-up should happen next.",
-        ].join("\n"),
+        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        autonomyTrigger: {
+          source_name: event.sourceName,
+          source_type: event.sourceType,
+          event_id: event.id,
+          sort_ts: event.sortTs,
+          payload: event.payload,
+        },
       };
     },
   };

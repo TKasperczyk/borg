@@ -2,6 +2,7 @@ import type { CommitmentRecord, CommitmentRepository } from "../../memory/commit
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyCondition, DueEvent } from "../types.js";
 
 const CONDITION_NAME = "commitment_revoked" as const;
@@ -63,11 +64,17 @@ export function createCommitmentRevokedCondition(
         .filter((event): event is DueEvent<CommitmentRevokedPayload> => event !== null);
     },
     buildTurn(event) {
-      const reason = event.payload.reason ?? "no reason was recorded";
       return {
         audience: "self",
         stakes: "low",
-        userMessage: `You revoked the commitment '${event.payload.directive}' because '${reason}'. Reflect on this change.`,
+        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        autonomyTrigger: {
+          source_name: event.sourceName,
+          source_type: event.sourceType,
+          event_id: event.id,
+          sort_ts: event.sortTs,
+          payload: event.payload,
+        },
       };
     },
   };

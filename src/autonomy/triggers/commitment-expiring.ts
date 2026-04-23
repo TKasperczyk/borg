@@ -2,6 +2,7 @@ import type { CommitmentRecord, CommitmentRepository } from "../../memory/commit
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 
 const TRIGGER_NAME = "commitment_expiring" as const;
@@ -23,22 +24,6 @@ export type CommitmentExpiringTriggerOptions = {
   clock?: Clock;
   sessionId?: SessionId;
 };
-
-function formatActiveCommitments(commitments: readonly CommitmentRecord[] | undefined): string {
-  if (commitments === undefined || commitments.length === 0) {
-    return "Active commitments snapshot: none.";
-  }
-
-  return [
-    "Active commitments snapshot:",
-    ...commitments
-      .slice(0, 6)
-      .map(
-        (commitment) =>
-          `- [${commitment.type}] ${commitment.directive}${commitment.expires_at === null ? "" : ` (expires ${new Date(commitment.expires_at).toISOString()})`}`,
-      ),
-  ].join("\n");
-}
 
 export function createCommitmentExpiringTrigger(
   options: CommitmentExpiringTriggerOptions,
@@ -104,14 +89,14 @@ export function createCommitmentExpiringTrigger(
       return {
         audience: "self",
         stakes: "low",
-        userMessage: [
-          "A commitment is about to expire.",
-          `Commitment: [${event.payload.type}] ${event.payload.directive}`,
-          `Priority: ${event.payload.priority}`,
-          `Expires at: ${new Date(event.payload.expires_at).toISOString()}`,
-          formatActiveCommitments(event.payload.active_commitments),
-          "Decide whether to renew it, let it expire, or note a follow-up.",
-        ].join("\n"),
+        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        autonomyTrigger: {
+          source_name: event.sourceName,
+          source_type: event.sourceType,
+          event_id: event.id,
+          sort_ts: event.sortTs,
+          payload: event.payload,
+        },
       };
     },
   };

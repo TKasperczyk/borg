@@ -2,6 +2,7 @@ import type { GoalRecord, GoalTreeNode, GoalsRepository } from "../../memory/sel
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 
 const TRIGGER_NAME = "goal_followup_due" as const;
@@ -43,22 +44,6 @@ function flattenGoals(goals: readonly GoalTreeNode[]): GoalRecord[] {
   }
 
   return flattened;
-}
-
-function formatReason(payload: GoalFollowupDuePayload, nowMs: number): string {
-  const deadlineText =
-    payload.target_at === null
-      ? null
-      : payload.target_at <= nowMs
-        ? `the deadline has passed (${new Date(payload.target_at).toISOString()})`
-        : `the deadline is approaching (${new Date(payload.target_at).toISOString()})`;
-  const staleText = `no progress has been recorded for ${payload.days_stale} day${payload.days_stale === 1 ? "" : "s"}`;
-
-  if (payload.reason === "both") {
-    return `${deadlineText ?? "the deadline is approaching"}, and ${staleText}`;
-  }
-
-  return payload.reason === "deadline" ? (deadlineText ?? "the deadline is approaching") : staleText;
 }
 
 export function createGoalFollowupDueTrigger(
@@ -128,7 +113,14 @@ export function createGoalFollowupDueTrigger(
       return {
         audience: "self",
         stakes: "low",
-        userMessage: `Your goal '${event.payload.description}' needs attention: ${formatReason(event.payload, clock.now())}. What's the next move?`,
+        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        autonomyTrigger: {
+          source_name: event.sourceName,
+          source_type: event.sourceType,
+          event_id: event.id,
+          sort_ts: event.sortTs,
+          payload: event.payload,
+        },
       };
     },
   };
