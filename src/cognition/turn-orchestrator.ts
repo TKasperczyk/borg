@@ -425,6 +425,16 @@ export class TurnOrchestrator {
         } satisfies Parameters<StreamWriter["append"]>[0];
 
         await streamWriter.append(userEntry);
+        await streamWriter.append({
+          kind: "perception",
+          content: {
+            mode: perception.mode,
+            entities: perception.entities,
+            temporalCue: perception.temporalCue,
+            affectiveSignal: perception.affectiveSignal,
+          },
+          ...(input.audience === undefined ? {} : { audience: input.audience }),
+        });
         const applicableCommitments = this.collectApplicableCommitments(
           audienceEntityId,
           perception.entities,

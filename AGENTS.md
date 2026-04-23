@@ -7,7 +7,7 @@ TypeScript library (plus thin CLI and optional headless daemon) that provides
 primitives for agent memory, cognition, and evolving identity.
 
 Read [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full design. It is the
-authoritative reference for the seven memory bands, cognitive loop, offline
+authoritative reference for the current memory bands, cognitive loop, offline
 processes, and retrieval pipeline.
 
 ## Stack
@@ -44,7 +44,7 @@ src/
     social/
     working/
   cognition/      perception, attention, deliberation, action, reflection
-  offline/        consolidator, reflector, curator, overseer, dreamer, ruminator
+  offline/        consolidator, reflector, curator, overseer, ruminator, self-narrator
   retrieval/      unified context-aware retrieval pipeline
   storage/        lancedb + sqlite abstractions
   embeddings/     embedding client

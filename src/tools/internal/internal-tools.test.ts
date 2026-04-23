@@ -46,6 +46,7 @@ async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
     embeddingDimensions: 4,
     embeddingClient: new TestEmbeddingClient(),
     llmClient: llm,
+    liveExtraction: false,
   });
 }
 
@@ -132,6 +133,7 @@ describe("internal tools", () => {
         kind: "concept",
         label: "Planning",
         description: "Planning work",
+        domain: "process",
         sourceEpisodeIds: [createEpisodeId()],
       });
       const child = await borg.semantic.nodes.add({
@@ -140,6 +142,7 @@ describe("internal tools", () => {
         description: "Autonomy work",
         sourceEpisodeIds: [createEpisodeId()],
       });
+      expect(root.domain).toBe("process");
       borg.semantic.edges.add({
         from_node_id: root.id,
         to_node_id: child.id,

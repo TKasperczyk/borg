@@ -188,6 +188,14 @@ function mergeAliases(left: readonly string[], right: readonly string[]): string
   ];
 }
 
+function buildNodeEmbeddingText(input: {
+  label: string;
+  description: string;
+  aliases: readonly string[];
+}): string {
+  return `${input.label}\n${input.description}\n${input.aliases.join(" ")}`;
+}
+
 function normalizeDomain(value: string | null | undefined): string | null {
   const trimmed = value?.trim().toLowerCase() ?? "";
   return trimmed.length > 0 ? trimmed : null;
@@ -258,8 +266,15 @@ export class SemanticExtractor {
     const candidateScopeKeys = resolveEpisodeScopeKeys(sourceEpisodes);
 
     try {
+      const candidateLabel = candidate.label.trim();
+      const candidateDescription = candidate.description.trim();
+      const candidateAliases = mergeAliases(candidate.aliases, []);
       const embedding = await this.options.embeddingClient.embed(
-        `${candidate.label}\n${candidate.description}\n${candidate.aliases.join(" ")}`,
+        buildNodeEmbeddingText({
+          label: candidateLabel,
+          description: candidateDescription,
+          aliases: candidateAliases,
+        }),
       );
       const isCompatibleNode = async (node: SemanticNode): Promise<boolean> => {
         if (node.kind !== candidate.kind) {
@@ -308,10 +323,10 @@ export class SemanticExtractor {
         const inserted = await this.options.nodeRepository.insert({
           id: createSemanticNodeId(),
           kind: candidate.kind,
-          label: candidate.label.trim(),
-          description: candidate.description.trim(),
+          label: candidateLabel,
+          description: candidateDescription,
           domain: normalizeDomain(candidate.domain),
-          aliases: mergeAliases(candidate.aliases, []),
+          aliases: candidateAliases,
           confidence: Math.min(candidate.confidence, this.confidenceCeiling),
           source_episode_ids: sourceEpisodeIds,
           created_at: nowMs,
@@ -328,20 +343,27 @@ export class SemanticExtractor {
         };
       }
 
+      const nextDescription =
+        candidate.confidence >= existing.confidence ? candidateDescription : existing.description;
+      const nextAliases = mergeAliases(existing.aliases, [candidateLabel, ...candidate.aliases]);
+      const updatedEmbedding = await this.options.embeddingClient.embed(
+        buildNodeEmbeddingText({
+          label: existing.label,
+          description: nextDescription,
+          aliases: nextAliases,
+        }),
+      );
       const updated = await this.options.nodeRepository.update(existing.id, {
-        description:
-          candidate.confidence >= existing.confidence
-            ? candidate.description.trim()
-            : existing.description,
+        description: nextDescription,
         domain: existing.domain ?? normalizeDomain(candidate.domain),
-        aliases: mergeAliases(existing.aliases, [candidate.label, ...candidate.aliases]),
+        aliases: nextAliases,
         confidence: Math.max(
           existing.confidence * 0.99,
           Math.min(candidate.confidence, this.confidenceCeiling),
         ),
         source_episode_ids: sourceEpisodeIds,
         last_verified_at: nowMs,
-        embedding,
+        embedding: updatedEmbedding,
         archived: false,
       });
 

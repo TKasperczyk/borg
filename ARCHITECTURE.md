@@ -100,9 +100,9 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 │  │                                                                 │    │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │    │
 │  │  │  COMMITMENTS │  │    SOCIAL    │  │    WORKING           │  │    │
-│  │  │ (per-audience│  │ (per-person: │  │  (scratchpad,        │  │    │
-│  │  │  promises,   │  │  trust,      │  │   current focus,     │  │    │
-│  │  │  boundaries) │  │  norms,      │  │   open questions)    │  │    │
+│  │  │ (per-audience│  │ (per-person: │  │  (current focus,     │  │    │
+│  │  │  promises,   │  │  trust,      │  │   hot entities,      │  │    │
+│  │  │  boundaries) │  │  norms,      │  │   pending intents)   │  │    │
 │  │  │              │  │  history)    │  │                      │  │    │
 │  │  └──────────────┘  └──────────────┘  └──────────────────────┘  │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
@@ -111,9 +111,10 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 │  ┌─────────────────────────────────────────────────────────────────┐    │
 │  │                 OFFLINE / DREAM PROCESSES                       │    │
 │  │                                                                 │    │
-│  │  Consolidator │ Reflector │ Dreamer │ Curator │ Ruminator       │    │
-│  │  (merge/      (extract    (generate (prune,   (revisit          │    │
-│  │   contradict) insights)   hypoths)  promote)  unresolved)       │    │
+│  │  Consolidator │ Reflector │ Curator │ Overseer │ Ruminator       │    │
+│  │  (merge/      (extract    (prune,   (QA /      (revisit          │    │
+│  │   contradict) insights)   promote)  drift)     unresolved)       │    │
+│  │  Self-narrator (growth markers / autobiographical summaries)    │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -125,7 +126,7 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 
 ---
 
-## Part 4: Data Model -- Seven Memory Bands
+## Part 4: Data Model -- Stream + Eight Memory Bands
 
 ### 1. Stream (raw log)
 
@@ -235,19 +236,64 @@ Mood influences retrieval weighting -- mood-congruent memories get a salience bo
 
 The `autobiographical_arc` + `growth_markers` pair is what turns memory into *identity-that-evolves*.
 
-### 7. Working memory (ephemeral)
+### 7. Commitments
 
 ```typescript
 {
-  scratchpad: string,           // free-form agent monologue for current turn
+  id, type: "promise" | "boundary",
+  directive,
+  priority,
+  made_to_entity?,
+  restricted_audience?,
+  about_entity?,
+  provenance,
+  created_at,
+  expires_at?,
+  revoked_at?,
+  superseded_by?
+}
+```
+
+Commitments are scoped, first-class memory. They are retrieved into the prompt
+before speaking rather than enforced only as a post-hoc filter.
+
+### 8. Social
+
+```typescript
+{
+  entity_id,
+  trust, attachment,
+  communication_style?,
+  shared_history_summary?,
+  last_interaction_at?,
+  interaction_count,
+  commitment_count,
+  sentiment_history: [{ ts, valence }],
+  notes?
+}
+```
+
+Social memory tracks per-entity trust/history and stores user-turn sentiment on
+interactions separately from the agent's own outgoing tone.
+
+### 9. Working memory (ephemeral)
+
+```typescript
+{
   current_focus: string,        // what I'm attending to
-  recent_thoughts: string[],    // short rolling buffer
   hot_entities: string[],       // currently salient
+  pending_social_attribution: { entity_id, interaction_id, turn_completed_ts }?,
+  suppressed: [{ id, reason, until_turn }],
+  mood: { valence, arousal, dominant_emotion }?,
+  last_selected_skill_id: string?,
+  last_selected_skill_turn: number?,
+  mode: "problem_solving" | "relational" | "reflective" | "idle" | null,
   pending_intents: [{ description, next_action }]
 }
 ```
 
-Wiped or compressed at end-of-turn and promoted-or-dropped by the reflector.
+Derived live-turn state only. Scratchpad/recent-thoughts were removed; persistent
+thinking lives in the stream as `thought` entries.
 
 ---
 
@@ -278,8 +324,7 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
 
 **Deliberation**
 - Cheap path (System 1): high retrieval confidence + low stakes → respond directly.
-- Expensive path (System 2): low confidence OR high stakes OR contradiction detected → internal monologue in scratchpad, re-retrieved, possibly a second LLM call.
-- Scratchpad persisted to stream as a `thought` entry.
+- Expensive path (System 2): low confidence OR high stakes OR contradiction detected → internal monologue persisted as `thought` stream entries, re-retrieved, possibly a second LLM call.
 
 **Action**
 - Generate response + tool calls
@@ -287,7 +332,7 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
 - Emit structured `intent` records alongside user-visible output
 
 **Reflection** (post-action, before next input)
-- Promote worth-remembering material from scratchpad to episodic
+- Promote worth-remembering material from the completed turn / stream to episodic
 - Update procedural confidence (Beta update if an approach was tried)
 - Update mood state
 - Flag anything needing offline attention
@@ -297,13 +342,11 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
 Run on idle, on sleep command, or on cron. Each has a **budget** and produces an **audit log**.
 
 - **Consolidator** -- find redundant episodes, merge with lineage.
-- **Contradiction Resolver** -- weigh evidence, produce winning proposition + keep loser with `superseded_by`. Explicit workflow.
 - **Reflector** -- pick N recent episodes, generate 1-3 new semantic propositions + edges. Require ≥ K supporting episodes and attach confidence to guard against hallucinated patterns.
-- **Dreamer** -- counterfactual / hypothetical generation. Produces candidate procedural heuristics with low initial confidence, validated on next use.
 - **Curator** -- apply decay, promote/demote tiers, archive cold memories, prune affective state.
 - **Ruminator** -- revisit `open_questions` and unresolved items; generate next-step suggestions; update priorities.
 - **Overseer** -- QA pass: flag misattributions, temporal drift, identity-inconsistent memories.
-- **Self-narrator** -- periodically (weekly?) generate `growth_marker` entries.
+- **Self-narrator** -- periodically generate autobiographical summaries and `growth_marker` entries.
 
 Every offline run emits a `dream_report` entry to stream.
 
@@ -373,7 +416,7 @@ Ranked by value / cost.
 
 **LLM call budget.** Dream cycles, mood-tagging extractions, affective re-ranking, reflection passes, overseer checks -- easily $20-50/day for a single user. Batch aggressively and cheap-model (Haiku) everything that isn't user-facing.
 
-**Schema rigidity.** Seven memory bands = seven schemas, seven retrieval paths, seven migration stories. Start with **Stream + Episodic + Semantic + Self**, get those solid, then add the rest.
+**Schema rigidity.** Multiple memory bands means multiple schemas, retrieval paths, and migration stories. Start with **Stream + Episodic + Semantic + Self**, get those solid, then add the rest.
 
 **Insight generation is the shiny risk.** Most likely to produce confidently wrong memories that poison future retrievals. Build contradiction detector and confidence decay first; gate dream-generated memories behind a review queue.
 
@@ -398,7 +441,7 @@ Ranked by value / cost.
 - **Milestone**: ingest, retrieve, cite, decay. Feature parity with kira-memory.
 
 **Phase 1 -- Cognitive loop**
-- Working memory band (scratchpad)
+- Working memory band (live turn state only; no scratchpad cache)
 - System-1 / System-2 branching
 - Post-turn reflection → episodic promotion
 - Commitment band

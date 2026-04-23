@@ -186,6 +186,37 @@ describe("TurnContextCompiler", () => {
     expect(window.messages.map((m) => m.content)).toEqual(["first", "response"]);
   });
 
+  it("collapses same-role adjacency by keeping the newest entry in each run", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+
+    try {
+      await writer.append({ kind: "user_msg", content: "first user" });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "older assistant" });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "newer assistant" });
+      clock.advance(10);
+      await writer.append({ kind: "user_msg", content: "older followup" });
+      clock.advance(10);
+      await writer.append({ kind: "user_msg", content: "newer followup" });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "final answer" });
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler().compile(makeReader(dataDir));
+
+    expect(window.messages.map((message) => message.content)).toEqual([
+      "first user",
+      "newer assistant",
+      "newer followup",
+      "final answer",
+    ]);
+  });
+
   it("drops a leading assistant entry so the window starts with user", async () => {
     const dataDir = createTempDir();
     const clock = new ManualClock(1_000);

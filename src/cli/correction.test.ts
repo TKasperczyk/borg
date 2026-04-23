@@ -65,6 +65,7 @@ function openCorrectionBorg(tempDir: string, llm = new FakeLLMClient()) {
     embeddingDimensions: 4,
     embeddingClient: new CliEmbeddingClient(),
     llmClient: llm,
+    liveExtraction: false,
   });
 }
 

@@ -198,6 +198,131 @@ describe("episodic extractor", () => {
     });
   });
 
+  it("filters internal scaffolding out of episodic extraction chunks", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+    const entityRepository = new EntityRepository({
+      db,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const user = await writer.append({
+      kind: "user_msg",
+      content: "Sam asked about the Atlas deployment issue.",
+    });
+    clock.advance(10);
+    await writer.append({
+      kind: "thought",
+      content: "internal plan: inspect pnpm lockfile before answering",
+    });
+    clock.advance(10);
+    await writer.append({
+      kind: "internal_event",
+      content: {
+        kind: "debug_hook",
+        detail: "non-conversational scaffolding",
+      },
+    });
+    clock.advance(10);
+    await writer.append({
+      kind: "perception",
+      content: {
+        mode: "problem_solving",
+        entities: ["Atlas"],
+        temporalCue: null,
+        affectiveSignal: {
+          valence: -0.3,
+          arousal: 0.4,
+          dominant_emotion: "frustration",
+        },
+      },
+    });
+    clock.advance(10);
+    await writer.append({
+      kind: "tool_call",
+      content: {
+        call_id: "call_1",
+        tool_name: "tool.test.echo",
+        input: {
+          value: "Atlas",
+        },
+        origin: "deliberator",
+      },
+    });
+    clock.advance(10);
+    const agent = await writer.append({
+      kind: "agent_msg",
+      content: "I suggested rerunning pnpm install before the next deploy.",
+    });
+
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Atlas deploy debugging",
+            narrative:
+              "Sam asked about the Atlas deployment issue. I suggested rerunning pnpm install before the next deploy.",
+            source_stream_ids: [user.id, agent.id],
+            participants: ["Sam"],
+            tags: ["atlas", "deploy"],
+            confidence: 0.8,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: tempDir,
+      episodicRepository: repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository,
+      clock,
+    });
+
+    const result = await extractor.extractFromStream();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const listed = await repo.listAll();
+
+    expect(result).toEqual({
+      inserted: 1,
+      updated: 0,
+      skipped: 0,
+    });
+    expect(prompt).not.toContain("internal plan");
+    expect(prompt).not.toContain('"perception"');
+    expect(prompt).not.toContain('"tool_call"');
+    expect(prompt).not.toContain("non-conversational scaffolding");
+    expect(listed[0]?.source_stream_ids).toEqual([user.id, agent.id]);
+  });
+
   it("treats replayed chunks as idempotent no-ops keyed by source stream ids", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new ManualClock(1_000);

@@ -50,7 +50,7 @@ export type StreamIngestionCoordinatorOptions = {
    * runs after the turn's response is returned -- failure should not
    * surface to the user). Pass a hook to log or rethrow.
    */
-  onError?: (error: unknown) => void | Promise<void>;
+  onError?: (error: unknown, sessionId: SessionId) => void | Promise<void>;
   /**
    * Called when resuming from a legacy watermark that has a timestamp but no
    * entry id. Defaults to console.warn so the fallback is observable without
@@ -370,7 +370,7 @@ export class StreamIngestionCoordinator {
       };
     } catch (error) {
       try {
-        await this.options.onError?.(error);
+      await this.options.onError?.(error, sessionId);
       } catch {
         // Best-effort.
       }

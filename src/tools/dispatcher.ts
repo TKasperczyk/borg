@@ -85,13 +85,18 @@ function withTimeout<Output>(
       error,
     }),
   );
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
   return Promise.race([
     settledPromise,
     new Promise<{ kind: "timeout" }>((resolve) => {
-      setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+      timeoutHandle = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
     }),
-  ]);
+  ]).finally(() => {
+    if (timeoutHandle !== undefined) {
+      clearTimeout(timeoutHandle);
+    }
+  });
 }
 
 export class ToolDispatcher {

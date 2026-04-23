@@ -8,6 +8,13 @@ import type { TurnInput, TurnOrchestrator } from "../cognition/index.js";
 import type { AutonomyTickEventResult, AutonomyWakeSource, TickResult, DueEvent } from "./types.js";
 
 type IntervalHandle = ReturnType<typeof setInterval>;
+type RetryBackoffState = {
+  delayMs: number;
+  nextEligibleTs: number;
+};
+
+const INITIAL_RETRY_BACKOFF_MS = 30_000;
+const MAX_RETRY_BACKOFF_MS = 3_600_000;
 
 export type AutonomySchedulerObserver = {
   onTick?(result: TickResult): void | Promise<void>;
@@ -52,6 +59,7 @@ export class AutonomyScheduler {
   private readonly setIntervalFn: typeof setInterval;
   private readonly clearIntervalFn: typeof clearInterval;
   private readonly wakeHistory: number[] = [];
+  private readonly retryBackoff = new Map<string, RetryBackoffState>();
   private intervalHandle: IntervalHandle | null = null;
   private activeTick: Promise<TickResult> | null = null;
   private observer: AutonomySchedulerObserver | null = null;
@@ -124,7 +132,21 @@ export class AutonomyScheduler {
       };
     }
 
-    const dueEvents = await this.scanDueEvents();
+    const scannedDueEvents = await this.scanDueEvents();
+    const dueEventKeys = new Set(
+      scannedDueEvents.map(({ event }) => `${event.sourceType}:${event.sourceName}:${event.id}`),
+    );
+
+    for (const key of this.retryBackoff.keys()) {
+      if (!dueEventKeys.has(key)) {
+        this.retryBackoff.delete(key);
+      }
+    }
+
+    const dueEvents = scannedDueEvents.filter(({ event }) => {
+      const backoff = this.retryBackoff.get(`${event.sourceType}:${event.sourceName}:${event.id}`);
+      return backoff === undefined || backoff.nextEligibleTs <= nowMs;
+    });
     const writer = this.options.createStreamWriter(this.sessionId);
     const eventResults: AutonomyTickEventResult[] = [];
     let firedEvents = 0;
@@ -167,6 +189,7 @@ export class AutonomyScheduler {
         if ("toolError" in preparedEvent) {
           errorCount += 1;
           const outcomeSummary = `Autonomous preparation failed: ${preparedEvent.toolError}`;
+          this.scheduleRetryBackoff(dueEvent);
           await writer.append({
             kind: "internal_event",
             content: {
@@ -217,6 +240,7 @@ export class AutonomyScheduler {
               lastTs: wakeEntry.timestamp,
               lastEntryId: wakeEntry.id,
             });
+            this.retryBackoff.delete(`${dueEvent.sourceType}:${dueEvent.sourceName}:${dueEvent.id}`);
             firedEvents += 1;
             eventResults.push({
               id: dueEvent.id,
@@ -229,6 +253,7 @@ export class AutonomyScheduler {
             });
           } catch (error) {
             errorCount += 1;
+            this.scheduleRetryBackoff(dueEvent);
             eventResults.push({
               id: dueEvent.id,
               sourceName: dueEvent.sourceName,
@@ -263,6 +288,7 @@ export class AutonomyScheduler {
           } else {
             errorCount += 1;
           }
+          this.scheduleRetryBackoff(dueEvent);
 
           eventResults.push({
             id: dueEvent.id,
@@ -519,5 +545,19 @@ export class AutonomyScheduler {
     } catch {
       // Observer failures must not stop the scheduler loop.
     }
+  }
+
+  private scheduleRetryBackoff(dueEvent: DueEvent): void {
+    const backoffKey = `${dueEvent.sourceType}:${dueEvent.sourceName}:${dueEvent.id}`;
+    const previousBackoff = this.retryBackoff.get(backoffKey);
+    const delayMs =
+      previousBackoff === undefined
+        ? INITIAL_RETRY_BACKOFF_MS
+        : Math.min(previousBackoff.delayMs * 2, MAX_RETRY_BACKOFF_MS);
+
+    this.retryBackoff.set(backoffKey, {
+      delayMs,
+      nextEligibleTs: this.clock.now() + delayMs,
+    });
   }
 }

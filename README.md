@@ -10,15 +10,16 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the design document.
 
 ## Status
 
-Feature-complete against the design in `ARCHITECTURE.md` (7 sprints delivered).
+Feature-complete against the design in `ARCHITECTURE.md` (18 sprints delivered).
 Not yet used in anger. No stability guarantees; schemas, storage layout, and
 public API may still shift as the library gets exercised.
 
 ## What it does
 
-- **Stream-first logging.** Append-only JSONL log of every perception, thought,
-  tool call, and message. Everything else is derived from this.
-- **Seven memory bands.** Episodic (what happened), semantic (what I know),
+- **Stream-first logging.** Append-only JSONL log of every user/agent message,
+  perception, thought, tool call/result, and internal event. Everything else
+  is derived from this.
+- **Eight memory bands.** Episodic (what happened), semantic (what I know),
   procedural (how I do things, as Bayesian skills), affective (how I felt / feel),
   self (values, goals, traits, autobiographical arc, growth markers,
   open questions), commitments (scoped promises + guard), social (per-person

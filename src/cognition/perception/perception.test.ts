@@ -82,6 +82,38 @@ describe("perception", () => {
     });
   });
 
+  it("runs the entity fallback for long zero-hit text and truncates the prompt", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: ENTITY_TOOL_NAME,
+              input: { entities: ["pgvector", "qdrant"] },
+            },
+          ],
+        },
+      ],
+    });
+    const extractor = new EntityExtractor({
+      llmClient: llm,
+      model: "haiku",
+      useLlmFallback: true,
+      shortTextThreshold: 40,
+    });
+    const longLowercaseText = `${"pgvector qdrant ".repeat(180)}borg memory index drift`;
+
+    const entities = await extractor.extractEntities(longLowercaseText);
+
+    expect(entities).toEqual(["pgvector", "qdrant"]);
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "").length).toBeLessThanOrEqual(2_000);
+  });
+
   it("produces a perception result with null temporal cue when no LLM is configured", async () => {
     // Previously this module had a hardcoded "yesterday" -> 24h-window
     // pattern. With the heuristic tier removed, temporal extraction is

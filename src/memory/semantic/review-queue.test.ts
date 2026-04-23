@@ -133,7 +133,10 @@ describe("review queue", () => {
     expect(openQuestions[0]?.source).toBe("contradiction");
     expect(openQuestions[0]?.related_semantic_node_ids).toEqual([first.id, second.id]);
 
-    const resolved = await reviewQueue.resolve(openItems[0]!.id, "invalidate");
+    const resolved = await reviewQueue.resolve(openItems[0]!.id, {
+      decision: "invalidate",
+      winner_node_id: first.id,
+    });
     const updatedSecond = await nodeRepository.get(second.id);
 
     expect(resolved?.resolution).toBe("invalidate");
@@ -250,6 +253,90 @@ describe("review queue", () => {
       content: {
         hook: "review_queue_open_question",
       },
+    });
+  });
+
+  it("requires an explicit winner for contradiction invalidation", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...semanticMigrations, ...selfMigrations],
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const reviewQueue = new ReviewQueueRepository({
+      db,
+      clock,
+      semanticNodeRepository: nodeRepository,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+      enqueueReview: (input) => reviewQueue.enqueue(input),
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const episodeIds = ["ep_aaaaaaaaaaaaaaaa" as EpisodeId];
+    const first = await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "proposition",
+      label: "Atlas succeeds",
+      description: "Atlas succeeds",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: episodeIds,
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const second = await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "proposition",
+      label: "Atlas fails",
+      description: "Atlas does not succeed",
+      aliases: [],
+      confidence: 0.6,
+      source_episode_ids: episodeIds,
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+
+    edgeRepository.addEdge({
+      from_node_id: first.id,
+      to_node_id: second.id,
+      relation: "contradicts",
+      confidence: 0.7,
+      evidence_episode_ids: episodeIds,
+      created_at: 1_000,
+      last_verified_at: 1_000,
+    });
+
+    const openItem = reviewQueue.getOpen()[0];
+
+    await expect(reviewQueue.resolve(openItem!.id, "invalidate")).rejects.toMatchObject({
+      code: "REVIEW_QUEUE_WINNER_REQUIRED",
     });
   });
 
@@ -421,7 +508,7 @@ describe("review queue", () => {
           last_progress_ts: 7_000,
         },
         proposed_provenance: {
-          kind: "offline",
+          kind: "online",
           process: "reflector",
         },
       },
@@ -457,7 +544,22 @@ describe("review queue", () => {
       expect.objectContaining({
         progress_notes: "Reviewed progress.",
         provenance: {
-          kind: "offline",
+          kind: "online",
+          process: "reflector",
+        },
+      }),
+    );
+    expect(
+      harness.identityEventRepository
+        .list({
+          recordType: "goal",
+          recordId: goal.id,
+        })
+        .find((event) => event.review_item_id === patchGoal.id),
+    ).toEqual(
+      expect.objectContaining({
+        provenance: {
+          kind: "online",
           process: "reflector",
         },
       }),
@@ -619,6 +721,52 @@ describe("review queue", () => {
         legacyTemporalDrift.id,
         legacyIdentityRepair.id,
       ]),
+    );
+  });
+
+  it("rejects malformed semantic pair refs for supersede/invalidate but still allows dismiss", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(9_000),
+    });
+    cleanup.push(harness.cleanup);
+
+    const malformedDuplicate = harness.reviewQueueRepository.enqueue({
+      kind: "duplicate",
+      refs: {
+        node_ids: ["semn_aaaaaaaaaaaaaaaa"],
+      },
+      reason: "legacy row lost one side of the pair",
+    });
+    const malformedContradiction = harness.reviewQueueRepository.enqueue({
+      kind: "contradiction",
+      refs: {},
+      reason: "legacy row lost the pair refs",
+    });
+
+    await expect(
+      harness.reviewQueueRepository.resolve(malformedDuplicate.id, {
+        decision: "supersede",
+        winner_node_id: "semn_aaaaaaaaaaaaaaaa",
+      }),
+    ).rejects.toMatchObject({
+      name: "SemanticError",
+      code: "REVIEW_QUEUE_MALFORMED_PAIR_REFS",
+    });
+    await expect(
+      harness.reviewQueueRepository.resolve(malformedContradiction.id, {
+        decision: "invalidate",
+        winner_node_id: "semn_bbbbbbbbbbbbbbbb",
+      }),
+    ).rejects.toMatchObject({
+      name: "SemanticError",
+      code: "REVIEW_QUEUE_MALFORMED_PAIR_REFS",
+    });
+
+    const dismissed = await harness.reviewQueueRepository.resolve(malformedDuplicate.id, "dismiss");
+
+    expect(dismissed?.resolution).toBe("dismiss");
+    expect(harness.reviewQueueRepository.getOpen().map((item) => item.id)).toContain(
+      malformedContradiction.id,
     );
   });
 

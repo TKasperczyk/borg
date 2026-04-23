@@ -15,7 +15,7 @@ import { retrievalMigrations } from "./retrieval/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, SqliteDatabase } from "./storage/sqlite/index.js";
 import { ManualClock } from "./util/clock.js";
-import { createEpisodeId, createStreamEntryId } from "./util/ids.js";
+import { createEpisodeId, createSessionId, createStreamEntryId } from "./util/ids.js";
 import { Borg } from "./borg.js";
 
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
@@ -643,6 +643,243 @@ describe("Borg", () => {
     }
   });
 
+  it("enables live extraction by default", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Try the rollback plan.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+    });
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          streamIngestionCoordinator?: {
+            options: {
+              extractor: {
+                extractFromStream(): Promise<{ inserted: number; updated: number; skipped: number }>;
+              };
+            };
+          };
+        };
+      };
+      const coordinator = internal.deps.streamIngestionCoordinator;
+      expect(coordinator).toBeDefined();
+      let extractionCalls = 0;
+      coordinator!.options.extractor = {
+        async extractFromStream(): Promise<{ inserted: number; updated: number; skipped: number }> {
+          extractionCalls += 1;
+          return {
+            inserted: 0,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+      };
+
+      await borg.turn({
+        userMessage: "Atlas deploy failed again.",
+      });
+      await borg.close();
+
+      expect(extractionCalls).toBe(1);
+    } finally {
+      await borg.close().catch(() => undefined);
+    }
+  });
+
+  it("logs perception entries after the user message", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Try the rollback plan.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Atlas deploy failed again.",
+        stakes: "low",
+      });
+
+      expect(borg.stream.tail(3).map((entry) => entry.kind)).toEqual([
+        "user_msg",
+        "perception",
+        "agent_msg",
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("logs live extraction failures to the triggering session stream", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const sessionId = createSessionId();
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Try the rollback plan.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      liveExtraction: true,
+    });
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          streamIngestionCoordinator?: {
+            options: {
+              extractor: {
+                extractFromStream(): Promise<{ inserted: number; updated: number; skipped: number }>;
+              };
+            };
+          };
+        };
+      };
+      const coordinator = internal.deps.streamIngestionCoordinator;
+      expect(coordinator).toBeDefined();
+      coordinator!.options.extractor = {
+        async extractFromStream(): Promise<never> {
+          throw new Error("boom");
+        },
+      };
+
+      await borg.turn({
+        userMessage: "Atlas deploy failed again.",
+        sessionId,
+      });
+      await borg.close();
+
+      const failedSessionEntries = borg.stream.tail(10, {
+        session: sessionId,
+      });
+      const defaultSessionEntries = borg.stream.tail(10);
+
+      expect(
+        failedSessionEntries.some(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            String(entry.content).includes("Live episodic extraction failed: boom"),
+        ),
+      ).toBe(true);
+      expect(
+        defaultSessionEntries.some(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            String(entry.content).includes("Live episodic extraction failed: boom"),
+        ),
+      ).toBe(false);
+    } finally {
+      await borg.close().catch(() => undefined);
+    }
+  });
+
   it("runs the full cognitive turn loop", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -779,8 +1016,9 @@ describe("Borg", () => {
       });
       // Phase D: the planner's EmitTurnPlan tool-call shows up as a
       // compact "plan: ..." thought entry persisted before the agent_msg.
-      expect(borg.stream.tail(3).map((entry) => entry.kind)).toEqual([
+      expect(borg.stream.tail(4).map((entry) => entry.kind)).toEqual([
         "user_msg",
+        "perception",
         "thought",
         "agent_msg",
       ]);
@@ -1394,8 +1632,9 @@ describe("Borg", () => {
         turn_counter: 1,
         mode: "problem_solving",
       });
-      expect(borg.stream.tail(2).map((entry) => entry.kind)).toEqual([
+      expect(borg.stream.tail(3).map((entry) => entry.kind)).toEqual([
         "user_msg",
+        "perception",
         "internal_event",
       ]);
     } finally {
@@ -1489,8 +1728,9 @@ describe("Borg", () => {
       expect(result.path).toBe("system_2");
       expect(result.response).toContain("compare more evidence");
       expect(borg.self.openQuestions.list({ status: "open" })).toEqual([]);
-      expect(borg.stream.tail(4).map((entry) => entry.kind)).toEqual([
+      expect(borg.stream.tail(5).map((entry) => entry.kind)).toEqual([
         "user_msg",
+        "perception",
         "thought",
         "agent_msg",
         "internal_event",
@@ -1548,6 +1788,7 @@ describe("Borg", () => {
           },
         ],
       }),
+      liveExtraction: false,
     });
 
     try {
@@ -1763,8 +2004,16 @@ describe("Borg", () => {
             stop_reason: "end_turn",
             tool_calls: [],
           },
+          {
+            text: "I hear that landed badly.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
         ],
       }),
+      liveExtraction: false,
     });
 
     try {

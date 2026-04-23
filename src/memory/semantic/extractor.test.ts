@@ -262,6 +262,97 @@ describe("semantic extractor", () => {
     ).rejects.toThrow("unknown source_episode_ids");
   });
 
+  it("re-embeds updated nodes from the final stored text", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const existing = await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "entity",
+      label: "Atlas",
+      description: "Atlas existing node",
+      domain: "tech",
+      aliases: ["Project Atlas"],
+      confidence: 0.8,
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as EpisodeId],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const embed = vi.fn(async () => Float32Array.from([1, 0, 0, 0]));
+    const embeddingClient: EmbeddingClient = {
+      embed,
+      embedBatch: async (texts) => Promise.all(texts.map((text) => embed(text))),
+    };
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient,
+      episodicRepository: createEpisodeLookup([
+        buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident"),
+      ]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "entity",
+                label: "Atlas",
+                description: "Atlas newer description that should not win",
+                domain: "tech",
+                aliases: ["Atlas service"],
+                confidence: 0.4,
+                source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+              },
+            ],
+            edges: [],
+          }),
+        ],
+      }),
+      model: "haiku",
+      clock,
+    });
+
+    await extractor.extractFromEpisodes([
+      buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident"),
+    ]);
+    const updated = await nodeRepository.get(existing.id);
+
+    expect(updated?.description).toBe("Atlas existing node");
+    expect(updated?.aliases).toEqual(["Project Atlas", "Atlas", "Atlas service"]);
+    expect(embed.mock.calls.at(-1)?.[0]).toBe(
+      "Atlas\nAtlas existing node\nProject Atlas Atlas Atlas service",
+    );
+  });
+
   it("normalizes string-wrapped tool payloads before validation", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({

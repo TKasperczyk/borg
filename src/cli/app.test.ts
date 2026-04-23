@@ -96,6 +96,7 @@ function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
     embeddingDimensions: 4,
     embeddingClient: new ScriptedEmbeddingClient(),
     llmClient: llm,
+    liveExtraction: false,
   });
 }
 
@@ -1226,6 +1227,8 @@ describe("cli", () => {
           "Atlas",
           "--description",
           "Atlas service",
+          "--domain",
+          "tech",
           "--source-episodes",
           "ep_aaaaaaaaaaaaaaaa",
         ],
@@ -1280,6 +1283,7 @@ describe("cli", () => {
     expect(JSON.parse(showNodeOut.read())).toMatchObject({
       id: atlasNode.id,
       label: "Atlas",
+      domain: "tech",
     });
 
     const searchNodeOut = createOutputBuffer();
@@ -1451,11 +1455,23 @@ describe("cli", () => {
 
     const resolveReviewOut = createOutputBuffer();
     expect(
-      await runCli(["node", "borg", "review", "resolve", String(reviews[0]!.id), "invalidate"], {
+      await runCli(
+        [
+          "node",
+          "borg",
+          "review",
+          "resolve",
+          String(reviews[0]!.id),
+          "invalidate",
+          "--winner-node-id",
+          atlasNode.id,
+        ],
+        {
         stdout: resolveReviewOut.stream,
         stderr: createOutputBuffer().stream,
         ...cliOptions,
-      }),
+        },
+      ),
     ).toBe(0);
     expect(JSON.parse(resolveReviewOut.read())).toMatchObject({
       id: reviews[0]!.id,

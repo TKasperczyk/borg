@@ -162,11 +162,25 @@ export class TurnContextCompiler {
       messages.pop();
     }
 
-    const latestTs = messages.length === 0 ? null : (messages[messages.length - 1]?.ts ?? null);
-    const normalizedChars = messages.reduce((sum, message) => sum + message.content.length, 0);
+    const alternating: RecencyMessage[] = [];
+
+    for (const message of messages) {
+      const previous = alternating[alternating.length - 1];
+
+      if (previous?.role === message.role) {
+        alternating[alternating.length - 1] = message;
+        continue;
+      }
+
+      alternating.push(message);
+    }
+
+    const latestTs =
+      alternating.length === 0 ? null : (alternating[alternating.length - 1]?.ts ?? null);
+    const normalizedChars = alternating.reduce((sum, message) => sum + message.content.length, 0);
 
     return {
-      messages,
+      messages: alternating,
       latest_ts: latestTs,
       total_chars: normalizedChars,
     };

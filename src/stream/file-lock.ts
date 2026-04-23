@@ -157,9 +157,11 @@ export async function withFileLock<T>(
     try {
       unlinkSync(lockPath);
     } catch (error) {
-      throw new StreamError(`Failed to release stream lock in ${dirname(lockPath)}`, {
-        cause: error,
-      });
+      console.warn(
+        `Failed to release stream lock in ${dirname(lockPath)}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 }

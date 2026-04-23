@@ -175,6 +175,7 @@ describe("Borg Sprint 7", () => {
       embeddingDimensions: 4,
       embeddingClient,
       llmClient: llm,
+      liveExtraction: false,
     });
 
     try {

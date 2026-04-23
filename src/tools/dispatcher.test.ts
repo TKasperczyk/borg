@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { StreamReader, StreamWriter } from "../stream/index.js";
@@ -131,5 +131,49 @@ describe("ToolDispatcher", () => {
     expect(entries[1]?.content).toMatchObject({
       ok: false,
     });
+  });
+
+  it("clears the timeout timer after a successful dispatch", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(3_000);
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    const dispatcher = new ToolDispatcher({
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: tempDir,
+          sessionId,
+          clock,
+        }),
+    });
+
+    dispatcher.register({
+      name: "tool.test.fast",
+      description: "Fast tool.",
+      inputSchema: z.object({
+        value: z.string().min(1),
+      }),
+      outputSchema: z.object({
+        echoed: z.string().min(1),
+      }),
+      async invoke(input) {
+        return {
+          echoed: input.value,
+        };
+      },
+    });
+
+    const result = await dispatcher.dispatch({
+      toolName: "tool.test.fast",
+      input: {
+        value: "ok",
+      },
+      origin: "autonomous",
+      timeoutMs: 100,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(clearTimeoutSpy).toHaveBeenCalled();
   });
 });

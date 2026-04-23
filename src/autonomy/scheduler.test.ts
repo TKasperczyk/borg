@@ -227,6 +227,9 @@ describe("AutonomyScheduler", () => {
       intervalMs: 10_000,
       clock,
     });
+    const turnRunner = {
+      run: vi.fn().mockRejectedValue(new SessionBusyError("busy")),
+    };
     const scheduler = new AutonomyScheduler({
       enabled: true,
       intervalMs: 1_000,
@@ -239,9 +242,7 @@ describe("AutonomyScheduler", () => {
           clock,
         }),
       watermarkRepository,
-      turnOrchestrator: {
-        run: vi.fn().mockRejectedValue(new SessionBusyError("busy")),
-      },
+      turnOrchestrator: turnRunner,
       toolDispatcher: dispatcher,
       sources: [trigger],
     });
@@ -252,8 +253,86 @@ describe("AutonomyScheduler", () => {
     expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
 
     const secondResult = await scheduler.tick();
-    expect(secondResult.busySkipped).toBe(1);
-    expect(secondResult.events[0]?.status).toBe("busy_skipped");
+    expect(secondResult.busySkipped).toBe(0);
+    expect(secondResult.events).toEqual([]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(1);
+
+    clock.advance(30_000);
+    const thirdResult = await scheduler.tick();
+    expect(thirdResult.busySkipped).toBe(1);
+    expect(thirdResult.events[0]?.status).toBe("busy_skipped");
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses scheduled reflection backoff within a due window and refreshes it in the next window", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const dispatcher = new ToolDispatcher({
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      clock,
+    });
+    dispatcher.register(
+      createIdentityEventsListTool({
+        listEvents: (options) => harness.identityService.listEvents(options),
+      }),
+    );
+    const trigger = createScheduledReflectionTrigger({
+      watermarkRepository,
+      intervalMs: 60_000,
+      clock,
+    });
+    const turnRunner = {
+      run: vi.fn().mockRejectedValue(new SessionBusyError("busy")),
+    };
+    const scheduler = new AutonomyScheduler({
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerHour: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      sources: [trigger],
+    });
+
+    const firstTick = await scheduler.tick();
+    expect(firstTick.events[0]?.id).toBe("scheduled-reflection:1000000");
+    expect(firstTick.busySkipped).toBe(1);
+    expect(turnRunner.run).toHaveBeenCalledTimes(1);
+
+    clock.advance(10_000);
+    const secondTick = await scheduler.tick();
+    expect(secondTick.events).toEqual([]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(1);
+
+    clock.advance(19_999);
+    const thirdTick = await scheduler.tick();
+    expect(thirdTick.events).toEqual([]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(1);
+
+    clock.advance(30_001);
+    const fourthTick = await scheduler.tick();
+    expect(fourthTick.events[0]?.id).toBe("scheduled-reflection:1060000");
+    expect(fourthTick.busySkipped).toBe(1);
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
   });
 
   it("leaves trigger watermarks untouched when an autonomous turn throws", async () => {
@@ -311,8 +390,14 @@ describe("AutonomyScheduler", () => {
     expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
 
     const secondResult = await scheduler.tick();
-    expect(secondResult.errorCount).toBe(1);
-    expect(secondResult.events[0]?.status).toBe("error");
+    expect(secondResult.errorCount).toBe(0);
+    expect(secondResult.events).toEqual([]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(1);
+
+    clock.advance(30_000);
+    const thirdResult = await scheduler.tick();
+    expect(thirdResult.errorCount).toBe(1);
+    expect(thirdResult.events[0]?.status).toBe("error");
     expect(turnRunner.run).toHaveBeenCalledTimes(2);
   });
 
@@ -694,13 +779,19 @@ describe("AutonomyScheduler", () => {
     expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
 
     const secondTick = await scheduler.tick();
-    expect(secondTick.firedEvents).toBe(1);
-    expect(secondTick.events[0]?.status).toBe("fired");
+    expect(secondTick.firedEvents).toBe(0);
+    expect(secondTick.events).toEqual([]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(1);
+
+    clock.advance(30_000);
+    const thirdTick = await scheduler.tick();
+    expect(thirdTick.firedEvents).toBe(1);
+    expect(thirdTick.events[0]?.status).toBe("fired");
     expect(turnRunner.run).toHaveBeenCalledTimes(2);
     expect(
       watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID),
     ).toMatchObject({
-      lastTs: 1_000_000,
+      lastTs: 1_030_000,
       lastEntryId: expect.any(String),
     });
   });

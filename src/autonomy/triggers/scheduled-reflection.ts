@@ -25,6 +25,7 @@ export function createScheduledReflectionTrigger(
 ): AutonomyTrigger<ScheduledReflectionPayload> {
   const clock = options.clock ?? new SystemClock();
   const sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
+  const initialWindowStartMs = clock.now();
 
   return {
     name: TRIGGER_NAME,
@@ -37,13 +38,25 @@ export function createScheduledReflectionTrigger(
         return [];
       }
 
+      const dueWindowStartMs =
+        watermark === null
+          ? initialWindowStartMs +
+            Math.floor(Math.max(0, nowMs - initialWindowStartMs) / options.intervalMs) *
+              options.intervalMs
+          : watermark.lastTs +
+            options.intervalMs +
+            Math.floor(
+              Math.max(0, nowMs - (watermark.lastTs + options.intervalMs)) / options.intervalMs,
+            ) *
+              options.intervalMs;
+
       return [
         {
-          id: `scheduled-reflection:${nowMs}`,
+          id: `scheduled-reflection:${dueWindowStartMs}`,
           sourceName: TRIGGER_NAME,
           sourceType: "trigger",
           watermarkProcessName: WATERMARK_PROCESS_NAME,
-          sortTs: nowMs,
+          sortTs: dueWindowStartMs,
           payload: {
             interval_ms: options.intervalMs,
           },

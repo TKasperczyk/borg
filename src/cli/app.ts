@@ -1074,6 +1074,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     .option("--kind <kind>", "Node kind")
     .option("--label <label>", "Node label")
     .option("--description <text>", "Node description")
+    .option("--domain <domain>", "Node domain")
     .option("--aliases <aliases>", "Comma-separated aliases")
     .option("--source-episodes <ids>", "Comma-separated episode ids")
     .option("--from <id>", "From node id")
@@ -1105,6 +1106,8 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
                 kind: parseSemanticNodeKind(commandOptions.kind),
                 label: parseRequiredText(commandOptions.label, "--label"),
                 description: parseRequiredText(commandOptions.description, "--description"),
+                domain:
+                  typeof commandOptions.domain === "string" ? commandOptions.domain : undefined,
                 aliases:
                   typeof commandOptions.aliases === "string"
                     ? commandOptions.aliases
@@ -1761,6 +1764,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   cli
     .command("review <action> [arg1] [arg2]", "Inspect and resolve review items")
     .option("--kind <kind>", "Review item kind")
+    .option("--winner-node-id <id>", "Winner node id for duplicate/contradiction resolution")
     .option("--accept", "Accept a correction review item")
     .option("--reject", "Reject a correction review item")
     .action(
@@ -1803,7 +1807,15 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
                 : parseReviewResolution(arg2);
 
           const resolved = await withBorg(options, async (borg) =>
-            borg.review.resolve(itemId, decision),
+            borg.review.resolve(
+              itemId,
+              typeof commandOptions.winnerNodeId === "string"
+                ? {
+                    decision,
+                    winner_node_id: resolveSemanticNodeId(commandOptions.winnerNodeId),
+                  }
+                : decision,
+            ),
           );
           writeLine(stdout, JSON.stringify(resolved, null, 2));
           return;

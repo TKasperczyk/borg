@@ -35,6 +35,7 @@ async function openTestBorg(tempDir: string, llm: FakeLLMClient) {
     embeddingDimensions: 4,
     embeddingClient: new TestEmbeddingClient(),
     llmClient: llm,
+    liveExtraction: false,
   });
 }
 

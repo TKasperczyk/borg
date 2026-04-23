@@ -296,7 +296,7 @@ describe("reflector", () => {
             target_id: goal.id,
             repair_op: "patch",
             proposed_provenance: {
-              kind: "offline",
+              kind: "online",
               process: "reflector",
             },
           }),

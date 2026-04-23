@@ -142,7 +142,7 @@ function buildReflectionProvenance(retrievedEpisodes: readonly RetrievedEpisode[
         episode_ids: episodeIds,
       })
     : ({
-        kind: "offline" as const,
+        kind: "online" as const,
         process: "reflector",
       });
 }

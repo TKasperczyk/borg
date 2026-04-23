@@ -34,6 +34,7 @@ const extractorResponseSchema = z.object({
 
 type ExtractorCandidate = z.infer<typeof extractorCandidateSchema>;
 const EXTRACT_EPISODES_TOOL_NAME = "EmitEpisodeCandidates";
+const EPISODIC_SOURCE_STREAM_KINDS = ["user_msg", "agent_msg"] as const;
 export const EXTRACT_EPISODES_TOOL = {
   name: EXTRACT_EPISODES_TOOL_NAME,
   description: "Emit grounded episodic memory candidates for the provided stream chunk.",
@@ -332,6 +333,7 @@ export class EpisodicExtractor {
     const streamEntries: StreamEntry[] = [];
 
     for await (const entry of reader.iterate({
+      kinds: EPISODIC_SOURCE_STREAM_KINDS,
       sinceTs: extractOptions.sinceTs,
       sinceCursor: extractOptions.sinceCursor,
       untilTs: extractOptions.untilTs,

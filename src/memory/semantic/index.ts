@@ -12,10 +12,12 @@ export {
   reviewKindSchema,
   reviewQueueItemSchema,
   reviewResolutionSchema,
+  reviewResolutionInputSchema,
   type ReviewKind,
   type ReviewQueueInsertInput,
   type ReviewQueueItem,
   type ReviewResolution,
+  type ReviewResolutionInput,
 } from "./review-queue.js";
 export {
   SemanticEdgeRepository,

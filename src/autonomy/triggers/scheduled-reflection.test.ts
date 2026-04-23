@@ -27,12 +27,18 @@ describe("scheduled reflection trigger", () => {
 
     const trigger = createScheduledReflectionTrigger({
       watermarkRepository,
-      intervalMs: 10_000,
+      intervalMs: 60_000,
       clock,
     });
 
     const firstScan = await trigger.scan();
     expect(firstScan).toHaveLength(1);
+    expect(firstScan[0]?.id).toBe("scheduled-reflection:1000000");
+
+    clock.advance(30_000);
+    const sameWindowScan = await trigger.scan();
+    expect(sameWindowScan).toHaveLength(1);
+    expect(sameWindowScan[0]?.id).toBe(firstScan[0]?.id);
 
     watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default", {
       lastTs: clock.now(),
@@ -40,7 +46,9 @@ describe("scheduled reflection trigger", () => {
     });
     expect(await trigger.scan()).toEqual([]);
 
-    clock.advance(10_001);
-    expect(await trigger.scan()).toHaveLength(1);
+    clock.advance(60_001);
+    const nextWindowScan = await trigger.scan();
+    expect(nextWindowScan).toHaveLength(1);
+    expect(nextWindowScan[0]?.id).not.toBe(firstScan[0]?.id);
   });
 });

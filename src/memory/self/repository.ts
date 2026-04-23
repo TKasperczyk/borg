@@ -298,6 +298,7 @@ function resolveValueInitialState(
           new Set(provenance.episode_ids).size >= VALUE_PROMOTION_THRESHOLD ? timestamp : null,
       };
     case "offline":
+    case "online":
       return {
         state: "candidate",
         established_at: null,

@@ -60,6 +60,7 @@ import {
   type ReviewKind,
   type ReviewQueueItem,
   type ReviewResolution,
+  type ReviewResolutionInput,
   type SemanticEdge,
   type SemanticNode,
   type SemanticNodeSearchCandidate,
@@ -185,10 +186,9 @@ export type BorgOpenOptions = {
   /**
    * When true, every completed turn triggers watermark-based episodic
    * extraction so the next turn's retrieval sees material from the turn
-   * that just ran. Defaults to false: the existing test suite uses fake
-   * LLMs with scripted response queues, and live extraction would consume
-   * responses out of band. Production callers (scripts/chat.ts,
-   * scripts/debug.ts when using real clients) opt in explicitly.
+   * that just ran. Defaults to true. Tests and scripted harnesses that use
+   * fake LLM response queues should opt out explicitly so extraction does
+   * not consume responses out of band.
    */
   liveExtraction?: boolean;
 };
@@ -436,6 +436,7 @@ export class Borg {
         kind: SemanticNode["kind"];
         label: string;
         description: string;
+        domain?: string | null;
         aliases?: string[];
         confidence?: number;
         sourceEpisodeIds: SemanticNode["source_episode_ids"];
@@ -516,7 +517,7 @@ export class Borg {
   };
   readonly review: {
     list: (options?: { kind?: ReviewKind; openOnly?: boolean }) => ReviewQueueItem[];
-    resolve: (id: number, decision: ReviewResolution) => Promise<ReviewQueueItem | null>;
+    resolve: (id: number, decision: ReviewResolutionInput) => Promise<ReviewQueueItem | null>;
   };
   readonly audit: {
     list: (options?: {
@@ -762,7 +763,7 @@ export class Borg {
             kind: input.kind,
             label: input.label,
             description: input.description,
-            domain: null,
+            domain: input.domain ?? null,
             aliases: input.aliases ?? [],
             confidence: input.confidence ?? 0.6,
             source_episode_ids: input.sourceEpisodeIds,
@@ -1419,7 +1420,7 @@ export class Borg {
         createStreamWriter: () => createStreamWriter(DEFAULT_SESSION_ID),
         processRegistry: offlineProcesses,
       });
-      const liveExtractionEnabled = options.liveExtraction ?? false;
+      const liveExtractionEnabled = options.liveExtraction ?? true;
       // Live extractor shares the same embedding + LLM wiring as the offline
       // consolidator process. It runs after each turn inside the ingestion
       // coordinator so the next turn's retrieval sees this turn's material.
@@ -1437,11 +1438,11 @@ export class Borg {
             watermarkRepository: streamWatermarkRepository,
             dataDir: config.dataDir,
             clock,
-            onError: (error) => {
+            onError: (error, sessionId) => {
               // Use a fresh writer: the turn's writer closes before
               // ingestion resolves, and we must not hold onto stream handles
               // across fire-and-forget boundaries.
-              const writer = createStreamWriter(DEFAULT_SESSION_ID);
+              const writer = createStreamWriter(sessionId);
               void writer
                 .append({
                   kind: "internal_event",

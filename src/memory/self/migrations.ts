@@ -950,4 +950,156 @@ export const selfMigrations = [
       }
     },
   },
+  {
+    id: 264,
+    name: "allow-online-self-event-provenance",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE trait_reinforcement_events__next (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trait_id TEXT NOT NULL,
+          delta REAL NOT NULL,
+          ts INTEGER NOT NULL,
+          provenance_kind TEXT NOT NULL CHECK (
+            provenance_kind IN ('episodes', 'manual', 'system', 'offline', 'online')
+          ),
+          provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
+          provenance_process TEXT
+        );
+
+        INSERT INTO trait_reinforcement_events__next (
+          id,
+          trait_id,
+          delta,
+          ts,
+          provenance_kind,
+          provenance_episode_ids,
+          provenance_process
+        )
+        SELECT
+          id,
+          trait_id,
+          delta,
+          ts,
+          provenance_kind,
+          provenance_episode_ids,
+          provenance_process
+        FROM trait_reinforcement_events;
+
+        DROP TABLE trait_reinforcement_events;
+        ALTER TABLE trait_reinforcement_events__next RENAME TO trait_reinforcement_events;
+
+        CREATE INDEX IF NOT EXISTS idx_trait_reinforcement_events_trait_ts
+          ON trait_reinforcement_events (trait_id, ts DESC, id DESC);
+
+        CREATE TABLE value_reinforcement_events__next (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          value_id TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          provenance_kind TEXT NOT NULL CHECK (
+            provenance_kind IN ('episodes', 'manual', 'system', 'offline', 'online')
+          ),
+          provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
+          provenance_process TEXT
+        );
+
+        INSERT INTO value_reinforcement_events__next (
+          id,
+          value_id,
+          ts,
+          provenance_kind,
+          provenance_episode_ids,
+          provenance_process
+        )
+        SELECT
+          id,
+          value_id,
+          ts,
+          provenance_kind,
+          provenance_episode_ids,
+          provenance_process
+        FROM value_reinforcement_events;
+
+        DROP TABLE value_reinforcement_events;
+        ALTER TABLE value_reinforcement_events__next RENAME TO value_reinforcement_events;
+
+        CREATE INDEX IF NOT EXISTS idx_value_reinforcement_events_value_ts
+          ON value_reinforcement_events (value_id, ts DESC, id DESC);
+
+        CREATE TABLE value_contradiction_events__next (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          value_id TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          weight REAL NOT NULL DEFAULT 1,
+          provenance_kind TEXT NOT NULL CHECK (
+            provenance_kind IN ('episodes', 'manual', 'system', 'offline', 'online')
+          ),
+          provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
+          provenance_process TEXT
+        );
+
+        INSERT INTO value_contradiction_events__next (
+          id,
+          value_id,
+          ts,
+          weight,
+          provenance_kind,
+          provenance_episode_ids,
+          provenance_process
+        )
+        SELECT
+          id,
+          value_id,
+          ts,
+          weight,
+          provenance_kind,
+          provenance_episode_ids,
+          provenance_process
+        FROM value_contradiction_events;
+
+        DROP TABLE value_contradiction_events;
+        ALTER TABLE value_contradiction_events__next RENAME TO value_contradiction_events;
+
+        CREATE INDEX IF NOT EXISTS idx_value_contradiction_events_value_ts
+          ON value_contradiction_events (value_id, ts DESC, id DESC);
+
+        CREATE TABLE trait_contradiction_events__next (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trait_id TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          weight REAL NOT NULL DEFAULT 1,
+          provenance_kind TEXT NOT NULL CHECK (
+            provenance_kind IN ('episodes', 'manual', 'system', 'offline', 'online')
+          ),
+          provenance_episode_ids TEXT NOT NULL DEFAULT '[]',
+          provenance_process TEXT
+        );
+
+        INSERT INTO trait_contradiction_events__next (
+          id,
+          trait_id,
+          ts,
+          weight,
+          provenance_kind,
+          provenance_episode_ids,
+          provenance_process
+        )
+        SELECT
+          id,
+          trait_id,
+          ts,
+          weight,
+          provenance_kind,
+          provenance_episode_ids,
+          provenance_process
+        FROM trait_contradiction_events;
+
+        DROP TABLE trait_contradiction_events;
+        ALTER TABLE trait_contradiction_events__next RENAME TO trait_contradiction_events;
+
+        CREATE INDEX IF NOT EXISTS idx_trait_contradiction_events_trait_ts
+          ON trait_contradiction_events (trait_id, ts DESC, id DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

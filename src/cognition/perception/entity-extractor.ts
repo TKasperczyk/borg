@@ -12,6 +12,7 @@ const entityFallbackSchema = z.object({
   entities: z.array(z.string().min(1)),
 });
 const ENTITY_FALLBACK_TOOL_NAME = "EmitEntityExtraction";
+const ENTITY_FALLBACK_MAX_INPUT_CHARS = 2_000;
 export const ENTITY_FALLBACK_TOOL = {
   name: ENTITY_FALLBACK_TOOL_NAME,
   description: "Emit named entities, handles, products, and quoted phrases from the input.",
@@ -135,12 +136,13 @@ export class EntityExtractor {
 
   async extractEntities(text: string): Promise<string[]> {
     const heuristicEntities = extractEntitiesHeuristically(text);
+    const normalizedText = text.trim();
 
     if (
       heuristicEntities.length > 0 ||
       !this.useLlmFallback ||
       this.options.llmClient === undefined ||
-      text.trim().length > this.shortTextThreshold
+      normalizedText.length === 0
     ) {
       return heuristicEntities;
     }
@@ -152,13 +154,17 @@ export class EntityExtractor {
     }
 
     try {
+      const fallbackInput =
+        normalizedText.length > this.shortTextThreshold
+          ? normalizedText.slice(0, ENTITY_FALLBACK_MAX_INPUT_CHARS)
+          : normalizedText;
       const response = await this.options.llmClient.complete({
         model,
         system: "Extract named entities, handles, products, and quoted phrases.",
         messages: [
           {
             role: "user",
-            content: text,
+            content: fallbackInput,
           },
         ],
         tools: [ENTITY_FALLBACK_TOOL],

@@ -62,4 +62,40 @@ describe("social migrations", () => {
       db.close();
     }
   });
+
+  it("upgrades social event provenance checks to allow online writes", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const dbPath = join(tempDir, "social.db");
+    tempDirs.push(tempDir);
+
+    const legacyDb = openDatabase(dbPath, {
+      migrations: socialMigrations.filter((migration) => migration.id < 241),
+    });
+    legacyDb.close();
+
+    const db = openDatabase(dbPath, {
+      migrations: socialMigrations,
+    });
+    const repository = new SocialRepository({ db });
+
+    try {
+      repository.recordInteraction("ent_onlineeeeeeeeeee" as never, {
+        provenance: {
+          kind: "online",
+          process: "reflector",
+        },
+      });
+
+      expect(repository.listEvents("ent_onlineeeeeeeeeee" as never)).toEqual([
+        expect.objectContaining({
+          provenance: {
+            kind: "online",
+            process: "reflector",
+          },
+        }),
+      ]);
+    } finally {
+      db.close();
+    }
+  });
 });

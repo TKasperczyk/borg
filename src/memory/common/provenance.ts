@@ -9,7 +9,7 @@ const episodeIdSchema = z
   })
   .transform((value) => value as EpisodeId);
 
-export const provenanceKindSchema = z.enum(["episodes", "manual", "system", "offline"]);
+export const provenanceKindSchema = z.enum(["episodes", "manual", "system", "offline", "online"]);
 
 export const provenanceSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -24,6 +24,10 @@ export const provenanceSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("offline"),
+    process: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("online"),
     process: z.string().min(1),
   }),
 ]);
@@ -59,7 +63,10 @@ export function toStoredProvenance(provenance: Provenance): StoredProvenance {
     provenance_episode_ids: JSON.stringify(
       provenance.kind === "episodes" ? provenance.episode_ids : [],
     ),
-    provenance_process: provenance.kind === "offline" ? provenance.process : null,
+    provenance_process:
+      provenance.kind === "offline" || provenance.kind === "online"
+        ? provenance.process
+        : null,
   };
 }
 
@@ -76,6 +83,8 @@ export function summarizeProvenanceForPrompt(provenance: Provenance, limit = 2):
       return "(system)";
     case "offline":
       return `(offline: ${provenance.process})`;
+    case "online":
+      return `(online: ${provenance.process})`;
   }
 }
 
@@ -91,7 +100,7 @@ export function parseStoredProvenance(input: {
           episode_ids: parseStoredProvenanceEpisodeIds(input.provenance_episode_ids),
         }
       : {}),
-    ...(input.provenance_kind === "offline"
+    ...((input.provenance_kind === "offline" || input.provenance_kind === "online")
       ? {
           process: input.provenance_process,
         }

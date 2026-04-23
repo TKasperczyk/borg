@@ -51,6 +51,15 @@ export const REVIEW_RESOLUTIONS = [
 
 export const reviewKindSchema = z.enum(REVIEW_KINDS);
 export const reviewResolutionSchema = z.enum(REVIEW_RESOLUTIONS);
+export const reviewResolutionInputSchema = z.union([
+  reviewResolutionSchema,
+  z
+    .object({
+      decision: reviewResolutionSchema,
+      winner_node_id: semanticNodeIdSchema.optional(),
+    })
+    .strict(),
+]);
 
 export const reviewQueueItemSchema = z.object({
   id: z.number().int().positive(),
@@ -65,6 +74,11 @@ export const reviewQueueItemSchema = z.object({
 export type ReviewQueueItem = z.infer<typeof reviewQueueItemSchema>;
 export type ReviewKind = z.infer<typeof reviewKindSchema>;
 export type ReviewResolution = z.infer<typeof reviewResolutionSchema>;
+export type ReviewResolutionInput = z.infer<typeof reviewResolutionInputSchema>;
+type ResolvedReviewDecision = {
+  decision: ReviewResolution;
+  winner_node_id?: z.infer<typeof semanticNodeIdSchema>;
+};
 
 export type ReviewQueueInsertInput = {
   kind: ReviewKind;
@@ -179,6 +193,13 @@ function throwLegacyRepairRefsError(kind: ReviewKind): never {
   // would recreate the exact epistemic theater Sprint 14 was meant to remove.
   throw new SemanticError("cannot apply accept on legacy review row -- structured patch required", {
     code: "REVIEW_QUEUE_REPAIR_REQUIRES_STRUCTURED_REFS",
+    cause: { kind },
+  });
+}
+
+function throwMalformedPairRefsError(kind: ReviewKind): never {
+  throw new SemanticError("cannot apply pair resolution on malformed review row", {
+    code: "REVIEW_QUEUE_MALFORMED_PAIR_REFS",
     cause: { kind },
   });
 }
@@ -331,8 +352,12 @@ export class ReviewQueueRepository {
     return result.changes > 0;
   }
 
-  async resolve(itemId: number, decision: ReviewResolution): Promise<ReviewQueueItem | null> {
-    reviewResolutionSchema.parse(decision);
+  async resolve(itemId: number, decision: ReviewResolutionInput): Promise<ReviewQueueItem | null> {
+    const parsedResolution = reviewResolutionInputSchema.parse(decision);
+    const resolution: ResolvedReviewDecision =
+      typeof parsedResolution === "string"
+        ? { decision: parsedResolution }
+        : parsedResolution;
     const row = this.db.prepare("SELECT * FROM review_queue WHERE id = ?").get(itemId) as
       | Record<string, unknown>
       | undefined;
@@ -347,31 +372,34 @@ export class ReviewQueueRepository {
       return item;
     }
 
-    if (!isResolutionCompatible(item.kind, decision)) {
+    if (!isResolutionCompatible(item.kind, resolution.decision)) {
       throw new SemanticError(
-        `Resolution "${decision}" is incompatible with review kind "${item.kind}"`,
+        `Resolution "${resolution.decision}" is incompatible with review kind "${item.kind}"`,
         {
           code: "REVIEW_QUEUE_RESOLUTION_INVALID",
         },
       );
     }
 
-    await this.applyResolution(item, decision);
+    await this.applyResolution(item, resolution);
     const resolvedAt = this.clock.now();
     this.db
       .prepare("UPDATE review_queue SET resolved_at = ?, resolution = ? WHERE id = ?")
-      .run(resolvedAt, decision, itemId);
+      .run(resolvedAt, resolution.decision, itemId);
 
     return {
       ...item,
       resolved_at: resolvedAt,
-      resolution: decision,
+      resolution: resolution.decision,
     };
   }
 
-  private async applyResolution(item: ReviewQueueItem, decision: ReviewResolution): Promise<void> {
+  private async applyResolution(
+    item: ReviewQueueItem,
+    decision: ResolvedReviewDecision,
+  ): Promise<void> {
     if (item.kind === "correction") {
-      if (decision === "accept") {
+      if (decision.decision === "accept") {
         if (this.options.applyCorrection === undefined) {
           throw new SemanticError("No correction applier configured for review queue", {
             code: "REVIEW_QUEUE_CORRECTION_UNSUPPORTED",
@@ -409,11 +437,11 @@ export class ReviewQueueRepository {
 
   private async applySemanticPairResolution(
     item: ReviewQueueItem,
-    decision: ReviewResolution,
+    decision: ResolvedReviewDecision,
   ): Promise<void> {
     if (
       this.options.semanticNodeRepository === undefined ||
-      (decision !== "supersede" && decision !== "invalidate")
+      (decision.decision !== "supersede" && decision.decision !== "invalidate")
     ) {
       return;
     }
@@ -421,10 +449,26 @@ export class ReviewQueueRepository {
     const rawNodeIds = item.refs.node_ids;
 
     if (!Array.isArray(rawNodeIds) || rawNodeIds.length < 2) {
-      return;
+      throwMalformedPairRefsError(item.kind);
     }
 
     const parsedNodeIds = rawNodeIds.map((value) => semanticNodeIdSchema.parse(value));
+    const winnerNodeId = decision.winner_node_id;
+
+    if (winnerNodeId === undefined) {
+      throw new SemanticError("winner_node_id is required for supersede/invalidate", {
+        code: "REVIEW_QUEUE_WINNER_REQUIRED",
+        cause: { itemId: item.id, kind: item.kind },
+      });
+    }
+
+    if (!parsedNodeIds.includes(winnerNodeId)) {
+      throw new SemanticError("winner_node_id must reference a node in the review item", {
+        code: "REVIEW_QUEUE_WINNER_INVALID",
+        cause: { itemId: item.id, kind: item.kind, winner_node_id: winnerNodeId },
+      });
+    }
+
     const nodes = await this.options.semanticNodeRepository.getMany(parsedNodeIds, {
       includeArchived: true,
     });
@@ -435,10 +479,10 @@ export class ReviewQueueRepository {
       return;
     }
 
-    const winner = first.confidence >= second.confidence ? first : second;
+    const winner = first.id === winnerNodeId ? first : second;
     const loser = winner.id === first.id ? second : first;
 
-    if (decision === "supersede") {
+    if (decision.decision === "supersede") {
       await this.options.semanticNodeRepository.update(loser.id, {
         superseded_by: winner.id,
         archived: true,
@@ -454,11 +498,11 @@ export class ReviewQueueRepository {
 
   private async applyNewInsightResolution(
     item: ReviewQueueItem,
-    decision: ReviewResolution,
+    decision: ResolvedReviewDecision,
   ): Promise<void> {
     if (
       this.options.semanticNodeRepository === undefined ||
-      (decision !== "invalidate" && decision !== "accept")
+      (decision.decision !== "invalidate" && decision.decision !== "accept")
     ) {
       return;
     }
@@ -471,7 +515,7 @@ export class ReviewQueueRepository {
 
     const nodeId = semanticNodeIdSchema.parse(rawNodeIds[0]);
 
-    if (decision === "accept") {
+    if (decision.decision === "accept") {
       const current = await this.options.semanticNodeRepository.get(nodeId);
 
       if (current === null) {
@@ -492,9 +536,9 @@ export class ReviewQueueRepository {
 
   private async applyStaleResolution(
     item: ReviewQueueItem,
-    decision: ReviewResolution,
+    decision: ResolvedReviewDecision,
   ): Promise<void> {
-    if (decision !== "accept" || this.options.semanticNodeRepository === undefined) {
+    if (decision.decision !== "accept" || this.options.semanticNodeRepository === undefined) {
       return;
     }
 
@@ -520,9 +564,9 @@ export class ReviewQueueRepository {
 
   private async applyMisattributionResolution(
     item: ReviewQueueItem,
-    decision: ReviewResolution,
+    decision: ResolvedReviewDecision,
   ): Promise<void> {
-    if (decision !== "accept") {
+    if (decision.decision !== "accept") {
       return;
     }
 
@@ -576,9 +620,9 @@ export class ReviewQueueRepository {
 
   private async applyTemporalDriftResolution(
     item: ReviewQueueItem,
-    decision: ReviewResolution,
+    decision: ResolvedReviewDecision,
   ): Promise<void> {
-    if (decision !== "accept") {
+    if (decision.decision !== "accept") {
       return;
     }
 
@@ -655,9 +699,9 @@ export class ReviewQueueRepository {
 
   private async applyIdentityInconsistencyResolution(
     item: ReviewQueueItem,
-    decision: ReviewResolution,
+    decision: ResolvedReviewDecision,
   ): Promise<void> {
-    if (decision !== "accept") {
+    if (decision.decision !== "accept") {
       return;
     }
 
