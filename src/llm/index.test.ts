@@ -458,6 +458,58 @@ describe("llm", () => {
     });
   });
 
+  it("prepends the OAuth identity block without flattening string or block-array system input", async () => {
+    const systems: Array<Array<{ type: string; text: string }>> = [];
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const body = JSON.parse(String(init?.body)) as {
+          system: Array<{ type: string; text: string }>;
+        };
+
+        systems.push(body.system);
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+    });
+
+    await client.complete({
+      model: "claude-sonnet-4-5",
+      system: "be concise",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 32,
+      budget: "test",
+    });
+
+    await client.complete({
+      model: "claude-sonnet-4-5",
+      system: [
+        { type: "text", text: "be concise" },
+        { type: "text", text: "cite sources" },
+      ],
+      messages: [{ role: "user", content: "hello again" }],
+      max_tokens: 32,
+      budget: "test",
+    });
+
+    expect(systems).toEqual([
+      [
+        { type: "text", text: CLAUDE_CODE_IDENTITY_BLOCK_TEXT },
+        { type: "text", text: "be concise" },
+      ],
+      [
+        { type: "text", text: CLAUDE_CODE_IDENTITY_BLOCK_TEXT },
+        { type: "text", text: "be concise" },
+        { type: "text", text: "cite sources" },
+      ],
+    ]);
+  });
+
   it("omits temperature and thinking for Opus requests in OAuth mode", async () => {
     const fetchMock = vi.fn(
       async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {

@@ -85,7 +85,6 @@ export {
 } from "./embeddings/index.js";
 export {
   AnthropicLLMClient,
-  CLAUDE_CODE_AUTH_CONTEXT_BYPASS,
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
   FakeLLMClient,
   type LLMClient,

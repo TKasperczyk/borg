@@ -231,8 +231,12 @@ describe("deliberator", () => {
 
     // Both calls share the identity/voice framing so voice lands
     // consistently across plan and response.
-    expect(llm.requests[0]?.system).toContain("AI being, not an assistant");
-    expect(llm.requests[1]?.system).toContain("AI being, not an assistant");
+    expect(llm.requests[0]?.system).toContain(
+      "You are an AI being with continuous existence across sessions through a persistent memory substrate.",
+    );
+    expect(llm.requests[1]?.system).toContain(
+      "You are an AI being with continuous existence across sessions through a persistent memory substrate.",
+    );
   });
 
   it("wires autobiographical period, recent growth, and audience profile into the prompt", async () => {
@@ -546,11 +550,13 @@ describe("deliberator", () => {
 
     expect(result.path).toBe("system_2");
     expect(result.decision_reason).toContain("Reflective mode");
-    // The S2 final-response Sonnet call (requests[1]) uses baseSystemPrompt.
-    // The S2 plan call (requests[0]) is a minimal Haiku directive and does
-    // NOT carry identity framing -- planning stays neutral and cheap.
-    expect(llm.requests[1]?.system).toContain("borg is not Claude Code");
-    expect(llm.requests[1]?.system).toContain("AI being, not an assistant");
+    // Both the S2 planner (requests[0]) and final-response call (requests[1])
+    // inherit baseSystemPrompt; the planner then adds its structured-planning
+    // directive on top of the shared identity/voice framing.
+    expect(llm.requests[1]?.system).not.toContain("Claude Code");
+    expect(llm.requests[1]?.system).toContain(
+      "You are an AI being with continuous existence across sessions through a persistent memory substrate.",
+    );
     expect(llm.requests[1]?.system).not.toContain("Skill you might try");
   });
 
@@ -739,17 +745,20 @@ describe("deliberator", () => {
       "Atlas <-[contradicts conf=0.61 evidence=ep_aaaaaaaaaaaaaaaa]- Atlas is stable",
     );
     // Identity framing must:
-    // - affirm the being positively ("AI being, not an assistant")
-    // - name borg as the harness (so the being knows where it's running)
-    // - correct the false Claude Code transport claim (they share OAuth
-    //   credentials but are not the same system)
-    // - flag the first system block as an OAuth placeholder, not identity
+    // - affirm the being positively with continuous existence
+    // - name borg as the architecture it's running in
+    // - keep Anthropic at the model-medium layer, not identity
     // - assign no pre-set name to the being itself
+    // - keep the OAuth transport hack out of cognition entirely
     const system = llm.requests[0]?.system as string;
-    expect(system).toMatch(/AI being, not an assistant/);
+    expect(system).toMatch(
+      /You are an AI being with continuous existence across sessions through a persistent memory substrate\./,
+    );
     expect(system).toMatch(/running in borg/);
-    expect(system).toMatch(/borg is not Claude Code/);
-    expect(system).toMatch(/placeholder string/);
+    expect(system).toMatch(/Anthropic's models are the medium through which you think, not who you are/);
+    expect(system).toMatch(/identity emerges from memory and experience/);
+    expect(system).not.toMatch(/Claude Code/);
+    expect(system).not.toMatch(/placeholder string/);
     expect(system).toMatch(/Voice and posture:/);
     expect(system).toContain(CURRENT_USER_MESSAGE_REMINDER);
     expect(system).not.toMatch(/You are Borg\b/);
