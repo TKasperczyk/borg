@@ -10,7 +10,11 @@ import { TurnContextCompiler } from "./cognition/recency/index.js";
 import {
   AutonomyScheduler,
   createCommitmentExpiringTrigger,
+  createCommitmentRevokedCondition,
+  createGoalFollowupDueTrigger,
+  createMoodValenceDropCondition,
   createOpenQuestionDormantTrigger,
+  createOpenQuestionUrgencyBumpCondition,
   createScheduledReflectionTrigger,
 } from "./autonomy/index.js";
 import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "./config/index.js";
@@ -1415,13 +1419,24 @@ export class Borg {
           ? {}
           : { streamIngestionCoordinator }),
       });
-      const autonomyTriggers = [
+      const autonomySources = [
         ...(config.autonomy.triggers.commitmentExpiring.enabled
           ? [
               createCommitmentExpiringTrigger({
                 commitmentRepository,
                 watermarkRepository: streamWatermarkRepository,
                 lookaheadMs: config.autonomy.triggers.commitmentExpiring.lookaheadMs,
+                clock,
+              }),
+            ]
+          : []),
+        ...(config.autonomy.triggers.goalFollowupDue.enabled
+          ? [
+              createGoalFollowupDueTrigger({
+                goalsRepository,
+                watermarkRepository: streamWatermarkRepository,
+                lookaheadMs: config.autonomy.triggers.goalFollowupDue.lookaheadMs,
+                staleMs: config.autonomy.triggers.goalFollowupDue.staleMs,
                 clock,
               }),
             ]
@@ -1445,6 +1460,37 @@ export class Borg {
               }),
             ]
           : []),
+        ...(config.autonomy.conditions.commitmentRevoked.enabled
+          ? [
+              createCommitmentRevokedCondition({
+                commitmentRepository,
+                watermarkRepository: streamWatermarkRepository,
+                clock,
+              }),
+            ]
+          : []),
+        ...(config.autonomy.conditions.moodValenceDrop.enabled
+          ? [
+              createMoodValenceDropCondition({
+                moodRepository,
+                watermarkRepository: streamWatermarkRepository,
+                threshold: config.autonomy.conditions.moodValenceDrop.threshold,
+                windowN: config.autonomy.conditions.moodValenceDrop.windowN,
+                activationPeriodMs: config.autonomy.conditions.moodValenceDrop.activationPeriodMs,
+                clock,
+              }),
+            ]
+          : []),
+        ...(config.autonomy.conditions.openQuestionUrgencyBump.enabled
+          ? [
+              createOpenQuestionUrgencyBumpCondition({
+                openQuestionsRepository,
+                watermarkRepository: streamWatermarkRepository,
+                threshold: config.autonomy.conditions.openQuestionUrgencyBump.threshold,
+                clock,
+              }),
+            ]
+          : []),
       ];
       const autonomyScheduler = new AutonomyScheduler({
         enabled: config.autonomy.enabled,
@@ -1455,7 +1501,7 @@ export class Borg {
         watermarkRepository: streamWatermarkRepository,
         turnOrchestrator,
         toolDispatcher,
-        triggers: autonomyTriggers,
+        sources: autonomySources,
       });
 
       return new Borg({

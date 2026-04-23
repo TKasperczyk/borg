@@ -155,6 +155,41 @@ const configFileSchema = z
               })
               .partial()
               .optional(),
+            goalFollowupDue: z
+              .object({
+                enabled: z.boolean().optional(),
+                lookaheadMs: z.number().int().positive().optional(),
+                staleMs: z.number().int().positive().optional(),
+              })
+              .partial()
+              .optional(),
+          })
+          .partial()
+          .optional(),
+        conditions: z
+          .object({
+            commitmentRevoked: z
+              .object({
+                enabled: z.boolean().optional(),
+              })
+              .partial()
+              .optional(),
+            moodValenceDrop: z
+              .object({
+                enabled: z.boolean().optional(),
+                threshold: z.number().min(-1).max(1).optional(),
+                windowN: z.number().int().positive().optional(),
+                activationPeriodMs: z.number().int().positive().optional(),
+              })
+              .partial()
+              .optional(),
+            openQuestionUrgencyBump: z
+              .object({
+                enabled: z.boolean().optional(),
+                threshold: z.number().min(0).max(1).optional(),
+              })
+              .partial()
+              .optional(),
           })
           .partial()
           .optional(),
@@ -270,6 +305,26 @@ export const configSchema = z.object({
         enabled: z.boolean(),
         intervalMs: z.number().int().positive(),
       }),
+      goalFollowupDue: z.object({
+        enabled: z.boolean(),
+        lookaheadMs: z.number().int().positive(),
+        staleMs: z.number().int().positive(),
+      }),
+    }),
+    conditions: z.object({
+      commitmentRevoked: z.object({
+        enabled: z.boolean(),
+      }),
+      moodValenceDrop: z.object({
+        enabled: z.boolean(),
+        threshold: z.number().min(-1).max(1),
+        windowN: z.number().int().positive(),
+        activationPeriodMs: z.number().int().positive(),
+      }),
+      openQuestionUrgencyBump: z.object({
+        enabled: z.boolean(),
+        threshold: z.number().min(0).max(1),
+      }),
     }),
   }),
 });
@@ -368,6 +423,26 @@ export const DEFAULT_CONFIG: Config = {
       scheduledReflection: {
         enabled: false,
         intervalMs: 14_400_000,
+      },
+      goalFollowupDue: {
+        enabled: true,
+        lookaheadMs: 604_800_000,
+        staleMs: 1_209_600_000,
+      },
+    },
+    conditions: {
+      commitmentRevoked: {
+        enabled: true,
+      },
+      moodValenceDrop: {
+        enabled: false,
+        threshold: -0.5,
+        windowN: 5,
+        activationPeriodMs: 86_400_000,
+      },
+      openQuestionUrgencyBump: {
+        enabled: true,
+        threshold: 0.9,
       },
     },
   },
@@ -801,6 +876,65 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
             fileConfig.autonomy?.triggers?.scheduledReflection?.intervalMs ??
             DEFAULT_CONFIG.autonomy.triggers.scheduledReflection.intervalMs,
         },
+        goalFollowupDue: {
+          enabled:
+            readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_ENABLED") ??
+            fileConfig.autonomy?.triggers?.goalFollowupDue?.enabled ??
+            DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue.enabled,
+          lookaheadMs:
+            readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_LOOKAHEAD_MS") ??
+            fileConfig.autonomy?.triggers?.goalFollowupDue?.lookaheadMs ??
+            DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue.lookaheadMs,
+          staleMs:
+            readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_STALE_MS") ??
+            fileConfig.autonomy?.triggers?.goalFollowupDue?.staleMs ??
+            DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue.staleMs,
+        },
+      },
+      conditions: {
+        commitmentRevoked: {
+          enabled:
+            readOptionalEnvBoolean(env, "BORG_AUTONOMY_CONDITION_COMMITMENT_REVOKED_ENABLED") ??
+            fileConfig.autonomy?.conditions?.commitmentRevoked?.enabled ??
+            DEFAULT_CONFIG.autonomy.conditions.commitmentRevoked.enabled,
+        },
+        moodValenceDrop: {
+          enabled:
+            readOptionalEnvBoolean(env, "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_ENABLED") ??
+            fileConfig.autonomy?.conditions?.moodValenceDrop?.enabled ??
+            DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop.enabled,
+          threshold:
+            readOptionalEnvFloat(env, "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_THRESHOLD") ??
+            fileConfig.autonomy?.conditions?.moodValenceDrop?.threshold ??
+            DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop.threshold,
+          windowN:
+            readOptionalEnvNumber(env, "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_WINDOW_N") ??
+            fileConfig.autonomy?.conditions?.moodValenceDrop?.windowN ??
+            DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop.windowN,
+          activationPeriodMs:
+            readOptionalEnvNumber(
+              env,
+              "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_ACTIVATION_PERIOD_MS",
+            ) ??
+            fileConfig.autonomy?.conditions?.moodValenceDrop?.activationPeriodMs ??
+            DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop.activationPeriodMs,
+        },
+        openQuestionUrgencyBump: {
+          enabled:
+            readOptionalEnvBoolean(
+              env,
+              "BORG_AUTONOMY_CONDITION_OPEN_QUESTION_URGENCY_BUMP_ENABLED",
+            ) ??
+            fileConfig.autonomy?.conditions?.openQuestionUrgencyBump?.enabled ??
+            DEFAULT_CONFIG.autonomy.conditions.openQuestionUrgencyBump.enabled,
+          threshold:
+            readOptionalEnvFloat(
+              env,
+              "BORG_AUTONOMY_CONDITION_OPEN_QUESTION_URGENCY_BUMP_THRESHOLD",
+            ) ??
+            fileConfig.autonomy?.conditions?.openQuestionUrgencyBump?.threshold ??
+            DEFAULT_CONFIG.autonomy.conditions.openQuestionUrgencyBump.threshold,
+        },
       },
     },
   };
@@ -855,6 +989,21 @@ export function redactConfig(config: Config): Config {
         },
         scheduledReflection: {
           ...config.autonomy.triggers.scheduledReflection,
+        },
+        goalFollowupDue: {
+          ...config.autonomy.triggers.goalFollowupDue,
+        },
+      },
+      conditions: {
+        ...config.autonomy.conditions,
+        commitmentRevoked: {
+          ...config.autonomy.conditions.commitmentRevoked,
+        },
+        moodValenceDrop: {
+          ...config.autonomy.conditions.moodValenceDrop,
+        },
+        openQuestionUrgencyBump: {
+          ...config.autonomy.conditions.openQuestionUrgencyBump,
         },
       },
     },

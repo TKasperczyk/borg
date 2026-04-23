@@ -48,6 +48,7 @@ export function createOpenQuestionDormantTrigger(
 
   return {
     name: TRIGGER_NAME,
+    type: "trigger",
     async scan() {
       const nowMs = clock.now();
       const openQuestions = options.openQuestionsRepository
@@ -68,7 +69,8 @@ export function createOpenQuestionDormantTrigger(
 
           return {
             id: `${question.id}:${question.last_touched}`,
-            trigger: TRIGGER_NAME,
+            sourceName: TRIGGER_NAME,
+            sourceType: "trigger",
             watermarkProcessName,
             sortTs: question.last_touched,
             payload: {

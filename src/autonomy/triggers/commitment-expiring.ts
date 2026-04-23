@@ -48,6 +48,7 @@ export function createCommitmentExpiringTrigger(
 
   return {
     name: TRIGGER_NAME,
+    type: "trigger",
     async scan() {
       const nowMs = clock.now();
       const dueEvents = options.commitmentRepository
@@ -84,7 +85,8 @@ export function createCommitmentExpiringTrigger(
 
           return {
             id: `${commitment.id}:${expiresAt}`,
-            trigger: TRIGGER_NAME,
+            sourceName: TRIGGER_NAME,
+            sourceType: "trigger",
             watermarkProcessName,
             sortTs: expiresAt,
             payload: {

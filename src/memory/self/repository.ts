@@ -131,6 +131,10 @@ function mapGoalRow(row: Record<string, unknown>): GoalRecord {
       row.progress_notes === null || row.progress_notes === undefined
         ? null
         : String(row.progress_notes),
+    last_progress_ts:
+      row.last_progress_ts === null || row.last_progress_ts === undefined
+        ? null
+        : Number(row.last_progress_ts),
     created_at: Number(row.created_at),
     target_at: row.target_at === null || row.target_at === undefined ? null : Number(row.target_at),
     provenance: parseStoredProvenance({
@@ -877,7 +881,8 @@ export class GoalsRepository {
     const row = this.db
       .prepare(
         `
-          SELECT id, description, priority, parent_goal_id, status, progress_notes, created_at, target_at
+          SELECT id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
+                 created_at, target_at
               , provenance_kind, provenance_episode_ids, provenance_process
           FROM goals
           WHERE id = ?
@@ -912,6 +917,8 @@ export class GoalsRepository {
       }
     }
     const provenance = requireProvenance(input.provenance, "Goal");
+    const createdAt = input.createdAt ?? this.clock.now();
+    const progressNotes = input.progressNotes ?? null;
 
     const goal = goalSchema.parse({
       id: input.id ?? createGoalId(),
@@ -919,8 +926,9 @@ export class GoalsRepository {
       priority: input.priority,
       parent_goal_id: parentGoalId,
       status: input.status ?? "active",
-      progress_notes: input.progressNotes ?? null,
-      created_at: input.createdAt ?? this.clock.now(),
+      progress_notes: progressNotes,
+      last_progress_ts: progressNotes === null || progressNotes.trim().length === 0 ? null : createdAt,
+      created_at: createdAt,
       target_at: input.targetAt ?? null,
       provenance,
     });
@@ -930,9 +938,9 @@ export class GoalsRepository {
       .prepare(
         `
           INSERT INTO goals (
-            id, description, priority, parent_goal_id, status, progress_notes, created_at, target_at,
-            provenance_kind, provenance_episode_ids, provenance_process
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
+            created_at, target_at, provenance_kind, provenance_episode_ids, provenance_process
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -942,6 +950,7 @@ export class GoalsRepository {
         goal.parent_goal_id,
         goal.status,
         goal.progress_notes,
+        goal.last_progress_ts,
         goal.created_at,
         goal.target_at,
         storedProvenance.provenance_kind,
@@ -969,8 +978,8 @@ export class GoalsRepository {
         ? this.db
             .prepare(
               `
-                SELECT id, description, priority, parent_goal_id, status, progress_notes, created_at, target_at
-                    , provenance_kind, provenance_episode_ids, provenance_process
+                SELECT id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
+                       created_at, target_at, provenance_kind, provenance_episode_ids, provenance_process
                 FROM goals
                 ORDER BY priority DESC, created_at ASC
               `,
@@ -979,8 +988,8 @@ export class GoalsRepository {
         : this.db
             .prepare(
               `
-                SELECT id, description, priority, parent_goal_id, status, progress_notes, created_at, target_at
-                    , provenance_kind, provenance_episode_ids, provenance_process
+                SELECT id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
+                       created_at, target_at, provenance_kind, provenance_episode_ids, provenance_process
                 FROM goals
                 WHERE status = ?
                 ORDER BY priority DESC, created_at ASC
@@ -1071,16 +1080,19 @@ export class GoalsRepository {
 
     const parsedProvenance = requireProvenance(provenance, "Goal progress update");
     const storedProvenance = toStoredProvenance(parsedProvenance);
+    const nowMs = this.clock.now();
     const result = this.db
       .prepare(
         `
           UPDATE goals
-          SET progress_notes = ?, provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?
+          SET progress_notes = ?, last_progress_ts = ?, provenance_kind = ?, provenance_episode_ids = ?,
+              provenance_process = ?
           WHERE id = ?
         `,
       )
       .run(
         progressNotes,
+        nowMs,
         storedProvenance.provenance_kind,
         storedProvenance.provenance_episode_ids,
         storedProvenance.provenance_process,
@@ -1096,11 +1108,12 @@ export class GoalsRepository {
     this.identityEventRepository?.record({
       record_type: "goal",
       record_id: goalId,
-      action: "update",
+      action: "update_progress",
       old_value: current,
       new_value: {
         ...current,
         progress_notes: progressNotes,
+        last_progress_ts: nowMs,
         provenance: parsedProvenance,
       },
       provenance: parsedProvenance,
@@ -1127,9 +1140,18 @@ export class GoalsRepository {
 
     const parsedPatch = goalPatchSchema.parse(patch);
     const parsedProvenance = requireProvenance(provenance, "Goal update");
+    const nextProgressNotes =
+      parsedPatch.progress_notes === undefined ? current.progress_notes : parsedPatch.progress_notes;
+    const progressChanged = nextProgressNotes !== current.progress_notes;
+    const nextLastProgressTs =
+      !progressChanged
+        ? current.last_progress_ts
+        : this.clock.now();
     const next = goalSchema.parse({
       ...current,
       ...parsedPatch,
+      progress_notes: nextProgressNotes,
+      last_progress_ts: nextLastProgressTs,
       provenance: parsedPatch.provenance ?? current.provenance,
     });
     const storedProvenance = toStoredProvenance(next.provenance);
@@ -1138,8 +1160,9 @@ export class GoalsRepository {
       .prepare(
         `
           UPDATE goals
-          SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?, target_at = ?,
-              provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?
+          SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
+              last_progress_ts = ?, target_at = ?, provenance_kind = ?, provenance_episode_ids = ?,
+              provenance_process = ?
           WHERE id = ?
         `,
       )
@@ -1149,6 +1172,7 @@ export class GoalsRepository {
         next.parent_goal_id,
         next.status,
         next.progress_notes,
+        next.last_progress_ts,
         next.target_at,
         storedProvenance.provenance_kind,
         storedProvenance.provenance_episode_ids,

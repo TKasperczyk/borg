@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { parseEpisodeId } from "../../util/ids.js";
+import { identityMigrations } from "../identity/index.js";
 
 import { AutobiographicalRepository } from "./autobiographical.js";
 import { selfMigrations } from "./migrations.js";
@@ -322,6 +323,125 @@ describe("self migrations", () => {
           last_contradicted_at: null,
           confidence: 4 / 5,
           evidence_episode_ids: [relatedEpisodeIds[1], relatedEpisodeIds[0]],
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("backfills goal last_progress_ts from identity events when progress notes changed", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const dbPath = join(tempDir, "self.db");
+    tempDirs.push(tempDir);
+
+    const legacyDb = openDatabase(dbPath, {
+      migrations: [...selfMigrations.filter((migration) => migration.id < 262), ...identityMigrations],
+    });
+
+    try {
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO goals (
+              id, description, priority, parent_goal_id, status, progress_notes, created_at, target_at,
+              provenance_kind, provenance_episode_ids, provenance_process
+            ) VALUES (?, ?, ?, NULL, 'active', ?, ?, NULL, 'manual', '[]', NULL)
+          `,
+        )
+        .run("goal_aaaaaaaaaaaaaaaa", "Ship Sprint 11", 10, "Made initial progress.", 1_000);
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO goals (
+              id, description, priority, parent_goal_id, status, progress_notes, created_at, target_at,
+              provenance_kind, provenance_episode_ids, provenance_process
+            ) VALUES (?, ?, ?, NULL, 'active', NULL, ?, NULL, 'manual', '[]', NULL)
+          `,
+        )
+        .run("goal_bbbbbbbbbbbbbbbb", "Keep notes tidy", 4, 2_000);
+
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO identity_events (
+              record_type, record_id, action, old_value_json, new_value_json, reason,
+              provenance_kind, provenance_episode_ids, provenance_process, review_item_id,
+              overwrite_without_review, ts
+            ) VALUES ('goal', ?, ?, ?, ?, NULL, 'manual', '[]', NULL, NULL, 0, ?)
+          `,
+        )
+        .run(
+          "goal_aaaaaaaaaaaaaaaa",
+          "update",
+          JSON.stringify({
+            progress_notes: null,
+          }),
+          JSON.stringify({
+            progress_notes: "Made initial progress.",
+          }),
+          3_000,
+        );
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO identity_events (
+              record_type, record_id, action, old_value_json, new_value_json, reason,
+              provenance_kind, provenance_episode_ids, provenance_process, review_item_id,
+              overwrite_without_review, ts
+            ) VALUES ('goal', ?, ?, ?, ?, NULL, 'manual', '[]', NULL, NULL, 0, ?)
+          `,
+        )
+        .run(
+          "goal_aaaaaaaaaaaaaaaa",
+          "update_progress",
+          JSON.stringify({
+            progress_notes: "Made initial progress.",
+          }),
+          JSON.stringify({
+            progress_notes: "Made initial progress.\nClosed the remaining gaps.",
+          }),
+          5_000,
+        );
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO identity_events (
+              record_type, record_id, action, old_value_json, new_value_json, reason,
+              provenance_kind, provenance_episode_ids, provenance_process, review_item_id,
+              overwrite_without_review, ts
+            ) VALUES ('goal', ?, ?, ?, ?, NULL, 'manual', '[]', NULL, NULL, 0, ?)
+          `,
+        )
+        .run(
+          "goal_bbbbbbbbbbbbbbbb",
+          "update",
+          JSON.stringify({
+            progress_notes: null,
+          }),
+          JSON.stringify({
+            progress_notes: null,
+          }),
+          4_000,
+        );
+    } finally {
+      legacyDb.close();
+    }
+
+    const db = openDatabase(dbPath, {
+      migrations: [...selfMigrations, ...identityMigrations],
+    });
+    const goals = new GoalsRepository({ db, clock: new FixedClock(10_000) });
+
+    try {
+      expect(goals.get("goal_aaaaaaaaaaaaaaaa" as never)).toEqual(
+        expect.objectContaining({
+          last_progress_ts: 5_000,
+        }),
+      );
+      expect(goals.get("goal_bbbbbbbbbbbbbbbb" as never)).toEqual(
+        expect.objectContaining({
+          last_progress_ts: null,
         }),
       );
     } finally {

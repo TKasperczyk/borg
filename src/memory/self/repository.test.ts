@@ -53,12 +53,19 @@ describe("self repositories", () => {
     const db = openDatabase(":memory:", {
       migrations: [...selfMigrations],
     });
+    const clock = new ManualClock(100);
     const goals = new GoalsRepository({
       db,
-      clock: new FixedClock(100),
+      clock,
     });
 
     try {
+      const seeded = goals.add({
+        description: "Keep the migration honest",
+        priority: 2,
+        progressNotes: "Started already",
+        provenance: manualProvenance,
+      });
       const parent = goals.add({
         description: "Ship Sprint 2",
         priority: 10,
@@ -72,7 +79,16 @@ describe("self repositories", () => {
       });
 
       goals.updateProgress(child.id, "Covered happy path and dedup.", manualProvenance);
+      clock.advance(50);
       goals.updateStatus(child.id, "done", manualProvenance);
+      clock.advance(25);
+      goals.update(
+        child.id,
+        {
+          progress_notes: "Covered happy path, dedup, and follow-up fixes.",
+        },
+        manualProvenance,
+      );
 
       expect(goals.list()).toEqual([
         expect.objectContaining({
@@ -81,10 +97,15 @@ describe("self repositories", () => {
             expect.objectContaining({
               id: child.id,
               status: "done",
-              progress_notes: "Covered happy path and dedup.",
+              progress_notes: "Covered happy path, dedup, and follow-up fixes.",
+              last_progress_ts: 175,
               provenance: manualProvenance,
             }),
           ],
+        }),
+        expect.objectContaining({
+          id: seeded.id,
+          last_progress_ts: 100,
         }),
       ]);
       expect(goals.list({ status: "done" })).toEqual([

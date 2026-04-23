@@ -26,6 +26,21 @@ function tableHasColumn(db: SqliteDatabase, table: string, column: string): bool
   return columns.some((entry) => entry.name === column);
 }
 
+function tableExists(db: SqliteDatabase, table: string): boolean {
+  return (
+    db
+      .prepare(
+        `
+          SELECT 1
+          FROM sqlite_master
+          WHERE type = 'table' AND name = ?
+          LIMIT 1
+        `,
+      )
+      .get(table) !== undefined
+  );
+}
+
 function getRecentDistinctEpisodeIds(
   rows: Array<{ ts: number; provenance_episode_ids: unknown }>,
   limit: number,
@@ -838,6 +853,33 @@ export const selfMigrations = [
           ON open_questions (status, urgency DESC, last_touched DESC);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_open_questions_dedupe_key
           ON open_questions (dedupe_key);
+      `);
+    },
+  },
+  {
+    id: 262,
+    name: "add-goal-last-progress-ts",
+    up: (db) => {
+      if (!tableHasColumn(db, "goals", "last_progress_ts")) {
+        db.exec("ALTER TABLE goals ADD COLUMN last_progress_ts INTEGER");
+      }
+
+      if (!tableExists(db, "identity_events")) {
+        return;
+      }
+
+      db.exec(`
+        UPDATE goals
+        SET last_progress_ts = (
+          SELECT MAX(ts)
+          FROM identity_events
+          WHERE record_type = 'goal'
+            AND record_id = goals.id
+            AND action IN ('update_progress', 'update')
+            AND COALESCE(json_extract(old_value_json, '$.progress_notes'), '__null__')
+              != COALESCE(json_extract(new_value_json, '$.progress_notes'), '__null__')
+        )
+        WHERE last_progress_ts IS NULL;
       `);
     },
   },

@@ -7,7 +7,7 @@ import type { TurnInput, TurnOrchestrator } from "../cognition/index.js";
 
 import type {
   AutonomyTickEventResult,
-  AutonomyTrigger,
+  AutonomyWakeSource,
   TickResult,
   DueEvent,
 } from "./types.js";
@@ -33,7 +33,7 @@ export type AutonomySchedulerOptions = {
   watermarkRepository: StreamWatermarkRepository;
   turnOrchestrator: Pick<TurnOrchestrator, "run">;
   toolDispatcher: ToolDispatcher;
-  triggers: readonly AutonomyTrigger[];
+  sources: readonly AutonomyWakeSource[];
   setIntervalFn?: typeof setInterval;
   clearIntervalFn?: typeof clearInterval;
 };
@@ -109,13 +109,13 @@ export class AutonomyScheduler {
 
   async tick(): Promise<TickResult> {
     const nowMs = this.clock.now();
-    const scannedTriggers = this.options.triggers.map((trigger) => trigger.name);
+    const scannedSources = this.options.sources.map((source) => source.name);
 
     if (!this.options.enabled) {
       return {
         status: "disabled",
         ts: nowMs,
-        scannedTriggers,
+        scannedSources,
         dueEvents: 0,
         firedEvents: 0,
         budgetSkipped: 0,
@@ -142,7 +142,8 @@ export class AutonomyScheduler {
           budgetSkipped += 1;
           eventResults.push({
             id: dueEvent.id,
-            trigger: dueEvent.trigger,
+            sourceName: dueEvent.sourceName,
+            sourceType: dueEvent.sourceType,
             status: "budget_skipped",
             payload: dueEvent.payload,
             outcomeSummary: "Skipped because maxWakesPerHour budget was exhausted.",
@@ -154,8 +155,9 @@ export class AutonomyScheduler {
           kind: "internal_event",
           content: {
             kind: "autonomous_wake",
-            trigger: dueEvent.trigger,
-            trigger_payload: dueEvent.payload,
+            trigger_type: dueEvent.sourceType,
+            source_name: dueEvent.sourceName,
+            payload: dueEvent.payload,
             ts: this.clock.now(),
           },
         });
@@ -174,7 +176,7 @@ export class AutonomyScheduler {
             kind: "internal_event",
             content: {
               kind: "autonomous_action",
-              trigger: dueEvent.trigger,
+              trigger: dueEvent.sourceName,
               outcome_summary: outcomeSummary,
               turn_result_id: null,
               ts: this.clock.now(),
@@ -182,7 +184,8 @@ export class AutonomyScheduler {
           });
           eventResults.push({
             id: dueEvent.id,
-            trigger: dueEvent.trigger,
+            sourceName: dueEvent.sourceName,
+            sourceType: dueEvent.sourceType,
             status: "error",
             payload: dueEvent.payload,
             error: preparedEvent.toolError,
@@ -193,7 +196,7 @@ export class AutonomyScheduler {
         }
 
         try {
-          const turnInput = preparedEvent.trigger.buildTurn(preparedEvent.event);
+          const turnInput = preparedEvent.source.buildTurn(preparedEvent.event);
           const turnResult = await this.options.turnOrchestrator.run({
             ...turnInput,
             sessionId: this.sessionId,
@@ -207,7 +210,7 @@ export class AutonomyScheduler {
             kind: "internal_event",
             content: {
               kind: "autonomous_action",
-              trigger: dueEvent.trigger,
+              trigger: dueEvent.sourceName,
               outcome_summary: outcomeSummary,
               turn_result_id: turnResult.agentMessageId ?? null,
               ts: this.clock.now(),
@@ -217,7 +220,8 @@ export class AutonomyScheduler {
           firedEvents += 1;
           eventResults.push({
             id: dueEvent.id,
-            trigger: dueEvent.trigger,
+            sourceName: dueEvent.sourceName,
+            sourceType: dueEvent.sourceType,
             status: "fired",
             payload: preparedEvent.event.payload,
             outcomeSummary,
@@ -233,7 +237,7 @@ export class AutonomyScheduler {
             kind: "internal_event",
             content: {
               kind: "autonomous_action",
-              trigger: dueEvent.trigger,
+              trigger: dueEvent.sourceName,
               outcome_summary: outcomeSummary,
               turn_result_id: null,
               ts: this.clock.now(),
@@ -248,7 +252,8 @@ export class AutonomyScheduler {
 
           eventResults.push({
             id: dueEvent.id,
-            trigger: dueEvent.trigger,
+            sourceName: dueEvent.sourceName,
+            sourceType: dueEvent.sourceType,
             status: busy ? "busy_skipped" : "error",
             payload: preparedEvent.event.payload,
             outcomeSummary,
@@ -264,7 +269,7 @@ export class AutonomyScheduler {
     return {
       status: "ok",
       ts: nowMs,
-      scannedTriggers,
+      scannedSources,
       dueEvents: dueEvents.length,
       firedEvents,
       budgetSkipped,
@@ -274,15 +279,15 @@ export class AutonomyScheduler {
     };
   }
 
-  private async scanDueEvents(): Promise<Array<{ trigger: AutonomyTrigger; event: DueEvent }>> {
-    const dueEvents: Array<{ trigger: AutonomyTrigger; event: DueEvent }> = [];
+  private async scanDueEvents(): Promise<Array<{ source: AutonomyWakeSource; event: DueEvent }>> {
+    const dueEvents: Array<{ source: AutonomyWakeSource; event: DueEvent }> = [];
 
-    for (const trigger of this.options.triggers) {
-      const events = await trigger.scan();
+    for (const source of this.options.sources) {
+      const events = await source.scan();
 
       for (const event of events) {
         dueEvents.push({
-          trigger,
+          source,
           event,
         });
       }
@@ -305,19 +310,27 @@ export class AutonomyScheduler {
     dueEvent: DueEvent,
   ): Promise<
     | {
-        trigger: AutonomyTrigger;
+        source: AutonomyWakeSource;
         event: DueEvent;
       }
     | {
         toolError: string;
       }
   > {
+    const source = this.options.sources.find((entry) => entry.name === dueEvent.sourceName);
+
+    if (source === undefined) {
+      return {
+        toolError: `Unknown autonomy source: ${dueEvent.sourceName}`,
+      };
+    }
+
     const provenance = {
-      trigger: dueEvent.trigger,
+      source_name: dueEvent.sourceName,
       event_id: dueEvent.id,
     };
 
-    switch (dueEvent.trigger) {
+    switch (dueEvent.sourceName) {
       case "commitment_expiring": {
         const result = await this.options.toolDispatcher.dispatch({
           toolName: "tool.commitments.list",
@@ -338,7 +351,7 @@ export class AutonomyScheduler {
         };
 
         return {
-          trigger: this.options.triggers.find((trigger) => trigger.name === dueEvent.trigger)!,
+          source,
           event: {
             ...dueEvent,
             payload: {
@@ -375,7 +388,7 @@ export class AutonomyScheduler {
         };
 
         return {
-          trigger: this.options.triggers.find((trigger) => trigger.name === dueEvent.trigger)!,
+          source,
           event: {
             ...dueEvent,
             payload: {
@@ -408,7 +421,7 @@ export class AutonomyScheduler {
         };
 
         return {
-          trigger: this.options.triggers.find((trigger) => trigger.name === dueEvent.trigger)!,
+          source,
           event: {
             ...dueEvent,
             payload: {
@@ -418,6 +431,11 @@ export class AutonomyScheduler {
           },
         };
       }
+      default:
+        return {
+          source,
+          event: dueEvent,
+        };
     }
   }
 

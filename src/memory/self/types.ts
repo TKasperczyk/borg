@@ -82,6 +82,7 @@ export const goalSchema = z.object({
   parent_goal_id: goalIdSchema.nullable(),
   status: goalStatusSchema,
   progress_notes: z.string().nullable(),
+  last_progress_ts: z.number().finite().nullable(),
   created_at: z.number().finite(),
   target_at: z.number().finite().nullable(),
   provenance: provenanceSchema,

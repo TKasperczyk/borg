@@ -85,6 +85,26 @@ describe("autonomy integration", () => {
               enabled: false,
               intervalMs: 14_400_000,
             },
+            goalFollowupDue: {
+              enabled: false,
+              lookaheadMs: 604_800_000,
+              staleMs: 1_209_600_000,
+            },
+          },
+          conditions: {
+            commitmentRevoked: {
+              enabled: false,
+            },
+            moodValenceDrop: {
+              enabled: false,
+              threshold: -0.5,
+              windowN: 5,
+              activationPeriodMs: 86_400_000,
+            },
+            openQuestionUrgencyBump: {
+              enabled: false,
+              threshold: 0.9,
+            },
           },
         },
       },
@@ -119,7 +139,8 @@ describe("autonomy integration", () => {
       ]);
       expect(entries[0]?.content).toMatchObject({
         kind: "autonomous_wake",
-        trigger: "commitment_expiring",
+        trigger_type: "trigger",
+        source_name: "commitment_expiring",
       });
       expect(entries[1]?.content).toMatchObject({
         tool_name: "tool.commitments.list",

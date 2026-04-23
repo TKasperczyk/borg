@@ -89,7 +89,7 @@ describe("AutonomyScheduler", () => {
       watermarkRepository,
       turnOrchestrator: turnRunner,
       toolDispatcher: dispatcher,
-      triggers: [trigger],
+      sources: [trigger],
     });
 
     const firstTick = await scheduler.tick();
@@ -187,7 +187,7 @@ describe("AutonomyScheduler", () => {
         }),
       },
       toolDispatcher: dispatcher,
-      triggers: [trigger],
+      sources: [trigger],
     });
 
     const result = await scheduler.tick();
@@ -240,7 +240,7 @@ describe("AutonomyScheduler", () => {
         run: vi.fn().mockRejectedValue(new SessionBusyError("busy")),
       },
       toolDispatcher: dispatcher,
-      triggers: [trigger],
+      sources: [trigger],
     });
 
     const result = await scheduler.tick();
@@ -283,7 +283,7 @@ describe("AutonomyScheduler", () => {
           }),
         clock,
       }),
-      triggers: [],
+      sources: [],
       setIntervalFn,
       clearIntervalFn: vi.fn(),
     });
@@ -385,7 +385,7 @@ describe("AutonomyScheduler", () => {
       watermarkRepository,
       turnOrchestrator: turnRunner,
       toolDispatcher: dispatcher,
-      triggers: [trigger],
+      sources: [trigger],
       setIntervalFn,
       clearIntervalFn,
     });
@@ -424,6 +424,134 @@ describe("AutonomyScheduler", () => {
     await stopPromise;
     expect(stopped).toBe(true);
     expect(clearIntervalFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatches mixed trigger and condition sources and records wake metadata", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const scheduler = new AutonomyScheduler({
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerHour: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository,
+      turnOrchestrator: {
+        run: vi.fn().mockResolvedValue({
+          mode: "idle",
+          path: "system_1",
+          response: "Handled the wake.",
+          thoughts: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          retrievedEpisodeIds: [],
+          intents: [],
+          toolCalls: [],
+          agentMessageId: "strm_mixed_sources",
+        }),
+      },
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        clock,
+      }),
+      sources: [
+        {
+          name: "goal_followup_due",
+          type: "trigger",
+          async scan() {
+            return [
+              {
+                id: "goal-1",
+                sourceName: "goal_followup_due",
+                sourceType: "trigger",
+                watermarkProcessName: "autonomy:test:goal",
+                sortTs: 1,
+                payload: {
+                  goal_id: "goal_aaaaaaaaaaaaaaaa",
+                },
+              },
+            ];
+          },
+          buildTurn() {
+            return {
+              audience: "self",
+              stakes: "low",
+              userMessage: "Goal follow-up",
+            };
+          },
+        },
+        {
+          name: "commitment_revoked",
+          type: "condition",
+          async scan() {
+            return [
+              {
+                id: "condition-1",
+                sourceName: "commitment_revoked",
+                sourceType: "condition",
+                watermarkProcessName: "autonomy:test:condition",
+                sortTs: 2,
+                payload: {
+                  commitment_id: "cmt_aaaaaaaaaaaaaaaa",
+                },
+              },
+            ];
+          },
+          buildTurn() {
+            return {
+              audience: "self",
+              stakes: "low",
+              userMessage: "Commitment reflection",
+            };
+          },
+        },
+      ],
+    });
+
+    const result = await scheduler.tick();
+    expect(result.firedEvents).toBe(2);
+    expect(result.events.map((event) => event.sourceName)).toEqual([
+      "goal_followup_due",
+      "commitment_revoked",
+    ]);
+
+    const wakeEntries = new StreamReader({
+      dataDir: harness.tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    })
+      .tail(8)
+      .filter((entry) => entry.kind === "internal_event" && typeof entry.content === "object");
+
+    expect(wakeEntries[0]?.content).toMatchObject({
+      kind: "autonomous_wake",
+      trigger_type: "trigger",
+      source_name: "goal_followup_due",
+    });
+    expect(wakeEntries[2]?.content).toMatchObject({
+      kind: "autonomous_wake",
+      trigger_type: "condition",
+      source_name: "commitment_revoked",
+    });
   });
 
   it("logs a tick error and continues scheduling later ticks", async () => {
@@ -469,9 +597,10 @@ describe("AutonomyScheduler", () => {
           }),
         clock,
       }),
-      triggers: [
+      sources: [
         {
           name: "scheduled_reflection",
+          type: "trigger",
           scan: vi.fn().mockImplementation(async () => {
             scanCount += 1;
 

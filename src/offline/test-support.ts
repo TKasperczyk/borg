@@ -212,6 +212,26 @@ export async function createOfflineTestHarness(
           ...DEFAULT_CONFIG.autonomy.triggers.scheduledReflection,
           ...options.configOverrides?.autonomy?.triggers?.scheduledReflection,
         },
+        goalFollowupDue: {
+          ...DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue,
+          ...options.configOverrides?.autonomy?.triggers?.goalFollowupDue,
+        },
+      },
+      conditions: {
+        ...DEFAULT_CONFIG.autonomy.conditions,
+        ...options.configOverrides?.autonomy?.conditions,
+        commitmentRevoked: {
+          ...DEFAULT_CONFIG.autonomy.conditions.commitmentRevoked,
+          ...options.configOverrides?.autonomy?.conditions?.commitmentRevoked,
+        },
+        moodValenceDrop: {
+          ...DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop,
+          ...options.configOverrides?.autonomy?.conditions?.moodValenceDrop,
+        },
+        openQuestionUrgencyBump: {
+          ...DEFAULT_CONFIG.autonomy.conditions.openQuestionUrgencyBump,
+          ...options.configOverrides?.autonomy?.conditions?.openQuestionUrgencyBump,
+        },
       },
     },
   };

@@ -41,6 +41,7 @@ export function createScheduledReflectionTrigger(
 
   return {
     name: TRIGGER_NAME,
+    type: "trigger",
     async scan() {
       const nowMs = clock.now();
       const watermark = options.watermarkRepository.get(WATERMARK_PROCESS_NAME, sessionId);
@@ -52,7 +53,8 @@ export function createScheduledReflectionTrigger(
       return [
         {
           id: `scheduled-reflection:${nowMs}`,
-          trigger: TRIGGER_NAME,
+          sourceName: TRIGGER_NAME,
+          sourceType: "trigger",
           watermarkProcessName: WATERMARK_PROCESS_NAME,
           sortTs: nowMs,
           payload: {

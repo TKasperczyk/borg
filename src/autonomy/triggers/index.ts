@@ -3,6 +3,10 @@ export {
   type CommitmentExpiringTriggerOptions,
 } from "./commitment-expiring.js";
 export {
+  createGoalFollowupDueTrigger,
+  type GoalFollowupDueTriggerOptions,
+} from "./goal-followup-due.js";
+export {
   createOpenQuestionDormantTrigger,
   type OpenQuestionDormantTriggerOptions,
 } from "./open-question-dormant.js";
