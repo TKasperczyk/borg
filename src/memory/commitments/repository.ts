@@ -11,6 +11,7 @@ import {
   type CommitmentId,
   type EntityId,
 } from "../../util/ids.js";
+import { parseJsonArray, type JsonArrayCodecOptions } from "../../storage/codecs.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import {
   isEpisodeProvenance,
@@ -39,28 +40,19 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 }
 
-function parseJsonArray<T>(value: string, label: string): T[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-
-    if (!Array.isArray(parsed)) {
-      throw new TypeError(`${label} must be an array`);
-    }
-
-    return parsed as T[];
-  } catch (error) {
-    throw new CommitmentError(`Failed to parse ${label}`, {
-      cause: error,
-      code: "COMMITMENT_ROW_INVALID",
-    });
-  }
-}
+const COMMITMENT_JSON_ARRAY_CODEC = {
+  errorCode: "COMMITMENT_ROW_INVALID",
+  errorMessage: (label: string) => `Failed to parse ${label}`,
+  createError: (message, options) => new CommitmentError(message, options),
+} satisfies JsonArrayCodecOptions;
 
 function mapEntityRow(row: Record<string, unknown>): EntityRecord {
   return entityRecordSchema.parse({
     id: row.id,
     canonical_name: row.canonical_name,
-    aliases: uniqueStrings(parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases")),
+    aliases: uniqueStrings(
+      parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases", COMMITMENT_JSON_ARRAY_CODEC),
+    ),
     created_at: Number(row.created_at),
   });
 }

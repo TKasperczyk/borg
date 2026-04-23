@@ -1,12 +1,5 @@
-import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
-
-function tableHasColumn(db: SqliteDatabase, table: string, column: string): boolean {
-  const escapedTable = table.replaceAll('"', '""');
-  const columns = db.prepare(`PRAGMA table_info("${escapedTable}")`).all() as Array<{
-    name: string;
-  }>;
-  return columns.some((entry) => entry.name === column);
-}
+import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const commitmentMigrations: Migration[] = [
   {

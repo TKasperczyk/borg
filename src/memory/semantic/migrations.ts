@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const semanticMigrations: Migration[] = [
   {
@@ -98,11 +99,7 @@ export const semanticMigrations: Migration[] = [
     id: 132,
     name: "semantic_nodes_domain",
     up: (db) => {
-      const columns = db
-        .prepare("PRAGMA table_info(semantic_nodes)")
-        .all() as Array<{ name: string }>;
-
-      if (columns.some((column) => column.name === "domain")) {
+      if (tableHasColumn(db, "semantic_nodes", "domain")) {
         return;
       }
 

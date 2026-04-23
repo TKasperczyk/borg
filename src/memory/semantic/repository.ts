@@ -8,6 +8,13 @@ import {
   utf8Field,
   vectorField,
 } from "../../storage/lancedb/index.js";
+import {
+  parseJsonArray,
+  quoteSqlString,
+  toFloat32Array,
+  type Float32ArrayCodecOptions,
+  type JsonArrayCodecOptions,
+} from "../../storage/codecs.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { SemanticError, StorageError } from "../../util/errors.js";
@@ -72,6 +79,18 @@ type SemanticNodeRow = {
   _distance?: number;
 };
 
+const SEMANTIC_JSON_ARRAY_CODEC = {
+  errorCode: "SEMANTIC_ROW_INVALID",
+  errorMessage: (label: string) => `Failed to decode semantic ${label}`,
+  createError: (message, options) => new SemanticError(message, options),
+} satisfies JsonArrayCodecOptions;
+const SEMANTIC_VECTOR_CODEC = {
+  arrayLikeErrorMessage: "Semantic embedding must be array-like",
+  nonFiniteErrorMessage: "Semantic embedding contains a non-finite value",
+  errorCode: "SEMANTIC_ROW_INVALID",
+  createError: (message, options) => new SemanticError(message, options),
+} satisfies Float32ArrayCodecOptions;
+
 function assertPositiveLimit(limit: number | undefined, label: string, fallback: number): number {
   const resolved = limit ?? fallback;
 
@@ -82,62 +101,6 @@ function assertPositiveLimit(limit: number | undefined, label: string, fallback:
   }
 
   return resolved;
-}
-
-function quoteSqlString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-function parseJsonArray<T>(value: string, label: string): T[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-
-    if (!Array.isArray(parsed)) {
-      throw new TypeError(`${label} must be an array`);
-    }
-
-    return parsed as T[];
-  } catch (error) {
-    throw new SemanticError(`Failed to decode semantic ${label}`, {
-      cause: error,
-      code: "SEMANTIC_ROW_INVALID",
-    });
-  }
-}
-
-function toFloat32Array(vector: unknown): Float32Array {
-  if (vector instanceof Float32Array) {
-    return vector;
-  }
-
-  const candidate = Array.isArray(vector)
-    ? vector
-    : ArrayBuffer.isView(vector)
-      ? Array.from(vector as unknown as ArrayLike<number>)
-      : vector !== null &&
-          typeof vector === "object" &&
-          "length" in vector &&
-          typeof vector.length === "number"
-        ? Array.from(vector as ArrayLike<number>)
-        : null;
-
-  if (candidate === null) {
-    throw new SemanticError("Semantic embedding must be array-like", {
-      code: "SEMANTIC_ROW_INVALID",
-    });
-  }
-
-  return Float32Array.from(
-    candidate.map((value) => {
-      if (typeof value !== "number" || !Number.isFinite(value)) {
-        throw new SemanticError("Semantic embedding contains a non-finite value", {
-          code: "SEMANTIC_ROW_INVALID",
-        });
-      }
-
-      return value;
-    }),
-  );
 }
 
 function toSimilarity(distance: number | undefined): number {
@@ -184,16 +147,19 @@ function nodeFromRow(row: Record<string, unknown>): SemanticNode {
     label: row.label,
     description: row.description,
     domain: row.domain === undefined ? null : row.domain,
-    aliases: normalizeAliases(parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases")),
+    aliases: normalizeAliases(
+      parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases", SEMANTIC_JSON_ARRAY_CODEC),
+    ),
     confidence: Number(row.confidence),
     source_episode_ids: parseJsonArray<string>(
       String(row.source_episode_ids ?? "[]"),
       "source_episode_ids",
+      SEMANTIC_JSON_ARRAY_CODEC,
     ).map((value) => parseEpisodeId(value)),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
     last_verified_at: Number(row.last_verified_at),
-    embedding: toFloat32Array(row.embedding),
+    embedding: toFloat32Array(row.embedding, SEMANTIC_VECTOR_CODEC),
     archived: row.archived === true || Number(row.archived) === 1,
     superseded_by:
       row.superseded_by === null || row.superseded_by === undefined
@@ -221,6 +187,7 @@ function edgeFromRow(row: Record<string, unknown>): SemanticEdge {
     evidence_episode_ids: parseJsonArray<string>(
       String(row.evidence_episode_ids ?? "[]"),
       "evidence_episode_ids",
+      SEMANTIC_JSON_ARRAY_CODEC,
     ).map((value) => parseEpisodeId(value)),
     created_at: Number(row.created_at),
     last_verified_at: Number(row.last_verified_at),
@@ -540,9 +507,11 @@ export class SemanticNodeRepository {
       }
 
       const label = String(row.label ?? "").toLowerCase();
-      const aliases = parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases").map((value) =>
-        value.toLowerCase(),
-      );
+      const aliases = parseJsonArray<string>(
+        String(row.aliases ?? "[]"),
+        "aliases",
+        SEMANTIC_JSON_ARRAY_CODEC,
+      ).map((value) => value.toLowerCase());
 
       if (
         label === normalized ||

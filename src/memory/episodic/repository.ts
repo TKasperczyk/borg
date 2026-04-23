@@ -8,6 +8,13 @@ import {
   utf8Field,
   vectorField,
 } from "../../storage/lancedb/index.js";
+import {
+  parseJsonArray,
+  quoteSqlString,
+  toFloat32Array,
+  type Float32ArrayCodecOptions,
+  type JsonArrayCodecOptions,
+} from "../../storage/codecs.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
@@ -65,6 +72,15 @@ type CursorPayload = {
 
 const DEFAULT_LIST_LIMIT = 20;
 const DEFAULT_SEARCH_LIMIT = 10;
+const EPISODE_JSON_ARRAY_CODEC = {
+  errorCode: "EPISODE_ROW_INVALID",
+  errorMessage: (label: string) => `Failed to decode episode ${label}`,
+} satisfies JsonArrayCodecOptions;
+const EPISODE_VECTOR_CODEC = {
+  arrayLikeErrorMessage: "Episode row embedding must be array-like",
+  nonFiniteErrorMessage: "Episode row embedding contains a non-finite value",
+  errorCode: "EPISODE_ROW_INVALID",
+} satisfies Float32ArrayCodecOptions;
 
 function assertPositiveLimit(limit: number | undefined, label: string): number {
   const resolved = limit ?? DEFAULT_LIST_LIMIT;
@@ -76,33 +92,12 @@ function assertPositiveLimit(limit: number | undefined, label: string): number {
   return resolved;
 }
 
-function quoteSqlString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
 function buildSourceFingerprint(sourceStreamIds: readonly string[]): string {
   return [...new Set(sourceStreamIds)].sort().join("\n");
-}
-
-function parseJsonArray<T>(value: string, label: string): T[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-
-    if (!Array.isArray(parsed)) {
-      throw new TypeError(`${label} must be an array`);
-    }
-
-    return parsed as T[];
-  } catch (error) {
-    throw new StorageError(`Failed to decode episode ${label}`, {
-      cause: error,
-      code: "EPISODE_ROW_INVALID",
-    });
-  }
 }
 
 function encodeCursor(payload: CursorPayload): string {
@@ -188,41 +183,6 @@ function toSimilarity(distance: number | undefined): number {
   return Math.max(0, Math.min(1, 1 - distance));
 }
 
-function toFloat32Array(vector: unknown): Float32Array {
-  if (vector instanceof Float32Array) {
-    return vector;
-  }
-
-  const candidate = Array.isArray(vector)
-    ? vector
-    : ArrayBuffer.isView(vector)
-      ? Array.from(vector as unknown as ArrayLike<number>)
-      : vector !== null &&
-          typeof vector === "object" &&
-          "length" in vector &&
-          typeof vector.length === "number"
-        ? Array.from(vector as ArrayLike<number>)
-        : null;
-
-  if (candidate === null) {
-    throw new StorageError("Episode row embedding must be array-like", {
-      code: "EPISODE_ROW_INVALID",
-    });
-  }
-
-  const values = candidate.map((value) => {
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-      throw new StorageError("Episode row embedding contains a non-finite value", {
-        code: "EPISODE_ROW_INVALID",
-      });
-    }
-
-    return value;
-  });
-
-  return Float32Array.from(values);
-}
-
 function toEpisodeRow(episode: Episode): EpisodeRow {
   const normalized = normalizeEpisodeAccess(episode);
 
@@ -270,25 +230,32 @@ function fromEpisodeRow(row: Record<string, unknown>): Episode {
     id: row.id,
     title: row.title,
     narrative: row.narrative,
-    participants: parseJsonArray<string>(String(row.participants ?? "[]"), "participants"),
+    participants: parseJsonArray<string>(
+      String(row.participants ?? "[]"),
+      "participants",
+      EPISODE_JSON_ARRAY_CODEC,
+    ),
     location: row.location === null || row.location === undefined ? null : String(row.location),
     start_time: Number(row.start_time),
     end_time: Number(row.end_time),
     source_stream_ids: parseJsonArray<string>(
       String(row.source_stream_ids ?? "[]"),
       "source_stream_ids",
+      EPISODE_JSON_ARRAY_CODEC,
     ),
     significance: Number(row.significance),
-    tags: parseJsonArray<string>(String(row.tags ?? "[]"), "tags"),
+    tags: parseJsonArray<string>(String(row.tags ?? "[]"), "tags", EPISODE_JSON_ARRAY_CODEC),
     confidence: Number(row.confidence),
     lineage: {
       derived_from: parseJsonArray<string>(
         String(row.lineage_derived_from ?? "[]"),
         "lineage.derived_from",
+        EPISODE_JSON_ARRAY_CODEC,
       ),
       supersedes: parseJsonArray<string>(
         String(row.lineage_supersedes ?? "[]"),
         "lineage.supersedes",
+        EPISODE_JSON_ARRAY_CODEC,
       ),
     },
     emotional_arc: emotionalArc,
@@ -300,7 +267,7 @@ function fromEpisodeRow(row: Record<string, unknown>): Episode {
       row.shared === null || row.shared === undefined
         ? row.audience_entity_id === null || row.audience_entity_id === undefined
         : row.shared === true || Number(row.shared) === 1,
-    embedding: toFloat32Array(row.embedding),
+    embedding: toFloat32Array(row.embedding, EPISODE_VECTOR_CODEC),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
   };

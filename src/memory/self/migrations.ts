@@ -1,4 +1,5 @@
-import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
+import type { Migration } from "../../storage/sqlite/index.js";
+import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 import { createTraitId, parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
 
 import { buildOpenQuestionDedupeKey } from "./open-questions.js";
@@ -16,29 +17,6 @@ function parseStoredIdArray(value: unknown): string[] {
   } catch {
     return [];
   }
-}
-
-function tableHasColumn(db: SqliteDatabase, table: string, column: string): boolean {
-  const escapedTable = table.replaceAll('"', '""');
-  const columns = db.prepare(`PRAGMA table_info("${escapedTable}")`).all() as Array<{
-    name: string;
-  }>;
-  return columns.some((entry) => entry.name === column);
-}
-
-function tableExists(db: SqliteDatabase, table: string): boolean {
-  return (
-    db
-      .prepare(
-        `
-          SELECT 1
-          FROM sqlite_master
-          WHERE type = 'table' AND name = ?
-          LIMIT 1
-        `,
-      )
-      .get(table) !== undefined
-  );
 }
 
 function getRecentDistinctEpisodeIds(
@@ -174,11 +152,7 @@ export const selfMigrations = [
     id: 112,
     name: "add-open-question-dedupe-key",
     up: (db) => {
-      const columns = db.prepare("PRAGMA table_info(open_questions)").all() as Array<{
-        name: string;
-      }>;
-
-      if (!columns.some((column) => column.name === "dedupe_key")) {
+      if (!tableHasColumn(db, "open_questions", "dedupe_key")) {
         db.exec("ALTER TABLE open_questions ADD COLUMN dedupe_key TEXT");
       }
 

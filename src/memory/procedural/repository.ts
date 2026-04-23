@@ -5,6 +5,11 @@ import {
   utf8Field,
   vectorField,
 } from "../../storage/lancedb/index.js";
+import {
+  parseJsonArray,
+  quoteSqlString,
+  type JsonArrayCodecOptions,
+} from "../../storage/codecs.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -43,26 +48,10 @@ type SkillSqlRow = {
   updated_at: number;
 };
 
-function parseJsonArray<T>(value: string, label: string): T[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-
-    if (!Array.isArray(parsed)) {
-      throw new TypeError(`${label} must be an array`);
-    }
-
-    return parsed as T[];
-  } catch (error) {
-    throw new StorageError(`Failed to parse skill ${label}`, {
-      cause: error,
-      code: "SKILL_ROW_INVALID",
-    });
-  }
-}
-
-function quoteSqlString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
-}
+const SKILL_JSON_ARRAY_CODEC = {
+  errorCode: "SKILL_ROW_INVALID",
+  errorMessage: (label: string) => `Failed to parse skill ${label}`,
+} satisfies JsonArrayCodecOptions;
 
 function rowFromSkill(skill: SkillRecord): SkillSqlRow {
   return {
@@ -93,12 +82,15 @@ function skillFromRow(row: Record<string, unknown>): SkillRecord {
     attempts: Number(row.attempts),
     successes: Number(row.successes),
     failures: Number(row.failures),
-    alternatives: parseJsonArray<string>(String(row.alternatives ?? "[]"), "alternatives").map(
-      (value) => parseSkillId(value),
-    ),
+    alternatives: parseJsonArray<string>(
+      String(row.alternatives ?? "[]"),
+      "alternatives",
+      SKILL_JSON_ARRAY_CODEC,
+    ).map((value) => parseSkillId(value)),
     source_episode_ids: parseJsonArray<string>(
       String(row.source_episode_ids ?? "[]"),
       "source_episode_ids",
+      SKILL_JSON_ARRAY_CODEC,
     ).map((value) => parseEpisodeId(value)),
     last_used: row.last_used === null || row.last_used === undefined ? null : Number(row.last_used),
     last_successful:

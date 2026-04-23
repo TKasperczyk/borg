@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const episodicMigrations = [
   {
@@ -23,15 +24,19 @@ export const episodicMigrations = [
   {
     id: 101,
     name: "add-episode-archived-flag",
-    up: `
-      ALTER TABLE episode_stats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0
-    `,
+    up: (db) => {
+      if (!tableHasColumn(db, "episode_stats", "archived")) {
+        db.exec("ALTER TABLE episode_stats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+      }
+    },
   },
   {
     id: 102,
     name: "add-episode-valence-mean",
-    up: `
-      ALTER TABLE episode_stats ADD COLUMN valence_mean REAL NOT NULL DEFAULT 0
-    `,
+    up: (db) => {
+      if (!tableHasColumn(db, "episode_stats", "valence_mean")) {
+        db.exec("ALTER TABLE episode_stats ADD COLUMN valence_mean REAL NOT NULL DEFAULT 0");
+      }
+    },
   },
 ] as const satisfies readonly Migration[];
