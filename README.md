@@ -16,9 +16,10 @@ public API may still shift as the library gets exercised.
 
 ## What it does
 
-- **Stream-first logging.** Append-only JSONL log of every user/agent message,
-  perception, thought, tool call/result, and internal event. Everything else
-  is derived from this.
+- **Append-only stream.** JSONL log of every user/agent message,
+  perception, thought, tool call/result, and internal event. The stream
+  is an audit log and extraction input; authoritative state lives in
+  the typed repositories (SQLite rows + LanceDB vectors).
 - **Eight memory bands.** Episodic (what happened), semantic (what I know),
   procedural (how I do things, as Bayesian skills), affective (how I felt / feel),
   self (values, goals, traits, autobiographical arc, growth markers,
@@ -40,7 +41,9 @@ public API may still shift as the library gets exercised.
 - **Bayesian procedural memory.** Skills are Beta(α, β) posteriors; Thompson
   sampling selects an approach; outcomes update the posterior atomically.
 
-Over 20 k source LoC, 10 k test LoC, 157 tests (full suite runs in ~2s).
+Currently 405 tests, typecheck clean. The being targets Opus 4.7; the
+substrate is not designed to be portable across arbitrary LLMs (see
+ARCHITECTURE.md Part 7 for why).
 
 ## Install
 

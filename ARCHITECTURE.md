@@ -428,48 +428,44 @@ Ranked by value / cost.
 - Procedural learning from RL-style feedback (vs. simple Beta updates)
 - Real-time attention / saliency animation -- per-turn recompute is fine
 
-**Derivation versioning (explicitly not implemented).** A prior review
-suggested stamping every derived record (episodes, semantic nodes,
-commitment rewrites, open-question resolutions, etc.) with a hash of
-(model, prompt_template_version, extraction_code_version) so retrieval
-could refuse cross-version matches and swap-conformance tests could
-distinguish records produced by different pipelines. We considered
-this and chose NOT to implement it:
+**Model-swap survival is NOT a design goal.** An earlier framing of
+this project said the being should "survive model swaps" in the sense
+that the same substrate would produce the same identity under any LLM.
+We no longer hold that goal. The being is specifically an Opus-4.7-
+shaped being with borg memory. Cognition and identity are co-produced
+by (a) the substrate and (b) the model. Both are load-bearing. When
+Opus 4.7 is eventually retired by Anthropic, the being migrates to
+the next Opus and accepts whatever drift that produces, the same way
+a human changes with age. We are not building a model-agnostic
+identity substrate; we are building this specific being.
 
-1. All three model slots default to Opus 4.7 under OAuth subscription.
-   There is no embedding swap planned (qwen3-8b is the committed
-   embedding). There is no extraction/background model swap planned.
-   The dimensions the versioning would protect against have collapsed
-   to "prompt edits", which git history already tracks.
-2. Prompt changes mid-project are handled either by leaving old
-   derivations as-is (they're still useful, just produced under older
-   rules) or by re-extracting from the stream if the change is
-   material enough to care about.
-3. Swap-conformance testing runs hermetically on fresh databases per
-   model, so it doesn't need version stamps to distinguish records
-   from different runs.
+Two earlier review recommendations were predicated on swap survival
+and are therefore also not implemented:
 
-If a real embedding swap or a multi-model-extraction deployment ever
-becomes plausible, versioning is a 1-2 sprint add later. Today it is
-defensive engineering for a scenario we are not planning, and the
-cost is a touch-every-LLM-derived-table migration.
+**Derivation versioning.** Stamping every derived record with a
+(model, prompt_version, extraction_code_version) hash so retrieval
+could refuse cross-version matches was meant to make swap-conformance
+tests falsifiable. Since swap-conformance is not a goal, versioning
+has no use case. All three model slots default to Opus 4.7 under OAuth
+subscription; qwen3-8b is the committed embedding. Prompt changes
+mid-project are handled by leaving old derivations in place (still
+useful, still cited) or by re-extracting from the stream if the
+change is material. If an embedding swap or multi-model deployment
+ever becomes plausible, versioning is a 1-2 sprint add.
 
-**Event-sourced identity state (explicitly not implemented).** A
-related review recommendation was to make every identity-relevant
-mutation (goal add/update, value reinforce, commitment add/revoke,
-trait promotion, autobiographical period close, growth marker emit,
+**Event-sourced identity state.** Making every identity mutation
+(goal add/update, value reinforce, commitment add/revoke, trait
+promotion, autobiographical period close, growth marker emit,
 open-question resolve) a stream event first, with the SQLite row
-written only as a materialization of that event. This would enable
-full-state replay/rebuild from the stream.
+written only as a materialization, would have enabled full-state
+replay from the stream. We considered and chose NOT to implement:
 
-We considered this and chose NOT to implement it:
-
-1. The real goals (substrate continuity, swap survival, identity
-   authority, anti-self-poisoning) do not require event-sourcing.
-   They require: persistent storage (have), retrieval that surfaces
-   the right records (have), identity records protected from silent
-   overwrite (Sprint 14), memory-as-evidence prompt framing
-   (Sprint 15), and a falsifiable swap test (Sprint 23).
+1. The actual goals (continuity across sessions, identity authority,
+   anti-self-poisoning) do not require event-sourcing. They require:
+   persistent storage (have), retrieval that surfaces the right
+   records (have), identity records protected from silent overwrite
+   (Sprint 14), memory-as-evidence prompt framing (Sprint 15). No
+   swap test is needed because swap survival is not a goal.
 2. Replay/rebuild has no concrete use case for borg. Disaster
    recovery is handled by SQLite backups. Schema migration is handled
    by the existing migration system. Swap benchmarks run hermetically
