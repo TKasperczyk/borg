@@ -61,7 +61,10 @@ describe("StreamIngestionCoordinator", () => {
     return dir;
   }
 
-  async function seedStream(dataDir: string, entries: readonly { kind: "user_msg" | "agent_msg"; content: string; ts: number }[]): Promise<void> {
+  async function seedStream(
+    dataDir: string,
+    entries: readonly { kind: "user_msg" | "agent_msg"; content: string; ts: number }[],
+  ): Promise<void> {
     for (const entry of entries) {
       const writer = new StreamWriter({
         dataDir,
@@ -141,6 +144,13 @@ describe("StreamIngestionCoordinator", () => {
       const watermark = repo.get("episodic-extractor", DEFAULT_SESSION_ID);
       expect(watermark?.lastTs).toBe(110);
       expect(watermark?.lastEntryId).not.toBeNull();
+      expect(
+        (
+          coordinator as unknown as {
+            trackedSessions: Set<string>;
+          }
+        ).trackedSessions.has(DEFAULT_SESSION_ID),
+      ).toBe(false);
     } finally {
       close();
     }
@@ -390,7 +400,7 @@ describe("StreamIngestionCoordinator", () => {
     }
   });
 
-  it("coalesces concurrent ingests for the same session", async () => {
+  it("queues concurrent ingests onto a follow-up pass for the same session", async () => {
     const dataDir = createTempDir();
     await seedStream(dataDir, [
       { kind: "user_msg", content: "a", ts: 100 },
@@ -413,12 +423,292 @@ describe("StreamIngestionCoordinator", () => {
         coordinator.ingest(DEFAULT_SESSION_ID),
       ]);
 
-      // All three awaits resolve to the same shared result; the extractor
-      // was called exactly once because the in-flight promise was shared.
       expect(calls).toHaveLength(1);
       expect(a.ran).toBe(true);
-      expect(b).toBe(a);
-      expect(c).toBe(a);
+      expect(b.ran).toBe(false);
+      expect(b.processedEntries).toBe(0);
+      expect(c).toBe(b);
+    } finally {
+      close();
+    }
+  });
+
+  it("runs a queued follow-up pass when new entries arrive during an active ingest", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "first", ts: 100 },
+      { kind: "agent_msg", content: "reply", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    let releaseFirstPass: (() => void) | undefined;
+    let notifyFirstPassStarted: (() => void) | undefined;
+    const firstPassStarted = new Promise<void>((resolve) => {
+      notifyFirstPassStarted = resolve;
+    });
+    let extractCallCount = 0;
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: {
+        async extractFromStream(options: ExtractCall): Promise<{
+          inserted: number;
+          updated: number;
+          skipped: number;
+        }> {
+          calls.push(options);
+          extractCallCount += 1;
+
+          if (extractCallCount === 1) {
+            notifyFirstPassStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseFirstPass = resolve;
+            });
+          }
+
+          return {
+            inserted: 1,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+      } as unknown as never,
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+    });
+
+    try {
+      const firstPromise = coordinator.ingest(DEFAULT_SESSION_ID);
+      await firstPassStarted;
+
+      await seedStream(dataDir, [
+        { kind: "user_msg", content: "followup", ts: 200 },
+        { kind: "agent_msg", content: "second reply", ts: 210 },
+      ]);
+      const secondPromise = coordinator.ingest(DEFAULT_SESSION_ID);
+
+      releaseFirstPass?.();
+
+      const first = await firstPromise;
+      const firstWatermark = repo.get("episodic-extractor", DEFAULT_SESSION_ID);
+      const second = await secondPromise;
+
+      expect(first.ran).toBe(true);
+      expect(firstWatermark?.lastTs).toBe(110);
+      expect(firstWatermark?.lastEntryId).not.toBeNull();
+
+      expect(second.ran).toBe(true);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.sinceCursor).toEqual({
+        ts: firstWatermark?.lastTs,
+        entryId: firstWatermark?.lastEntryId,
+      });
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(210);
+    } finally {
+      close();
+    }
+  });
+
+  it("waits for queued follow-up passes that arrive during close", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "first", ts: 100 },
+      { kind: "agent_msg", content: "reply", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    let notifyFirstPassStarted: (() => void) | undefined;
+    let releaseFirstPass: (() => void) | undefined;
+    const firstPassStarted = new Promise<void>((resolve) => {
+      notifyFirstPassStarted = resolve;
+    });
+    let notifySecondPassStarted: (() => void) | undefined;
+    let releaseSecondPass: (() => void) | undefined;
+    const secondPassStarted = new Promise<void>((resolve) => {
+      notifySecondPassStarted = resolve;
+    });
+    let extractCallCount = 0;
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: {
+        async extractFromStream(options: ExtractCall): Promise<{
+          inserted: number;
+          updated: number;
+          skipped: number;
+        }> {
+          calls.push(options);
+          extractCallCount += 1;
+
+          if (extractCallCount === 1) {
+            notifyFirstPassStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseFirstPass = resolve;
+            });
+          }
+
+          if (extractCallCount === 2) {
+            notifySecondPassStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseSecondPass = resolve;
+            });
+          }
+
+          return {
+            inserted: 1,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+      } as unknown as never,
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+    });
+
+    try {
+      (
+        coordinator as unknown as {
+          trackedSessions: Set<string>;
+        }
+      ).trackedSessions.add(DEFAULT_SESSION_ID);
+
+      let closed = false;
+      const closePromise = coordinator.close();
+      void closePromise.then(() => {
+        closed = true;
+      });
+      await firstPassStarted;
+
+      await seedStream(dataDir, [
+        { kind: "user_msg", content: "followup", ts: 200 },
+        { kind: "agent_msg", content: "second reply", ts: 210 },
+      ]);
+      const queuedIngest = coordinator.ingest(DEFAULT_SESSION_ID);
+
+      releaseFirstPass?.();
+      await secondPassStarted;
+      await Promise.resolve();
+      expect(closed).toBe(false);
+
+      releaseSecondPass?.();
+
+      await Promise.all([closePromise, queuedIngest]);
+      expect(closed).toBe(true);
+      expect(calls).toHaveLength(2);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(210);
+      expect(
+        (
+          coordinator as unknown as {
+            trackedSessions: Set<string>;
+          }
+        ).trackedSessions.has(DEFAULT_SESSION_ID),
+      ).toBe(false);
+    } finally {
+      close();
+    }
+  });
+
+  it("flushes below-threshold shutdown tails past the watermark", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "one", ts: 100 },
+      { kind: "agent_msg", content: "two", ts: 110 },
+      { kind: "user_msg", content: "three", ts: 120 },
+      { kind: "agent_msg", content: "four", ts: 130 },
+      { kind: "user_msg", content: "five", ts: 140 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    let notifyFirstPassStarted: (() => void) | undefined;
+    let releaseFirstPass: (() => void) | undefined;
+    const firstPassStarted = new Promise<void>((resolve) => {
+      notifyFirstPassStarted = resolve;
+    });
+    let notifyFinalDrainStarted: (() => void) | undefined;
+    let releaseFinalDrain: (() => void) | undefined;
+    const finalDrainStarted = new Promise<void>((resolve) => {
+      notifyFinalDrainStarted = resolve;
+    });
+    let extractCallCount = 0;
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: {
+        async extractFromStream(options: ExtractCall): Promise<{
+          inserted: number;
+          updated: number;
+          skipped: number;
+        }> {
+          calls.push(options);
+          extractCallCount += 1;
+
+          if (extractCallCount === 1) {
+            notifyFirstPassStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseFirstPass = resolve;
+            });
+          }
+
+          if (extractCallCount === 2) {
+            notifyFinalDrainStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseFinalDrain = resolve;
+            });
+          }
+
+          return {
+            inserted: 1,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+      } as unknown as never,
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 5,
+    });
+
+    try {
+      const initialLastEntry = new StreamReader({
+        dataDir,
+        sessionId: DEFAULT_SESSION_ID,
+      }).tail(5)[4];
+
+      const firstPromise = coordinator.ingest(DEFAULT_SESSION_ID);
+      await firstPassStarted;
+
+      await seedStream(dataDir, [
+        { kind: "agent_msg", content: "tail one", ts: 200 },
+        { kind: "user_msg", content: "tail two", ts: 210 },
+        { kind: "agent_msg", content: "tail three", ts: 220 },
+      ]);
+
+      let closed = false;
+      const closePromise = coordinator.close();
+      void closePromise.then(() => {
+        closed = true;
+      });
+      const secondPromise = coordinator.ingest(DEFAULT_SESSION_ID);
+
+      releaseFirstPass?.();
+
+      await finalDrainStarted;
+
+      const [first, second] = await Promise.all([firstPromise, secondPromise]);
+      expect(first.ran).toBe(true);
+      expect(second.ran).toBe(false);
+      expect(second.processedEntries).toBe(3);
+      await Promise.resolve();
+      expect(closed).toBe(false);
+
+      releaseFinalDrain?.();
+      await closePromise;
+
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.sinceCursor).toEqual({
+        ts: 140,
+        entryId: initialLastEntry?.id,
+      });
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(220);
     } finally {
       close();
     }

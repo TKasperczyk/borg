@@ -23,7 +23,11 @@ function isFileMissingError(error: unknown): boolean {
     return isFileMissingError(error.cause);
   }
 
-  if (error instanceof Error && "code" in error && typeof (error as { code: unknown }).code === "string") {
+  if (
+    error instanceof Error &&
+    "code" in error &&
+    typeof (error as { code: unknown }).code === "string"
+  ) {
     return (error as { code: string }).code === "ENOENT";
   }
 
@@ -77,6 +81,21 @@ type ResumeOptions = {
   usedLegacyFallback: boolean;
 };
 
+type InFlightIngestion = {
+  promise: Promise<IngestionResult>;
+  minEntriesThreshold: number;
+};
+
+type PendingIngestionWaiter = {
+  resolve: (result: IngestionResult) => void;
+  reject: (error: unknown) => void;
+};
+
+type PendingIngestion = {
+  minEntriesThreshold: number;
+  waiters: PendingIngestionWaiter[];
+};
+
 /**
  * Fires episodic extraction after a turn completes, gated by a stream
  * watermark so each entry is processed at most once (the extractor keeps an
@@ -90,7 +109,11 @@ type ResumeOptions = {
 export class StreamIngestionCoordinator {
   private readonly clock: Clock;
   private readonly minEntriesThreshold: number;
-  private readonly inFlight = new Map<SessionId, Promise<IngestionResult>>();
+  private readonly inFlight = new Map<SessionId, InFlightIngestion>();
+  private readonly pending = new Map<SessionId, PendingIngestion>();
+  private readonly trackedSessions = new Set<SessionId>();
+  private readonly shutdownPendingDrain = new Set<SessionId>();
+  private closePromise: Promise<void> | null = null;
 
   constructor(private readonly options: StreamIngestionCoordinatorOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -102,22 +125,142 @@ export class StreamIngestionCoordinator {
    * watermark meets the threshold. Returns a promise that resolves to the
    * extraction result; the orchestrator usually doesn't await it.
    *
-   * Concurrent calls for the same session are coalesced: only one extraction
-   * pass runs at a time per session.
+   * Concurrent calls for the same session are serialized: only one extraction
+   * pass runs at a time per session, and callers arriving during an active
+   * pass wait on a queued follow-up pass.
    */
   ingest(sessionId: SessionId, ingestOptions: IngestOptions = {}): Promise<IngestionResult> {
+    const minEntriesThreshold = ingestOptions.minEntriesThreshold ?? this.minEntriesThreshold;
     const existing = this.inFlight.get(sessionId);
 
-    if (existing !== undefined) {
-      return existing;
+    if (this.closePromise !== null && existing === undefined) {
+      return this.closePromise.then(() => ({
+        ran: false,
+        processedEntries: 0,
+      }));
     }
 
-    const promise = this.ingestInternal(sessionId, ingestOptions).finally(() => {
-      this.inFlight.delete(sessionId);
-    });
+    this.trackedSessions.add(sessionId);
 
-    this.inFlight.set(sessionId, promise);
+    if (existing !== undefined) {
+      return this.enqueueFollowUp(
+        sessionId,
+        Math.min(existing.minEntriesThreshold, minEntriesThreshold),
+      );
+    }
+
+    return this.startPass(sessionId, minEntriesThreshold);
+  }
+
+  private enqueueFollowUp(
+    sessionId: SessionId,
+    minEntriesThreshold: number,
+  ): Promise<IngestionResult> {
+    return new Promise<IngestionResult>((resolve, reject) => {
+      const pending = this.pending.get(sessionId);
+
+      if (pending === undefined) {
+        this.pending.set(sessionId, {
+          minEntriesThreshold,
+          waiters: [{ resolve, reject }],
+        });
+        return;
+      }
+
+      pending.minEntriesThreshold = Math.min(pending.minEntriesThreshold, minEntriesThreshold);
+      pending.waiters.push({ resolve, reject });
+    });
+  }
+
+  private startPass(sessionId: SessionId, minEntriesThreshold: number): Promise<IngestionResult> {
+    let settledResult: IngestionResult | undefined;
+    let settledError: unknown;
+    const promise = this.runPass(sessionId, minEntriesThreshold)
+      .then((result) => {
+        settledResult = result;
+        return result;
+      })
+      .catch((error) => {
+        settledError = error;
+        throw error;
+      })
+      .finally(() => {
+        const needsShutdownDrain =
+          this.closePromise !== null &&
+          settledError === undefined &&
+          settledResult !== undefined &&
+          settledResult.error === undefined &&
+          !settledResult.ran &&
+          settledResult.processedEntries > 0;
+
+        if (needsShutdownDrain) {
+          this.shutdownPendingDrain.add(sessionId);
+        } else {
+          this.shutdownPendingDrain.delete(sessionId);
+        }
+
+        if (this.inFlight.get(sessionId)?.promise === promise) {
+          this.inFlight.delete(sessionId);
+        }
+
+        if (
+          settledError === undefined &&
+          settledResult?.error === undefined &&
+          !this.inFlight.has(sessionId) &&
+          !this.pending.has(sessionId) &&
+          !this.shutdownPendingDrain.has(sessionId)
+        ) {
+          this.trackedSessions.delete(sessionId);
+        }
+      });
+
+    this.inFlight.set(sessionId, {
+      promise,
+      minEntriesThreshold,
+    });
     return promise;
+  }
+
+  private async runPass(
+    sessionId: SessionId,
+    minEntriesThreshold: number,
+  ): Promise<IngestionResult> {
+    let result: IngestionResult | undefined;
+    let failure: unknown;
+
+    try {
+      result = await this.ingestInternal(sessionId, {
+        minEntriesThreshold,
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    const pending = this.pending.get(sessionId);
+
+    if (pending !== undefined) {
+      this.pending.delete(sessionId);
+      const followUp = this.startPass(sessionId, pending.minEntriesThreshold);
+
+      void followUp.then(
+        (followUpResult) => {
+          for (const waiter of pending.waiters) {
+            waiter.resolve(followUpResult);
+          }
+        },
+        (error) => {
+          for (const waiter of pending.waiters) {
+            waiter.reject(error);
+          }
+        },
+      );
+    }
+
+    if (failure !== undefined) {
+      throw failure;
+    }
+
+    return result as IngestionResult;
   }
 
   private resolveResumeOptions(sessionId: SessionId): ResumeOptions {
@@ -248,6 +391,47 @@ export class StreamIngestionCoordinator {
    */
   flush(sessionId: SessionId): Promise<IngestionResult> {
     return this.ingest(sessionId, { minEntriesThreshold: 1 });
+  }
+
+  async close(): Promise<void> {
+    if (this.closePromise !== null) {
+      return this.closePromise;
+    }
+
+    this.closePromise = (async () => {
+      while (true) {
+        const sessionIds = new Set<SessionId>([
+          ...this.trackedSessions,
+          ...this.shutdownPendingDrain,
+          ...this.inFlight.keys(),
+          ...this.pending.keys(),
+        ]);
+
+        if (sessionIds.size === 0) {
+          return;
+        }
+
+        await Promise.all(
+          [...sessionIds].map((sessionId) => {
+            const active = this.inFlight.get(sessionId);
+            return active?.promise ?? this.startPass(sessionId, 1);
+          }),
+        );
+
+        const hasOutstanding = [...sessionIds].some(
+          (sessionId) =>
+            this.shutdownPendingDrain.has(sessionId) ||
+            this.inFlight.has(sessionId) ||
+            this.pending.has(sessionId),
+        );
+
+        if (!hasOutstanding) {
+          return;
+        }
+      }
+    })();
+
+    return this.closePromise;
   }
 
   now(): number {

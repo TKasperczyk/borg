@@ -13,10 +13,7 @@ import { ManualClock } from "../util/clock.js";
 import { createOfflineTestHarness } from "../offline/test-support.js";
 import { SessionBusyError } from "../util/errors.js";
 
-import {
-  createCommitmentExpiringTrigger,
-  createScheduledReflectionTrigger,
-} from "./index.js";
+import { createCommitmentExpiringTrigger, createScheduledReflectionTrigger } from "./index.js";
 import { AutonomyScheduler } from "./scheduler.js";
 
 describe("AutonomyScheduler", () => {
@@ -95,6 +92,12 @@ describe("AutonomyScheduler", () => {
     const firstTick = await scheduler.tick();
     expect(firstTick.firedEvents).toBe(1);
     expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    expect(
+      watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID),
+    ).toMatchObject({
+      lastTs: 1_000_000,
+      lastEntryId: expect.any(String),
+    });
 
     const secondTick = await scheduler.tick();
     expect(secondTick.firedEvents).toBe(0);
@@ -246,6 +249,71 @@ describe("AutonomyScheduler", () => {
     const result = await scheduler.tick();
     expect(result.busySkipped).toBe(1);
     expect(result.events[0]?.status).toBe("busy_skipped");
+    expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
+
+    const secondResult = await scheduler.tick();
+    expect(secondResult.busySkipped).toBe(1);
+    expect(secondResult.events[0]?.status).toBe("busy_skipped");
+  });
+
+  it("leaves trigger watermarks untouched when an autonomous turn throws", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const dispatcher = new ToolDispatcher({
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      clock,
+    });
+    dispatcher.register(
+      createIdentityEventsListTool({
+        listEvents: (options) => harness.identityService.listEvents(options),
+      }),
+    );
+    const trigger = createScheduledReflectionTrigger({
+      watermarkRepository,
+      intervalMs: 10_000,
+      clock,
+    });
+    const turnRunner = {
+      run: vi.fn().mockRejectedValue(new Error("turn failed")),
+    };
+    const scheduler = new AutonomyScheduler({
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerHour: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      sources: [trigger],
+    });
+
+    const result = await scheduler.tick();
+    expect(result.errorCount).toBe(1);
+    expect(result.events[0]?.status).toBe("error");
+    expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
+
+    const secondResult = await scheduler.tick();
+    expect(secondResult.errorCount).toBe(1);
+    expect(secondResult.events[0]?.status).toBe("error");
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
   });
 
   it("is inert when autonomy is disabled", async () => {
@@ -424,6 +492,217 @@ describe("AutonomyScheduler", () => {
     await stopPromise;
     expect(stopped).toBe(true);
     expect(clearIntervalFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for a direct tick to finish during graceful stop", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const dispatcher = new ToolDispatcher({
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      clock,
+    });
+    dispatcher.register(
+      createIdentityEventsListTool({
+        listEvents: (options) => harness.identityService.listEvents(options),
+      }),
+    );
+
+    const trigger = createScheduledReflectionTrigger({
+      watermarkRepository,
+      intervalMs: 10_000,
+      clock,
+    });
+
+    let resolveTurn:
+      | ((value: {
+          mode: "idle";
+          path: "system_1";
+          response: string;
+          thoughts: [];
+          usage: {
+            input_tokens: number;
+            output_tokens: number;
+            stop_reason: "end_turn";
+          };
+          retrievedEpisodeIds: [];
+          intents: [];
+          toolCalls: [];
+          agentMessageId: string;
+        }) => void)
+      | undefined;
+    const turnCompletion = new Promise<{
+      mode: "idle";
+      path: "system_1";
+      response: string;
+      thoughts: [];
+      usage: {
+        input_tokens: number;
+        output_tokens: number;
+        stop_reason: "end_turn";
+      };
+      retrievedEpisodeIds: [];
+      intents: [];
+      toolCalls: [];
+      agentMessageId: string;
+    }>((resolve) => {
+      resolveTurn = resolve;
+    });
+    const turnRunner = {
+      run: vi.fn().mockReturnValue(turnCompletion),
+    };
+
+    const scheduler = new AutonomyScheduler({
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerHour: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      sources: [trigger],
+    });
+
+    const tickPromise = scheduler.tick();
+    await vi.waitFor(() => {
+      expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    });
+
+    let stopped = false;
+    const stopPromise = scheduler.stop();
+    void stopPromise.then(() => {
+      stopped = true;
+    });
+
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    resolveTurn?.({
+      mode: "idle",
+      path: "system_1",
+      response: "Finished reflective work.",
+      thoughts: [],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "end_turn",
+      },
+      retrievedEpisodeIds: [],
+      intents: [],
+      toolCalls: [],
+      agentMessageId: "strm_direct_stop_wait",
+    });
+
+    await Promise.all([tickPromise, stopPromise]);
+    expect(stopped).toBe(true);
+  });
+
+  it("reports watermark commit failures as errors and retries the source", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const dispatcher = new ToolDispatcher({
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      clock,
+    });
+    dispatcher.register(
+      createIdentityEventsListTool({
+        listEvents: (options) => harness.identityService.listEvents(options),
+      }),
+    );
+
+    const trigger = createScheduledReflectionTrigger({
+      watermarkRepository,
+      intervalMs: 10_000,
+      clock,
+    });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue({
+        mode: "idle",
+        path: "system_1",
+        response: "Reflected on recent changes.",
+        thoughts: [],
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+        },
+        retrievedEpisodeIds: [],
+        intents: [],
+        toolCalls: [],
+        agentMessageId: "strm_agent_result",
+      }),
+    };
+    vi.spyOn(watermarkRepository, "set").mockImplementationOnce(() => {
+      throw new Error("watermark commit failed");
+    });
+
+    const scheduler = new AutonomyScheduler({
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerHour: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      sources: [trigger],
+    });
+
+    const firstTick = await scheduler.tick();
+    expect(firstTick.firedEvents).toBe(0);
+    expect(firstTick.errorCount).toBe(1);
+    expect(firstTick.events[0]).toMatchObject({
+      status: "error",
+      turnResultId: "strm_agent_result",
+      error: "Error: watermark commit failed",
+    });
+    expect(firstTick.events[0]?.outcomeSummary).toContain("watermark commit failed");
+    expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
+
+    const secondTick = await scheduler.tick();
+    expect(secondTick.firedEvents).toBe(1);
+    expect(secondTick.events[0]?.status).toBe("fired");
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+    expect(
+      watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID),
+    ).toMatchObject({
+      lastTs: 1_000_000,
+      lastEntryId: expect.any(String),
+    });
   });
 
   it("dispatches mixed trigger and condition sources and records wake metadata", async () => {

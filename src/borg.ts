@@ -159,6 +159,7 @@ type BorgDependencies = {
   workingMemoryStore: WorkingMemoryStore;
   turnOrchestrator: TurnOrchestrator;
   autonomyScheduler: AutonomyScheduler;
+  streamIngestionCoordinator?: StreamIngestionCoordinator;
   auditLog: AuditLog;
   maintenanceOrchestrator: MaintenanceOrchestrator;
   offlineProcesses: Record<OfflineProcessName, OfflineProcess>;
@@ -1532,6 +1533,7 @@ export class Borg {
         workingMemoryStore,
         turnOrchestrator,
         autonomyScheduler,
+        streamIngestionCoordinator,
         auditLog,
         maintenanceOrchestrator,
         offlineProcesses,
@@ -1546,7 +1548,14 @@ export class Borg {
   }
 
   async close(): Promise<void> {
-    this.deps.sqlite.close();
-    await this.deps.lance.close();
+    try {
+      await this.deps.autonomyScheduler.stop({
+        graceful: true,
+      });
+      await this.deps.streamIngestionCoordinator?.close();
+    } finally {
+      this.deps.sqlite.close();
+      await this.deps.lance.close();
+    }
   }
 }

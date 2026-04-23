@@ -524,6 +524,125 @@ describe("Borg", () => {
     expect(lanceCloseSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("waits for live ingestion to flush before closing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Try the rollback plan.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      liveExtraction: true,
+    });
+
+    let closePromise: Promise<void> | undefined;
+    let closed = false;
+    let resolveExtraction:
+      | ((value: { inserted: number; updated: number; skipped: number }) => void)
+      | undefined;
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          streamIngestionCoordinator?: {
+            options: {
+              extractor: {
+                extractFromStream(): Promise<{ inserted: number; updated: number; skipped: number }>;
+              };
+            };
+          };
+        };
+      };
+      const coordinator = internal.deps.streamIngestionCoordinator;
+      expect(coordinator).toBeDefined();
+
+      let notifyExtractionStarted: (() => void) | undefined;
+      const extractionStarted = new Promise<void>((resolve) => {
+        notifyExtractionStarted = resolve;
+      });
+      let extractionCalls = 0;
+      coordinator!.options.extractor = {
+        async extractFromStream(): Promise<{ inserted: number; updated: number; skipped: number }> {
+          extractionCalls += 1;
+          notifyExtractionStarted?.();
+
+          return await new Promise((resolve) => {
+            resolveExtraction = resolve;
+          });
+        },
+      };
+
+      await borg.turn({
+        userMessage: "Atlas deploy failed again.",
+      });
+      await extractionStarted;
+
+      closePromise = borg.close();
+      void closePromise.then(() => {
+        closed = true;
+      });
+
+      await Promise.resolve();
+      expect(extractionCalls).toBe(1);
+      expect(closed).toBe(false);
+
+      resolveExtraction?.({
+        inserted: 1,
+        updated: 0,
+        skipped: 0,
+      });
+      await closePromise;
+      expect(closed).toBe(true);
+    } finally {
+      if (!closed) {
+        resolveExtraction?.({
+          inserted: 1,
+          updated: 0,
+          skipped: 0,
+        });
+        await closePromise?.catch(() => undefined);
+
+        if (closePromise === undefined) {
+          await borg.close().catch(() => undefined);
+        }
+      }
+    }
+  });
+
   it("runs the full cognitive turn loop", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

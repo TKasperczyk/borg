@@ -5,12 +5,7 @@ import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import type { TurnInput, TurnOrchestrator } from "../cognition/index.js";
 
-import type {
-  AutonomyTickEventResult,
-  AutonomyWakeSource,
-  TickResult,
-  DueEvent,
-} from "./types.js";
+import type { AutonomyTickEventResult, AutonomyWakeSource, TickResult, DueEvent } from "./types.js";
 
 type IntervalHandle = ReturnType<typeof setInterval>;
 
@@ -58,7 +53,7 @@ export class AutonomyScheduler {
   private readonly clearIntervalFn: typeof clearInterval;
   private readonly wakeHistory: number[] = [];
   private intervalHandle: IntervalHandle | null = null;
-  private activeTick: Promise<void> | null = null;
+  private activeTick: Promise<TickResult> | null = null;
   private observer: AutonomySchedulerObserver | null = null;
 
   constructor(private readonly options: AutonomySchedulerOptions) {
@@ -86,7 +81,7 @@ export class AutonomyScheduler {
         return;
       }
 
-      this.activeTick = this.runScheduledTick();
+      void this.runScheduledTick();
     }, this.options.intervalMs);
   }
 
@@ -108,6 +103,10 @@ export class AutonomyScheduler {
   }
 
   async tick(): Promise<TickResult> {
+    return this.runTrackedTick();
+  }
+
+  private async tickOnce(): Promise<TickResult> {
     const nowMs = this.clock.now();
     const scannedSources = this.options.sources.map((source) => source.name);
 
@@ -161,10 +160,6 @@ export class AutonomyScheduler {
             ts: this.clock.now(),
           },
         });
-        this.options.watermarkRepository.set(dueEvent.watermarkProcessName, this.sessionId, {
-          lastTs: wakeEntry.timestamp,
-          lastEntryId: wakeEntry.id,
-        });
         this.wakeHistory.push(wakeEntry.timestamp);
 
         const preparedEvent = await this.prepareEvent(dueEvent);
@@ -217,16 +212,35 @@ export class AutonomyScheduler {
             },
           });
 
-          firedEvents += 1;
-          eventResults.push({
-            id: dueEvent.id,
-            sourceName: dueEvent.sourceName,
-            sourceType: dueEvent.sourceType,
-            status: "fired",
-            payload: preparedEvent.event.payload,
-            outcomeSummary,
-            turnResultId: turnResult.agentMessageId ?? null,
-          });
+          try {
+            this.options.watermarkRepository.set(dueEvent.watermarkProcessName, this.sessionId, {
+              lastTs: wakeEntry.timestamp,
+              lastEntryId: wakeEntry.id,
+            });
+            firedEvents += 1;
+            eventResults.push({
+              id: dueEvent.id,
+              sourceName: dueEvent.sourceName,
+              sourceType: dueEvent.sourceType,
+              status: "fired",
+              payload: preparedEvent.event.payload,
+              outcomeSummary,
+              turnResultId: turnResult.agentMessageId ?? null,
+            });
+          } catch (error) {
+            errorCount += 1;
+            eventResults.push({
+              id: dueEvent.id,
+              sourceName: dueEvent.sourceName,
+              sourceType: dueEvent.sourceType,
+              status: "error",
+              payload: preparedEvent.event.payload,
+              outcomeSummary: `Autonomous turn succeeded but watermark commit failed: ${formatError(error)}`,
+              turnResultId: turnResult.agentMessageId ?? null,
+              error: formatError(error),
+            });
+            await this.notifyError(error);
+          }
         } catch (error) {
           const busy = error instanceof SessionBusyError;
           const outcomeSummary = busy
@@ -279,6 +293,44 @@ export class AutonomyScheduler {
     };
   }
 
+  private runTrackedTick(
+    options: {
+      notifyObserver?: boolean;
+    } = {},
+  ): Promise<TickResult> {
+    const existing = this.activeTick;
+
+    if (existing !== null) {
+      return existing;
+    }
+
+    const notifyObserver = options.notifyObserver ?? false;
+    const promise = (async () => {
+      try {
+        const result = await this.tickOnce();
+
+        if (notifyObserver) {
+          await this.notifyTick(result);
+        }
+
+        return result;
+      } catch (error) {
+        if (notifyObserver) {
+          await this.notifyError(error);
+        }
+
+        throw error;
+      }
+    })().finally(() => {
+      if (this.activeTick === promise) {
+        this.activeTick = null;
+      }
+    });
+
+    this.activeTick = promise;
+    return promise;
+  }
+
   private async scanDueEvents(): Promise<Array<{ source: AutonomyWakeSource; event: DueEvent }>> {
     const dueEvents: Array<{ source: AutonomyWakeSource; event: DueEvent }> = [];
 
@@ -294,21 +346,24 @@ export class AutonomyScheduler {
     }
 
     return dueEvents.sort(
-      (left, right) => left.event.sortTs - right.event.sortTs || left.event.id.localeCompare(right.event.id),
+      (left, right) =>
+        left.event.sortTs - right.event.sortTs || left.event.id.localeCompare(right.event.id),
     );
   }
 
   private pruneWakeHistory(): void {
     const cutoff = this.clock.now() - 3_600_000;
 
-    while (this.wakeHistory.length > 0 && this.wakeHistory[0] !== undefined && this.wakeHistory[0] < cutoff) {
+    while (
+      this.wakeHistory.length > 0 &&
+      this.wakeHistory[0] !== undefined &&
+      this.wakeHistory[0] < cutoff
+    ) {
       this.wakeHistory.shift();
     }
   }
 
-  private async prepareEvent(
-    dueEvent: DueEvent,
-  ): Promise<
+  private async prepareEvent(dueEvent: DueEvent): Promise<
     | {
         source: AutonomyWakeSource;
         event: DueEvent;
@@ -441,12 +496,12 @@ export class AutonomyScheduler {
 
   private async runScheduledTick(): Promise<void> {
     try {
-      const result = await this.tick();
-      await this.notifyTick(result);
-    } catch (error) {
-      await this.notifyError(error);
-    } finally {
-      this.activeTick = null;
+      await this.runTrackedTick({
+        notifyObserver: true,
+      });
+    } catch {
+      // Scheduled ticks report failures through notifyError; the interval loop
+      // should not surface an unhandled rejection.
     }
   }
 
