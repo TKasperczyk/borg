@@ -4,6 +4,15 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { EmbeddingClient } from "../../embeddings/index.js";
+import { FakeLLMClient } from "../../llm/index.js";
+import { EntityRepository } from "../../memory/commitments/index.js";
+import { EpisodicExtractor } from "../../memory/episodic/extractor.js";
+import { episodicMigrations } from "../../memory/episodic/migrations.js";
+import { EpisodicRepository, createEpisodesTableSchema } from "../../memory/episodic/repository.js";
+import { retrievalMigrations } from "../../retrieval/migrations.js";
+import { selfMigrations } from "../../memory/self/migrations.js";
+import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import {
   StreamReader,
@@ -12,6 +21,7 @@ import {
   streamWatermarkMigrations,
 } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
+import { EmbeddingError } from "../../util/errors.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 
 import { StreamIngestionCoordinator } from "./coordinator.js";
@@ -25,6 +35,26 @@ type ExtractCall = {
   };
   untilTs?: number;
 };
+
+const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
+
+function createEpisodeToolResponse(episodes: unknown[]) {
+  return {
+    text: "",
+    input_tokens: 10,
+    output_tokens: 20,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_1",
+        name: EPISODE_TOOL_NAME,
+        input: {
+          episodes,
+        },
+      },
+    ],
+  };
+}
 
 function createFakeExtractor(
   calls: ExtractCall[],
@@ -397,6 +427,129 @@ describe("StreamIngestionCoordinator", () => {
       expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)).toBeNull();
     } finally {
       close();
+    }
+  });
+
+  it("keeps the watermark unchanged on embedding failure and retries next pass", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "candidate one", ts: 100 },
+      { kind: "agent_msg", content: "candidate two", ts: 110 },
+    ]);
+
+    const store = new LanceDbStore({
+      uri: join(dataDir, "lancedb"),
+    });
+    const db = openDatabase(join(dataDir, "borg.db"), {
+      migrations: [
+        ...episodicMigrations,
+        ...selfMigrations,
+        ...retrievalMigrations,
+        ...streamWatermarkMigrations,
+      ],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const episodicRepository = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+    const entityRepository = new EntityRepository({
+      db,
+      clock,
+    });
+    const entries = new StreamReader({
+      dataDir,
+      sessionId: DEFAULT_SESSION_ID,
+    }).tail(2);
+    const firstEntry = entries[0];
+
+    if (firstEntry === undefined) {
+      throw new Error("Expected seeded stream entry");
+    }
+
+    let failed = false;
+    const embeddingClient: EmbeddingClient = {
+      async embed(): Promise<Float32Array> {
+        if (!failed) {
+          failed = true;
+          throw new EmbeddingError("embedding failed");
+        }
+
+        return Float32Array.from([1, 0, 0, 0]);
+      },
+      async embedBatch(texts): Promise<Float32Array[]> {
+        return texts.map(() => Float32Array.from([1, 0, 0, 0]));
+      },
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Retry me",
+            narrative: "This candidate should retry after the embedding failure.",
+            source_stream_ids: [firstEntry.id],
+            participants: [],
+            location: null,
+            tags: [],
+            confidence: 0.8,
+            significance: 0.7,
+          },
+        ]),
+        createEpisodeToolResponse([
+          {
+            title: "Retry me",
+            narrative: "This candidate should retry after the embedding failure.",
+            source_stream_ids: [firstEntry.id],
+            participants: [],
+            location: null,
+            tags: [],
+            confidence: 0.8,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir,
+      episodicRepository,
+      embeddingClient,
+      llmClient: llm,
+      model: "haiku",
+      entityRepository,
+      clock,
+    });
+    const repo = new StreamWatermarkRepository({
+      db,
+      clock,
+    });
+    const coordinator = new StreamIngestionCoordinator({
+      extractor,
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+    });
+
+    try {
+      const first = await coordinator.ingest(DEFAULT_SESSION_ID);
+
+      expect(first.ran).toBe(false);
+      expect(first.error).toBeInstanceOf(EmbeddingError);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)).toBeNull();
+
+      const second = await coordinator.ingest(DEFAULT_SESSION_ID);
+
+      expect(second.ran).toBe(true);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(110);
+      expect(await episodicRepository.listAll()).toHaveLength(1);
+      expect(llm.requests).toHaveLength(2);
+    } finally {
+      db.close();
+      await store.close();
     }
   });
 

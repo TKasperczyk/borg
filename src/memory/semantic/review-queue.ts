@@ -4,16 +4,8 @@ import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { SemanticError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
-import {
-  parseReviewProvenance,
-  provenanceSchema,
-  type Provenance,
-} from "../common/provenance.js";
-import {
-  EpisodicRepository,
-  episodeIdSchema,
-  episodePatchSchema,
-} from "../episodic/index.js";
+import { parseReviewProvenance, provenanceSchema, type Provenance } from "../common/provenance.js";
+import { EpisodicRepository, episodeIdSchema, episodePatchSchema } from "../episodic/index.js";
 import { type IdentityService } from "../identity/index.js";
 import {
   AutobiographicalRepository,
@@ -108,7 +100,11 @@ const SEMANTIC_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
   "invalidate",
   "dismiss",
 ]);
-const NEW_INSIGHT_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "invalidate", "dismiss"]);
+const NEW_INSIGHT_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
+  "accept",
+  "invalidate",
+  "dismiss",
+]);
 const LIFECYCLE_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject", "dismiss"]);
 const CORRECTION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject"]);
 
@@ -170,6 +166,24 @@ const identityInconsistencyTargetTypeSchema = z.enum([
   "autobiographical_period",
 ]);
 const identityRepairOpSchema = z.enum(["reinforce", "contradict", "patch"]);
+const REVIEW_APPLYING_REF_KEY = "__borg_resolution_applying";
+const reviewApplyingStateSchema = z
+  .object({
+    decision: reviewResolutionSchema,
+    winner_node_id: semanticNodeIdSchema.nullable().optional(),
+    started_at: z.number().finite(),
+    semantic_node_patch: z
+      .object({
+        node_id: semanticNodeIdSchema,
+        confidence: z.number().min(0).max(1).optional(),
+        last_verified_at: z.number().finite().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+type ReviewApplyingState = z.infer<typeof reviewApplyingStateSchema>;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -352,12 +366,211 @@ export class ReviewQueueRepository {
     return result.changes > 0;
   }
 
+  private getApplyingState(item: ReviewQueueItem): ReviewApplyingState | null {
+    const candidate = item.refs[REVIEW_APPLYING_REF_KEY];
+    const parsed = reviewApplyingStateSchema.safeParse(candidate);
+    return parsed.success ? parsed.data : null;
+  }
+
+  private resolutionMatchesApplyingState(
+    state: ReviewApplyingState,
+    resolution: ResolvedReviewDecision,
+  ): boolean {
+    return (
+      state.decision === resolution.decision &&
+      (state.winner_node_id ?? null) === (resolution.winner_node_id ?? null)
+    );
+  }
+
+  private refsWithoutApplyingState(refs: Record<string, unknown>): Record<string, unknown> {
+    const next = { ...refs };
+    delete next[REVIEW_APPLYING_REF_KEY];
+    return next;
+  }
+
+  private targetLooksCrossStore(targetId: unknown): boolean {
+    return (
+      typeof targetId === "string" && (targetId.startsWith("ep_") || targetId.startsWith("semn_"))
+    );
+  }
+
+  private resolutionTouchesCrossStore(
+    item: ReviewQueueItem,
+    resolution: ResolvedReviewDecision,
+  ): boolean {
+    if (resolution.decision === "dismiss") {
+      return false;
+    }
+
+    if (item.kind === "correction") {
+      return resolution.decision === "accept" && this.targetLooksCrossStore(item.refs.target_id);
+    }
+
+    if (item.kind === "contradiction" || item.kind === "duplicate") {
+      return resolution.decision === "supersede" || resolution.decision === "invalidate";
+    }
+
+    if (item.kind === "new_insight") {
+      return resolution.decision === "accept" || resolution.decision === "invalidate";
+    }
+
+    if (item.kind === "stale") {
+      return resolution.decision === "accept";
+    }
+
+    if (item.kind === "misattribution" || item.kind === "temporal_drift") {
+      return resolution.decision === "accept";
+    }
+
+    return false;
+  }
+
+  private markResolved(
+    itemId: number,
+    resolution: ResolvedReviewDecision,
+    resolvedAt: number,
+    refs: Record<string, unknown>,
+  ): void {
+    this.db
+      .prepare("UPDATE review_queue SET refs = ?, resolved_at = ?, resolution = ? WHERE id = ?")
+      .run(
+        serializeJsonValue(this.refsWithoutApplyingState(refs)),
+        resolvedAt,
+        resolution.decision,
+        itemId,
+      );
+  }
+
+  private async buildApplyingState(
+    item: ReviewQueueItem,
+    resolution: ResolvedReviewDecision,
+  ): Promise<ReviewApplyingState> {
+    const state: ReviewApplyingState = {
+      decision: resolution.decision,
+      winner_node_id: resolution.winner_node_id ?? null,
+      started_at: this.clock.now(),
+    };
+
+    if (
+      this.options.semanticNodeRepository === undefined ||
+      (item.kind !== "new_insight" && item.kind !== "stale") ||
+      resolution.decision !== "accept"
+    ) {
+      return state;
+    }
+
+    const rawNodeId =
+      item.kind === "new_insight"
+        ? Array.isArray(item.refs.node_ids)
+          ? item.refs.node_ids[0]
+          : undefined
+        : item.refs.target_type === "semantic_node"
+          ? item.refs.target_id
+          : item.refs.node_id;
+
+    if (typeof rawNodeId !== "string") {
+      return state;
+    }
+
+    const nodeId = semanticNodeIdSchema.parse(rawNodeId);
+    const current = await this.options.semanticNodeRepository.get(nodeId);
+
+    if (current === null) {
+      return state;
+    }
+
+    state.semantic_node_patch = {
+      node_id: nodeId,
+      confidence: clamp(current.confidence + (item.kind === "new_insight" ? 0.1 : -0.05), 0, 1),
+      last_verified_at: this.clock.now(),
+    };
+    return state;
+  }
+
+  private async ensureApplyingState(
+    item: ReviewQueueItem,
+    resolution: ResolvedReviewDecision,
+  ): Promise<ReviewQueueItem> {
+    const existing = this.getApplyingState(item);
+
+    if (existing !== null) {
+      if (!this.resolutionMatchesApplyingState(existing, resolution)) {
+        throw new SemanticError("Review item is already applying a different resolution", {
+          code: "REVIEW_QUEUE_RESOLUTION_IN_PROGRESS",
+          cause: { itemId: item.id, decision: existing.decision },
+        });
+      }
+
+      return item;
+    }
+
+    const applyingState = await this.buildApplyingState(item, resolution);
+    const refs = {
+      ...item.refs,
+      [REVIEW_APPLYING_REF_KEY]: applyingState,
+    };
+
+    this.db
+      .prepare("UPDATE review_queue SET refs = ? WHERE id = ? AND resolved_at IS NULL")
+      .run(serializeJsonValue(refs), item.id);
+
+    return {
+      ...item,
+      refs,
+    };
+  }
+
+  private async resolveInSqliteTransaction(
+    item: ReviewQueueItem,
+    resolution: ResolvedReviewDecision,
+  ): Promise<ReviewQueueItem> {
+    const resolvedAt = this.clock.now();
+
+    this.db.exec("BEGIN IMMEDIATE");
+
+    try {
+      await this.applyResolution(item, resolution);
+      this.markResolved(item.id, resolution, resolvedAt, item.refs);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Keep the original failure.
+      }
+
+      throw error;
+    }
+
+    return {
+      ...item,
+      resolved_at: resolvedAt,
+      resolution: resolution.decision,
+    };
+  }
+
+  private async resolveWithApplyingState(
+    item: ReviewQueueItem,
+    resolution: ResolvedReviewDecision,
+  ): Promise<ReviewQueueItem> {
+    const applyingItem = await this.ensureApplyingState(item, resolution);
+
+    await this.applyResolution(applyingItem, resolution);
+    const resolvedAt = this.clock.now();
+    this.markResolved(applyingItem.id, resolution, resolvedAt, applyingItem.refs);
+
+    return {
+      ...applyingItem,
+      refs: this.refsWithoutApplyingState(applyingItem.refs),
+      resolved_at: resolvedAt,
+      resolution: resolution.decision,
+    };
+  }
+
   async resolve(itemId: number, decision: ReviewResolutionInput): Promise<ReviewQueueItem | null> {
     const parsedResolution = reviewResolutionInputSchema.parse(decision);
     const resolution: ResolvedReviewDecision =
-      typeof parsedResolution === "string"
-        ? { decision: parsedResolution }
-        : parsedResolution;
+      typeof parsedResolution === "string" ? { decision: parsedResolution } : parsedResolution;
     const row = this.db.prepare("SELECT * FROM review_queue WHERE id = ?").get(itemId) as
       | Record<string, unknown>
       | undefined;
@@ -381,17 +594,9 @@ export class ReviewQueueRepository {
       );
     }
 
-    await this.applyResolution(item, resolution);
-    const resolvedAt = this.clock.now();
-    this.db
-      .prepare("UPDATE review_queue SET resolved_at = ?, resolution = ? WHERE id = ?")
-      .run(resolvedAt, resolution.decision, itemId);
-
-    return {
-      ...item,
-      resolved_at: resolvedAt,
-      resolution: resolution.decision,
-    };
+    return this.resolutionTouchesCrossStore(item, resolution)
+      ? this.resolveWithApplyingState(item, resolution)
+      : this.resolveInSqliteTransaction(item, resolution);
   }
 
   private async applyResolution(
@@ -516,6 +721,16 @@ export class ReviewQueueRepository {
     const nodeId = semanticNodeIdSchema.parse(rawNodeIds[0]);
 
     if (decision.decision === "accept") {
+      const applyingPatch = this.getApplyingState(item)?.semantic_node_patch;
+
+      if (applyingPatch?.node_id === nodeId && applyingPatch.confidence !== undefined) {
+        await this.options.semanticNodeRepository.update(nodeId, {
+          confidence: applyingPatch.confidence,
+          last_verified_at: applyingPatch.last_verified_at ?? this.clock.now(),
+        });
+        return;
+      }
+
       const current = await this.options.semanticNodeRepository.get(nodeId);
 
       if (current === null) {
@@ -550,6 +765,16 @@ export class ReviewQueueRepository {
     }
 
     const targetId = semanticNodeIdSchema.parse(rawTargetId);
+    const applyingPatch = this.getApplyingState(item)?.semantic_node_patch;
+
+    if (applyingPatch?.node_id === targetId && applyingPatch.confidence !== undefined) {
+      await this.options.semanticNodeRepository.update(targetId, {
+        last_verified_at: applyingPatch.last_verified_at ?? this.clock.now(),
+        confidence: applyingPatch.confidence,
+      });
+      return;
+    }
+
     const current = await this.options.semanticNodeRepository.get(targetId);
 
     if (current === null) {
@@ -729,9 +954,12 @@ export class ReviewQueueRepository {
           }
 
           if (this.options.valuesRepository === undefined) {
-            throw new SemanticError("Values repository is required for value reinforcement repair", {
-              code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
-            });
+            throw new SemanticError(
+              "Values repository is required for value reinforcement repair",
+              {
+                code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
+              },
+            );
           }
 
           this.options.valuesRepository.reinforce(targetId, evidenceProvenance, this.clock.now());
@@ -744,9 +972,12 @@ export class ReviewQueueRepository {
           }
 
           if (this.options.valuesRepository === undefined) {
-            throw new SemanticError("Values repository is required for value contradiction repair", {
-              code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
-            });
+            throw new SemanticError(
+              "Values repository is required for value contradiction repair",
+              {
+                code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
+              },
+            );
           }
 
           this.options.valuesRepository.recordContradiction({
@@ -773,11 +1004,16 @@ export class ReviewQueueRepository {
           throwLegacyRepairRefsError(item.kind);
         }
 
-        const result = this.options.identityService.updateValue(targetId, patch, proposedProvenance, {
-          throughReview: true,
-          reason: item.reason,
-          reviewItemId: item.id,
-        });
+        const result = this.options.identityService.updateValue(
+          targetId,
+          patch,
+          proposedProvenance,
+          {
+            throughReview: true,
+            reason: item.reason,
+            reviewItemId: item.id,
+          },
+        );
 
         if (result.status !== "applied") {
           throw new SemanticError(`Identity patch for value ${targetId} still requires review`, {
@@ -795,9 +1031,12 @@ export class ReviewQueueRepository {
           }
 
           if (this.options.traitsRepository === undefined) {
-            throw new SemanticError("Traits repository is required for trait reinforcement repair", {
-              code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
-            });
+            throw new SemanticError(
+              "Traits repository is required for trait reinforcement repair",
+              {
+                code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
+              },
+            );
           }
 
           const current = this.options.traitsRepository.get(targetId);
@@ -823,9 +1062,12 @@ export class ReviewQueueRepository {
           }
 
           if (this.options.traitsRepository === undefined) {
-            throw new SemanticError("Traits repository is required for trait contradiction repair", {
-              code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
-            });
+            throw new SemanticError(
+              "Traits repository is required for trait contradiction repair",
+              {
+                code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
+              },
+            );
           }
 
           const current = this.options.traitsRepository.get(targetId);
@@ -860,11 +1102,16 @@ export class ReviewQueueRepository {
           throwLegacyRepairRefsError(item.kind);
         }
 
-        const result = this.options.identityService.updateTrait(targetId, patch, proposedProvenance, {
-          throughReview: true,
-          reason: item.reason,
-          reviewItemId: item.id,
-        });
+        const result = this.options.identityService.updateTrait(
+          targetId,
+          patch,
+          proposedProvenance,
+          {
+            throughReview: true,
+            reason: item.reason,
+            reviewItemId: item.id,
+          },
+        );
 
         if (result.status !== "applied") {
           throw new SemanticError(`Identity patch for trait ${targetId} still requires review`, {
@@ -913,9 +1160,12 @@ export class ReviewQueueRepository {
         );
 
         if (result.status !== "applied") {
-          throw new SemanticError(`Identity patch for commitment ${targetId} still requires review`, {
-            code: "IDENTITY_REVIEW_REQUIRED",
-          });
+          throw new SemanticError(
+            `Identity patch for commitment ${targetId} still requires review`,
+            {
+              code: "IDENTITY_REVIEW_REQUIRED",
+            },
+          );
         }
         return;
       }
@@ -947,11 +1197,16 @@ export class ReviewQueueRepository {
           throwLegacyRepairRefsError(item.kind);
         }
 
-        const result = this.options.identityService.updateGoal(targetId, patch, proposedProvenance, {
-          throughReview: true,
-          reason: item.reason,
-          reviewItemId: item.id,
-        });
+        const result = this.options.identityService.updateGoal(
+          targetId,
+          patch,
+          proposedProvenance,
+          {
+            throughReview: true,
+            reason: item.reason,
+            reviewItemId: item.id,
+          },
+        );
 
         if (result.status !== "applied") {
           throw new SemanticError(`Identity patch for goal ${targetId} still requires review`, {

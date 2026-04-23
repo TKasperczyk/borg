@@ -154,7 +154,8 @@ describe("episodic extractor", () => {
     clock.advance(4 * 24 * 60 * 60 * 1_000);
     const second = await writer.append({
       kind: "agent_msg",
-      content: "We reviewed the borg architecture again and compared the retrieval pipeline changes.",
+      content:
+        "We reviewed the borg architecture again and compared the retrieval pipeline changes.",
     });
     llm.pushResponse(
       createEpisodeToolResponse([
@@ -409,7 +410,9 @@ describe("episodic extractor", () => {
       updated: 0,
       skipped: 1,
     });
-    expect((await repo.listAll()).map((episode) => episode.source_stream_ids)).toEqual([[first.id]]);
+    expect((await repo.listAll()).map((episode) => episode.source_stream_ids)).toEqual([
+      [first.id],
+    ]);
   });
 
   it("rejects hallucinated source stream ids", async () => {
@@ -533,7 +536,7 @@ describe("episodic extractor", () => {
     });
   });
 
-  it("skips candidates whose embeddings fail and continues the extraction run", async () => {
+  it("propagates embedding failures so ingestion can retry the candidate", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new ManualClock(1_000);
     const store = new LanceDbStore({
@@ -608,15 +611,9 @@ describe("episodic extractor", () => {
       clock,
     });
 
-    const result = await extractor.extractFromStream();
+    await expect(extractor.extractFromStream()).rejects.toBeInstanceOf(EmbeddingError);
     const listed = await repo.list();
 
-    expect(result).toEqual({
-      inserted: 1,
-      updated: 0,
-      skipped: 1,
-    });
-    expect(listed.items).toHaveLength(1);
-    expect(listed.items[0]?.title).toBe("Keep me");
+    expect(listed.items).toHaveLength(0);
   });
 });

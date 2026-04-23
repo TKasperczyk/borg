@@ -114,12 +114,6 @@ export class WorkingMemoryStore {
   }
 
   load(sessionId: SessionId): WorkingMemory {
-    const cached = this.states.get(sessionId);
-
-    if (cached !== undefined) {
-      return cloneWorkingMemory(cached);
-    }
-
     const persisted = this.readPersisted(sessionId);
     const state = persisted ?? createWorkingMemory(sessionId, this.clock.now());
     this.states.set(sessionId, cloneWorkingMemory(state));

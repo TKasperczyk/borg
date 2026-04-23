@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { FakeLLMClient } from "../../llm/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
+import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   createSemanticEdgeId,
@@ -375,6 +377,64 @@ describe("semantic repositories", () => {
 
     expect(danglingError).toMatchObject({
       code: "SEMANTIC_EDGE_DANGLING",
+    });
+  });
+
+  it("logs duplicate-review background failures without an unhandled rejection", async () => {
+    const fixture = await createSemanticFixture();
+    const writer = new StreamWriter({
+      dataDir: fixture.tempDir,
+      clock: fixture.clock,
+    });
+    const logged: Promise<void>[] = [];
+    const nodeRepository = new SemanticNodeRepository({
+      table: fixture.table,
+      db: fixture.db,
+      clock: fixture.clock,
+      enqueueReview: vi.fn(),
+      llmClient: new FakeLLMClient(),
+      contradictionJudgeModel: "haiku",
+      onDuplicateReviewError: (error) => {
+        const promise = writer
+          .append({
+            kind: "internal_event",
+            content: {
+              hook: "semantic_duplicate_review",
+              error: error instanceof Error ? error.message : String(error),
+            },
+          })
+          .then(() => undefined);
+        logged.push(promise);
+        return promise;
+      },
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    vi.spyOn(nodeRepository, "searchByVector").mockRejectedValue(new Error("vector exploded"));
+
+    await nodeRepository.insert({
+      ...buildNode(createSemanticNodeId(), "Atlas is unstable"),
+      kind: "proposition",
+    });
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+    await Promise.all(logged);
+
+    const [entry] = new StreamReader({
+      dataDir: fixture.tempDir,
+    }).tail(1);
+
+    expect(entry?.kind).toBe("internal_event");
+    expect(entry?.content).toMatchObject({
+      hook: "semantic_duplicate_review",
+      error: "vector exploded",
     });
   });
 });

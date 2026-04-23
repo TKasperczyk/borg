@@ -9,7 +9,7 @@ import { analyzeAffectiveSignalHeuristically, type EmotionalArc } from "../affec
 import type { EntityRepository } from "../commitments/index.js";
 import { StreamReader, type StreamCursor, type StreamEntry } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { EmbeddingError, LLMError, StorageError } from "../../util/errors.js";
+import { LLMError } from "../../util/errors.js";
 import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
 import { normalizeEpisodeAccess } from "./access.js";
 import { EpisodicRepository } from "./repository.js";
@@ -291,35 +291,27 @@ export class EpisodicExtractor {
       return "skipped";
     }
 
-    try {
-      const existing = await this.options.episodicRepository.findBySourceStreamIds(
-        uniqueStreamEntryIds(sourceEntries),
-      );
+    const existing = await this.options.episodicRepository.findBySourceStreamIds(
+      uniqueStreamEntryIds(sourceEntries),
+    );
 
-      if (existing !== null) {
-        return "skipped";
-      }
-
-      const embedding = await this.options.embeddingClient.embed(
-        `${candidate.title}\n${candidate.narrative}\n${candidate.tags.join(" ")}`,
-      );
-      const nowMs = this.clock.now();
-      const nextEpisode = buildEpisodeFromCandidate(
-        candidate,
-        sourceEntries,
-        access,
-        embedding,
-        nowMs,
-      );
-      await this.options.episodicRepository.insert(nextEpisode);
-      return "inserted";
-    } catch (error) {
-      if (error instanceof EmbeddingError || error instanceof StorageError) {
-        return "skipped";
-      }
-
-      throw error;
+    if (existing !== null) {
+      return "skipped";
     }
+
+    const embedding = await this.options.embeddingClient.embed(
+      `${candidate.title}\n${candidate.narrative}\n${candidate.tags.join(" ")}`,
+    );
+    const nowMs = this.clock.now();
+    const nextEpisode = buildEpisodeFromCandidate(
+      candidate,
+      sourceEntries,
+      access,
+      embedding,
+      nowMs,
+    );
+    await this.options.episodicRepository.insert(nextEpisode);
+    return "inserted";
   }
 
   async extractFromStream(

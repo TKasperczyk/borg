@@ -9,7 +9,7 @@ import { FakeLLMClient } from "../../llm/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { createSemanticNodeId, type EpisodeId } from "../../util/ids.js";
+import { createEntityId, createSemanticNodeId, type EpisodeId } from "../../util/ids.js";
 import type { Episode } from "../episodic/types.js";
 import { SemanticExtractor } from "./extractor.js";
 import { semanticMigrations } from "./migrations.js";
@@ -55,11 +55,7 @@ class SemanticEmbeddingClient implements EmbeddingClient {
   }
 }
 
-function buildEpisode(
-  id: Episode["id"],
-  title: string,
-  overrides: Partial<Episode> = {},
-): Episode {
+function buildEpisode(id: Episode["id"], title: string, overrides: Partial<Episode> = {}): Episode {
   return {
     id,
     title,
@@ -68,17 +64,16 @@ function buildEpisode(
     location: overrides.location ?? null,
     start_time: overrides.start_time ?? 1,
     end_time: overrides.end_time ?? 2,
-    source_stream_ids:
-      overrides.source_stream_ids ??
-      ["strm_aaaaaaaaaaaaaaaa" as Episode["source_stream_ids"][number]],
+    source_stream_ids: overrides.source_stream_ids ?? [
+      "strm_aaaaaaaaaaaaaaaa" as Episode["source_stream_ids"][number],
+    ],
     significance: overrides.significance ?? 0.8,
     tags: overrides.tags ?? ["atlas"],
     confidence: overrides.confidence ?? 0.8,
-    lineage:
-      overrides.lineage ?? {
-        derived_from: [],
-        supersedes: [],
-      },
+    lineage: overrides.lineage ?? {
+      derived_from: [],
+      supersedes: [],
+    },
     emotional_arc: overrides.emotional_arc ?? null,
     audience_entity_id: overrides.audience_entity_id,
     shared: overrides.shared,
@@ -263,6 +258,295 @@ describe("semantic extractor", () => {
         buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident"),
       ]),
     ).rejects.toThrow("unknown source_episode_ids");
+  });
+
+  it("creates edges between existing nodes even when the batch omits node candidates", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Alice and Bob");
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const alice = await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "entity",
+      label: "Alice",
+      description: "Alice existing node",
+      domain: "people",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const bob = await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "entity",
+      label: "Bob",
+      description: "Bob existing node",
+      domain: "people",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [],
+            edges: [
+              {
+                from_label: "Alice",
+                to_label: "Bob",
+                relation: "related_to",
+                confidence: 0.8,
+                evidence_episode_ids: [episode.id],
+              },
+            ],
+          }),
+        ],
+      }),
+      model: "haiku",
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+    const [edge] = edgeRepository.listEdges();
+
+    expect(result.insertedEdges).toBe(1);
+    expect(edge).toMatchObject({
+      from_node_id: alice.id,
+      to_node_id: bob.id,
+      relation: "related_to",
+    });
+  });
+
+  it("does not resolve label-only edges to archived nodes", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Archived Alice");
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "entity",
+      label: "Alice",
+      description: "Archived Alice node",
+      domain: "people",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: true,
+      superseded_by: null,
+    });
+    await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "entity",
+      label: "Bob",
+      description: "Bob existing node",
+      domain: "people",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [],
+            edges: [
+              {
+                from_label: "Alice",
+                to_label: "Bob",
+                relation: "related_to",
+                confidence: 0.8,
+                evidence_episode_ids: [episode.id],
+              },
+            ],
+          }),
+        ],
+      }),
+      model: "haiku",
+      clock,
+    });
+
+    await expect(extractor.extractFromEpisodes([episode])).rejects.toMatchObject({
+      code: "SEMANTIC_EXTRACTOR_INVALID_REF",
+    });
+    expect(edgeRepository.listEdges()).toHaveLength(0);
+  });
+
+  it("does not resolve label-only edges across audience scopes", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const bobAudience = createEntityId();
+    const publicEpisode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Public Alice");
+    const privateEpisode = buildEpisode("ep_bbbbbbbbbbbbbbbb" as Episode["id"], "Private Alice", {
+      audience_entity_id: bobAudience,
+      shared: false,
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "entity",
+      label: "Alice",
+      description: "Private Alice node",
+      domain: "people",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [privateEpisode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "entity",
+      label: "Bob",
+      description: "Public Bob node",
+      domain: "people",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [publicEpisode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([publicEpisode, privateEpisode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [],
+            edges: [
+              {
+                from_label: "Alice",
+                to_label: "Bob",
+                relation: "related_to",
+                confidence: 0.8,
+                evidence_episode_ids: [publicEpisode.id],
+              },
+            ],
+          }),
+        ],
+      }),
+      model: "haiku",
+      clock,
+    });
+
+    await expect(extractor.extractFromEpisodes([publicEpisode])).rejects.toMatchObject({
+      code: "SEMANTIC_EXTRACTOR_INVALID_REF",
+    });
+    expect(edgeRepository.listEdges()).toHaveLength(0);
   });
 
   it("re-embeds updated nodes from the final stored text", async () => {

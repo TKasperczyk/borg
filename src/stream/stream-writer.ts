@@ -55,7 +55,7 @@ export class StreamWriter {
     }
   }
 
-  private buildEntry(input: StreamEntryInput): StreamEntry {
+  private buildEntry(input: StreamEntryInput, timestamp: number): StreamEntry {
     const parsedInput = streamEntryInputSchema.safeParse(input);
 
     if (!parsedInput.success) {
@@ -67,7 +67,7 @@ export class StreamWriter {
     const candidate = {
       ...parsedInput.data,
       id: createStreamEntryId(),
-      timestamp: this.clock.now(),
+      timestamp,
       session_id: this.sessionId,
       compressed: parsedInput.data.compressed ?? false,
     };
@@ -83,10 +83,11 @@ export class StreamWriter {
     return parsedEntry.data;
   }
 
-  private async appendEntries(entries: readonly StreamEntry[]): Promise<void> {
+  private async appendEntries(inputs: readonly StreamEntryInput[]): Promise<StreamEntry[]> {
     const streamDir = getStreamDirectory(this.dataDir);
     const streamPath = getSessionStreamPath(this.dataDir, this.sessionId);
     const lockPath = `${streamPath}.lock`;
+    let appendedEntries: StreamEntry[] = [];
 
     mkdirSync(streamDir, { recursive: true });
 
@@ -96,6 +97,7 @@ export class StreamWriter {
         let fileDescriptor: number | undefined;
 
         try {
+          const entries = inputs.map((input) => this.buildEntry(input, this.clock.now()));
           const serializedEntries = entries.map((entry) => `${serializeJsonValue(entry)}\n`);
           const payload = serializedEntries.join("");
 
@@ -132,6 +134,8 @@ export class StreamWriter {
               this.logger.error(error instanceof Error ? error.message : String(error));
             }
           }
+
+          appendedEntries = entries;
         } catch (error) {
           this.logger.error(`Failed to append to stream ${streamPath}`);
 
@@ -156,12 +160,18 @@ export class StreamWriter {
         retryDelayMs: this.lockRetryDelayMs,
       },
     );
+
+    return appendedEntries;
   }
 
   async append(input: StreamEntryInput): Promise<StreamEntry> {
     this.ensureOpen();
-    const entry = this.buildEntry(input);
-    await this.appendEntries([entry]);
+    const [entry] = await this.appendEntries([input]);
+
+    if (entry === undefined) {
+      throw new StreamError("Failed to append stream entry");
+    }
+
     return entry;
   }
 
@@ -172,9 +182,7 @@ export class StreamWriter {
       return [];
     }
 
-    const entries = inputs.map((input) => this.buildEntry(input));
-    await this.appendEntries(entries);
-    return entries;
+    return this.appendEntries(inputs);
   }
 
   close(): void {

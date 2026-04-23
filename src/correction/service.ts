@@ -139,6 +139,81 @@ function toIdentityJsonValue(value: unknown): JsonValue {
   return String(value);
 }
 
+function jsonValuesEqual(left: JsonValue, right: JsonValue): boolean {
+  if (left === right) {
+    return true;
+  }
+
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+
+    return left.every((entry, index) => jsonValuesEqual(entry, right[index] as JsonValue));
+  }
+
+  if (isRecord(left) || isRecord(right)) {
+    if (!isRecord(left) || !isRecord(right)) {
+      return false;
+    }
+
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+
+    return (
+      leftKeys.length === rightKeys.length &&
+      leftKeys.every(
+        (key, index) =>
+          key === rightKeys[index] &&
+          jsonValuesEqual(left[key] as JsonValue, right[key] as JsonValue),
+      )
+    );
+  }
+
+  return false;
+}
+
+function patchValueAlreadyApplied(currentValue: unknown, patchValue: unknown): boolean {
+  if (patchValue === undefined) {
+    return true;
+  }
+
+  if (Array.isArray(patchValue)) {
+    if (!Array.isArray(currentValue)) {
+      return false;
+    }
+
+    const currentEntries = currentValue.map((entry) => toIdentityJsonValue(entry));
+
+    return patchValue.every((entry) =>
+      currentEntries.some((currentEntry) =>
+        jsonValuesEqual(currentEntry, toIdentityJsonValue(entry)),
+      ),
+    );
+  }
+
+  if (isRecord(patchValue)) {
+    if (!isRecord(currentValue)) {
+      return false;
+    }
+
+    return Object.entries(patchValue).every(([key, value]) =>
+      patchValueAlreadyApplied(currentValue[key], value),
+    );
+  }
+
+  return jsonValuesEqual(toIdentityJsonValue(currentValue), toIdentityJsonValue(patchValue));
+}
+
+function recordAlreadyMatchesPatch(
+  current: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): boolean {
+  return Object.entries(patch).every(([key, value]) =>
+    patchValueAlreadyApplied(current[key], value),
+  );
+}
+
 function summarizePatch(patch: Record<string, unknown>): string {
   const entries = Object.entries(patch).slice(0, 3);
 
@@ -731,20 +806,32 @@ export class CorrectionService {
           });
         }
 
-        const next = await this.options.episodicRepository.update(
-          target.id,
-          episodePatchSchema.parse(patch) as EpisodePatch,
-        );
-        this.options.identityEventRepository.record({
-          record_type: "episode",
-          record_id: target.id,
+        const parsedPatch = episodePatchSchema.parse(patch) as EpisodePatch;
+
+        if (recordAlreadyMatchesPatch(current, parsedPatch as Record<string, unknown>)) {
+          return;
+        }
+
+        const next = await this.options.episodicRepository.update(target.id, parsedPatch);
+        const existingEvent = this.options.identityEventRepository.findByReviewKey({
+          reviewItemId: item.id,
+          recordType: "episode",
+          recordId: target.id,
           action: "correction_apply",
-          old_value: toIdentityJsonValue(current),
-          new_value: next === null ? null : toIdentityJsonValue(next),
-          reason: item.reason,
-          provenance: proposedProvenance,
-          review_item_id: item.id,
         });
+
+        if (existingEvent === null) {
+          this.options.identityEventRepository.record({
+            record_type: "episode",
+            record_id: target.id,
+            action: "correction_apply",
+            old_value: toIdentityJsonValue(current),
+            new_value: next === null ? null : toIdentityJsonValue(next),
+            reason: item.reason,
+            provenance: proposedProvenance,
+            review_item_id: item.id,
+          });
+        }
         return;
       }
       case "semantic_node": {
@@ -756,20 +843,32 @@ export class CorrectionService {
           });
         }
 
-        const next = await this.options.semanticNodeRepository.update(
-          target.id,
-          semanticNodePatchSchema.parse(patch),
-        );
-        this.options.identityEventRepository.record({
-          record_type: "semantic_node",
-          record_id: target.id,
+        const parsedPatch = semanticNodePatchSchema.parse(patch);
+
+        if (recordAlreadyMatchesPatch(current, parsedPatch as Record<string, unknown>)) {
+          return;
+        }
+
+        const next = await this.options.semanticNodeRepository.update(target.id, parsedPatch);
+        const existingEvent = this.options.identityEventRepository.findByReviewKey({
+          reviewItemId: item.id,
+          recordType: "semantic_node",
+          recordId: target.id,
           action: "correction_apply",
-          old_value: toIdentityJsonValue(current),
-          new_value: next === null ? null : toIdentityJsonValue(next),
-          reason: item.reason,
-          provenance: proposedProvenance,
-          review_item_id: item.id,
         });
+
+        if (existingEvent === null) {
+          this.options.identityEventRepository.record({
+            record_type: "semantic_node",
+            record_id: target.id,
+            action: "correction_apply",
+            old_value: toIdentityJsonValue(current),
+            new_value: next === null ? null : toIdentityJsonValue(next),
+            reason: item.reason,
+            provenance: proposedProvenance,
+            review_item_id: item.id,
+          });
+        }
         return;
       }
       case "value": {

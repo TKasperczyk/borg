@@ -8,7 +8,9 @@ import { Borg } from "../borg.js";
 import { DEFAULT_CONFIG } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient } from "../llm/index.js";
+import { createEpisodeFixture, createOfflineTestHarness } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
+import { CorrectionService } from "./service.js";
 
 class TestEmbeddingClient implements EmbeddingClient {
   async embed(): Promise<Float32Array> {
@@ -178,6 +180,91 @@ describe("correction service", () => {
       );
     } finally {
       await borg.close();
+    }
+  });
+
+  it("does not duplicate audit events when an episode correction is retried", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(1_000_500),
+    });
+
+    try {
+      const correction = new CorrectionService({
+        config: harness.config,
+        retrievalPipeline: harness.retrievalPipeline,
+        episodicRepository: harness.episodicRepository,
+        semanticNodeRepository: harness.semanticNodeRepository,
+        semanticEdgeRepository: harness.semanticEdgeRepository,
+        semanticGraph: harness.semanticGraph,
+        valuesRepository: harness.valuesRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        socialRepository: harness.socialRepository,
+        entityRepository: harness.entityRepository,
+        commitmentRepository: harness.commitmentRepository,
+        reviewQueueRepository: harness.reviewQueueRepository,
+        identityService: harness.identityService,
+        identityEventRepository: harness.identityEventRepository,
+      });
+      const episode = await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          title: "Planning sync",
+          narrative: "Original narrative.",
+        }),
+      );
+      const item = harness.reviewQueueRepository.enqueue({
+        kind: "correction",
+        refs: {
+          target_id: episode.id,
+          target_type: "episode",
+          patch: {
+            narrative: "Corrected narrative.",
+          },
+          proposed_provenance: {
+            kind: "manual",
+          },
+        },
+        reason: "user corrected the episode narrative",
+      });
+
+      await correction.applyCorrectionReview(item);
+      await correction.applyCorrectionReview(item);
+
+      const events = harness.identityEventRepository
+        .list({
+          recordType: "episode",
+          recordId: episode.id,
+          limit: 10,
+        })
+        .filter((event) => event.action === "correction_apply");
+
+      expect((await harness.episodicRepository.get(episode.id))?.narrative).toBe(
+        "Corrected narrative.",
+      );
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual(
+        expect.objectContaining({
+          review_item_id: item.id,
+          old_value: expect.objectContaining({
+            narrative: "Original narrative.",
+          }),
+          new_value: expect.objectContaining({
+            narrative: "Corrected narrative.",
+          }),
+        }),
+      );
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            old_value: expect.objectContaining({
+              narrative: "Corrected narrative.",
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      await harness.cleanup();
     }
   });
 

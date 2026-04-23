@@ -235,14 +235,30 @@ export class ToolDispatcher {
         );
       }
 
-      const invocation = await withTimeout(
-        tool.invoke(parsedInput.data, {
-          sessionId,
-          origin: call.origin,
-          provenance: call.provenance,
-        }),
-        timeoutMs,
-      );
+      const context = {
+        sessionId,
+        origin: call.origin,
+        provenance: call.provenance,
+      };
+      const invocation =
+        tool.writeScope === "read"
+          ? await withTimeout(tool.invoke(parsedInput.data, context), timeoutMs)
+          : await (async (): Promise<SettledInvocation<unknown>> => {
+              // Write-scoped tools are not raced against the dispatcher timeout:
+              // a timed-out write can still commit after the model sees failure.
+              // Write tools must keep their own execution bounded internally.
+              try {
+                return {
+                  kind: "resolved",
+                  value: await tool.invoke(parsedInput.data, context),
+                };
+              } catch (error) {
+                return {
+                  kind: "rejected",
+                  error,
+                };
+              }
+            })();
 
       if (invocation.kind === "timeout") {
         return await this.appendErrorResult(

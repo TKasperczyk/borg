@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
@@ -575,6 +575,59 @@ describe("review queue", () => {
     );
   });
 
+  it("rolls back SQLite-only repair side effects when resolution application fails", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(7_500),
+    });
+    cleanup.push(harness.cleanup);
+
+    const evidenceEpisode = createEpisodeFixture().id;
+    const value = harness.valuesRepository.add({
+      label: "carefulness",
+      description: "Prefer careful changes.",
+      priority: 5,
+      provenance: {
+        kind: "manual",
+      },
+    });
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "identity_inconsistency",
+      refs: {
+        target_type: "value",
+        target_id: value.id,
+        repair_op: "reinforce",
+        evidence_episode_ids: [evidenceEpisode],
+        proposed_provenance: {
+          kind: "offline",
+          process: "overseer",
+        },
+      },
+      reason: "episode reinforces carefulness",
+    });
+    const originalReinforce = harness.valuesRepository.reinforce.bind(harness.valuesRepository);
+    const reinforceSpy = vi
+      .spyOn(harness.valuesRepository, "reinforce")
+      .mockImplementation((...args: Parameters<typeof harness.valuesRepository.reinforce>) => {
+        originalReinforce(...args);
+        throw new Error("reinforce failed after write");
+      });
+
+    await expect(harness.reviewQueueRepository.resolve(item.id, "accept")).rejects.toThrow(
+      "reinforce failed after write",
+    );
+    expect(harness.valuesRepository.listReinforcementEvents(value.id)).toHaveLength(0);
+    expect(harness.valuesRepository.get(value.id)?.support_count).toBe(0);
+    expect(harness.reviewQueueRepository.getOpen().map((openItem) => openItem.id)).toContain(
+      item.id,
+    );
+
+    reinforceSpy.mockRestore();
+    await harness.reviewQueueRepository.resolve(item.id, "accept");
+
+    expect(harness.valuesRepository.listReinforcementEvents(value.id)).toHaveLength(1);
+    expect(harness.valuesRepository.get(value.id)?.support_count).toBe(1);
+  });
+
   it("verifies accepted new insights, archives invalidated ones, and refreshes stale semantic nodes", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(8_000),
@@ -652,6 +705,62 @@ describe("review queue", () => {
     );
   });
 
+  it("keeps stale rejects sqlite-only so a crash can be retried with another decision", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(8_500),
+    });
+    cleanup.push(harness.cleanup);
+
+    const episode = createEpisodeFixture().id;
+    const staleNode = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Stale retry claim",
+          description: "Needs a verification pass.",
+          source_episode_ids: [episode],
+          confidence: 0.8,
+          last_verified_at: 10,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const stale = harness.reviewQueueRepository.enqueue({
+      kind: "stale",
+      refs: {
+        target_type: "semantic_node",
+        target_id: staleNode.id,
+      },
+      reason: "stale node needs refresh",
+    });
+    const markResolvedSpy = vi
+      .spyOn(
+        harness.reviewQueueRepository as unknown as {
+          markResolved: (...args: unknown[]) => void;
+        },
+        "markResolved",
+      )
+      .mockImplementationOnce(() => {
+        throw new Error("crash after stale reject");
+      });
+
+    await expect(harness.reviewQueueRepository.resolve(stale.id, "reject")).rejects.toThrow(
+      "crash after stale reject",
+    );
+    markResolvedSpy.mockRestore();
+
+    expect(harness.reviewQueueRepository.getOpen().map((item) => item.id)).toContain(stale.id);
+
+    const accepted = await harness.reviewQueueRepository.resolve(stale.id, "accept");
+
+    expect(accepted?.resolution).toBe("accept");
+    expect(await harness.semanticNodeRepository.get(staleNode.id)).toEqual(
+      expect.objectContaining({
+        last_verified_at: 8_500,
+        confidence: 0.75,
+      }),
+    );
+  });
+
   it("rejects accept on legacy under-specified repair rows and leaves them open", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(9_000),
@@ -696,12 +805,12 @@ describe("review queue", () => {
       reason: "legacy row missing identity patch",
     });
 
-    await expect(harness.reviewQueueRepository.resolve(legacyMisattribution.id, "accept")).rejects.toMatchObject(
-      {
-        name: "SemanticError",
-        code: "REVIEW_QUEUE_REPAIR_REQUIRES_STRUCTURED_REFS",
-      },
-    );
+    await expect(
+      harness.reviewQueueRepository.resolve(legacyMisattribution.id, "accept"),
+    ).rejects.toMatchObject({
+      name: "SemanticError",
+      code: "REVIEW_QUEUE_REPAIR_REQUIRES_STRUCTURED_REFS",
+    });
     await expect(
       harness.reviewQueueRepository.resolve(legacyTemporalDrift.id, "accept"),
     ).rejects.toMatchObject({

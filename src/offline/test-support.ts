@@ -37,6 +37,7 @@ import {
   selfMigrations,
 } from "../memory/self/index.js";
 import {
+  appendInternalFailureEvent,
   appendOpenQuestionHookFailureEvent,
   enqueueOpenQuestionForReview,
 } from "../memory/self/review-open-question-hook.js";
@@ -292,6 +293,16 @@ export async function createOfflineTestHarness(
     table: semanticNodesTable,
     db,
     clock,
+    onDuplicateReviewError: (error) => {
+      const promise = appendInternalFailureEvent(
+        streamWriter,
+        "semantic_duplicate_review",
+        error,
+      ).finally(() => {
+        pendingHookLogs.delete(promise);
+      });
+      pendingHookLogs.add(promise);
+    },
   });
   const openQuestionsRepository = new OpenQuestionsRepository({
     db,

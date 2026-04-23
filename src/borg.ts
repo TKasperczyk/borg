@@ -81,6 +81,7 @@ import {
 } from "./memory/self/index.js";
 import { SocialRepository, socialMigrations } from "./memory/social/index.js";
 import {
+  appendInternalFailureEvent,
   appendOpenQuestionHookFailureEvent,
   enqueueOpenQuestionForReview,
 } from "./memory/self/review-open-question-hook.js";
@@ -490,9 +491,15 @@ export class Borg {
     }) => ReturnType<CommitmentRepository["list"]>;
   };
   readonly identity: {
-    updateValue: (...args: Parameters<IdentityService["updateValue"]>) => ReturnType<IdentityService["updateValue"]>;
-    updateGoal: (...args: Parameters<IdentityService["updateGoal"]>) => ReturnType<IdentityService["updateGoal"]>;
-    updateTrait: (...args: Parameters<IdentityService["updateTrait"]>) => ReturnType<IdentityService["updateTrait"]>;
+    updateValue: (
+      ...args: Parameters<IdentityService["updateValue"]>
+    ) => ReturnType<IdentityService["updateValue"]>;
+    updateGoal: (
+      ...args: Parameters<IdentityService["updateGoal"]>
+    ) => ReturnType<IdentityService["updateGoal"]>;
+    updateTrait: (
+      ...args: Parameters<IdentityService["updateTrait"]>
+    ) => ReturnType<IdentityService["updateTrait"]>;
     updateCommitment: (
       ...args: Parameters<IdentityService["updateCommitment"]>
     ) => ReturnType<IdentityService["updateCommitment"]>;
@@ -505,12 +512,18 @@ export class Borg {
     updateOpenQuestion: (
       ...args: Parameters<IdentityService["updateOpenQuestion"]>
     ) => ReturnType<IdentityService["updateOpenQuestion"]>;
-    listEvents: (...args: Parameters<IdentityService["listEvents"]>) => ReturnType<IdentityService["listEvents"]>;
+    listEvents: (
+      ...args: Parameters<IdentityService["listEvents"]>
+    ) => ReturnType<IdentityService["listEvents"]>;
   };
   readonly correction: {
-    forget: (...args: Parameters<CorrectionService["forget"]>) => ReturnType<CorrectionService["forget"]>;
+    forget: (
+      ...args: Parameters<CorrectionService["forget"]>
+    ) => ReturnType<CorrectionService["forget"]>;
     why: (...args: Parameters<CorrectionService["why"]>) => ReturnType<CorrectionService["why"]>;
-    correct: (...args: Parameters<CorrectionService["correct"]>) => ReturnType<CorrectionService["correct"]>;
+    correct: (
+      ...args: Parameters<CorrectionService["correct"]>
+    ) => ReturnType<CorrectionService["correct"]>;
     rememberAboutMe: (
       ...args: Parameters<CorrectionService["rememberAboutMe"]>
     ) => ReturnType<CorrectionService["rememberAboutMe"]>;
@@ -597,20 +610,18 @@ export class Borg {
           ? options.audienceProfile
           : audienceEntityId === null || audienceEntityId === undefined
             ? undefined
-            : this.deps.socialRepository.getProfile(audienceEntityId) ?? undefined;
+            : (this.deps.socialRepository.getProfile(audienceEntityId) ?? undefined);
       const audienceTerms = resolveEpisodeAudienceTerms(options, audienceEntityId);
       const hasTemporalSignal =
-        options?.temporalCue !== undefined ||
-        options?.timeRange !== undefined;
-      const hasEntitySignal =
-        options?.entityTerms !== undefined && options.entityTerms.length > 0;
+        options?.temporalCue !== undefined || options?.timeRange !== undefined;
+      const hasEntitySignal = options?.entityTerms !== undefined && options.entityTerms.length > 0;
 
       return {
         ...options,
         audienceEntityId,
         audienceProfile,
         audienceTerms,
-        strictTimeRange: options?.strictTimeRange ?? (options?.timeRange !== undefined),
+        strictTimeRange: options?.strictTimeRange ?? options?.timeRange !== undefined,
         attentionWeights:
           options?.attentionWeights ??
           (options?.scoreWeights !== undefined
@@ -1150,6 +1161,14 @@ export class Borg {
           return deferredLlm;
         },
         contradictionJudgeModel: config.anthropic.models.background,
+        onDuplicateReviewError: (error) => {
+          const writer = createDefaultStreamWriter();
+          void appendInternalFailureEvent(writer, "semantic_duplicate_review", error).finally(
+            () => {
+              writer.close();
+            },
+          );
+        },
       });
       const semanticEdgeRepository = new SemanticEdgeRepository({
         db: sqlite,
@@ -1488,9 +1507,7 @@ export class Borg {
         // turn-orchestrator.ts falls back to defaults if omitted, but doing
         // it here makes the configuration visible at the composition root.
         turnContextCompiler: new TurnContextCompiler(),
-        ...(streamIngestionCoordinator === undefined
-          ? {}
-          : { streamIngestionCoordinator }),
+        ...(streamIngestionCoordinator === undefined ? {} : { streamIngestionCoordinator }),
       });
       const autonomySources = [
         ...(config.autonomy.triggers.commitmentExpiring.enabled

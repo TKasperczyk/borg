@@ -1,4 +1,13 @@
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -97,6 +106,68 @@ describe("stream", () => {
     expect(filtered).toHaveLength(1);
     expect(filtered[0]?.kind).toBe("thought");
     expect(reader.tail(2).map((entry) => entry.kind)).toEqual(["thought", "internal_event"]);
+  });
+
+  it("assigns append timestamps after acquiring the stream lock", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const streamDir = join(tempDir, "stream");
+    const lockPath = join(streamDir, "default.jsonl.lock");
+    const clock = new ManualClock(100);
+
+    mkdirSync(streamDir, { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        host: hostname(),
+        timestamp: Date.now(),
+      }),
+    );
+
+    const delayedWriter = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+      lockRetryDelayMs: 100,
+    });
+    const fastWriter = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+      lockRetryDelayMs: 1,
+    });
+
+    try {
+      const delayedAppend = delayedWriter.append({
+        kind: "user_msg",
+        content: "waited for the lock",
+      });
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, 10);
+      });
+
+      unlinkSync(lockPath);
+      clock.set(200);
+      const firstPhysicalEntry = await fastWriter.append({
+        kind: "agent_msg",
+        content: "acquired first after manual release",
+      });
+      clock.set(300);
+      const secondPhysicalEntry = await delayedAppend;
+
+      const entries = new StreamReader({
+        dataDir: tempDir,
+      }).tail(2);
+
+      expect(entries.map((entry) => entry.id)).toEqual([
+        firstPhysicalEntry.id,
+        secondPhysicalEntry.id,
+      ]);
+      expect(entries.map((entry) => entry.timestamp)).toEqual([200, 300]);
+    } finally {
+      delayedWriter.close();
+      fastWriter.close();
+    }
   });
 
   it("matches the legacy full-scan tail behavior on small files", async () => {

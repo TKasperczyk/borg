@@ -12,11 +12,7 @@ import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { SemanticError, StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
-import {
-  type LLMClient,
-  type LLMToolDefinition,
-  toToolInputSchema,
-} from "../../llm/index.js";
+import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import {
   createSemanticEdgeId,
   createSemanticNodeId,
@@ -319,6 +315,7 @@ export type SemanticNodeRepositoryOptions = {
    */
   llmClient?: LLMClient;
   contradictionJudgeModel?: string;
+  onDuplicateReviewError?: (error: unknown, node: SemanticNode) => void | Promise<void>;
 };
 
 export class SemanticNodeRepository {
@@ -337,7 +334,15 @@ export class SemanticNodeRepository {
   }
 
   private maybeQueueDuplicateReview(node: SemanticNode): void {
-    void this.detectDuplicateReview(node);
+    void this.detectDuplicateReview(node).catch((error) => {
+      try {
+        void Promise.resolve(this.options.onDuplicateReviewError?.(error, node)).catch(
+          () => undefined,
+        );
+      } catch {
+        // Best-effort background observability only.
+      }
+    });
   }
 
   private async detectDuplicateReview(node: SemanticNode): Promise<void> {

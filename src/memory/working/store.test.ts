@@ -88,6 +88,29 @@ describe("working memory store", () => {
     writeSpy.mockRestore();
   });
 
+  it("reloads persisted state on every load instead of returning stale cache", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const firstStore = new WorkingMemoryStore({
+      dataDir: tempDir,
+      clock: new FixedClock(100),
+    });
+    const secondStore = new WorkingMemoryStore({
+      dataDir: tempDir,
+      clock: new FixedClock(200),
+    });
+    const initial = firstStore.load(DEFAULT_SESSION_ID);
+
+    secondStore.save({
+      ...initial,
+      turn_counter: 7,
+      updated_at: 300,
+    });
+
+    expect(firstStore.load(DEFAULT_SESSION_ID).turn_counter).toBe(7);
+  });
+
   it("caps pending intents to the most recent unique next actions", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

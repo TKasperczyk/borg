@@ -15,6 +15,9 @@ describe("ToolDispatcher", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
@@ -181,6 +184,113 @@ describe("ToolDispatcher", () => {
 
     expect(result.ok).toBe(true);
     expect(clearTimeoutSpy).toHaveBeenCalled();
+  });
+
+  it("times out read-scoped tools and clears the timeout timer", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      const clock = new ManualClock(3_500);
+      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+      const dispatcher = new ToolDispatcher({
+        clock,
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: tempDir,
+            sessionId,
+            clock,
+          }),
+      });
+
+      dispatcher.register({
+        name: "tool.test.slow-read",
+        description: "Slow read tool.",
+        allowedOrigins: ["autonomous", "deliberator"],
+        writeScope: "read",
+        inputSchema: z.object({}).strict(),
+        outputSchema: z.object({
+          ok: z.literal(true),
+        }),
+        async invoke() {
+          await new Promise(() => undefined);
+          return { ok: true } as const;
+        },
+      });
+
+      const resultPromise = dispatcher.dispatch({
+        toolName: "tool.test.slow-read",
+        input: {},
+        origin: "autonomous",
+        timeoutMs: 10,
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+      const result = await resultPromise;
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: "Timed out after 10ms",
+      });
+      expect(clearTimeoutSpy).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not apply dispatcher timeouts to write-scoped tools", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      const clock = new ManualClock(3_750);
+      const dispatcher = new ToolDispatcher({
+        clock,
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: tempDir,
+            sessionId,
+            clock,
+          }),
+      });
+
+      dispatcher.register({
+        name: "tool.test.slow-write",
+        description: "Slow write tool.",
+        allowedOrigins: ["autonomous", "deliberator"],
+        writeScope: "write",
+        inputSchema: z.object({}).strict(),
+        outputSchema: z.object({
+          ok: z.literal(true),
+        }),
+        async invoke() {
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 25);
+          });
+          return { ok: true } as const;
+        },
+      });
+
+      const resultPromise = dispatcher.dispatch({
+        toolName: "tool.test.slow-write",
+        input: {},
+        origin: "autonomous",
+        timeoutMs: 1,
+      });
+
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(24);
+      await expect(resultPromise).resolves.toMatchObject({
+        ok: true,
+        output: {
+          ok: true,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("filters listed tools by origin and rejects disallowed origins at dispatch time", async () => {

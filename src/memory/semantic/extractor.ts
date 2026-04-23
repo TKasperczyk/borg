@@ -12,10 +12,7 @@ import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
 import { createSemanticNodeId } from "../../util/ids.js";
 import { episodeAccessScopeKey } from "../episodic/access.js";
 import type { Episode, EpisodicRepository } from "../episodic/index.js";
-import {
-  SemanticEdgeRepository,
-  SemanticNodeRepository,
-} from "./repository.js";
+import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import { canonicalizeDomain } from "./domain.js";
 import {
   semanticNodeKindSchema,
@@ -211,14 +208,8 @@ function resolveEpisodeScopeKeys(episodes: readonly Episode[]): Set<string> {
   return new Set(episodes.map((episode) => episodeAccessScopeKey(episode)));
 }
 
-function haveSameScopeKeys(
-  left: ReadonlySet<string>,
-  right: ReadonlySet<string>,
-): boolean {
-  return (
-    left.size === right.size &&
-    [...left].every((value) => right.has(value))
-  );
+function haveSameScopeKeys(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((value) => right.has(value));
 }
 
 export class SemanticExtractor {
@@ -281,7 +272,9 @@ export class SemanticExtractor {
           return false;
         }
 
-        const nodeSourceEpisodes = await this.options.episodicRepository.getMany(node.source_episode_ids);
+        const nodeSourceEpisodes = await this.options.episodicRepository.getMany(
+          node.source_episode_ids,
+        );
         const nodeScopeKeys = resolveEpisodeScopeKeys(nodeSourceEpisodes);
 
         return (
@@ -289,9 +282,13 @@ export class SemanticExtractor {
           haveSameScopeKeys(nodeScopeKeys, candidateScopeKeys)
         );
       };
-      const byLabelMatches = await this.options.nodeRepository.findByLabelOrAlias(candidate.label, 5, {
-        includeArchived: true,
-      });
+      const byLabelMatches = await this.options.nodeRepository.findByLabelOrAlias(
+        candidate.label,
+        5,
+        {
+          includeArchived: true,
+        },
+      );
       const byLabel: SemanticNode[] = [];
 
       for (const match of byLabelMatches) {
@@ -382,12 +379,63 @@ export class SemanticExtractor {
     }
   }
 
-  private resolveEdgeNode(
+  private async edgeNodeMatchesScope(
+    node: SemanticNode,
+    evidenceScopeKeys: ReadonlySet<string>,
+  ): Promise<boolean> {
+    if (node.archived) {
+      return false;
+    }
+
+    const nodeSourceEpisodes = await this.options.episodicRepository.getMany(
+      node.source_episode_ids,
+    );
+    const nodeScopeKeys = resolveEpisodeScopeKeys(nodeSourceEpisodes);
+
+    return (
+      nodeSourceEpisodes.length === node.source_episode_ids.length &&
+      haveSameScopeKeys(nodeScopeKeys, evidenceScopeKeys)
+    );
+  }
+
+  private cacheEdgeNode(existingNodes: Map<string, SemanticNode>, node: SemanticNode): void {
+    existingNodes.set(node.label.toLowerCase(), node);
+
+    for (const alias of node.aliases) {
+      existingNodes.set(alias.toLowerCase(), node);
+    }
+  }
+
+  private async resolveEdgeNode(
     label: string,
     batchNodes: ReadonlyMap<string, SemanticNode>,
-    existingNodes: ReadonlyMap<string, SemanticNode>,
-  ): SemanticNode | undefined {
-    return batchNodes.get(label.toLowerCase()) ?? existingNodes.get(label.toLowerCase());
+    existingNodes: Map<string, SemanticNode>,
+    evidenceScopeKeys: ReadonlySet<string>,
+  ): Promise<SemanticNode | undefined> {
+    const key = label.toLowerCase();
+    const localNode = batchNodes.get(key) ?? existingNodes.get(key);
+
+    if (localNode !== undefined && (await this.edgeNodeMatchesScope(localNode, evidenceScopeKeys))) {
+      return localNode;
+    }
+
+    const matches = await this.options.nodeRepository.findByLabelOrAlias(label, 10, {
+      includeArchived: false,
+    });
+
+    for (const matchedNode of matches) {
+      if (!(await this.edgeNodeMatchesScope(matchedNode, evidenceScopeKeys))) {
+        continue;
+      }
+
+      this.cacheEdgeNode(existingNodes, matchedNode);
+
+      // findByLabelOrAlias already returns updated_at DESC, so the first
+      // scope-compatible match is the most recently updated node.
+      return matchedNode;
+    }
+
+    return undefined;
   }
 
   async extractFromEpisodes(episodes: readonly Episode[]): Promise<ExtractSemanticResult> {
@@ -468,8 +516,27 @@ export class SemanticExtractor {
     // Insert/update nodes before edges so endpoint validation never sees
     // dangling in-batch references.
     for (const candidate of parsed.edges) {
-      const fromNode = this.resolveEdgeNode(candidate.from_label, batchNodes, existingNodes);
-      const toNode = this.resolveEdgeNode(candidate.to_label, batchNodes, existingNodes);
+      const evidenceEpisodeIds = this.validateEpisodeRefs(
+        candidate.evidence_episode_ids,
+        allowedEpisodeIds,
+        "evidence_episode_ids",
+      );
+      const evidenceEpisodes = evidenceEpisodeIds
+        .map((episodeId) => episodeById.get(episodeId))
+        .filter((episode): episode is Episode => episode !== undefined);
+      const evidenceScopeKeys = resolveEpisodeScopeKeys(evidenceEpisodes);
+      const fromNode = await this.resolveEdgeNode(
+        candidate.from_label,
+        batchNodes,
+        existingNodes,
+        evidenceScopeKeys,
+      );
+      const toNode = await this.resolveEdgeNode(
+        candidate.to_label,
+        batchNodes,
+        existingNodes,
+        evidenceScopeKeys,
+      );
 
       if (fromNode === undefined || toNode === undefined) {
         throw new SemanticError("Semantic extractor referenced an unknown edge node", {
@@ -481,12 +548,6 @@ export class SemanticExtractor {
         skippedEdges += 1;
         continue;
       }
-
-      const evidenceEpisodeIds = this.validateEpisodeRefs(
-        candidate.evidence_episode_ids,
-        allowedEpisodeIds,
-        "evidence_episode_ids",
-      );
 
       try {
         this.options.edgeRepository.addEdge({

@@ -169,4 +169,33 @@ export class IdentityEventRepository {
 
     return rows.map((row) => mapRow(row));
   }
+
+  findByReviewKey(input: {
+    reviewItemId: number;
+    recordType: IdentityRecordType;
+    recordId: string;
+    action: string;
+  }): IdentityEvent | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM identity_events
+          WHERE review_item_id = ?
+            AND record_type = ?
+            AND record_id = ?
+            AND action = ?
+          ORDER BY ts DESC, id DESC
+          LIMIT 1
+        `,
+      )
+      .get(
+        z.number().int().positive().parse(input.reviewItemId),
+        identityRecordTypeSchema.parse(input.recordType),
+        input.recordId,
+        input.action,
+      ) as Record<string, unknown> | undefined;
+
+    return row === undefined ? null : mapRow(row);
+  }
 }
