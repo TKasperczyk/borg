@@ -428,6 +428,32 @@ Ranked by value / cost.
 - Procedural learning from RL-style feedback (vs. simple Beta updates)
 - Real-time attention / saliency animation -- per-turn recompute is fine
 
+**Derivation versioning (explicitly not implemented).** A prior review
+suggested stamping every derived record (episodes, semantic nodes,
+commitment rewrites, open-question resolutions, etc.) with a hash of
+(model, prompt_template_version, extraction_code_version) so retrieval
+could refuse cross-version matches and swap-conformance tests could
+distinguish records produced by different pipelines. We considered
+this and chose NOT to implement it:
+
+1. All three model slots default to Opus 4.7 under OAuth subscription.
+   There is no embedding swap planned (qwen3-8b is the committed
+   embedding). There is no extraction/background model swap planned.
+   The dimensions the versioning would protect against have collapsed
+   to "prompt edits", which git history already tracks.
+2. Prompt changes mid-project are handled either by leaving old
+   derivations as-is (they're still useful, just produced under older
+   rules) or by re-extracting from the stream if the change is
+   material enough to care about.
+3. Swap-conformance testing runs hermetically on fresh databases per
+   model, so it doesn't need version stamps to distinguish records
+   from different runs.
+
+If a real embedding swap or a multi-model-extraction deployment ever
+becomes plausible, versioning is a 1-2 sprint add later. Today it is
+defensive engineering for a scenario we are not planning, and the
+cost is a touch-every-LLM-derived-table migration.
+
 ---
 
 ## Part 8: Implementation Strategy -- Phased Build
