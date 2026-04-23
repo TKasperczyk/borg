@@ -47,6 +47,7 @@ export const semanticNodeSchema = z.object({
   kind: semanticNodeKindSchema,
   label: z.string().min(1),
   description: z.string().min(1),
+  domain: z.string().min(1).nullable().default(null),
   aliases: z.array(z.string().min(1)),
   confidence: z.number().min(0).max(1),
   source_episode_ids: z.array(episodeIdSchema).min(1),

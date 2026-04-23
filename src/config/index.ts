@@ -479,8 +479,8 @@ function readOptionalEnvNumber(env: NodeJS.ProcessEnv, name: string): number | u
 
   const value = Number(raw);
 
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new ConfigError(`Environment variable ${name} must be a positive integer`);
+  if (!Number.isFinite(value)) {
+    throw new ConfigError(`Environment variable ${name} must be a finite number`);
   }
 
   return value;
@@ -495,8 +495,8 @@ function readOptionalEnvFloat(env: NodeJS.ProcessEnv, name: string): number | un
 
   const value = Number(raw);
 
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new ConfigError(`Environment variable ${name} must be a positive number`);
+  if (!Number.isFinite(value)) {
+    throw new ConfigError(`Environment variable ${name} must be a finite number`);
   }
 
   return value;

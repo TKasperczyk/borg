@@ -754,6 +754,7 @@ export class Borg {
             kind: input.kind,
             label: input.label,
             description: input.description,
+            domain: null,
             aliases: input.aliases ?? [],
             confidence: input.confidence ?? 0.6,
             source_episode_ids: input.sourceEpisodeIds,
@@ -784,6 +785,7 @@ export class Borg {
           nodeRepository: this.deps.semanticNodeRepository,
           edgeRepository: this.deps.semanticEdgeRepository,
           embeddingClient: this.deps.embeddingClient,
+          episodicRepository: this.deps.episodicRepository,
           llmClient: this.deps.llmFactory(),
           model: this.deps.config.anthropic.models.extraction,
           clock: this.deps.clock,
@@ -1067,6 +1069,7 @@ export class Borg {
         db: sqlite,
         clock,
       });
+      await episodicRepository.reconcileCrossStoreState();
       const createDefaultStreamWriter = () =>
         new StreamWriter({
           dataDir: config.dataDir,

@@ -18,6 +18,7 @@ export {
   EpisodicRepository,
   createEpisodesTableSchema,
   type EpisodicRepositoryOptions,
+  type ReconciliationReport,
 } from "./repository.js";
 export {
   EPISODE_TIERS,

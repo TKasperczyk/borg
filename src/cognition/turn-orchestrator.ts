@@ -463,6 +463,7 @@ export class TurnOrchestrator {
           goalDescriptions: selfSnapshot.goals.map((goal) => goal.description),
           activeValues,
           temporalCue: perception.temporalCue,
+          strictTimeRange: perception.temporalCue !== null,
           moodState: currentMood,
           audienceProfile,
           audienceTerms:

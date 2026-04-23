@@ -405,6 +405,13 @@ export function createEpisodesTableSchema(dimensions: number) {
   ]);
 }
 
+export type ReconciliationReport = {
+  createdMissingStats: number;
+  deletedOrphanStats: number;
+  deletedOrphanRetrievalLogs: number;
+  deletedOrphanValueSources: number;
+};
+
 export type EpisodicRepositoryOptions = {
   table: LanceDbTable;
   db: SqliteDatabase;
@@ -424,6 +431,33 @@ export class EpisodicRepository {
 
   private get db(): SqliteDatabase {
     return this.options.db;
+  }
+
+  private deleteSqlRowsForEpisode(episodeId: EpisodeId): {
+    deletedStats: number;
+    deletedRetrievalLogs: number;
+    deletedValueSources: number;
+  } {
+    const deleteStats = this.db.prepare("DELETE FROM episode_stats WHERE episode_id = ?");
+    const deleteRetrievalLog = this.db.prepare("DELETE FROM retrieval_log WHERE episode_id = ?");
+    const deleteValueSources = this.db.prepare("DELETE FROM value_sources WHERE episode_id = ?");
+    const apply = this.db.transaction((targetEpisodeId: EpisodeId) => {
+      const deletedStats = deleteStats.run(targetEpisodeId).changes;
+      const deletedRetrievalLogs = deleteRetrievalLog.run(targetEpisodeId).changes;
+      const deletedValueSources = deleteValueSources.run(targetEpisodeId).changes;
+
+      return {
+        deletedStats,
+        deletedRetrievalLogs,
+        deletedValueSources,
+      };
+    });
+
+    return apply(episodeId) as {
+      deletedStats: number;
+      deletedRetrievalLogs: number;
+      deletedValueSources: number;
+    };
   }
 
   private buildVisibilityWhereClause(
@@ -558,9 +592,26 @@ export class EpisodicRepository {
       });
     }
 
-    await this.table.upsert([toEpisodeRow(parsed.data)], { on: "id" });
-    this.upsertStats(defaultEpisodeStats(parsed.data));
-    return parsed.data;
+    try {
+      await this.table.upsert([toEpisodeRow(parsed.data)], { on: "id" });
+
+      try {
+        const apply = this.db.transaction(() => {
+          this.upsertStats(defaultEpisodeStats(parsed.data));
+        });
+        apply();
+      } catch (error) {
+        await this.table.remove(`id = ${quoteSqlString(parsed.data.id)}`);
+        throw error;
+      }
+
+      return parsed.data;
+    } catch (error) {
+      throw new StorageError(`Failed to insert episode ${parsed.data.id}`, {
+        cause: error,
+        code: "EPISODE_INSERT_FAILED",
+      });
+    }
   }
 
   async get(id: EpisodeId): Promise<Episode | null> {
@@ -623,17 +674,46 @@ export class EpisodicRepository {
       });
     }
 
-    await this.table.upsert([toEpisodeRow(parsedEpisode.data)], { on: "id" });
-    this.updateStats(id, {
-      valence_mean:
-        parsedEpisode.data.emotional_arc === null
-          ? 0
-          : (parsedEpisode.data.emotional_arc.start.valence +
-              parsedEpisode.data.emotional_arc.peak.valence +
-              parsedEpisode.data.emotional_arc.end.valence) /
-            3,
-    });
-    return parsedEpisode.data;
+    const previousRow = toEpisodeRow(current);
+
+    try {
+      await this.table.upsert([toEpisodeRow(parsedEpisode.data)], { on: "id" });
+
+      try {
+        const apply = this.db.transaction(() => {
+          this.updateStats(id, {
+            valence_mean:
+              parsedEpisode.data.emotional_arc === null
+                ? 0
+                : (parsedEpisode.data.emotional_arc.start.valence +
+                    parsedEpisode.data.emotional_arc.peak.valence +
+                    parsedEpisode.data.emotional_arc.end.valence) /
+                  3,
+          });
+        });
+        apply();
+      } catch (error) {
+        const currentAfterFailure = await this.get(id);
+
+        if (currentAfterFailure?.updated_at === parsedEpisode.data.updated_at) {
+          await this.table.upsert([previousRow], { on: "id" });
+        } else {
+          console.warn("Skipped episode rollback because newer Lance state exists.", {
+            episodeId: id,
+            attemptedUpdatedAt: parsedEpisode.data.updated_at,
+            currentUpdatedAt: currentAfterFailure?.updated_at ?? null,
+          });
+        }
+        throw error;
+      }
+
+      return parsedEpisode.data;
+    } catch (error) {
+      throw new StorageError(`Failed to update episode ${id}`, {
+        cause: error,
+        code: "EPISODE_UPDATE_FAILED",
+      });
+    }
   }
 
   async delete(id: EpisodeId): Promise<boolean> {
@@ -643,11 +723,76 @@ export class EpisodicRepository {
       return false;
     }
 
-    await this.table.remove(`id = ${quoteSqlString(id)}`);
-    this.db.prepare("DELETE FROM episode_stats WHERE episode_id = ?").run(id);
-    this.db.prepare("DELETE FROM retrieval_log WHERE episode_id = ?").run(id);
-    this.db.prepare("DELETE FROM value_sources WHERE episode_id = ?").run(id);
-    return true;
+    try {
+      await this.table.remove(`id = ${quoteSqlString(id)}`);
+
+      try {
+        this.deleteSqlRowsForEpisode(id);
+      } catch (error) {
+        console.warn("Episode delete left orphaned SQLite rows for reconciliation.", {
+          episodeId: id,
+          error,
+        });
+        throw error;
+      }
+
+      return true;
+    } catch (error) {
+      throw new StorageError(`Failed to delete episode ${id}`, {
+        cause: error,
+        code: "EPISODE_DELETE_FAILED",
+      });
+    }
+  }
+
+  async reconcileCrossStoreState(): Promise<ReconciliationReport> {
+    const episodes = await this.listEpisodesWhere(undefined);
+    const episodeIds = new Set(episodes.map((episode) => episode.id));
+    const statsRows = this.db
+      .prepare("SELECT episode_id FROM episode_stats ORDER BY episode_id ASC")
+      .all() as Array<{ episode_id: string }>;
+    const retrievalLogRows = this.db
+      .prepare("SELECT DISTINCT episode_id FROM retrieval_log ORDER BY episode_id ASC")
+      .all() as Array<{ episode_id: string }>;
+    const valueSourceRows = this.db
+      .prepare("SELECT DISTINCT episode_id FROM value_sources ORDER BY episode_id ASC")
+      .all() as Array<{ episode_id: string }>;
+    const statsIdSet = new Set(statsRows.map((row) => parseEpisodeId(row.episode_id)));
+    const referencedSqlEpisodeIds = new Set<EpisodeId>([
+      ...statsRows.map((row) => parseEpisodeId(row.episode_id)),
+      ...retrievalLogRows.map((row) => parseEpisodeId(row.episode_id)),
+      ...valueSourceRows.map((row) => parseEpisodeId(row.episode_id)),
+    ]);
+    const missingStats = episodes.filter((episode) => !statsIdSet.has(episode.id));
+    const orphanEpisodeIds = [...referencedSqlEpisodeIds].filter((episodeId) => !episodeIds.has(episodeId));
+    let createdMissingStats = 0;
+    let deletedOrphanStats = 0;
+    let deletedOrphanRetrievalLogs = 0;
+    let deletedOrphanValueSources = 0;
+
+    if (missingStats.length > 0) {
+      const apply = this.db.transaction((episodesWithoutStats: readonly Episode[]) => {
+        for (const episode of episodesWithoutStats) {
+          this.upsertStats(defaultEpisodeStats(episode));
+        }
+      });
+      apply(missingStats);
+      createdMissingStats = missingStats.length;
+    }
+
+    for (const episodeId of orphanEpisodeIds) {
+      const deleted = this.deleteSqlRowsForEpisode(episodeId);
+      deletedOrphanStats += deleted.deletedStats;
+      deletedOrphanRetrievalLogs += deleted.deletedRetrievalLogs;
+      deletedOrphanValueSources += deleted.deletedValueSources;
+    }
+
+    return {
+      createdMissingStats,
+      deletedOrphanStats,
+      deletedOrphanRetrievalLogs,
+      deletedOrphanValueSources,
+    };
   }
 
   getStats(id: EpisodeId): EpisodeStats | null {

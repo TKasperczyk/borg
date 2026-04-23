@@ -254,10 +254,11 @@ function resolveTimeSignals(
 } {
   const temporalCueRange = resolveTemporalCueTimeRange(options.temporalCue);
   const explicitRange = options.timeRange ?? null;
+  const effectiveRange = explicitRange ?? temporalCueRange;
 
   return {
-    scoringRange: explicitRange ?? temporalCueRange,
-    strictFilterRange: options.strictTimeRange === true ? explicitRange : null,
+    scoringRange: effectiveRange,
+    strictFilterRange: options.strictTimeRange === true ? effectiveRange : null,
   };
 }
 
@@ -983,6 +984,12 @@ export class RetrievalPipeline {
         ? true
         : overlapsTimeRange(entry.candidate.episode, timeSignals.strictFilterRange),
     );
+    if (timeSignals.strictFilterRange !== null && candidates.length === 0) {
+      console.warn("Strict time filter returned 0 retrieval candidates.", {
+        query,
+        timeRange: timeSignals.strictFilterRange,
+      });
+    }
     const scored = candidates.map((entry) => {
       const candidate = entry.candidate;
       const score = this.scoreCandidate(candidate, options, nowMs, timeSignals.scoringRange);

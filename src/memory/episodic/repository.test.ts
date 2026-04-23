@@ -2,10 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { selfMigrations } from "../self/migrations.js";
 import {
+  LanceDbTable,
   LanceDbStore,
   float64Field,
   schema,
@@ -13,8 +14,10 @@ import {
   vectorField,
 } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
+import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
+import { createEpisodeId } from "../../util/ids.js";
 import { episodicMigrations } from "./migrations.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "./repository.js";
 import type { Episode } from "./types.js";
@@ -23,6 +26,8 @@ import { retrievalMigrations } from "../../retrieval/migrations.js";
 type Harness = {
   tempDir: string;
   store: LanceDbStore;
+  table: LanceDbTable;
+  db: SqliteDatabase;
   repo: EpisodicRepository;
   close: () => Promise<void>;
   clock: ManualClock;
@@ -74,6 +79,8 @@ async function createHarness(): Promise<Harness> {
   return {
     tempDir,
     store,
+    table,
+    db,
     repo,
     clock,
     close: async () => {
@@ -88,6 +95,8 @@ describe("episodic repository", () => {
   const closers: Array<() => Promise<void>> = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+
     while (closers.length > 0) {
       await closers.pop()?.();
     }
@@ -394,5 +403,229 @@ describe("episodic repository", () => {
 
     expect(updated?.tags).toEqual(["merged"]);
     expect(updated?.emotional_arc).toEqual(episode.emotional_arc);
+  });
+
+  it("removes the Lance row if stats insertion fails after episode upsert", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const episode = createEpisode("ep_atomicinsertfail", harness.clock.now());
+    const statsSpy = vi
+      .spyOn(harness.repo as unknown as { upsertStats(stats: unknown): void }, "upsertStats")
+      .mockImplementationOnce(() => {
+        throw new Error("sqlite failed");
+      });
+
+    await expect(harness.repo.insert(episode)).rejects.toMatchObject({
+      code: "EPISODE_INSERT_FAILED",
+    });
+    expect(await harness.repo.get(episode.id)).toBeNull();
+    expect(harness.repo.getStats(episode.id)).toBeNull();
+
+    statsSpy.mockRestore();
+  });
+
+  it("reconciles Lance episodes that are missing stats rows", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const episode = createEpisode(createEpisodeId(), harness.clock.now());
+
+    await harness.table.upsert(
+      [
+        {
+          id: episode.id,
+          title: episode.title,
+          narrative: episode.narrative,
+          participants: JSON.stringify(episode.participants),
+          location: episode.location,
+          start_time: episode.start_time,
+          end_time: episode.end_time,
+          source_stream_ids: JSON.stringify(episode.source_stream_ids),
+          significance: episode.significance,
+          tags: JSON.stringify(episode.tags),
+          confidence: episode.confidence,
+          lineage_derived_from: JSON.stringify(episode.lineage.derived_from),
+          lineage_supersedes: JSON.stringify(episode.lineage.supersedes),
+          source_fingerprint: episode.source_stream_ids.join("\n"),
+          audience_entity_id: episode.audience_entity_id ?? null,
+          shared: episode.shared ?? true,
+          emotional_arc: null,
+          embedding: Array.from(episode.embedding),
+          created_at: episode.created_at,
+          updated_at: episode.updated_at,
+        },
+      ],
+      { on: "id" },
+    );
+
+    const report = await harness.repo.reconcileCrossStoreState();
+    const stats = harness.repo.getStats(episode.id);
+
+    expect(report).toEqual({
+      createdMissingStats: 1,
+      deletedOrphanStats: 0,
+      deletedOrphanRetrievalLogs: 0,
+      deletedOrphanValueSources: 0,
+    });
+    expect(stats).toEqual(
+      expect.objectContaining({
+        episode_id: episode.id,
+        retrieval_count: 0,
+      }),
+    );
+  });
+
+  it("removes orphaned sqlite rows during reconciliation", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const orphanEpisodeId = createEpisodeId();
+    const logOnlyOrphanEpisodeId = createEpisodeId();
+
+    harness.db
+      .prepare(
+        `
+          INSERT INTO episode_stats (
+            episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, valence_mean, archived
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(orphanEpisodeId, 1, 0, null, 0, "T1", harness.clock.now(), null, null, null, null, 0, 0);
+    harness.db
+      .prepare("INSERT INTO retrieval_log (episode_id, timestamp, score) VALUES (?, ?, ?)")
+      .run(orphanEpisodeId, harness.clock.now(), 0.2);
+    harness.db
+      .prepare(
+        `INSERT INTO "values" (id, label, description, priority, created_at, last_affirmed)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run("val_orphan", "Orphan value", "orphan", 0.5, harness.clock.now(), null);
+    harness.db
+      .prepare("INSERT INTO value_sources (value_id, episode_id) VALUES (?, ?)")
+      .run("val_orphan", orphanEpisodeId);
+    harness.db
+      .prepare("INSERT INTO retrieval_log (episode_id, timestamp, score) VALUES (?, ?, ?)")
+      .run(logOnlyOrphanEpisodeId, harness.clock.now(), 0.4);
+    harness.db
+      .prepare(
+        `INSERT INTO "values" (id, label, description, priority, created_at, last_affirmed)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run("val_orphan_log_only", "Orphan log-only value", "orphan", 0.5, harness.clock.now(), null);
+    harness.db
+      .prepare("INSERT INTO value_sources (value_id, episode_id) VALUES (?, ?)")
+      .run("val_orphan_log_only", logOnlyOrphanEpisodeId);
+
+    const report = await harness.repo.reconcileCrossStoreState();
+
+    expect(report).toEqual({
+      createdMissingStats: 0,
+      deletedOrphanStats: 1,
+      deletedOrphanRetrievalLogs: 2,
+      deletedOrphanValueSources: 2,
+    });
+    expect(harness.repo.getStats(orphanEpisodeId)).toBeNull();
+    expect(
+      (
+        harness.db
+          .prepare("SELECT COUNT(*) AS count FROM retrieval_log WHERE episode_id = ?")
+          .get(orphanEpisodeId) as { count: number }
+      ).count,
+    ).toBe(0);
+    expect(
+      (
+        harness.db
+          .prepare("SELECT COUNT(*) AS count FROM value_sources WHERE episode_id = ?")
+          .get(orphanEpisodeId) as { count: number }
+      ).count,
+    ).toBe(0);
+    expect(
+      (
+        harness.db
+          .prepare("SELECT COUNT(*) AS count FROM retrieval_log WHERE episode_id = ?")
+          .get(logOnlyOrphanEpisodeId) as { count: number }
+      ).count,
+    ).toBe(0);
+    expect(
+      (
+        harness.db
+          .prepare("SELECT COUNT(*) AS count FROM value_sources WHERE episode_id = ?")
+          .get(logOnlyOrphanEpisodeId) as { count: number }
+      ).count,
+    ).toBe(0);
+  });
+
+  it("skips stale rollback restores when a newer Lance update wins the race", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const episode = createEpisode(createEpisodeId(), harness.clock.now(), {
+      tags: ["initial"],
+    });
+    await harness.repo.insert(episode);
+    harness.clock.advance(1_000);
+    const originalGet = harness.repo.get.bind(harness.repo);
+    const getSpy = vi
+      .spyOn(harness.repo, "get")
+      .mockImplementationOnce(originalGet)
+      .mockImplementationOnce(async (id) => {
+        const competingUpdatedAt = harness.clock.now() + 1_000;
+
+        await harness.table.upsert(
+          [
+            {
+              id,
+              title: episode.title,
+              narrative: "competing writer",
+              participants: JSON.stringify(["user"]),
+              location: null,
+              start_time: episode.start_time,
+              end_time: episode.end_time,
+              source_stream_ids: JSON.stringify(episode.source_stream_ids),
+              significance: episode.significance,
+              tags: JSON.stringify(["competing"]),
+              confidence: episode.confidence,
+              lineage_derived_from: JSON.stringify([]),
+              lineage_supersedes: JSON.stringify([]),
+              source_fingerprint: episode.source_stream_ids.join("\n"),
+              audience_entity_id: null,
+              shared: true,
+              emotional_arc: null,
+              embedding: Array.from(episode.embedding),
+              created_at: episode.created_at,
+              updated_at: competingUpdatedAt,
+            },
+          ],
+          { on: "id" },
+        );
+
+        return originalGet(id);
+      });
+    const statsSpy = vi
+      .spyOn(harness.repo as unknown as { updateStats(episodeId: Episode["id"], patch: unknown): unknown }, "updateStats")
+      .mockImplementationOnce(() => {
+        throw new Error("sqlite failed");
+      });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      harness.repo.update(episode.id, {
+        tags: ["first-writer"],
+      }),
+    ).rejects.toMatchObject({
+      code: "EPISODE_UPDATE_FAILED",
+    });
+
+    const persisted = await harness.repo.get(episode.id);
+
+    expect(persisted?.narrative).toBe("competing writer");
+    expect(persisted?.tags).toEqual(["competing"]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Skipped episode rollback because newer Lance state exists.",
+      expect.objectContaining({
+        episodeId: episode.id,
+      }),
+    );
+
+    getSpy.mockRestore();
+    statsSpy.mockRestore();
   });
 });

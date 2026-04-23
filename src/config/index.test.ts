@@ -125,6 +125,38 @@ describe("config", () => {
     ).toThrow(ConfigError);
   });
 
+  it("accepts negative and zero env numbers when the schema allows them", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_THRESHOLD: "-0.5",
+        BORG_OFFLINE_CURATOR_ARCHIVE_MIN_HEAT: "0",
+        BORG_AUTONOMY_CONDITION_OPEN_QUESTION_URGENCY_BUMP_THRESHOLD: "0",
+      },
+    });
+
+    expect(config.autonomy.conditions.moodValenceDrop.threshold).toBe(-0.5);
+    expect(config.offline.curator.archiveMinHeat).toBe(0);
+    expect(config.autonomy.conditions.openQuestionUrgencyBump.threshold).toBe(0);
+  });
+
+  it("rejects non-finite env numbers", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() =>
+      loadConfig({
+        dataDir: tempDir,
+        env: {
+          BORG_OFFLINE_CURATOR_ARCHIVE_MIN_HEAT: "NaN",
+        },
+      }),
+    ).toThrow(ConfigError);
+  });
+
   it("rejects reflector confidence ceilings above the hard cap", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

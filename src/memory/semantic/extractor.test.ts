@@ -55,26 +55,47 @@ class SemanticEmbeddingClient implements EmbeddingClient {
   }
 }
 
-function buildEpisode(id: Episode["id"], title: string): Episode {
+function buildEpisode(
+  id: Episode["id"],
+  title: string,
+  overrides: Partial<Episode> = {},
+): Episode {
   return {
     id,
     title,
-    narrative: `${title} narrative.`,
-    participants: ["team"],
-    location: null,
-    start_time: 1,
-    end_time: 2,
-    source_stream_ids: ["strm_aaaaaaaaaaaaaaaa" as Episode["source_stream_ids"][number]],
-    significance: 0.8,
-    tags: ["atlas"],
-    confidence: 0.8,
-    lineage: {
-      derived_from: [],
-      supersedes: [],
-    },
-    embedding: Float32Array.from([1, 0, 0, 0]),
-    created_at: 1,
-    updated_at: 1,
+    narrative: overrides.narrative ?? `${title} narrative.`,
+    participants: overrides.participants ?? ["team"],
+    location: overrides.location ?? null,
+    start_time: overrides.start_time ?? 1,
+    end_time: overrides.end_time ?? 2,
+    source_stream_ids:
+      overrides.source_stream_ids ??
+      ["strm_aaaaaaaaaaaaaaaa" as Episode["source_stream_ids"][number]],
+    significance: overrides.significance ?? 0.8,
+    tags: overrides.tags ?? ["atlas"],
+    confidence: overrides.confidence ?? 0.8,
+    lineage:
+      overrides.lineage ?? {
+        derived_from: [],
+        supersedes: [],
+      },
+    emotional_arc: overrides.emotional_arc ?? null,
+    audience_entity_id: overrides.audience_entity_id,
+    shared: overrides.shared,
+    embedding: overrides.embedding ?? Float32Array.from([1, 0, 0, 0]),
+    created_at: overrides.created_at ?? 1,
+    updated_at: overrides.updated_at ?? 1,
+  };
+}
+
+function createEpisodeLookup(episodes: readonly Episode[]) {
+  const episodeById = new Map(episodes.map((episode) => [episode.id, episode]));
+
+  return {
+    getMany: async (ids: readonly Episode["id"][]) =>
+      ids
+        .map((id) => episodeById.get(id))
+        .filter((episode): episode is Episode => episode !== undefined),
   };
 }
 
@@ -121,6 +142,7 @@ describe("semantic extractor", () => {
       kind: "entity",
       label: "Atlas",
       description: "Atlas existing node",
+      domain: "tech",
       aliases: ["Project Atlas"],
       confidence: 0.6,
       source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as EpisodeId],
@@ -140,6 +162,7 @@ describe("semantic extractor", () => {
               kind: "entity",
               label: "Atlas",
               description: "Atlas updated node",
+              domain: "tech",
               aliases: ["Atlas service"],
               confidence: 0.7,
               source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
@@ -169,6 +192,9 @@ describe("semantic extractor", () => {
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([
+        buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident"),
+      ]),
       llmClient: llm,
       model: "haiku",
       clock,
@@ -205,6 +231,9 @@ describe("semantic extractor", () => {
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([
+        buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident"),
+      ]),
       llmClient: new FakeLLMClient({
         responses: [
           createSemanticToolResponse({
@@ -286,6 +315,9 @@ describe("semantic extractor", () => {
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([
+        buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident"),
+      ]),
       llmClient: llm,
       model: "haiku",
       clock,
@@ -297,5 +329,215 @@ describe("semantic extractor", () => {
 
     expect(result.insertedNodes).toBe(2);
     expect(result.insertedEdges).toBe(1);
+  });
+
+  it("keeps homonyms in separate nodes when domains differ", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const episodeA = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Tomasz conversation", {
+      narrative: "Tomasz joined the call and asked about plans.",
+      participants: ["Alice", "Tomasz"],
+      audience_entity_id: "ent_aaaaaaaaaaaaaaaa" as Episode["audience_entity_id"],
+      shared: false,
+      tags: ["people"],
+    });
+    const episodeB = buildEpisode("ep_bbbbbbbbbbbbbbbb" as Episode["id"], "Tomasz travel note", {
+      narrative: "We discussed the city of Tomasz and nearby routes.",
+      participants: ["team"],
+      tags: ["travel", "places"],
+      location: "Poland",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "entity",
+              label: "Tomasz",
+              description: "A person participating in the conversation.",
+              domain: "people",
+              aliases: [],
+              confidence: 0.7,
+              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+            },
+          ],
+          edges: [],
+        }),
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "entity",
+              label: "Tomasz",
+              description: "A city mentioned in the travel discussion.",
+              domain: "places",
+              aliases: [],
+              confidence: 0.7,
+              source_episode_ids: ["ep_bbbbbbbbbbbbbbbb"],
+            },
+          ],
+          edges: [],
+        }),
+      ],
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episodeA, episodeB]),
+      llmClient: llm,
+      model: "haiku",
+      clock,
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await extractor.extractFromEpisodes([episodeA]);
+    await extractor.extractFromEpisodes([episodeB]);
+
+    const matches = await nodeRepository.findByLabelOrAlias("Tomasz", 5, {
+      includeArchived: true,
+    });
+
+    expect(matches).toHaveLength(2);
+    expect(matches.map((node) => node.domain).sort()).toEqual(["people", "places"]);
+    expect(matches.map((node) => node.source_episode_ids[0])).toEqual(
+      expect.arrayContaining([episodeA.id, episodeB.id]),
+    );
+  });
+
+  it("does not merge nodes when either side lacks a domain", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Tomasz ambiguous note", {
+      narrative: "Tomasz came up in an ambiguous context.",
+      participants: ["Alice", "Tomasz"],
+      audience_entity_id: "ent_aaaaaaaaaaaaaaaa" as Episode["audience_entity_id"],
+      shared: false,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "entity",
+              label: "Tomasz",
+              description: "An ambiguous Tomasz reference.",
+              aliases: [],
+              confidence: 0.7,
+              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+            },
+          ],
+          edges: [],
+        }),
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "entity",
+              label: "Tomasz",
+              description: "A person named Tomasz.",
+              domain: "people",
+              aliases: [],
+              confidence: 0.7,
+              source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+            },
+          ],
+          edges: [],
+        }),
+      ],
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: llm,
+      model: "haiku",
+      clock,
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await nodeRepository.insert({
+      id: createSemanticNodeId(),
+      kind: "entity",
+      label: "Tomasz",
+      description: "Existing ambiguous Tomasz node.",
+      domain: null,
+      aliases: [],
+      confidence: 0.6,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+
+    await extractor.extractFromEpisodes([episode]);
+
+    const afterNullCandidate = await nodeRepository.findByLabelOrAlias("Tomasz", 5, {
+      includeArchived: true,
+    });
+
+    expect(afterNullCandidate).toHaveLength(2);
+    expect(afterNullCandidate.map((node) => node.domain)).toEqual([null, null]);
+
+    await extractor.extractFromEpisodes([episode]);
+
+    const afterSpecificCandidate = await nodeRepository.findByLabelOrAlias("Tomasz", 5, {
+      includeArchived: true,
+    });
+
+    expect(afterSpecificCandidate).toHaveLength(3);
+    expect(afterSpecificCandidate.map((node) => node.domain)).toEqual(
+      expect.arrayContaining([null, null, "people"]),
+    );
   });
 });

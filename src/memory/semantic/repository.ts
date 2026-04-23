@@ -62,6 +62,7 @@ type SemanticNodeRow = {
   kind: string;
   label: string;
   description: string;
+  domain: string | null;
   aliases: string;
   confidence: number;
   source_episode_ids: string;
@@ -166,6 +167,7 @@ function nodeToRow(node: SemanticNode): SemanticNodeRow {
     kind: node.kind,
     label: node.label,
     description: node.description,
+    domain: node.domain,
     aliases: serializeJsonValue(node.aliases),
     confidence: node.confidence,
     source_episode_ids: serializeJsonValue(node.source_episode_ids),
@@ -184,6 +186,7 @@ function nodeFromRow(row: Record<string, unknown>): SemanticNode {
     kind: row.kind,
     label: row.label,
     description: row.description,
+    domain: row.domain === undefined ? null : row.domain,
     aliases: normalizeAliases(parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases")),
     confidence: Number(row.confidence),
     source_episode_ids: parseJsonArray<string>(
@@ -289,6 +292,7 @@ export function createSemanticNodesTableSchema(dimensions: number) {
     utf8Field("kind"),
     utf8Field("label"),
     utf8Field("description"),
+    utf8Field("domain", true),
     utf8Field("aliases"),
     float64Field("confidence"),
     utf8Field("source_episode_ids"),
@@ -392,13 +396,14 @@ export class SemanticNodeRepository {
       .prepare(
         `
           INSERT INTO semantic_nodes (
-            id, kind, label, description, aliases, confidence, source_episode_ids,
+            id, kind, label, description, domain, aliases, confidence, source_episode_ids,
             created_at, updated_at, last_verified_at, archived, superseded_by
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             kind = excluded.kind,
             label = excluded.label,
             description = excluded.description,
+            domain = excluded.domain,
             aliases = excluded.aliases,
             confidence = excluded.confidence,
             source_episode_ids = excluded.source_episode_ids,
@@ -413,6 +418,7 @@ export class SemanticNodeRepository {
         node.kind,
         node.label,
         node.description,
+        node.domain,
         serializeJsonValue(node.aliases),
         node.confidence,
         serializeJsonValue(node.source_episode_ids),
@@ -424,7 +430,7 @@ export class SemanticNodeRepository {
       );
   }
 
-  async insert(input: SemanticNode): Promise<SemanticNode> {
+  async insert(input: z.input<typeof semanticNodeSchema>): Promise<SemanticNode> {
     const parsed = semanticNodeSchema.parse(input);
     const row = nodeToRow(parsed);
 
@@ -508,7 +514,7 @@ export class SemanticNodeRepository {
       .prepare(
         `
           SELECT id, kind, label, description, aliases, confidence, source_episode_ids,
-                 created_at, updated_at, last_verified_at, archived, superseded_by
+                 created_at, updated_at, last_verified_at, archived, superseded_by, domain
           FROM semantic_nodes
           ORDER BY updated_at DESC, id ASC
         `,

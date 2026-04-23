@@ -395,6 +395,183 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     ).toBe(true);
   });
 
+  it("hard-filters cue-only searches when strictTimeRange is enabled", async () => {
+    harness = await createHarness();
+    await insertHotVectorDecoys(harness, 12, {
+      start_time: 900_000,
+      end_time: 901_000,
+    });
+
+    const inRange = createEpisodeFixture(
+      {
+        title: "Yesterday architecture review",
+        significance: 1,
+        created_at: 10,
+        updated_at: 10,
+        start_time: 150_000,
+        end_time: 160_000,
+      },
+      [0, 1, 0, 0],
+    );
+    await harness.episodicRepository.insert(inRange);
+
+    const results = await harness.retrievalPipeline.search(QUERY, {
+      limit: 10,
+      temporalCue: {
+        phrase: "yesterday",
+        granularity: "day",
+        sinceTs: 140_000,
+        untilTs: 170_000,
+      },
+      strictTimeRange: true,
+      attentionWeights: searchWeights({
+        semantic: 0.05,
+        time: 0.85,
+        heat: 0.02,
+        entity: 0,
+      }),
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.episode.id).toBe(inRange.id);
+  });
+
+  it("keeps cue-only searches as scoring boosts when strictTimeRange is disabled", async () => {
+    harness = await createHarness();
+    await insertHotVectorDecoys(harness, 12, {
+      start_time: 900_000,
+      end_time: 901_000,
+    });
+
+    const inRange = createEpisodeFixture(
+      {
+        title: "Yesterday architecture review",
+        significance: 1,
+        created_at: 10,
+        updated_at: 10,
+        start_time: 150_000,
+        end_time: 160_000,
+      },
+      [0, 1, 0, 0],
+    );
+    await harness.episodicRepository.insert(inRange);
+
+    const results = await harness.retrievalPipeline.search(QUERY, {
+      limit: 10,
+      temporalCue: {
+        phrase: "yesterday",
+        granularity: "day",
+        sinceTs: 140_000,
+        untilTs: 170_000,
+      },
+      strictTimeRange: false,
+      attentionWeights: searchWeights({
+        semantic: 0.4,
+        time: 0.15,
+        heat: 0.7,
+        entity: 0,
+      }),
+    });
+
+    expect(results).toHaveLength(10);
+    expect(results.some((item) => item.episode.start_time > 170_000)).toBe(true);
+    expect(
+      results.every(
+        (item) => item.episode.start_time <= 170_000 && item.episode.end_time >= 140_000,
+      ),
+    ).toBe(false);
+  });
+
+  it("prefers explicit timeRange over a temporal cue when strict filtering", async () => {
+    harness = await createHarness();
+    const cueOnly = createEpisodeFixture(
+      {
+        title: "Cue window architecture note",
+        significance: 1,
+        created_at: 10,
+        updated_at: 10,
+        start_time: 150_000,
+        end_time: 160_000,
+      },
+      [0, 1, 0, 0],
+    );
+    const explicit = createEpisodeFixture(
+      {
+        title: "Explicit window architecture note",
+        significance: 1,
+        created_at: 10,
+        updated_at: 10,
+        start_time: 320_000,
+        end_time: 330_000,
+      },
+      [0, 1, 0, 0],
+    );
+    await harness.episodicRepository.insert(cueOnly);
+    await harness.episodicRepository.insert(explicit);
+
+    const results = await harness.retrievalPipeline.search(QUERY, {
+      limit: 3,
+      timeRange: {
+        start: 300_000,
+        end: 340_000,
+      },
+      temporalCue: {
+        phrase: "yesterday",
+        granularity: "day",
+        sinceTs: 140_000,
+        untilTs: 170_000,
+      },
+      strictTimeRange: true,
+      attentionWeights: searchWeights({
+        semantic: 0.05,
+        time: 0.85,
+        heat: 0.02,
+        entity: 0,
+      }),
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.episode.id).toBe(explicit.id);
+  });
+
+  it("returns empty results instead of widening when a strict cue range matches nothing", async () => {
+    harness = await createHarness();
+    await insertHotVectorDecoys(harness, 12, {
+      start_time: 900_000,
+      end_time: 901_000,
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const results = await harness.retrievalPipeline.search(QUERY, {
+      limit: 3,
+      temporalCue: {
+        phrase: "yesterday",
+        granularity: "day",
+        sinceTs: 140_000,
+        untilTs: 170_000,
+      },
+      strictTimeRange: true,
+      attentionWeights: searchWeights({
+        semantic: 0.05,
+        time: 0.85,
+        heat: 0.02,
+        entity: 0,
+      }),
+    });
+
+    expect(results).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Strict time filter returned 0 retrieval candidates.",
+      expect.objectContaining({
+        query: QUERY,
+        timeRange: {
+          start: 140_000,
+          end: 170_000,
+        },
+      }),
+    );
+  });
+
   it("reuses a single visible-corpus scan across scan-based generators", async () => {
     harness = await createHarness();
     const sam = harness.entityRepository.resolve("Sam");

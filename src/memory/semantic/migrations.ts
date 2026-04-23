@@ -10,6 +10,7 @@ export const semanticMigrations: Migration[] = [
         kind TEXT NOT NULL,
         label TEXT NOT NULL,
         description TEXT NOT NULL,
+        domain TEXT NULL,
         aliases TEXT NOT NULL,
         confidence REAL NOT NULL,
         source_episode_ids TEXT NOT NULL,
@@ -91,6 +92,21 @@ export const semanticMigrations: Migration[] = [
           } satisfies { kind: "manual" });
         update.run(JSON.stringify(refs), row.id);
       }
+    },
+  },
+  {
+    id: 132,
+    name: "semantic_nodes_domain",
+    up: (db) => {
+      const columns = db
+        .prepare("PRAGMA table_info(semantic_nodes)")
+        .all() as Array<{ name: string }>;
+
+      if (columns.some((column) => column.name === "domain")) {
+        return;
+      }
+
+      db.prepare("ALTER TABLE semantic_nodes ADD COLUMN domain TEXT NULL").run();
     },
   },
 ];

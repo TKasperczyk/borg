@@ -10,10 +10,11 @@ import {
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
 import { createSemanticNodeId } from "../../util/ids.js";
+import { episodeAccessScopeKey } from "../episodic/access.js";
+import type { Episode, EpisodicRepository } from "../episodic/index.js";
 import {
   SemanticEdgeRepository,
   SemanticNodeRepository,
-  type SemanticNodeRepositoryOptions,
 } from "./repository.js";
 import {
   semanticNodeKindSchema,
@@ -21,12 +22,12 @@ import {
   type SemanticEdge,
   type SemanticNode,
 } from "./types.js";
-import type { Episode } from "../episodic/index.js";
 
 const extractorNodeSchema = z.object({
   kind: semanticNodeKindSchema,
   label: z.string().min(1),
   description: z.string().min(1),
+  domain: z.string().min(1).nullable().default(null),
   aliases: z.array(z.string().min(1)),
   confidence: z.number().min(0).max(1),
   source_episode_ids: z.array(z.string().min(1)).min(1),
@@ -61,6 +62,7 @@ export type SemanticExtractorOptions = {
   nodeRepository: SemanticNodeRepository;
   edgeRepository: SemanticEdgeRepository;
   embeddingClient: EmbeddingClient;
+  episodicRepository: Pick<EpisodicRepository, "getMany">;
   llmClient: LLMClient;
   model: string;
   clock?: Clock;
@@ -86,6 +88,7 @@ function buildPrompt(episodes: readonly Episode[]): string {
     "Each edge must use from_label and to_label values that match node labels exactly.",
     "Only use relation values allowed by the tool schema.",
     "Edges may only reference nodes that already exist or are extracted in this batch.",
+    'Emit a free-form domain string for each node when it helps disambiguate homonyms (examples: "tech", "people", "food", "places"). Use null for broadly general nodes.',
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
     ...episodes.map((episode) =>
@@ -94,6 +97,9 @@ function buildPrompt(episodes: readonly Episode[]): string {
         title: episode.title,
         narrative: episode.narrative,
         participants: episode.participants,
+        audience_entity_id: episode.audience_entity_id ?? null,
+        shared: episode.shared ?? (episode.audience_entity_id ?? null) === null,
+        location: episode.location,
         tags: episode.tags,
       }),
     ),
@@ -182,6 +188,35 @@ function mergeAliases(left: readonly string[], right: readonly string[]): string
   ];
 }
 
+function normalizeDomain(value: string | null | undefined): string | null {
+  const trimmed = value?.trim().toLowerCase() ?? "";
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function hasCompatibleDomain(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  const normalizedLeft = normalizeDomain(left);
+  const normalizedRight = normalizeDomain(right);
+
+  return normalizedLeft !== null && normalizedRight !== null && normalizedLeft === normalizedRight;
+}
+
+function resolveEpisodeScopeKeys(episodes: readonly Episode[]): Set<string> {
+  return new Set(episodes.map((episode) => episodeAccessScopeKey(episode)));
+}
+
+function haveSameScopeKeys(
+  left: ReadonlySet<string>,
+  right: ReadonlySet<string>,
+): boolean {
+  return (
+    left.size === right.size &&
+    [...left].every((value) => right.has(value))
+  );
+}
+
 export class SemanticExtractor {
   private readonly clock: Clock;
   private readonly dedupThreshold: number;
@@ -210,24 +245,62 @@ export class SemanticExtractor {
   private async upsertNode(
     candidate: ExtractorNode,
     allowedEpisodeIds: ReadonlySet<string>,
+    episodeById: ReadonlyMap<Episode["id"], Episode>,
   ): Promise<{ status: "inserted" | "updated" | "skipped"; node?: SemanticNode }> {
     const sourceEpisodeIds = this.validateEpisodeRefs(
       candidate.source_episode_ids,
       allowedEpisodeIds,
       "source_episode_ids",
     );
+    const sourceEpisodes = sourceEpisodeIds
+      .map((episodeId) => episodeById.get(episodeId))
+      .filter((episode): episode is Episode => episode !== undefined);
+    const candidateScopeKeys = resolveEpisodeScopeKeys(sourceEpisodes);
 
     try {
       const embedding = await this.options.embeddingClient.embed(
         `${candidate.label}\n${candidate.description}\n${candidate.aliases.join(" ")}`,
       );
-      const byLabel = await this.options.nodeRepository.findByLabelOrAlias(candidate.label, 5, {
+      const isCompatibleNode = async (node: SemanticNode): Promise<boolean> => {
+        if (node.kind !== candidate.kind) {
+          return false;
+        }
+
+        if (!hasCompatibleDomain(node.domain, candidate.domain)) {
+          return false;
+        }
+
+        const nodeSourceEpisodes = await this.options.episodicRepository.getMany(node.source_episode_ids);
+        const nodeScopeKeys = resolveEpisodeScopeKeys(nodeSourceEpisodes);
+
+        return (
+          nodeSourceEpisodes.length === node.source_episode_ids.length &&
+          haveSameScopeKeys(nodeScopeKeys, candidateScopeKeys)
+        );
+      };
+      const byLabelMatches = await this.options.nodeRepository.findByLabelOrAlias(candidate.label, 5, {
         includeArchived: true,
       });
-      const byVector = await this.options.nodeRepository.searchByVector(embedding, {
+      const byLabel: SemanticNode[] = [];
+
+      for (const match of byLabelMatches) {
+        if (await isCompatibleNode(match)) {
+          byLabel.push(match);
+        }
+      }
+
+      const byVectorMatches = await this.options.nodeRepository.searchByVector(embedding, {
         limit: 3,
         minSimilarity: this.dedupThreshold,
       });
+      const byVector: Array<{ node: SemanticNode; similarity: number }> = [];
+
+      for (const match of byVectorMatches) {
+        if (await isCompatibleNode(match.node)) {
+          byVector.push(match);
+        }
+      }
+
       const existing = byLabel[0] ?? byVector[0]?.node;
       const nowMs = this.clock.now();
 
@@ -237,6 +310,7 @@ export class SemanticExtractor {
           kind: candidate.kind,
           label: candidate.label.trim(),
           description: candidate.description.trim(),
+          domain: normalizeDomain(candidate.domain),
           aliases: mergeAliases(candidate.aliases, []),
           confidence: Math.min(candidate.confidence, this.confidenceCeiling),
           source_episode_ids: sourceEpisodeIds,
@@ -259,6 +333,7 @@ export class SemanticExtractor {
           candidate.confidence >= existing.confidence
             ? candidate.description.trim()
             : existing.description,
+        domain: existing.domain ?? normalizeDomain(candidate.domain),
         aliases: mergeAliases(existing.aliases, [candidate.label, ...candidate.aliases]),
         confidence: Math.max(
           existing.confidence * 0.99,
@@ -324,6 +399,7 @@ export class SemanticExtractor {
     });
     const parsed = parseResponse(result);
     const allowedEpisodeIds = new Set(episodes.map((episode) => episode.id));
+    const episodeById = new Map(episodes.map((episode) => [episode.id, episode]));
     const existingNodes = new Map<string, SemanticNode>();
     const batchNodes = new Map<string, SemanticNode>();
     let insertedNodes = 0;
@@ -333,7 +409,7 @@ export class SemanticExtractor {
     let skippedEdges = 0;
 
     for (const candidate of parsed.nodes) {
-      const outcome = await this.upsertNode(candidate, allowedEpisodeIds);
+      const outcome = await this.upsertNode(candidate, allowedEpisodeIds, episodeById);
 
       if (outcome.status === "inserted") {
         insertedNodes += 1;
@@ -359,10 +435,14 @@ export class SemanticExtractor {
       });
 
       for (const match of matches) {
-        existingNodes.set(match.label.toLowerCase(), match);
+        if (!existingNodes.has(match.label.toLowerCase())) {
+          existingNodes.set(match.label.toLowerCase(), match);
+        }
 
         for (const alias of match.aliases) {
-          existingNodes.set(alias.toLowerCase(), match);
+          if (!existingNodes.has(alias.toLowerCase())) {
+            existingNodes.set(alias.toLowerCase(), match);
+          }
         }
       }
     }
