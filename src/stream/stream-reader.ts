@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -14,6 +14,27 @@ import {
 } from "./types.js";
 
 type LoggerLike = Pick<Console, "error">;
+
+const REVERSE_TAIL_CHUNK_SIZE_BYTES = 64 * 1024;
+const NEWLINE_BYTE = 0x0a;
+
+function reverseLineToString(
+  lineSegment: Buffer,
+  carryChunks: readonly Buffer[],
+  carryLength: number,
+): string {
+  if (carryChunks.length === 0) {
+    return lineSegment.toString("utf8");
+  }
+
+  if (lineSegment.length === 0) {
+    return Buffer.concat(carryChunks, carryLength).toString("utf8");
+  }
+
+  return Buffer.concat([lineSegment, ...carryChunks], lineSegment.length + carryLength).toString(
+    "utf8",
+  );
+}
 
 export type StreamReaderOptions = {
   dataDir: string;
@@ -199,15 +220,67 @@ export class StreamReader {
       return [];
     }
 
-    const raw = readFileSync(this.streamPath, "utf8");
-    const lines = raw.split("\n");
+    const fileDescriptor = openSync(this.streamPath, "r");
     const entries: StreamEntry[] = [];
 
-    for (let index = lines.length - 1; index >= 0 && entries.length < n; index -= 1) {
-      const entry = this.parseLine(lines[index] ?? "");
-      if (entry !== undefined) {
-        entries.push(entry);
+    try {
+      const fileSize = fstatSync(fileDescriptor).size;
+
+      if (fileSize === 0) {
+        return [];
       }
+
+      let position = fileSize;
+      const carryChunks: Buffer[] = [];
+      let carryLength = 0;
+
+      while (position > 0 && entries.length < n) {
+        const chunkSize = Math.min(REVERSE_TAIL_CHUNK_SIZE_BYTES, position);
+        position -= chunkSize;
+
+        const chunk = Buffer.allocUnsafe(chunkSize);
+        const bytesRead = readSync(fileDescriptor, chunk, 0, chunkSize, position);
+        if (bytesRead <= 0) {
+          break;
+        }
+
+        const chunkBytes = bytesRead === chunkSize ? chunk : chunk.subarray(0, bytesRead);
+        let lineEnd = chunkBytes.length;
+
+        for (let index = chunkBytes.length - 1; index >= 0 && entries.length < n; index -= 1) {
+          if (chunkBytes[index] !== NEWLINE_BYTE) {
+            continue;
+          }
+
+          const entry = this.parseLine(
+            reverseLineToString(chunkBytes.subarray(index + 1, lineEnd), carryChunks, carryLength),
+          );
+
+          if (entry !== undefined) {
+            entries.push(entry);
+          }
+
+          carryChunks.length = 0;
+          carryLength = 0;
+          lineEnd = index;
+        }
+
+        if (lineEnd > 0) {
+          const remainder = chunkBytes.subarray(0, lineEnd);
+          carryChunks.unshift(remainder);
+          carryLength += remainder.length;
+        }
+      }
+
+      if (entries.length < n && carryLength > 0) {
+        const entry = this.parseLine(Buffer.concat(carryChunks, carryLength).toString("utf8"));
+
+        if (entry !== undefined) {
+          entries.push(entry);
+        }
+      }
+    } finally {
+      closeSync(fileDescriptor);
     }
 
     return entries.reverse();

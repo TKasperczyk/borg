@@ -15,6 +15,12 @@ export { getSessionStreamPath, getStreamDirectory } from "./path.js";
 export { StreamReader, type StreamReaderOptions } from "./stream-reader.js";
 export { StreamWriter, type StreamWriterOptions } from "./stream-writer.js";
 export {
+  StreamEntryIndexRepository,
+  streamEntryIndexMigrations,
+  type StreamEntryIndexRecord,
+  type StreamEntryIndexRepositoryOptions,
+} from "./entry-index.js";
+export {
   StreamWatermarkRepository,
   streamWatermarkMigrations,
   type StreamWatermark,

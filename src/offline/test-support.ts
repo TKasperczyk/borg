@@ -52,7 +52,12 @@ import {
 import { SocialRepository, socialMigrations } from "../memory/social/index.js";
 import { retrievalMigrations } from "../retrieval/index.js";
 import { RetrievalPipeline } from "../retrieval/index.js";
-import { StreamWriter, streamWatermarkMigrations } from "../stream/index.js";
+import {
+  StreamEntryIndexRepository,
+  StreamWriter,
+  streamEntryIndexMigrations,
+  streamWatermarkMigrations,
+} from "../stream/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
@@ -251,6 +256,7 @@ export async function createOfflineTestHarness(
       ...identityMigrations,
       ...offlineMigrations,
       ...streamWatermarkMigrations,
+      ...streamEntryIndexMigrations,
     ],
   });
   const episodesTable = await lance.openTable({
@@ -270,10 +276,15 @@ export async function createOfflineTestHarness(
     db,
     clock,
   });
+  const entryIndex = new StreamEntryIndexRepository({
+    db,
+    dataDir: tempDir,
+  });
   const streamWriter = new StreamWriter({
     dataDir: tempDir,
     sessionId: DEFAULT_SESSION_ID,
     clock,
+    entryIndex,
   });
   const pendingHookLogs = new Set<Promise<void>>();
   const registry = new ReverserRegistry();
@@ -393,6 +404,7 @@ export async function createOfflineTestHarness(
     semanticGraph,
     openQuestionsRepository,
     dataDir: tempDir,
+    entryIndex,
     clock,
   });
   const flushHookLogs = async () => {

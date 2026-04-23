@@ -1,3 +1,4 @@
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -101,9 +102,12 @@ import {
 } from "./offline/index.js";
 import { retrievalMigrations, RetrievalPipeline } from "./retrieval/index.js";
 import {
+  getStreamDirectory,
+  StreamEntryIndexRepository,
   StreamReader,
   StreamWatermarkRepository,
   StreamWriter,
+  streamEntryIndexMigrations,
   streamWatermarkMigrations,
   type StreamCursor,
   type StreamEntry,
@@ -126,6 +130,7 @@ import {
   type AuditId,
   type EntityId,
   type MaintenanceRunId,
+  parseSessionId,
   createSemanticNodeId,
   type EpisodeId,
   type SessionId,
@@ -135,6 +140,7 @@ type BorgDependencies = {
   config: Config;
   sqlite: SqliteDatabase;
   lance: LanceDbStore;
+  entryIndex: StreamEntryIndexRepository;
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
@@ -286,6 +292,7 @@ function createMigrations(): Migration[] {
     ...proceduralMigrations,
     ...offlineMigrations,
     ...streamWatermarkMigrations,
+    ...streamEntryIndexMigrations,
   ];
 }
 
@@ -639,6 +646,7 @@ export class Borg {
           dataDir: this.deps.config.dataDir,
           sessionId: options.session ?? DEFAULT_SESSION_ID,
           clock: this.deps.clock,
+          entryIndex: this.deps.entryIndex,
         });
 
         try {
@@ -1070,11 +1078,38 @@ export class Borg {
         clock,
       });
       await episodicRepository.reconcileCrossStoreState();
+      const entryIndex = new StreamEntryIndexRepository({
+        db: sqlite,
+        dataDir: config.dataDir,
+      });
+      const streamDir = getStreamDirectory(config.dataDir);
+
+      if (existsSync(streamDir)) {
+        const sessionIds = readdirSync(streamDir)
+          .map((filename) => {
+            if (!filename.endsWith(".jsonl")) {
+              return null;
+            }
+
+            try {
+              return parseSessionId(filename.slice(0, -".jsonl".length));
+            } catch {
+              return null;
+            }
+          })
+          .filter((sessionId): sessionId is SessionId => sessionId !== null);
+
+        for (const sessionId of sessionIds) {
+          await entryIndex.backfillSession(sessionId);
+        }
+      }
+
       const createDefaultStreamWriter = () =>
         new StreamWriter({
           dataDir: config.dataDir,
           sessionId: DEFAULT_SESSION_ID,
           clock,
+          entryIndex,
         });
       let reviewQueueRepository: ReviewQueueRepository | undefined;
       let applyCorrectionReview: ((item: ReviewQueueItem) => Promise<void>) | undefined;
@@ -1231,6 +1266,7 @@ export class Borg {
         semanticGraph,
         openQuestionsRepository,
         dataDir: config.dataDir,
+        entryIndex,
         clock,
       });
       const correctionService = new CorrectionService({
@@ -1268,6 +1304,7 @@ export class Borg {
           dataDir: config.dataDir,
           sessionId,
           clock,
+          entryIndex,
         });
       const toolDispatcher = new ToolDispatcher({
         createStreamWriter,
@@ -1539,6 +1576,7 @@ export class Borg {
         config,
         sqlite,
         lance,
+        entryIndex,
         episodicRepository,
         semanticNodeRepository,
         semanticEdgeRepository,

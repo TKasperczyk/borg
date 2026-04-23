@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SuppressionSet, computeWeights } from "../cognition/attention/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
-import { StreamReader, StreamWriter } from "../stream/index.js";
+import {
+  StreamEntryIndexRepository,
+  StreamReader,
+  StreamWriter,
+  streamEntryIndexMigrations,
+} from "../stream/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
 import { FixedClock } from "../util/clock.js";
@@ -67,6 +72,40 @@ function createEpisode(id: string, sourceId: string, embedding: number[]): Episo
     embedding: Float32Array.from(embedding),
     created_at: 1_000,
     updated_at: 1_000,
+  };
+}
+
+async function openRetrievalFixture(tempDir: string) {
+  const store = new LanceDbStore({
+    uri: join(tempDir, "lancedb"),
+  });
+  const db = openDatabase(join(tempDir, "borg.db"), {
+    migrations: [
+      ...episodicMigrations,
+      ...selfMigrations,
+      ...retrievalMigrations,
+      ...streamEntryIndexMigrations,
+    ],
+  });
+  const table = await store.openTable({
+    name: "episodes",
+    schema: createEpisodesTableSchema(4),
+  });
+  const episodicRepository = new EpisodicRepository({
+    table,
+    db,
+    clock: new FixedClock(5_000),
+  });
+  const entryIndex = new StreamEntryIndexRepository({
+    db,
+    dataDir: tempDir,
+  });
+
+  return {
+    store,
+    db,
+    episodicRepository,
+    entryIndex,
   };
 }
 
@@ -258,6 +297,171 @@ describe("retrieval pipeline", () => {
 
     expect(results).toHaveLength(2);
     expect(iterateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves citations via the entry index and matches the scan-based result", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const { store, db, episodicRepository, entryIndex } = await openRetrievalFixture(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(2_000),
+      entryIndex,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const entry = await writer.append({
+      kind: "user_msg",
+      content: "planning kickoff",
+    });
+    const episodeId = "ep_aaaaaaaaaaaaaaa1";
+    await episodicRepository.insert(createEpisode(episodeId, entry.id, [1, 0, 0, 0]));
+
+    const indexedIterateSpy = vi.spyOn(StreamReader.prototype, "iterate");
+    const indexedPipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+      entryIndex,
+    });
+    const indexedResult = await indexedPipeline.getEpisode(episodeId as Episode["id"], {
+      crossAudience: true,
+    });
+
+    expect(indexedIterateSpy).toHaveBeenCalledTimes(0);
+    indexedIterateSpy.mockRestore();
+
+    const fallbackPipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+    const fallbackResult = await fallbackPipeline.getEpisode(episodeId as Episode["id"], {
+      crossAudience: true,
+    });
+
+    expect(indexedResult).toEqual(fallbackResult);
+  });
+
+  it("falls back to a stream scan when an index row is missing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const { store, db, episodicRepository, entryIndex } = await openRetrievalFixture(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(2_000),
+      entryIndex,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const entry = await writer.append({
+      kind: "user_msg",
+      content: "planning kickoff",
+    });
+    const episodeId = "ep_bbbbbbbbbbbbbbb2";
+    await episodicRepository.insert(createEpisode(episodeId, entry.id, [1, 0, 0, 0]));
+    db.prepare("DELETE FROM stream_entry_index WHERE entry_id = ?").run(entry.id);
+
+    const iterateSpy = vi.spyOn(StreamReader.prototype, "iterate");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+      entryIndex,
+    });
+
+    const result = await pipeline.getEpisode(episodeId as Episode["id"], {
+      crossAudience: true,
+    });
+
+    expect(result?.citationChain[0]?.id).toBe(entry.id);
+    expect(iterateSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith("Citation index miss; falling back to stream scan.", {
+      entryId: entry.id,
+    });
+  });
+
+  it("resolves multi-session citations from the index without scanning unrelated sessions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const { store, db, episodicRepository, entryIndex } = await openRetrievalFixture(tempDir);
+    const defaultWriter = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(2_000),
+      entryIndex,
+    });
+    const secondaryWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: "sess_aaaaaaaaaaaaaaaa" as never,
+      clock: new FixedClock(2_100),
+      entryIndex,
+    });
+    const unrelatedWriter = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: "sess_bbbbbbbbbbbbbbbb" as never,
+      clock: new FixedClock(2_200),
+      entryIndex,
+    });
+
+    cleanup.push(async () => {
+      defaultWriter.close();
+      secondaryWriter.close();
+      unrelatedWriter.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const defaultEntry = await defaultWriter.append({
+      kind: "user_msg",
+      content: "planning kickoff",
+    });
+    const secondaryEntry = await secondaryWriter.append({
+      kind: "agent_msg",
+      content: "planning follow-up",
+    });
+    await unrelatedWriter.append({
+      kind: "internal_event",
+      content: "not cited",
+    });
+
+    await episodicRepository.insert(createEpisode("ep_multisession0001", defaultEntry.id, [1, 0, 0, 0]));
+    await episodicRepository.insert(
+      createEpisode("ep_multisession0002", secondaryEntry.id, [0.9, 0.1, 0, 0]),
+    );
+
+    const iterateSpy = vi.spyOn(StreamReader.prototype, "iterate");
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+      entryIndex,
+    });
+
+    const results = await pipeline.search("planning", {
+      limit: 2,
+      crossAudience: true,
+    });
+
+    expect(results).toHaveLength(2);
+    expect(results.flatMap((result) => result.citationChain.map((entry) => entry.id))).toEqual(
+      expect.arrayContaining([defaultEntry.id, secondaryEntry.id]),
+    );
+    expect(iterateSpy).toHaveBeenCalledTimes(0);
   });
 
   it("hides scoped episodes by id unless the caller provides audience access or cross-audience mode", async () => {

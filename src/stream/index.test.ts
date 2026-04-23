@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ManualClock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import { StreamError } from "../util/errors.js";
-import { getSessionStreamPath, StreamReader, StreamWriter } from "./index.js";
+import { getSessionStreamPath, streamEntrySchema, StreamReader, StreamWriter } from "./index.js";
 
 describe("stream", () => {
   const tempDirs: string[] = [];
@@ -17,6 +17,35 @@ describe("stream", () => {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
   });
+
+  function legacyTailFromDisk(streamPath: string, n: number) {
+    if (n <= 0) {
+      return [];
+    }
+
+    const lines = readFileSync(streamPath, "utf8").split("\n");
+    const entries = [];
+
+    for (let index = lines.length - 1; index >= 0 && entries.length < n; index -= 1) {
+      const line = lines[index] ?? "";
+
+      if (line.trim() === "") {
+        continue;
+      }
+
+      try {
+        const parsed = streamEntrySchema.safeParse(JSON.parse(line) as unknown);
+
+        if (parsed.success) {
+          entries.push(parsed.data);
+        }
+      } catch {
+        // Legacy behavior ignored unreadable lines while searching for more.
+      }
+    }
+
+    return entries.reverse();
+  }
 
   it("appends and reads stream entries", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -68,6 +97,235 @@ describe("stream", () => {
     expect(filtered).toHaveLength(1);
     expect(filtered[0]?.kind).toBe("thought");
     expect(reader.tail(2).map((entry) => entry.kind)).toEqual(["thought", "internal_event"]);
+  });
+
+  it("matches the legacy full-scan tail behavior on small files", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+    });
+
+    try {
+      await writer.append({ kind: "user_msg", content: "alpha" });
+      await writer.append({ kind: "agent_msg", content: "beta" });
+      await writer.append({ kind: "thought", content: { note: "gamma" } });
+      await writer.append({ kind: "internal_event", content: "delta" });
+    } finally {
+      writer.close();
+    }
+
+    const streamPath = getSessionStreamPath(tempDir, DEFAULT_SESSION_ID);
+    appendFileSync(streamPath, "\n", { encoding: "utf8", flag: "a" });
+    appendFileSync(streamPath, '{"broken"\n', { encoding: "utf8", flag: "a" });
+
+    const reader = new StreamReader({
+      dataDir: tempDir,
+      logger: {
+        error: vi.fn(),
+      },
+    });
+
+    expect(reader.tail(3)).toEqual(legacyTailFromDisk(streamPath, 3));
+  });
+
+  it("tails the last entries from a very large synthetic stream", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const streamPath = getSessionStreamPath(tempDir, DEFAULT_SESSION_ID);
+
+    mkdirSync(join(tempDir, "stream"), { recursive: true });
+
+    const totalEntries = 100_000;
+    const batchSize = 5_000;
+
+    for (let start = 0; start < totalEntries; start += batchSize) {
+      const batchLines: string[] = [];
+      const end = Math.min(start + batchSize, totalEntries);
+
+      for (let index = start; index < end; index += 1) {
+        batchLines.push(
+          `${JSON.stringify({
+            id: `strm_${String(index).padStart(16, "0")}`,
+            timestamp: index,
+            kind: "user_msg",
+            content: `entry-${index}`,
+            session_id: "default",
+            compressed: false,
+          })}\n`,
+        );
+      }
+
+      appendFileSync(streamPath, batchLines.join(""), { encoding: "utf8", flag: "a" });
+    }
+
+    const tail = new StreamReader({
+      dataDir: tempDir,
+    }).tail(10);
+
+    expect(tail).toHaveLength(10);
+    expect(tail.map((entry) => entry.content)).toEqual(
+      Array.from({ length: 10 }, (_, offset) => `entry-${totalEntries - 10 + offset}`),
+    );
+  });
+
+  it("parses entries that straddle the 64KB reverse-read chunk boundary", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const streamPath = getSessionStreamPath(tempDir, DEFAULT_SESSION_ID);
+
+    mkdirSync(join(tempDir, "stream"), { recursive: true });
+    appendFileSync(
+      streamPath,
+      [
+        {
+          id: "strm_0000000000000001",
+          timestamp: 1,
+          kind: "user_msg",
+          content: "prefix",
+          session_id: "default",
+          compressed: false,
+        },
+        {
+          id: "strm_0000000000000002",
+          timestamp: 2,
+          kind: "agent_msg",
+          content: "x".repeat(70_000),
+          session_id: "default",
+          compressed: false,
+        },
+        {
+          id: "strm_0000000000000003",
+          timestamp: 3,
+          kind: "internal_event",
+          content: "suffix",
+          session_id: "default",
+          compressed: false,
+        },
+      ]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join(""),
+      { encoding: "utf8", flag: "a" },
+    );
+
+    expect(
+      new StreamReader({
+        dataDir: tempDir,
+      }).tail(2),
+    ).toMatchObject([
+      {
+        id: "strm_0000000000000002",
+        content: "x".repeat(70_000),
+      },
+      {
+        id: "strm_0000000000000003",
+        content: "suffix",
+      },
+    ]);
+  });
+
+  it("tails across a 5MB line without rebuilding the full carry buffer", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const streamPath = getSessionStreamPath(tempDir, DEFAULT_SESSION_ID);
+    const largeContent = "x".repeat(5 * 1024 * 1024);
+
+    mkdirSync(join(tempDir, "stream"), { recursive: true });
+    appendFileSync(
+      streamPath,
+      [
+        {
+          id: "strm_0000000000000100",
+          timestamp: 100,
+          kind: "user_msg",
+          content: "prefix",
+          session_id: "default",
+          compressed: false,
+        },
+        {
+          id: "strm_0000000000000101",
+          timestamp: 101,
+          kind: "agent_msg",
+          content: largeContent,
+          session_id: "default",
+          compressed: false,
+        },
+        {
+          id: "strm_0000000000000102",
+          timestamp: 102,
+          kind: "internal_event",
+          content: "suffix",
+          session_id: "default",
+          compressed: false,
+        },
+      ]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join(""),
+      { encoding: "utf8", flag: "a" },
+    );
+
+    const startedAt = Date.now();
+    const tail = new StreamReader({
+      dataDir: tempDir,
+    }).tail(2);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(tail).toHaveLength(2);
+    expect(tail.map((entry) => entry.id)).toEqual([
+      "strm_0000000000000101",
+      "strm_0000000000000102",
+    ]);
+    expect(typeof tail[0]?.content).toBe("string");
+    expect((tail[0]?.content as string).length).toBe(largeContent.length);
+    expect(tail[1]?.content).toBe("suffix");
+    expect(elapsedMs).toBeLessThan(5_000);
+  });
+
+  it("reads a final line even when the file has no trailing newline", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const streamPath = getSessionStreamPath(tempDir, DEFAULT_SESSION_ID);
+
+    mkdirSync(join(tempDir, "stream"), { recursive: true });
+    appendFileSync(
+      streamPath,
+      [
+        JSON.stringify({
+          id: "strm_0000000000000010",
+          timestamp: 10,
+          kind: "user_msg",
+          content: "alpha",
+          session_id: "default",
+          compressed: false,
+        }),
+        JSON.stringify({
+          id: "strm_0000000000000011",
+          timestamp: 11,
+          kind: "agent_msg",
+          content: "omega",
+          session_id: "default",
+          compressed: false,
+        }),
+      ].join("\n"),
+      { encoding: "utf8", flag: "a" },
+    );
+
+    expect(
+      new StreamReader({
+        dataDir: tempDir,
+      }).tail(2),
+    ).toMatchObject([
+      {
+        id: "strm_0000000000000010",
+        content: "alpha",
+      },
+      {
+        id: "strm_0000000000000011",
+        content: "omega",
+      },
+    ]);
   });
 
   it("uses file order to resume within same-millisecond ties", async () => {
