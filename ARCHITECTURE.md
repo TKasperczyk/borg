@@ -52,7 +52,7 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 ## Part 2: Design Principles
 
 1. **Every memory must be citable.** Provenance is non-negotiable.
-2. **Stream is the source of truth.** Append-only log first, everything else is derived.
+2. **Stream is an append-only audit log.** Turns, perceptions, identity events, and extraction sources are recorded chronologically. It is NOT the canonical source of all state -- authoritative state lives in the typed repositories (SQLite rows + LanceDB vectors). The stream exists so extraction has replayable input and so identity-relevant mutations leave a chronological trail. Event-sourced identity rebuild is explicitly not a goal (see Part 7).
 3. **Cold paths do real work.** Dreams/consolidation are not cosmetic -- they must produce summaries, insights, new edges, new skills.
 4. **Retrieval must be context-aware, not just semantic.** Current goal, current mood, current commitments, current audience all shift what's relevant.
 5. **Self is a first-class entity, not a prompt file.** Identity, values, skills, current goals, open questions, uncertainties live in the memory itself and evolve with it.
@@ -453,6 +453,35 @@ If a real embedding swap or a multi-model-extraction deployment ever
 becomes plausible, versioning is a 1-2 sprint add later. Today it is
 defensive engineering for a scenario we are not planning, and the
 cost is a touch-every-LLM-derived-table migration.
+
+**Event-sourced identity state (explicitly not implemented).** A
+related review recommendation was to make every identity-relevant
+mutation (goal add/update, value reinforce, commitment add/revoke,
+trait promotion, autobiographical period close, growth marker emit,
+open-question resolve) a stream event first, with the SQLite row
+written only as a materialization of that event. This would enable
+full-state replay/rebuild from the stream.
+
+We considered this and chose NOT to implement it:
+
+1. The real goals (substrate continuity, swap survival, identity
+   authority, anti-self-poisoning) do not require event-sourcing.
+   They require: persistent storage (have), retrieval that surfaces
+   the right records (have), identity records protected from silent
+   overwrite (Sprint 14), memory-as-evidence prompt framing
+   (Sprint 15), and a falsifiable swap test (Sprint 23).
+2. Replay/rebuild has no concrete use case for borg. Disaster
+   recovery is handled by SQLite backups. Schema migration is handled
+   by the existing migration system. Swap benchmarks run hermetically
+   against fresh DBs, not by replaying events.
+3. The cost is high: ~7 repository refactors, doubled write work per
+   identity mutation, new replay-correctness maintenance burden,
+   harder debugging (trace event history vs. read row). The benefit
+   for this project is mostly theoretical purity.
+
+The stream still logs identity events for audit and chronological
+trail. The authoritative state is in the repositories. That is the
+actual architecture, and the docs now say so.
 
 ---
 
