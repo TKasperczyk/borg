@@ -81,7 +81,7 @@ function parseSections(value: string | undefined): Set<number> | null {
   for (const rawPart of value.split(",")) {
     const part = Number(rawPart.trim());
 
-    if (!Number.isInteger(part) || part < 1 || part > 8) {
+    if (!Number.isInteger(part) || part < 1 || part > 10) {
       throw new Error(`Invalid BORG_DEBUG_SECTIONS value: ${value}`);
     }
 
@@ -478,14 +478,96 @@ function nowMs(): number {
   return Date.now();
 }
 
-async function runPhase8(
+async function runPhase8(borg: Borg, state: DebugState): Promise<void> {
+  await ensurePhase7(borg, state);
+  header(8, "Maintenance scheduler (Sprint 28)");
+
+  const scheduler = borg.maintenance.scheduler;
+  info(`scheduler enabled=${scheduler.isEnabled()}`);
+
+  if (!scheduler.isEnabled()) {
+    note(
+      "scheduler is off by default (maintenance.enabled=false); set BORG_MAINTENANCE_ENABLED=true to activate scheduled ticks.",
+    );
+    note("manual tick() still works regardless -- exercising below.");
+  }
+
+  // Tick both cadences back to back. Independent of the autonomy scheduler;
+  // each cadence runs its configured process set through MaintenanceOrchestrator.
+  // The default light cadence includes consolidator which needs LLM, so in
+  // fake-LLM mode the run may hit "no scripted response" -- we catch it and
+  // just report the tick status for visibility.
+  for (const cadence of ["light", "heavy"] as const) {
+    try {
+      const tick = await scheduler.tick(cadence);
+      info(
+        `${cadence} cadence status=${tick.status} processes=[${tick.processes.join(", ")}] changes=${
+          tick.result?.changes.length ?? 0
+        } errors=${tick.result?.errors.length ?? 0}`,
+      );
+    } catch (error) {
+      warn(
+        `${cadence} cadence failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  const reader = borg.stream.reader();
+  const recent = reader.tail(50);
+  const dreamReports = recent.filter((entry) => entry.kind === "dream_report");
+  info(`dream_report entries seen=${dreamReports.length}`);
+}
+
+async function runPhase9(borg: Borg): Promise<void> {
+  header(9, "Retrieval confidence snapshot (Sprint 28)");
+
+  const deps = (borg as unknown as {
+    deps: {
+      retrievalPipeline: {
+        searchWithContext: (
+          query: string,
+          options?: Record<string, unknown>,
+        ) => Promise<{
+          episodes: unknown[];
+          contradiction_present: boolean;
+          confidence: {
+            overall: number;
+            evidenceStrength: number;
+            coverage: number;
+            sourceDiversity: number;
+            contradictionPresent: boolean;
+            sampleSize: number;
+          };
+        }>;
+      };
+    };
+  }).deps;
+
+  const query = "recent deploy outcome";
+  const result = await deps.retrievalPipeline.searchWithContext(query, { limit: 5 });
+  const c = result.confidence;
+
+  info(`query: ${query}`);
+  info(
+    `confidence overall=${c.overall.toFixed(3)} evidence=${c.evidenceStrength.toFixed(3)} ` +
+      `coverage=${c.coverage.toFixed(3)} diversity=${c.sourceDiversity.toFixed(3)} ` +
+      `samples=${c.sampleSize} contradictions=${c.contradictionPresent}`,
+  );
+
+  const threshold = 0.45;
+  const pathHint =
+    c.overall < threshold ? "path hint: S2 (low confidence)" : "path hint: S1 (confident enough)";
+  note(pathHint);
+}
+
+async function runPhase10(
   borg: Borg,
   state: DebugState,
   dataDir: string,
   keepDataDir: boolean,
 ): Promise<void> {
   await ensurePhase7(borg, state);
-  header(8, "Inspection footer");
+  header(10, "Inspection footer");
   const [episodes, semanticNodes, skills, commitments, openQuestions, growthMarkers, audits] =
     await Promise.all([
       borg.episodic.list({ limit: 100 }),
@@ -580,7 +662,15 @@ async function main(): Promise<void> {
     }
 
     if (shouldRunPhase(selectedSections, 8)) {
-      await runPhase8(borg, state, dataDir, keepDataDir);
+      await runPhase8(borg, state);
+    }
+
+    if (shouldRunPhase(selectedSections, 9)) {
+      await runPhase9(borg);
+    }
+
+    if (shouldRunPhase(selectedSections, 10)) {
+      await runPhase10(borg, state, dataDir, keepDataDir);
     } else {
       info(keepDataDir ? `data dir kept ${dataDir}` : "data dir removed");
     }

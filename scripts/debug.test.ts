@@ -58,7 +58,9 @@ describe("debug script", () => {
       expect(result.stdout).toContain("=== Phase 1. Setup & self ===");
       expect(result.stdout).toContain("=== Phase 2. Stream + extraction ===");
       expect(result.stdout).toContain("=== Phase 5. Dream cycle ===");
-      expect(result.stdout).toContain("=== Phase 8. Inspection footer ===");
+      expect(result.stdout).toContain("=== Phase 8. Maintenance scheduler (Sprint 28) ===");
+      expect(result.stdout).toContain("=== Phase 9. Retrieval confidence snapshot (Sprint 28) ===");
+      expect(result.stdout).toContain("=== Phase 10. Inspection footer ===");
       expect(result.stdout).toContain("debug run complete");
     },
     30_000,
