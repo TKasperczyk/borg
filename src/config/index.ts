@@ -127,6 +127,20 @@ const configFileSchema = z
       })
       .partial()
       .optional(),
+    maintenance: z
+      .object({
+        enabled: z.boolean().optional(),
+        lightIntervalMs: z.number().int().positive().optional(),
+        heavyIntervalMs: z.number().int().positive().optional(),
+        lightProcesses: z
+          .array(z.enum(["consolidator", "reflector", "curator", "overseer", "ruminator", "self-narrator"]))
+          .optional(),
+        heavyProcesses: z
+          .array(z.enum(["consolidator", "reflector", "curator", "overseer", "ruminator", "self-narrator"]))
+          .optional(),
+      })
+      .partial()
+      .optional(),
     autonomy: z
       .object({
         enabled: z.boolean().optional(),
@@ -288,6 +302,17 @@ export const configSchema = z.object({
       cadenceHintDays: z.number().positive(),
     }),
   }),
+  maintenance: z.object({
+    enabled: z.boolean(),
+    lightIntervalMs: z.number().int().positive(),
+    heavyIntervalMs: z.number().int().positive(),
+    lightProcesses: z.array(
+      z.enum(["consolidator", "reflector", "curator", "overseer", "ruminator", "self-narrator"]),
+    ),
+    heavyProcesses: z.array(
+      z.enum(["consolidator", "reflector", "curator", "overseer", "ruminator", "self-narrator"]),
+    ),
+  }),
   autonomy: z.object({
     enabled: z.boolean(),
     intervalMs: z.number().int().positive(),
@@ -413,6 +438,13 @@ export const DEFAULT_CONFIG: Config = {
       minSupportEpisodes: 2,
       cadenceHintDays: 7,
     },
+  },
+  maintenance: {
+    enabled: false,
+    lightIntervalMs: 14_400_000,
+    heavyIntervalMs: 86_400_000,
+    lightProcesses: ["consolidator", "curator"],
+    heavyProcesses: ["reflector", "overseer", "ruminator", "self-narrator"],
   },
   autonomy: {
     enabled: false,
@@ -839,6 +871,24 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           DEFAULT_CONFIG.offline.selfNarrator.cadenceHintDays,
       },
     },
+    maintenance: {
+      enabled:
+        readOptionalEnvBoolean(env, "BORG_MAINTENANCE_ENABLED") ??
+        fileConfig.maintenance?.enabled ??
+        DEFAULT_CONFIG.maintenance.enabled,
+      lightIntervalMs:
+        readOptionalEnvNumber(env, "BORG_MAINTENANCE_LIGHT_INTERVAL_MS") ??
+        fileConfig.maintenance?.lightIntervalMs ??
+        DEFAULT_CONFIG.maintenance.lightIntervalMs,
+      heavyIntervalMs:
+        readOptionalEnvNumber(env, "BORG_MAINTENANCE_HEAVY_INTERVAL_MS") ??
+        fileConfig.maintenance?.heavyIntervalMs ??
+        DEFAULT_CONFIG.maintenance.heavyIntervalMs,
+      lightProcesses:
+        fileConfig.maintenance?.lightProcesses ?? DEFAULT_CONFIG.maintenance.lightProcesses,
+      heavyProcesses:
+        fileConfig.maintenance?.heavyProcesses ?? DEFAULT_CONFIG.maintenance.heavyProcesses,
+    },
     autonomy: {
       enabled:
         readOptionalEnvBoolean(env, "BORG_AUTONOMY_ENABLED") ??
@@ -983,6 +1033,11 @@ export function redactConfig(config: Config): Config {
     },
     offline: {
       ...config.offline,
+    },
+    maintenance: {
+      ...config.maintenance,
+      lightProcesses: [...config.maintenance.lightProcesses],
+      heavyProcesses: [...config.maintenance.heavyProcesses],
     },
     autonomy: {
       ...config.autonomy,

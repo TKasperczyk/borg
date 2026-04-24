@@ -32,6 +32,7 @@ import type {
   AuditLog,
   MaintenanceOrchestrator,
   MaintenancePlan,
+  MaintenanceScheduler,
   OfflineProcess,
   OfflineProcessName,
   OrchestratorResult,
@@ -78,6 +79,7 @@ export type BorgDependencies = {
   workingMemoryStore: WorkingMemoryStore;
   turnOrchestrator: TurnOrchestrator;
   autonomyScheduler: AutonomyScheduler;
+  maintenanceScheduler: MaintenanceScheduler;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   auditLog: AuditLog;
   maintenanceOrchestrator: MaintenanceOrchestrator;

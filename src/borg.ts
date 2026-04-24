@@ -30,6 +30,7 @@ export class Borg {
   readonly audit: BorgFacades["audit"];
   readonly dream: BorgFacades["dream"];
   readonly autonomy: BorgFacades["autonomy"];
+  readonly maintenance: BorgFacades["maintenance"];
   readonly workmem: BorgFacades["workmem"];
 
   private constructor(private readonly deps: BorgDependencies) {
@@ -49,6 +50,7 @@ export class Borg {
     this.audit = facades.audit;
     this.dream = facades.dream;
     this.autonomy = facades.autonomy;
+    this.maintenance = facades.maintenance;
     this.workmem = facades.workmem;
   }
 

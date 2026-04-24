@@ -1,4 +1,9 @@
 export { retrievalMigrations } from "./migrations.js";
+export {
+  computeRetrievalConfidence,
+  type ComputeRetrievalConfidenceInput,
+  type RetrievalConfidence,
+} from "./confidence.js";
 export { applyMmr, type MmrCandidate } from "./mmr.js";
 export {
   RetrievalPipeline,

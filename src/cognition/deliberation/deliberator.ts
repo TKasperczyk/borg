@@ -83,6 +83,7 @@ export class Deliberator {
       stakes,
       context.retrievalResult,
       context.contradictionPresent,
+      context.retrievalConfidence ?? null,
     );
     const baseSystemPrompt = buildBaseSystemPrompt(context, {
       retrievalContextBudget,

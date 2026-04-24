@@ -423,6 +423,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     autonomy: {
       scheduler: deps.autonomyScheduler,
     },
+    maintenance: {
+      scheduler: deps.maintenanceScheduler,
+    },
     workmem: {
       load: (sessionId = DEFAULT_SESSION_ID) => deps.workingMemoryStore.load(sessionId),
       clear: (sessionId = DEFAULT_SESSION_ID) => {

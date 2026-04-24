@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { withFileLock } from "../stream/file-lock.js";
+import { isFileLockLive, withFileLock } from "../stream/file-lock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import { SessionBusyError, StreamError } from "../util/errors.js";
 
@@ -65,6 +65,15 @@ export class SessionLock {
 
   async tryAcquire(sessionId: SessionId = DEFAULT_SESSION_ID): Promise<SessionLockLease | null> {
     return this.acquireWithTimeout(sessionId, 0);
+  }
+
+  // Advisory check: returns true if the session lock is held by a live process
+  // on this host. Stale locks (owner crashed) return false so maintenance and
+  // other opt-in consumers aren't blocked indefinitely after a crash. Callers
+  // should treat this as a hint, not a correctness boundary -- acquiring the
+  // lock is still the only way to safely perform writes.
+  isHeld(sessionId: SessionId = DEFAULT_SESSION_ID): boolean {
+    return isFileLockLive(this.lockPathFor(sessionId));
   }
 
   private lockPathFor(sessionId: SessionId): string {

@@ -107,6 +107,45 @@ function reapStaleLock(lockPath: string): boolean {
   return removeLockFile(lockPath);
 }
 
+// Advisory check: returns true when the given lock path exists and is held by
+// a live process on this host. Used by callers (e.g., MaintenanceScheduler)
+// that want to skip work when a session is busy without racing to acquire the
+// lock. Stale locks (crashed owner) return false so maintenance isn't blocked
+// indefinitely after a crash.
+export function isFileLockLive(lockPath: string): boolean {
+  let metadataText: string;
+
+  try {
+    metadataText = readFileSync(lockPath, "utf8");
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return false;
+    }
+
+    return false;
+  }
+
+  let metadata: unknown;
+
+  try {
+    metadata = JSON.parse(metadataText) as unknown;
+  } catch {
+    return false;
+  }
+
+  if (!isFileLockMetadata(metadata)) {
+    return false;
+  }
+
+  if (metadata.host !== LOCAL_HOSTNAME) {
+    // Remote holder: cannot verify liveness, treat as live to err on the
+    // cautious side for cross-host setups.
+    return true;
+  }
+
+  return isProcessAlive(metadata.pid);
+}
+
 export async function withFileLock<T>(
   lockPath: string,
   callback: () => T | Promise<T>,

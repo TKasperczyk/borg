@@ -29,6 +29,14 @@ export {
 } from "./plan-file.js";
 export { ReflectorProcess, type ReflectorProcessOptions } from "./reflector/index.js";
 export {
+  MaintenanceScheduler,
+  type MaintenanceCadence,
+  type MaintenanceSchedulerObserver,
+  type MaintenanceSchedulerOptions,
+  type MaintenanceSchedulerStopOptions,
+  type MaintenanceTickResult,
+} from "./scheduler.js";
+export {
   RuminatorProcess,
   ruminatorPlanSchema,
   type RuminatorPlan,

@@ -1,5 +1,5 @@
 // Chooses the S1/S2 deliberation path from perception, stakes, and retrieval signals.
-import type { RetrievedEpisode } from "../../retrieval/index.js";
+import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 import type { CognitiveMode } from "../types.js";
 import type { TurnStakes } from "./types.js";
@@ -9,7 +9,10 @@ export type DeliberationPathDecision = {
   reason: string;
 };
 
-function averageConfidence(results: readonly RetrievedEpisode[]): number {
+// When no RetrievalConfidence is supplied, fall back to the old score-average.
+// This keeps test harnesses and other callers that don't pass confidence working;
+// production paths plumb RetrievalConfidence through pipeline -> deliberator.
+function fallbackConfidence(results: readonly RetrievedEpisode[]): number {
   if (results.length === 0) {
     return 0;
   }
@@ -56,8 +59,12 @@ export function chooseDeliberationPath(
   stakes: TurnStakes,
   retrievedEpisodes: readonly RetrievedEpisode[],
   contradictionPresent = false,
+  retrievalConfidence?: RetrievalConfidence | null,
 ): DeliberationPathDecision {
-  const confidence = averageConfidence(retrievedEpisodes);
+  const confidence =
+    retrievalConfidence !== undefined && retrievalConfidence !== null
+      ? retrievalConfidence.overall
+      : fallbackConfidence(retrievedEpisodes);
 
   if (mode === "idle") {
     return {
@@ -73,7 +80,10 @@ export function chooseDeliberationPath(
     };
   }
 
-  if (contradictionPresent || hasContradictionSignal(retrievedEpisodes)) {
+  const effectiveContradiction =
+    contradictionPresent || retrievalConfidence?.contradictionPresent === true;
+
+  if (effectiveContradiction || hasContradictionSignal(retrievedEpisodes)) {
     return {
       path: "system_2",
       reason: "Retrieved-context contradiction triggered deeper reasoning.",

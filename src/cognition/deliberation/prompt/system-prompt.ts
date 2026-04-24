@@ -18,7 +18,11 @@ import {
   VOICE_AND_POSTURE_SECTION,
 } from "../constants.js";
 import type { DeliberationContext, SelfSnapshot } from "../types.js";
-import { summarizeRetrievedEpisodes, summarizeSemanticContext } from "./retrieval.js";
+import {
+  summarizeRetrievalConfidence,
+  summarizeRetrievedEpisodes,
+  summarizeSemanticContext,
+} from "./retrieval.js";
 import { renderTaggedPromptBlock } from "./sections.js";
 
 export type BuildBaseSystemPromptOptions = {
@@ -64,6 +68,10 @@ export function buildBaseSystemPrompt(
         context.retrievalResult,
         options.retrievalContextBudget,
       ),
+    },
+    {
+      tag: "borg_retrieval_confidence",
+      content: summarizeRetrievalConfidence(context.retrievalConfidence ?? null),
     },
     {
       tag: "borg_retrieved_semantic",

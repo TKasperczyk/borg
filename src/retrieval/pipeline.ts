@@ -226,6 +226,7 @@ export class RetrievalPipeline {
       semantic: toRetrievedSemantic(semantic),
       openQuestions,
       contradictionPresent: semantic.contradictionPresent,
+      expectedCount: limit,
     });
   }
 

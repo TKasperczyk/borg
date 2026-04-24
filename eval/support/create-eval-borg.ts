@@ -112,6 +112,11 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
         ...options.config?.offline?.selfNarrator,
       },
     },
+    maintenance: {
+      ...DEFAULT_CONFIG.maintenance,
+      lightProcesses: [...DEFAULT_CONFIG.maintenance.lightProcesses],
+      heavyProcesses: [...DEFAULT_CONFIG.maintenance.heavyProcesses],
+    },
     autonomy: {
       ...DEFAULT_CONFIG.autonomy,
       ...options.config?.autonomy,

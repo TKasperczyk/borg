@@ -1,7 +1,39 @@
 // Summarizes episodic and semantic retrieval results for deliberation prompts.
 import type { SemanticNode } from "../../../memory/semantic/index.js";
-import type { RetrievedEpisode, RetrievedSemantic } from "../../../retrieval/index.js";
+import type {
+  RetrievalConfidence,
+  RetrievedEpisode,
+  RetrievedSemantic,
+} from "../../../retrieval/index.js";
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
+
+export function summarizeRetrievalConfidence(
+  confidence: RetrievalConfidence | null | undefined,
+): string | null {
+  if (confidence === null || confidence === undefined || confidence.sampleSize === 0) {
+    return null;
+  }
+
+  const fragments: string[] = [
+    `overall=${confidence.overall.toFixed(2)}`,
+    `evidence=${confidence.evidenceStrength.toFixed(2)}`,
+    `coverage=${confidence.coverage.toFixed(2)}`,
+    `diversity=${confidence.sourceDiversity.toFixed(2)}`,
+    `samples=${confidence.sampleSize}`,
+  ];
+
+  if (confidence.contradictionPresent) {
+    fragments.push("contradictions=present");
+  }
+
+  // Internal hint: the being should speak more cautiously when overall is low.
+  // Not user-facing -- the LLM phrases uncertainty naturally rather than
+  // emitting the percentage. This is the signal, not the phrasing.
+  return [
+    "Retrieval confidence (internal, for calibrating certainty in your response):",
+    fragments.join(" "),
+  ].join("\n");
+}
 
 function estimatePromptTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));

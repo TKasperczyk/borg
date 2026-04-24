@@ -186,4 +186,21 @@ export function registerAutonomyCommands(cli: CAC, deps: CliCommandDeps): void {
 
       throw new CliError(`Unknown audit action: ${action}`);
     });
+
+  cli
+    .command("maintenance tick", "Fire a single maintenance cadence (light or heavy)")
+    .option("--cadence <name>", "Cadence to run: light or heavy", { default: "light" })
+    .action(async (commandOptions: CommandOptions) => {
+      const cadence = commandOptions.cadence;
+
+      if (cadence !== "light" && cadence !== "heavy") {
+        throw new CliError(`Unknown maintenance cadence: ${String(cadence)} (expected light|heavy)`);
+      }
+
+      const result = await withBorg(options, async (borg) =>
+        borg.maintenance.scheduler.tick(cadence),
+      );
+
+      writeLine(stdout, JSON.stringify(result, null, 2));
+    });
 }

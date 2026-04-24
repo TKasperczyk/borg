@@ -30,6 +30,9 @@ export async function closeBorgDependencies(deps: BorgDependencies): Promise<voi
     await deps.autonomyScheduler.stop({
       graceful: true,
     });
+    await deps.maintenanceScheduler.stop({
+      graceful: true,
+    });
     await deps.streamIngestionCoordinator?.close();
   } finally {
     deps.sqlite.close();

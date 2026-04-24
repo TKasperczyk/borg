@@ -572,6 +572,7 @@ export class TurnOrchestrator {
             retrievalResult: retrievedEpisodes,
             retrievedSemantic,
             contradictionPresent: retrieval.contradiction_present,
+            retrievalConfidence: retrieval.confidence,
             applicableCommitments,
             openQuestionsContext: retrieval.open_questions,
             pendingCorrectionsContext: pendingCorrections,

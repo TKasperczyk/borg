@@ -7,6 +7,7 @@ import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { StreamWatermarkRepository } from "../stream/index.js";
 import { buildAutonomyScheduler } from "./autonomy-setup.js";
+import { buildMaintenanceScheduler } from "./maintenance-setup.js";
 import { createEmbeddingClient, createLazyLlmClient, createLlmFactory } from "./clients.js";
 import { buildStreamIngestionCoordinator } from "./ingestion-setup.js";
 import { closeBestEffort } from "./lifecycle.js";
@@ -146,6 +147,13 @@ export async function openBorgDependencies(
       createStreamWriter: repositories.createStreamWriter,
       clock,
     });
+    const maintenanceScheduler = buildMaintenanceScheduler({
+      config,
+      orchestrator: offline.maintenanceOrchestrator,
+      processRegistry: offline.offlineProcesses,
+      clock,
+      isBusy: () => sessionLock.isHeld(),
+    });
 
     return {
       config,
@@ -176,6 +184,7 @@ export async function openBorgDependencies(
       workingMemoryStore: repositories.workingMemoryStore,
       turnOrchestrator,
       autonomyScheduler,
+      maintenanceScheduler,
       streamIngestionCoordinator,
       auditLog: offline.auditLog,
       maintenanceOrchestrator: offline.maintenanceOrchestrator,
