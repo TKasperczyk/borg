@@ -479,6 +479,15 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
   pulls when held values or salient entities should bias retrieval.
 
 **Deliberation**
+- Path selection routes on an **epistemic** retrieval-confidence
+  signal (not on the retrieval relevance score, which mixes similarity,
+  salience, heat, mood, goals, entities, time). The per-turn
+  `RetrievalConfidence` combines evidence strength (top-N mean decayed
+  salience), coverage (hits / expected count), source diversity
+  (distinct participant-sets), and a contradiction penalty into one
+  `overall` number. Evidence strength gates: weak evidence cannot be
+  lifted over the S1/S2 threshold by high coverage or diversity.
+  See `src/retrieval/confidence.ts`.
 - Cheap path (System 1): high retrieval confidence + low stakes →
   go straight to the response call (with the tool loop -- see Action).
 - Expensive path (System 2): low confidence OR high stakes OR
@@ -488,6 +497,9 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
   entry, then make the response call with the plan rendered into a
   tagged `<borg_s2_plan>` block. The response call itself is one LLM
   invocation enriched with the plan, not a second retrieval.
+- The prompt receives the confidence summary in a
+  `<borg_retrieval_confidence>` block so the being can calibrate how
+  certain it speaks (internal signal -- not a user-facing percentage).
 
 **Action**
 - Run the response call as an Anthropic tool-use loop
@@ -554,11 +566,24 @@ so all maintenance is dry-runnable and reversible.
 Every `apply()` run emits a `dream_report` stream entry summarizing
 runs / changes / tokens / errors.
 
-**Scheduling note:** `MaintenanceOrchestrator` is a callable surface,
-not a self-running service. There is no idle / sleep / cron scheduler
-wiring offline processes today. They run when a caller (CLI, tests,
-or a future scheduler) invokes them. The autonomy daemon schedules
-cognitive turns (wakes), not offline maintenance.
+**Scheduling.** `MaintenanceScheduler`
+(`src/offline/scheduler.ts`) runs maintenance on two cadences,
+independent of the autonomy scheduler (cognition wakes ≠ housekeeping):
+
+- **Light** (default 4h): consolidator + curator -- cheap,
+  low-risk, frequent.
+- **Heavy** (default 24h): reflector + overseer + ruminator +
+  self-narrator -- expensive, higher-risk, conservative.
+
+Cadences run independently: heavy is not blocked by an in-flight light
+tick and vice versa. Same-cadence concurrent ticks coalesce. An optional
+`isBusy` hook (wired in `open.ts` to `SessionLock.isHeld()`, which is
+stale-aware) skips a cadence when a user turn is likely in flight, so
+the dream cycle doesn't compete with live cognition. `MaintenanceOrchestrator`
+remains the callable surface for manual invocation (CLI `borg dream …`
+and the new `borg maintenance tick --cadence light|heavy`). The
+scheduler is opt-in: `start()` must be called explicitly (same pattern
+as the autonomy scheduler).
 
 ### 5.3 Retrieval pipeline
 
@@ -585,8 +610,10 @@ MMR diversification  (configurable lambda)
  ↓
 citation resolution  (stream_entry_index O(1) lookup, fallback scan)
  ↓
+confidence aggregation (epistemic, separate from relevance scoring)
+ ↓
 RetrievedContext { episodes, semantic, open_questions,
-                   contradiction_present }
+                   contradiction_present, confidence }
 ```
 
 Critical innovation: **graph walk during retrieval**. If a query hits
@@ -599,9 +626,10 @@ Notes vs. an earlier sketch of this pipeline:
 - Commitment retrieval also happens outside this pipeline -- the
   deliberator pulls commitments directly when assembling the prompt
   trust-lane.
-- Per-result scores are exposed via `scoreBreakdown`, but there is no
-  single "overall answer confidence" number aggregated across all
-  retrieved results.
+- Per-result scores are exposed via `scoreBreakdown` (blended
+  relevance, used for ranking). Epistemic confidence is aggregated
+  separately as `RetrievalConfidence` (see `src/retrieval/confidence.ts`)
+  and fed into S1/S2 path selection + the deliberation prompt.
 - Token-budget truncation happens at the LLM-call boundary in the
   deliberator, not inside the retrieval pipeline.
 
@@ -639,8 +667,12 @@ Ranked by value / cost. Implementation status annotated.
 8. **Provenance-first confidence propagation.** Provenance is
    mandatory on every identity-bearing write; confidence is
    per-band (Bayesian for traits/values, direct float for semantic
-   nodes/edges, Beta-derived for skills). There is no single global
-   "propagation" algorithm; each band handles its own arithmetic.
+   nodes/edges, Beta-derived for skills). Retrieval aggregates
+   per-result signals into a per-query `RetrievalConfidence`
+   (Sprint 28) that feeds S1/S2 routing. Graph-edge confidence
+   propagation (weakening derived beliefs when supporting evidence
+   is weak) is still not implemented -- each semantic node/edge
+   carries its own confidence in isolation.
 
 ### Moderate value, low cost
 
