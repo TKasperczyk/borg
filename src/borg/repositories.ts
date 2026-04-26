@@ -285,6 +285,7 @@ export async function buildBorgRepositories(
   });
   const correctionService = new CorrectionService({
     config,
+    db: sqlite,
     clock,
     retrievalPipeline,
     episodicRepository,

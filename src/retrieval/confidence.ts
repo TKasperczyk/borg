@@ -23,6 +23,7 @@ export type ComputeRetrievalConfidenceInput = {
   episodes: readonly RetrievedEpisode[];
   contradictionPresent: boolean;
   contradictionEdges?: readonly Pick<SemanticEdge, "valid_from" | "valid_to">[];
+  nowMs: number;
   asOf?: number;
   expectedCount?: number;
   topN?: number;
@@ -54,7 +55,7 @@ export function computeRetrievalConfidence(
     input.contradictionEdges === undefined
       ? input.contradictionPresent
       : input.contradictionPresent &&
-        input.contradictionEdges.some((edge) => isEdgeValidAt(edge, input.asOf ?? Date.now()));
+        input.contradictionEdges.some((edge) => isEdgeValidAt(edge, input.asOf ?? input.nowMs));
 
   if (episodes.length === 0) {
     return {

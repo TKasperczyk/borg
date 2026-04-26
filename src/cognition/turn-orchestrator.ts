@@ -576,6 +576,7 @@ export class TurnOrchestrator {
           toolDispatcher: this.options.toolDispatcher,
           cognitionModel: this.options.config.anthropic.models.cognition,
           backgroundModel: this.options.config.anthropic.models.background,
+          clock: this.clock,
           tracer: this.tracer,
         });
         const deliberation = await deliberator.run(

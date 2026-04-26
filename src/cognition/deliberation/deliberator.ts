@@ -1,6 +1,7 @@
 // Thin deliberation orchestrator: selects S1/S2, calls planner/finalizer, and assembles results.
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import type { StreamWriter } from "../../stream/index.js";
+import { SystemClock, type Clock } from "../../util/clock.js";
 import {
   DEFAULT_DELIBERATION_PLAN_MAX_TOKENS,
   DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS,
@@ -67,9 +68,11 @@ function dedupeRetrievedEpisodes(results: readonly RetrievedEpisode[]): Retrieve
 
 export class Deliberator {
   private readonly tracer: TurnTracer;
+  private readonly clock: Clock;
 
   constructor(private readonly options: DeliberatorOptions) {
     this.tracer = options.tracer ?? NOOP_TRACER;
+    this.clock = options.clock ?? new SystemClock();
   }
 
   async run(
@@ -101,6 +104,7 @@ export class Deliberator {
     const baseSystemPrompt = buildBaseSystemPrompt(context, {
       retrievalContextBudget,
       semanticContextBudget,
+      nowMs: this.clock.now(),
     });
 
     const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage);

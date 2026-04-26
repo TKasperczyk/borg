@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Borg } from "../borg.js";
 import { DEFAULT_CONFIG } from "../config/index.js";
@@ -14,7 +14,7 @@ import {
   createSemanticNodeFixture,
 } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
-import { CorrectionService } from "./service.js";
+import { CorrectionService, type CorrectionServiceOptions } from "./service.js";
 
 class TestEmbeddingClient implements EmbeddingClient {
   async embed(): Promise<Float32Array> {
@@ -28,9 +28,11 @@ class TestEmbeddingClient implements EmbeddingClient {
 
 function createHarnessCorrectionService(
   harness: Awaited<ReturnType<typeof createOfflineTestHarness>>,
+  overrides: Partial<Pick<CorrectionServiceOptions, "identityEventRepository">> = {},
 ): CorrectionService {
   return new CorrectionService({
     config: harness.config,
+    db: harness.db,
     clock: harness.clock,
     retrievalPipeline: harness.retrievalPipeline,
     episodicRepository: harness.episodicRepository,
@@ -46,7 +48,7 @@ function createHarnessCorrectionService(
     commitmentRepository: harness.commitmentRepository,
     reviewQueueRepository: harness.reviewQueueRepository,
     identityService: harness.identityService,
-    identityEventRepository: harness.identityEventRepository,
+    identityEventRepository: overrides.identityEventRepository ?? harness.identityEventRepository,
   });
 }
 
@@ -106,6 +108,7 @@ describe("correction service", () => {
       });
 
       expect(queued.kind).toBe("correction");
+      expect(queued.reason).toContain(new Date(1_000).toISOString());
 
       const resolved = await borg.review.resolve(queued.id, "accept");
 
@@ -219,6 +222,7 @@ describe("correction service", () => {
     try {
       const correction = new CorrectionService({
         config: harness.config,
+        db: harness.db,
         retrievalPipeline: harness.retrievalPipeline,
         episodicRepository: harness.episodicRepository,
         semanticNodeRepository: harness.semanticNodeRepository,
@@ -374,6 +378,101 @@ describe("correction service", () => {
     }
   });
 
+  it("rolls back manual semantic edge invalidation when audit recording fails", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(6_000),
+    });
+
+    try {
+      const originalRecord = harness.identityEventRepository.record.bind(
+        harness.identityEventRepository,
+      );
+      let recordCalls = 0;
+      const throwingIdentityEventRepository = Object.create(
+        harness.identityEventRepository,
+      ) as typeof harness.identityEventRepository;
+      throwingIdentityEventRepository.record = ((
+        input: Parameters<typeof harness.identityEventRepository.record>[0],
+      ) => {
+        recordCalls += 1;
+
+        if (recordCalls === 1) {
+          throw new Error("audit write failed");
+        }
+
+        return originalRecord(input);
+      }) as typeof harness.identityEventRepository.record;
+      const failingCorrection = createHarnessCorrectionService(harness, {
+        identityEventRepository: throwingIdentityEventRepository,
+      });
+      const retryCorrection = createHarnessCorrectionService(harness);
+      const episodeId = createEpisodeFixture().id;
+      const first = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "Atlas transaction source",
+            description: "Atlas was stable before correction.",
+            source_episode_ids: [episodeId],
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const second = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "Atlas transaction target",
+            description: "Rollback state depended on audit integrity.",
+            source_episode_ids: [episodeId],
+          },
+          [0, 1, 0, 0],
+        ),
+      );
+      const edge = harness.semanticEdgeRepository.addEdge({
+        from_node_id: first.id,
+        to_node_id: second.id,
+        relation: "supports",
+        confidence: 0.8,
+        evidence_episode_ids: [episodeId],
+        created_at: 5_000,
+        last_verified_at: 5_000,
+        valid_from: 5_000,
+      });
+
+      expect(() =>
+        failingCorrection.invalidateSemanticEdge(edge.id, {
+          at: 5_500,
+          reason: "manual revoke",
+        }),
+      ).toThrow("audit write failed");
+      expect(harness.semanticEdgeRepository.getEdge(edge.id)?.valid_to).toBeNull();
+      expect(
+        harness.identityEventRepository.list({
+          recordType: "semantic_edge",
+          recordId: edge.id,
+        }),
+      ).toEqual([]);
+
+      const invalidated = retryCorrection.invalidateSemanticEdge(edge.id, {
+        at: 5_500,
+        reason: "manual revoke",
+      });
+      const events = harness.identityEventRepository.list({
+        recordType: "semantic_edge",
+        recordId: edge.id,
+      });
+
+      expect(invalidated.valid_to).toBe(5_500);
+      expect(events).toEqual([
+        expect.objectContaining({
+          action: "edge_invalidate",
+          record_id: edge.id,
+        }),
+      ]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("surfaces a clean error for nonexistent semantic edge invalidation", async () => {
     const harness = await createOfflineTestHarness();
 
@@ -482,6 +581,34 @@ describe("correction service", () => {
       );
     } finally {
       await borg.close();
+    }
+  });
+
+  it("uses the injected clock when synthesizing a missing remember-about-me entity", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(7_000),
+    });
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+      const originalGet = harness.entityRepository.get.bind(harness.entityRepository);
+      harness.entityRepository.get = (() => null) as typeof harness.entityRepository.get;
+      const dateNow = vi.spyOn(Date, "now").mockImplementation(() => {
+        throw new Error("wall clock used");
+      });
+
+      try {
+        await expect(correction.rememberAboutMe({ entity: "Sam" })).resolves.toEqual(
+          expect.objectContaining({
+            entity: null,
+          }),
+        );
+      } finally {
+        dateNow.mockRestore();
+        harness.entityRepository.get = originalGet;
+      }
+    } finally {
+      await harness.cleanup();
     }
   });
 });

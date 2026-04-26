@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { ManualClock } from "../util/clock.js";
 import { computeRetrievalConfidence } from "./confidence.js";
 import type { RetrievedEpisode } from "./scoring.js";
+
+const NOW_MS = 2_000;
 
 function makeEpisode(overrides: {
   id: string;
@@ -54,6 +57,7 @@ describe("computeRetrievalConfidence", () => {
     const confidence = computeRetrievalConfidence({
       episodes: [],
       contradictionPresent: false,
+      nowMs: NOW_MS,
     });
 
     expect(confidence.overall).toBe(0);
@@ -75,6 +79,7 @@ describe("computeRetrievalConfidence", () => {
     const confidence = computeRetrievalConfidence({
       episodes,
       contradictionPresent: false,
+      nowMs: NOW_MS,
       expectedCount: 5,
     });
 
@@ -101,6 +106,7 @@ describe("computeRetrievalConfidence", () => {
     const confidence = computeRetrievalConfidence({
       episodes,
       contradictionPresent: false,
+      nowMs: NOW_MS,
       expectedCount: 5,
     });
 
@@ -118,11 +124,13 @@ describe("computeRetrievalConfidence", () => {
     const withoutContradiction = computeRetrievalConfidence({
       episodes,
       contradictionPresent: false,
+      nowMs: NOW_MS,
       expectedCount: 5,
     });
     const withContradiction = computeRetrievalConfidence({
       episodes,
       contradictionPresent: true,
+      nowMs: NOW_MS,
       expectedCount: 5,
     });
 
@@ -144,6 +152,7 @@ describe("computeRetrievalConfidence", () => {
           valid_to: 1_500,
         },
       ],
+      nowMs: NOW_MS,
       asOf: 2_000,
       expectedCount: 5,
     });
@@ -156,6 +165,7 @@ describe("computeRetrievalConfidence", () => {
           valid_to: 1_500,
         },
       ],
+      nowMs: NOW_MS,
       asOf: 1_250,
       expectedCount: 5,
     });
@@ -163,6 +173,27 @@ describe("computeRetrievalConfidence", () => {
     expect(current.contradictionPresent).toBe(false);
     expect(historical.contradictionPresent).toBe(true);
     expect(historical.overall).toBeLessThan(current.overall);
+  });
+
+  it("uses injected current time when checking contradiction edge validity", () => {
+    const clock = new ManualClock(1_000);
+    const episodes = [
+      makeEpisode({ id: "epi_aaaaaaaaaaaaaaaa", decayedSalience: 0.9, participants: ["alice"] }),
+    ];
+    const confidence = computeRetrievalConfidence({
+      episodes,
+      contradictionPresent: true,
+      contradictionEdges: [
+        {
+          valid_from: 500,
+          valid_to: 1_500,
+        },
+      ],
+      nowMs: clock.now(),
+      expectedCount: 1,
+    });
+
+    expect(confidence.contradictionPresent).toBe(true);
   });
 
   it("drops coverage when fewer episodes than expected were found", () => {
@@ -174,6 +205,7 @@ describe("computeRetrievalConfidence", () => {
     const confidence = computeRetrievalConfidence({
       episodes: [episode],
       contradictionPresent: false,
+      nowMs: NOW_MS,
       expectedCount: 5,
     });
 
@@ -207,6 +239,7 @@ describe("computeRetrievalConfidence", () => {
     const confidence = computeRetrievalConfidence({
       episodes,
       contradictionPresent: false,
+      nowMs: NOW_MS,
       expectedCount: 3,
     });
 
@@ -221,6 +254,7 @@ describe("computeRetrievalConfidence", () => {
     const confidence = computeRetrievalConfidence({
       episodes,
       contradictionPresent: false,
+      nowMs: NOW_MS,
     });
 
     expect(confidence.evidenceStrength).toBeGreaterThanOrEqual(0);

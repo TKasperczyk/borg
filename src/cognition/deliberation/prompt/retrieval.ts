@@ -209,6 +209,7 @@ function summarizeSemanticHitBucket(
 export function summarizeSemanticContext(
   retrievedSemantic: RetrievedSemantic | null | undefined,
   maxContextTokens: number,
+  nowMs = Date.now(),
 ): string | null {
   if (retrievedSemantic === null || retrievedSemantic === undefined) {
     return null;
@@ -243,7 +244,7 @@ export function summarizeSemanticContext(
   const maxChars = Math.max(480, Math.min(maxContextTokens * 6, 6_000));
   const rootNodesById = new Map(matchedNodes.map((node) => [node.id, node] as const));
   const historicalMode = retrievedSemantic.as_of !== undefined && retrievedSemantic.as_of !== null;
-  const currentAsOf = Date.now();
+  const currentAsOf = nowMs;
   const visibleSupportHits = historicalMode
     ? supportHits
     : supportHits.filter((hit) => !semanticHitHasClosedEdge(hit, currentAsOf));

@@ -18,6 +18,7 @@ export function assembleRetrievedContext(input: {
   semantic: RetrievedSemantic;
   openQuestions: OpenQuestion[];
   contradictionPresent: boolean;
+  nowMs: number;
   expectedCount?: number;
 }): RetrievedContext {
   const contradictionEdges = input.semantic.contradiction_hits.flatMap((hit) => hit.edgePath);
@@ -25,6 +26,7 @@ export function assembleRetrievedContext(input: {
     episodes: input.episodes,
     contradictionPresent: input.contradictionPresent,
     contradictionEdges: contradictionEdges.length === 0 ? undefined : contradictionEdges,
+    nowMs: input.nowMs,
     asOf: input.semantic.as_of ?? undefined,
     expectedCount: input.expectedCount,
   });

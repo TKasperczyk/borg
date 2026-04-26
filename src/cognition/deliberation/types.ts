@@ -21,6 +21,7 @@ import type {
   RetrievalSearchOptions,
 } from "../../retrieval/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
+import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { ToolLoopCallRecord } from "../action/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
@@ -125,5 +126,6 @@ export type DeliberatorOptions = {
   toolDispatcher: ToolDispatcher;
   cognitionModel: string;
   backgroundModel: string;
+  clock?: Clock;
   tracer?: TurnTracer;
 };

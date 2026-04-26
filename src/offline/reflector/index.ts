@@ -11,7 +11,12 @@ import {
   episodeIdSchema,
   type Episode,
 } from "../../memory/episodic/index.js";
-import { semanticNodeIdSchema, type SemanticNode } from "../../memory/semantic/index.js";
+import {
+  semanticEdgeIdSchema,
+  semanticNodeIdSchema,
+  semanticNodeSchema,
+  type SemanticNode,
+} from "../../memory/semantic/index.js";
 import { semanticRelationSchema } from "../../memory/semantic/types.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { createSemanticEdgeId, createSemanticNodeId } from "../../util/ids.js";
@@ -59,7 +64,7 @@ const serializableSemanticNodeSchema = z.object({
 });
 
 const serializableSemanticEdgeSchema = z.object({
-  id: z.string().min(1),
+  id: semanticEdgeIdSchema,
   from_node_id: semanticNodeIdSchema,
   to_node_id: semanticNodeIdSchema,
   relation: semanticRelationSchema,
@@ -126,14 +131,16 @@ type ReflectionCluster = {
   episodes: Episode[];
 };
 
-type ReflectorReversal = {
-  nodeId: string;
-  nodeCreated: boolean;
-  previousNode?: z.infer<typeof serializableSemanticNodeSchema>;
-  anchorNodeId?: string;
-  edgeIds: string[];
-  reviewItemId?: number;
-};
+const reflectorReversalSchema = z.object({
+  nodeId: semanticNodeIdSchema,
+  nodeCreated: z.boolean(),
+  previousNode: serializableSemanticNodeSchema.optional(),
+  anchorNodeId: semanticNodeIdSchema.optional(),
+  edgeIds: z.array(semanticEdgeIdSchema),
+  reviewItemId: z.number().int().positive().optional(),
+});
+
+type ReflectorReversal = z.infer<typeof reflectorReversalSchema>;
 
 function serializeSemanticNode(node: SemanticNode) {
   return serializableSemanticNodeSchema.parse({
@@ -142,13 +149,13 @@ function serializeSemanticNode(node: SemanticNode) {
   });
 }
 
-function deserializeSemanticNode(
-  node: z.infer<typeof serializableSemanticNodeSchema>,
-): SemanticNode {
-  return {
-    ...node,
-    embedding: Float32Array.from(node.embedding),
-  };
+function deserializeSemanticNode(node: unknown): SemanticNode {
+  const parsed = serializableSemanticNodeSchema.parse(node);
+
+  return semanticNodeSchema.parse({
+    ...parsed,
+    embedding: Float32Array.from(parsed.embedding),
+  });
 }
 
 function buildPrompt(cluster: ReflectionCluster, goalDescriptions: readonly string[]): string {
@@ -333,46 +340,39 @@ export class ReflectorProcess implements OfflineProcess {
   constructor(private readonly options: ReflectorProcessOptions) {
     this.clock = options.clock ?? new SystemClock();
     this.options.registry.register(this.name, "insight", async ({ reversal }) => {
-      const parsed = reversal as Partial<ReflectorReversal>;
+      const parsed = reflectorReversalSchema.parse(reversal);
 
-      for (const edgeId of parsed.edgeIds ?? []) {
-        if (typeof edgeId === "string") {
-          this.options.semanticEdgeRepository.invalidateEdge(edgeId as never, {
-            at: this.clock.now(),
-            by_process: "maintenance",
-            reason: "reflector_audit_reversal",
-          });
-        }
+      for (const edgeId of parsed.edgeIds) {
+        this.options.semanticEdgeRepository.invalidateEdge(edgeId, {
+          at: this.clock.now(),
+          by_process: "maintenance",
+          reason: "reflector_audit_reversal",
+        });
       }
 
-      if (typeof parsed.nodeId === "string") {
-        if (parsed.nodeCreated) {
-          await this.options.semanticNodeRepository.update(parsed.nodeId as SemanticNode["id"], {
-            archived: true,
-          });
-        } else if (parsed.previousNode !== undefined) {
-          const previousNode = deserializeSemanticNode(parsed.previousNode);
-          await this.options.semanticNodeRepository.update(previousNode.id, {
-            label: previousNode.label,
-            description: previousNode.description,
-            aliases: previousNode.aliases,
-            confidence: previousNode.confidence,
-            source_episode_ids: previousNode.source_episode_ids,
-            last_verified_at: previousNode.last_verified_at,
-            embedding: previousNode.embedding,
-            archived: previousNode.archived,
-            superseded_by: previousNode.superseded_by,
-          });
-        }
+      if (parsed.nodeCreated) {
+        await this.options.semanticNodeRepository.update(parsed.nodeId, {
+          archived: true,
+        });
+      } else if (parsed.previousNode !== undefined) {
+        const previousNode = deserializeSemanticNode(parsed.previousNode);
+        await this.options.semanticNodeRepository.update(previousNode.id, {
+          label: previousNode.label,
+          description: previousNode.description,
+          aliases: previousNode.aliases,
+          confidence: previousNode.confidence,
+          source_episode_ids: previousNode.source_episode_ids,
+          last_verified_at: previousNode.last_verified_at,
+          embedding: previousNode.embedding,
+          archived: previousNode.archived,
+          superseded_by: previousNode.superseded_by,
+        });
       }
 
-      if (typeof parsed.anchorNodeId === "string") {
-        await this.options.semanticNodeRepository.update(
-          parsed.anchorNodeId as SemanticNode["id"],
-          {
-            archived: true,
-          },
-        );
+      if (parsed.anchorNodeId !== undefined) {
+        await this.options.semanticNodeRepository.update(parsed.anchorNodeId, {
+          archived: true,
+        });
       }
 
       if (typeof parsed.reviewItemId === "number") {
@@ -615,7 +615,7 @@ export class ReflectorProcess implements OfflineProcess {
         deserializeSemanticNode(item.anchor_node),
       );
       const edge = ctx.semanticEdgeRepository.addEdge({
-        id: item.edge.id as never,
+        id: item.edge.id,
         from_node_id: anchorNode.id,
         to_node_id: nodeId,
         relation: item.edge.relation,

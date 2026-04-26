@@ -32,6 +32,7 @@ import { renderTaggedPromptBlock } from "./sections.js";
 export type BuildBaseSystemPromptOptions = {
   retrievalContextBudget: number;
   semanticContextBudget: number;
+  nowMs?: number;
 };
 
 export function buildBaseSystemPrompt(
@@ -92,6 +93,7 @@ export function buildBaseSystemPrompt(
       content: summarizeSemanticContext(
         context.retrievedSemantic ?? null,
         options.semanticContextBudget,
+        options.nowMs,
       ),
     },
     {

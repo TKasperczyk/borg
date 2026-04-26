@@ -13,6 +13,7 @@ import {
 } from "../util/ids.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import type { Config } from "../config/index.js";
+import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import {
   parseReviewProvenance,
   provenanceSchema,
@@ -240,6 +241,7 @@ function reviewPromptSummary(
 
 export type CorrectionServiceOptions = {
   config: Config;
+  db: SqliteDatabase;
   clock?: Clock;
   retrievalPipeline: RetrievalPipeline;
   episodicRepository: EpisodicRepository;
@@ -756,19 +758,37 @@ export class CorrectionService {
       typeof options.reason === "string" && options.reason.trim().length > 0
         ? options.reason.trim()
         : undefined;
-    const next = this.options.semanticEdgeRepository.invalidateEdge(target.id, {
-      at,
-      by_process: "manual",
-      reason,
-    });
-
-    if (next === null) {
-      throw new StorageError(`Unknown semantic edge id: ${target.id}`, {
-        code: "SEMANTIC_EDGE_NOT_FOUND",
+    if (current.valid_to !== null) {
+      const next = this.options.semanticEdgeRepository.invalidateEdge(target.id, {
+        at,
+        by_process: "manual",
+        reason,
       });
+
+      if (next === null) {
+        throw new StorageError(`Unknown semantic edge id: ${target.id}`, {
+          code: "SEMANTIC_EDGE_NOT_FOUND",
+        });
+      }
+
+      return next;
     }
 
-    if (current.valid_to === null) {
+    this.options.db.exec("BEGIN IMMEDIATE");
+
+    try {
+      const next = this.options.semanticEdgeRepository.invalidateEdge(target.id, {
+        at,
+        by_process: "manual",
+        reason,
+      });
+
+      if (next === null) {
+        throw new StorageError(`Unknown semantic edge id: ${target.id}`, {
+          code: "SEMANTIC_EDGE_NOT_FOUND",
+        });
+      }
+
       this.options.identityEventRepository.record({
         record_type: "semantic_edge",
         record_id: target.id,
@@ -789,9 +809,18 @@ export class CorrectionService {
         reason: next.invalidated_reason,
         provenance: MANUAL_PROVENANCE,
       });
-    }
 
-    return next;
+      this.options.db.exec("COMMIT");
+      return next;
+    } catch (error) {
+      try {
+        this.options.db.exec("ROLLBACK");
+      } catch {
+        // Keep the original failure.
+      }
+
+      throw error;
+    }
   }
 
   async correct(
@@ -817,7 +846,7 @@ export class CorrectionService {
     }
 
     const metadata = await this.resolveTargetMetadata(target);
-    const createdAtIso = new Date().toISOString();
+    const createdAtIso = new Date(this.clock.now()).toISOString();
 
     return this.options.reviewQueueRepository.enqueue({
       kind: "correction",
@@ -864,7 +893,7 @@ export class CorrectionService {
       id: entityId,
       canonical_name: entityName,
       aliases: [],
-      created_at: Date.now(),
+      created_at: this.clock.now(),
     };
     const names = [resolvedEntity.canonical_name, ...resolvedEntity.aliases];
     const socialProfile = this.options.socialRepository.recomputeCommitmentCount(

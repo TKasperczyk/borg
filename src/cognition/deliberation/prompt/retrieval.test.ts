@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SemanticEdge, SemanticNode } from "../../../memory/semantic/index.js";
 import type { RetrievedSemantic } from "../../../retrieval/index.js";
+import { ManualClock } from "../../../util/clock.js";
 import { summarizeSemanticContext } from "./retrieval.js";
 
 function makeNode(overrides: Partial<SemanticNode> = {}): SemanticNode {
@@ -137,5 +138,48 @@ describe("semantic retrieval prompt rendering", () => {
     expect(summary).toContain("Closed Atlas proposition [historical]");
     expect(summary).not.toContain("-[supports");
     expect(summary).not.toContain("[valid 2024-01-01..2024-01-10");
+  });
+
+  it("uses injected current time when filtering current-mode closed edges", () => {
+    const clock = new ManualClock(Date.UTC(2024, 0, 5));
+    const root = makeNode({
+      id: "semn_aaaaaaaaaaaaaaaa" as SemanticNode["id"],
+      kind: "entity",
+      label: "Atlas",
+      description: "Atlas deployment service.",
+    });
+    const support = makeNode({
+      id: "semn_bbbbbbbbbbbbbbbb" as SemanticNode["id"],
+      label: "Rerun install",
+      description: "Rerun pnpm install before deploying Atlas.",
+    });
+    const edge = makeClosedEdge({
+      from_node_id: root.id,
+      to_node_id: support.id,
+      valid_to: Date.UTC(2024, 0, 10),
+    });
+    const retrievedSemantic = {
+      matched_node_ids: [root.id],
+      matched_nodes: [root],
+      supports: [support],
+      contradicts: [],
+      categories: [],
+      support_hits: [
+        {
+          root_node_id: root.id,
+          node: support,
+          edgePath: [edge],
+        },
+      ],
+      contradiction_hits: [],
+      category_hits: [],
+    } satisfies RetrievedSemantic;
+
+    const beforeClose = summarizeSemanticContext(retrievedSemantic, 1_000, clock.now());
+    clock.set(Date.UTC(2024, 0, 11));
+    const afterClose = summarizeSemanticContext(retrievedSemantic, 1_000, clock.now());
+
+    expect(beforeClose).toContain("-[supports");
+    expect(afterClose).not.toContain("-[supports");
   });
 });

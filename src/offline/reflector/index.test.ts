@@ -169,6 +169,98 @@ describe("reflector process", () => {
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
   });
 
+  it("rejects malformed reflector reversal edge ids before repository calls", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+    let invalidateCalled = false;
+    const originalInvalidate = harness.semanticEdgeRepository.invalidateEdge.bind(
+      harness.semanticEdgeRepository,
+    );
+    harness.semanticEdgeRepository.invalidateEdge = ((
+      ...args: Parameters<typeof harness.semanticEdgeRepository.invalidateEdge>
+    ) => {
+      invalidateCalled = true;
+      return originalInvalidate(...args);
+    }) as typeof harness.semanticEdgeRepository.invalidateEdge;
+
+    new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+      clock: harness.clock,
+    });
+    const audit = harness.auditLog.record({
+      run_id: harness.createContext().runId,
+      process: "reflector",
+      action: "insight",
+      targets: {},
+      reversal: {
+        nodeId: createSemanticNodeFixture().id,
+        nodeCreated: true,
+        edgeIds: ["not-an-edge-id"],
+      },
+    });
+
+    await expect(harness.auditLog.revert(audit.id, "test")).rejects.toThrow(
+      "Invalid semantic edge id",
+    );
+    expect(invalidateCalled).toBe(false);
+  });
+
+  it.each([
+    {
+      label: "nodeId",
+      reversal: {
+        nodeId: "not-a-node-id",
+        nodeCreated: true,
+        edgeIds: [],
+      },
+    },
+    {
+      label: "anchorNodeId",
+      reversal: {
+        nodeId: createSemanticNodeFixture().id,
+        nodeCreated: true,
+        anchorNodeId: "not-a-node-id",
+        edgeIds: [],
+      },
+    },
+  ])("rejects malformed reflector reversal $label before node updates", async ({ reversal }) => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+    let updateCalled = false;
+    const originalUpdate = harness.semanticNodeRepository.update.bind(
+      harness.semanticNodeRepository,
+    );
+    harness.semanticNodeRepository.update = (async (
+      ...args: Parameters<typeof harness.semanticNodeRepository.update>
+    ) => {
+      updateCalled = true;
+      return originalUpdate(...args);
+    }) as typeof harness.semanticNodeRepository.update;
+
+    new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+      clock: harness.clock,
+    });
+    const audit = harness.auditLog.record({
+      run_id: harness.createContext().runId,
+      process: "reflector",
+      action: "insight",
+      targets: {},
+      reversal,
+    });
+
+    await expect(harness.auditLog.revert(audit.id, "test")).rejects.toThrow(
+      "Invalid semantic node id",
+    );
+    expect(updateCalled).toBe(false);
+  });
+
   it("skips insights when support is insufficient or provenance is hallucinated", async () => {
     const llm = new FakeLLMClient({
       responses: [
