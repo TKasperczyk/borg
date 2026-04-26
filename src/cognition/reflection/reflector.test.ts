@@ -27,6 +27,10 @@ import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/te
 
 function createReflectionResponse(
   advancedGoals: Array<{ goal_id: string; evidence: string }> = [],
+  proceduralOutcomes: Array<{
+    classification: "success" | "failure" | "unclear";
+    evidence: string;
+  }> = [],
 ) {
   return {
     text: "",
@@ -39,6 +43,7 @@ function createReflectionResponse(
         name: "EmitTurnReflection",
         input: {
           advanced_goals: advancedGoals,
+          procedural_outcomes: proceduralOutcomes,
         },
       },
     ],
@@ -1035,56 +1040,189 @@ describe("reflector", () => {
     });
   });
 
-  it("keeps a newly surfaced skill pending and records explicit follow-up failure once", async () => {
+  it.each(["success", "failure", "unclear"] as const)(
+    "stages structured procedural %s outcomes as evidence",
+    async (classification) => {
+      const harness = await createOfflineTestHarness({
+        llmClient: new FakeLLMClient({
+          responses: [
+            createReflectionResponse([], [
+              {
+                classification,
+                evidence:
+                  classification === "success"
+                    ? "User confirmed the fix worked."
+                    : classification === "failure"
+                      ? "User reported the same error is still happening."
+                      : "User replied without saying whether the attempt worked.",
+              },
+            ]),
+          ],
+        }),
+      });
+      cleanup.push(harness.cleanup);
+
+      const episode = await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          title: "Rust lifetime attempt",
+          source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
+        }),
+      );
+      const skill = await harness.skillRepository.add({
+        applies_when: "Rust lifetime debugging",
+        approach: "Shrink borrow scopes and use intermediate bindings.",
+        sourceEpisodes: [episode.id],
+      });
+      const reflector = new Reflector({
+        clock: harness.clock,
+        llmClient: harness.llmClient,
+        model: "haiku",
+      });
+
+      const reflected = await reflector.reflect(
+        {
+          userMessage:
+            classification === "success"
+              ? "That worked, thanks."
+              : classification === "failure"
+                ? "That didn't work; the same error remains."
+                : "I need to look at it again.",
+          perception: {
+            entities: ["Rust"],
+            mode: "problem_solving",
+            affectiveSignal: {
+              valence: 0,
+              arousal: 0,
+              dominant_emotion: null,
+            },
+            temporalCue: null,
+          },
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 2,
+            current_focus: "Rust",
+            hot_entities: ["Rust"],
+            pending_intents: [],
+            suppressed: [],
+            mood: null,
+            last_selected_skill_id: null,
+            last_selected_skill_turn: null,
+            pending_procedural_attempt: {
+              problem_text: "I hit a Rust lifetime issue again.",
+              approach_summary: "Shrink borrow scopes and use intermediate bindings.",
+              selected_skill_id: skill.id,
+              source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
+              turn_counter: 1,
+              audience_entity_id: null,
+            },
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+          selfSnapshot: {
+            values: [],
+            goals: [],
+            traits: [],
+          },
+          deliberationResult: {
+            path: "system_1",
+            response: "Next response.",
+            thoughts: [],
+            tool_calls: [],
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              stop_reason: "end_turn",
+            },
+            decision_reason: "confidence",
+            retrievedEpisodes: [],
+            referencedEpisodeIds: null,
+            thoughtsPersisted: false,
+          },
+          actionResult: {
+            response: "Next response.",
+            tool_calls: [],
+            intents: [],
+            workingMemory: {
+              session_id: DEFAULT_SESSION_ID,
+              turn_counter: 2,
+              current_focus: "Rust",
+              hot_entities: ["Rust"],
+              pending_intents: [],
+              suppressed: [],
+              mood: null,
+              last_selected_skill_id: null,
+              last_selected_skill_turn: null,
+              pending_procedural_attempt: {
+                problem_text: "I hit a Rust lifetime issue again.",
+                approach_summary: "Shrink borrow scopes and use intermediate bindings.",
+                selected_skill_id: skill.id,
+                source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
+                turn_counter: 1,
+                audience_entity_id: null,
+              },
+              mode: "problem_solving",
+              updated_at: 0,
+            },
+          },
+          retrievedEpisodes: [],
+          retrievalConfidence: createRetrievalConfidence(),
+          episodicRepository: harness.episodicRepository,
+          goalsRepository: harness.goalsRepository,
+          traitsRepository: harness.traitsRepository,
+          openQuestionsRepository: harness.openQuestionsRepository,
+          skillRepository: harness.skillRepository,
+          proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+          selectedSkillId: null,
+          suppressionSet: new SuppressionSet(2),
+        },
+        harness.streamWriter,
+      );
+
+      expect(reflected.pending_procedural_attempt).toBeNull();
+      expect(harness.proceduralEvidenceRepository.list()).toEqual([
+        expect.objectContaining({
+          classification,
+          resolved_episode_ids: [episode.id],
+          audience_entity_id: null,
+        }),
+      ]);
+
+      if (classification === "success") {
+        expect(harness.skillRepository.get(skill.id)).toMatchObject({
+          attempts: 1,
+          successes: 1,
+          alpha: 2,
+        });
+      } else if (classification === "failure") {
+        expect(harness.skillRepository.get(skill.id)).toMatchObject({
+          attempts: 1,
+          failures: 1,
+          beta: 2,
+        });
+      } else {
+        expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
+      }
+    },
+  );
+
+  it("does not infer procedural success from assistant wording alone", async () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
-    const episode = createEpisodeFixture({
-      title: "Rust lifetime frustration",
-      narrative: "Rust lifetime errors kept blocking progress.",
-      tags: ["rust", "lifetimes"],
-    });
-    await harness.episodicRepository.insert(episode);
-
-    const skill = await harness.skillRepository.add({
-      applies_when: "Rust lifetime debugging",
-      approach: "Shrink borrow scopes and use intermediate bindings.",
-      sourceEpisodes: [episode.id],
-    });
     const reflector = new Reflector({
       clock: harness.clock,
     });
-    const retrieved: RetrievedEpisode = {
-      episode,
-      score: 0.8,
-      scoreBreakdown: {
-        similarity: 0.8,
-        decayedSalience: 0.4,
-        heat: 0.3,
-        goalRelevance: 0,
-        timeRelevance: 0,
-        moodBoost: 0,
-        socialRelevance: 0,
-        suppressionPenalty: 0,
-      },
-      citationChain: [],
-      semantic_context: {
-        supports: [],
-        contradicts: [],
-        categories: [],
-      },
-    };
 
-    const firstTurnMemory = await reflector.reflect(
+    await reflector.reflect(
       {
-        userMessage: "I hit a Rust lifetime error again.",
+        userMessage: "I'm frustrated and tired of this.",
         perception: {
           entities: ["Rust"],
           mode: "problem_solving",
           affectiveSignal: {
-            valence: -0.7,
-            arousal: 0.5,
-            dominant_emotion: "anger",
+            valence: -0.8,
+            arousal: 0.3,
+            dominant_emotion: "sadness",
           },
           temporalCue: null,
         },
@@ -1098,6 +1236,14 @@ describe("reflector", () => {
           mood: null,
           last_selected_skill_id: null,
           last_selected_skill_turn: null,
+          pending_procedural_attempt: {
+            problem_text: "I hit a Rust lifetime issue again.",
+            approach_summary: "This works when you shrink the borrow scope.",
+            selected_skill_id: null,
+            source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"] as never,
+            turn_counter: 1,
+            audience_entity_id: null,
+          },
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -1108,7 +1254,7 @@ describe("reflector", () => {
         },
         deliberationResult: {
           path: "system_1",
-          response: "Try shrinking the borrow scope.",
+          response: "This works when you shrink the borrow scope.",
           thoughts: [],
           tool_calls: [],
           usage: {
@@ -1117,12 +1263,12 @@ describe("reflector", () => {
             stop_reason: "end_turn",
           },
           decision_reason: "confidence",
-          retrievedEpisodes: [retrieved],
-          referencedEpisodeIds: [episode.id],
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
           thoughtsPersisted: false,
         },
         actionResult: {
-          response: "Try shrinking the borrow scope.",
+          response: "This works when you shrink the borrow scope.",
           tool_calls: [],
           intents: [],
           workingMemory: {
@@ -1135,97 +1281,47 @@ describe("reflector", () => {
             mood: null,
             last_selected_skill_id: null,
             last_selected_skill_turn: null,
+            pending_procedural_attempt: {
+              problem_text: "I hit a Rust lifetime issue again.",
+              approach_summary: "This works when you shrink the borrow scope.",
+              selected_skill_id: null,
+              source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"] as never,
+              turn_counter: 1,
+              audience_entity_id: null,
+            },
             mode: "problem_solving",
             updated_at: 0,
           },
         },
-        retrievedEpisodes: [retrieved],
+        retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
         openQuestionsRepository: harness.openQuestionsRepository,
-        skillRepository: harness.skillRepository,
-        selectedSkillId: skill.id,
+        proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+        selectedSkillId: null,
         suppressionSet: new SuppressionSet(1),
       },
       harness.streamWriter,
     );
 
-    expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
-    expect(firstTurnMemory.last_selected_skill_id).toBe(skill.id);
-
-    const secondTurnMemory = await reflector.reflect(
-      {
-        userMessage: "That didn't work; I'm still failing with the Rust lifetime error.",
-        perception: {
-          entities: ["Rust"],
-          mode: "problem_solving",
-          affectiveSignal: {
-            valence: -0.6,
-            arousal: 0.5,
-            dominant_emotion: "anger",
-          },
-          temporalCue: null,
-        },
-        workingMemory: {
-          ...firstTurnMemory,
-          turn_counter: 2,
-          updated_at: 1,
-        },
-        selfSnapshot: {
-          values: [],
-          goals: [],
-          traits: [],
-        },
-        deliberationResult: {
-          path: "system_1",
-          response: "Let's inspect the borrow spans next.",
-          thoughts: [],
-          tool_calls: [],
-          usage: {
-            input_tokens: 1,
-            output_tokens: 1,
-            stop_reason: "end_turn",
-          },
-          decision_reason: "confidence",
-          retrievedEpisodes: [retrieved],
-          referencedEpisodeIds: [episode.id],
-          thoughtsPersisted: false,
-        },
-        actionResult: {
-          response: "Let's inspect the borrow spans next.",
-          tool_calls: [],
-          intents: [],
-          workingMemory: {
-            ...firstTurnMemory,
-            turn_counter: 2,
-            updated_at: 1,
-          },
-        },
-        retrievedEpisodes: [retrieved],
-        retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
-        skillRepository: harness.skillRepository,
-        selectedSkillId: null,
-        suppressionSet: new SuppressionSet(2),
-      },
-      harness.streamWriter,
-    );
-
-    expect(harness.skillRepository.get(skill.id)).toMatchObject({
-      attempts: 1,
-      failures: 1,
-      beta: 2,
-    });
-    expect(secondTurnMemory.last_selected_skill_id).toBeNull();
+    expect(harness.proceduralEvidenceRepository.list()).toEqual([]);
   });
 
-  it("does not attribute outcomes from assistant wording or generic negative affect", async () => {
-    const harness = await createOfflineTestHarness();
+  it("rejects self-validating success evidence grounded only in assistant wording", async () => {
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse([], [
+            {
+              classification: "success",
+              evidence: "The assistant response said this works.",
+            },
+          ]),
+        ],
+      }),
+    });
     cleanup.push(harness.cleanup);
 
     const episode = createEpisodeFixture({
@@ -1242,31 +1338,13 @@ describe("reflector", () => {
     });
     const reflector = new Reflector({
       clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
     });
-    const retrieved: RetrievedEpisode = {
-      episode,
-      score: 0.8,
-      scoreBreakdown: {
-        similarity: 0.8,
-        decayedSalience: 0.4,
-        heat: 0.3,
-        goalRelevance: 0,
-        timeRelevance: 0,
-        moodBoost: 0,
-        socialRelevance: 0,
-        suppressionPenalty: 0,
-      },
-      citationChain: [],
-      semantic_context: {
-        supports: [],
-        contradicts: [],
-        categories: [],
-      },
-    };
 
-    const firstTurnMemory = await reflector.reflect(
+    const reflected = await reflector.reflect(
       {
-        userMessage: "I hit a Rust lifetime issue again.",
+        userMessage: "I'm frustrated and tired of this.",
         perception: {
           entities: ["Rust"],
           mode: "problem_solving",
@@ -1287,6 +1365,14 @@ describe("reflector", () => {
           mood: null,
           last_selected_skill_id: null,
           last_selected_skill_turn: null,
+          pending_procedural_attempt: {
+            problem_text: "I hit a Rust lifetime issue again.",
+            approach_summary: "Shrink borrow scopes and use intermediate bindings.",
+            selected_skill_id: skill.id,
+            source_stream_ids: episode.source_stream_ids,
+            turn_counter: 1,
+            audience_entity_id: null,
+          },
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -1297,7 +1383,7 @@ describe("reflector", () => {
         },
         deliberationResult: {
           path: "system_1",
-          response: "This works when you shrink the borrow scope.",
+          response: "Let's narrow the borrow lifetime a bit more.",
           thoughts: [],
           tool_calls: [],
           usage: {
@@ -1306,12 +1392,12 @@ describe("reflector", () => {
             stop_reason: "end_turn",
           },
           decision_reason: "confidence",
-          retrievedEpisodes: [retrieved],
-          referencedEpisodeIds: [episode.id],
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
           thoughtsPersisted: false,
         },
         actionResult: {
-          response: "This works when you shrink the borrow scope.",
+          response: "Let's narrow the borrow lifetime a bit more.",
           tool_calls: [],
           intents: [],
           workingMemory: {
@@ -1324,89 +1410,35 @@ describe("reflector", () => {
             mood: null,
             last_selected_skill_id: null,
             last_selected_skill_turn: null,
+            pending_procedural_attempt: {
+              problem_text: "I hit a Rust lifetime issue again.",
+              approach_summary: "Shrink borrow scopes and use intermediate bindings.",
+              selected_skill_id: skill.id,
+              source_stream_ids: episode.source_stream_ids,
+              turn_counter: 1,
+              audience_entity_id: null,
+            },
             mode: "problem_solving",
             updated_at: 0,
           },
         },
-        retrievedEpisodes: [retrieved],
+        retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
         openQuestionsRepository: harness.openQuestionsRepository,
         skillRepository: harness.skillRepository,
-        selectedSkillId: skill.id,
+        proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+        selectedSkillId: null,
         suppressionSet: new SuppressionSet(1),
       },
       harness.streamWriter,
     );
 
+    expect(reflected.pending_procedural_attempt).toBeNull();
+    expect(harness.proceduralEvidenceRepository.list()).toEqual([]);
     expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
-    expect(firstTurnMemory.last_selected_skill_id).toBe(skill.id);
-
-    const secondTurnMemory = await reflector.reflect(
-      {
-        userMessage: "I'm frustrated and tired of this.",
-        perception: {
-          entities: ["Rust"],
-          mode: "problem_solving",
-          affectiveSignal: {
-            valence: -0.8,
-            arousal: 0.3,
-            dominant_emotion: "sadness",
-          },
-          temporalCue: null,
-        },
-        workingMemory: {
-          ...firstTurnMemory,
-          turn_counter: 2,
-          updated_at: 1,
-        },
-        selfSnapshot: {
-          values: [],
-          goals: [],
-          traits: [],
-        },
-        deliberationResult: {
-          path: "system_1",
-          response: "Let's narrow the borrow lifetime a bit more.",
-          thoughts: [],
-          tool_calls: [],
-          usage: {
-            input_tokens: 1,
-            output_tokens: 1,
-            stop_reason: "end_turn",
-          },
-          decision_reason: "confidence",
-          retrievedEpisodes: [retrieved],
-          referencedEpisodeIds: null,
-          thoughtsPersisted: false,
-        },
-        actionResult: {
-          response: "Let's narrow the borrow lifetime a bit more.",
-          tool_calls: [],
-          intents: [],
-          workingMemory: {
-            ...firstTurnMemory,
-            turn_counter: 2,
-            updated_at: 1,
-          },
-        },
-        retrievedEpisodes: [retrieved],
-        retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
-        skillRepository: harness.skillRepository,
-        selectedSkillId: null,
-        suppressionSet: new SuppressionSet(2),
-      },
-      harness.streamWriter,
-    );
-
-    expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
-    expect(secondTurnMemory.last_selected_skill_id).toBe(skill.id);
   });
 
   it("uses planner-referenced retrieved episodes for S2 trait evidence", async () => {

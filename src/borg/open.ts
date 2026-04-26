@@ -99,6 +99,7 @@ export async function openBorgDependencies(
       entityRepository: repositories.entityRepository,
       commitmentRepository: repositories.commitmentRepository,
       skillRepository: repositories.skillRepository,
+      proceduralEvidenceRepository: repositories.proceduralEvidenceRepository,
       retrievalPipeline: repositories.retrievalPipeline,
       createStreamWriter: repositories.createStreamWriter,
     });
@@ -130,6 +131,7 @@ export async function openBorgDependencies(
       moodRepository: repositories.moodRepository,
       socialRepository: repositories.socialRepository,
       skillRepository: repositories.skillRepository,
+      proceduralEvidenceRepository: repositories.proceduralEvidenceRepository,
       skillSelector: repositories.skillSelector,
       workingMemoryStore: repositories.workingMemoryStore,
       llmFactory,
@@ -186,6 +188,7 @@ export async function openBorgDependencies(
       commitmentRepository: repositories.commitmentRepository,
       correctionService: repositories.correctionService,
       skillRepository: repositories.skillRepository,
+      proceduralEvidenceRepository: repositories.proceduralEvidenceRepository,
       skillSelector: repositories.skillSelector,
       retrievalPipeline: repositories.retrievalPipeline,
       workingMemoryStore: repositories.workingMemoryStore,

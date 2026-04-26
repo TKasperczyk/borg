@@ -65,6 +65,10 @@ export function resolveBorgConfig(options: {
       ...DEFAULT_CONFIG.self,
       ...(rawConfig as Partial<Config>).self,
     },
+    procedural: {
+      ...DEFAULT_CONFIG.procedural,
+      ...(rawConfig as Partial<Config>).procedural,
+    },
     offline: {
       ...DEFAULT_CONFIG.offline,
       ...rawConfig.offline,
@@ -75,6 +79,10 @@ export function resolveBorgConfig(options: {
       reflector: {
         ...DEFAULT_CONFIG.offline.reflector,
         ...rawConfig.offline?.reflector,
+      },
+      proceduralSynthesizer: {
+        ...DEFAULT_CONFIG.offline.proceduralSynthesizer,
+        ...rawConfig.offline?.proceduralSynthesizer,
       },
       curator: {
         ...DEFAULT_CONFIG.offline.curator,

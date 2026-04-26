@@ -6,6 +6,7 @@ import { ruminatorPlanSchema } from "./ruminator/index.js";
 import { reflectorPlanSchema } from "./reflector/index.js";
 import { selfNarratorPlanSchema } from "./self-narrator/index.js";
 import { overseerPlanSchema } from "./overseer/index.js";
+import { proceduralSynthesizerPlanSchema } from "./procedural-synthesizer/index.js";
 
 export const offlineProcessPlanSchema = z.discriminatedUnion("process", [
   consolidatorPlanSchema,
@@ -14,6 +15,7 @@ export const offlineProcessPlanSchema = z.discriminatedUnion("process", [
   overseerPlanSchema,
   ruminatorPlanSchema,
   selfNarratorPlanSchema,
+  proceduralSynthesizerPlanSchema,
 ]);
 
 export const maintenancePlanSchema = z.object({

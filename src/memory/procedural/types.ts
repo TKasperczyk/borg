@@ -1,7 +1,17 @@
 import { z } from "zod";
 
 import { type EpisodeId, type SkillId, skillIdHelpers } from "../../util/ids.js";
+import {
+  proceduralEvidenceIdHelpers,
+  type EntityId,
+  type ProceduralEvidenceId,
+} from "../../util/ids.js";
 import { episodeIdSchema } from "../episodic/types.js";
+import {
+  pendingProceduralAttemptSchema,
+  workingEntityIdSchema,
+  type PendingProceduralAttempt,
+} from "../working/types.js";
 
 export const skillIdSchema = z
   .string()
@@ -55,5 +65,62 @@ export type SkillSelectionResult = {
   evaluatedCandidates: SkillSelectionCandidate[];
 };
 
+export const proceduralOutcomeClassificationSchema = z.enum(["success", "failure", "unclear"]);
+
+export const proceduralEvidenceIdSchema = z
+  .string()
+  .refine((value) => proceduralEvidenceIdHelpers.is(value), {
+    message: "Invalid procedural evidence id",
+  })
+  .transform((value) => value as ProceduralEvidenceId);
+
+export const proceduralEvidenceSchema = z.object({
+  id: proceduralEvidenceIdSchema,
+  pending_attempt_snapshot: pendingProceduralAttemptSchema,
+  classification: proceduralOutcomeClassificationSchema,
+  evidence_text: z.string().min(1),
+  resolved_episode_ids: z.array(episodeIdSchema),
+  audience_entity_id: workingEntityIdSchema.nullable(),
+  consumed_at: z.number().finite().nullable(),
+  created_at: z.number().finite(),
+});
+
+export type ProceduralOutcomeClassification = z.infer<
+  typeof proceduralOutcomeClassificationSchema
+>;
+export type ProceduralEvidenceRecord = z.infer<typeof proceduralEvidenceSchema>;
+
+const ASSISTANT_ONLY_EVIDENCE_PATTERN =
+  /\b(assistant|agent|model|borg|response|answer|i said|i suggested|we suggested|the suggestion)\b/i;
+const USER_SIGNAL_EVIDENCE_PATTERN =
+  /\b(user|they|them|their|reply|follow-up|message|reported|reports|confirmed|confirms)\b/i;
+
+export function isProceduralOutcomeEvidenceGrounded(input: {
+  classification: ProceduralOutcomeClassification;
+  evidence_text: string;
+}): boolean {
+  if (input.classification === "unclear") {
+    return true;
+  }
+
+  const evidence = input.evidence_text.trim();
+
+  if (evidence.length === 0) {
+    return false;
+  }
+
+  if (
+    ASSISTANT_ONLY_EVIDENCE_PATTERN.test(evidence) &&
+    !USER_SIGNAL_EVIDENCE_PATTERN.test(evidence)
+  ) {
+    return false;
+  }
+
+  return USER_SIGNAL_EVIDENCE_PATTERN.test(evidence);
+}
+
 export type SkillIdValue = SkillId;
 export type EpisodeIdValue = EpisodeId;
+export type EntityIdValue = EntityId;
+export type PendingProceduralAttemptValue = PendingProceduralAttempt;
+export type ProceduralEvidenceIdValue = ProceduralEvidenceId;

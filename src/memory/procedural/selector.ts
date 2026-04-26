@@ -24,6 +24,7 @@ export type SkillSelectorOptions = {
   repository: SkillRepository;
   rng?: () => number;
   sampler?: (alpha: number, beta: number, rng: () => number) => number;
+  minSimilarity?: number;
 };
 
 export class SkillSelector {
@@ -40,17 +41,23 @@ export class SkillSelector {
     options: {
       k?: number;
       exploreFraction?: number;
+      minSimilarity?: number;
     } = {},
   ): Promise<SkillSelectionResult | null> {
     const limit = Math.max(1, options.k ?? 10);
     const exploreFraction = Math.max(0, Math.min(1, options.exploreFraction ?? 0));
+    const minSimilarity = Math.max(
+      0,
+      Math.min(1, options.minSimilarity ?? this.options.minSimilarity ?? 0.5),
+    );
     const candidates = await this.options.repository.searchByContext(text, limit);
+    const eligibleCandidates = candidates.filter((candidate) => candidate.similarity >= minSimilarity);
 
-    if (candidates.length === 0) {
+    if (eligibleCandidates.length === 0) {
       return null;
     }
 
-    const evaluatedCandidates = candidates
+    const evaluatedCandidates = eligibleCandidates
       .map((candidate) => {
         const stats = this.options.repository.getStats(candidate.skill.id);
         return {

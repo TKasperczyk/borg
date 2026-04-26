@@ -440,6 +440,7 @@ async function ensurePhase7(
   });
   const selected = await borg.skills.select("debugging pgvector similarity", {
     k: 3,
+    minSimilarity: 0,
   });
 
   const mood = borg.mood.current(state.sessionId);

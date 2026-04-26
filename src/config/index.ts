@@ -60,6 +60,12 @@ const configFileSchema = z
       })
       .partial()
       .optional(),
+    procedural: z
+      .object({
+        skillSelectionMinSimilarity: z.number().min(0).max(1).optional(),
+      })
+      .partial()
+      .optional(),
     offline: z
       .object({
         consolidator: z
@@ -78,6 +84,16 @@ const configFileSchema = z
             minSupport: z.number().int().positive().optional(),
             ceilingConfidence: z.number().positive().max(0.5).optional(),
             maxInsightsPerRun: z.number().int().positive().optional(),
+            budget: z.number().int().positive().optional(),
+          })
+          .partial()
+          .optional(),
+        proceduralSynthesizer: z
+          .object({
+            enabled: z.boolean().optional(),
+            minSupport: z.number().int().positive().optional(),
+            maxSkillsPerRun: z.number().int().positive().optional(),
+            dedupThreshold: z.number().min(0).max(1).optional(),
             budget: z.number().int().positive().optional(),
           })
           .partial()
@@ -144,6 +160,7 @@ const configFileSchema = z
               "overseer",
               "ruminator",
               "self-narrator",
+              "procedural-synthesizer",
             ]),
           )
           .optional(),
@@ -156,6 +173,7 @@ const configFileSchema = z
               "overseer",
               "ruminator",
               "self-narrator",
+              "procedural-synthesizer",
             ]),
           )
           .optional(),
@@ -276,6 +294,9 @@ export const configSchema = z.object({
   self: z.object({
     autoBootstrapPeriod: z.boolean(),
   }),
+  procedural: z.object({
+    skillSelectionMinSimilarity: z.number().min(0).max(1),
+  }),
   offline: z.object({
     consolidator: z.object({
       enabled: z.boolean(),
@@ -289,6 +310,13 @@ export const configSchema = z.object({
       minSupport: z.number().int().positive(),
       ceilingConfidence: z.number().positive().max(0.5),
       maxInsightsPerRun: z.number().int().positive(),
+      budget: z.number().int().positive(),
+    }),
+    proceduralSynthesizer: z.object({
+      enabled: z.boolean(),
+      minSupport: z.number().int().positive(),
+      maxSkillsPerRun: z.number().int().positive(),
+      dedupThreshold: z.number().min(0).max(1),
       budget: z.number().int().positive(),
     }),
     curator: z.object({
@@ -330,10 +358,26 @@ export const configSchema = z.object({
     lightIntervalMs: z.number().int().positive(),
     heavyIntervalMs: z.number().int().positive(),
     lightProcesses: z.array(
-      z.enum(["consolidator", "reflector", "curator", "overseer", "ruminator", "self-narrator"]),
+      z.enum([
+        "consolidator",
+        "reflector",
+        "curator",
+        "overseer",
+        "ruminator",
+        "self-narrator",
+        "procedural-synthesizer",
+      ]),
     ),
     heavyProcesses: z.array(
-      z.enum(["consolidator", "reflector", "curator", "overseer", "ruminator", "self-narrator"]),
+      z.enum([
+        "consolidator",
+        "reflector",
+        "curator",
+        "overseer",
+        "ruminator",
+        "self-narrator",
+        "procedural-synthesizer",
+      ]),
     ),
   }),
   autonomy: z.object({
@@ -417,6 +461,9 @@ export const DEFAULT_CONFIG: Config = {
   self: {
     autoBootstrapPeriod: true,
   },
+  procedural: {
+    skillSelectionMinSimilarity: 0.5,
+  },
   offline: {
     consolidator: {
       enabled: true,
@@ -431,6 +478,13 @@ export const DEFAULT_CONFIG: Config = {
       ceilingConfidence: 0.5,
       maxInsightsPerRun: 2,
       budget: 60_000,
+    },
+    proceduralSynthesizer: {
+      enabled: true,
+      minSupport: 2,
+      maxSkillsPerRun: 3,
+      dedupThreshold: 0.88,
+      budget: 4_000,
     },
     curator: {
       enabled: true,
@@ -473,7 +527,7 @@ export const DEFAULT_CONFIG: Config = {
     lightIntervalMs: 14_400_000,
     heavyIntervalMs: 86_400_000,
     lightProcesses: ["consolidator", "curator"],
-    heavyProcesses: ["reflector", "overseer", "ruminator", "self-narrator"],
+    heavyProcesses: ["reflector", "overseer", "ruminator", "self-narrator", "procedural-synthesizer"],
   },
   autonomy: {
     enabled: false,
@@ -758,6 +812,12 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         fileConfig.self?.autoBootstrapPeriod ??
         DEFAULT_CONFIG.self.autoBootstrapPeriod,
     },
+    procedural: {
+      skillSelectionMinSimilarity:
+        readOptionalEnvUnitInterval(env, "BORG_PROCEDURAL_SKILL_SELECTION_MIN_SIMILARITY") ??
+        fileConfig.procedural?.skillSelectionMinSimilarity ??
+        DEFAULT_CONFIG.procedural.skillSelectionMinSimilarity,
+    },
     offline: {
       consolidator: {
         enabled:
@@ -802,6 +862,28 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_BUDGET") ??
           fileConfig.offline?.reflector?.budget ??
           DEFAULT_CONFIG.offline.reflector.budget,
+      },
+      proceduralSynthesizer: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_ENABLED") ??
+          fileConfig.offline?.proceduralSynthesizer?.enabled ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.enabled,
+        minSupport:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MIN_SUPPORT") ??
+          fileConfig.offline?.proceduralSynthesizer?.minSupport ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.minSupport,
+        maxSkillsPerRun:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MAX_SKILLS_PER_RUN") ??
+          fileConfig.offline?.proceduralSynthesizer?.maxSkillsPerRun ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.maxSkillsPerRun,
+        dedupThreshold:
+          readOptionalEnvUnitInterval(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_DEDUP_THRESHOLD") ??
+          fileConfig.offline?.proceduralSynthesizer?.dedupThreshold ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.dedupThreshold,
+        budget:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_BUDGET") ??
+          fileConfig.offline?.proceduralSynthesizer?.budget ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.budget,
       },
       curator: {
         enabled:
@@ -1075,6 +1157,9 @@ export function redactConfig(config: Config): Config {
     },
     self: {
       ...config.self,
+    },
+    procedural: {
+      ...config.procedural,
     },
     offline: {
       ...config.offline,

@@ -11,7 +11,11 @@ import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
-import type { SkillRepository, SkillSelector } from "../memory/procedural/index.js";
+import type {
+  ProceduralEvidenceRepository,
+  SkillRepository,
+  SkillSelector,
+} from "../memory/procedural/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -76,6 +80,7 @@ export type BorgDependencies = {
   commitmentRepository: CommitmentRepository;
   correctionService: CorrectionService;
   skillRepository: SkillRepository;
+  proceduralEvidenceRepository: ProceduralEvidenceRepository;
   skillSelector: SkillSelector;
   retrievalPipeline: RetrievalPipeline;
   workingMemoryStore: WorkingMemoryStore;

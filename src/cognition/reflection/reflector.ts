@@ -10,7 +10,11 @@ import {
 } from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import type { ReviewQueueRepository } from "../../memory/semantic/index.js";
-import { SkillRepository } from "../../memory/procedural/index.js";
+import {
+  isProceduralOutcomeEvidenceGrounded,
+  ProceduralEvidenceRepository,
+  SkillRepository,
+} from "../../memory/procedural/index.js";
 import {
   appendInternalFailureEvent,
   appendOpenQuestionHookFailureEvent,
@@ -18,7 +22,7 @@ import {
 import { EpisodicRepository } from "../../memory/episodic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
-import type { EntityId, SkillId } from "../../util/ids.js";
+import type { EntityId, EpisodeId, SkillId, StreamEntryId } from "../../util/ids.js";
 import { z } from "zod";
 
 import type { ActionResult } from "../action/index.js";
@@ -44,6 +48,7 @@ export type ReflectionContext = {
   identityService?: Pick<IdentityService, "updateGoal">;
   reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
   skillRepository?: SkillRepository;
+  proceduralEvidenceRepository?: ProceduralEvidenceRepository;
   selectedSkillId?: SkillId | null;
   audienceEntityId?: EntityId | null;
   suppressionSet: SuppressionSet;
@@ -55,27 +60,8 @@ const NOISE_TTL_TURNS = 2;
 // RetrievalConfidence is calibrated epistemic confidence, not the relevance
 // ranking score. Keep this aligned with the S1/S2 low-confidence route.
 const OPEN_QUESTION_CONFIDENCE_THRESHOLD = 0.45;
-const SKILL_OUTCOME_WINDOW_TURNS = 2;
 const REFLECTION_TOOL_NAME = "EmitTurnReflection";
 const DEFAULT_REFLECTION_MAX_TOKENS = 768;
-const EXPLICIT_SUCCESS_MARKERS = [
-  /\bit works\b/i,
-  /\bit worked\b/i,
-  /\bworks now\b/i,
-  /\bfixed\b/i,
-  /\bsolved\b/i,
-  /\bthanks,\s*that did it\b/i,
-  /\bperfect\b/i,
-  /\bgreat,\s*that fixed it\b/i,
-  /^[\s]*[✅✔]/u,
-] as const;
-const EXPLICIT_FAILURE_MARKERS = [
-  /\bdidn'?t work\b/i,
-  /\bstill broken\b/i,
-  /\bsame error\b/i,
-  /\bthat didn'?t help\b/i,
-  /\bno,\s*still\b/i,
-] as const;
 
 const reflectionOutputSchema = z.object({
   advanced_goals: z
@@ -87,7 +73,19 @@ const reflectionOutputSchema = z.object({
     )
     .describe(
       "Goals advanced by this turn. Mark only if the turn took a concrete step toward the goal, not just discussed it.",
-    ),
+    )
+    .default([]),
+  procedural_outcomes: z
+    .array(
+      z.object({
+        classification: z.enum(["success", "failure", "unclear"]),
+        evidence: z.string().min(1),
+      }),
+    )
+    .describe(
+      "Outcomes for the prior pending_procedural_attempt. Judge success only from the user's follow-up signal, never from the assistant's wording.",
+    )
+    .default([]),
 });
 
 type ReflectionOutput = z.infer<typeof reflectionOutputSchema>;
@@ -95,7 +93,7 @@ type ReflectionOutput = z.infer<typeof reflectionOutputSchema>;
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
   description:
-    "Emit structured post-turn reflection. Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
+    "Emit structured post-turn reflection. Mark advanced_goals only if the turn took a concrete step toward the goal, and procedural_outcomes only from user follow-up evidence.",
   inputSchema: toToolInputSchema(reflectionOutputSchema),
 };
 
@@ -175,18 +173,6 @@ function buildReflectionQuestion(userMessage: string, entities: readonly string[
   return `What am I missing here: ${prompt}?`;
 }
 
-function inferSkillOutcomeFromUserFollowUp(userMessage: string): boolean | null {
-  if (EXPLICIT_SUCCESS_MARKERS.some((pattern) => pattern.test(userMessage))) {
-    return true;
-  }
-
-  if (EXPLICIT_FAILURE_MARKERS.some((pattern) => pattern.test(userMessage))) {
-    return false;
-  }
-
-  return null;
-}
-
 function buildIdentityPatchReviewRefs(
   targetId: string,
   patch: Record<string, unknown>,
@@ -204,6 +190,22 @@ function buildIdentityPatchReviewRefs(
         }
       : {}),
   };
+}
+
+async function resolveAttemptEpisodeIds(
+  context: ReflectionContext,
+  sourceStreamIds: readonly StreamEntryId[],
+): Promise<EpisodeId[]> {
+  const retrievedMatches = context.retrievedEpisodes
+    .filter((result) =>
+      sourceStreamIds.every((streamId) => result.episode.source_stream_ids.includes(streamId)),
+    )
+    .map((result) => result.episode.id);
+
+  const exact = await context.episodicRepository.findBySourceStreamIds(sourceStreamIds);
+  const exactIds = exact === null ? [] : [exact.id];
+
+  return [...new Set([...retrievedMatches, ...exactIds])];
 }
 
 export type ReflectorOptions = {
@@ -232,6 +234,7 @@ export class Reflector {
     const reflectedTrait = MODE_TRAIT_MAP[effectiveMode];
     let reflectionOutput: ReflectionOutput = {
       advanced_goals: [],
+      procedural_outcomes: [],
     };
 
     if (
@@ -361,68 +364,72 @@ export class Reflector {
       };
     }
 
-    const carrySkillId = context.workingMemory.last_selected_skill_id;
-    const carrySkillTurn = context.workingMemory.last_selected_skill_turn;
-    const currentTurn = nextWorkingMemory.turn_counter;
-    let consumedCarryOutcome = false;
+    const pendingProceduralAttempt = context.workingMemory.pending_procedural_attempt;
+    const proceduralOutcome = reflectionOutput.procedural_outcomes[0];
 
     if (
-      carrySkillId !== null &&
-      carrySkillTurn !== null &&
-      currentTurn - carrySkillTurn <= SKILL_OUTCOME_WINDOW_TURNS
+      pendingProceduralAttempt !== null &&
+      proceduralOutcome !== undefined &&
+      context.proceduralEvidenceRepository !== undefined
     ) {
-      const carryOutcome = inferSkillOutcomeFromUserFollowUp(context.userMessage);
+      const grounded = isProceduralOutcomeEvidenceGrounded({
+        classification: proceduralOutcome.classification,
+        evidence_text: proceduralOutcome.evidence,
+      });
 
-      if (carryOutcome !== null && context.skillRepository !== undefined) {
-        try {
-          context.skillRepository.recordOutcome(carrySkillId, carryOutcome);
-          consumedCarryOutcome = true;
-          nextWorkingMemory = {
-            ...nextWorkingMemory,
-            last_selected_skill_id: null,
-            last_selected_skill_turn: null,
-          };
-        } catch (error) {
-          await appendInternalFailureEvent(streamWriter, "skill_outcome_record", error);
+      try {
+        const resolvedEpisodeIds = grounded
+          ? await resolveAttemptEpisodeIds(context, pendingProceduralAttempt.source_stream_ids)
+          : [];
+
+        if (grounded) {
+          context.proceduralEvidenceRepository.insert({
+            pendingAttemptSnapshot: pendingProceduralAttempt,
+            classification: proceduralOutcome.classification,
+            evidenceText: proceduralOutcome.evidence,
+            resolvedEpisodeIds,
+            audienceEntityId: pendingProceduralAttempt.audience_entity_id,
+          });
+
+          if (
+            pendingProceduralAttempt.selected_skill_id !== null &&
+            (proceduralOutcome.classification === "success" ||
+              proceduralOutcome.classification === "failure") &&
+            context.skillRepository !== undefined
+          ) {
+            context.skillRepository.recordOutcome(
+              pendingProceduralAttempt.selected_skill_id,
+              proceduralOutcome.classification === "success",
+              resolvedEpisodeIds,
+            );
+          }
         }
-      }
-    } else if (carrySkillId !== null && carrySkillTurn !== null) {
-      nextWorkingMemory = {
-        ...nextWorkingMemory,
-        last_selected_skill_id: null,
-        last_selected_skill_turn: null,
-      };
-    }
 
-    if (context.selectedSkillId !== null && context.selectedSkillId !== undefined) {
-      if (consumedCarryOutcome) {
-        return {
+        nextWorkingMemory = {
           ...nextWorkingMemory,
+          pending_procedural_attempt: null,
           last_selected_skill_id: null,
           last_selected_skill_turn: null,
         };
+      } catch (error) {
+        await appendInternalFailureEvent(streamWriter, "procedural_evidence_record", error);
       }
-
-      // Outcome attribution is follow-up-only to avoid treating the current problem statement
-      // or the assistant's own wording as evidence that a suggested skill succeeded or failed.
-      nextWorkingMemory = {
-        ...nextWorkingMemory,
-        last_selected_skill_id: context.selectedSkillId,
-        last_selected_skill_turn: currentTurn,
-      };
     }
 
     return nextWorkingMemory;
   }
 
   private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
+    const pendingProceduralAttempt = context.workingMemory.pending_procedural_attempt;
+
     if (
       this.llmClient === undefined ||
       this.model === undefined ||
-      context.selfSnapshot.goals.length === 0
+      (context.selfSnapshot.goals.length === 0 && pendingProceduralAttempt === null)
     ) {
       return {
         advanced_goals: [],
+        procedural_outcomes: [],
       };
     }
 
@@ -431,6 +438,8 @@ export class Reflector {
       system: [
         "You are Borg's post-turn reflector. Read the completed turn and active goals, then emit only the structured reflection tool.",
         "Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
+        "If pending_procedural_attempt is present, classify whether the user's current message shows that attempt succeeded, failed, or remains unclear.",
+        "Do not infer procedural success or failure from the assistant response, confidence, phrasing, or intentions.",
       ].join("\n"),
       messages: [
         {
@@ -443,6 +452,7 @@ export class Reflector {
               description: goal.description,
               progress_notes: goal.progress_notes,
             })),
+            pending_procedural_attempt: pendingProceduralAttempt,
           }),
         },
       ],
@@ -456,6 +466,7 @@ export class Reflector {
     if (toolCall === undefined) {
       return {
         advanced_goals: [],
+        procedural_outcomes: [],
       };
     }
 
@@ -465,6 +476,7 @@ export class Reflector {
       ? parsed.data
       : {
           advanced_goals: [],
+          procedural_outcomes: [],
         };
   }
 }

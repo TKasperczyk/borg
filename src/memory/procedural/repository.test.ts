@@ -125,4 +125,48 @@ describe("SkillRepository", () => {
       failures: 50,
     });
   });
+
+  it("stages procedural evidence idempotently for the same pending attempt", async () => {
+    harness = await createOfflineTestHarness();
+    const pendingAttempt = {
+      problem_text: "Fix the flaky Atlas deploy.",
+      approach_summary: "Compare the failing deploy log against the last clean release.",
+      selected_skill_id: null,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
+      turn_counter: 7,
+      audience_entity_id: null,
+    };
+
+    const first = harness.proceduralEvidenceRepository.insert({
+      pendingAttemptSnapshot: pendingAttempt,
+      classification: "success",
+      evidenceText: "User confirmed the deploy worked.",
+    });
+    const second = harness.proceduralEvidenceRepository.insert({
+      pendingAttemptSnapshot: pendingAttempt,
+      classification: "success",
+      evidenceText: "User confirmed the deploy worked again.",
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(harness.proceduralEvidenceRepository.list()).toHaveLength(1);
+  });
+
+  it("does not select a skill below the configured similarity threshold", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    await harness.skillRepository.add({
+      applies_when: "Atlas deployment rollback",
+      approach: "Compare deploy logs and rollback state.",
+      sourceEpisodes: [episode.id],
+    });
+
+    const selector = new SkillSelector({
+      repository: harness.skillRepository,
+      minSimilarity: 0.5,
+    });
+
+    await expect(selector.select("planning roadmap review", { k: 5 })).resolves.toBeNull();
+  });
 });

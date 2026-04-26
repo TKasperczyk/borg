@@ -13,10 +13,12 @@ import {
   isSessionId,
   parseSessionId,
   skillIdHelpers,
+  streamEntryIdHelpers,
   type EntityId,
   type EpisodeId,
   type SessionId,
   type SkillId,
+  type StreamEntryId,
 } from "../../util/ids.js";
 
 export const workingSessionIdSchema = z
@@ -53,6 +55,13 @@ export const workingEntityIdSchema = z
   })
   .transform((value) => value as EntityId);
 
+export const workingStreamEntryIdSchema = z
+  .string()
+  .refine((value) => streamEntryIdHelpers.is(value), {
+    message: "Invalid stream entry id",
+  })
+  .transform((value) => value as StreamEntryId);
+
 export const pendingSocialAttributionSchema = z.object({
   entity_id: z.string().min(1),
   interaction_id: z.number().int().positive(),
@@ -64,6 +73,15 @@ export const pendingTraitAttributionSchema = z.object({
   trait_label: z.string().min(1),
   source_episode_ids: z.array(workingEpisodeIdSchema).min(1),
   turn_completed_ts: z.number().finite(),
+  audience_entity_id: workingEntityIdSchema.nullable(),
+});
+
+export const pendingProceduralAttemptSchema = z.object({
+  problem_text: z.string().min(1),
+  approach_summary: z.string().min(1),
+  selected_skill_id: workingSkillIdSchema.nullable(),
+  source_stream_ids: z.array(workingStreamEntryIdSchema).min(1),
+  turn_counter: z.number().int().nonnegative(),
   audience_entity_id: workingEntityIdSchema.nullable(),
 });
 
@@ -79,6 +97,7 @@ export const workingMemorySchema = z.object({
   mood: affectiveSignalSchema.nullable().default(null),
   last_selected_skill_id: workingSkillIdSchema.nullable().default(null),
   last_selected_skill_turn: z.number().int().nonnegative().nullable().default(null),
+  pending_procedural_attempt: pendingProceduralAttemptSchema.nullable().default(null),
   mode: cognitiveModeSchema.nullable(),
   updated_at: z.number().finite(),
 });
@@ -86,6 +105,7 @@ export const workingMemorySchema = z.object({
 export type WorkingMemory = z.infer<typeof workingMemorySchema>;
 export type PendingSocialAttribution = z.infer<typeof pendingSocialAttributionSchema>;
 export type PendingTraitAttribution = z.infer<typeof pendingTraitAttributionSchema>;
+export type PendingProceduralAttempt = z.infer<typeof pendingProceduralAttemptSchema>;
 
 /**
  * Derived live-state only. Phase E removed `scratchpad` (S2 planner output
@@ -108,6 +128,7 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
     mood: null,
     last_selected_skill_id: null,
     last_selected_skill_turn: null,
+    pending_procedural_attempt: null,
     mode: null,
     updated_at: timestamp,
   };

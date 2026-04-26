@@ -152,6 +152,27 @@ describe("Borg Sprint 7", () => {
           stop_reason: "end_turn",
           tool_calls: [],
         },
+        {
+          text: "",
+          input_tokens: 20,
+          output_tokens: 10,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_reflection",
+              name: "EmitTurnReflection",
+              input: {
+                advanced_goals: [],
+                procedural_outcomes: [
+                  {
+                    classification: "success",
+                    evidence: "User confirmed the Rust lifetime error is fixed now.",
+                  },
+                ],
+              },
+            },
+          ],
+        },
       ],
     });
     const borg = await Borg.open({

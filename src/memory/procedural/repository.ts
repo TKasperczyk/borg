@@ -16,17 +16,25 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import {
+  createProceduralEvidenceId,
   createSkillId,
   parseEpisodeId,
   parseSkillId,
+  type EntityId,
   type EpisodeId,
+  type ProceduralEvidenceId,
   type SkillId,
 } from "../../util/ids.js";
 
 import { computeBetaStats, type BetaStats } from "./bayes.js";
 import {
+  proceduralEvidenceSchema,
+  proceduralOutcomeClassificationSchema,
   skillInsertSchema,
   skillSchema,
+  type PendingProceduralAttemptValue,
+  type ProceduralEvidenceRecord,
+  type ProceduralOutcomeClassification,
   type SkillRecord,
   type SkillSearchCandidate,
 } from "./types.js";
@@ -51,6 +59,11 @@ type SkillSqlRow = {
 const SKILL_JSON_ARRAY_CODEC = {
   errorCode: "SKILL_ROW_INVALID",
   errorMessage: (label: string) => `Failed to parse skill ${label}`,
+} satisfies JsonArrayCodecOptions;
+
+const PROCEDURAL_EVIDENCE_JSON_ARRAY_CODEC = {
+  errorCode: "PROCEDURAL_EVIDENCE_ROW_INVALID",
+  errorMessage: (label: string) => `Failed to parse procedural evidence ${label}`,
 } satisfies JsonArrayCodecOptions;
 
 function rowFromSkill(skill: SkillRecord): SkillSqlRow {
@@ -105,6 +118,52 @@ function skillFromRow(row: Record<string, unknown>): SkillRecord {
     throw new StorageError("Skill row failed validation", {
       cause: parsed.error,
       code: "SKILL_ROW_INVALID",
+    });
+  }
+
+  return parsed.data;
+}
+
+function parsePendingAttemptSnapshot(value: string): PendingProceduralAttemptValue {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return proceduralEvidenceSchema.shape.pending_attempt_snapshot.parse(parsed);
+  } catch (error) {
+    throw new StorageError("Failed to parse procedural evidence pending attempt snapshot", {
+      cause: error,
+      code: "PROCEDURAL_EVIDENCE_ROW_INVALID",
+    });
+  }
+}
+
+function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvidenceRecord {
+  const parsed = proceduralEvidenceSchema.safeParse({
+    id: row.id,
+    pending_attempt_snapshot: parsePendingAttemptSnapshot(
+      String(row.pending_attempt_snapshot ?? "{}"),
+    ),
+    classification: row.classification,
+    evidence_text: row.evidence_text,
+    resolved_episode_ids: parseJsonArray<string>(
+      String(row.resolved_episode_ids ?? "[]"),
+      "resolved_episode_ids",
+      PROCEDURAL_EVIDENCE_JSON_ARRAY_CODEC,
+    ).map((value) => parseEpisodeId(value)),
+    audience_entity_id:
+      row.audience_entity_id === null || row.audience_entity_id === undefined
+        ? null
+        : (String(row.audience_entity_id) as EntityId),
+    consumed_at:
+      row.consumed_at === null || row.consumed_at === undefined
+        ? null
+        : Number(row.consumed_at),
+    created_at: Number(row.created_at),
+  });
+
+  if (!parsed.success) {
+    throw new StorageError("Procedural evidence row failed validation", {
+      cause: parsed.error,
+      code: "PROCEDURAL_EVIDENCE_ROW_INVALID",
     });
   }
 
@@ -239,6 +298,35 @@ export class SkillRepository {
     }
   }
 
+  async replace(skill: SkillRecord): Promise<SkillRecord> {
+    const parsed = skillSchema.parse(skill);
+    const embedding = await this.options.embeddingClient.embed(parsed.applies_when);
+
+    try {
+      await this.table.upsert(
+        [
+          {
+            id: parsed.id,
+            applies_when: parsed.applies_when,
+            embedding: Array.from(embedding),
+          },
+        ],
+        { on: "id" },
+      );
+
+      this.db.transaction(() => {
+        this.upsertSqlRow(parsed);
+      })();
+
+      return parsed;
+    } catch (error) {
+      throw new StorageError(`Failed to replace skill ${parsed.id}`, {
+        cause: error,
+        code: "SKILL_REPLACE_FAILED",
+      });
+    }
+  }
+
   get(id: SkillId): SkillRecord | null {
     const row = this.db.prepare("SELECT * FROM skills WHERE id = ?").get(id) as
       | Record<string, unknown>
@@ -334,7 +422,11 @@ export class SkillRepository {
       .filter((item): item is SkillSearchCandidate => item !== null);
   }
 
-  recordOutcome(skillId: SkillId, success: boolean, episodeId?: EpisodeId): SkillRecord {
+  recordOutcome(
+    skillId: SkillId,
+    success: boolean,
+    episodeIds?: EpisodeId | readonly EpisodeId[],
+  ): SkillRecord {
     const nowMs = this.clock.now();
     const incrementAlpha = success ? 1 : 0;
     const incrementBeta = success ? 0 : 1;
@@ -374,6 +466,9 @@ export class SkillRepository {
       `,
     );
 
+    const sourceEpisodeIds =
+      episodeIds === undefined ? [] : Array.isArray(episodeIds) ? episodeIds : [episodeIds];
+
     this.db.transaction(() => {
       const result = updateOutcome.run(
         incrementAlpha,
@@ -393,7 +488,7 @@ export class SkillRepository {
         });
       }
 
-      if (episodeId !== undefined) {
+      for (const episodeId of sourceEpisodeIds) {
         appendSourceEpisode.run(episodeId, episodeId, skillId);
       }
     })();
@@ -419,5 +514,189 @@ export class SkillRepository {
     }
 
     return computeBetaStats(current.alpha, current.beta);
+  }
+}
+
+export type ProceduralEvidenceRepositoryOptions = {
+  db: SqliteDatabase;
+  clock?: Clock;
+};
+
+function uniqueEpisodeIds(ids: readonly EpisodeId[]): EpisodeId[] {
+  return [...new Set(ids)];
+}
+
+export class ProceduralEvidenceRepository {
+  private readonly clock: Clock;
+
+  constructor(private readonly options: ProceduralEvidenceRepositoryOptions) {
+    this.clock = options.clock ?? new SystemClock();
+  }
+
+  private get db(): SqliteDatabase {
+    return this.options.db;
+  }
+
+  insert(input: {
+    id?: ProceduralEvidenceId;
+    pendingAttemptSnapshot: PendingProceduralAttemptValue;
+    classification: ProceduralOutcomeClassification;
+    evidenceText: string;
+    resolvedEpisodeIds?: readonly EpisodeId[];
+    audienceEntityId?: EntityId | null;
+    createdAt?: number;
+  }): ProceduralEvidenceRecord {
+    const snapshot = proceduralEvidenceSchema.shape.pending_attempt_snapshot.parse(
+      input.pendingAttemptSnapshot,
+    );
+    const snapshotJson = serializeJsonValue(snapshot);
+    const existing = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM procedural_evidence
+          WHERE pending_attempt_snapshot = ?
+          ORDER BY created_at ASC, id ASC
+          LIMIT 1
+        `,
+      )
+      .get(snapshotJson) as Record<string, unknown> | undefined;
+
+    if (existing !== undefined) {
+      return proceduralEvidenceFromRow(existing);
+    }
+
+    const record = proceduralEvidenceSchema.parse({
+      id: input.id ?? createProceduralEvidenceId(),
+      pending_attempt_snapshot: snapshot,
+      classification: proceduralOutcomeClassificationSchema.parse(input.classification),
+      evidence_text: input.evidenceText.trim(),
+      resolved_episode_ids: uniqueEpisodeIds([...(input.resolvedEpisodeIds ?? [])]),
+      audience_entity_id: input.audienceEntityId ?? snapshot.audience_entity_id,
+      consumed_at: null,
+      created_at: input.createdAt ?? this.clock.now(),
+    });
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO procedural_evidence (
+            id, pending_attempt_snapshot, classification, evidence_text, resolved_episode_ids,
+            audience_entity_id, consumed_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        record.id,
+        serializeJsonValue(record.pending_attempt_snapshot),
+        record.classification,
+        record.evidence_text,
+        serializeJsonValue(record.resolved_episode_ids),
+        record.audience_entity_id,
+        record.consumed_at,
+        record.created_at,
+      );
+
+    return record;
+  }
+
+  get(id: ProceduralEvidenceId): ProceduralEvidenceRecord | null {
+    const row = this.db.prepare("SELECT * FROM procedural_evidence WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+
+    return row === undefined ? null : proceduralEvidenceFromRow(row);
+  }
+
+  list(limit = 100): ProceduralEvidenceRecord[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM procedural_evidence
+          ORDER BY created_at ASC, id ASC
+          LIMIT ?
+        `,
+      )
+      .all(limit) as Record<string, unknown>[];
+
+    return rows.map((row) => proceduralEvidenceFromRow(row));
+  }
+
+  listUnconsumed(limit = 100): ProceduralEvidenceRecord[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM procedural_evidence
+          WHERE consumed_at IS NULL
+          ORDER BY created_at ASC, id ASC
+          LIMIT ?
+        `,
+      )
+      .all(limit) as Record<string, unknown>[];
+
+    return rows.map((row) => proceduralEvidenceFromRow(row));
+  }
+
+  markConsumed(ids: readonly ProceduralEvidenceId[], consumedAt = this.clock.now()): void {
+    if (ids.length === 0) {
+      return;
+    }
+
+    const statement = this.db.prepare(
+      "UPDATE procedural_evidence SET consumed_at = ? WHERE id = ?",
+    );
+
+    this.db.transaction(() => {
+      for (const id of ids) {
+        statement.run(consumedAt, id);
+      }
+    })();
+  }
+
+  markUnconsumed(ids: readonly ProceduralEvidenceId[]): void {
+    if (ids.length === 0) {
+      return;
+    }
+
+    const statement = this.db.prepare(
+      "UPDATE procedural_evidence SET consumed_at = NULL WHERE id = ?",
+    );
+
+    this.db.transaction(() => {
+      for (const id of ids) {
+        statement.run(id);
+      }
+    })();
+  }
+
+  updateResolvedEpisodeIds(
+    id: ProceduralEvidenceId,
+    episodeIds: readonly EpisodeId[],
+  ): ProceduralEvidenceRecord {
+    const current = this.get(id);
+
+    if (current === null) {
+      throw new StorageError(`Unknown procedural evidence id: ${id}`, {
+        code: "PROCEDURAL_EVIDENCE_NOT_FOUND",
+      });
+    }
+
+    const nextIds = uniqueEpisodeIds([...current.resolved_episode_ids, ...episodeIds]);
+
+    this.db
+      .prepare("UPDATE procedural_evidence SET resolved_episode_ids = ? WHERE id = ?")
+      .run(serializeJsonValue(nextIds), id);
+
+    const updated = this.get(id);
+
+    if (updated === null) {
+      throw new StorageError(`Unknown procedural evidence id: ${id}`, {
+        code: "PROCEDURAL_EVIDENCE_NOT_FOUND",
+      });
+    }
+
+    return updated;
   }
 }

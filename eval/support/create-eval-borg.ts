@@ -14,14 +14,22 @@ type EvalConfigOverrides = {
     models?: Partial<Config["anthropic"]["models"]>;
   };
   self?: Partial<Config["self"]>;
+  procedural?: Partial<Config["procedural"]>;
   offline?: Partial<
     Omit<
       Config["offline"],
-      "consolidator" | "reflector" | "curator" | "overseer" | "ruminator" | "selfNarrator"
+      | "consolidator"
+      | "reflector"
+      | "proceduralSynthesizer"
+      | "curator"
+      | "overseer"
+      | "ruminator"
+      | "selfNarrator"
     >
   > & {
     consolidator?: Partial<Config["offline"]["consolidator"]>;
     reflector?: Partial<Config["offline"]["reflector"]>;
+    proceduralSynthesizer?: Partial<Config["offline"]["proceduralSynthesizer"]>;
     curator?: Partial<Config["offline"]["curator"]>;
     overseer?: Partial<Config["offline"]["overseer"]>;
     ruminator?: Partial<Config["offline"]["ruminator"]>;
@@ -84,6 +92,10 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
       ...DEFAULT_CONFIG.self,
       ...options.config?.self,
     },
+    procedural: {
+      ...DEFAULT_CONFIG.procedural,
+      ...options.config?.procedural,
+    },
     offline: {
       ...DEFAULT_CONFIG.offline,
       ...options.config?.offline,
@@ -94,6 +106,10 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
       reflector: {
         ...DEFAULT_CONFIG.offline.reflector,
         ...options.config?.offline?.reflector,
+      },
+      proceduralSynthesizer: {
+        ...DEFAULT_CONFIG.offline.proceduralSynthesizer,
+        ...options.config?.offline?.proceduralSynthesizer,
       },
       curator: {
         ...DEFAULT_CONFIG.offline.curator,

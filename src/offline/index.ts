@@ -29,6 +29,12 @@ export {
 } from "./plan-file.js";
 export { ReflectorProcess, type ReflectorProcessOptions } from "./reflector/index.js";
 export {
+  ProceduralSynthesizerProcess,
+  proceduralSynthesizerPlanSchema,
+  type ProceduralSynthesizerPlan,
+  type ProceduralSynthesizerProcessOptions,
+} from "./procedural-synthesizer/index.js";
+export {
   MaintenanceScheduler,
   type MaintenanceCadence,
   type MaintenanceSchedulerObserver,

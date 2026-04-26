@@ -25,6 +25,7 @@ export type SemanticEdgeId = BrandedId<"SemanticEdgeId">;
 export type CommitmentId = BrandedId<"CommitmentId">;
 export type EntityId = BrandedId<"EntityId">;
 export type SkillId = BrandedId<"SkillId">;
+export type ProceduralEvidenceId = BrandedId<"ProceduralEvidenceId">;
 export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
 export type AutonomyWakeId = BrandedId<"AutonomyWakeId">;
 export type AuditId = number & {
@@ -71,6 +72,18 @@ export const semanticEdgeIdHelpers = createIdHelpers<"SemanticEdgeId">("seme");
 export const commitmentIdHelpers = createIdHelpers<"CommitmentId">("cmt");
 export const entityIdHelpers = createIdHelpers<"EntityId">("ent");
 export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
+export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
+  pattern: new RegExp(`^procevi_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
+  create: () => `procevi_${createAutonomyWakeNanoId()}` as ProceduralEvidenceId,
+  is: (value: string): value is ProceduralEvidenceId => proceduralEvidenceIdHelpers.pattern.test(value),
+  parse: (value: string): ProceduralEvidenceId => {
+    if (!proceduralEvidenceIdHelpers.pattern.test(value)) {
+      throw new TypeError(`Invalid procevi identifier: ${value}`);
+    }
+
+    return value as ProceduralEvidenceId;
+  },
+};
 export const maintenanceRunIdHelpers = createIdHelpers<"MaintenanceRunId">("run");
 export const autonomyWakeIdHelpers: IdHelpers<"AutonomyWakeId"> = {
   pattern: new RegExp(`^autonomy_wake_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
@@ -100,6 +113,8 @@ export const createSemanticEdgeId = (): SemanticEdgeId => semanticEdgeIdHelpers.
 export const createCommitmentId = (): CommitmentId => commitmentIdHelpers.create();
 export const createEntityId = (): EntityId => entityIdHelpers.create();
 export const createSkillId = (): SkillId => skillIdHelpers.create();
+export const createProceduralEvidenceId = (): ProceduralEvidenceId =>
+  proceduralEvidenceIdHelpers.create();
 export const createMaintenanceRunId = (): MaintenanceRunId => maintenanceRunIdHelpers.create();
 export const createAutonomyWakeId = (): AutonomyWakeId => autonomyWakeIdHelpers.create();
 
@@ -161,6 +176,10 @@ export function parseEntityId(value: string): EntityId {
 
 export function parseSkillId(value: string): SkillId {
   return skillIdHelpers.parse(value);
+}
+
+export function parseProceduralEvidenceId(value: string): ProceduralEvidenceId {
+  return proceduralEvidenceIdHelpers.parse(value);
 }
 
 export function parseMaintenanceRunId(value: string): MaintenanceRunId {

@@ -10,7 +10,11 @@ import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
-import type { SkillRepository, SkillSelector } from "../memory/procedural/index.js";
+import type {
+  ProceduralEvidenceRepository,
+  SkillRepository,
+  SkillSelector,
+} from "../memory/procedural/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -45,6 +49,7 @@ export type BuildTurnOrchestratorOptions = {
   moodRepository: MoodRepository;
   socialRepository: SocialRepository;
   skillRepository: SkillRepository;
+  proceduralEvidenceRepository: ProceduralEvidenceRepository;
   skillSelector: SkillSelector;
   workingMemoryStore: WorkingMemoryStore;
   llmFactory: () => LLMClient;
@@ -74,6 +79,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     moodRepository: options.moodRepository,
     socialRepository: options.socialRepository,
     skillRepository: options.skillRepository,
+    proceduralEvidenceRepository: options.proceduralEvidenceRepository,
     skillSelector: options.skillSelector,
     workingMemoryStore: options.workingMemoryStore,
     llmFactory: options.llmFactory,

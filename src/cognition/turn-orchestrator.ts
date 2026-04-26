@@ -19,7 +19,11 @@ import {
   EntityRepository,
   type CommitmentRecord,
 } from "../memory/commitments/index.js";
-import { SkillRepository, SkillSelector } from "../memory/procedural/index.js";
+import {
+  ProceduralEvidenceRepository,
+  SkillRepository,
+  SkillSelector,
+} from "../memory/procedural/index.js";
 import {
   appendInternalFailureEvent,
   AutobiographicalRepository,
@@ -80,6 +84,19 @@ function selectActiveValues(values: readonly ValueRecord[], candidateLimit = 2):
   return [...established, ...candidates];
 }
 
+function compactTurnText(text: string, maxLength: number): string {
+  const compacted = text.replace(/\s+/g, " ").trim();
+
+  return compacted.length <= maxLength ? compacted : compacted.slice(0, maxLength).trimEnd();
+}
+
+function buildSkillSelectionQuery(userMessage: string, entities: readonly string[]): string {
+  return [userMessage, ...entities]
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .join(" ");
+}
+
 export type TurnInput = {
   userMessage: string;
   audience?: string;
@@ -119,6 +136,7 @@ export type TurnOrchestratorOptions = {
   moodRepository: MoodRepository;
   socialRepository: SocialRepository;
   skillRepository: SkillRepository;
+  proceduralEvidenceRepository: ProceduralEvidenceRepository;
   skillSelector: SkillSelector;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
@@ -571,14 +589,12 @@ export class TurnOrchestrator {
         );
         const retrievedEpisodes = retrieval.episodes;
         const retrievedSemantic = retrieval.semantic;
+        const skillSelectionQuery = buildSkillSelectionQuery(input.userMessage, perception.entities);
         const selectedSkill =
           perception.mode === "problem_solving"
-            ? await this.options.skillSelector.select(
-                perception.entities[0] ?? workingMemory.current_focus ?? cognitionInput,
-                {
-                  k: 5,
-                },
-              )
+            ? await this.options.skillSelector.select(skillSelectionQuery, {
+                k: 5,
+              })
             : null;
         const deliberator = new Deliberator({
           llmClient,
@@ -749,6 +765,7 @@ export class TurnOrchestrator {
             identityService: this.options.identityService,
             reviewQueueRepository: this.options.reviewQueueRepository,
             skillRepository: this.options.skillRepository,
+            proceduralEvidenceRepository: this.options.proceduralEvidenceRepository,
             selectedSkillId: selectedSkill?.skill.id ?? null,
             audienceEntityId,
             suppressionSet,
@@ -769,6 +786,21 @@ export class TurnOrchestrator {
                 turn_completed_ts: persistedAgentEntry.timestamp,
               }
             : pendingSocialAttribution;
+        const nextPendingProceduralAttempt =
+          reflectedWorkingMemory.pending_procedural_attempt !== null ||
+          !isUserTurn ||
+          perception.mode !== "problem_solving"
+            ? reflectedWorkingMemory.pending_procedural_attempt
+            : {
+                problem_text: compactTurnText(input.userMessage, 1_000),
+                approach_summary:
+                  selectedSkill?.skill.approach ??
+                  (compactTurnText(actionResult.response, 1_000) || "No explicit approach stated."),
+                selected_skill_id: selectedSkill?.skill.id ?? null,
+                source_stream_ids: [persistedUserEntry.id, persistedAgentEntry.id],
+                turn_counter: reflectedWorkingMemory.turn_counter,
+                audience_entity_id: audienceEntityId,
+              };
 
         if (this.tracer.enabled) {
           this.tracer.emit("reflection_emitted", {
@@ -776,6 +808,7 @@ export class TurnOrchestrator {
             attributions: {
               pending_social: nextPendingSocialAttribution !== null,
               pending_trait: reflectedWorkingMemory.pending_trait_attribution !== null,
+              pending_procedural: nextPendingProceduralAttempt !== null,
               pending_intents: reflectedWorkingMemory.pending_intents.length,
             },
           });
@@ -785,6 +818,7 @@ export class TurnOrchestrator {
           ...reflectedWorkingMemory,
           mood: moodSnapshot,
           pending_social_attribution: nextPendingSocialAttribution,
+          pending_procedural_attempt: nextPendingProceduralAttempt,
           suppressed: suppressionSet.snapshot(),
           updated_at: this.clock.now(),
         });

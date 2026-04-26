@@ -19,6 +19,7 @@ import {
   type Episode,
 } from "../memory/episodic/index.js";
 import {
+  ProceduralEvidenceRepository,
   SkillRepository,
   createSkillsTableSchema,
   proceduralMigrations,
@@ -124,6 +125,7 @@ export type OfflineTestHarness = {
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   skillRepository: SkillRepository;
+  proceduralEvidenceRepository: ProceduralEvidenceRepository;
   retrievalPipeline: RetrievalPipeline;
   registry: ReverserRegistry;
   auditLog: AuditLog;
@@ -172,6 +174,10 @@ export async function createOfflineTestHarness(
         ...options.configOverrides?.anthropic?.models,
       },
     },
+    procedural: {
+      ...DEFAULT_CONFIG.procedural,
+      ...options.configOverrides?.procedural,
+    },
     offline: {
       ...DEFAULT_CONFIG.offline,
       ...options.configOverrides?.offline,
@@ -182,6 +188,10 @@ export async function createOfflineTestHarness(
       reflector: {
         ...DEFAULT_CONFIG.offline.reflector,
         ...options.configOverrides?.offline?.reflector,
+      },
+      proceduralSynthesizer: {
+        ...DEFAULT_CONFIG.offline.proceduralSynthesizer,
+        ...options.configOverrides?.offline?.proceduralSynthesizer,
       },
       curator: {
         ...DEFAULT_CONFIG.offline.curator,
@@ -396,6 +406,10 @@ export async function createOfflineTestHarness(
     embeddingClient,
     clock,
   });
+  const proceduralEvidenceRepository = new ProceduralEvidenceRepository({
+    db,
+    clock,
+  });
   const auditLog = new AuditLog({
     db,
     clock,
@@ -439,6 +453,7 @@ export async function createOfflineTestHarness(
     entityRepository,
     commitmentRepository,
     skillRepository,
+    proceduralEvidenceRepository,
     retrievalPipeline,
     registry,
     auditLog,
@@ -473,6 +488,7 @@ export async function createOfflineTestHarness(
       entityRepository,
       commitmentRepository,
       skillRepository,
+      proceduralEvidenceRepository,
       retrievalPipeline,
     }),
     cleanup: async () => {

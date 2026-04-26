@@ -7,7 +7,10 @@ import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
-import type { SkillRepository } from "../memory/procedural/index.js";
+import type {
+  ProceduralEvidenceRepository,
+  SkillRepository,
+} from "../memory/procedural/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -28,6 +31,7 @@ import {
   CuratorProcess,
   MaintenanceOrchestrator,
   OverseerProcess,
+  ProceduralSynthesizerProcess,
   ReflectorProcess,
   ReverserRegistry,
   RuminatorProcess,
@@ -69,6 +73,7 @@ export type BuildOfflineSetupOptions = {
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   skillRepository: SkillRepository;
+  proceduralEvidenceRepository: ProceduralEvidenceRepository;
   retrievalPipeline: RetrievalPipeline;
   createStreamWriter: BorgStreamWriterFactory;
 };
@@ -113,6 +118,12 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       growthMarkersRepository: options.growthMarkersRepository,
       registry: reverserRegistry,
     }),
+    "procedural-synthesizer": new ProceduralSynthesizerProcess({
+      skillRepository: options.skillRepository,
+      proceduralEvidenceRepository: options.proceduralEvidenceRepository,
+      registry: reverserRegistry,
+      clock: options.clock,
+    }),
   } satisfies Record<OfflineProcessName, OfflineProcess>;
   const maintenanceOrchestrator = new MaintenanceOrchestrator({
     baseContext: {
@@ -140,6 +151,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       entityRepository: options.entityRepository,
       commitmentRepository: options.commitmentRepository,
       skillRepository: options.skillRepository,
+      proceduralEvidenceRepository: options.proceduralEvidenceRepository,
       retrievalPipeline: options.retrievalPipeline,
     },
     auditLog,

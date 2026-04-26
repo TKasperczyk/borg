@@ -9,7 +9,11 @@ import { MoodRepository } from "../memory/affective/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
-import { SkillRepository, SkillSelector } from "../memory/procedural/index.js";
+import {
+  ProceduralEvidenceRepository,
+  SkillRepository,
+  SkillSelector,
+} from "../memory/procedural/index.js";
 import {
   AutobiographicalRepository,
   GoalsRepository,
@@ -66,6 +70,7 @@ export type BorgRepositorySetup = Pick<
   | "commitmentRepository"
   | "correctionService"
   | "skillRepository"
+  | "proceduralEvidenceRepository"
   | "skillSelector"
   | "retrievalPipeline"
   | "workingMemoryStore"
@@ -269,8 +274,13 @@ export async function buildBorgRepositories(
     embeddingClient,
     clock,
   });
+  const proceduralEvidenceRepository = new ProceduralEvidenceRepository({
+    db: sqlite,
+    clock,
+  });
   const skillSelector = new SkillSelector({
     repository: skillRepository,
+    minSimilarity: config.procedural.skillSelectionMinSimilarity,
   });
   const retrievalPipeline = new RetrievalPipeline({
     embeddingClient,
@@ -330,6 +340,7 @@ export async function buildBorgRepositories(
     commitmentRepository,
     correctionService,
     skillRepository,
+    proceduralEvidenceRepository,
     skillSelector,
     retrievalPipeline,
     workingMemoryStore,

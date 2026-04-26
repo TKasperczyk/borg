@@ -25,4 +25,24 @@ export const proceduralMigrations = [
         ON skills (updated_at DESC);
     `,
   },
+  {
+    id: 173,
+    name: "create-procedural-evidence-table",
+    up: `
+      CREATE TABLE IF NOT EXISTS procedural_evidence (
+        id TEXT PRIMARY KEY,
+        pending_attempt_snapshot TEXT NOT NULL,
+        classification TEXT NOT NULL,
+        evidence_text TEXT NOT NULL,
+        resolved_episode_ids TEXT NOT NULL,
+        audience_entity_id TEXT,
+        consumed_at INTEGER,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_procedural_evidence_unconsumed
+        ON procedural_evidence (consumed_at, created_at);
+      CREATE INDEX IF NOT EXISTS idx_procedural_evidence_audience
+        ON procedural_evidence (audience_entity_id);
+    `,
+  },
 ] as const satisfies readonly Migration[];

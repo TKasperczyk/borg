@@ -5,7 +5,7 @@ import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
-import type { SkillRepository } from "../memory/procedural/index.js";
+import type { ProceduralEvidenceRepository, SkillRepository } from "../memory/procedural/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -34,6 +34,7 @@ export const OFFLINE_PROCESS_NAMES = [
   "overseer",
   "ruminator",
   "self-narrator",
+  "procedural-synthesizer",
 ] as const;
 
 export type OfflineProcessName = (typeof OFFLINE_PROCESS_NAMES)[number];
@@ -95,6 +96,7 @@ export type OfflineContext = {
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   skillRepository: SkillRepository;
+  proceduralEvidenceRepository: ProceduralEvidenceRepository;
   retrievalPipeline: RetrievalPipeline;
 };
 
