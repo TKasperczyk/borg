@@ -1,4 +1,5 @@
 import type { RetrievedEpisode } from "../../retrieval/index.js";
+import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import {
@@ -18,6 +19,7 @@ import { EpisodicRepository } from "../../memory/episodic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 import type { EntityId, SkillId } from "../../util/ids.js";
+import { z } from "zod";
 
 import type { ActionResult } from "../action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
@@ -51,6 +53,8 @@ const SURFACED_TTL_TURNS = 4;
 const NOISE_TTL_TURNS = 2;
 const OPEN_QUESTION_CONFIDENCE_THRESHOLD = 0.4;
 const SKILL_OUTCOME_WINDOW_TURNS = 2;
+const REFLECTION_TOOL_NAME = "EmitTurnReflection";
+const DEFAULT_REFLECTION_MAX_TOKENS = 768;
 const EXPLICIT_SUCCESS_MARKERS = [
   /\bit works\b/i,
   /\bit worked\b/i,
@@ -70,15 +74,27 @@ const EXPLICIT_FAILURE_MARKERS = [
   /\bno,\s*still\b/i,
 ] as const;
 
-function goalMentioned(goal: GoalRecord, userMessage: string, response: string): boolean {
-  const goalTokens = tokenizeText(goal.description);
-  const userTokens = tokenizeText(userMessage);
-  const responseTokens = tokenizeText(response);
-  const inUser = [...goalTokens].some((token) => userTokens.has(token));
-  const inResponse = [...goalTokens].some((token) => responseTokens.has(token));
+const reflectionOutputSchema = z.object({
+  advanced_goals: z
+    .array(
+      z.object({
+        goal_id: z.string().min(1),
+        evidence: z.string().min(1),
+      }),
+    )
+    .describe(
+      "Goals advanced by this turn. Mark only if the turn took a concrete step toward the goal, not just discussed it.",
+    ),
+});
 
-  return inUser && inResponse;
-}
+type ReflectionOutput = z.infer<typeof reflectionOutputSchema>;
+
+const REFLECTION_TOOL: LLMToolDefinition = {
+  name: REFLECTION_TOOL_NAME,
+  description:
+    "Emit structured post-turn reflection. Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
+  inputSchema: toToolInputSchema(reflectionOutputSchema),
+};
 
 function episodeUsed(result: RetrievedEpisode, response: string): boolean {
   const normalized = response.toLowerCase();
@@ -197,19 +213,31 @@ function buildIdentityPatchReviewRefs(
 
 export type ReflectorOptions = {
   clock?: Clock;
+  llmClient?: LLMClient;
+  model?: string;
+  maxTokens?: number;
 };
 
 export class Reflector {
   private readonly clock: Clock;
+  private readonly llmClient?: LLMClient;
+  private readonly model?: string;
+  private readonly maxTokens: number;
 
   constructor(options: ReflectorOptions = {}) {
     this.clock = options.clock ?? new SystemClock();
+    this.llmClient = options.llmClient;
+    this.model = options.model;
+    this.maxTokens = options.maxTokens ?? DEFAULT_REFLECTION_MAX_TOKENS;
   }
 
   async reflect(context: ReflectionContext, streamWriter: StreamWriter): Promise<WorkingMemory> {
     const reflectionProvenance = buildReflectionProvenance(context.retrievedEpisodes);
     const effectiveMode = context.perception?.mode ?? context.workingMemory.mode ?? "idle";
     const reflectedTrait = MODE_TRAIT_MAP[effectiveMode];
+    let reflectionOutput: ReflectionOutput = {
+      advanced_goals: [],
+    };
 
     if (
       context.deliberationResult.thoughts.length > 0 &&
@@ -223,12 +251,23 @@ export class Reflector {
       );
     }
 
-    for (const goal of context.selfSnapshot.goals) {
-      if (!goalMentioned(goal, context.userMessage, context.actionResult.response)) {
+    try {
+      reflectionOutput = await this.runReflectionJudgment(context);
+    } catch (error) {
+      await appendInternalFailureEvent(streamWriter, "reflection_judgment", error);
+    }
+
+    const activeGoalsById = new Map(context.selfSnapshot.goals.map((goal) => [goal.id, goal]));
+
+    for (const advancedGoal of reflectionOutput.advanced_goals) {
+      const goal = activeGoalsById.get(advancedGoal.goal_id as GoalRecord["id"]);
+
+      if (goal === undefined) {
         continue;
       }
 
-      const note = `[${this.clock.now()}] Heuristic turn progress from response overlap`;
+      const evidence = advancedGoal.evidence.trim();
+      const note = `[${this.clock.now()}] ${evidence}`;
       const nextProgress = goal.progress_notes === null ? note : `${goal.progress_notes}\n${note}`;
       const patch = {
         progress_notes: nextProgress,
@@ -302,6 +341,11 @@ export class Reflector {
       updated_at: this.clock.now(),
     };
 
+    const traitEvidenceEpisodeIds = selectTraitEvidenceEpisodeIds(
+      context.deliberationResult,
+      context.retrievedEpisodes,
+    );
+
     if (
       // Lagged trait attribution must only come from user-visible turns.
       // Autonomous/self-talk turns are not shown to the user, so a later
@@ -309,13 +353,13 @@ export class Reflector {
       context.origin !== "autonomous" &&
       nextWorkingMemory.pending_trait_attribution === null &&
       reflectedTrait !== null &&
-      reflectionProvenance.kind === "episodes"
+      traitEvidenceEpisodeIds.length > 0
     ) {
       nextWorkingMemory = {
         ...nextWorkingMemory,
         pending_trait_attribution: {
           trait_label: reflectedTrait,
-          source_episode_ids: reflectionProvenance.episode_ids,
+          source_episode_ids: traitEvidenceEpisodeIds,
           turn_completed_ts: this.clock.now(),
           audience_entity_id: context.audienceEntityId ?? null,
         },
@@ -375,4 +419,89 @@ export class Reflector {
 
     return nextWorkingMemory;
   }
+
+  private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
+    if (
+      this.llmClient === undefined ||
+      this.model === undefined ||
+      context.selfSnapshot.goals.length === 0
+    ) {
+      return {
+        advanced_goals: [],
+      };
+    }
+
+    const response = await this.llmClient.complete({
+      model: this.model,
+      system: [
+        "You are Borg's post-turn reflector. Read the completed turn and active goals, then emit only the structured reflection tool.",
+        "Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
+      ].join("\n"),
+      messages: [
+        {
+          role: "user",
+          content: JSON.stringify({
+            user_message: context.userMessage,
+            agent_response: context.actionResult.response,
+            active_goals: context.selfSnapshot.goals.map((goal) => ({
+              goal_id: goal.id,
+              description: goal.description,
+              progress_notes: goal.progress_notes,
+            })),
+          }),
+        },
+      ],
+      tools: [REFLECTION_TOOL],
+      tool_choice: { type: "tool", name: REFLECTION_TOOL_NAME },
+      max_tokens: this.maxTokens,
+      budget: "reflection",
+    });
+    const toolCall = response.tool_calls.find((call) => call.name === REFLECTION_TOOL_NAME);
+
+    if (toolCall === undefined) {
+      return {
+        advanced_goals: [],
+      };
+    }
+
+    const parsed = reflectionOutputSchema.safeParse(toolCall.input);
+
+    return parsed.success
+      ? parsed.data
+      : {
+          advanced_goals: [],
+        };
+  }
+}
+
+function selectTraitEvidenceEpisodeIds(
+  deliberationResult: DeliberationResult,
+  retrievedEpisodes: readonly RetrievedEpisode[],
+): RetrievedEpisode["episode"]["id"][] {
+  if (
+    deliberationResult.path !== "system_2" ||
+    deliberationResult.referencedEpisodeIds === null ||
+    deliberationResult.referencedEpisodeIds.length === 0
+  ) {
+    return [];
+  }
+
+  const retrievedIds = new Map(
+    retrievedEpisodes.map((result) => [result.episode.id, result.episode.id]),
+  );
+  const selected: RetrievedEpisode["episode"]["id"][] = [];
+  const seen = new Set<string>();
+
+  for (const referencedId of deliberationResult.referencedEpisodeIds) {
+    const retrievedId = retrievedIds.get(referencedId as RetrievedEpisode["episode"]["id"]);
+
+    if (retrievedId === undefined || seen.has(retrievedId)) {
+      continue;
+    }
+
+    seen.add(retrievedId);
+    selected.push(retrievedId);
+  }
+
+  return selected;
 }

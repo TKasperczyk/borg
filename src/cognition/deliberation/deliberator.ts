@@ -132,6 +132,7 @@ export class Deliberator {
         usage: response.usage,
         decision_reason: decision.reason,
         retrievedEpisodes: [...context.retrievalResult],
+        referencedEpisodeIds: null,
         thoughtsPersisted: false,
       };
     }
@@ -227,6 +228,7 @@ export class Deliberator {
         ...context.retrievalResult,
         ...secondaryRetrieval,
       ]),
+      referencedEpisodeIds: plan?.referenced_episode_ids ?? null,
       thoughtsPersisted,
     };
   }

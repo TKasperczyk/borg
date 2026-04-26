@@ -231,6 +231,7 @@ describe("Sprint 28 integration", () => {
                 tensions: [],
                 voice_note: "Speak honestly about uncertainty.",
                 uncertainty: "high",
+                referenced_episode_ids: [],
               },
             },
           ],

@@ -16,6 +16,7 @@ import {
   type SessionId,
   type StreamEntryId,
 } from "../util/ids.js";
+import { NOOP_TRACER, type TurnTracer } from "../cognition/tracing/tracer.js";
 
 const INDEXED_CITATION_READ_CHUNK_SIZE_BYTES = 64 * 1024;
 const NEWLINE_BYTE = 0x0a;
@@ -23,6 +24,7 @@ const NEWLINE_BYTE = 0x0a;
 export type CitationResolverOptions = {
   dataDir: string;
   entryIndex?: StreamEntryIndexRepository;
+  tracer?: TurnTracer;
 };
 
 function parseSessionIdFromFilename(filename: string): SessionId | null {
@@ -40,7 +42,11 @@ function parseSessionIdFromFilename(filename: string): SessionId | null {
 }
 
 export class CitationResolver {
-  constructor(private readonly options: CitationResolverOptions) {}
+  private readonly tracer: TurnTracer;
+
+  constructor(private readonly options: CitationResolverOptions) {
+    this.tracer = options.tracer ?? NOOP_TRACER;
+  }
 
   listSessionIds(): SessionId[] {
     const streamDir = getStreamDirectory(this.options.dataDir);
@@ -138,10 +144,29 @@ export class CitationResolver {
   resolveCitationChainFromMap(
     sourceStreamIds: readonly StreamEntryId[],
     entries: ReadonlyMap<string, StreamEntry>,
+    traceTurnId?: string,
   ): StreamEntry[] {
-    return sourceStreamIds
-      .map((sourceId) => entries.get(sourceId))
-      .filter((entry): entry is StreamEntry => entry !== undefined);
+    const missingIds: string[] = [];
+    const chain = sourceStreamIds.map((sourceId) => {
+      const entry = entries.get(sourceId);
+
+      if (entry !== undefined) {
+        return entry;
+      }
+
+      missingIds.push(sourceId);
+      return createUnresolvedCitationEntry(sourceId);
+    });
+
+    if (missingIds.length > 0 && this.tracer.enabled && traceTurnId !== undefined) {
+      this.tracer.emit("citation_unresolved", {
+        turnId: traceTurnId,
+        missingIds,
+        resolvedCount: chain.length - missingIds.length,
+      });
+    }
+
+    return chain;
   }
 
   private async scanCitationEntries(
@@ -244,4 +269,15 @@ export class CitationResolver {
       return null;
     }
   }
+}
+
+function createUnresolvedCitationEntry(sourceId: StreamEntryId): StreamEntry {
+  return {
+    id: sourceId,
+    timestamp: 0,
+    kind: "internal_event",
+    content: `[citation unresolved: ${sourceId}]`,
+    session_id: DEFAULT_SESSION_ID,
+    compressed: false,
+  };
 }

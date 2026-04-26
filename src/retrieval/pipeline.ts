@@ -211,6 +211,7 @@ export class RetrievalPipeline {
       const citationChain = citationResolver.resolveCitationChainFromMap(
         item.candidate.episode.source_stream_ids,
         citationEntries,
+        options.traceTurnId,
       );
       const result = buildRetrievedEpisode(
         item.candidate,
@@ -333,6 +334,7 @@ export class RetrievalPipeline {
   private createCitationResolver(): CitationResolver {
     const options: CitationResolverOptions = {
       dataDir: this.options.dataDir,
+      tracer: this.tracer,
     };
 
     if (this.options.entryIndex !== undefined) {

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SuppressionSet, computeWeights } from "../cognition/attention/index.js";
+import { summarizeRetrievedEpisodes } from "../cognition/deliberation/prompt/retrieval.js";
+import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import {
   StreamEntryIndexRepository,
@@ -185,6 +187,78 @@ describe("retrieval pipeline", () => {
       }),
     ]);
     expect(repo.getStats("ep_aaaaaaaaaaaaaaaa" as Episode["id"])?.retrieval_count).toBe(1);
+  });
+
+  it("keeps unresolved citation markers in rendered citation chains and traces them", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(2_000),
+    });
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const resolvedEntry = await writer.append({
+      kind: "user_msg",
+      content: "planning kickoff",
+    });
+    const missingId = "strm_cccccccccccccccc" as Episode["source_stream_ids"][number];
+
+    await repo.insert({
+      ...createEpisode("ep_aaaaaaaaaaaaaaaa", resolvedEntry.id, [1, 0, 0, 0]),
+      source_stream_ids: [resolvedEntry.id, missingId],
+    });
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: repo,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+      tracer,
+    });
+
+    const results = await pipeline.search("planning", {
+      limit: 1,
+      traceTurnId: "turn-citations",
+    });
+    const rendered = summarizeRetrievedEpisodes("Retrieved context", results);
+
+    expect(results[0]?.citationChain.map((entry) => entry.content)).toEqual([
+      "planning kickoff",
+      `[citation unresolved: ${missingId}]`,
+    ]);
+    expect(rendered).toContain("planning kickoff");
+    expect(rendered).toContain(`[citation unresolved: ${missingId}]`);
+    expect(tracer.emit).toHaveBeenCalledWith("citation_unresolved", {
+      turnId: "turn-citations",
+      missingIds: [missingId],
+      resolvedCount: 1,
+    });
   });
 
   it("defaults search to public-only visibility unless cross-audience is explicit", async () => {

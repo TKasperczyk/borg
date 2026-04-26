@@ -20,6 +20,28 @@ import { Borg } from "./borg.js";
 
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
 
+function createTurnPlanResponse(referencedEpisodeIds: string[] = []) {
+  return {
+    text: "",
+    input_tokens: 8,
+    output_tokens: 4,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_plan",
+        name: "EmitTurnPlan",
+        input: {
+          uncertainty: "",
+          verification_steps: [],
+          tensions: [],
+          voice_note: "",
+          referenced_episode_ids: referencedEpisodeIds,
+        },
+      },
+    ],
+  };
+}
+
 class ScriptedEmbeddingClient implements EmbeddingClient {
   async embed(text: string): Promise<Float32Array> {
     return this.vector(text);
@@ -940,6 +962,7 @@ describe("Borg", () => {
                 verification_steps: ["check pnpm lockfile"],
                 tensions: [],
                 voice_note: "",
+                referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
               },
             },
           ],
@@ -950,6 +973,26 @@ describe("Borg", () => {
           output_tokens: 10,
           stop_reason: "end_turn",
           tool_calls: [],
+        },
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_reflection",
+              name: "EmitTurnReflection",
+              input: {
+                advanced_goals: [
+                  {
+                    goal_id: "goal_aaaaaaaaaaaaaaaa",
+                    evidence: "Reran the Atlas release stabilization plan.",
+                  },
+                ],
+              },
+            },
+          ],
         },
       ],
     });
@@ -984,6 +1027,7 @@ describe("Borg", () => {
 
     try {
       const goal = borg.self.goals.add({
+        id: "goal_aaaaaaaaaaaaaaaa" as never,
         description: "stabilize atlas release",
         priority: 5,
         provenance: { kind: "manual" },
@@ -1001,7 +1045,7 @@ describe("Borg", () => {
       expect(borg.workmem.load().turn_counter).toBe(1);
       expect(borg.self.goals.list({ status: "active" })[0]?.id).toBe(goal.id);
       expect(borg.self.goals.list({ status: "active" })[0]?.progress_notes).toContain(
-        "Heuristic turn progress",
+        "Reran the Atlas release stabilization plan.",
       );
       expect(borg.self.goals.list({ status: "active" })[0]?.provenance).toEqual({
         kind: "episodes",
@@ -1047,6 +1091,7 @@ describe("Borg", () => {
                 verification_steps: ["check pnpm lockfile"],
                 tensions: [],
                 voice_note: "",
+                referenced_episode_ids: [],
               },
             },
           ],
@@ -1280,13 +1325,7 @@ describe("Borg", () => {
     const llm = new FakeLLMClient({
       responses: [
         // S2 planning (Haiku)
-        {
-          text: "List the commitments that apply before answering.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
         // S2 final (Sonnet) -- refusal-only, judge will find no violations
         {
           text: "I can't discuss Atlas or Borealis with Sam.",
@@ -1819,6 +1858,7 @@ describe("Borg", () => {
                   verification_steps: ["compare Atlas evidence"],
                   tensions: [],
                   voice_note: "",
+                  referenced_episode_ids: [],
                 },
               },
             ],
@@ -2095,6 +2135,7 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createTurnPlanResponse([]),
           {
             text: "Warm, supportive reply for Sam.",
             input_tokens: 8,
@@ -2102,24 +2143,7 @@ describe("Borg", () => {
             stop_reason: "end_turn",
             tool_calls: [],
           },
-          {
-            text: "",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "tool_use",
-            tool_calls: [
-              {
-                id: "toolu_social_plan",
-                name: "EmitTurnPlan",
-                input: {
-                  uncertainty: "",
-                  verification_steps: [],
-                  tensions: [],
-                  voice_note: "",
-                },
-              },
-            ],
-          },
+          createTurnPlanResponse([]),
           {
             text: "I hear that landed badly.",
             input_tokens: 8,
@@ -2419,6 +2443,7 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
           {
             text: "Here is a warmer Atlas update.",
             input_tokens: 8,
@@ -2455,6 +2480,7 @@ describe("Borg", () => {
     try {
       await borg.turn({
         userMessage: "Can you make the Atlas update sound warmer?",
+        stakes: "high",
       });
 
       expect(borg.self.traits.list()).toEqual([]);
@@ -2571,6 +2597,7 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
           {
             text: "Here is a warmer Atlas update.",
             input_tokens: 8,
@@ -2607,6 +2634,7 @@ describe("Borg", () => {
     try {
       await borg.turn({
         userMessage: "Can you make the Atlas update sound warmer?",
+        stakes: "high",
       });
 
       clock.advance(1_000);
@@ -2698,6 +2726,7 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
           {
             text: "Here is a warmer Atlas update.",
             input_tokens: 8,
@@ -2734,6 +2763,7 @@ describe("Borg", () => {
     try {
       await borg.turn({
         userMessage: "Can you make the Atlas update sound warmer?",
+        stakes: "high",
       });
 
       const pendingAfterFirst = borg.workmem.load().pending_trait_attribution;
@@ -2895,6 +2925,7 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
           {
             text: "Here is a warmer Atlas update.",
             input_tokens: 8,
@@ -2945,6 +2976,7 @@ describe("Borg", () => {
     try {
       await borg.turn({
         userMessage: "Can you make the Atlas update sound warmer?",
+        stakes: "high",
       });
 
       const pendingAfterFirst = borg.workmem.load().pending_trait_attribution;
@@ -3048,6 +3080,7 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
           {
             text: "Here is a warmer Atlas update.",
             input_tokens: 8,
@@ -3084,6 +3117,7 @@ describe("Borg", () => {
     try {
       await borg.turn({
         userMessage: "Can you make the Atlas update sound warmer?",
+        stakes: "high",
       });
 
       clock.advance(60 * 60 * 1_000 + 1);
@@ -3186,6 +3220,7 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
           {
             text: "Here is a warmer Atlas update for Sam.",
             input_tokens: 8,
@@ -3222,6 +3257,7 @@ describe("Borg", () => {
     try {
       await borg.turn({
         userMessage: "Can you make the Atlas update sound warmer?",
+        stakes: "high",
         audience: "Sam",
       });
 

@@ -77,13 +77,14 @@ function phaseFor(event: string): Phase {
     return "perception";
   }
 
-  if (event.startsWith("retrieval_")) {
+  if (event.startsWith("retrieval_") || event === "citation_unresolved") {
     return "retrieval";
   }
 
   if (
     event.startsWith("llm_call_") ||
     event.startsWith("plan_") ||
+    event === "s2_planner_exhausted" ||
     event === "path_selected"
   ) {
     return "deliberation";

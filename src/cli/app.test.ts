@@ -1210,11 +1210,23 @@ describe("cli", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: "Check the Atlas deploy assumptions before answering.",
+          text: "",
           input_tokens: 10,
           output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_cli",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: ["check the Atlas deploy assumptions"],
+                tensions: [],
+                voice_note: "",
+                referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+              },
+            },
+          ],
         },
         {
           text: "Rerun pnpm install, then redeploy Atlas. Next step: redeploy Atlas.",

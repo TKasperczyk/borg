@@ -116,6 +116,7 @@ export type DeliberationResult = {
   usage: DeliberationUsage;
   decision_reason: string;
   retrievedEpisodes: RetrievedEpisode[];
+  referencedEpisodeIds: readonly string[] | null;
   thoughtsPersisted: boolean;
 };
 

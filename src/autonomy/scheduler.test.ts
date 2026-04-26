@@ -67,6 +67,7 @@ describe("AutonomyScheduler", () => {
           stop_reason: "end_turn",
         },
         retrievedEpisodeIds: [],
+        referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
         agentMessageId: "strm_agent_result",
@@ -184,6 +185,7 @@ describe("AutonomyScheduler", () => {
             stop_reason: "end_turn",
           },
           retrievedEpisodeIds: [],
+          referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
           agentMessageId: "strm_agent_budget",
@@ -498,6 +500,7 @@ describe("AutonomyScheduler", () => {
             stop_reason: "end_turn";
           };
           retrievedEpisodeIds: [];
+          referencedEpisodeIds: [];
           intents: [];
           toolCalls: [];
           agentMessageId: string;
@@ -514,6 +517,7 @@ describe("AutonomyScheduler", () => {
         stop_reason: "end_turn";
       };
       retrievedEpisodeIds: [];
+      referencedEpisodeIds: [];
       intents: [];
       toolCalls: [];
       agentMessageId: string;
@@ -569,6 +573,7 @@ describe("AutonomyScheduler", () => {
         stop_reason: "end_turn",
       },
       retrievedEpisodeIds: [],
+      referencedEpisodeIds: [],
       intents: [],
       toolCalls: [],
       agentMessageId: "strm_stop_wait",
@@ -622,6 +627,7 @@ describe("AutonomyScheduler", () => {
             stop_reason: "end_turn";
           };
           retrievedEpisodeIds: [];
+          referencedEpisodeIds: [];
           intents: [];
           toolCalls: [];
           agentMessageId: string;
@@ -638,6 +644,7 @@ describe("AutonomyScheduler", () => {
         stop_reason: "end_turn";
       };
       retrievedEpisodeIds: [];
+      referencedEpisodeIds: [];
       intents: [];
       toolCalls: [];
       agentMessageId: string;
@@ -690,6 +697,7 @@ describe("AutonomyScheduler", () => {
         stop_reason: "end_turn",
       },
       retrievedEpisodeIds: [],
+      referencedEpisodeIds: [],
       intents: [],
       toolCalls: [],
       agentMessageId: "strm_direct_stop_wait",
@@ -741,6 +749,7 @@ describe("AutonomyScheduler", () => {
           stop_reason: "end_turn",
         },
         retrievedEpisodeIds: [],
+        referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
         agentMessageId: "strm_agent_result",
@@ -842,6 +851,7 @@ describe("AutonomyScheduler", () => {
             stop_reason: "end_turn",
           },
           retrievedEpisodeIds: [],
+          referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
           agentMessageId: "strm_event_a",
@@ -858,6 +868,7 @@ describe("AutonomyScheduler", () => {
             stop_reason: "end_turn",
           },
           retrievedEpisodeIds: [],
+          referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
           agentMessageId: "strm_event_b",
@@ -972,6 +983,7 @@ describe("AutonomyScheduler", () => {
             stop_reason: "end_turn",
           },
           retrievedEpisodeIds: [],
+          referencedEpisodeIds: [],
           intents: [],
           toolCalls: [],
           agentMessageId: "strm_mixed_sources",

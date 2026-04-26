@@ -36,6 +36,11 @@ const turnPlanSchema = z.object({
     .describe(
       "How the voice and posture should land for this specific turn. Empty string if default voice fits.",
     ),
+  referenced_episode_ids: z
+    .array(z.string())
+    .describe(
+      "List the episode_ids from borg_retrieved_episodes that you actually used as evidence; empty if none were drawn on.",
+    ),
 });
 
 export type TurnPlan = z.infer<typeof turnPlanSchema>;
@@ -45,9 +50,12 @@ export const TURN_PLAN_TOOL_NAME = "EmitTurnPlan";
 const TURN_PLAN_TOOL: LLMToolDefinition = {
   name: TURN_PLAN_TOOL_NAME,
   description:
-    "Emit a structured plan for this reflective/high-stakes turn before the final response. The plan is passed back to you in the final-response call so you can execute against it.",
+    "Emit a structured plan for this reflective/high-stakes turn before the final response. The plan is passed back to you in the final-response call so you can execute against it. List the episode_ids from borg_retrieved_episodes that you actually used as evidence; empty if none were drawn on.",
   inputSchema: toToolInputSchema(turnPlanSchema),
 };
+
+const PLANNER_RETRY_HINT =
+  "Your previous response did not include the required EmitTurnPlan tool_use block. Emit one now -- this is the only way to complete the plan step.";
 
 export type RunS2PlannerOptions = {
   llmClient: LLMClient;
@@ -83,19 +91,84 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     .filter((section): section is string => section !== null)
     .join("\n\n");
   const tools = [TURN_PLAN_TOOL];
+  let result = await callPlannerAttempt(options, systemPrompt, tools, options.dialogueMessages);
+  let usage = result.usage;
 
+  if (result.extraction.plan === null) {
+    result = await callPlannerAttempt(options, systemPrompt, tools, [
+      ...options.dialogueMessages,
+      {
+        role: "user",
+        content: PLANNER_RETRY_HINT,
+      },
+    ]);
+    usage = aggregatePlannerUsage(usage, result.usage);
+  }
+
+  if (
+    result.extraction.plan === null &&
+    options.tracer?.enabled === true &&
+    options.turnId !== undefined
+  ) {
+    options.tracer.emit("s2_planner_exhausted", {
+      turnId: options.turnId,
+      attempts: 2,
+      lastResponseShape: summarizePlannerResponseShape(result.planner),
+    });
+  }
+
+  return {
+    plan: result.extraction.plan,
+    reasoning: result.planner.text,
+    usage,
+  };
+}
+
+type PlannerAttemptResult = {
+  planner: Awaited<ReturnType<LLMClient["complete"]>>;
+  extraction: ExtractTurnPlanResult;
+  usage: DeliberationUsage;
+};
+
+function aggregatePlannerUsage(
+  current: DeliberationUsage,
+  next: DeliberationUsage,
+): DeliberationUsage {
+  return {
+    input_tokens: current.input_tokens + next.input_tokens,
+    output_tokens: current.output_tokens + next.output_tokens,
+    stop_reason: next.stop_reason,
+  };
+}
+
+function summarizePlannerResponseShape(planner: Awaited<ReturnType<LLMClient["complete"]>>) {
+  return {
+    textLength: planner.text.length,
+    toolUseBlocks: planner.tool_calls.map((call) => ({
+      id: call.id,
+      name: call.name,
+    })),
+  };
+}
+
+async function callPlannerAttempt(
+  options: RunS2PlannerOptions,
+  systemPrompt: string,
+  tools: readonly LLMToolDefinition[],
+  messages: readonly LLMMessage[],
+): Promise<PlannerAttemptResult> {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("llm_call_started", {
       turnId: options.turnId,
       label: "s2_planner",
       model: options.model,
-      promptCharCount: countCompletePromptChars(systemPrompt, options.dialogueMessages),
+      promptCharCount: countCompletePromptChars(systemPrompt, messages),
       toolSchemas: summarizeToolSchemas(tools),
       ...(options.tracer.includePayloads
         ? {
             prompt: toTraceJsonValue({
               system: systemPrompt,
-              messages: options.dialogueMessages,
+              messages,
               tools,
             }),
           }
@@ -106,7 +179,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
   const planner = await options.llmClient.complete({
     model: options.model,
     system: systemPrompt,
-    messages: options.dialogueMessages,
+    messages,
     tools,
     tool_choice: { type: "tool", name: TURN_PLAN_TOOL_NAME },
     max_tokens: options.maxTokens,
@@ -118,13 +191,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     options.tracer.emit("llm_call_response", {
       turnId: options.turnId,
       label: "s2_planner",
-      responseShape: {
-        textLength: planner.text.length,
-        toolUseBlocks: planner.tool_calls.map((call) => ({
-          id: call.id,
-          name: call.name,
-        })),
-      },
+      responseShape: summarizePlannerResponseShape(planner),
       stopReason: planner.stop_reason,
       usage: {
         inputTokens: planner.input_tokens,
@@ -147,8 +214,8 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
   }
 
   return {
-    plan: extraction.plan,
-    reasoning: planner.text,
+    planner,
+    extraction,
     usage: {
       input_tokens: planner.input_tokens,
       output_tokens: planner.output_tokens,

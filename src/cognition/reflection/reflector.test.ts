@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { SuppressionSet } from "../attention/index.js";
 import { Reflector } from "./reflector.js";
+import { FakeLLMClient } from "../../llm/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
@@ -24,6 +25,54 @@ import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
 
+function createReflectionResponse(
+  advancedGoals: Array<{ goal_id: string; evidence: string }> = [],
+) {
+  return {
+    text: "",
+    input_tokens: 8,
+    output_tokens: 4,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_reflection",
+        name: "EmitTurnReflection",
+        input: {
+          advanced_goals: advancedGoals,
+        },
+      },
+    ],
+  };
+}
+
+function createRetrievedEpisode(
+  episode: RetrievedEpisode["episode"],
+  score = 0.8,
+): RetrievedEpisode {
+  return {
+    episode,
+    score,
+    scoreBreakdown: {
+      similarity: score,
+      decayedSalience: 0.4,
+      heat: 0.3,
+      goalRelevance: 0,
+      valueAlignment: 0,
+      timeRelevance: 0,
+      moodBoost: 0,
+      socialRelevance: 0,
+      entityRelevance: 0,
+      suppressionPenalty: 0,
+    },
+    citationChain: [],
+    semantic_context: {
+      supports: [],
+      contradicts: [],
+      categories: [],
+    },
+  };
+}
+
 describe("reflector", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -33,7 +82,7 @@ describe("reflector", () => {
     }
   });
 
-  it("bumps goal progress, stashes pending trait attribution, marks episode use, and ticks suppression", async () => {
+  it("bumps LLM-marked goal progress, marks episode use, skips S1 trait evidence, and ticks suppression", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new FixedClock(1_000);
     const store = new LanceDbStore({
@@ -116,8 +165,20 @@ describe("reflector", () => {
       1,
     );
 
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse([
+          {
+            goal_id: goal.id,
+            evidence: "Updated the Atlas release stabilization plan.",
+          },
+        ]),
+      ],
+    });
     const reflector = new Reflector({
       clock,
+      llmClient: llm,
+      model: "haiku",
     });
     const retrieved: RetrievedEpisode = {
       episode,
@@ -168,6 +229,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: null,
           thoughtsPersisted: true,
         },
         actionResult: {
@@ -197,15 +259,11 @@ describe("reflector", () => {
     );
 
     expect(goalsRepository.list({ status: "active" })[0]?.progress_notes).toContain(
-      "Heuristic turn progress",
+      "Updated the Atlas release stabilization plan.",
     );
     expect(episodicRepository.getStats(episode.id)?.use_count).toBe(1);
     expect(traitsRepository.list()).toEqual([]);
-    expect(reflected.pending_trait_attribution).toMatchObject({
-      trait_label: "engaged",
-      source_episode_ids: [episode.id],
-      audience_entity_id: null,
-    });
+    expect(reflected.pending_trait_attribution).toBeNull();
     expect(suppressionSet.isSuppressed(episode.id)).toBe(true);
     expect(suppressionSet.isSuppressed("ep_stale")).toBe(false);
     // Phase E removed scratchpad/recent_thoughts from working memory. The
@@ -230,8 +288,20 @@ describe("reflector", () => {
         episode_ids: ["ep_aaaaaaaaaaaaaaaa" as const],
       },
     });
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse([
+          {
+            goal_id: goal.id,
+            evidence: "Updated the deployment checklist.",
+          },
+        ]),
+      ],
+    });
     const reflector = new Reflector({
       clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
     });
 
     await reflector.reflect(
@@ -264,6 +334,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [],
+          referencedEpisodeIds: null,
           thoughtsPersisted: true,
         },
         actionResult: {
@@ -310,6 +381,87 @@ describe("reflector", () => {
         }),
       ]),
     );
+  });
+
+  it("does not update goal progress when reflection output is empty even if text overlaps", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(5_000),
+    });
+    cleanup.push(harness.cleanup);
+
+    const goal = harness.goalsRepository.add({
+      description: "stabilize atlas release",
+      priority: 5,
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    await reflector.reflect(
+      {
+        userMessage: "We need to stabilize the Atlas release.",
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: "Atlas",
+          hot_entities: ["Atlas"],
+          pending_intents: [],
+          suppressed: [],
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: harness.valuesRepository.list(),
+          goals: [goal],
+          traits: harness.traitsRepository.list(),
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "To stabilize the Atlas release, we should discuss the risk.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          thoughtsPersisted: true,
+        },
+        actionResult: {
+          response: "To stabilize the Atlas release, we should discuss the risk.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: "Atlas",
+            hot_entities: ["Atlas"],
+            pending_intents: [],
+            suppressed: [],
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(),
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
   });
 
   it("counts an episode as used when the response echoes title or narrative tokens", async () => {
@@ -428,6 +580,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: [episode.id],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -574,6 +727,7 @@ describe("reflector", () => {
           },
           decision_reason: "low confidence",
           retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: null,
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -729,6 +883,7 @@ describe("reflector", () => {
           },
           decision_reason: "low confidence",
           retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: null,
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -853,6 +1008,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: [episode.id],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -923,6 +1079,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: [episode.id],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1038,6 +1195,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: [episode.id],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1108,6 +1266,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: null,
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1134,6 +1293,295 @@ describe("reflector", () => {
 
     expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
     expect(secondTurnMemory.last_selected_skill_id).toBe(skill.id);
+  });
+
+  it("uses planner-referenced retrieved episodes for S2 trait evidence", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const episodeA = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        id: "ep_aaaaaaaaaaaaaaaa" as never,
+        title: "Planning sync A",
+      }),
+    );
+    const episodeB = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        id: "ep_bbbbbbbbbbbbbbbb" as never,
+        title: "Planning sync B",
+      }),
+    );
+    const retrievedA = createRetrievedEpisode(episodeA);
+    const retrievedB = createRetrievedEpisode(episodeB);
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+
+    const reflected = await reflector.reflect(
+      {
+        userMessage: "Let's work through the plan.",
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: null,
+          hot_entities: [],
+          pending_intents: [],
+          pending_trait_attribution: null,
+          suppressed: [],
+          mood: null,
+          last_selected_skill_id: null,
+          last_selected_skill_turn: null,
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_2",
+          response: "Use both planning syncs as evidence.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "reflective",
+          retrievedEpisodes: [retrievedA, retrievedB],
+          referencedEpisodeIds: [episodeA.id, episodeB.id],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Use both planning syncs as evidence.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: null,
+            hot_entities: [],
+            pending_intents: [],
+            pending_trait_attribution: null,
+            suppressed: [],
+            mood: null,
+            last_selected_skill_id: null,
+            last_selected_skill_turn: null,
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [retrievedA, retrievedB],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_trait_attribution).toMatchObject({
+      trait_label: "engaged",
+      source_episode_ids: [episodeA.id, episodeB.id],
+    });
+  });
+
+  it("does not attach S2 trait evidence when the planner referenced no episodes", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const episode = await harness.episodicRepository.insert(createEpisodeFixture());
+    const retrieved = createRetrievedEpisode(episode);
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+
+    const reflected = await reflector.reflect(
+      {
+        userMessage: "Let's work through the plan.",
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: null,
+          hot_entities: [],
+          pending_intents: [],
+          pending_trait_attribution: null,
+          suppressed: [],
+          mood: null,
+          last_selected_skill_id: null,
+          last_selected_skill_turn: null,
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_2",
+          response: "No episode evidence was needed.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "reflective",
+          retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "No episode evidence was needed.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: null,
+            hot_entities: [],
+            pending_intents: [],
+            pending_trait_attribution: null,
+            suppressed: [],
+            mood: null,
+            last_selected_skill_id: null,
+            last_selected_skill_turn: null,
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_trait_attribution).toBeNull();
+  });
+
+  it("filters S2 planner-referenced trait evidence to episodes retrieved this turn", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        id: "ep_aaaaaaaaaaaaaaaa" as never,
+      }),
+    );
+    const retrieved = createRetrievedEpisode(episode);
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+
+    const reflected = await reflector.reflect(
+      {
+        userMessage: "Let's work through the plan.",
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: null,
+          hot_entities: [],
+          pending_intents: [],
+          pending_trait_attribution: null,
+          suppressed: [],
+          mood: null,
+          last_selected_skill_id: null,
+          last_selected_skill_turn: null,
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_2",
+          response: "Only the retrieved episode should count.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "reflective",
+          retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: [episode.id, "ep_bbbbbbbbbbbbbbbb"],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Only the retrieved episode should count.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: null,
+            hot_entities: [],
+            pending_intents: [],
+            pending_trait_attribution: null,
+            suppressed: [],
+            mood: null,
+            last_selected_skill_id: null,
+            last_selected_skill_turn: null,
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_trait_attribution).toMatchObject({
+      trait_label: "engaged",
+      source_episode_ids: [episode.id],
+    });
   });
 
   it("does not reinforce traits when no episodes were retrieved", async () => {
@@ -1188,6 +1636,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [],
+          referencedEpisodeIds: null,
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1302,6 +1751,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: [episode.id],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1422,6 +1872,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: null,
           thoughtsPersisted: false,
         },
         actionResult: {

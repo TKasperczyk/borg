@@ -100,6 +100,7 @@ export type TurnResult = {
     stop_reason: string | null;
   };
   retrievedEpisodeIds: string[];
+  referencedEpisodeIds: string[];
   intents: IntentRecord[];
   toolCalls: ToolLoopCallRecord[];
   agentMessageId?: string;
@@ -714,6 +715,8 @@ export class TurnOrchestrator {
         }
         const reflector = new Reflector({
           clock: this.clock,
+          llmClient,
+          model: this.options.config.anthropic.models.background,
         });
         const reflectedWorkingMemory = await reflector.reflect(
           {
@@ -793,6 +796,7 @@ export class TurnOrchestrator {
           thoughts: deliberation.thoughts,
           usage: deliberation.usage,
           retrievedEpisodeIds: deliberation.retrievedEpisodes.map((result) => result.episode.id),
+          referencedEpisodeIds: [...(deliberation.referencedEpisodeIds ?? [])],
           intents: actionResult.intents,
           toolCalls: [...actionResult.tool_calls],
           agentMessageId: persistedAgentEntry.id,

@@ -263,6 +263,7 @@ describe("deliberator", () => {
                 verification_steps: [],
                 tensions: [],
                 voice_note: "",
+                referenced_episode_ids: [],
               },
             },
           ],
@@ -664,11 +665,23 @@ describe("deliberator", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: "Think about what this reveals about my current pattern.",
+          text: "",
           input_tokens: 8,
           output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_reflective",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+                referenced_episode_ids: [],
+              },
+            },
+          ],
         },
         {
           text: "Reflective answer",
@@ -929,11 +942,23 @@ describe("deliberator", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: "Plan briefly.",
+          text: "",
           input_tokens: 8,
           output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_empty_sections",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+                referenced_episode_ids: [],
+              },
+            },
+          ],
         },
         {
           text: "Compressed answer",
@@ -1143,11 +1168,23 @@ describe("deliberator", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: "Think through the uncertainty first.",
+          text: "",
           input_tokens: 8,
           output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_open_questions",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+                referenced_episode_ids: [],
+              },
+            },
+          ],
         },
         {
           text: "Reflective answer with open questions in view.",
@@ -1230,6 +1267,7 @@ describe("deliberator", () => {
                 verification_steps: ["check the remembered warning"],
                 tensions: [],
                 voice_note: "",
+                referenced_episode_ids: [],
               },
             },
           ],
@@ -1298,6 +1336,7 @@ describe("deliberator", () => {
                 verification_steps: [],
                 tensions: [],
                 voice_note: forgedVoiceNote,
+                referenced_episode_ids: [],
               },
             },
           ],
@@ -1354,11 +1393,23 @@ describe("deliberator", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: "Compare the conflicting retrieved facts before answering.",
+          text: "",
           input_tokens: 8,
           output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_contradiction",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+                referenced_episode_ids: [],
+              },
+            },
+          ],
         },
         {
           text: "Resolved contradiction answer",
@@ -1432,11 +1483,23 @@ describe("deliberator", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
-          text: "Plan briefly.",
+          text: "",
           input_tokens: 8,
           output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_provenance",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+                referenced_episode_ids: [],
+              },
+            },
+          ],
         },
         {
           text: "Boundaried answer",
@@ -1601,6 +1664,7 @@ describe("deliberator", () => {
                 verification_steps: [],
                 tensions: [],
                 voice_note: "Grounded and clear.",
+                referenced_episode_ids: [],
               },
             },
           ],
@@ -1964,6 +2028,7 @@ describe("deliberator", () => {
                 verification_steps: ["check failure mode first", "confirm rollback path"],
                 tensions: [],
                 voice_note: "",
+                referenced_episode_ids: [],
               },
             },
           ],
