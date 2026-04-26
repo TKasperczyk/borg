@@ -521,7 +521,12 @@ export class TurnOrchestrator {
 
             return correctionAudience === null || correctionAudience === audienceEntityId;
           });
-        const currentMood = this.options.moodRepository.current(sessionId);
+        const perceivedMood = workingMemory.mood ?? createNeutralAffectiveSignal();
+        const perceivedMoodActive =
+          Math.abs(perceivedMood.valence) + Math.abs(perceivedMood.arousal) > 0.3;
+        const retrievalMood = perceivedMoodActive
+          ? perceivedMood
+          : this.options.moodRepository.current(sessionId);
         const affectiveTrajectory = this.options.moodRepository.history(sessionId, {
           limit: 5,
         });
@@ -531,7 +536,7 @@ export class TurnOrchestrator {
           currentGoals: selfSnapshot.goals,
           hasActiveValues: activeValues.length > 0,
           hasTemporalCue: perception.temporalCue !== null,
-          moodActive: Math.abs(currentMood.valence) + Math.abs(currentMood.arousal) > 0.3,
+          moodActive: Math.abs(retrievalMood.valence) + Math.abs(retrievalMood.arousal) > 0.3,
           audienceTrust: audienceProfile?.trust ?? null,
         });
         const retrievalOptions: RetrievalSearchOptions = {
@@ -542,7 +547,7 @@ export class TurnOrchestrator {
           activeValues,
           temporalCue: perception.temporalCue,
           strictTimeRange: perception.temporalCue !== null,
-          moodState: currentMood,
+          moodState: retrievalMood,
           audienceProfile,
           audienceTerms: isSelfAudience
             ? []

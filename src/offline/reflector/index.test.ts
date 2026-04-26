@@ -104,6 +104,18 @@ describe("reflector process", () => {
       await harness.episodicRepository.insert(episode);
     }
 
+    const evidenceAnchor = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          kind: "entity",
+          label: "Rollback plan",
+          description: "A rollback plan extracted from the source episode.",
+          source_episode_ids: [episodes[0]!.id],
+          confidence: 0.8,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
     const process = new ReflectorProcess({
       semanticNodeRepository: harness.semanticNodeRepository,
       semanticEdgeRepository: harness.semanticEdgeRepository,
@@ -152,6 +164,12 @@ describe("reflector process", () => {
           evidence_cluster_key: "public:shared|tag:deploy-pattern",
           evidence_cluster_size: episodes.length,
           reflector_pending_insight: expect.objectContaining({
+            candidate_support_edges: [
+              expect.objectContaining({
+                target_node_id: evidenceAnchor.id,
+                source_episode_ids: [episodes[0]!.id],
+              }),
+            ],
             evidence_cluster: expect.objectContaining({
               key: "public:shared|tag:deploy-pattern",
               size: episodes.length,
@@ -175,7 +193,14 @@ describe("reflector process", () => {
     expect(
       nodes.filter((node) => node.kind === "proposition" && /^Evidence cluster /.test(node.label)),
     ).toEqual([]);
-    expect(harness.semanticEdgeRepository.listEdges({ relation: "supports" })).toEqual([]);
+    const supportEdges = harness.semanticEdgeRepository.listEdges({ relation: "supports" });
+    expect(supportEdges).toEqual([
+      expect.objectContaining({
+        from_node_id: insightNode?.id,
+        to_node_id: evidenceAnchor.id,
+        evidence_episode_ids: [episodes[0]!.id],
+      }),
+    ]);
 
     const afterRetrieval = await harness.retrievalPipeline.searchWithContext(
       "Deploys stabilize when rollback plans are documented",
@@ -200,7 +225,13 @@ describe("reflector process", () => {
     expect(harness.semanticEdgeRepository.listEdges({ relation: "supports" })).toEqual([]);
     expect(
       harness.semanticEdgeRepository.listEdges({ relation: "supports", includeInvalid: true }),
-    ).toEqual([]);
+    ).toEqual([
+      expect.objectContaining({
+        id: supportEdges[0]?.id,
+        valid_to: expect.any(Number),
+        invalidated_by_process: "maintenance",
+      }),
+    ]);
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
   });
 

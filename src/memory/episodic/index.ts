@@ -18,6 +18,7 @@ export { episodicMigrations } from "./migrations.js";
 export {
   EpisodicRepository,
   createEpisodesTableSchema,
+  type EpisodeGetOptions,
   type EpisodicRepositoryOptions,
   type ReconciliationReport,
 } from "./repository.js";

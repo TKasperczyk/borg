@@ -154,6 +154,24 @@ describe("episodic repository", () => {
     expect(await harness.repo.get(second.id)).toBeNull();
   });
 
+  it("filters archived episodes from get unless explicitly included", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+
+    const episode = createEpisode("ep_archivedgetxxxxx", harness.clock.now());
+    await harness.repo.insert(episode);
+    harness.repo.updateStats(episode.id, {
+      archived: true,
+    });
+
+    expect(await harness.repo.get(episode.id)).toBeNull();
+    expect(await harness.repo.get(episode.id, { includeArchived: true })).toEqual(
+      expect.objectContaining({
+        id: episode.id,
+      }),
+    );
+  });
+
   it("defaults vector search to public-only visibility unless cross-audience is explicit", async () => {
     const harness = await createHarness();
     closers.push(harness.close);
@@ -335,10 +353,7 @@ describe("episodic repository", () => {
           location: null,
           start_time: clock.now(),
           end_time: clock.now() + 1_000,
-          source_stream_ids: JSON.stringify([
-            "strm_bbbbbbbbbbbbbbbb",
-            "strm_aaaaaaaaaaaaaaaa",
-          ]),
+          source_stream_ids: JSON.stringify(["strm_bbbbbbbbbbbbbbbb", "strm_aaaaaaaaaaaaaaaa"]),
           significance: 0.8,
           tags: JSON.stringify(["alpha"]),
           confidence: 0.9,
@@ -510,7 +525,14 @@ describe("episodic repository", () => {
         `INSERT INTO "values" (id, label, description, priority, created_at, last_affirmed)
          VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run("val_orphan_log_only", "Orphan log-only value", "orphan", 0.5, harness.clock.now(), null);
+      .run(
+        "val_orphan_log_only",
+        "Orphan log-only value",
+        "orphan",
+        0.5,
+        harness.clock.now(),
+        null,
+      );
     harness.db
       .prepare("INSERT INTO value_sources (value_id, episode_id) VALUES (?, ?)")
       .run("val_orphan_log_only", logOnlyOrphanEpisodeId);
@@ -600,7 +622,12 @@ describe("episodic repository", () => {
         return originalGet(id);
       });
     const statsSpy = vi
-      .spyOn(harness.repo as unknown as { updateStats(episodeId: Episode["id"], patch: unknown): unknown }, "updateStats")
+      .spyOn(
+        harness.repo as unknown as {
+          updateStats(episodeId: Episode["id"], patch: unknown): unknown;
+        },
+        "updateStats",
+      )
       .mockImplementationOnce(() => {
         throw new Error("sqlite failed");
       });

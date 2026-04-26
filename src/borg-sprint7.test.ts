@@ -198,7 +198,7 @@ describe("Borg Sprint 7", () => {
       });
       const updatedSkill = borg.skills.get(skill.id);
 
-      expect(secondTurn.retrievedEpisodeIds[0]).toBe(negativeEpisode.id);
+      expect(secondTurn.retrievedEpisodeIds[0]).toBe(positiveEpisode.id);
       expect(updatedSkill?.alpha).toBe(2);
       expect(updatedSkill?.successes).toBe(1);
     } finally {

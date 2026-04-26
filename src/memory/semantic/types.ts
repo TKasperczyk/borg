@@ -73,7 +73,11 @@ export const semanticNodePatchSchema = semanticNodeSchema
     id: true,
     created_at: true,
   })
-  .partial();
+  .partial()
+  .extend({
+    replace_aliases: z.boolean().optional(),
+    replace_source_episode_ids: z.boolean().optional(),
+  });
 
 const semanticEdgeBaseSchema = z.object({
   id: semanticEdgeIdSchema,

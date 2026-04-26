@@ -230,9 +230,9 @@ describe("Borg", () => {
     });
 
     try {
-      expect((await borg.episodic.search("planning", { limit: 5 })).map((item) => item.episode.id)).toEqual([
-        "ep_publicpublicpub1",
-      ]);
+      expect(
+        (await borg.episodic.search("planning", { limit: 5 })).map((item) => item.episode.id),
+      ).toEqual(["ep_publicpublicpub1"]);
       expect((await borg.episodic.get("ep_privateprivate01" as never))?.episode.id).toBeUndefined();
       expect(
         (await borg.episodic.search("planning", { limit: 5, audience: "Alice" })).map(
@@ -603,7 +603,11 @@ describe("Borg", () => {
           streamIngestionCoordinator?: {
             options: {
               extractor: {
-                extractFromStream(): Promise<{ inserted: number; updated: number; skipped: number }>;
+                extractFromStream(): Promise<{
+                  inserted: number;
+                  updated: number;
+                  skipped: number;
+                }>;
               };
             };
           };
@@ -715,7 +719,11 @@ describe("Borg", () => {
           streamIngestionCoordinator?: {
             options: {
               extractor: {
-                extractFromStream(): Promise<{ inserted: number; updated: number; skipped: number }>;
+                extractFromStream(): Promise<{
+                  inserted: number;
+                  updated: number;
+                  skipped: number;
+                }>;
               };
             };
           };
@@ -858,7 +866,11 @@ describe("Borg", () => {
           streamIngestionCoordinator?: {
             options: {
               extractor: {
-                extractFromStream(): Promise<{ inserted: number; updated: number; skipped: number }>;
+                extractFromStream(): Promise<{
+                  inserted: number;
+                  updated: number;
+                  skipped: number;
+                }>;
               };
             };
           };
@@ -1999,6 +2011,100 @@ describe("Borg", () => {
     }
   });
 
+  it("feeds current-turn perceived mood into retrieval before mood persistence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      },
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "We can slow down and inspect the failure.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              affectiveSignalDetector?: () => Promise<unknown>;
+              retrievalPipeline: {
+                searchWithContext: (
+                  query: string,
+                  options?: Record<string, unknown>,
+                ) => Promise<unknown>;
+              };
+            };
+          };
+        };
+      };
+      internal.deps.turnOrchestrator.options.affectiveSignalDetector = async () => ({
+        valence: -0.9,
+        arousal: 0.85,
+        dominant_emotion: "fear",
+      });
+      const searchSpy = vi.spyOn(
+        internal.deps.turnOrchestrator.options.retrievalPipeline,
+        "searchWithContext",
+      );
+
+      await borg.turn({
+        userMessage: "Atlas deploy failed and I am panicking.",
+      });
+
+      expect(searchSpy.mock.calls[0]?.[1]).toMatchObject({
+        moodState: {
+          valence: -0.9,
+          arousal: 0.85,
+          dominant_emotion: "fear",
+        },
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("keeps a turn running when social update fails and logs an internal event", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -2781,11 +2887,12 @@ describe("Borg", () => {
           };
         };
       };
-      vi.spyOn(internal.deps.turnOrchestrator.options.traitsRepository, "reinforce").mockImplementation(
-        () => {
-          throw new Error("trait exploded");
-        },
-      );
+      vi.spyOn(
+        internal.deps.turnOrchestrator.options.traitsRepository,
+        "reinforce",
+      ).mockImplementation(() => {
+        throw new Error("trait exploded");
+      });
 
       clock.advance(1_000);
       await borg.turn({
@@ -3553,12 +3660,16 @@ describe("Borg", () => {
         process: "curator",
       });
       expect(audits.length).toBeGreaterThan(0);
+      expect((await borg.episodic.get("ep_cccccccccccccccc" as never))?.episode.id).toBeUndefined();
+
+      const archiveAudit = audits.find((audit) => audit.action === "archive");
+      expect(archiveAudit).toBeDefined();
+
+      const reverted = await borg.audit.revert(archiveAudit!.id);
+      expect(reverted?.reverted_at).not.toBeNull();
       expect((await borg.episodic.get("ep_cccccccccccccccc" as never))?.episode.id).toBe(
         "ep_cccccccccccccccc",
       );
-
-      const reverted = await borg.audit.revert(audits[0]!.id);
-      expect(reverted?.reverted_at).not.toBeNull();
     } finally {
       await borg.close();
     }

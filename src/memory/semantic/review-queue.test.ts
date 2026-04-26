@@ -473,6 +473,43 @@ describe("review queue", () => {
     expect(updated?.tags).toEqual(["review", "alex"]);
   });
 
+  it("replaces semantic node source episodes when accepting misattribution repairs", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(5_500),
+    });
+    cleanup.push(harness.cleanup);
+
+    const firstEpisodeId = "ep_aaaaaaaaaaaaaaaa" as EpisodeId;
+    const secondEpisodeId = "ep_bbbbbbbbbbbbbbbb" as EpisodeId;
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Misattributed semantic node",
+        source_episode_ids: [firstEpisodeId, secondEpisodeId],
+      }),
+    );
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "misattribution",
+      refs: {
+        target_type: "semantic_node",
+        target_id: node.id,
+        patch: {
+          source_episode_ids: [firstEpisodeId],
+        },
+        proposed_provenance: {
+          kind: "offline",
+          process: "overseer",
+        },
+      },
+      reason: "semantic node attribution includes the wrong episode",
+    });
+
+    await harness.reviewQueueRepository.resolve(item.id, "accept");
+
+    expect((await harness.semanticNodeRepository.get(node.id))?.source_episode_ids).toEqual([
+      firstEpisodeId,
+    ]);
+  });
+
   it("applies temporal drift repairs to semantic nodes on accept", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(6_000),

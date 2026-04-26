@@ -396,6 +396,10 @@ export type EpisodicRepositoryOptions = {
   clock?: Clock;
 };
 
+export type EpisodeGetOptions = {
+  includeArchived?: boolean;
+};
+
 export class EpisodicRepository {
   private readonly clock: Clock;
 
@@ -609,13 +613,25 @@ export class EpisodicRepository {
     }
   }
 
-  async get(id: EpisodeId): Promise<Episode | null> {
+  async get(id: EpisodeId, options: EpisodeGetOptions = {}): Promise<Episode | null> {
     const rows = await this.table.list({
       where: `id = ${quoteSqlString(id)}`,
       limit: 1,
     });
     const row = rows[0];
-    return row === undefined ? null : fromEpisodeRow(row);
+
+    if (row === undefined) {
+      return null;
+    }
+
+    const episode = fromEpisodeRow(row);
+    const stats = this.getStats(id);
+
+    if (options.includeArchived !== true && (stats?.archived ?? false)) {
+      return null;
+    }
+
+    return episode;
   }
 
   async getMany(ids: readonly EpisodeId[]): Promise<Episode[]> {
@@ -632,7 +648,7 @@ export class EpisodicRepository {
   }
 
   async update(id: EpisodeId, patch: EpisodePatch): Promise<Episode | null> {
-    const current = await this.get(id);
+    const current = await this.get(id, { includeArchived: true });
 
     if (current === null) {
       return null;
@@ -688,7 +704,7 @@ export class EpisodicRepository {
         });
         apply();
       } catch (error) {
-        const currentAfterFailure = await this.get(id);
+        const currentAfterFailure = await this.get(id, { includeArchived: true });
 
         if (currentAfterFailure?.updated_at === parsedEpisode.data.updated_at) {
           await this.table.upsert([previousRow], { on: "id" });
@@ -712,7 +728,7 @@ export class EpisodicRepository {
   }
 
   async updateSignificance(id: EpisodeId, significance: number): Promise<Episode | null> {
-    const current = await this.get(id);
+    const current = await this.get(id, { includeArchived: true });
 
     if (current === null) {
       return null;
@@ -742,7 +758,7 @@ export class EpisodicRepository {
   }
 
   async delete(id: EpisodeId): Promise<boolean> {
-    const existing = await this.get(id);
+    const existing = await this.get(id, { includeArchived: true });
 
     if (existing === null) {
       return false;

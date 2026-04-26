@@ -18,7 +18,7 @@ import {
   type SemanticNode,
 } from "../../memory/semantic/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { createSemanticNodeId } from "../../util/ids.js";
+import { createSemanticEdgeId, createSemanticNodeId } from "../../util/ids.js";
 import { BudgetExceededError, SemanticError } from "../../util/errors.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 
@@ -81,10 +81,19 @@ const reflectorTargetSchema = z.discriminatedUnion("mode", [
   }),
 ]);
 
+const reflectorSupportEdgeCandidateSchema = z.object({
+  id: semanticEdgeIdSchema,
+  insight_node_id: semanticNodeIdSchema,
+  target_node_id: semanticNodeIdSchema,
+  source_episode_ids: z.array(episodeIdSchema).min(1),
+  confidence: z.number().min(0).max(1),
+});
+
 const reflectorPlanItemSchema = z.object({
   cluster_key: z.string().min(1),
   episode_ids: z.array(episodeIdSchema).min(1),
   target: reflectorTargetSchema,
+  candidate_support_edges: z.array(reflectorSupportEdgeCandidateSchema).default([]),
   review: z.object({
     kind: z.literal("new_insight"),
     reason: z.string().min(1),
@@ -318,6 +327,49 @@ function buildChange(item: ReflectorPlan["items"][number]): OfflineChange {
   };
 }
 
+async function buildSupportEdgeCandidates(
+  ctx: OfflineContext,
+  insightNodeId: SemanticNode["id"],
+  sourceEpisodeIds: readonly Episode["id"][],
+  confidence: number,
+): Promise<Array<z.infer<typeof reflectorSupportEdgeCandidateSchema>>> {
+  const sourceEpisodeIdSet = new Set(sourceEpisodeIds);
+  const candidateNodes = await ctx.semanticNodeRepository.list({
+    includeArchived: false,
+    limit: 1_000,
+  });
+  const evidenceByTargetNodeId = new Map<SemanticNode["id"], Episode["id"][]>();
+
+  for (const node of candidateNodes) {
+    if (node.id === insightNodeId) {
+      continue;
+    }
+
+    const evidenceEpisodeIds = node.source_episode_ids.filter((episodeId) =>
+      sourceEpisodeIdSet.has(episodeId),
+    );
+
+    if (evidenceEpisodeIds.length === 0) {
+      continue;
+    }
+
+    evidenceByTargetNodeId.set(node.id, [
+      ...(evidenceByTargetNodeId.get(node.id) ?? []),
+      ...evidenceEpisodeIds,
+    ]);
+  }
+
+  return [...evidenceByTargetNodeId.entries()].map(([targetNodeId, evidenceEpisodeIds]) =>
+    reflectorSupportEdgeCandidateSchema.parse({
+      id: createSemanticEdgeId(),
+      insight_node_id: insightNodeId,
+      target_node_id: targetNodeId,
+      source_episode_ids: [...new Set(evidenceEpisodeIds)],
+      confidence,
+    }),
+  );
+}
+
 export type ReflectorProcessOptions = {
   semanticNodeRepository: OfflineContext["semanticNodeRepository"];
   semanticEdgeRepository: OfflineContext["semanticEdgeRepository"];
@@ -460,10 +512,18 @@ export class ReflectorProcess implements OfflineProcess {
                       archived: false,
                     },
                   };
+            const nodeId = target.mode === "insert" ? target.node.id : target.node_id;
+            const candidateSupportEdges = await buildSupportEdgeCandidates(
+              ctx,
+              nodeId,
+              candidate.sourceEpisodeIds,
+              candidate.confidence,
+            );
             items.push({
               cluster_key: cluster.key,
               episode_ids: cluster.episodes.map((episode) => episode.id),
               target,
+              candidate_support_edges: candidateSupportEdges,
               review: {
                 kind: "new_insight",
                 reason:
@@ -556,6 +616,7 @@ export class ReflectorProcess implements OfflineProcess {
           evidence_cluster_size: item.episode_ids.length,
           reflector_pending_insight: {
             target: item.target,
+            candidate_support_edges: item.candidate_support_edges,
             evidence_cluster: {
               key: item.cluster_key,
               episode_ids: item.episode_ids,
@@ -578,7 +639,7 @@ export class ReflectorProcess implements OfflineProcess {
           nodeId,
           nodeCreated,
           ...(previousNode === undefined ? {} : { previousNode }),
-          edgeIds: [],
+          edgeIds: item.candidate_support_edges.map((edge) => edge.id),
           reviewItemId: reviewItem.id,
         } satisfies ReflectorReversal,
       });

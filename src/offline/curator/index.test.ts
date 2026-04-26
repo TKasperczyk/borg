@@ -235,6 +235,55 @@ describe("curator process", () => {
     expect(harness.episodicRepository.getStats(episode.id)?.heat_multiplier).toBe(1);
   });
 
+  it("skips repeat episode decay until the decay interval has elapsed", async () => {
+    const lastDecayedAt = 100 * DAY_MS;
+    const earlyHarness = await createOfflineTestHarness({
+      clock: new FixedClock(lastDecayedAt + HOUR_MS),
+    });
+    const lateHarness = await createOfflineTestHarness({
+      clock: new FixedClock(lastDecayedAt + 25 * HOUR_MS),
+    });
+    cleanup.push(earlyHarness.cleanup, lateHarness.cleanup);
+
+    for (const harness of [earlyHarness, lateHarness]) {
+      const episode = createEpisodeFixture(
+        {
+          title: "Recently decayed note",
+          created_at: lastDecayedAt - DAY_MS,
+          updated_at: lastDecayedAt - DAY_MS,
+        },
+        [0, 1, 0, 0],
+      );
+      await harness.episodicRepository.insert(episode);
+      harness.episodicRepository.updateStats(episode.id, {
+        tier: "T2",
+        retrieval_count: 10,
+        last_decayed_at: lastDecayedAt,
+      });
+    }
+
+    const earlyProcess = new CuratorProcess({
+      episodicRepository: earlyHarness.episodicRepository,
+      traitsRepository: earlyHarness.traitsRepository,
+      registry: earlyHarness.registry,
+    });
+    const lateProcess = new CuratorProcess({
+      episodicRepository: lateHarness.episodicRepository,
+      traitsRepository: lateHarness.traitsRepository,
+      registry: lateHarness.registry,
+    });
+
+    const early = await earlyProcess.run(earlyHarness.createContext(), {
+      dryRun: true,
+    });
+    const late = await lateProcess.run(lateHarness.createContext(), {
+      dryRun: true,
+    });
+
+    expect(early.changes.map((change) => change.action)).not.toContain("decay");
+    expect(late.changes.map((change) => change.action)).toContain("decay");
+  });
+
   it("decays stale traits through curator and records a trait identity event", async () => {
     const nowMs = 100 * DAY_MS;
     const harness = await createOfflineTestHarness({

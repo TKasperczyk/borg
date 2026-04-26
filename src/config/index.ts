@@ -90,6 +90,7 @@ const configFileSchema = z
             t3DemoteHeat: z.number().positive().optional(),
             archiveAgeDays: z.number().positive().optional(),
             archiveMinHeat: z.number().nonnegative().optional(),
+            episodeDecayIntervalMs: z.number().positive().optional(),
             episodeSalienceHalfLifeDays: z.number().positive().optional(),
             episodeHeatHalfLifeDays: z.number().positive().optional(),
             traitHalfLifeDays: z.number().positive().optional(),
@@ -135,10 +136,28 @@ const configFileSchema = z
         lightIntervalMs: z.number().int().positive().optional(),
         heavyIntervalMs: z.number().int().positive().optional(),
         lightProcesses: z
-          .array(z.enum(["consolidator", "reflector", "curator", "overseer", "ruminator", "self-narrator"]))
+          .array(
+            z.enum([
+              "consolidator",
+              "reflector",
+              "curator",
+              "overseer",
+              "ruminator",
+              "self-narrator",
+            ]),
+          )
           .optional(),
         heavyProcesses: z
-          .array(z.enum(["consolidator", "reflector", "curator", "overseer", "ruminator", "self-narrator"]))
+          .array(
+            z.enum([
+              "consolidator",
+              "reflector",
+              "curator",
+              "overseer",
+              "ruminator",
+              "self-narrator",
+            ]),
+          )
           .optional(),
       })
       .partial()
@@ -221,9 +240,7 @@ export const configSchema = z.object({
   defaultUser: z.string().min(1).optional(),
   perception: z.object({
     useLlmFallback: z.boolean(),
-    modeWhenLlmAbsent: z
-      .enum(["problem_solving", "relational", "reflective", "idle"])
-      .optional(),
+    modeWhenLlmAbsent: z.enum(["problem_solving", "relational", "reflective", "idle"]).optional(),
   }),
   affective: z.object({
     useLlmFallback: z.boolean(),
@@ -281,6 +298,7 @@ export const configSchema = z.object({
       t3DemoteHeat: z.number().positive(),
       archiveAgeDays: z.number().positive(),
       archiveMinHeat: z.number().nonnegative(),
+      episodeDecayIntervalMs: z.number().positive(),
       episodeSalienceHalfLifeDays: z.number().positive(),
       episodeHeatHalfLifeDays: z.number().positive(),
       traitHalfLifeDays: z.number().positive(),
@@ -421,6 +439,7 @@ export const DEFAULT_CONFIG: Config = {
       t3DemoteHeat: 3,
       archiveAgeDays: 45,
       archiveMinHeat: 1,
+      episodeDecayIntervalMs: 24 * 60 * 60 * 1_000,
       episodeSalienceHalfLifeDays: 30,
       episodeHeatHalfLifeDays: 7,
       traitHalfLifeDays: 30,
@@ -671,8 +690,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         fileConfig.perception?.useLlmFallback ??
         DEFAULT_CONFIG.perception.useLlmFallback,
       modeWhenLlmAbsent:
-        fileConfig.perception?.modeWhenLlmAbsent ??
-        DEFAULT_CONFIG.perception.modeWhenLlmAbsent,
+        fileConfig.perception?.modeWhenLlmAbsent ?? DEFAULT_CONFIG.perception.modeWhenLlmAbsent,
     },
     affective: {
       useLlmFallback:
@@ -810,6 +828,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_ARCHIVE_MIN_HEAT") ??
           fileConfig.offline?.curator?.archiveMinHeat ??
           DEFAULT_CONFIG.offline.curator.archiveMinHeat,
+        episodeDecayIntervalMs:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_DECAY_INTERVAL_MS") ??
+          fileConfig.offline?.curator?.episodeDecayIntervalMs ??
+          DEFAULT_CONFIG.offline.curator.episodeDecayIntervalMs,
         episodeSalienceHalfLifeDays:
           readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_SALIENCE_HALF_LIFE_DAYS") ??
           fileConfig.offline?.curator?.episodeSalienceHalfLifeDays ??

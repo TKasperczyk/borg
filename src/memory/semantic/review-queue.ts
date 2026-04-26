@@ -224,9 +224,18 @@ const pendingReflectorTargetSchema = z.discriminatedUnion("mode", [
   }),
 ]);
 
+const pendingReflectorSupportEdgeSchema = z.object({
+  id: semanticEdgeIdSchema,
+  insight_node_id: semanticNodeIdSchema,
+  target_node_id: semanticNodeIdSchema,
+  source_episode_ids: z.array(episodeIdSchema).min(1),
+  confidence: z.number().min(0).max(1),
+});
+
 const pendingReflectorInsightSchema = z
   .object({
     target: pendingReflectorTargetSchema,
+    candidate_support_edges: z.array(pendingReflectorSupportEdgeSchema).default([]),
     evidence_cluster: z.object({
       key: z.string().min(1),
       episode_ids: z.array(episodeIdSchema).min(1),
@@ -279,6 +288,10 @@ function deserializeReviewSemanticNode(
     ...node,
     embedding: Float32Array.from(node.embedding),
   });
+}
+
+function targetNodeId(target: z.infer<typeof pendingReflectorTargetSchema>): SemanticNode["id"] {
+  return target.mode === "insert" ? target.node.id : target.node_id;
 }
 
 function parseEvidenceProvenance(refs: Record<string, unknown>): Provenance | null {
@@ -948,27 +961,75 @@ export class ReviewQueueRepository {
       }
 
       const target = pendingReflectorInsight.data.target;
+      const candidateSupportEdges = pendingReflectorInsight.data.candidate_support_edges;
+      const insightNodeId = targetNodeId(target);
 
       if (target.mode === "insert") {
         await this.options.semanticNodeRepository.insert(
           deserializeReviewSemanticNode(target.node),
         );
-        return;
+      } else {
+        const updated = await this.options.semanticNodeRepository.update(target.node_id, {
+          description: target.patch.description,
+          confidence: target.patch.confidence,
+          source_episode_ids: target.patch.source_episode_ids,
+          last_verified_at: target.patch.last_verified_at,
+          embedding: Float32Array.from(target.patch.embedding),
+          archived: target.patch.archived,
+        });
+
+        if (updated === null) {
+          throw new SemanticError(
+            `Unknown semantic node id for pending insight: ${target.node_id}`,
+            {
+              code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
+            },
+          );
+        }
       }
 
-      const updated = await this.options.semanticNodeRepository.update(target.node_id, {
-        description: target.patch.description,
-        confidence: target.patch.confidence,
-        source_episode_ids: target.patch.source_episode_ids,
-        last_verified_at: target.patch.last_verified_at,
-        embedding: Float32Array.from(target.patch.embedding),
-        archived: target.patch.archived,
-      });
+      if (candidateSupportEdges.length > 0) {
+        if (this.options.semanticEdgeRepository === undefined) {
+          throw new SemanticError(
+            "Semantic edge repository is required for pending insight review",
+            {
+              code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
+            },
+          );
+        }
 
-      if (updated === null) {
-        throw new SemanticError(`Unknown semantic node id for pending insight: ${target.node_id}`, {
-          code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
-        });
+        for (const edge of candidateSupportEdges) {
+          if (edge.insight_node_id !== insightNodeId) {
+            throw new SemanticError(
+              "Pending insight support edge points at the wrong insight node",
+              {
+                code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
+                cause: { itemId: item.id, insightNodeId, edgeInsightNodeId: edge.insight_node_id },
+              },
+            );
+          }
+
+          const duplicate = this.options.semanticEdgeRepository.listEdges({
+            fromId: edge.insight_node_id,
+            toId: edge.target_node_id,
+            relation: "supports",
+          });
+
+          if (duplicate.length > 0) {
+            continue;
+          }
+
+          this.options.semanticEdgeRepository.addEdge({
+            id: edge.id,
+            from_node_id: edge.insight_node_id,
+            to_node_id: edge.target_node_id,
+            relation: "supports",
+            confidence: edge.confidence,
+            evidence_episode_ids: edge.source_episode_ids,
+            created_at: this.clock.now(),
+            last_verified_at: this.clock.now(),
+          });
+        }
       }
 
       return;
@@ -1102,7 +1163,11 @@ export class ReviewQueueRepository {
       });
     }
 
-    const updated = await this.options.semanticNodeRepository.update(refs.target_id, refs.patch);
+    const updated = await this.options.semanticNodeRepository.update(refs.target_id, {
+      ...refs.patch,
+      ...(refs.patch.aliases === undefined ? {} : { replace_aliases: true }),
+      ...(refs.patch.source_episode_ids === undefined ? {} : { replace_source_episode_ids: true }),
+    });
 
     if (updated === null) {
       throw new SemanticError(

@@ -139,9 +139,10 @@ describe("consolidator process", () => {
     expect(harness.episodicRepository.getStats(merged!.id)?.tier).toBe("T2");
     expect(harness.episodicRepository.getStats(first.id)?.archived).toBe(true);
     expect(harness.episodicRepository.getStats(second.id)?.archived).toBe(true);
-    expect((await harness.episodicRepository.get(first.id))?.lineage.supersedes).toContain(
-      merged?.id,
-    );
+    expect(
+      (await harness.episodicRepository.get(first.id, { includeArchived: true }))?.lineage
+        .supersedes,
+    ).toContain(merged?.id);
 
     const auditEntry = harness.auditLog.list({ process: "consolidator" })[0];
     expect(auditEntry?.action).toBe("consolidate");

@@ -594,6 +594,54 @@ describe("retrieval pipeline", () => {
     ).toBe("ep_privateepisode01");
   });
 
+  it("filters archived episodes from direct episode lookup", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(5_000),
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const episode = createEpisode(
+      "ep_archivedlookup01",
+      "strm_archivedlookup01" as never,
+      [1, 0, 0, 0],
+    );
+    await repo.insert(episode);
+    repo.updateStats(episode.id, {
+      archived: true,
+    });
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: repo,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    expect(await pipeline.getEpisode(episode.id, { crossAudience: true })).toBeNull();
+    expect(await repo.get(episode.id, { includeArchived: true })).toEqual(
+      expect.objectContaining({
+        id: episode.id,
+      }),
+    );
+  });
+
   it("rescales results with attention weights and suppression", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
@@ -869,6 +917,120 @@ describe("retrieval pipeline", () => {
         }),
       ],
     });
+  });
+
+  it("assigns nonzero confidence when search finds semantic evidence without episodes", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        ...episodicMigrations,
+        ...selfMigrations,
+        ...retrievalMigrations,
+        ...semanticMigrations,
+      ],
+    });
+    const episodeTable = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const semanticTable = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(10_000);
+    const repo = new EpisodicRepository({
+      table: episodeTable,
+      db,
+      clock,
+    });
+    const semanticNodeRepository = new SemanticNodeRepository({
+      table: semanticTable,
+      db,
+      clock,
+    });
+    const semanticEdgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const semanticGraph = new SemanticGraph({
+      nodeRepository: semanticNodeRepository,
+      edgeRepository: semanticEdgeRepository,
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const episode = createEpisode("ep_aaaaaaaaaaaaaaaa", "strm_aaaaaaaaaaaaaaaa", [1, 0, 0, 0]);
+    await repo.insert(episode);
+    repo.updateStats(episode.id, {
+      archived: true,
+    });
+    const atlas = await semanticNodeRepository.insert({
+      id: "semn_aaaaaaaaaaaaaaaa" as never,
+      kind: "entity",
+      label: "Atlas",
+      description: "Atlas entity",
+      aliases: [],
+      confidence: 0.9,
+      source_episode_ids: [episode.id],
+      created_at: 10_000,
+      updated_at: 10_000,
+      last_verified_at: 10_000,
+      embedding: Float32Array.from([0, 0, 1, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const support = await semanticNodeRepository.insert({
+      id: "semn_bbbbbbbbbbbbbbbb" as never,
+      kind: "proposition",
+      label: "Atlas deploys are steadier with rollback plans",
+      description: "Rollback plans support steadier Atlas deploys.",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [episode.id],
+      created_at: 10_000,
+      updated_at: 10_000,
+      last_verified_at: 10_000,
+      embedding: Float32Array.from([0, 0, 1, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    semanticEdgeRepository.addEdge({
+      from_node_id: atlas.id,
+      to_node_id: support.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: [episode.id],
+      created_at: 10_000,
+      last_verified_at: 10_000,
+    });
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: repo,
+      semanticNodeRepository,
+      semanticGraph,
+      dataDir: tempDir,
+      clock,
+    });
+
+    const result = await pipeline.searchWithContext("Atlas", {
+      crossAudience: true,
+      graphWalkDepth: 1,
+      limit: 1,
+    });
+
+    expect(result.episodes).toEqual([]);
+    expect(result.semantic.matched_nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: atlas.id })]),
+    );
+    expect(result.semantic.support_hits).toHaveLength(1);
+    expect(result.confidence.overall).toBeGreaterThan(0);
   });
 
   it("threads semantic as-of through graph retrieval and confidence", async () => {

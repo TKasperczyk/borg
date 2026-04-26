@@ -191,11 +191,13 @@ function buildEpisodeDecayItem(
   stats: EpisodeStats,
   nowMs: number,
 ): z.infer<typeof episodePlanItemSchema> | null {
-  if (stats.last_decayed_at === nowMs) {
+  const lastDecayedAt = stats.last_decayed_at ?? stats.promoted_at;
+  const decayIntervalMs = ctx.config.offline.curator.episodeDecayIntervalMs;
+
+  if (stats.last_decayed_at !== null && nowMs - stats.last_decayed_at < decayIntervalMs) {
     return null;
   }
 
-  const lastDecayedAt = stats.last_decayed_at ?? stats.promoted_at;
   const elapsedMs = Math.max(0, nowMs - lastDecayedAt);
   const salienceHalfLifeDays = ctx.config.offline.curator.episodeSalienceHalfLifeDays;
   const heatHalfLifeDays = ctx.config.offline.curator.episodeHeatHalfLifeDays;

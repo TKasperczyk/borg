@@ -1,6 +1,5 @@
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
-import type { MoodState } from "../memory/affective/index.js";
 import { isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
 import type {
@@ -37,6 +36,7 @@ import {
   clamp,
   scoreCandidate,
   type EpisodeScoreDefaults,
+  type RetrievalMoodState,
   type RetrievedEpisode,
   type ScoreWeights,
   type SuppressionLookup,
@@ -84,7 +84,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   asOf?: number;
   includeOpenQuestions?: boolean;
   openQuestionsLimit?: number;
-  moodState?: MoodState | null;
+  moodState?: RetrievalMoodState | null;
   audienceProfile?: SocialProfile | null;
   audienceTerms?: readonly string[];
   entityTerms?: readonly string[];

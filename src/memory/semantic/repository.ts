@@ -559,11 +559,15 @@ export class SemanticNodeRepository {
       aliases:
         parsedPatch.aliases === undefined
           ? current.aliases
-          : normalizeAliases([...current.aliases, ...parsedPatch.aliases]),
+          : parsedPatch.replace_aliases === true
+            ? normalizeAliases(parsedPatch.aliases)
+            : normalizeAliases([...current.aliases, ...parsedPatch.aliases]),
       source_episode_ids:
         parsedPatch.source_episode_ids === undefined
           ? current.source_episode_ids
-          : [...new Set([...current.source_episode_ids, ...parsedPatch.source_episode_ids])],
+          : parsedPatch.replace_source_episode_ids === true
+            ? [...new Set(parsedPatch.source_episode_ids)]
+            : [...new Set([...current.source_episode_ids, ...parsedPatch.source_episode_ids])],
       updated_at: this.clock.now(),
     });
     const previousRow = nodeToRow(current);

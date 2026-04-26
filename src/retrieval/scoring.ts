@@ -21,6 +21,8 @@ export type ScoreWeights = {
   salience: number;
 };
 
+export type RetrievalMoodState = Pick<MoodState, "valence" | "arousal">;
+
 export type RetrievedEpisode = {
   episode: Episode;
   score: number;
@@ -45,7 +47,7 @@ export type EpisodeScoringOptions = {
   attentionWeights?: AttentionWeights;
   goalDescriptions?: readonly string[];
   activeValues?: readonly ValueRecord[];
-  moodState?: MoodState | null;
+  moodState?: RetrievalMoodState | null;
   audienceProfile?: SocialProfile | null;
   audienceTerms?: readonly string[];
   entityTerms?: readonly string[];
@@ -106,7 +108,10 @@ function normalizeTerm(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function computeMoodBoost(episode: Episode, moodState: MoodState | null | undefined): number {
+function computeMoodBoost(
+  episode: Episode,
+  moodState: RetrievalMoodState | null | undefined,
+): number {
   if (
     moodState === null ||
     moodState === undefined ||

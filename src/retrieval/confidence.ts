@@ -8,7 +8,7 @@
 // from the semantic walk, so S1/S2 routing and uncertainty surfacing can key off it.
 
 import type { RetrievedEpisode } from "./scoring.js";
-import type { SemanticEdge } from "../memory/semantic/index.js";
+import type { SemanticEdge, SemanticNode } from "../memory/semantic/index.js";
 
 export type RetrievalConfidence = {
   overall: number;
@@ -23,6 +23,13 @@ export type ComputeRetrievalConfidenceInput = {
   episodes: readonly RetrievedEpisode[];
   contradictionPresent: boolean;
   contradictionEdges?: readonly Pick<SemanticEdge, "valid_from" | "valid_to">[];
+  semanticEvidence?: {
+    matched_nodes: readonly Pick<SemanticNode, "id" | "confidence" | "source_episode_ids">[];
+    support_hits: readonly {
+      root_node_id: SemanticNode["id"];
+      edgePath: readonly Pick<SemanticEdge, "evidence_episode_ids">[];
+    }[];
+  };
   nowMs: number;
   asOf?: number;
   expectedCount?: number;
@@ -32,6 +39,7 @@ export type ComputeRetrievalConfidenceInput = {
 const DEFAULT_EXPECTED_COUNT = 5;
 const DEFAULT_TOP_N = 5;
 const CONTRADICTION_PENALTY = 0.7;
+const SEMANTIC_CONFIDENCE_THRESHOLD = 0.6;
 
 function clamp01(value: number): number {
   if (Number.isNaN(value)) {
@@ -43,6 +51,75 @@ function clamp01(value: number): number {
 
 function isEdgeValidAt(edge: Pick<SemanticEdge, "valid_from" | "valid_to">, asOf: number): boolean {
   return edge.valid_from <= asOf && (edge.valid_to === null || edge.valid_to > asOf);
+}
+
+function sigmoid(value: number): number {
+  return 1 / (1 + Math.exp(-value));
+}
+
+function hasEpisodeOverlap(left: readonly string[], right: ReadonlySet<string>): boolean {
+  return left.some((value) => right.has(value));
+}
+
+function computeSemanticEvidence(input: ComputeRetrievalConfidenceInput): {
+  strength: number;
+  count: number;
+  sourceSignatures: string[];
+} {
+  const semanticEvidence = input.semanticEvidence;
+
+  if (semanticEvidence === undefined || semanticEvidence.support_hits.length === 0) {
+    return {
+      strength: 0,
+      count: 0,
+      sourceSignatures: [],
+    };
+  }
+
+  const retrievedEpisodeIds = new Set(input.episodes.map((episode) => episode.episode.id));
+  const supportHitCountByRoot = new Map<string, number>();
+
+  for (const hit of semanticEvidence.support_hits) {
+    if (
+      hit.edgePath.some((edge) => hasEpisodeOverlap(edge.evidence_episode_ids, retrievedEpisodeIds))
+    ) {
+      continue;
+    }
+
+    supportHitCountByRoot.set(
+      hit.root_node_id,
+      (supportHitCountByRoot.get(hit.root_node_id) ?? 0) + 1,
+    );
+  }
+
+  const supportedMatches = semanticEvidence.matched_nodes.filter(
+    (node) =>
+      node.confidence >= SEMANTIC_CONFIDENCE_THRESHOLD &&
+      !hasEpisodeOverlap(node.source_episode_ids, retrievedEpisodeIds) &&
+      (supportHitCountByRoot.get(node.id) ?? 0) > 0,
+  );
+
+  if (supportedMatches.length === 0) {
+    return {
+      strength: 0,
+      count: 0,
+      sourceSignatures: [],
+    };
+  }
+
+  const meanConfidence =
+    supportedMatches.reduce((sum, node) => sum + clamp01(node.confidence), 0) /
+    supportedMatches.length;
+  const supportHitCount = supportedMatches.reduce(
+    (sum, node) => sum + (supportHitCountByRoot.get(node.id) ?? 0),
+    0,
+  );
+
+  return {
+    strength: clamp01(0.3 * sigmoid(meanConfidence * supportHitCount)),
+    count: supportedMatches.length,
+    sourceSignatures: supportedMatches.map((node) => [...node.source_episode_ids].sort().join("|")),
+  };
 }
 
 export function computeRetrievalConfidence(
@@ -57,7 +134,9 @@ export function computeRetrievalConfidence(
       : input.contradictionPresent &&
         input.contradictionEdges.some((edge) => isEdgeValidAt(edge, input.asOf ?? input.nowMs));
 
-  if (episodes.length === 0) {
+  const semanticEvidence = computeSemanticEvidence(input);
+
+  if (episodes.length === 0 && semanticEvidence.count === 0) {
     return {
       overall: 0,
       evidenceStrength: 0,
@@ -77,10 +156,12 @@ export function computeRetrievalConfidence(
     (sum, episode) => sum + clamp01(episode.scoreBreakdown.decayedSalience),
     0,
   );
-  const evidenceStrength = clamp01(salienceSum / topEpisodes.length);
+  const episodeEvidenceStrength =
+    topEpisodes.length === 0 ? 0 : clamp01(salienceSum / topEpisodes.length);
+  const evidenceStrength = clamp01(episodeEvidenceStrength + semanticEvidence.strength);
 
   // Coverage: did we find enough evidence to answer confidently.
-  const coverage = clamp01(episodes.length / Math.max(1, expectedCount));
+  const coverage = clamp01((episodes.length + semanticEvidence.count) / Math.max(1, expectedCount));
 
   // Source diversity: distinct participant sets across the top-N. Episodes
   // that involve the same participants are more likely to be one conversation
@@ -93,8 +174,13 @@ export function computeRetrievalConfidence(
     participantSignatures.add(signature);
   }
 
+  for (const signature of semanticEvidence.sourceSignatures) {
+    participantSignatures.add(`semantic:${signature}`);
+  }
+
+  const diversitySampleSize = topEpisodes.length + semanticEvidence.count;
   const sourceDiversity =
-    topEpisodes.length === 0 ? 0 : clamp01(participantSignatures.size / topEpisodes.length);
+    diversitySampleSize === 0 ? 0 : clamp01(participantSignatures.size / diversitySampleSize);
 
   // Multiplicative gate: evidenceStrength is the base ceiling. Coverage and
   // diversity can modulate *downward* from that ceiling but cannot lift weak
@@ -112,6 +198,6 @@ export function computeRetrievalConfidence(
     coverage,
     sourceDiversity,
     contradictionPresent,
-    sampleSize: episodes.length,
+    sampleSize: episodes.length + semanticEvidence.count,
   };
 }

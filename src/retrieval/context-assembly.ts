@@ -26,6 +26,10 @@ export function assembleRetrievedContext(input: {
     episodes: input.episodes,
     contradictionPresent: input.contradictionPresent,
     contradictionEdges: contradictionEdges.length === 0 ? undefined : contradictionEdges,
+    semanticEvidence: {
+      matched_nodes: input.semantic.matched_nodes,
+      support_hits: input.semantic.support_hits,
+    },
     nowMs: input.nowMs,
     asOf: input.semantic.as_of ?? undefined,
     expectedCount: input.expectedCount,
