@@ -22,6 +22,7 @@ import type {
   ReviewQueueItem,
   ReviewResolutionInput,
   SemanticEdge,
+  SemanticEdgeRepository,
   SemanticGraph,
   SemanticNode,
   SemanticNodeRepository,
@@ -165,13 +166,15 @@ export type BorgSemanticFacade = {
     ) => ReturnType<SemanticNodeRepository["list"]>;
     search: (
       query: string,
-      options?: Omit<RetrievalSearchOptions, "temporalCue" | "attentionWeights"> & {
+      options?: Omit<RetrievalSearchOptions, "temporalCue" | "attentionWeights" | "asOf"> & {
         limit?: number;
       },
     ) => Promise<SemanticNodeSearchCandidate[]>;
   };
   edges: {
-    add: (input: Omit<SemanticEdge, "id"> & { id?: SemanticEdge["id"] }) => SemanticEdge;
+    add: (
+      input: Parameters<SemanticEdgeRepository["addEdge"]>[0],
+    ) => ReturnType<SemanticEdgeRepository["addEdge"]>;
     list: (
       ...args: Parameters<BorgDependencies["semanticEdgeRepository"]["listEdges"]>
     ) => ReturnType<BorgDependencies["semanticEdgeRepository"]["listEdges"]>;
@@ -238,6 +241,9 @@ export type BorgCorrectionFacade = {
     ...args: Parameters<CorrectionService["forget"]>
   ) => ReturnType<CorrectionService["forget"]>;
   why: (...args: Parameters<CorrectionService["why"]>) => ReturnType<CorrectionService["why"]>;
+  invalidateSemanticEdge: (
+    ...args: Parameters<CorrectionService["invalidateSemanticEdge"]>
+  ) => ReturnType<CorrectionService["invalidateSemanticEdge"]>;
   correct: (
     ...args: Parameters<CorrectionService["correct"]>
   ) => ReturnType<CorrectionService["correct"]>;

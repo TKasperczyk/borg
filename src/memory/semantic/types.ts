@@ -20,6 +20,13 @@ export const SEMANTIC_RELATIONS = [
   "related_to",
   "instance_of",
 ] as const;
+export const INVALIDATION_PROCESSES = [
+  "extractor",
+  "overseer",
+  "manual",
+  "review",
+  "maintenance",
+] as const;
 
 export const semanticNodeIdSchema = z
   .string()
@@ -37,6 +44,7 @@ export const semanticEdgeIdSchema = z
 
 export const semanticNodeKindSchema = z.enum(SEMANTIC_NODE_KINDS);
 export const semanticRelationSchema = z.enum(SEMANTIC_RELATIONS);
+export const invalidationProcessSchema = z.enum(INVALIDATION_PROCESSES);
 
 const float32ArraySchema = z.custom<Float32Array>((value) => value instanceof Float32Array, {
   message: "Expected Float32Array embedding",
@@ -76,6 +84,14 @@ const semanticEdgeBaseSchema = z.object({
   evidence_episode_ids: z.array(episodeIdSchema).min(1),
   created_at: z.number().finite(),
   last_verified_at: z.number().finite(),
+  // Knowledge-valid interval; created_at remains row insertion time.
+  valid_from: z.number().finite(),
+  valid_to: z.number().finite().nullable(),
+  invalidated_at: z.number().finite().nullable(),
+  invalidated_by_edge_id: semanticEdgeIdSchema.nullable(),
+  invalidated_by_review_id: z.number().int().nullable(),
+  invalidated_by_process: invalidationProcessSchema.nullable(),
+  invalidated_reason: z.string().min(1).nullable(),
 });
 
 export const semanticEdgeSchema = semanticEdgeBaseSchema.refine(
@@ -100,6 +116,7 @@ export type SemanticNode = z.infer<typeof semanticNodeSchema>;
 export type SemanticNodePatch = z.infer<typeof semanticNodePatchSchema>;
 export type SemanticNodeKind = z.infer<typeof semanticNodeKindSchema>;
 export type SemanticRelation = z.infer<typeof semanticRelationSchema>;
+export type InvalidationProcess = z.infer<typeof invalidationProcessSchema>;
 export type SemanticEdge = z.infer<typeof semanticEdgeSchema>;
 export type SemanticEdgePatch = z.infer<typeof semanticEdgePatchSchema>;
 
@@ -125,6 +142,8 @@ export type SemanticEdgeListOptions = {
   fromId?: SemanticNodeId;
   toId?: SemanticNodeId;
   relation?: SemanticRelation;
+  asOf?: number;
+  includeInvalid?: boolean;
 };
 
 export type SemanticWalkOptions = {
@@ -132,6 +151,8 @@ export type SemanticWalkOptions = {
   direction?: "out" | "in" | "both";
   depth?: number;
   maxNodes?: number;
+  asOf?: number;
+  includeInvalid?: boolean;
 };
 
 export type SemanticWalkStep = {

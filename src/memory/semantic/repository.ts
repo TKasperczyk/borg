@@ -31,20 +31,9 @@ import {
   type SemanticNodeId,
 } from "../../util/ids.js";
 import type { ReviewQueueInsertInput } from "./review-queue.js";
-
-const CONTRADICTION_JUDGE_TOOL_NAME = "EmitContradictionJudgment";
-const contradictionJudgeSchema = z.object({
-  contradicts: z.boolean(),
-  confidence: z.number().min(0).max(1),
-  reason: z.string().min(1).optional(),
-});
-const CONTRADICTION_JUDGE_TOOL = {
-  name: CONTRADICTION_JUDGE_TOOL_NAME,
-  description:
-    "Judge whether two semantic propositions genuinely contradict each other (a direct or morphological negation, an opposite quantifier, a stated fact vs. its denial). Reinforcements, variants, elaborations, and merely similar statements are NOT contradictions.",
-  inputSchema: toToolInputSchema(contradictionJudgeSchema),
-} satisfies LLMToolDefinition;
 import {
+  invalidationProcessSchema,
+  semanticEdgeIdSchema,
   semanticEdgePatchSchema,
   semanticEdgeSchema,
   semanticNodePatchSchema,
@@ -60,6 +49,26 @@ import {
   type SemanticRelation,
 } from "./types.js";
 import { canonicalizeDomain } from "./domain.js";
+
+const CONTRADICTION_JUDGE_TOOL_NAME = "EmitContradictionJudgment";
+const contradictionJudgeSchema = z.object({
+  contradicts: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  reason: z.string().min(1).optional(),
+});
+const semanticEdgeInvalidationInputSchema = z.object({
+  at: z.number().finite(),
+  by_edge_id: semanticEdgeIdSchema.optional(),
+  by_review_id: z.number().int().optional(),
+  by_process: invalidationProcessSchema,
+  reason: z.string().min(1).optional(),
+});
+const CONTRADICTION_JUDGE_TOOL = {
+  name: CONTRADICTION_JUDGE_TOOL_NAME,
+  description:
+    "Judge whether two semantic propositions genuinely contradict each other (a direct or morphological negation, an opposite quantifier, a stated fact vs. its denial). Reinforcements, variants, elaborations, and merely similar statements are NOT contradictions.",
+  inputSchema: toToolInputSchema(contradictionJudgeSchema),
+} satisfies LLMToolDefinition;
 
 type SemanticNodeRow = {
   id: string;
@@ -191,6 +200,28 @@ function edgeFromRow(row: Record<string, unknown>): SemanticEdge {
     ).map((value) => parseEpisodeId(value)),
     created_at: Number(row.created_at),
     last_verified_at: Number(row.last_verified_at),
+    valid_from: Number(row.valid_from),
+    valid_to: row.valid_to === null || row.valid_to === undefined ? null : Number(row.valid_to),
+    invalidated_at:
+      row.invalidated_at === null || row.invalidated_at === undefined
+        ? null
+        : Number(row.invalidated_at),
+    invalidated_by_edge_id:
+      row.invalidated_by_edge_id === null || row.invalidated_by_edge_id === undefined
+        ? null
+        : parseSemanticEdgeId(String(row.invalidated_by_edge_id)),
+    invalidated_by_review_id:
+      row.invalidated_by_review_id === null || row.invalidated_by_review_id === undefined
+        ? null
+        : Number(row.invalidated_by_review_id),
+    invalidated_by_process:
+      row.invalidated_by_process === null || row.invalidated_by_process === undefined
+        ? null
+        : row.invalidated_by_process,
+    invalidated_reason:
+      row.invalidated_reason === null || row.invalidated_reason === undefined
+        ? null
+        : String(row.invalidated_reason),
   });
 
   if (!parsed.success) {
@@ -692,6 +723,22 @@ export type SemanticEdgeRepositoryOptions = {
   enqueueReview?: (input: ReviewQueueInsertInput) => unknown;
 };
 
+type SemanticEdgeValidityKey =
+  | "valid_from"
+  | "valid_to"
+  | "invalidated_at"
+  | "invalidated_by_edge_id"
+  | "invalidated_by_review_id"
+  | "invalidated_by_process"
+  | "invalidated_reason";
+
+export type SemanticEdgeInsertInput = Omit<SemanticEdge, "id" | SemanticEdgeValidityKey> &
+  Partial<Pick<SemanticEdge, SemanticEdgeValidityKey>> & {
+    id?: SemanticEdgeId;
+  };
+
+export type SemanticEdgeInvalidationInput = z.input<typeof semanticEdgeInvalidationInputSchema>;
+
 export class SemanticEdgeRepository {
   private readonly clock: Clock;
 
@@ -761,36 +808,61 @@ export class SemanticEdgeRepository {
     return row?.label ?? null;
   }
 
-  addEdge(input: Omit<SemanticEdge, "id"> & { id?: SemanticEdgeId }): SemanticEdge {
+  addEdge(input: SemanticEdgeInsertInput): SemanticEdge {
+    const now = this.clock.now();
     const edge = semanticEdgeSchema.parse({
       ...input,
       id: input.id ?? createSemanticEdgeId(),
+      valid_from: input.valid_from ?? now,
+      valid_to: input.valid_to ?? null,
+      invalidated_at: input.invalidated_at ?? null,
+      invalidated_by_edge_id: input.invalidated_by_edge_id ?? null,
+      invalidated_by_review_id: input.invalidated_by_review_id ?? null,
+      invalidated_by_process: input.invalidated_by_process ?? null,
+      invalidated_reason: input.invalidated_reason ?? null,
     });
 
     this.assertNodeExists(edge.from_node_id, "from_node_id");
     this.assertNodeExists(edge.to_node_id, "to_node_id");
-    const duplicate = this.db
-      .prepare(
-        `
-          SELECT id
-          FROM semantic_edges
-          WHERE from_node_id = ? AND to_node_id = ? AND relation = ?
-        `,
-      )
-      .get(edge.from_node_id, edge.to_node_id, edge.relation);
 
-    if (duplicate !== undefined) {
-      throw new SemanticError("Duplicate semantic edge", {
-        code: "SEMANTIC_EDGE_DUPLICATE",
-      });
+    if (edge.valid_to === null) {
+      const duplicate = this.db
+        .prepare(
+          `
+            SELECT id
+            FROM semantic_edges
+            WHERE from_node_id = ? AND to_node_id = ? AND relation = ? AND valid_to IS NULL
+          `,
+        )
+        .get(edge.from_node_id, edge.to_node_id, edge.relation);
+
+      if (duplicate !== undefined) {
+        throw new SemanticError("Duplicate semantic edge", {
+          code: "SEMANTIC_EDGE_DUPLICATE",
+        });
+      }
     }
 
     this.db
       .prepare(
         `
           INSERT INTO semantic_edges (
-            id, from_node_id, to_node_id, relation, confidence, evidence_episode_ids, created_at, last_verified_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            id,
+            from_node_id,
+            to_node_id,
+            relation,
+            confidence,
+            evidence_episode_ids,
+            created_at,
+            last_verified_at,
+            valid_from,
+            valid_to,
+            invalidated_at,
+            invalidated_by_edge_id,
+            invalidated_by_review_id,
+            invalidated_by_process,
+            invalidated_reason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -802,6 +874,13 @@ export class SemanticEdgeRepository {
         serializeJsonValue(edge.evidence_episode_ids),
         edge.created_at,
         edge.last_verified_at,
+        edge.valid_from,
+        edge.valid_to,
+        edge.invalidated_at,
+        edge.invalidated_by_edge_id,
+        edge.invalidated_by_review_id,
+        edge.invalidated_by_process,
+        edge.invalidated_reason,
       );
 
     if (edge.relation === "contradicts" && this.options.enqueueReview !== undefined) {
@@ -841,6 +920,12 @@ export class SemanticEdgeRepository {
       semanticRelationSchema.parse(options.relation);
     }
 
+    if (options.asOf !== undefined && !Number.isFinite(options.asOf)) {
+      throw new SemanticError("Semantic edge asOf must be finite", {
+        code: "SEMANTIC_EDGE_AS_OF_INVALID",
+      });
+    }
+
     const filters: string[] = [];
     const values: unknown[] = [];
 
@@ -859,6 +944,15 @@ export class SemanticEdgeRepository {
       values.push(options.relation);
     }
 
+    if (options.includeInvalid !== true) {
+      const asOf = options.asOf ?? this.clock.now();
+
+      filters.push("valid_from <= ?");
+      values.push(asOf);
+      filters.push("(valid_to IS NULL OR valid_to > ?)");
+      values.push(asOf);
+    }
+
     const whereClause = filters.length === 0 ? "" : `WHERE ${filters.join(" AND ")}`;
     const rows = this.db
       .prepare(
@@ -872,6 +966,61 @@ export class SemanticEdgeRepository {
       .all(...values) as Record<string, unknown>[];
 
     return rows.map((row) => edgeFromRow(row));
+  }
+
+  invalidateEdge(id: SemanticEdgeId, input: SemanticEdgeInvalidationInput): SemanticEdge | null {
+    const current = this.getEdge(id);
+
+    if (current === null) {
+      return null;
+    }
+
+    if (current.valid_to !== null) {
+      return current;
+    }
+
+    const parsed = semanticEdgeInvalidationInputSchema.parse(input);
+
+    if (parsed.at < current.valid_from) {
+      throw new SemanticError("Semantic edge invalidation 'at' precedes valid_from", {
+        code: "SEMANTIC_EDGE_INVALIDATE_BEFORE_VALID_FROM",
+      });
+    }
+
+    const invalidatedAt = this.clock.now();
+
+    this.db
+      .prepare(
+        `
+          UPDATE semantic_edges
+          SET valid_to = ?,
+              invalidated_at = ?,
+              invalidated_by_edge_id = ?,
+              invalidated_by_review_id = ?,
+              invalidated_by_process = ?,
+              invalidated_reason = ?
+          WHERE id = ? AND valid_to IS NULL
+        `,
+      )
+      .run(
+        parsed.at,
+        invalidatedAt,
+        parsed.by_edge_id ?? null,
+        parsed.by_review_id ?? null,
+        parsed.by_process,
+        parsed.reason ?? null,
+        id,
+      );
+
+    return semanticEdgeSchema.parse({
+      ...current,
+      valid_to: parsed.at,
+      invalidated_at: invalidatedAt,
+      invalidated_by_edge_id: parsed.by_edge_id ?? null,
+      invalidated_by_review_id: parsed.by_review_id ?? null,
+      invalidated_by_process: parsed.by_process,
+      invalidated_reason: parsed.reason ?? null,
+    });
   }
 
   delete(id: SemanticEdgeId): boolean {
