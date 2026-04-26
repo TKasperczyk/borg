@@ -94,6 +94,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
     }),
     curator: new CuratorProcess({
       episodicRepository: options.episodicRepository,
+      traitsRepository: options.traitsRepository,
       moodRepository: options.moodRepository,
       socialRepository: options.socialRepository,
       registry: reverserRegistry,

@@ -468,6 +468,45 @@ export class SemanticNodeRepository {
     return normalizedNode;
   }
 
+  async restore(input: z.input<typeof semanticNodeSchema>): Promise<SemanticNode> {
+    const parsed = semanticNodeSchema.parse(input);
+    const normalizedNode = semanticNodeSchema.parse({
+      ...parsed,
+      domain: canonicalizeDomain(parsed.domain),
+    });
+    const current = await this.get(normalizedNode.id);
+    const previousRow = current === null ? null : nodeToRow(current);
+
+    try {
+      await this.table.upsert([nodeToRow(normalizedNode)], {
+        on: "id",
+      });
+
+      try {
+        const apply = this.db.transaction(() => {
+          this.upsertSqlRow(normalizedNode);
+        });
+        apply();
+      } catch (error) {
+        if (previousRow === null) {
+          await this.table.remove(`id = ${quoteSqlString(normalizedNode.id)}`);
+        } else {
+          await this.table.upsert([previousRow], {
+            on: "id",
+          });
+        }
+        throw error;
+      }
+    } catch (error) {
+      throw new SemanticError(`Failed to restore semantic node ${normalizedNode.id}`, {
+        cause: error,
+        code: "SEMANTIC_NODE_RESTORE_FAILED",
+      });
+    }
+
+    return normalizedNode;
+  }
+
   async get(id: SemanticNodeId): Promise<SemanticNode | null> {
     const rows = await this.table.list({
       where: `id = ${quoteSqlString(id)}`,

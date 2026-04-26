@@ -20,7 +20,13 @@ import {
 } from "../self/index.js";
 import { CommitmentRepository, commitmentIdSchema } from "../commitments/index.js";
 import type { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
-import { semanticEdgeIdSchema, semanticNodeIdSchema, type SemanticEdge } from "./types.js";
+import {
+  semanticEdgeIdSchema,
+  semanticNodeIdSchema,
+  semanticNodeSchema,
+  type SemanticEdge,
+  type SemanticNode,
+} from "./types.js";
 
 export const REVIEW_KINDS = [
   "contradiction",
@@ -182,6 +188,53 @@ const semanticEdgeReviewClosureRefsSchema = z
   })
   .passthrough();
 
+const reviewSemanticNodePayloadSchema = z.object({
+  id: semanticNodeIdSchema,
+  kind: z.enum(["concept", "entity", "proposition"]),
+  label: z.string().min(1),
+  description: z.string().min(1),
+  domain: z.string().min(1).nullable().default(null),
+  aliases: z.array(z.string().min(1)),
+  confidence: z.number().min(0).max(1),
+  source_episode_ids: z.array(episodeIdSchema).min(1),
+  created_at: z.number().finite(),
+  updated_at: z.number().finite(),
+  last_verified_at: z.number().finite(),
+  embedding: z.array(z.number().finite()),
+  archived: z.boolean(),
+  superseded_by: semanticNodeIdSchema.nullable(),
+});
+
+const pendingReflectorTargetSchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("insert"),
+    node: reviewSemanticNodePayloadSchema,
+  }),
+  z.object({
+    mode: z.literal("update"),
+    node_id: semanticNodeIdSchema,
+    patch: z.object({
+      description: z.string().min(1),
+      confidence: z.number().min(0).max(1),
+      source_episode_ids: z.array(episodeIdSchema).min(1),
+      last_verified_at: z.number().finite(),
+      embedding: z.array(z.number().finite()),
+      archived: z.boolean(),
+    }),
+  }),
+]);
+
+const pendingReflectorInsightSchema = z
+  .object({
+    target: pendingReflectorTargetSchema,
+    evidence_cluster: z.object({
+      key: z.string().min(1),
+      episode_ids: z.array(episodeIdSchema).min(1),
+      size: z.number().int().positive(),
+    }),
+  })
+  .strict();
+
 const identityInconsistencyTargetTypeSchema = z.enum([
   "trait",
   "value",
@@ -217,6 +270,15 @@ type SemanticEdgeClosureRefs = {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function deserializeReviewSemanticNode(
+  node: z.infer<typeof reviewSemanticNodePayloadSchema>,
+): SemanticNode {
+  return semanticNodeSchema.parse({
+    ...node,
+    embedding: Float32Array.from(node.embedding),
+  });
 }
 
 function parseEvidenceProvenance(refs: Record<string, unknown>): Provenance | null {
@@ -870,6 +932,48 @@ export class ReviewQueueRepository {
     item: ReviewQueueItem,
     decision: ResolvedReviewDecision,
   ): Promise<void> {
+    const pendingReflectorInsight = pendingReflectorInsightSchema.safeParse(
+      item.refs.reflector_pending_insight,
+    );
+
+    if (pendingReflectorInsight.success) {
+      if (decision.decision !== "accept") {
+        return;
+      }
+
+      if (this.options.semanticNodeRepository === undefined) {
+        throw new SemanticError("Semantic node repository is required for pending insight review", {
+          code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
+        });
+      }
+
+      const target = pendingReflectorInsight.data.target;
+
+      if (target.mode === "insert") {
+        await this.options.semanticNodeRepository.insert(
+          deserializeReviewSemanticNode(target.node),
+        );
+        return;
+      }
+
+      const updated = await this.options.semanticNodeRepository.update(target.node_id, {
+        description: target.patch.description,
+        confidence: target.patch.confidence,
+        source_episode_ids: target.patch.source_episode_ids,
+        last_verified_at: target.patch.last_verified_at,
+        embedding: Float32Array.from(target.patch.embedding),
+        archived: target.patch.archived,
+      });
+
+      if (updated === null) {
+        throw new SemanticError(`Unknown semantic node id for pending insight: ${target.node_id}`, {
+          code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
+        });
+      }
+
+      return;
+    }
+
     if (
       this.options.semanticNodeRepository === undefined ||
       (decision.decision !== "invalidate" && decision.decision !== "accept")
@@ -892,6 +996,7 @@ export class ReviewQueueRepository {
         await this.options.semanticNodeRepository.update(nodeId, {
           confidence: applyingPatch.confidence,
           last_verified_at: applyingPatch.last_verified_at ?? this.clock.now(),
+          archived: false,
         });
         return;
       }
@@ -905,6 +1010,7 @@ export class ReviewQueueRepository {
       await this.options.semanticNodeRepository.update(nodeId, {
         confidence: clamp(current.confidence + 0.1, 0, 1),
         last_verified_at: this.clock.now(),
+        archived: false,
       });
       return;
     }

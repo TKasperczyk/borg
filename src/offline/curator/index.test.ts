@@ -82,6 +82,7 @@ describe("curator process", () => {
 
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
+      traitsRepository: harness.traitsRepository,
       registry: harness.registry,
     });
 
@@ -149,6 +150,7 @@ describe("curator process", () => {
 
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
+      traitsRepository: harness.traitsRepository,
       registry: harness.registry,
     });
 
@@ -196,6 +198,7 @@ describe("curator process", () => {
 
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
+      traitsRepository: auditedTraits,
       registry: harness.registry,
     });
 
@@ -218,6 +221,27 @@ describe("curator process", () => {
           action: "decay",
         }),
       ]),
+    );
+
+    const auditRow = harness.auditLog
+      .list({ process: "curator" })
+      .find((row) => row.action === "decay_trait");
+
+    expect(auditRow).toEqual(
+      expect.objectContaining({
+        targets: {
+          trait_id: staleTrait.id,
+        },
+      }),
+    );
+
+    await harness.auditLog.revert(auditRow!.id, "test");
+
+    expect(auditedTraits.get(staleTrait.id)).toEqual(
+      expect.objectContaining({
+        strength: 0.8,
+        last_decayed: staleTrait.last_decayed,
+      }),
     );
   });
 });

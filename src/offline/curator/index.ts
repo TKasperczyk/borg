@@ -329,6 +329,7 @@ function buildItems(ctx: OfflineContext, episodes: readonly Episode[]): CuratorP
 
 export type CuratorProcessOptions = {
   episodicRepository: EpisodicRepository;
+  traitsRepository: OfflineContext["traitsRepository"];
   moodRepository: OfflineContext["moodRepository"];
   socialRepository: OfflineContext["socialRepository"];
   registry: ReverserRegistry;
@@ -359,6 +360,32 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
     this.options.registry.register(this.name, "demote", revertStats);
     this.options.registry.register(this.name, "archive", revertStats);
     this.options.registry.register(this.name, "decay", revertStats);
+    this.options.registry.register(this.name, "decay_trait", async ({ reversal }) => {
+      const parsed = traitSchema.safeParse(reversal.previous);
+
+      if (!parsed.success) {
+        return;
+      }
+
+      const previous = parsed.data;
+      this.options.traitsRepository.update(
+        previous.id,
+        {
+          label: previous.label,
+          strength: previous.strength,
+          last_reinforced: previous.last_reinforced,
+          last_decayed: previous.last_decayed,
+          state: previous.state,
+          established_at: previous.established_at,
+          provenance: previous.provenance,
+        },
+        previous.provenance,
+        {
+          reason: "curator_trait_decay_reversal",
+          overwriteWithoutReview: true,
+        },
+      );
+    });
     this.options.registry.register(this.name, "trim_mood_history", async ({ reversal }) => {
       const parsed = z.array(moodHistoryEntrySchema).safeParse(reversal.removed);
 
@@ -401,9 +428,10 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
   async apply(ctx: OfflineContext, rawPlan: CuratorPlan): Promise<OfflineResult> {
     const plan = curatorPlanSchema.parse(rawPlan);
     const previousByAction = new Map<string, EpisodeStats[]>();
-    const traitDecayIds = plan.items
-      .filter((item): item is z.infer<typeof traitDecayPlanItemSchema> => item.action === "decay_trait")
-      .map((item) => item.trait_id);
+    const traitDecayItems = plan.items.filter(
+      (item): item is z.infer<typeof traitDecayPlanItemSchema> => item.action === "decay_trait",
+    );
+    const traitDecayIds = traitDecayItems.map((item) => item.trait_id);
 
     for (const item of plan.items) {
       if ("episode_id" in item) {
@@ -458,6 +486,20 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
         ctx.clock.now(),
         { traitIds: traitDecayIds },
       );
+
+      for (const item of traitDecayItems) {
+        ctx.auditLog.record({
+          run_id: ctx.runId,
+          process: this.name,
+          action: item.action,
+          targets: {
+            trait_id: item.trait_id,
+          },
+          reversal: {
+            previous: item.previous,
+          },
+        });
+      }
     }
 
     for (const [action, previous] of previousByAction.entries()) {

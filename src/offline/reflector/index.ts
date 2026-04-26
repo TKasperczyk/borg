@@ -17,9 +17,8 @@ import {
   semanticNodeSchema,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
-import { semanticRelationSchema } from "../../memory/semantic/types.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { createSemanticEdgeId, createSemanticNodeId } from "../../util/ids.js";
+import { createSemanticNodeId } from "../../util/ids.js";
 import { BudgetExceededError, SemanticError } from "../../util/errors.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 
@@ -63,17 +62,6 @@ const serializableSemanticNodeSchema = z.object({
   superseded_by: semanticNodeIdSchema.nullable(),
 });
 
-const serializableSemanticEdgeSchema = z.object({
-  id: semanticEdgeIdSchema,
-  from_node_id: semanticNodeIdSchema,
-  to_node_id: semanticNodeIdSchema,
-  relation: semanticRelationSchema,
-  confidence: z.number().min(0).max(1),
-  evidence_episode_ids: z.array(episodeIdSchema).min(1),
-  created_at: z.number().finite(),
-  last_verified_at: z.number().finite(),
-});
-
 const reflectorTargetSchema = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("insert"),
@@ -97,10 +85,8 @@ const reflectorPlanItemSchema = z.object({
   cluster_key: z.string().min(1),
   episode_ids: z.array(episodeIdSchema).min(1),
   target: reflectorTargetSchema,
-  anchor_node: serializableSemanticNodeSchema,
-  edge: serializableSemanticEdgeSchema,
   review: z.object({
-    kind: z.enum(["duplicate", "new_insight"]),
+    kind: z.literal("new_insight"),
     reason: z.string().min(1),
   }),
 });
@@ -156,6 +142,13 @@ function deserializeSemanticNode(node: unknown): SemanticNode {
     ...parsed,
     embedding: Float32Array.from(parsed.embedding),
   });
+}
+
+function semanticNodeSnapshotMatches(
+  node: SemanticNode,
+  snapshot: z.infer<typeof serializableSemanticNodeSchema>,
+): boolean {
+  return JSON.stringify(serializeSemanticNode(node)) === JSON.stringify(snapshot);
 }
 
 function buildPrompt(cluster: ReflectionCluster, goalDescriptions: readonly string[]): string {
@@ -356,17 +349,11 @@ export class ReflectorProcess implements OfflineProcess {
         });
       } else if (parsed.previousNode !== undefined) {
         const previousNode = deserializeSemanticNode(parsed.previousNode);
-        await this.options.semanticNodeRepository.update(previousNode.id, {
-          label: previousNode.label,
-          description: previousNode.description,
-          aliases: previousNode.aliases,
-          confidence: previousNode.confidence,
-          source_episode_ids: previousNode.source_episode_ids,
-          last_verified_at: previousNode.last_verified_at,
-          embedding: previousNode.embedding,
-          archived: previousNode.archived,
-          superseded_by: previousNode.superseded_by,
-        });
+        const current = await this.options.semanticNodeRepository.get(previousNode.id);
+
+        if (current === null || !semanticNodeSnapshotMatches(current, parsed.previousNode)) {
+          await this.options.semanticNodeRepository.restore(previousNode);
+        }
       }
 
       if (parsed.anchorNodeId !== undefined) {
@@ -473,45 +460,12 @@ export class ReflectorProcess implements OfflineProcess {
                       archived: false,
                     },
                   };
-            const targetNodeId = target.mode === "insert" ? target.node.id : target.node_id;
-            const anchorLabel = `Evidence cluster ${cluster.key}`;
-            const anchorNode = serializableSemanticNodeSchema.parse({
-              id: createSemanticNodeId(),
-              kind: "proposition",
-              label: anchorLabel,
-              description: `Supporting evidence from ${cluster.episodes.length} episodes for ${candidate.label}.`,
-              aliases: [],
-              confidence: 0.4,
-              source_episode_ids: cluster.episodes.map((episode) => episode.id),
-              created_at: timestamp,
-              updated_at: timestamp,
-              last_verified_at: timestamp,
-              embedding: Array.from(
-                await ctx.embeddingClient.embed(
-                  `${anchorLabel}\n${cluster.episodes.map((episode) => episode.title).join("\n")}`,
-                ),
-              ),
-              archived: false,
-              superseded_by: null,
-            });
-
             items.push({
               cluster_key: cluster.key,
               episode_ids: cluster.episodes.map((episode) => episode.id),
               target,
-              anchor_node: anchorNode,
-              edge: serializableSemanticEdgeSchema.parse({
-                id: createSemanticEdgeId(),
-                from_node_id: anchorNode.id,
-                to_node_id: targetNodeId,
-                relation: "supports",
-                confidence: 0.6,
-                evidence_episode_ids: cluster.episodes.map((episode) => episode.id),
-                created_at: timestamp,
-                last_verified_at: timestamp,
-              }),
               review: {
-                kind: existing === undefined ? "new_insight" : "duplicate",
+                kind: "new_insight",
                 reason:
                   existing === undefined
                     ? `New low-confidence insight extracted from ${cluster.key}`
@@ -575,10 +529,7 @@ export class ReflectorProcess implements OfflineProcess {
       let previousNode: z.infer<typeof serializableSemanticNodeSchema> | undefined;
 
       if (item.target.mode === "insert") {
-        const inserted = await ctx.semanticNodeRepository.insert(
-          deserializeSemanticNode(item.target.node),
-        );
-        nodeId = inserted.id;
+        nodeId = item.target.node.id;
         nodeCreated = true;
       } else {
         const current = await ctx.semanticNodeRepository.get(item.target.node_id);
@@ -593,42 +544,24 @@ export class ReflectorProcess implements OfflineProcess {
         }
 
         previousNode = serializeSemanticNode(current);
-        const updated = await ctx.semanticNodeRepository.update(item.target.node_id, {
-          description: item.target.patch.description,
-          confidence: item.target.patch.confidence,
-          source_episode_ids: item.target.patch.source_episode_ids,
-          last_verified_at: item.target.patch.last_verified_at,
-          embedding: Float32Array.from(item.target.patch.embedding),
-          archived: item.target.patch.archived,
-        });
-
-        if (updated === null) {
-          throw new SemanticError(`Failed to update semantic node ${item.target.node_id}`, {
-            code: "REFLECTOR_PLAN_INVALID",
-          });
-        }
-
-        nodeId = updated.id;
+        nodeId = current.id;
       }
 
-      const anchorNode = await ctx.semanticNodeRepository.insert(
-        deserializeSemanticNode(item.anchor_node),
-      );
-      const edge = ctx.semanticEdgeRepository.addEdge({
-        id: item.edge.id,
-        from_node_id: anchorNode.id,
-        to_node_id: nodeId,
-        relation: item.edge.relation,
-        confidence: item.edge.confidence,
-        evidence_episode_ids: item.edge.evidence_episode_ids,
-        created_at: item.edge.created_at,
-        last_verified_at: item.edge.last_verified_at,
-      });
       const reviewItem = ctx.reviewQueueRepository.enqueue({
         kind: item.review.kind,
         refs: {
           node_ids: [nodeId],
           episode_ids: item.episode_ids,
+          evidence_cluster_key: item.cluster_key,
+          evidence_cluster_size: item.episode_ids.length,
+          reflector_pending_insight: {
+            target: item.target,
+            evidence_cluster: {
+              key: item.cluster_key,
+              episode_ids: item.episode_ids,
+              size: item.episode_ids.length,
+            },
+          },
         },
         reason: item.review.reason,
       });
@@ -639,14 +572,13 @@ export class ReflectorProcess implements OfflineProcess {
         action: "insight",
         targets: {
           nodeId,
-          edgeIds: [edge.id],
+          reviewItemId: reviewItem.id,
         },
         reversal: {
           nodeId,
           nodeCreated,
           ...(previousNode === undefined ? {} : { previousNode }),
-          anchorNodeId: anchorNode.id,
-          edgeIds: [edge.id],
+          edgeIds: [],
           reviewItemId: reviewItem.id,
         } satisfies ReflectorReversal,
       });

@@ -42,7 +42,7 @@ describe("reflector process", () => {
     }
   });
 
-  it("creates low-confidence insights with review items and supports reversal", async () => {
+  it("gates low-confidence insights behind review acceptance and supports reversal", async () => {
     const episodes = [
       createEpisodeFixture(
         {
@@ -123,6 +123,46 @@ describe("reflector process", () => {
       name: REFLECTOR_TOOL_NAME,
     });
 
+    const nodesBeforeReview = await harness.semanticNodeRepository.list({
+      includeArchived: true,
+      limit: 10,
+    });
+    expect(
+      nodesBeforeReview.some((node) =>
+        node.label.includes("Deploys stabilize when rollback plans are documented"),
+      ),
+    ).toBe(false);
+    expect(harness.semanticEdgeRepository.listEdges({ relation: "supports" })).toEqual([]);
+
+    const beforeRetrieval = await harness.retrievalPipeline.searchWithContext(
+      "Deploys stabilize when rollback plans are documented",
+      { limit: 1 },
+    );
+    expect(
+      beforeRetrieval.semantic.matched_nodes.some((node) =>
+        node.label.includes("Deploys stabilize when rollback plans are documented"),
+      ),
+    ).toBe(false);
+
+    const openReview = harness.reviewQueueRepository.getOpen()[0];
+    expect(openReview).toEqual(
+      expect.objectContaining({
+        kind: "new_insight",
+        refs: expect.objectContaining({
+          evidence_cluster_key: "public:shared|tag:deploy-pattern",
+          evidence_cluster_size: episodes.length,
+          reflector_pending_insight: expect.objectContaining({
+            evidence_cluster: expect.objectContaining({
+              key: "public:shared|tag:deploy-pattern",
+              size: episodes.length,
+            }),
+          }),
+        }),
+      }),
+    );
+
+    await harness.reviewQueueRepository.resolve(openReview!.id, "accept");
+
     const nodes = await harness.semanticNodeRepository.list({
       includeArchived: true,
       limit: 10,
@@ -132,16 +172,20 @@ describe("reflector process", () => {
     );
 
     expect(insightNode?.confidence).toBe(0.5);
-    expect(harness.reviewQueueRepository.getOpen()).toEqual([
+    expect(
+      nodes.filter((node) => node.kind === "proposition" && /^Evidence cluster /.test(node.label)),
+    ).toEqual([]);
+    expect(harness.semanticEdgeRepository.listEdges({ relation: "supports" })).toEqual([]);
+
+    const afterRetrieval = await harness.retrievalPipeline.searchWithContext(
+      "Deploys stabilize when rollback plans are documented",
+      { limit: 1 },
+    );
+    expect(afterRetrieval.semantic.matched_nodes).toEqual([
       expect.objectContaining({
-        kind: "new_insight",
+        id: insightNode?.id,
       }),
     ]);
-    const [supportEdge] = harness.semanticEdgeRepository.listEdges({
-      relation: "supports",
-      includeInvalid: true,
-    });
-    expect(supportEdge?.to_node_id).toBe(insightNode?.id);
 
     const auditRow = harness.auditLog.list({ process: "reflector" })[0];
     await harness.auditLog.revert(auditRow!.id, "test");
@@ -156,17 +200,140 @@ describe("reflector process", () => {
     expect(harness.semanticEdgeRepository.listEdges({ relation: "supports" })).toEqual([]);
     expect(
       harness.semanticEdgeRepository.listEdges({ relation: "supports", includeInvalid: true }),
-    ).toEqual([
-      expect.objectContaining({
-        id: supportEdge?.id,
-        confidence: supportEdge?.confidence,
-        evidence_episode_ids: supportEdge?.evidence_episode_ids,
-        valid_to: harness.clock.now(),
-        invalidated_by_process: "maintenance",
-        invalidated_reason: "reflector_audit_reversal",
-      }),
-    ]);
+    ).toEqual([]);
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+  });
+
+  it("keeps existing insight updates pending until review acceptance and restores snapshots", async () => {
+    const previousEpisodes = [
+      createEpisodeFixture(
+        {
+          title: "Previous rollback signal one",
+          tags: ["existing-reflect"],
+          created_at: 1_000,
+          updated_at: 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Previous rollback signal two",
+          tags: ["existing-reflect"],
+          created_at: 2_000,
+          updated_at: 2_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+    const updateEpisodes = [
+      createEpisodeFixture(
+        {
+          title: "Updated rollback signal one",
+          tags: ["update-reflect"],
+          created_at: 3_000,
+          updated_at: 3_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Updated rollback signal two",
+          tags: ["update-reflect"],
+          created_at: 4_000,
+          updated_at: 4_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Updated rollback signal three",
+          tags: ["update-reflect"],
+          created_at: 5_000,
+          updated_at: 5_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectorResponse({
+          label: "Rollback planning lowers deploy stress",
+          description: "Updated evidence says rollback planning lowers deploy stress.",
+          confidence: 0.8,
+          source_episode_ids: updateEpisodes.map((episode) => episode.id),
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      configOverrides: {
+        offline: {
+          ...DEFAULT_CONFIG.offline,
+          reflector: {
+            ...DEFAULT_CONFIG.offline.reflector,
+            ceilingConfidence: 0.9,
+          },
+        },
+      },
+    });
+    cleanup.push(harness.cleanup);
+
+    for (const episode of [...previousEpisodes, ...updateEpisodes]) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    const existingNode = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Rollback planning lowers deploy stress",
+          description: "Previous evidence says rollback planning lowers deploy stress.",
+          confidence: 0.4,
+          source_episode_ids: previousEpisodes.map((episode) => episode.id),
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+      clock: harness.clock,
+    });
+
+    await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+
+    expect(await harness.semanticNodeRepository.get(existingNode.id)).toEqual(
+      expect.objectContaining({
+        description: "Previous evidence says rollback planning lowers deploy stress.",
+        source_episode_ids: previousEpisodes.map((episode) => episode.id),
+      }),
+    );
+
+    const pendingReview = harness.reviewQueueRepository.getOpen()[0];
+    await harness.reviewQueueRepository.resolve(pendingReview!.id, "accept");
+
+    expect(await harness.semanticNodeRepository.get(existingNode.id)).toEqual(
+      expect.objectContaining({
+        description: "Updated evidence says rollback planning lowers deploy stress.",
+        source_episode_ids: [
+          ...previousEpisodes.map((episode) => episode.id),
+          ...updateEpisodes.map((episode) => episode.id),
+        ],
+      }),
+    );
+
+    const auditRow = harness.auditLog.list({ process: "reflector" })[0];
+    await harness.auditLog.revert(auditRow!.id, "test");
+
+    expect(await harness.semanticNodeRepository.get(existingNode.id)).toEqual(
+      expect.objectContaining({
+        description: "Previous evidence says rollback planning lowers deploy stress.",
+        source_episode_ids: previousEpisodes.map((episode) => episode.id),
+      }),
+    );
   });
 
   it("rejects malformed reflector reversal edge ids before repository calls", async () => {
@@ -587,6 +754,9 @@ describe("reflector process", () => {
     await process.run(harness.createContext(), {
       dryRun: false,
     });
+    for (const item of harness.reviewQueueRepository.getOpen()) {
+      await harness.reviewQueueRepository.resolve(item.id, "accept");
+    }
 
     const nodes = await harness.semanticNodeRepository.list({
       includeArchived: true,
@@ -876,6 +1046,9 @@ describe("reflector process", () => {
     const result = await process.run(harness.createContext(), {
       dryRun: false,
     });
+    const pendingReview = harness.reviewQueueRepository.getOpen()[0];
+    await harness.reviewQueueRepository.resolve(pendingReview!.id, "accept");
+
     const nodes = await harness.semanticNodeRepository.list({
       includeArchived: true,
       limit: 20,
