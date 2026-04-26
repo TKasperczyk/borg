@@ -9,6 +9,8 @@ import {
   DEFAULT_SESSION_ID,
   FakeLLMClient,
   ManualClock,
+  StreamWriter,
+  ToolDispatcher,
   createEpisodeId,
   createCommitmentsListTool,
   createEpisodicSearchTool,
@@ -102,10 +104,10 @@ describe("internal tools", () => {
       });
 
       const tool = createEpisodicSearchTool({
-        searchEpisodes: (query, limit) =>
+        searchEpisodes: (query, limit, context) =>
           borg.episodic.search(query, {
             limit,
-            crossAudience: true,
+            audienceEntityId: context.audienceEntityId,
           }),
       });
       const result = await tool.invoke(
@@ -119,6 +121,117 @@ describe("internal tools", () => {
       );
 
       expect(result.episodes[0]?.title).toBe("Planning sync");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("scopes episodic search to the invocation audience", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm);
+
+    try {
+      const aliceEntry = await borg.stream.append({
+        kind: "user_msg",
+        content: "Alice private planning note about the roadmap.",
+        audience: "Alice",
+      });
+      const bobEntry = await borg.stream.append({
+        kind: "user_msg",
+        content: "Bob private planning note about the roadmap.",
+        audience: "Bob",
+      });
+      llm.pushResponse({
+        text: "",
+        input_tokens: 10,
+        output_tokens: 5,
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_extract_3",
+            name: "EmitEpisodeCandidates",
+            input: {
+              episodes: [
+                {
+                  title: "Alice private planning",
+                  narrative: "Alice discussed a private roadmap planning note.",
+                  source_stream_ids: [aliceEntry.id],
+                  participants: ["Alice"],
+                  location: null,
+                  tags: ["planning", "roadmap"],
+                  confidence: 0.8,
+                  significance: 0.8,
+                },
+                {
+                  title: "Bob private planning",
+                  narrative: "Bob discussed a private roadmap planning note.",
+                  source_stream_ids: [bobEntry.id],
+                  participants: ["Bob"],
+                  location: null,
+                  tags: ["planning", "roadmap"],
+                  confidence: 0.8,
+                  significance: 0.8,
+                },
+              ],
+            },
+          },
+        ],
+      });
+      await borg.episodic.extract({
+        session: DEFAULT_SESSION_ID,
+      });
+
+      const episodes = await borg.episodic.list({ limit: 10 });
+      const aliceEpisode = episodes.items.find(
+        (episode) => episode.title === "Alice private planning",
+      );
+      if (aliceEpisode === undefined || aliceEpisode.audience_entity_id === null) {
+        throw new Error("Expected an Alice-scoped episode");
+      }
+
+      const clock = new ManualClock(1_000_100);
+      const dispatcher = new ToolDispatcher({
+        clock,
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: tempDir,
+            sessionId,
+            clock,
+          }),
+      });
+      dispatcher.register(
+        createEpisodicSearchTool({
+          searchEpisodes: (query, limit, context) =>
+            borg.episodic.search(query, {
+              limit,
+              audienceEntityId: context.audienceEntityId,
+            }),
+        }),
+      );
+
+      const result = await dispatcher.dispatch({
+        toolName: "tool.episodic.search",
+        input: {
+          query: "planning roadmap",
+          limit: 10,
+        },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: aliceEpisode.audience_entity_id,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+      const output = result.output as {
+        episodes: Array<{ title: string }>;
+      };
+      const titles = output.episodes.map((episode) => episode.title);
+      expect(titles).toContain("Alice private planning");
+      expect(titles).not.toContain("Bob private planning");
     } finally {
       await borg.close();
     }

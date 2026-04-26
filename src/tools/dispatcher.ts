@@ -3,13 +3,19 @@ import { z } from "zod";
 import { StreamWriter } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { ToolError } from "../util/errors.js";
-import { createStreamEntryId, DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
+import {
+  createStreamEntryId,
+  DEFAULT_SESSION_ID,
+  type EntityId,
+  type SessionId,
+} from "../util/ids.js";
 
 export type ToolOrigin = "autonomous" | "deliberator";
 
 export type ToolInvocationContext = {
   sessionId: SessionId;
   origin: ToolOrigin;
+  audienceEntityId?: EntityId | null;
   provenance?: unknown;
 };
 
@@ -29,6 +35,7 @@ export type ToolDispatchCall = {
   input: unknown;
   sessionId?: SessionId;
   origin: ToolOrigin;
+  audienceEntityId?: EntityId | null;
   provenance?: unknown;
   timeoutMs?: number;
 };
@@ -39,6 +46,7 @@ export type ToolSkippedCall = {
   input: unknown;
   sessionId?: SessionId;
   origin: ToolOrigin;
+  audienceEntityId?: EntityId | null;
   provenance?: unknown;
   skipReason: string;
   error?: string;
@@ -238,6 +246,7 @@ export class ToolDispatcher {
       const context = {
         sessionId,
         origin: call.origin,
+        ...(call.audienceEntityId === undefined ? {} : { audienceEntityId: call.audienceEntityId }),
         provenance: call.provenance,
       };
       const invocation =

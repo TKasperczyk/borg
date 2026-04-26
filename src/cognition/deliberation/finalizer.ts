@@ -1,7 +1,7 @@
 // Routes S1/S2 final response generation through the deliberator tool loop.
 import type { LLMClient, LLMContentBlockMessage } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/index.js";
-import type { SessionId } from "../../util/ids.js";
+import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../action/index.js";
 
@@ -9,6 +9,7 @@ export type RunFinalizerOptions = {
   llmClient: LLMClient;
   dispatcher: ToolDispatcher;
   sessionId: SessionId;
+  audienceEntityId?: EntityId | null;
   model: string;
   baseSystemPrompt: string;
   initialMessages: readonly LLMContentBlockMessage[];
@@ -35,6 +36,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<ToolLo
     llmClient: options.llmClient,
     dispatcher: options.dispatcher,
     sessionId: options.sessionId,
+    audienceEntityId: options.audienceEntityId,
     model: options.model,
     systemPrompt,
     initialMessages: options.initialMessages,

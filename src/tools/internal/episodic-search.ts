@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type { RetrievedEpisode } from "../../retrieval/index.js";
-import type { ToolDefinition } from "../dispatcher.js";
+import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
 const episodicSearchInputSchema = z.object({
   query: z.string().min(1),
@@ -19,7 +19,11 @@ const episodicSearchOutputSchema = z.object({
 });
 
 export type EpisodicSearchToolOptions = {
-  searchEpisodes: (query: string, limit?: number) => Promise<RetrievedEpisode[]>;
+  searchEpisodes: (
+    query: string,
+    limit: number | undefined,
+    context: ToolInvocationContext,
+  ) => Promise<RetrievedEpisode[]>;
 };
 
 export function createEpisodicSearchTool(
@@ -35,8 +39,8 @@ export function createEpisodicSearchTool(
     writeScope: "read",
     inputSchema: episodicSearchInputSchema,
     outputSchema: episodicSearchOutputSchema,
-    async invoke(input) {
-      const results = await options.searchEpisodes(input.query, input.limit ?? 5);
+    async invoke(input, context) {
+      const results = await options.searchEpisodes(input.query, input.limit ?? 5, context);
 
       return {
         episodes: results.map((result) => ({

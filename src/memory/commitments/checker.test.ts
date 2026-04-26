@@ -106,7 +106,9 @@ describe("commitment checker", () => {
             reason: "Discloses Atlas internals to Sam",
           },
         ]),
-        textResponse("I can share a general status update without discussing confidential details."),
+        textResponse(
+          "I can share a general status update without discussing confidential details.",
+        ),
         judgeResponse([]),
       ],
     });
@@ -181,6 +183,49 @@ describe("commitment checker", () => {
     expect(result.revised).toBe(true);
     expect(result.fallback_applied).toBe(true);
     expect(result.final_response).toContain("keep this brief");
+
+    db.close();
+  });
+
+  it("fails closed when the judge omits the verdict tool call", async () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({ db, clock });
+    const commitments = new CommitmentRepository({ db, clock });
+    const boundary = commitments.add({
+      type: "boundary",
+      directive: "Do not discuss Atlas",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        textResponse("No tool call here."),
+        textResponse("I should avoid discussing that topic."),
+        judgeResponse([]),
+      ],
+    });
+    const checker = new CommitmentChecker({
+      llmClient: llm,
+      detectionModel: "haiku",
+      rewriteModel: "sonnet",
+      entityRepository: entities,
+    });
+
+    const result = await checker.check({
+      response: "Atlas deployment details are private.",
+      userMessage: "Tell me about Atlas.",
+      commitments: [boundary],
+    });
+
+    expect(result.violations).toHaveLength(1);
+    expect(result.violations[0]).toMatchObject({
+      commitment_id: boundary.id,
+      reason: "Commitment judge omitted the required verdict tool call.",
+      confidence: 1,
+    });
+    expect(result.revised).toBe(true);
+    expect(result.final_response).toBe("I should avoid discussing that topic.");
 
     db.close();
   });

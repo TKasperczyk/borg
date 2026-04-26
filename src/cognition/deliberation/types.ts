@@ -21,7 +21,7 @@ import type {
   RetrievalSearchOptions,
 } from "../../retrieval/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
-import type { SessionId } from "../../util/ids.js";
+import type { EntityId, SessionId } from "../../util/ids.js";
 import type { ToolLoopCallRecord } from "../action/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { RecencyMessage } from "../recency/index.js";
@@ -53,6 +53,7 @@ export type DeliberationContext = {
   sessionId: SessionId;
   turnId?: string;
   audience?: string;
+  audienceEntityId?: EntityId | null;
   userMessage: string;
   userEntryId?: string;
   autonomyTrigger?: AutonomyTriggerContext | null;

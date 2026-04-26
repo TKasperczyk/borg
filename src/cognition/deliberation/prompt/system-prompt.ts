@@ -458,7 +458,7 @@ function summarizeSelectedSkill(
     selectedSkill === undefined ||
     selectedSkill.evaluatedCandidates.length === 0
   ) {
-    return "No procedural skills matched this turn. Use tool.skills.list to inspect the registry, or tool.skills.add (when available) to record a procedural pattern after a turn that worked.";
+    return "No procedural skills matched this turn. Use tool.skills.list to inspect the registry.";
   }
 
   const winner = selectedSkill.evaluatedCandidates.find(

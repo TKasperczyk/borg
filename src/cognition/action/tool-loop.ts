@@ -7,10 +7,15 @@ import type {
   LLMToolUseBlock,
 } from "../../llm/index.js";
 import { toAnthropicToolDefinitions } from "../../tools/anthropic.js";
-import type { ToolDefinition, ToolDispatchResult, ToolDispatcher, ToolOrigin } from "../../tools/index.js";
+import type {
+  ToolDefinition,
+  ToolDispatchResult,
+  ToolDispatcher,
+  ToolOrigin,
+} from "../../tools/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { toTraceJsonValue } from "../tracing/tracer.js";
-import type { SessionId } from "../../util/ids.js";
+import type { EntityId, SessionId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 
@@ -41,6 +46,7 @@ export type ExecuteToolLoopOptions = {
   initialMessages: readonly LLMContentBlockMessage[];
   tools: readonly ToolDefinition[];
   origin: ToolOrigin;
+  audienceEntityId?: EntityId | null;
   provenance?: unknown;
   budget: string;
   maxTokens?: number;
@@ -87,7 +93,9 @@ function extractText(blocks: readonly LLMContentBlock[]): string {
     .join("");
 }
 
-function buildToolResultBlock(result: ToolDispatchResult): Extract<LLMContentBlock, { type: "tool_result" }> {
+function buildToolResultBlock(
+  result: ToolDispatchResult,
+): Extract<LLMContentBlock, { type: "tool_result" }> {
   if (result.ok) {
     return {
       type: "tool_result",
@@ -140,7 +148,7 @@ function toCallRecord(block: LLMToolUseBlock, result: ToolDispatchResult): ToolL
 
 async function dispatchToolUseBlock(
   dispatcher: ToolDispatcher,
-  options: Pick<ExecuteToolLoopOptions, "sessionId" | "origin" | "provenance">,
+  options: Pick<ExecuteToolLoopOptions, "sessionId" | "origin" | "audienceEntityId" | "provenance">,
   block: LLMToolUseBlock,
 ): Promise<ToolDispatchResult> {
   try {
@@ -150,6 +158,7 @@ async function dispatchToolUseBlock(
       input: block.input,
       sessionId: options.sessionId,
       origin: options.origin,
+      audienceEntityId: options.audienceEntityId,
       provenance: options.provenance,
     });
   } catch (error) {
@@ -306,6 +315,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         {
           sessionId: options.sessionId,
           origin: options.origin,
+          audienceEntityId: options.audienceEntityId,
           provenance: options.provenance,
         },
         block,
@@ -421,8 +431,7 @@ function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
       tool.inputSchema.properties === undefined
         ? 0
         : Object.keys(tool.inputSchema.properties).length,
-    required:
-      Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
+    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
   }));
 }
 

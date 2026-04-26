@@ -5,9 +5,7 @@ import { SuppressionSet, computeRetrievalLimit, computeWeights } from "./attenti
 import { performAction, type ToolLoopCallRecord } from "./action/index.js";
 import { formatAutonomyTriggerContext, type AutonomyTriggerContext } from "./autonomy-trigger.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
-import {
-  detectAffectiveSignal,
-} from "./perception/affective-signal.js";
+import { detectAffectiveSignal } from "./perception/affective-signal.js";
 import { Perceiver } from "./perception/index.js";
 import { TurnContextCompiler, type RecencyWindow } from "./recency/index.js";
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
@@ -191,10 +189,8 @@ export class TurnOrchestrator {
     const values = this.options.valuesRepository.list();
     const goals = flattenGoals(this.options.goalsRepository.list({ status: "active" }));
     const traits = this.options.traitsRepository.list();
-    const currentPeriod =
-      this.options.autobiographicalRepository?.currentPeriod() ?? null;
-    const recentGrowthMarkers =
-      this.options.growthMarkersRepository?.list({ limit: 3 }) ?? [];
+    const currentPeriod = this.options.autobiographicalRepository?.currentPeriod() ?? null;
+    const recentGrowthMarkers = this.options.growthMarkersRepository?.list({ limit: 3 }) ?? [];
 
     return {
       values,
@@ -374,7 +370,7 @@ export class TurnOrchestrator {
         const perception = await perceiver.perceive(cognitionInput, recentHistoryStrings);
         const workingMood =
           input.origin === "autonomous"
-            ? workingMemory.mood ?? createNeutralAffectiveSignal()
+            ? (workingMemory.mood ?? createNeutralAffectiveSignal())
             : perception.affectiveSignal;
 
         workingMemory = {
@@ -435,8 +431,7 @@ export class TurnOrchestrator {
           const nowMs = this.clock.now();
           const expired =
             nowMs - pendingTraitAttribution.turn_completed_ts > PENDING_TRAIT_ATTRIBUTION_TTL_MS;
-          const audienceMatches =
-            pendingTraitAttribution.audience_entity_id === audienceEntityId;
+          const audienceMatches = pendingTraitAttribution.audience_entity_id === audienceEntityId;
 
           if (expired || !audienceMatches) {
             await streamWriter.append({
@@ -543,10 +538,9 @@ export class TurnOrchestrator {
           strictTimeRange: perception.temporalCue !== null,
           moodState: currentMood,
           audienceProfile,
-          audienceTerms:
-            isSelfAudience
-              ? []
-              : audienceEntity === null
+          audienceTerms: isSelfAudience
+            ? []
+            : audienceEntity === null
               ? input.audience === undefined
                 ? []
                 : [input.audience]
@@ -587,6 +581,7 @@ export class TurnOrchestrator {
             sessionId,
             turnId,
             audience: input.audience,
+            audienceEntityId,
             userMessage: input.userMessage,
             userEntryId: persistedUserEntry.id,
             autonomyTrigger: input.autonomyTrigger ?? null,
@@ -699,18 +694,17 @@ export class TurnOrchestrator {
           }
         }
 
-        let interactionRecord:
-          | ReturnType<SocialRepository["recordInteractionWithId"]>
-          | null = null;
+        let interactionRecord: ReturnType<SocialRepository["recordInteractionWithId"]> | null =
+          null;
         if (audienceEntityId !== null) {
           try {
             interactionRecord = this.options.socialRepository.recordInteractionWithId(
               audienceEntityId,
               {
-              now: this.clock.now(),
-              provenance: {
-                kind: "system",
-              },
+                now: this.clock.now(),
+                provenance: {
+                  kind: "system",
+                },
               },
             );
           } catch (error) {

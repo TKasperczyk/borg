@@ -38,10 +38,10 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
   toolDispatcher
     .register(
       createEpisodicSearchTool({
-        searchEpisodes: (query, limit) =>
+        searchEpisodes: (query, limit, context) =>
           options.retrievalPipeline.search(query, {
             limit,
-            crossAudience: true,
+            audienceEntityId: context.audienceEntityId,
           }),
       }),
     )

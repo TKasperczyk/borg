@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-import {
-  toToolInputSchema,
-  type LLMClient,
-  type LLMToolDefinition,
-} from "../../llm/index.js";
+import { toToolInputSchema, type LLMClient, type LLMToolDefinition } from "../../llm/index.js";
 import { summarizeProvenanceForPrompt } from "../common/provenance.js";
 import { parseCommitmentId, type CommitmentId, type EntityId } from "../../util/ids.js";
 import { EntityRepository } from "./repository.js";
@@ -110,6 +106,18 @@ function describeCommitmentForJudge(
   return `id=${commitment.id} type=${commitment.type}${scope === "" ? "" : ` ${scope}`} :: ${escapeReservedBorgTags(commitment.directive)}`;
 }
 
+function failClosedJudgeViolation(
+  commitment: CommitmentRecord,
+  reason: string,
+): CommitmentViolation {
+  // Boundary policy is safety-critical; ambiguous judge output should not bypass the guard.
+  return {
+    commitment_id: parseCommitmentId(commitment.id),
+    reason,
+    confidence: 1,
+  };
+}
+
 export class CommitmentChecker {
   constructor(private readonly options: CommitmentCheckerOptions) {}
 
@@ -120,6 +128,11 @@ export class CommitmentChecker {
     untrustedContext?: string | null,
   ): Promise<CommitmentViolation[]> {
     if (commitments.length === 0) {
+      return [];
+    }
+
+    const firstCommitment = commitments[0];
+    if (firstCommitment === undefined) {
       return [];
     }
 
@@ -164,12 +177,22 @@ export class CommitmentChecker {
 
     const call = judged.tool_calls.find((toolCall) => toolCall.name === VIOLATION_JUDGE_TOOL_NAME);
     if (call === undefined) {
-      return [];
+      return [
+        failClosedJudgeViolation(
+          firstCommitment,
+          "Commitment judge omitted the required verdict tool call.",
+        ),
+      ];
     }
 
     const parsed = judgeSchema.safeParse(call.input);
     if (!parsed.success) {
-      return [];
+      return [
+        failClosedJudgeViolation(
+          firstCommitment,
+          "Commitment judge returned an invalid verdict payload.",
+        ),
+      ];
     }
 
     const violations: CommitmentViolation[] = [];

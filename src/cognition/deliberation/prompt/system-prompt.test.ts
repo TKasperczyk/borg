@@ -209,8 +209,10 @@ describe("buildBaseSystemPrompt", () => {
     );
 
     expect(prompt).toContain("<borg_procedural_guidance>");
-    expect(prompt).toContain("No procedural skills matched this turn.");
-    expect(prompt).toContain("tool.skills.list");
+    expect(prompt).toContain(
+      "No procedural skills matched this turn. Use tool.skills.list to inspect the registry.",
+    );
+    expect(prompt).not.toContain("tool.skills.add");
   });
 
   it("renders an empty procedural placeholder when no skill was selected at all", () => {
@@ -223,6 +225,7 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(prompt).toContain("<borg_procedural_guidance>");
     expect(prompt).toContain("No procedural skills matched this turn.");
+    expect(prompt).not.toContain("tool.skills.add");
   });
 
   it("omits procedural guidance outside problem-solving mode", () => {
