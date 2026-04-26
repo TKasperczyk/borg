@@ -540,8 +540,6 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       start_time: 900_000,
       end_time: 901_000,
     });
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
     const results = await harness.retrievalPipeline.search(QUERY, {
       limit: 3,
       temporalCue: {
@@ -560,16 +558,6 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     });
 
     expect(results).toEqual([]);
-    expect(warnSpy).toHaveBeenCalledWith(
-      "Strict time filter returned 0 retrieval candidates.",
-      expect.objectContaining({
-        query: QUERY,
-        timeRange: {
-          start: 140_000,
-          end: 170_000,
-        },
-      }),
-    );
   });
 
   it("reuses a single visible-corpus scan across scan-based generators", async () => {

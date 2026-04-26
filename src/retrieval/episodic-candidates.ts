@@ -152,7 +152,7 @@ export async function generateEpisodicCandidates(params: {
   limit: number;
   timeSignals: ResolvedTimeSignals;
 }): Promise<MergedEpisodeCandidate[]> {
-  const { repository, query, queryVector, options, limit, timeSignals } = params;
+  const { repository, queryVector, options, limit, timeSignals } = params;
   const vectorBudget = Math.max(limit * 2, 12);
   const temporalBudget = Math.max(limit * 2, 8);
   const audienceBudget = Math.max(limit * 2, 8);
@@ -212,18 +212,13 @@ export async function generateEpisodicCandidates(params: {
     );
   }
 
-  const candidates = mergeCandidates(await Promise.all(generatorCalls)).filter((entry) =>
+  // The strict time filter producing zero candidates is a normal user-query
+  // outcome ("asked about yesterday, nothing happened"). The retrieval_completed
+  // tracer event already records episodeCount and the time range from options,
+  // so this state is observable without spamming stdout.
+  return mergeCandidates(await Promise.all(generatorCalls)).filter((entry) =>
     timeSignals.strictFilterRange === null
       ? true
       : overlapsTimeRange(entry.candidate.episode, timeSignals.strictFilterRange),
   );
-
-  if (timeSignals.strictFilterRange !== null && candidates.length === 0) {
-    console.warn("Strict time filter returned 0 retrieval candidates.", {
-      query,
-      timeRange: timeSignals.strictFilterRange,
-    });
-  }
-
-  return candidates;
 }
