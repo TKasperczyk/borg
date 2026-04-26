@@ -6,7 +6,11 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
+import {
+  episodeIdSchema,
+  isEpisodeInGlobalIdentityScope,
+  type Episode,
+} from "../../memory/episodic/index.js";
 import {
   GROWTH_MARKER_CATEGORIES,
   autobiographicalPeriodIdSchema,
@@ -315,11 +319,15 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const nowMs = ctx.clock.now();
     const configuredLabel = typeof opts.params?.label === "string" ? opts.params.label.trim() : "";
     const currentPeriod = ctx.autobiographicalRepository.currentPeriod();
+    const selfAudienceEntityId = ctx.entityRepository.findByName("self");
+    // Existing global periods and growth markers may already cite older
+    // audience-scoped evidence; this write-side guard only prevents new ones.
     const sourceEpisodes = (await ctx.episodicRepository.listAll()).filter(
       (episode) =>
-        currentPeriod === null ||
-        episode.start_time >= currentPeriod.start_ts ||
-        episode.end_time >= currentPeriod.start_ts,
+        isEpisodeInGlobalIdentityScope(episode, selfAudienceEntityId) &&
+        (currentPeriod === null ||
+          episode.start_time >= currentPeriod.start_ts ||
+          episode.end_time >= currentPeriod.start_ts),
     );
     const clusters = collectClusters(
       sourceEpisodes,

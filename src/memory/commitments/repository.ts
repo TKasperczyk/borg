@@ -131,15 +131,7 @@ export class EntityRepository {
     return this.options.db;
   }
 
-  resolve(name: string): EntityId {
-    const normalized = normalizeName(name);
-
-    if (normalized.length === 0) {
-      throw new CommitmentError("Entity name is required", {
-        code: "ENTITY_NAME_REQUIRED",
-      });
-    }
-
+  private listEntities(): EntityRecord[] {
     const rows = this.db
       .prepare(
         `
@@ -150,13 +142,40 @@ export class EntityRepository {
       )
       .all() as Record<string, unknown>[];
 
-    for (const row of rows) {
-      const entity = mapEntityRow(row);
+    return rows.map((row) => mapEntityRow(row));
+  }
+
+  findByName(name: string): EntityId | null {
+    const normalized = normalizeName(name);
+
+    if (normalized.length === 0) {
+      return null;
+    }
+
+    for (const entity of this.listEntities()) {
       const names = [entity.canonical_name, ...entity.aliases].map((value) => normalizeName(value));
 
       if (names.includes(normalized)) {
         return entity.id;
       }
+    }
+
+    return null;
+  }
+
+  resolve(name: string): EntityId {
+    const normalized = normalizeName(name);
+
+    if (normalized.length === 0) {
+      throw new CommitmentError("Entity name is required", {
+        code: "ENTITY_NAME_REQUIRED",
+      });
+    }
+
+    const existing = this.findByName(name);
+
+    if (existing !== null) {
+      return existing;
     }
 
     const entity = entityRecordSchema.parse({
@@ -400,9 +419,13 @@ export class CommitmentRepository {
       values.push(nowMs);
     }
 
-    if (options.audience !== undefined && options.audience !== null) {
-      filters.push("(restricted_audience IS NULL OR restricted_audience = ?)");
-      values.push(options.audience);
+    if (options.audience !== undefined) {
+      if (options.audience === null) {
+        filters.push("restricted_audience IS NULL");
+      } else {
+        filters.push("(restricted_audience IS NULL OR restricted_audience = ?)");
+        values.push(options.audience);
+      }
     }
 
     if (options.aboutEntity !== undefined && options.aboutEntity !== null) {

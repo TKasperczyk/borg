@@ -130,13 +130,17 @@ export type EpisodeSearchOptions = {
   tierFilter?: readonly EpisodeTier[];
   audienceEntityId?: EntityId | null;
   crossAudience?: boolean;
+  globalIdentitySelfAudienceEntityId?: EntityId | null;
   timeRange?: {
     start: number;
     end: number;
   };
 };
 
-export type EpisodeVisibilityOptions = Pick<EpisodeSearchOptions, "audienceEntityId" | "crossAudience">;
+export type EpisodeVisibilityOptions = Pick<
+  EpisodeSearchOptions,
+  "audienceEntityId" | "crossAudience" | "globalIdentitySelfAudienceEntityId"
+>;
 
 export type EpisodeSearchCandidate = {
   episode: Episode;

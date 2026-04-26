@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { commitmentSchema, type CommitmentRecord } from "../../memory/commitments/index.js";
-import type { ToolDefinition } from "../dispatcher.js";
+import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
 const commitmentsListInputSchema = z.object({}).strict();
 
@@ -10,7 +10,7 @@ const commitmentsListOutputSchema = z.object({
 });
 
 export type CommitmentsListToolOptions = {
-  listCommitments: () => CommitmentRecord[];
+  listCommitments: (context: ToolInvocationContext) => CommitmentRecord[];
 };
 
 export function createCommitmentsListTool(
@@ -26,9 +26,9 @@ export function createCommitmentsListTool(
     writeScope: "read",
     inputSchema: commitmentsListInputSchema,
     outputSchema: commitmentsListOutputSchema,
-    async invoke() {
+    async invoke(_input, context) {
       return {
-        commitments: options.listCommitments(),
+        commitments: options.listCommitments(context),
       };
     },
   };

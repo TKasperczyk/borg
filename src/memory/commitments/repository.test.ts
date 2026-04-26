@@ -79,6 +79,78 @@ describe("commitment repository", () => {
     db.close();
   });
 
+  it("treats a null audience as public-only for active commitment lists", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...commitmentMigrations, ...identityMigrations],
+    });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({
+      db,
+      clock,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const sam = entities.resolve("Sam");
+      const publicCommitment = commitments.add({
+        type: "promise",
+        directive: "Follow up on public work",
+        priority: 5,
+        provenance: manualProvenance,
+      });
+      const restricted = commitments.add({
+        type: "boundary",
+        directive: "Do not discuss Sam-only details elsewhere",
+        priority: 10,
+        restrictedAudience: sam,
+        provenance: manualProvenance,
+      });
+
+      expect(
+        commitments.list({
+          activeOnly: true,
+          audience: null,
+        }),
+      ).toEqual([publicCommitment]);
+      expect(
+        commitments.getApplicable({
+          audience: null,
+          nowMs: 1_000,
+        }),
+      ).toEqual([publicCommitment]);
+      expect(
+        commitments.getApplicable({
+          audience: sam,
+          nowMs: 1_000,
+        }),
+      ).toEqual([restricted, publicCommitment]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("can look up an entity by name without creating one", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const entities = new EntityRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    try {
+      expect(entities.findByName("Unknown")).toBeNull();
+      expect(
+        (db.prepare("SELECT COUNT(*) AS count FROM entities").get() as { count: number }).count,
+      ).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it("materializes expiration and records an identity event", () => {
     const db = openDatabase(":memory:", {
       migrations: [...commitmentMigrations, ...identityMigrations],

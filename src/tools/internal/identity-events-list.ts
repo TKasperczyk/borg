@@ -6,7 +6,7 @@ import {
   type IdentityEvent,
   type IdentityRecordType,
 } from "../../memory/identity/index.js";
-import type { ToolDefinition } from "../dispatcher.js";
+import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
 const identityEventsListInputSchema = z.object({
   recordType: identityRecordTypeSchema.optional(),
@@ -19,11 +19,14 @@ const identityEventsListOutputSchema = z.object({
 });
 
 export type IdentityEventsListToolOptions = {
-  listEvents: (options: {
-    recordType?: IdentityRecordType;
-    recordId?: string;
-    limit?: number;
-  }) => IdentityEvent[];
+  listEvents: (
+    options: {
+      recordType?: IdentityRecordType;
+      recordId?: string;
+      limit?: number;
+    },
+    context: ToolInvocationContext,
+  ) => IdentityEvent[] | Promise<IdentityEvent[]>;
 };
 
 export function createIdentityEventsListTool(
@@ -34,18 +37,22 @@ export function createIdentityEventsListTool(
 > {
   return {
     name: "tool.identityEvents.list",
-    description: "List recent identity events.",
+    description:
+      "List recent identity events visible to the current audience. Event types without audience metadata are treated as global.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: identityEventsListInputSchema,
     outputSchema: identityEventsListOutputSchema,
-    async invoke(input) {
+    async invoke(input, context) {
       return {
-        events: options.listEvents({
-          recordType: input.recordType,
-          recordId: input.recordId,
-          limit: input.limit ?? 10,
-        }),
+        events: await options.listEvents(
+          {
+            recordType: input.recordType,
+            recordId: input.recordId,
+            limit: input.limit ?? 10,
+          },
+          context,
+        ),
       };
     },
   };

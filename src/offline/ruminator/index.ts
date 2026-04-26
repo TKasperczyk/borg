@@ -7,7 +7,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { episodeIdSchema } from "../../memory/episodic/index.js";
+import { episodeIdSchema, isEpisodeInGlobalIdentityScope } from "../../memory/episodic/index.js";
 import {
   growthMarkerCategorySchema,
   growthMarkerIdSchema,
@@ -187,16 +187,22 @@ async function planResolution(
   question: OpenQuestion,
   maxQuestionsPerRun: number,
 ): Promise<RuminatorPlan["items"][number] | null> {
+  const selfAudienceEntityId = ctx.entityRepository.findByName("self");
+  // Open questions are global self-band records, so resolution evidence is
+  // limited to public/self episodes rather than audience-specific material.
   const retrieval = await ctx.retrievalPipeline.searchWithContext(question.question, {
     limit: Math.max(3, maxQuestionsPerRun),
-    crossAudience: true,
+    globalIdentitySelfAudienceEntityId: selfAudienceEntityId,
     attentionWeights: buildReflectionWeights(ctx),
     goalDescriptions: ctx.goalsRepository
       .list({ status: "active" })
       .map((goal) => goal.description),
     includeOpenQuestions: false,
   });
-  const strongEvidence = retrieval.episodes
+  const globalIdentityEpisodes = retrieval.episodes.filter((result) =>
+    isEpisodeInGlobalIdentityScope(result.episode, selfAudienceEntityId),
+  );
+  const strongEvidence = globalIdentityEpisodes
     .filter(
       (result) =>
         result.score >= ctx.config.offline.ruminator.resolveConfidenceThreshold &&
@@ -211,7 +217,7 @@ async function planResolution(
     return null;
   }
 
-  const evidenceBlock = retrieval.episodes
+  const evidenceBlock = globalIdentityEpisodes
     .slice(0, 3)
     .map((result) =>
       JSON.stringify({

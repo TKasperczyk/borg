@@ -108,6 +108,20 @@ function isSemanticNodeVisible(
   );
 }
 
+export async function isSemanticNodeVisibleToAudience(
+  node: SemanticNode,
+  visibility: Pick<SemanticRetrievalOptions, "audienceEntityId" | "crossAudience">,
+  dependencies: Pick<SemanticRetrievalDependencies, "episodicRepository">,
+): Promise<boolean> {
+  const visibleEpisodeIds = await resolveVisibleEpisodeIds(
+    dependencies.episodicRepository,
+    node.source_episode_ids,
+    visibility,
+  );
+
+  return isSemanticNodeVisible(node, visibleEpisodeIds);
+}
+
 function isSemanticWalkStepVisible(
   step: SemanticWalkStep,
   visibleEpisodeIds: ReadonlySet<string> | null,
@@ -119,6 +133,23 @@ function isSemanticWalkStepVisible(
         edge.evidence_episode_ids.every((episodeId) => visibleEpisodeIds.has(episodeId)),
       ))
   );
+}
+
+export async function filterSemanticWalkStepsByAudience(
+  steps: readonly SemanticWalkStep[],
+  visibility: Pick<SemanticRetrievalOptions, "audienceEntityId" | "crossAudience">,
+  dependencies: Pick<SemanticRetrievalDependencies, "episodicRepository">,
+): Promise<SemanticWalkStep[]> {
+  const visibleEpisodeIds = await resolveVisibleEpisodeIds(
+    dependencies.episodicRepository,
+    steps.flatMap((step) => [
+      ...step.node.source_episode_ids,
+      ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+    ]),
+    visibility,
+  );
+
+  return steps.filter((step) => isSemanticWalkStepVisible(step, visibleEpisodeIds));
 }
 
 async function isHistoricalPropositionMatch(

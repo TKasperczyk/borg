@@ -55,3 +55,17 @@ export function isEpisodeVisibleToAudience(
 
   return normalized.audience_entity_id === audienceEntityId;
 }
+
+export function isEpisodeInGlobalIdentityScope(
+  input: EpisodeAccessLike,
+  selfAudienceEntityId?: EntityId | null,
+): boolean {
+  const normalized = normalizeEpisodeAccess(input);
+
+  return (
+    normalized.audience_entity_id === null ||
+    (selfAudienceEntityId !== null &&
+      selfAudienceEntityId !== undefined &&
+      normalized.audience_entity_id === selfAudienceEntityId)
+  );
+}

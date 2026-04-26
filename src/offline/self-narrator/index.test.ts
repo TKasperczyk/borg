@@ -297,7 +297,77 @@ describe("SelfNarratorProcess", () => {
       await harness.reviewQueueRepository.resolve(reviewItem!.id, "accept");
 
       expect(harness.autobiographicalRepository.currentPeriod()?.id).toBe(nextPeriod?.id);
-      expect(harness.autobiographicalRepository.getPeriod(currentPeriod.id)?.end_ts).toBe(rolloverTs);
+      expect(harness.autobiographicalRepository.getPeriod(currentPeriod.id)?.end_ts).toBe(
+        rolloverTs,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("does not use audience-scoped episodes as global growth-marker evidence", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          observation: {
+            category: "understanding",
+            what_changed: "Public planning became more explicit.",
+            before_description: "Planning evidence was scattered.",
+            after_description: "Public evidence now supports the planning pattern.",
+            confidence: 0.9,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+          },
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const sam = harness.entityRepository.resolve("Sam");
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          title: "Public planning start",
+          narrative: "Public planning started with clearer goals.",
+          tags: ["planning"],
+        }),
+      );
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          title: "Public planning follow-up",
+          narrative: "Public planning follow-up reinforced the goals.",
+          tags: ["planning"],
+          created_at: 2_000_000,
+          updated_at: 2_000_000,
+        }),
+      );
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_cccccccccccccccc" as never,
+          title: "Sam private planning",
+          narrative: "Sam shared a private planning detail.",
+          tags: ["planning"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 3_000_000,
+          updated_at: 3_000_000,
+        }),
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+      const marker = plan.items.find((item) => item.action === "add_growth_marker")?.marker;
+
+      expect(llm.requests[0]?.messages[0]?.content).not.toContain("Sam private planning");
+      expect(marker?.evidence_episode_ids).toEqual(["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"]);
+      expect(marker?.evidence_episode_ids).not.toContain("ep_cccccccccccccccc");
     } finally {
       await harness.cleanup();
     }

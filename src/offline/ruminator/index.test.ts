@@ -172,6 +172,88 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("resolves global open questions only from public or self evidence", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createRuminatorResponse({
+          resolution_note: "Public evidence resolved the planning question.",
+          growth_marker: null,
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const sam = harness.entityRepository.resolve("Sam");
+      const alex = harness.entityRepository.resolve("Alex");
+      const publicEpisode = createEpisodeFixture(
+        {
+          title: "Public planning resolution",
+          narrative: "Public planning evidence resolved the open question.",
+          tags: ["planning"],
+          created_at: 2_000_000,
+          updated_at: 2_000_000,
+        },
+        [0, 1, 0, 0],
+      );
+      const samEpisode = createEpisodeFixture(
+        {
+          title: "Sam private planning resolution",
+          narrative: "Sam shared a private planning resolution.",
+          tags: ["planning"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 3_000_000,
+          updated_at: 3_000_000,
+        },
+        [0, 1, 0, 0],
+      );
+      const alexEpisode = createEpisodeFixture(
+        {
+          title: "Alex private planning resolution",
+          narrative: "Alex shared a private planning resolution.",
+          tags: ["planning"],
+          audience_entity_id: alex,
+          shared: false,
+          created_at: 4_000_000,
+          updated_at: 4_000_000,
+        },
+        [0, 1, 0, 0],
+      );
+      await harness.episodicRepository.insert(publicEpisode);
+      await harness.episodicRepository.insert(samEpisode);
+      await harness.episodicRepository.insert(alexEpisode);
+      const question = harness.openQuestionsRepository.add({
+        question: "What resolved the planning uncertainty?",
+        urgency: 0.7,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items[0]).toMatchObject({
+        action: "resolve",
+        question_id: question.id,
+        resolution_episode_id: publicEpisode.id,
+      });
+      expect(llm.requests[0]?.messages[0]?.content).toContain("Public planning resolution");
+      expect(llm.requests[0]?.messages[0]?.content).not.toContain("Sam private planning");
+      expect(llm.requests[0]?.messages[0]?.content).not.toContain("Alex private planning");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("halts on budget exhaustion without making further LLM calls", async () => {
     const llm = new FakeLLMClient({
       responses: [

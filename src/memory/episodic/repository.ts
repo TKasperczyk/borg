@@ -22,7 +22,11 @@ import { serializeJsonValue } from "../../util/json-value.js";
 import { parseEntityId, parseEpisodeId, type EntityId, type EpisodeId } from "../../util/ids.js";
 import { createNeutralEmotionalArc, emotionalArcSchema } from "../affective/types.js";
 import { computeEpisodeHeat } from "./heat.js";
-import { isEpisodeVisibleToAudience, normalizeEpisodeAccess } from "./access.js";
+import {
+  isEpisodeInGlobalIdentityScope,
+  isEpisodeVisibleToAudience,
+  normalizeEpisodeAccess,
+} from "./access.js";
 
 import {
   type Episode,
@@ -322,7 +326,9 @@ function fromEpisodeStatsRow(row: Record<string, unknown>): EpisodeStats {
     tier: row.tier,
     promoted_at: Number(row.promoted_at),
     promoted_from:
-      row.promoted_from === null || row.promoted_from === undefined ? null : String(row.promoted_from),
+      row.promoted_from === null || row.promoted_from === undefined
+        ? null
+        : String(row.promoted_from),
     gist: row.gist === null || row.gist === undefined ? null : String(row.gist),
     gist_generated_at:
       row.gist_generated_at === null || row.gist_generated_at === undefined
@@ -430,7 +436,16 @@ export class EpisodicRepository {
   private buildVisibilityWhereClause(
     audienceEntityId: EntityId | null | undefined,
     crossAudience = false,
+    globalIdentitySelfAudienceEntityId?: EntityId | null,
   ): string | undefined {
+    if (globalIdentitySelfAudienceEntityId !== undefined) {
+      return globalIdentitySelfAudienceEntityId === null
+        ? "audience_entity_id IS NULL"
+        : `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(
+            globalIdentitySelfAudienceEntityId,
+          )})`;
+    }
+
     if (crossAudience) {
       return undefined;
     }
@@ -444,6 +459,14 @@ export class EpisodicRepository {
     )} OR shared = true)`;
   }
 
+  private buildOptionsVisibilityWhereClause(options: EpisodeVisibilityOptions): string | undefined {
+    return this.buildVisibilityWhereClause(
+      options.audienceEntityId,
+      options.crossAudience,
+      options.globalIdentitySelfAudienceEntityId,
+    );
+  }
+
   private async listEpisodesWhere(where: string | undefined): Promise<Episode[]> {
     const rows = await this.table.list(where === undefined ? {} : { where });
     return rows.map((row) => fromEpisodeRow(row));
@@ -454,10 +477,7 @@ export class EpisodicRepository {
     extraWhere?: string,
   ): Promise<Episode[]> {
     return this.listEpisodesWhere(
-      combineWhereClauses(
-        this.buildVisibilityWhereClause(options.audienceEntityId, options.crossAudience),
-        extraWhere,
-      ),
+      combineWhereClauses(this.buildOptionsVisibilityWhereClause(options), extraWhere),
     );
   }
 
@@ -731,7 +751,9 @@ export class EpisodicRepository {
       ...valueSourceRows.map((row) => parseEpisodeId(row.episode_id)),
     ]);
     const missingStats = episodes.filter((episode) => !statsIdSet.has(episode.id));
-    const orphanEpisodeIds = [...referencedSqlEpisodeIds].filter((episodeId) => !episodeIds.has(episodeId));
+    const orphanEpisodeIds = [...referencedSqlEpisodeIds].filter(
+      (episodeId) => !episodeIds.has(episodeId),
+    );
     let createdMissingStats = 0;
     let deletedOrphanStats = 0;
     let deletedOrphanRetrievalLogs = 0;
@@ -864,7 +886,7 @@ export class EpisodicRepository {
       limit: searchLimit,
       vectorColumn: "embedding",
       distanceType: "cosine",
-      where: this.buildVisibilityWhereClause(options.audienceEntityId, options.crossAudience),
+      where: this.buildOptionsVisibilityWhereClause(options),
     });
     const ranked = rows.map((row) => {
       const episode = fromEpisodeRow(row);
@@ -881,11 +903,19 @@ export class EpisodicRepository {
       const stats = statsById.get(episode.id) ?? defaultEpisodeStats(episode);
       const similarity = item.similarity;
 
+      if (
+        options.globalIdentitySelfAudienceEntityId !== undefined &&
+        !isEpisodeInGlobalIdentityScope(episode, options.globalIdentitySelfAudienceEntityId)
+      ) {
+        continue;
+      }
+
       if (options.minSimilarity !== undefined && similarity < options.minSimilarity) {
         continue;
       }
 
       if (
+        options.globalIdentitySelfAudienceEntityId === undefined &&
         !isEpisodeVisibleToAudience(episode, options.audienceEntityId, {
           crossAudience: options.crossAudience,
         })
@@ -950,10 +980,7 @@ export class EpisodicRepository {
     );
     const episodes = (
       await this.listEpisodesWhere(
-        combineWhereClauses(
-          this.buildVisibilityWhereClause(options.audienceEntityId, options.crossAudience),
-          timeWhere,
-        ),
+        combineWhereClauses(this.buildOptionsVisibilityWhereClause(options), timeWhere),
       )
     )
       .filter((episode) => episode.start_time <= range.end && episode.end_time >= range.start)

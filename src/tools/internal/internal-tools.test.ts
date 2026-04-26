@@ -19,8 +19,15 @@ import {
   createOpenQuestionsCreateTool,
   createSemanticWalkTool,
   createSkillsListTool,
+  SemanticGraph,
 } from "../../index.js";
-import { TestEmbeddingClient } from "../../offline/test-support.js";
+import { buildToolDispatcher } from "../../borg/tools-setup.js";
+import {
+  createEpisodeFixture,
+  createOfflineTestHarness,
+  createSemanticNodeFixture,
+  TestEmbeddingClient,
+} from "../../offline/test-support.js";
 
 async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
   return Borg.open({
@@ -51,6 +58,34 @@ async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
     embeddingClient: new TestEmbeddingClient(),
     llmClient: llm,
     liveExtraction: false,
+  });
+}
+
+function createHarnessToolDispatcher(
+  harness: Awaited<ReturnType<typeof createOfflineTestHarness>>,
+) {
+  const clock = new ManualClock(1_000_100);
+  const semanticGraph = new SemanticGraph({
+    nodeRepository: harness.semanticNodeRepository,
+    edgeRepository: harness.semanticEdgeRepository,
+  });
+
+  return buildToolDispatcher({
+    retrievalPipeline: harness.retrievalPipeline,
+    episodicRepository: harness.episodicRepository,
+    semanticNodeRepository: harness.semanticNodeRepository,
+    semanticGraph,
+    commitmentRepository: harness.commitmentRepository,
+    openQuestionsRepository: harness.openQuestionsRepository,
+    identityService: harness.identityService,
+    skillRepository: harness.skillRepository,
+    createStreamWriter: (sessionId) =>
+      new StreamWriter({
+        dataDir: harness.tempDir,
+        sessionId,
+        clock,
+      }),
+    clock,
   });
 }
 
@@ -319,6 +354,101 @@ describe("internal tools", () => {
     });
   });
 
+  it("scopes semantic walks to the invocation audience", async () => {
+    const harness = await createOfflineTestHarness();
+
+    try {
+      const alice = harness.entityRepository.resolve("Alice");
+      const bob = harness.entityRepository.resolve("Bob");
+      const publicEpisode = await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          title: "Public semantic root",
+          narrative: "Public evidence anchors the root node.",
+        }),
+      );
+      const aliceEpisode = await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          title: "Alice semantic support",
+          narrative: "Alice-only evidence supports the root node.",
+          audience_entity_id: alice,
+          shared: false,
+        }),
+      );
+      const bobEpisode = await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_cccccccccccccccc" as never,
+          title: "Bob semantic support",
+          narrative: "Bob-only evidence supports the root node.",
+          audience_entity_id: bob,
+          shared: false,
+        }),
+      );
+      const root = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture({
+          label: "Planning root",
+          source_episode_ids: [publicEpisode.id],
+        }),
+      );
+      const aliceNode = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture({
+          label: "Alice support",
+          source_episode_ids: [aliceEpisode.id],
+        }),
+      );
+      const bobNode = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture({
+          label: "Bob support",
+          source_episode_ids: [bobEpisode.id],
+        }),
+      );
+      harness.semanticEdgeRepository.addEdge({
+        from_node_id: root.id,
+        to_node_id: aliceNode.id,
+        relation: "supports",
+        confidence: 0.8,
+        evidence_episode_ids: [aliceEpisode.id],
+        created_at: 1_000_000,
+        last_verified_at: 1_000_000,
+      });
+      harness.semanticEdgeRepository.addEdge({
+        from_node_id: root.id,
+        to_node_id: bobNode.id,
+        relation: "supports",
+        confidence: 0.8,
+        evidence_episode_ids: [bobEpisode.id],
+        created_at: 1_000_000,
+        last_verified_at: 1_000_000,
+      });
+
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const result = await dispatcher.dispatch({
+        toolName: "tool.semantic.walk",
+        input: {
+          node_id: root.id,
+          relation: "supports",
+        },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: alice,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+
+      const output = result.output as {
+        steps: Array<{ node: { id: string; label: string } }>;
+      };
+      expect(output.steps.map((step) => step.node.id)).toContain(aliceNode.id);
+      expect(output.steps.map((step) => step.node.id)).not.toContain(bobNode.id);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("lists active commitments", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -349,6 +479,76 @@ describe("internal tools", () => {
       expect(result.commitments.map((item) => item.id)).toContain(commitment.id);
     } finally {
       await borg.close();
+    }
+  });
+
+  it("scopes commitment lists to the invocation audience", async () => {
+    const harness = await createOfflineTestHarness();
+
+    try {
+      const sam = harness.entityRepository.resolve("Sam");
+      const alex = harness.entityRepository.resolve("Alex");
+      const publicCommitment = harness.commitmentRepository.add({
+        type: "promise",
+        directive: "Follow up on public planning",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      const samCommitment = harness.commitmentRepository.add({
+        type: "boundary",
+        directive: "Keep Sam planning details scoped to Sam",
+        priority: 10,
+        restrictedAudience: sam,
+        provenance: { kind: "manual" },
+      });
+      const alexCommitment = harness.commitmentRepository.add({
+        type: "boundary",
+        directive: "Keep Alex planning details scoped to Alex",
+        priority: 10,
+        restrictedAudience: alex,
+        provenance: { kind: "manual" },
+      });
+      const dispatcher = createHarnessToolDispatcher(harness);
+
+      const defaultResult = await dispatcher.dispatch({
+        toolName: "tool.commitments.list",
+        input: {},
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: null,
+      });
+
+      expect(defaultResult.ok).toBe(true);
+      if (!defaultResult.ok) {
+        throw new Error(defaultResult.error);
+      }
+      expect(
+        (defaultResult.output as { commitments: Array<{ id: string }> }).commitments.map(
+          (item) => item.id,
+        ),
+      ).toEqual([publicCommitment.id]);
+
+      const samResult = await dispatcher.dispatch({
+        toolName: "tool.commitments.list",
+        input: {},
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: sam,
+      });
+
+      expect(samResult.ok).toBe(true);
+      if (!samResult.ok) {
+        throw new Error(samResult.error);
+      }
+
+      const samIds = (samResult.output as { commitments: Array<{ id: string }> }).commitments.map(
+        (item) => item.id,
+      );
+      expect(samIds).toContain(publicCommitment.id);
+      expect(samIds).toContain(samCommitment.id);
+      expect(samIds).not.toContain(alexCommitment.id);
+    } finally {
+      await harness.cleanup();
     }
   });
 
@@ -435,6 +635,61 @@ describe("internal tools", () => {
       expect(result.events.some((event) => event.record_type === "value")).toBe(true);
     } finally {
       await borg.close();
+    }
+  });
+
+  it("scopes commitment identity events to the invocation audience", async () => {
+    const harness = await createOfflineTestHarness();
+
+    try {
+      const sam = harness.entityRepository.resolve("Sam");
+      const alex = harness.entityRepository.resolve("Alex");
+      const publicCommitment = harness.commitmentRepository.add({
+        type: "promise",
+        directive: "Public identity event",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      const samCommitment = harness.commitmentRepository.add({
+        type: "boundary",
+        directive: "Sam identity event",
+        priority: 8,
+        restrictedAudience: sam,
+        provenance: { kind: "manual" },
+      });
+      const alexCommitment = harness.commitmentRepository.add({
+        type: "boundary",
+        directive: "Alex identity event",
+        priority: 8,
+        restrictedAudience: alex,
+        provenance: { kind: "manual" },
+      });
+      const dispatcher = createHarnessToolDispatcher(harness);
+
+      const result = await dispatcher.dispatch({
+        toolName: "tool.identityEvents.list",
+        input: {
+          recordType: "commitment",
+          limit: 10,
+        },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: sam,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+
+      const recordIds = (result.output as { events: Array<{ record_id: string }> }).events.map(
+        (event) => event.record_id,
+      );
+      expect(recordIds).toContain(publicCommitment.id);
+      expect(recordIds).toContain(samCommitment.id);
+      expect(recordIds).not.toContain(alexCommitment.id);
+    } finally {
+      await harness.cleanup();
     }
   });
 

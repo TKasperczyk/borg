@@ -85,7 +85,10 @@ export async function searchByVector(
 export async function searchByTimeRange(
   repository: EpisodicRepository,
   range: ResolvedTimeRange,
-  options: Pick<EpisodeSearchOptions, "audienceEntityId" | "crossAudience"> & {
+  options: Pick<
+    EpisodeSearchOptions,
+    "audienceEntityId" | "crossAudience" | "globalIdentitySelfAudienceEntityId"
+  > & {
     limit?: number;
   },
 ): Promise<EpisodeSearchCandidate[]> {
@@ -180,6 +183,7 @@ export async function generateEpisodicCandidates(params: {
         limit: temporalBudget,
         audienceEntityId: options.audienceEntityId,
         crossAudience: options.crossAudience,
+        globalIdentitySelfAudienceEntityId: options.globalIdentitySelfAudienceEntityId,
       }).then((candidates) => tagCandidates("temporal", candidates)),
     );
   }

@@ -2,6 +2,7 @@ export { applyEpisodeDecay, type DecayOptions, type DecayResult } from "./decay.
 export {
   episodeAccessScopeKey,
   hasSameEpisodeAccessScope,
+  isEpisodeInGlobalIdentityScope,
   isEpisodeVisibleToAudience,
   normalizeEpisodeAccess,
   type EpisodeAccessLike,

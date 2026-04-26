@@ -67,6 +67,8 @@ export async function openBorgDependencies(
     });
     const toolDispatcher = buildToolDispatcher({
       retrievalPipeline: repositories.retrievalPipeline,
+      episodicRepository: repositories.episodicRepository,
+      semanticNodeRepository: repositories.semanticNodeRepository,
       semanticGraph: repositories.semanticGraph,
       commitmentRepository: repositories.commitmentRepository,
       openQuestionsRepository: repositories.openQuestionsRepository,

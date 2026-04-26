@@ -235,7 +235,11 @@ export class TurnOrchestrator {
       }
 
       seenEntities.add(key);
-      aboutEntityIds.push(this.options.entityRepository.resolve(normalized));
+      const entityId = this.options.entityRepository.findByName(normalized);
+
+      if (entityId !== null) {
+        aboutEntityIds.push(entityId);
+      }
     }
 
     if (aboutEntityIds.length === 0) {
