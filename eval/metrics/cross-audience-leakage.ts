@@ -121,6 +121,42 @@ export const crossAudienceLeakageMetric = {
           });
         }
 
+        const publicNode = fixture.data.semantic_nodes.find((node) =>
+          node.source_episode_ids.every((episodeId) =>
+            fixture.data.episodes.some(
+              (episode) => episode.id === episodeId && episode.visibility === "public",
+            ),
+          ),
+        );
+        const privateNode = fixture.data.semantic_nodes.find(
+          (node) => publicNode !== undefined && node.id !== publicNode.id,
+        );
+        const alicePrivateEpisode = fixture.data.episodes.find(
+          (episode) => episode.visibility === "alice_private",
+        );
+
+        if (
+          publicNode !== undefined &&
+          privateNode !== undefined &&
+          alicePrivateEpisode !== undefined
+        ) {
+          const closedEdge = harness.semanticEdgeRepository.addEdge({
+            from_node_id: publicNode.id as never,
+            to_node_id: privateNode.id as never,
+            relation: "supports",
+            confidence: 0.8,
+            evidence_episode_ids: [alicePrivateEpisode.id] as never,
+            created_at: 10_000,
+            last_verified_at: 10_000,
+            valid_from: 10_000,
+          });
+          harness.semanticEdgeRepository.invalidateEdge(closedEdge.id, {
+            at: 15_000,
+            by_process: "maintenance",
+            reason: "eval_closed_edge_audience_scope",
+          });
+        }
+
         for (const scenario of fixture.data.scenarios) {
           let audienceEntityId: ReturnType<typeof harness.entityRepository.resolve> | null = null;
           let audienceProfile:
@@ -161,6 +197,72 @@ export const crossAudienceLeakageMetric = {
               semantic_node_ids: expectedSemanticNodeIds,
             },
           });
+        }
+
+        if (
+          publicNode !== undefined &&
+          privateNode !== undefined &&
+          alicePrivateEpisode !== undefined
+        ) {
+          for (const scenario of [
+            {
+              name: "closed_edge_history_alice",
+              audience: "Alice",
+              expected_support_hit_ids: [privateNode.id],
+            },
+            {
+              name: "closed_edge_history_bob",
+              audience: "Bob",
+              expected_support_hit_ids: [],
+            },
+            {
+              name: "closed_edge_history_no_audience",
+              audience: null,
+              expected_support_hit_ids: [],
+            },
+          ] as const) {
+            let audienceEntityId: ReturnType<typeof harness.entityRepository.resolve> | null = null;
+            let audienceProfile:
+              | ReturnType<typeof harness.socialRepository.upsertProfile>
+              | undefined;
+            if (scenario.audience !== null) {
+              audienceEntityId = harness.entityRepository.resolve(scenario.audience);
+              audienceProfile = harness.socialRepository.upsertProfile(audienceEntityId);
+            }
+
+            const result = await harness.retrievalPipeline.searchWithContext(publicNode.label, {
+              limit: 5,
+              audienceEntityId,
+              audienceTerms: scenario.audience === null ? undefined : [scenario.audience],
+              audienceProfile,
+              graphWalkDepth: 1,
+              maxGraphNodes: 8,
+              asOf: 12_000,
+            });
+            const actualSupportHitIds = result.semantic.support_hits
+              .map((hit) => hit.node.id)
+              .sort();
+            const expectedSupportHitIds = [...scenario.expected_support_hit_ids].sort();
+            const casePassed =
+              JSON.stringify(actualSupportHitIds) === JSON.stringify(expectedSupportHitIds);
+
+            totalScenarios += 1;
+            scenariosPassed += casePassed ? 1 : 0;
+            passed &&= casePassed;
+            cases.push({
+              name: `${fixture.name}:${scenario.name}`,
+              passed: casePassed,
+              actual: {
+                support_hit_ids: actualSupportHitIds,
+                as_of: 12_000,
+              },
+              expected: {
+                support_hit_ids: expectedSupportHitIds,
+                as_of: 12_000,
+              },
+              note: "Historical asOf graph walks must still enforce audience visibility on closed edge evidence.",
+            });
+          }
         }
       } finally {
         await harness.cleanup();

@@ -37,6 +37,8 @@ const extractorEdgeSchema = z.object({
   relation: semanticRelationSchema,
   confidence: z.number().min(0).max(1),
   evidence_episode_ids: z.array(z.string().min(1)).min(1),
+  valid_from_relative: z.string().min(1).nullable().optional(),
+  valid_to_relative: z.string().min(1).nullable().optional(),
 });
 
 const extractorResponseSchema = z.object({
@@ -87,6 +89,7 @@ function buildPrompt(episodes: readonly Episode[]): string {
     "Only use relation values allowed by the tool schema.",
     "Edges may only reference nodes that already exist or are extracted in this batch.",
     'Emit a free-form domain string for each node when it helps disambiguate homonyms. Prefer stable canonical buckets when they fit (examples: "tech", "people", "places", "food", "process"). Use null for broadly general nodes.',
+    'Temporal validity for edges: leave valid_from_relative and valid_to_relative empty unless the episode wording explicitly says when the relation became true or stopped being true. Use short source phrases such as "since 2026-03-01", "as of 2026-03-01T12:00:00Z", or "until 2026-06-30". If the wording says the relation became true during the episode itself, use "episode_start" for valid_from_relative. Do not infer validity dates from the episode timestamp alone.',
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
     ...episodes.map((episode) =>
@@ -210,6 +213,49 @@ function resolveEpisodeScopeKeys(episodes: readonly Episode[]): Set<string> {
 
 function haveSameScopeKeys(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function parseIsoLikeTimestamp(value: string): number | null {
+  const match = value.match(
+    /\b(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?)(Z|[+-]\d{2}:?\d{2})?)?\b/,
+  );
+
+  if (match === null) {
+    return null;
+  }
+
+  const date = match[1]!;
+  const time = match[2];
+  const zone = match[3];
+  const iso =
+    time === undefined
+      ? `${date}T00:00:00.000Z`
+      : `${date}T${time}${zone === undefined ? "Z" : zone}`;
+  const timestamp = Date.parse(iso);
+
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function resolveEdgeValidityHint(
+  value: string | null | undefined,
+  episodeStartTime: number | undefined,
+): number | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (
+    normalized === "episode_start" ||
+    normalized === "conversation_start" ||
+    normalized === "at conversation time" ||
+    normalized === "during this episode"
+  ) {
+    return episodeStartTime;
+  }
+
+  return parseIsoLikeTimestamp(value) ?? undefined;
 }
 
 export class SemanticExtractor {
@@ -415,7 +461,10 @@ export class SemanticExtractor {
     const key = label.toLowerCase();
     const localNode = batchNodes.get(key) ?? existingNodes.get(key);
 
-    if (localNode !== undefined && (await this.edgeNodeMatchesScope(localNode, evidenceScopeKeys))) {
+    if (
+      localNode !== undefined &&
+      (await this.edgeNodeMatchesScope(localNode, evidenceScopeKeys))
+    ) {
       return localNode;
     }
 
@@ -549,6 +598,13 @@ export class SemanticExtractor {
         continue;
       }
 
+      const edgeTimeAnchor =
+        evidenceEpisodes.length === 0
+          ? undefined
+          : Math.min(...evidenceEpisodes.map((episode) => episode.start_time));
+      const validFrom = resolveEdgeValidityHint(candidate.valid_from_relative, edgeTimeAnchor);
+      const validTo = resolveEdgeValidityHint(candidate.valid_to_relative, edgeTimeAnchor);
+
       try {
         this.options.edgeRepository.addEdge({
           from_node_id: fromNode.id,
@@ -558,6 +614,8 @@ export class SemanticExtractor {
           evidence_episode_ids: evidenceEpisodeIds,
           created_at: this.clock.now(),
           last_verified_at: this.clock.now(),
+          ...(validFrom === undefined ? {} : { valid_from: validFrom }),
+          ...(validTo === undefined ? {} : { valid_to: validTo }),
         });
         insertedEdges += 1;
       } catch (error) {

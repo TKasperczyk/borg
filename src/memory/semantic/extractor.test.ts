@@ -358,6 +358,189 @@ describe("semantic extractor", () => {
     });
   });
 
+  it("sets edge valid_from from an explicit temporal relation hint", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(Date.UTC(2026, 4, 1));
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas temporal note", {
+      narrative: "Atlas has depended on rollback drills since 2026-03-01.",
+      start_time: Date.UTC(2026, 2, 10),
+      end_time: Date.UTC(2026, 2, 10, 1),
+      created_at: Date.UTC(2026, 2, 10),
+      updated_at: Date.UTC(2026, 2, 10),
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "entity",
+                label: "Atlas",
+                description: "Atlas service.",
+                domain: "tech",
+                aliases: [],
+                confidence: 0.7,
+                source_episode_ids: [episode.id],
+              },
+              {
+                kind: "concept",
+                label: "Rollback drills",
+                description: "Rollback drill practice.",
+                domain: "process",
+                aliases: [],
+                confidence: 0.7,
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [
+              {
+                from_label: "Atlas",
+                to_label: "Rollback drills",
+                relation: "related_to",
+                confidence: 0.7,
+                evidence_episode_ids: [episode.id],
+                valid_from_relative: "since 2026-03-01",
+              },
+            ],
+          }),
+        ],
+      }),
+      model: "haiku",
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+    const [edge] = edgeRepository.listEdges({
+      includeInvalid: true,
+    });
+
+    expect(result.insertedEdges).toBe(1);
+    expect(edge).toMatchObject({
+      valid_from: Date.UTC(2026, 2, 1),
+      valid_to: null,
+    });
+  });
+
+  it("keeps default edge validity when no temporal relation hint is present", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas plain note", {
+      narrative: "Atlas depends on rollback drills.",
+      start_time: 500,
+      end_time: 600,
+      created_at: 500,
+      updated_at: 600,
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "entity",
+                label: "Atlas",
+                description: "Atlas service.",
+                domain: "tech",
+                aliases: [],
+                confidence: 0.7,
+                source_episode_ids: [episode.id],
+              },
+              {
+                kind: "concept",
+                label: "Rollback drills",
+                description: "Rollback drill practice.",
+                domain: "process",
+                aliases: [],
+                confidence: 0.7,
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [
+              {
+                from_label: "Atlas",
+                to_label: "Rollback drills",
+                relation: "related_to",
+                confidence: 0.7,
+                evidence_episode_ids: [episode.id],
+              },
+            ],
+          }),
+        ],
+      }),
+      model: "haiku",
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+    const [edge] = edgeRepository.listEdges({
+      includeInvalid: true,
+    });
+
+    expect(result.insertedEdges).toBe(1);
+    expect(edge?.valid_from).toBe(1_000);
+    expect(edge?.valid_to).toBeNull();
+  });
+
   it("does not resolve label-only edges to archived nodes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({

@@ -109,6 +109,7 @@ describe("reflector process", () => {
       semanticEdgeRepository: harness.semanticEdgeRepository,
       reviewQueueRepository: harness.reviewQueueRepository,
       registry: harness.registry,
+      clock: harness.clock,
     });
 
     const result = await process.run(harness.createContext(), {
@@ -136,25 +137,36 @@ describe("reflector process", () => {
         kind: "new_insight",
       }),
     ]);
-    expect(
-      harness.semanticEdgeRepository
-        .listEdges({ relation: "supports" })
-        .some((edge) => edge.to_node_id === insightNode?.id),
-    ).toBe(true);
+    const [supportEdge] = harness.semanticEdgeRepository.listEdges({
+      relation: "supports",
+      includeInvalid: true,
+    });
+    expect(supportEdge?.to_node_id).toBe(insightNode?.id);
 
     const auditRow = harness.auditLog.list({ process: "reflector" })[0];
     await harness.auditLog.revert(auditRow!.id, "test");
 
-    const remainingNodes = await harness.semanticNodeRepository.list({
-      includeArchived: true,
-      limit: 10,
+    const reversedInsightNode =
+      insightNode === undefined ? null : await harness.semanticNodeRepository.get(insightNode.id);
+    expect(reversedInsightNode).toMatchObject({
+      archived: true,
+      confidence: 0.5,
+      source_episode_ids: episodes.map((episode) => episode.id),
     });
-    expect(
-      remainingNodes.some((node) =>
-        node.label.includes("Deploys stabilize when rollback plans are documented"),
-      ),
-    ).toBe(false);
     expect(harness.semanticEdgeRepository.listEdges({ relation: "supports" })).toEqual([]);
+    expect(
+      harness.semanticEdgeRepository.listEdges({ relation: "supports", includeInvalid: true }),
+    ).toEqual([
+      expect.objectContaining({
+        id: supportEdge?.id,
+        confidence: supportEdge?.confidence,
+        evidence_episode_ids: supportEdge?.evidence_episode_ids,
+        valid_to: harness.clock.now(),
+        invalidated_by_process: "maintenance",
+        invalidated_reason: "reflector_audit_reversal",
+      }),
+    ]);
+    expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
   });
 
   it("skips insights when support is insufficient or provenance is hallucinated", async () => {
@@ -359,7 +371,10 @@ describe("reflector process", () => {
 
     expect(result.changes).toHaveLength(2);
     expect(result.changes.map((change) => change.targets.cluster)).toEqual(
-      expect.arrayContaining(["public:shared|tag:scope-reflect", `${sam}:private|tag:scope-reflect`]),
+      expect.arrayContaining([
+        "public:shared|tag:scope-reflect",
+        `${sam}:private|tag:scope-reflect`,
+      ]),
     );
   });
 

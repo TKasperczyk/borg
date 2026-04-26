@@ -8,11 +8,17 @@ import goalProgressAttributionMetric from "./metrics/goal-progress-attribution.j
 import identityConsistencyMetric from "./metrics/identity-consistency.js";
 import preferenceFormationMetric from "./metrics/preference-formation.js";
 import retrievalPrecisionRecallMetric from "./metrics/retrieval-precision-recall.js";
+import semanticTemporalRecallMetric from "./metrics/semantic-temporal-recall.js";
 import swapTestMetric from "./metrics/swap-test.js";
-import { buildScorecard, formatHumanScorecard, type EvalMetricModule } from "./support/scorecard.js";
+import {
+  buildScorecard,
+  formatHumanScorecard,
+  type EvalMetricModule,
+} from "./support/scorecard.js";
 
 const REGISTRY: readonly EvalMetricModule[] = [
   retrievalPrecisionRecallMetric,
+  semanticTemporalRecallMetric,
   episodicExtractionQualityMetric,
   dedupCorrectnessMetric,
   crossAudienceLeakageMetric,

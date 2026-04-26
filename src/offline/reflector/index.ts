@@ -13,6 +13,7 @@ import {
 } from "../../memory/episodic/index.js";
 import { semanticNodeIdSchema, type SemanticNode } from "../../memory/semantic/index.js";
 import { semanticRelationSchema } from "../../memory/semantic/types.js";
+import { SystemClock, type Clock } from "../../util/clock.js";
 import { createSemanticEdgeId, createSemanticNodeId } from "../../util/ids.js";
 import { BudgetExceededError, SemanticError } from "../../util/errors.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
@@ -322,18 +323,33 @@ export type ReflectorProcessOptions = {
   semanticEdgeRepository: OfflineContext["semanticEdgeRepository"];
   reviewQueueRepository: OfflineContext["reviewQueueRepository"];
   registry: ReverserRegistry;
+  clock?: Clock;
 };
 
 export class ReflectorProcess implements OfflineProcess {
   readonly name = "reflector" as const;
+  private readonly clock: Clock;
 
   constructor(private readonly options: ReflectorProcessOptions) {
+    this.clock = options.clock ?? new SystemClock();
     this.options.registry.register(this.name, "insight", async ({ reversal }) => {
       const parsed = reversal as Partial<ReflectorReversal>;
 
+      for (const edgeId of parsed.edgeIds ?? []) {
+        if (typeof edgeId === "string") {
+          this.options.semanticEdgeRepository.invalidateEdge(edgeId as never, {
+            at: this.clock.now(),
+            by_process: "maintenance",
+            reason: "reflector_audit_reversal",
+          });
+        }
+      }
+
       if (typeof parsed.nodeId === "string") {
         if (parsed.nodeCreated) {
-          await this.options.semanticNodeRepository.delete(parsed.nodeId as SemanticNode["id"]);
+          await this.options.semanticNodeRepository.update(parsed.nodeId as SemanticNode["id"], {
+            archived: true,
+          });
         } else if (parsed.previousNode !== undefined) {
           const previousNode = deserializeSemanticNode(parsed.previousNode);
           await this.options.semanticNodeRepository.update(previousNode.id, {
@@ -350,14 +366,13 @@ export class ReflectorProcess implements OfflineProcess {
         }
       }
 
-      for (const edgeId of parsed.edgeIds ?? []) {
-        if (typeof edgeId === "string") {
-          this.options.semanticEdgeRepository.delete(edgeId as never);
-        }
-      }
-
       if (typeof parsed.anchorNodeId === "string") {
-        await this.options.semanticNodeRepository.delete(parsed.anchorNodeId as SemanticNode["id"]);
+        await this.options.semanticNodeRepository.update(
+          parsed.anchorNodeId as SemanticNode["id"],
+          {
+            archived: true,
+          },
+        );
       }
 
       if (typeof parsed.reviewItemId === "number") {
@@ -392,9 +407,13 @@ export class ReflectorProcess implements OfflineProcess {
         for (const cluster of clusters) {
           try {
             const candidate = await buildInsightCandidate(ctx, llmClient, cluster);
-            const byLabel = await ctx.semanticNodeRepository.findByLabelOrAlias(candidate.label, 3, {
-              includeArchived: true,
-            });
+            const byLabel = await ctx.semanticNodeRepository.findByLabelOrAlias(
+              candidate.label,
+              3,
+              {
+                includeArchived: true,
+              },
+            );
             const byVector = await ctx.semanticNodeRepository.searchByVector(candidate.embedding, {
               limit: 3,
               minSimilarity: DEDUP_THRESHOLD,

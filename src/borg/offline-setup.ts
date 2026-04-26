@@ -90,6 +90,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       semanticEdgeRepository: options.semanticEdgeRepository,
       reviewQueueRepository: options.reviewQueueRepository,
       registry: reverserRegistry,
+      clock: options.clock,
     }),
     curator: new CuratorProcess({
       episodicRepository: options.episodicRepository,
