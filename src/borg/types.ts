@@ -1,6 +1,6 @@
 // Shared public and internal Borg composition types used by the facade and setup modules.
 
-import type { AutonomyScheduler } from "../autonomy/index.js";
+import type { AutonomyScheduler, AutonomyWakesRepository } from "../autonomy/index.js";
 import type { StreamIngestionCoordinator } from "../cognition/ingestion/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
 import type { Config } from "../config/index.js";
@@ -77,6 +77,7 @@ export type BorgDependencies = {
   skillSelector: SkillSelector;
   retrievalPipeline: RetrievalPipeline;
   workingMemoryStore: WorkingMemoryStore;
+  autonomyWakesRepository: AutonomyWakesRepository;
   turnOrchestrator: TurnOrchestrator;
   autonomyScheduler: AutonomyScheduler;
   maintenanceScheduler: MaintenanceScheduler;

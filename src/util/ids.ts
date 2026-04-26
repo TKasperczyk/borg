@@ -1,9 +1,11 @@
 import { customAlphabet } from "nanoid";
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+const HEX_ID_ALPHABET = "abcdef0123456789";
 const ID_LENGTH = 16;
 const DEFAULT_SESSION_LITERAL = "default";
 const createNanoId = customAlphabet(ID_ALPHABET, ID_LENGTH);
+const createAutonomyWakeNanoId = customAlphabet(HEX_ID_ALPHABET, ID_LENGTH);
 
 export type BrandedId<BrandName extends string> = string & {
   readonly __brand: BrandName;
@@ -24,6 +26,7 @@ export type CommitmentId = BrandedId<"CommitmentId">;
 export type EntityId = BrandedId<"EntityId">;
 export type SkillId = BrandedId<"SkillId">;
 export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
+export type AutonomyWakeId = BrandedId<"AutonomyWakeId">;
 export type AuditId = number & {
   readonly __brand: "AuditId";
 };
@@ -69,6 +72,18 @@ export const commitmentIdHelpers = createIdHelpers<"CommitmentId">("cmt");
 export const entityIdHelpers = createIdHelpers<"EntityId">("ent");
 export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
 export const maintenanceRunIdHelpers = createIdHelpers<"MaintenanceRunId">("run");
+export const autonomyWakeIdHelpers: IdHelpers<"AutonomyWakeId"> = {
+  pattern: new RegExp(`^autonomy_wake_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
+  create: () => `autonomy_wake_${createAutonomyWakeNanoId()}` as AutonomyWakeId,
+  is: (value: string): value is AutonomyWakeId => autonomyWakeIdHelpers.pattern.test(value),
+  parse: (value: string): AutonomyWakeId => {
+    if (!autonomyWakeIdHelpers.pattern.test(value)) {
+      throw new TypeError(`Invalid autonomy_wake identifier: ${value}`);
+    }
+
+    return value as AutonomyWakeId;
+  },
+};
 
 export const createStreamEntryId = (): StreamEntryId => streamEntryIdHelpers.create();
 export const createSessionId = (): SessionId => sessionIdHelpers.create();
@@ -86,6 +101,7 @@ export const createCommitmentId = (): CommitmentId => commitmentIdHelpers.create
 export const createEntityId = (): EntityId => entityIdHelpers.create();
 export const createSkillId = (): SkillId => skillIdHelpers.create();
 export const createMaintenanceRunId = (): MaintenanceRunId => maintenanceRunIdHelpers.create();
+export const createAutonomyWakeId = (): AutonomyWakeId => autonomyWakeIdHelpers.create();
 
 export function isSessionId(value: string): value is SessionId {
   return value === DEFAULT_SESSION_LITERAL || sessionIdHelpers.is(value);
@@ -149,6 +165,10 @@ export function parseSkillId(value: string): SkillId {
 
 export function parseMaintenanceRunId(value: string): MaintenanceRunId {
   return maintenanceRunIdHelpers.parse(value);
+}
+
+export function parseAutonomyWakeId(value: string): AutonomyWakeId {
+  return autonomyWakeIdHelpers.parse(value);
 }
 
 export function parseAuditId(value: number | string): AuditId {

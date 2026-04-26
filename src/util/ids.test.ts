@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_SESSION_ID,
+  autonomyWakeIdHelpers,
+  createAutonomyWakeId,
   createSessionId,
   createStreamEntryId,
   parseAuditId,
@@ -14,11 +16,14 @@ describe("ids", () => {
   it("creates branded ids with stable prefixes", () => {
     const sessionId = createSessionId();
     const streamEntryId = createStreamEntryId();
+    const autonomyWakeId = createAutonomyWakeId();
 
     expect(sessionIdHelpers.is(sessionId)).toBe(true);
     expect(streamEntryIdHelpers.is(streamEntryId)).toBe(true);
+    expect(autonomyWakeIdHelpers.is(autonomyWakeId)).toBe(true);
     expect(sessionId).toMatch(/^sess_[a-z0-9]{16}$/);
     expect(streamEntryId).toMatch(/^strm_[a-z0-9]{16}$/);
+    expect(autonomyWakeId).toMatch(/^autonomy_wake_[a-f0-9]{16}$/);
   });
 
   it("parses default and generated session ids", () => {

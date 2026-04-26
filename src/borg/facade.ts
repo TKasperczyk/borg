@@ -422,6 +422,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     ) satisfies BorgDreamRunner,
     autonomy: {
       scheduler: deps.autonomyScheduler,
+      wakes: deps.autonomyWakesRepository,
     },
     maintenance: {
       scheduler: deps.maintenanceScheduler,

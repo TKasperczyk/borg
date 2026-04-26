@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -6,15 +8,40 @@ import {
   StreamWatermarkRepository,
   StreamWriter,
   ToolDispatcher,
+  autonomyMigrations,
   createCommitmentsListTool,
   createIdentityEventsListTool,
+  streamWatermarkMigrations,
 } from "../index.js";
 import { ManualClock } from "../util/clock.js";
 import { createOfflineTestHarness } from "../offline/test-support.js";
+import { openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { SessionBusyError } from "../util/errors.js";
 
 import { createCommitmentExpiringTrigger, createScheduledReflectionTrigger } from "./index.js";
-import { AutonomyScheduler } from "./scheduler.js";
+import { AutonomyScheduler, type AutonomySchedulerOptions } from "./scheduler.js";
+import { AutonomyWakesRepository } from "./wakes-repository.js";
+
+function createScheduler(
+  options: Omit<AutonomySchedulerOptions, "budgetWindowMs" | "wakeRepository"> & {
+    db: SqliteDatabase;
+    budgetWindowMs?: number;
+    wakeRepository?: AutonomyWakesRepository;
+  },
+): AutonomyScheduler {
+  const { db, budgetWindowMs = 3_600_000, wakeRepository, ...schedulerOptions } = options;
+
+  return new AutonomyScheduler({
+    ...schedulerOptions,
+    budgetWindowMs,
+    wakeRepository:
+      wakeRepository ??
+      new AutonomyWakesRepository({
+        db,
+        clock: schedulerOptions.clock,
+      }),
+  });
+}
 
 describe("AutonomyScheduler", () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -73,7 +100,8 @@ describe("AutonomyScheduler", () => {
         agentMessageId: "strm_agent_result",
       }),
     };
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 6,
@@ -161,7 +189,8 @@ describe("AutonomyScheduler", () => {
       lookaheadMs: 20_000,
       clock,
     });
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 1,
@@ -200,6 +229,336 @@ describe("AutonomyScheduler", () => {
     expect(result.budgetSkipped).toBe(1);
   });
 
+  it("checks persisted wake history when a fresh scheduler enforces budget", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const wakeRepository = new AutonomyWakesRepository({
+      db: harness.db,
+      clock,
+    });
+    wakeRepository.record({
+      trigger_name: "scheduled_reflection",
+      condition_name: null,
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "trigger",
+    });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue({
+        mode: "idle",
+        path: "system_1",
+        response: "Should not run.",
+        thoughts: [],
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+        },
+        retrievedEpisodeIds: [],
+        referencedEpisodeIds: [],
+        intents: [],
+        toolCalls: [],
+        agentMessageId: "strm_should_not_run",
+      }),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository: new AutonomyWakesRepository({
+        db: harness.db,
+        clock,
+      }),
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerHour: 1,
+      budgetWindowMs: 60_000,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository: new StreamWatermarkRepository({
+        db: harness.db,
+        clock,
+      }),
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        clock,
+      }),
+      sources: [
+        {
+          name: "scheduled_reflection",
+          type: "trigger",
+          async scan() {
+            return [
+              {
+                id: "persisted-budget-event",
+                sourceName: "scheduled_reflection",
+                sourceType: "trigger",
+                watermarkProcessName: "autonomy:test:persisted-budget",
+                sortTs: clock.now(),
+                payload: {},
+              },
+            ];
+          },
+          buildTurn() {
+            return {
+              audience: "self",
+              stakes: "low",
+              userMessage: "Reflect",
+            };
+          },
+        },
+      ],
+    });
+
+    const result = await scheduler.tick();
+    expect(result.firedEvents).toBe(0);
+    expect(result.budgetSkipped).toBe(1);
+    expect(turnRunner.run).not.toHaveBeenCalled();
+  });
+
+  it("shares persisted budget across SQLite connections", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const secondDb = openDatabase(join(harness.tempDir, "borg.db"), {
+      migrations: [...autonomyMigrations, ...streamWatermarkMigrations],
+    });
+
+    try {
+      const firstTurnRunner = {
+        run: vi.fn().mockResolvedValue({
+          mode: "idle",
+          path: "system_1",
+          response: "Process A wake.",
+          thoughts: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          retrievedEpisodeIds: [],
+          referencedEpisodeIds: [],
+          intents: [],
+          toolCalls: [],
+          agentMessageId: "strm_process_a",
+        }),
+      };
+      const firstScheduler = createScheduler({
+        db: harness.db,
+        wakeRepository: new AutonomyWakesRepository({
+          db: harness.db,
+          clock,
+        }),
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerHour: 1,
+        budgetWindowMs: 60_000,
+        clock,
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        watermarkRepository: new StreamWatermarkRepository({
+          db: harness.db,
+          clock,
+        }),
+        turnOrchestrator: firstTurnRunner,
+        toolDispatcher: new ToolDispatcher({
+          createStreamWriter: (sessionId) =>
+            new StreamWriter({
+              dataDir: harness.tempDir,
+              sessionId,
+              clock,
+            }),
+          clock,
+        }),
+        sources: [
+          {
+            name: "goal_followup_due",
+            type: "trigger",
+            async scan() {
+              return [
+                {
+                  id: "process-a-event",
+                  sourceName: "goal_followup_due",
+                  sourceType: "trigger",
+                  watermarkProcessName: "autonomy:test:process-a",
+                  sortTs: 1,
+                  payload: {
+                    goal_id: "goal_aaaaaaaaaaaaaaaa",
+                  },
+                },
+              ];
+            },
+            buildTurn() {
+              return {
+                audience: "self",
+                stakes: "low",
+                userMessage: "Process A",
+              };
+            },
+          },
+        ],
+      });
+      const firstResult = await firstScheduler.tick();
+      expect(firstResult.firedEvents).toBe(1);
+
+      const secondTurnRunner = {
+        run: vi.fn(),
+      };
+      const secondScheduler = createScheduler({
+        db: secondDb,
+        wakeRepository: new AutonomyWakesRepository({
+          db: secondDb,
+          clock,
+        }),
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerHour: 1,
+        budgetWindowMs: 60_000,
+        clock,
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        watermarkRepository: new StreamWatermarkRepository({
+          db: secondDb,
+          clock,
+        }),
+        turnOrchestrator: secondTurnRunner,
+        toolDispatcher: new ToolDispatcher({
+          createStreamWriter: (sessionId) =>
+            new StreamWriter({
+              dataDir: harness.tempDir,
+              sessionId,
+              clock,
+            }),
+          clock,
+        }),
+        sources: [
+          {
+            name: "goal_followup_due",
+            type: "trigger",
+            async scan() {
+              return [
+                {
+                  id: "process-b-event",
+                  sourceName: "goal_followup_due",
+                  sourceType: "trigger",
+                  watermarkProcessName: "autonomy:test:process-b",
+                  sortTs: 2,
+                  payload: {
+                    goal_id: "goal_bbbbbbbbbbbbbbbb",
+                  },
+                },
+              ];
+            },
+            buildTurn() {
+              return {
+                audience: "self",
+                stakes: "low",
+                userMessage: "Process B",
+              };
+            },
+          },
+        ],
+      });
+
+      const secondResult = await secondScheduler.tick();
+      expect(secondResult.firedEvents).toBe(0);
+      expect(secondResult.budgetSkipped).toBe(1);
+      expect(secondTurnRunner.run).not.toHaveBeenCalled();
+    } finally {
+      secondDb.close();
+    }
+  });
+
+  it("prunes wake records after each enabled tick", async () => {
+    const clock = new ManualClock(10_000_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const budgetWindowMs = 60_000;
+    const safetyBufferMs = 7 * 24 * 60 * 60 * 1_000;
+    const pruneCutoff = clock.now() - budgetWindowMs - safetyBufferMs;
+    const wakeRepository = new AutonomyWakesRepository({
+      db: harness.db,
+      clock,
+    });
+
+    clock.set(pruneCutoff - 1);
+    const oldWake = wakeRepository.record({
+      trigger_name: "scheduled_reflection",
+      condition_name: null,
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "trigger",
+    });
+    clock.set(pruneCutoff);
+    const retainedWake = wakeRepository.record({
+      trigger_name: "scheduled_reflection",
+      condition_name: null,
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "trigger",
+    });
+    clock.set(10_000_000_000);
+
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerHour: 6,
+      budgetWindowMs,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository: new StreamWatermarkRepository({
+        db: harness.db,
+        clock,
+      }),
+      turnOrchestrator: {
+        run: vi.fn(),
+      },
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        clock,
+      }),
+      sources: [],
+    });
+
+    await scheduler.tick();
+    const wakeIds = wakeRepository.listSince(0, 10).map((wake) => wake.id);
+    expect(wakeIds).not.toContain(oldWake.id);
+    expect(wakeIds).toContain(retainedWake.id);
+  });
+
   it("skips busy autonomous turns", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({
@@ -232,7 +591,8 @@ describe("AutonomyScheduler", () => {
     const turnRunner = {
       run: vi.fn().mockRejectedValue(new SessionBusyError("busy")),
     };
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 6,
@@ -298,7 +658,8 @@ describe("AutonomyScheduler", () => {
     const turnRunner = {
       run: vi.fn().mockRejectedValue(new SessionBusyError("busy")),
     };
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 6,
@@ -369,7 +730,8 @@ describe("AutonomyScheduler", () => {
     const turnRunner = {
       run: vi.fn().mockRejectedValue(new Error("turn failed")),
     };
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 6,
@@ -414,7 +776,8 @@ describe("AutonomyScheduler", () => {
       clock,
     });
     const setIntervalFn = vi.fn<typeof setInterval>();
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: false,
       intervalMs: 1_000,
       maxWakesPerHour: 6,
@@ -528,7 +891,8 @@ describe("AutonomyScheduler", () => {
       run: vi.fn().mockReturnValue(turnCompletion),
     };
 
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 6,
@@ -655,7 +1019,8 @@ describe("AutonomyScheduler", () => {
       run: vi.fn().mockReturnValue(turnCompletion),
     };
 
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 6,
@@ -759,7 +1124,8 @@ describe("AutonomyScheduler", () => {
       throw new Error("watermark commit failed");
     });
 
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 6,
@@ -874,7 +1240,8 @@ describe("AutonomyScheduler", () => {
           agentMessageId: "strm_event_b",
         }),
     };
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 6,
@@ -959,7 +1326,8 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       clock,
     });
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 6,
@@ -1094,7 +1462,8 @@ describe("AutonomyScheduler", () => {
     const onError = vi.fn();
     let scanCount = 0;
 
-    const scheduler = new AutonomyScheduler({
+    const scheduler = createScheduler({
+      db: harness.db,
       enabled: true,
       intervalMs: 1_000,
       maxWakesPerHour: 6,

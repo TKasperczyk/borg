@@ -2,6 +2,7 @@
 
 import { join } from "node:path";
 
+import { autonomyMigrations } from "../autonomy/index.js";
 import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "../config/index.js";
 import { affectiveMigrations } from "../memory/affective/index.js";
 import { commitmentMigrations } from "../memory/commitments/index.js";
@@ -127,6 +128,7 @@ function createMigrations(): Migration[] {
     ...socialMigrations,
     ...proceduralMigrations,
     ...offlineMigrations,
+    ...autonomyMigrations,
     ...streamWatermarkMigrations,
     ...streamEntryIndexMigrations,
   ];

@@ -72,6 +72,7 @@ describe("autonomy integration", () => {
           enabled: true,
           intervalMs: 60_000,
           maxWakesPerHour: 6,
+          budgetWindowMs: 86_400_000,
           triggers: {
             commitmentExpiring: {
               enabled: true,
@@ -222,6 +223,7 @@ describe("autonomy integration", () => {
           enabled: true,
           intervalMs: 60_000,
           maxWakesPerHour: 6,
+          budgetWindowMs: 86_400_000,
           triggers: {
             commitmentExpiring: {
               enabled: true,

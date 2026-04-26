@@ -1,5 +1,6 @@
 // Builds Borg's repository graph and the cross-repository services that sit on top of it.
 
+import { AutonomyWakesRepository } from "../autonomy/index.js";
 import type { Config } from "../config/index.js";
 import { CorrectionService } from "../correction/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
@@ -66,6 +67,7 @@ export type BorgRepositorySetup = Pick<
   | "skillSelector"
   | "retrievalPipeline"
   | "workingMemoryStore"
+  | "autonomyWakesRepository"
 > & {
   createStreamWriter: BorgStreamWriterFactory;
 };
@@ -93,6 +95,10 @@ export async function buildBorgRepositories(
   options: BuildBorgRepositoriesOptions,
 ): Promise<BorgRepositorySetup> {
   const { config, sqlite, clock, embeddingClient } = options;
+  const autonomyWakesRepository = new AutonomyWakesRepository({
+    db: sqlite,
+    clock,
+  });
   const episodicRepository = new EpisodicRepository({
     table: options.episodesTable,
     db: sqlite,
@@ -322,6 +328,7 @@ export async function buildBorgRepositories(
     skillSelector,
     retrievalPipeline,
     workingMemoryStore,
+    autonomyWakesRepository,
     createStreamWriter,
   };
 }

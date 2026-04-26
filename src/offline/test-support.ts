@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+import { autonomyMigrations } from "../autonomy/index.js";
 import { DEFAULT_CONFIG, type Config } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient, type LLMClient } from "../llm/index.js";
@@ -256,6 +257,7 @@ export async function createOfflineTestHarness(
       ...proceduralMigrations,
       ...identityMigrations,
       ...offlineMigrations,
+      ...autonomyMigrations,
       ...streamWatermarkMigrations,
       ...streamEntryIndexMigrations,
     ],

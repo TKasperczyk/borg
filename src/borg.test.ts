@@ -2244,6 +2244,7 @@ describe("Borg", () => {
           enabled: true,
           intervalMs: 60_000,
           maxWakesPerHour: 6,
+          budgetWindowMs: 86_400_000,
           triggers: {
             commitmentExpiring: {
               enabled: false,
@@ -2884,6 +2885,7 @@ describe("Borg", () => {
           enabled: true,
           intervalMs: 60_000,
           maxWakesPerHour: 6,
+          budgetWindowMs: 86_400_000,
           triggers: {
             commitmentExpiring: {
               enabled: false,

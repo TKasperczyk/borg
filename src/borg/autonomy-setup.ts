@@ -2,6 +2,7 @@
 
 import {
   AutonomyScheduler,
+  type AutonomyWakesRepository,
   createCommitmentExpiringTrigger,
   createCommitmentRevokedCondition,
   createGoalFollowupDueTrigger,
@@ -27,6 +28,7 @@ export type BuildAutonomySchedulerOptions = {
   openQuestionsRepository: OpenQuestionsRepository;
   moodRepository: MoodRepository;
   streamWatermarkRepository: StreamWatermarkRepository;
+  autonomyWakesRepository: AutonomyWakesRepository;
   turnOrchestrator: TurnOrchestrator;
   toolDispatcher: ToolDispatcher;
   createStreamWriter: BorgStreamWriterFactory;
@@ -113,9 +115,11 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
     enabled: options.config.autonomy.enabled,
     intervalMs: options.config.autonomy.intervalMs,
     maxWakesPerHour: options.config.autonomy.maxWakesPerHour,
+    budgetWindowMs: options.config.autonomy.budgetWindowMs,
     clock: options.clock,
     createStreamWriter: options.createStreamWriter,
     watermarkRepository: options.streamWatermarkRepository,
+    wakeRepository: options.autonomyWakesRepository,
     turnOrchestrator: options.turnOrchestrator,
     toolDispatcher: options.toolDispatcher,
     sources: autonomySources,

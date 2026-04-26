@@ -5,7 +5,14 @@ import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import type { TurnInput, TurnOrchestrator } from "../cognition/index.js";
 
-import type { AutonomyTickEventResult, AutonomyWakeSource, TickResult, DueEvent } from "./types.js";
+import type {
+  AutonomyConditionName,
+  AutonomyTickEventResult,
+  AutonomyWakeSource,
+  TickResult,
+  DueEvent,
+} from "./types.js";
+import type { AutonomyWakesRepository } from "./wakes-repository.js";
 
 type IntervalHandle = ReturnType<typeof setInterval>;
 type RetryBackoffState = {
@@ -15,6 +22,7 @@ type RetryBackoffState = {
 
 const INITIAL_RETRY_BACKOFF_MS = 30_000;
 const MAX_RETRY_BACKOFF_MS = 3_600_000;
+const WAKE_PRUNE_SAFETY_BUFFER_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export type AutonomySchedulerObserver = {
   onTick?(result: TickResult): void | Promise<void>;
@@ -29,10 +37,12 @@ export type AutonomySchedulerOptions = {
   enabled: boolean;
   intervalMs: number;
   maxWakesPerHour: number;
+  budgetWindowMs: number;
   sessionId?: SessionId;
   clock?: Clock;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
   watermarkRepository: StreamWatermarkRepository;
+  wakeRepository: AutonomyWakesRepository;
   turnOrchestrator: Pick<TurnOrchestrator, "run">;
   toolDispatcher: ToolDispatcher;
   sources: readonly AutonomyWakeSource[];
@@ -58,7 +68,6 @@ export class AutonomyScheduler {
   private readonly sessionId: SessionId;
   private readonly setIntervalFn: typeof setInterval;
   private readonly clearIntervalFn: typeof clearInterval;
-  private readonly wakeHistory: number[] = [];
   private readonly retryBackoff = new Map<string, RetryBackoffState>();
   private intervalHandle: IntervalHandle | null = null;
   private activeTick: Promise<TickResult> | null = null;
@@ -132,193 +141,209 @@ export class AutonomyScheduler {
       };
     }
 
-    const scannedDueEvents = await this.scanDueEvents();
-    const dueEventKeys = new Set(
-      scannedDueEvents.map(({ event }) => `${event.sourceType}:${event.sourceName}:${event.id}`),
-    );
-
-    for (const key of this.retryBackoff.keys()) {
-      if (!dueEventKeys.has(key)) {
-        this.retryBackoff.delete(key);
-      }
-    }
-
-    const dueEvents = scannedDueEvents.filter(({ event }) => {
-      const backoff = this.retryBackoff.get(`${event.sourceType}:${event.sourceName}:${event.id}`);
-      return backoff === undefined || backoff.nextEligibleTs <= nowMs;
-    });
-    const writer = this.options.createStreamWriter(this.sessionId);
-    const eventResults: AutonomyTickEventResult[] = [];
-    let firedEvents = 0;
-    let budgetSkipped = 0;
-    let busySkipped = 0;
-    let errorCount = 0;
-
     try {
-      for (const scannedEvent of dueEvents) {
-        const dueEvent = scannedEvent.event;
-        this.pruneWakeHistory();
+      const scannedDueEvents = await this.scanDueEvents();
+      const dueEventKeys = new Set(
+        scannedDueEvents.map(({ event }) => `${event.sourceType}:${event.sourceName}:${event.id}`),
+      );
 
-        if (this.wakeHistory.length >= this.options.maxWakesPerHour) {
-          budgetSkipped += 1;
-          eventResults.push({
-            id: dueEvent.id,
-            sourceName: dueEvent.sourceName,
-            sourceType: dueEvent.sourceType,
-            status: "budget_skipped",
-            payload: dueEvent.payload,
-            outcomeSummary: "Skipped because maxWakesPerHour budget was exhausted.",
-          });
-          continue;
+      for (const key of this.retryBackoff.keys()) {
+        if (!dueEventKeys.has(key)) {
+          this.retryBackoff.delete(key);
         }
+      }
 
-        const wakeEntry = await writer.append({
-          kind: "internal_event",
-          content: {
-            kind: "autonomous_wake",
-            trigger_type: dueEvent.sourceType,
-            source_name: dueEvent.sourceName,
-            payload: dueEvent.payload,
-            ts: this.clock.now(),
-          },
-        });
-        this.wakeHistory.push(wakeEntry.timestamp);
+      const dueEvents = scannedDueEvents.filter(({ event }) => {
+        const backoff = this.retryBackoff.get(
+          `${event.sourceType}:${event.sourceName}:${event.id}`,
+        );
+        return backoff === undefined || backoff.nextEligibleTs <= nowMs;
+      });
+      const writer = this.options.createStreamWriter(this.sessionId);
+      const eventResults: AutonomyTickEventResult[] = [];
+      let firedEvents = 0;
+      let budgetSkipped = 0;
+      let busySkipped = 0;
+      let errorCount = 0;
 
-        const preparedEvent = await this.prepareEvent(dueEvent);
+      try {
+        for (const scannedEvent of dueEvents) {
+          const dueEvent = scannedEvent.event;
+          const budgetCutoff = this.clock.now() - this.options.budgetWindowMs;
 
-        if ("toolError" in preparedEvent) {
-          errorCount += 1;
-          const outcomeSummary = `Autonomous preparation failed: ${preparedEvent.toolError}`;
-          this.scheduleRetryBackoff(dueEvent);
-          await writer.append({
-            kind: "internal_event",
-            content: {
-              kind: "autonomous_action",
-              trigger: dueEvent.sourceName,
-              outcome_summary: outcomeSummary,
-              turn_result_id: null,
-              ts: this.clock.now(),
-            },
-          });
-          eventResults.push({
-            id: dueEvent.id,
-            sourceName: dueEvent.sourceName,
-            sourceType: dueEvent.sourceType,
-            status: "error",
-            payload: dueEvent.payload,
-            error: preparedEvent.toolError,
-            outcomeSummary,
-            turnResultId: null,
-          });
-          continue;
-        }
-
-        try {
-          const turnInput = preparedEvent.source.buildTurn(preparedEvent.event);
-          const turnResult = await this.options.turnOrchestrator.run({
-            ...turnInput,
-            sessionId: this.sessionId,
-            audience: "self",
-            stakes: "low",
-            origin: "autonomous",
-          });
-          const outcomeSummary = summarizeOutcome(turnResult.response);
-
-          await writer.append({
-            kind: "internal_event",
-            content: {
-              kind: "autonomous_action",
-              trigger: dueEvent.sourceName,
-              outcome_summary: outcomeSummary,
-              turn_result_id: turnResult.agentMessageId ?? null,
-              ts: this.clock.now(),
-            },
-          });
-
-          try {
-            this.options.watermarkRepository.set(dueEvent.watermarkProcessName, this.sessionId, {
-              lastTs: dueEvent.sortTs,
-              lastEntryId: dueEvent.id,
-            });
-            this.retryBackoff.delete(
-              `${dueEvent.sourceType}:${dueEvent.sourceName}:${dueEvent.id}`,
-            );
-            firedEvents += 1;
+          if (
+            this.options.wakeRepository.countSince(budgetCutoff) >= this.options.maxWakesPerHour
+          ) {
+            budgetSkipped += 1;
             eventResults.push({
               id: dueEvent.id,
               sourceName: dueEvent.sourceName,
               sourceType: dueEvent.sourceType,
-              status: "fired",
-              payload: preparedEvent.event.payload,
-              outcomeSummary,
-              turnResultId: turnResult.agentMessageId ?? null,
+              status: "budget_skipped",
+              payload: dueEvent.payload,
+              outcomeSummary: "Skipped because autonomy wake budget was exhausted.",
             });
-          } catch (error) {
+            continue;
+          }
+
+          await writer.append({
+            kind: "internal_event",
+            content: {
+              kind: "autonomous_wake",
+              trigger_type: dueEvent.sourceType,
+              source_name: dueEvent.sourceName,
+              payload: dueEvent.payload,
+              ts: this.clock.now(),
+            },
+          });
+          this.options.wakeRepository.record({
+            trigger_name: dueEvent.sourceName,
+            condition_name:
+              dueEvent.sourceType === "condition"
+                ? (dueEvent.sourceName as AutonomyConditionName)
+                : null,
+            session_id: this.sessionId,
+            wake_source_type: dueEvent.sourceType,
+          });
+
+          const preparedEvent = await this.prepareEvent(dueEvent);
+
+          if ("toolError" in preparedEvent) {
             errorCount += 1;
+            const outcomeSummary = `Autonomous preparation failed: ${preparedEvent.toolError}`;
             this.scheduleRetryBackoff(dueEvent);
+            await writer.append({
+              kind: "internal_event",
+              content: {
+                kind: "autonomous_action",
+                trigger: dueEvent.sourceName,
+                outcome_summary: outcomeSummary,
+                turn_result_id: null,
+                ts: this.clock.now(),
+              },
+            });
             eventResults.push({
               id: dueEvent.id,
               sourceName: dueEvent.sourceName,
               sourceType: dueEvent.sourceType,
               status: "error",
-              payload: preparedEvent.event.payload,
-              outcomeSummary: `Autonomous turn succeeded but watermark commit failed: ${formatError(error)}`,
-              turnResultId: turnResult.agentMessageId ?? null,
-              error: formatError(error),
+              payload: dueEvent.payload,
+              error: preparedEvent.toolError,
+              outcomeSummary,
+              turnResultId: null,
             });
-            await this.notifyError(error);
+            continue;
           }
-        } catch (error) {
-          const busy = error instanceof SessionBusyError;
-          const outcomeSummary = busy
-            ? "Skipped autonomous turn because the session was busy."
-            : `Autonomous turn failed: ${formatError(error)}`;
 
-          await writer.append({
-            kind: "internal_event",
-            content: {
-              kind: "autonomous_action",
-              trigger: dueEvent.sourceName,
-              outcome_summary: outcomeSummary,
-              turn_result_id: null,
-              ts: this.clock.now(),
-            },
-          });
+          try {
+            const turnInput = preparedEvent.source.buildTurn(preparedEvent.event);
+            const turnResult = await this.options.turnOrchestrator.run({
+              ...turnInput,
+              sessionId: this.sessionId,
+              audience: "self",
+              stakes: "low",
+              origin: "autonomous",
+            });
+            const outcomeSummary = summarizeOutcome(turnResult.response);
 
-          if (busy) {
-            busySkipped += 1;
-          } else {
-            errorCount += 1;
+            await writer.append({
+              kind: "internal_event",
+              content: {
+                kind: "autonomous_action",
+                trigger: dueEvent.sourceName,
+                outcome_summary: outcomeSummary,
+                turn_result_id: turnResult.agentMessageId ?? null,
+                ts: this.clock.now(),
+              },
+            });
+
+            try {
+              this.options.watermarkRepository.set(dueEvent.watermarkProcessName, this.sessionId, {
+                lastTs: dueEvent.sortTs,
+                lastEntryId: dueEvent.id,
+              });
+              this.retryBackoff.delete(
+                `${dueEvent.sourceType}:${dueEvent.sourceName}:${dueEvent.id}`,
+              );
+              firedEvents += 1;
+              eventResults.push({
+                id: dueEvent.id,
+                sourceName: dueEvent.sourceName,
+                sourceType: dueEvent.sourceType,
+                status: "fired",
+                payload: preparedEvent.event.payload,
+                outcomeSummary,
+                turnResultId: turnResult.agentMessageId ?? null,
+              });
+            } catch (error) {
+              errorCount += 1;
+              this.scheduleRetryBackoff(dueEvent);
+              eventResults.push({
+                id: dueEvent.id,
+                sourceName: dueEvent.sourceName,
+                sourceType: dueEvent.sourceType,
+                status: "error",
+                payload: preparedEvent.event.payload,
+                outcomeSummary: `Autonomous turn succeeded but watermark commit failed: ${formatError(error)}`,
+                turnResultId: turnResult.agentMessageId ?? null,
+                error: formatError(error),
+              });
+              await this.notifyError(error);
+            }
+          } catch (error) {
+            const busy = error instanceof SessionBusyError;
+            const outcomeSummary = busy
+              ? "Skipped autonomous turn because the session was busy."
+              : `Autonomous turn failed: ${formatError(error)}`;
+
+            await writer.append({
+              kind: "internal_event",
+              content: {
+                kind: "autonomous_action",
+                trigger: dueEvent.sourceName,
+                outcome_summary: outcomeSummary,
+                turn_result_id: null,
+                ts: this.clock.now(),
+              },
+            });
+
+            if (busy) {
+              busySkipped += 1;
+            } else {
+              errorCount += 1;
+            }
+            this.scheduleRetryBackoff(dueEvent);
+
+            eventResults.push({
+              id: dueEvent.id,
+              sourceName: dueEvent.sourceName,
+              sourceType: dueEvent.sourceType,
+              status: busy ? "busy_skipped" : "error",
+              payload: preparedEvent.event.payload,
+              outcomeSummary,
+              turnResultId: null,
+              ...(busy ? {} : { error: formatError(error) }),
+            });
           }
-          this.scheduleRetryBackoff(dueEvent);
-
-          eventResults.push({
-            id: dueEvent.id,
-            sourceName: dueEvent.sourceName,
-            sourceType: dueEvent.sourceType,
-            status: busy ? "busy_skipped" : "error",
-            payload: preparedEvent.event.payload,
-            outcomeSummary,
-            turnResultId: null,
-            ...(busy ? {} : { error: formatError(error) }),
-          });
         }
+
+        return {
+          status: "ok",
+          ts: nowMs,
+          scannedSources,
+          dueEvents: dueEvents.length,
+          firedEvents,
+          budgetSkipped,
+          busySkipped,
+          errorCount,
+          events: eventResults,
+        };
+      } finally {
+        writer.close();
       }
     } finally {
-      writer.close();
+      this.pruneWakeRecords();
     }
-
-    return {
-      status: "ok",
-      ts: nowMs,
-      scannedSources,
-      dueEvents: dueEvents.length,
-      firedEvents,
-      budgetSkipped,
-      busySkipped,
-      errorCount,
-      events: eventResults,
-    };
   }
 
   private runTrackedTick(
@@ -379,16 +404,10 @@ export class AutonomyScheduler {
     );
   }
 
-  private pruneWakeHistory(): void {
-    const cutoff = this.clock.now() - 3_600_000;
-
-    while (
-      this.wakeHistory.length > 0 &&
-      this.wakeHistory[0] !== undefined &&
-      this.wakeHistory[0] < cutoff
-    ) {
-      this.wakeHistory.shift();
-    }
+  private pruneWakeRecords(): void {
+    this.options.wakeRepository.prune(
+      this.clock.now() - this.options.budgetWindowMs - WAKE_PRUNE_SAFETY_BUFFER_MS,
+    );
   }
 
   private async prepareEvent(dueEvent: DueEvent): Promise<

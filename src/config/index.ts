@@ -146,6 +146,7 @@ const configFileSchema = z
         enabled: z.boolean().optional(),
         intervalMs: z.number().int().positive().optional(),
         maxWakesPerHour: z.number().int().positive().optional(),
+        budgetWindowMs: z.number().int().positive().optional(),
         triggers: z
           .object({
             commitmentExpiring: z
@@ -317,6 +318,7 @@ export const configSchema = z.object({
     enabled: z.boolean(),
     intervalMs: z.number().int().positive(),
     maxWakesPerHour: z.number().int().positive(),
+    budgetWindowMs: z.number().int().positive(),
     triggers: z.object({
       commitmentExpiring: z.object({
         enabled: z.boolean(),
@@ -450,6 +452,7 @@ export const DEFAULT_CONFIG: Config = {
     enabled: false,
     intervalMs: 60_000,
     maxWakesPerHour: 6,
+    budgetWindowMs: 86_400_000,
     triggers: {
       commitmentExpiring: {
         enabled: true,
@@ -902,6 +905,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         readOptionalEnvNumber(env, "BORG_AUTONOMY_MAX_WAKES_PER_HOUR") ??
         fileConfig.autonomy?.maxWakesPerHour ??
         DEFAULT_CONFIG.autonomy.maxWakesPerHour,
+      budgetWindowMs:
+        readOptionalEnvNumber(env, "BORG_AUTONOMY_BUDGET_WINDOW_MS") ??
+        fileConfig.autonomy?.budgetWindowMs ??
+        DEFAULT_CONFIG.autonomy.budgetWindowMs,
       triggers: {
         commitmentExpiring: {
           enabled:

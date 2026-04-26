@@ -3,6 +3,7 @@ export {
   type AutonomySchedulerObserver,
   type AutonomySchedulerOptions,
 } from "./scheduler.js";
+export { autonomyMigrations } from "./migrations.js";
 export {
   AUTONOMY_CONDITION_NAMES,
   AUTONOMY_TRIGGER_NAMES,
@@ -36,3 +37,9 @@ export {
   type MoodValenceDropConditionOptions,
   type OpenQuestionUrgencyBumpConditionOptions,
 } from "./conditions/index.js";
+export {
+  AutonomyWakesRepository,
+  type AutonomyWakeRecord,
+  type AutonomyWakeRecordInput,
+  type AutonomyWakesRepositoryOptions,
+} from "./wakes-repository.js";

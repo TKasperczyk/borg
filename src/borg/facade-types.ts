@@ -1,6 +1,6 @@
 // Public facade property types exposed by the Borg class.
 
-import type { AutonomyScheduler } from "../autonomy/index.js";
+import type { AutonomyScheduler, AutonomyWakesRepository } from "../autonomy/index.js";
 import type { MaintenanceScheduler } from "../offline/index.js";
 import type { CorrectionService } from "../correction/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
@@ -278,6 +278,7 @@ export type BorgFacades = {
   dream: BorgDreamRunner;
   autonomy: {
     scheduler: AutonomyScheduler;
+    wakes: AutonomyWakesRepository;
   };
   maintenance: {
     scheduler: MaintenanceScheduler;
