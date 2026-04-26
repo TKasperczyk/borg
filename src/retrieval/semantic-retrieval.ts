@@ -163,7 +163,7 @@ async function isHistoricalPropositionMatch(
 
   const supportNeighbors = await semanticGraph.neighbors(node.id, {
     relations: ["supports"],
-    direction: "both",
+    direction: "in",
     includeInvalid: true,
   });
 
@@ -178,7 +178,7 @@ async function isHistoricalPropositionMatch(
   if (asOf === undefined) {
     const currentSupportNeighbors = await semanticGraph.neighbors(node.id, {
       relations: ["supports"],
-      direction: "both",
+      direction: "in",
     });
 
     return (
@@ -248,7 +248,7 @@ export async function resolveSemanticContext(
   for (const node of uniqueNodes.values()) {
     const walkedSupports = await semanticGraph.walk(node.id, {
       relations: ["supports"],
-      direction: "both",
+      direction: "out",
       depth: walkDepth,
       maxNodes: maxGraphNodes,
       asOf: options.asOf,

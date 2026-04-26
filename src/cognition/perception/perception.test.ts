@@ -114,6 +114,37 @@ describe("perception", () => {
     expect(String(llm.requests[0]?.messages[0]?.content ?? "").length).toBeLessThanOrEqual(2_000);
   });
 
+  it("combines heuristic entity hits with LLM fallback entities", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: ENTITY_TOOL_NAME,
+              input: { entities: ["Sam", "bicycles"] },
+            },
+          ],
+        },
+      ],
+    });
+    const extractor = new EntityExtractor({
+      llmClient: llm,
+      model: "haiku",
+      useLlmFallback: true,
+    });
+
+    expect(await extractor.extractEntities("yesterday Sam mentioned bicycles")).toEqual([
+      "Sam",
+      "bicycles",
+    ]);
+    expect(llm.requests).toHaveLength(1);
+  });
+
   it("produces a perception result with null temporal cue when no LLM is configured", async () => {
     // Previously this module had a hardcoded "yesterday" -> 24h-window
     // pattern. With the heuristic tier removed, temporal extraction is

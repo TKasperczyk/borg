@@ -91,7 +91,6 @@ function normalizeWorkingMemory(state: WorkingMemory): WorkingMemory {
 
 export class WorkingMemoryStore {
   private readonly clock: Clock;
-  private readonly states = new Map<SessionId, WorkingMemory>();
 
   constructor(private readonly options: WorkingMemoryStoreOptions = {}) {
     this.clock = options.clock ?? new SystemClock();
@@ -116,7 +115,6 @@ export class WorkingMemoryStore {
   load(sessionId: SessionId): WorkingMemory {
     const persisted = this.readPersisted(sessionId);
     const state = persisted ?? createWorkingMemory(sessionId, this.clock.now());
-    this.states.set(sessionId, cloneWorkingMemory(state));
     return cloneWorkingMemory(state);
   }
 
@@ -132,13 +130,10 @@ export class WorkingMemoryStore {
 
     const next = cloneWorkingMemory(parsed.data);
     this.writePersisted(next);
-    this.states.set(next.session_id, next);
     return cloneWorkingMemory(next);
   }
 
   clear(sessionId: SessionId): void {
-    this.states.delete(sessionId);
-
     const workingDirectory = this.workingDirectory;
 
     if (workingDirectory === undefined) {

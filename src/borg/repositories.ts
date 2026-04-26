@@ -28,6 +28,7 @@ import {
   SemanticEdgeRepository,
   SemanticGraph,
   SemanticNodeRepository,
+  SemanticReviewService,
   type ReviewQueueItem,
 } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
@@ -49,6 +50,7 @@ export type BorgRepositorySetup = Pick<
   | "semanticNodeRepository"
   | "semanticEdgeRepository"
   | "semanticGraph"
+  | "semanticReviewService"
   | "reviewQueueRepository"
   | "identityEventRepository"
   | "identityService"
@@ -79,9 +81,9 @@ export type BuildBorgRepositoriesOptions = {
   semanticNodesTable: LanceDbTable;
   skillsTable: LanceDbTable;
   embeddingClient: EmbeddingClient;
+  llmClient: LLMClient;
   clock: Clock;
   tracer?: TurnTracer;
-  getDeferredLlm: () => LLMClient | undefined;
 };
 
 function quarterLabel(timestamp: number): string {
@@ -138,17 +140,15 @@ export async function buildBorgRepositories(
   const enqueueReview = (input: Parameters<ReviewQueueRepository["enqueue"]>[0]) => {
     return reviewQueueRepository?.enqueue(input);
   };
-  // The semantic repo only uses the LLM lazily at duplicate-review time, so
-  // this getter preserves Borg.open's startup ordering while allowing the
-  // factory to be resolved later in the composition flow.
   const semanticNodeRepository = new SemanticNodeRepository({
     table: options.semanticNodesTable,
     db: sqlite,
     clock,
+  });
+  const semanticReviewService = new SemanticReviewService({
+    nodeRepository: semanticNodeRepository,
     enqueueReview,
-    get llmClient(): LLMClient | undefined {
-      return options.getDeferredLlm();
-    },
+    llmClient: options.llmClient,
     contradictionJudgeModel: config.anthropic.models.background,
     onDuplicateReviewError: (error) => {
       const writer = createDefaultStreamWriter();
@@ -314,6 +314,7 @@ export async function buildBorgRepositories(
     semanticNodeRepository,
     semanticEdgeRepository,
     semanticGraph,
+    semanticReviewService,
     reviewQueueRepository: createdReviewQueueRepository,
     identityEventRepository,
     identityService,

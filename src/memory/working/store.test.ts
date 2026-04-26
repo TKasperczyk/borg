@@ -59,7 +59,7 @@ describe("working memory store", () => {
     expect(store.load(DEFAULT_SESSION_ID).turn_counter).toBe(0);
   });
 
-  it("does not update the in-memory cache when persistence fails", () => {
+  it("does not persist a failed save", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
 

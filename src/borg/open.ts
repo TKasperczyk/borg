@@ -3,7 +3,6 @@
 import { SystemClock } from "../util/clock.js";
 import { SessionLock } from "../cognition/index.js";
 import { createTurnTracer } from "../cognition/tracing/tracer.js";
-import type { LLMClient } from "../llm/index.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { StreamWatermarkRepository } from "../stream/index.js";
@@ -46,7 +45,8 @@ export async function openBorgDependencies(
       embeddingDimensions: options.embeddingDimensions ?? config.embedding.dims,
     });
     const embeddingClient = options.embeddingClient ?? createEmbeddingClient(config);
-    let deferredLlm: LLMClient | undefined;
+    const llmFactory = createLlmFactory(config, options.llmClient, options.env, clock);
+    const lazyLlmClient = createLazyLlmClient(llmFactory);
     const repositories = await buildBorgRepositories({
       config,
       sqlite,
@@ -54,9 +54,9 @@ export async function openBorgDependencies(
       semanticNodesTable: tables.semanticNodesTable,
       skillsTable: tables.skillsTable,
       embeddingClient,
+      llmClient: lazyLlmClient,
       clock,
       tracer,
-      getDeferredLlm: () => deferredLlm,
     });
     const sessionLock = new SessionLock({
       dataDir: config.dataDir,
@@ -77,12 +77,6 @@ export async function openBorgDependencies(
       createStreamWriter: repositories.createStreamWriter,
       clock,
     });
-    const llmFactory = createLlmFactory(config, options.llmClient, options.env, clock);
-    const lazyLlmClient = createLazyLlmClient(llmFactory);
-    // Resolve the deferred LLM client for semantic-repo duplicate review
-    // now that llmFactory exists. Before this point the repo's getter
-    // returns undefined and near-dup inserts simply skip review.
-    deferredLlm = llmFactory();
     const offline = buildOfflineSetup({
       config,
       sqlite,
@@ -175,6 +169,7 @@ export async function openBorgDependencies(
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,
       semanticEdgeRepository: repositories.semanticEdgeRepository,
+      semanticReviewService: repositories.semanticReviewService,
       semanticGraph: repositories.semanticGraph,
       reviewQueueRepository: repositories.reviewQueueRepository,
       identityEventRepository: repositories.identityEventRepository,

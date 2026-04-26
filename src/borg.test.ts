@@ -1041,7 +1041,7 @@ describe("Borg", () => {
       expect(result.path).toBe("system_2");
       expect(result.response).toContain("rerun pnpm install");
       expect(result.retrievedEpisodeIds).toEqual(["ep_aaaaaaaaaaaaaaaa"]);
-      expect(result.intents[0]?.next_action).toContain("rerun the deploy");
+      expect(result.intents).toEqual([]);
       expect(borg.workmem.load().turn_counter).toBe(1);
       expect(borg.self.goals.list({ status: "active" })[0]?.id).toBe(goal.id);
       expect(borg.self.goals.list({ status: "active" })[0]?.progress_notes).toContain(

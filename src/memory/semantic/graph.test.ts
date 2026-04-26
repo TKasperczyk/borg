@@ -144,7 +144,7 @@ describe("semantic graph", () => {
       maxNodes: 2,
     });
 
-    expect(depthOne.map((step) => step.node.id)).toEqual([beta.id, gamma.id]);
+    expect(depthOne.map((step) => step.node.id)).toEqual([beta.id]);
     expect(bounded).toHaveLength(2);
     expect(await graph.supportsFor(alpha.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: beta.id })]),

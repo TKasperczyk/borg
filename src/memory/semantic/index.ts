@@ -21,6 +21,10 @@ export {
   type ReviewResolutionInput,
 } from "./review-queue.js";
 export {
+  SemanticReviewService,
+  type SemanticReviewServiceOptions,
+} from "./review-service.js";
+export {
   SemanticEdgeRepository,
   SemanticNodeRepository,
   createSemanticNodesTableSchema,

@@ -17,7 +17,6 @@ export type SemanticGraphOptions = {
 const SYMMETRIC_WALK_RELATIONS = new Set<SemanticRelation>([
   "contradicts",
   "related_to",
-  "supports",
 ]);
 
 function defaultDirectionForRelation(relation: SemanticRelation): "out" | "both" {
@@ -181,7 +180,7 @@ export class SemanticGraph {
   async supportsFor(id: SemanticNodeId): Promise<SemanticNode[]> {
     const neighbors = await this.neighbors(id, {
       relations: ["supports"],
-      direction: "both",
+      direction: "out",
     });
 
     return neighbors.map((item) => item.node);

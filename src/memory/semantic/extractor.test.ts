@@ -183,6 +183,9 @@ describe("semantic extractor", () => {
         }),
       ],
     });
+    const semanticReviewService = {
+      queueDuplicateReview: vi.fn(),
+    };
     const extractor = new SemanticExtractor({
       nodeRepository,
       edgeRepository,
@@ -192,6 +195,7 @@ describe("semantic extractor", () => {
       ]),
       llmClient: llm,
       model: "haiku",
+      semanticReviewService,
       clock,
     });
     const nodeInsertSpy = vi.spyOn(nodeRepository, "insert");
@@ -215,6 +219,9 @@ describe("semantic extractor", () => {
     );
     expect(nodesAfterMerge.find((node) => node.label === "Atlas")?.domain).toBe("tech");
     expect(edgeRepository.listEdges()).toHaveLength(1);
+    expect(semanticReviewService.queueDuplicateReview).toHaveBeenCalledWith(
+      expect.objectContaining({ label: "Rollback" }),
+    );
     expect(nodeInsertSpy).toHaveBeenCalled();
     expect(edgeAddSpy).toHaveBeenCalled();
     expect(llm.requests[0]?.tool_choice).toEqual({
@@ -989,7 +996,7 @@ describe("semantic extractor", () => {
     );
   });
 
-  it("does not merge nodes when either side lacks a domain", async () => {
+  it("merges null-domain nodes but keeps domain-specific nodes separate", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -1011,9 +1018,9 @@ describe("semantic extractor", () => {
       db,
       clock,
     });
-    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Tomasz ambiguous note", {
-      narrative: "Tomasz came up in an ambiguous context.",
-      participants: ["Alice", "Tomasz"],
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Time concept note", {
+      narrative: "Time came up as a broad concept.",
+      participants: ["Alice"],
       audience_entity_id: "ent_aaaaaaaaaaaaaaaa" as Episode["audience_entity_id"],
       shared: false,
     });
@@ -1022,9 +1029,9 @@ describe("semantic extractor", () => {
         createSemanticToolResponse({
           nodes: [
             {
-              kind: "entity",
-              label: "Tomasz",
-              description: "An ambiguous Tomasz reference.",
+              kind: "concept",
+              label: "Time",
+              description: "A broad time concept.",
               aliases: [],
               confidence: 0.7,
               source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
@@ -1035,10 +1042,10 @@ describe("semantic extractor", () => {
         createSemanticToolResponse({
           nodes: [
             {
-              kind: "entity",
-              label: "Tomasz",
-              description: "A person named Tomasz.",
-              domain: "people",
+              kind: "concept",
+              label: "Time",
+              description: "A scientific time concept.",
+              domain: "science",
               aliases: [],
               confidence: 0.7,
               source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
@@ -1066,9 +1073,9 @@ describe("semantic extractor", () => {
 
     await nodeRepository.insert({
       id: createSemanticNodeId(),
-      kind: "entity",
-      label: "Tomasz",
-      description: "Existing ambiguous Tomasz node.",
+      kind: "concept",
+      label: "Time",
+      description: "Existing broad time concept.",
       domain: null,
       aliases: [],
       confidence: 0.6,
@@ -1083,22 +1090,26 @@ describe("semantic extractor", () => {
 
     await extractor.extractFromEpisodes([episode]);
 
-    const afterNullCandidate = await nodeRepository.findByLabelOrAlias("Tomasz", 5, {
+    const afterNullCandidate = await nodeRepository.findByLabelOrAlias("Time", 5, {
       includeArchived: true,
     });
 
-    expect(afterNullCandidate).toHaveLength(2);
-    expect(afterNullCandidate.map((node) => node.domain)).toEqual([null, null]);
+    expect(afterNullCandidate).toHaveLength(1);
+    expect(afterNullCandidate[0]).toMatchObject({
+      label: "Time",
+      domain: null,
+      description: "A broad time concept.",
+    });
 
     await extractor.extractFromEpisodes([episode]);
 
-    const afterSpecificCandidate = await nodeRepository.findByLabelOrAlias("Tomasz", 5, {
+    const afterSpecificCandidate = await nodeRepository.findByLabelOrAlias("Time", 5, {
       includeArchived: true,
     });
 
-    expect(afterSpecificCandidate).toHaveLength(3);
+    expect(afterSpecificCandidate).toHaveLength(2);
     expect(afterSpecificCandidate.map((node) => node.domain)).toEqual(
-      expect.arrayContaining([null, null, "people"]),
+      expect.arrayContaining([null, "science"]),
     );
   });
 

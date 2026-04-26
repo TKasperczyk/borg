@@ -17,36 +17,8 @@ export type ActionResult = {
   workingMemory: WorkingMemory;
 };
 
-function inferIntent(response: string): IntentRecord[] {
-  const nextStepMatch = response.match(/\bnext (?:step|action)\b[:\s-]+([^.!\n]+)/i);
-
-  if (nextStepMatch?.[1] !== undefined) {
-    const nextAction = nextStepMatch[1].trim();
-
-    return [
-      {
-        description: "Suggested follow-up",
-        next_action: nextAction,
-      },
-    ];
-  }
-
-  const willMatch = response.match(/\bI will ([^.!\n]+)/i);
-
-  if (willMatch?.[1] !== undefined) {
-    return [
-      {
-        description: "Declared next step",
-        next_action: willMatch[1].trim(),
-      },
-    ];
-  }
-
-  return [];
-}
-
 export async function performAction(context: ActionContext): Promise<ActionResult> {
-  const intents = inferIntent(context.response);
+  const intents: IntentRecord[] = [];
 
   return {
     response: context.response,
@@ -54,7 +26,7 @@ export async function performAction(context: ActionContext): Promise<ActionResul
     intents,
     workingMemory: {
       ...context.workingMemory,
-      pending_intents: [...context.workingMemory.pending_intents, ...intents],
+      pending_intents: [...context.workingMemory.pending_intents],
     },
   };
 }

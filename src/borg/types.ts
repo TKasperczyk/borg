@@ -25,6 +25,7 @@ import type {
   SemanticEdgeRepository,
   SemanticGraph,
   SemanticNodeRepository,
+  SemanticReviewService,
 } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
@@ -59,6 +60,7 @@ export type BorgDependencies = {
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
   semanticGraph: SemanticGraph;
+  semanticReviewService: SemanticReviewService;
   reviewQueueRepository: ReviewQueueRepository;
   identityEventRepository: IdentityEventRepository;
   identityService: IdentityService;

@@ -139,7 +139,6 @@ export class EntityExtractor {
     const normalizedText = text.trim();
 
     if (
-      heuristicEntities.length > 0 ||
       !this.useLlmFallback ||
       this.options.llmClient === undefined ||
       normalizedText.length === 0
@@ -172,7 +171,7 @@ export class EntityExtractor {
         max_tokens: 512,
         budget: "perception-entity-fallback",
       });
-      return parseEntityFallback(response);
+      return dedupe([...heuristicEntities, ...parseEntityFallback(response)]);
     } catch (error) {
       if (error instanceof CognitionError || error instanceof LLMError) {
         throw error;

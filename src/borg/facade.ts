@@ -291,6 +291,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           episodicRepository: deps.episodicRepository,
           llmClient: deps.llmFactory(),
           model: deps.config.anthropic.models.extraction,
+          semanticReviewService: deps.semanticReviewService,
           clock: deps.clock,
         });
 

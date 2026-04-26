@@ -13,6 +13,7 @@ import { createSemanticNodeId } from "../../util/ids.js";
 import { episodeAccessScopeKey } from "../episodic/access.js";
 import type { Episode, EpisodicRepository } from "../episodic/index.js";
 import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
+import type { SemanticReviewService } from "./review-service.js";
 import { canonicalizeDomain } from "./domain.js";
 import {
   semanticNodeKindSchema,
@@ -65,6 +66,7 @@ export type SemanticExtractorOptions = {
   episodicRepository: Pick<EpisodicRepository, "getMany">;
   llmClient: LLMClient;
   model: string;
+  semanticReviewService?: Pick<SemanticReviewService, "queueDuplicateReview">;
   clock?: Clock;
   dedupThreshold?: number;
   confidenceCeiling?: number;
@@ -204,7 +206,7 @@ function hasCompatibleDomain(
   const normalizedLeft = canonicalizeDomain(left);
   const normalizedRight = canonicalizeDomain(right);
 
-  return normalizedLeft !== null && normalizedRight !== null && normalizedLeft === normalizedRight;
+  return normalizedLeft === normalizedRight;
 }
 
 function resolveEpisodeScopeKeys(episodes: readonly Episode[]): Set<string> {
@@ -375,6 +377,7 @@ export class SemanticExtractor {
           archived: false,
           superseded_by: null,
         });
+        this.options.semanticReviewService?.queueDuplicateReview(inserted);
 
         return {
           status: "inserted",
