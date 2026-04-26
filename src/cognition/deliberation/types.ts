@@ -24,6 +24,7 @@ import type { SessionId } from "../../util/ids.js";
 import type { ToolLoopCallRecord } from "../action/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { RecencyMessage } from "../recency/index.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import type { PerceptionResult } from "../types.js";
 
 export type TurnStakes = "low" | "medium" | "high";
@@ -49,6 +50,7 @@ export type SelfSnapshot = {
 
 export type DeliberationContext = {
   sessionId: SessionId;
+  turnId?: string;
   audience?: string;
   userMessage: string;
   userEntryId?: string;
@@ -115,4 +117,5 @@ export type DeliberatorOptions = {
   toolDispatcher: ToolDispatcher;
   cognitionModel: string;
   backgroundModel: string;
+  tracer?: TurnTracer;
 };

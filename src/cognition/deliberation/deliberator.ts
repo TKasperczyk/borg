@@ -17,6 +17,7 @@ import { renderTaggedPromptBlock } from "./prompt/sections.js";
 import { buildBaseSystemPrompt } from "./prompt/system-prompt.js";
 import { runS2Planner } from "./s2-planner.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
+import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
 import type {
   DeliberationContext,
   DeliberationResult,
@@ -65,7 +66,11 @@ function dedupeRetrievedEpisodes(results: readonly RetrievedEpisode[]): Retrieve
 }
 
 export class Deliberator {
-  constructor(private readonly options: DeliberatorOptions) {}
+  private readonly tracer: TurnTracer;
+
+  constructor(private readonly options: DeliberatorOptions) {
+    this.tracer = options.tracer ?? NOOP_TRACER;
+  }
 
   async run(
     context: DeliberationContext,
@@ -78,12 +83,20 @@ export class Deliberator {
     const retrievalContextBudget = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET;
     const systemOneMaxTokens = DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS;
     const systemTwoMaxTokens = DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS;
+    const trace =
+      this.tracer.enabled && context.turnId !== undefined
+        ? {
+            tracer: this.tracer,
+            turnId: context.turnId,
+          }
+        : undefined;
     const decision = chooseDeliberationPath(
       context.perception.mode,
       stakes,
       context.retrievalResult,
       context.contradictionPresent,
       context.retrievalConfidence ?? null,
+      trace,
     );
     const baseSystemPrompt = buildBaseSystemPrompt(context, {
       retrievalContextBudget,
@@ -106,6 +119,8 @@ export class Deliberator {
         userEntryId: context.userEntryId,
         maxTokens: systemOneMaxTokens,
         path: "system_1",
+        tracer: this.tracer,
+        turnId: context.turnId,
       });
 
       return {
@@ -133,6 +148,8 @@ export class Deliberator {
       dialogueMessages,
       selfSnapshot: context.selfSnapshot,
       maxTokens: planningMaxTokens,
+      tracer: this.tracer,
+      turnId: context.turnId,
     });
     const plan = planner.plan;
 
@@ -169,8 +186,32 @@ export class Deliberator {
       maxTokens: systemTwoMaxTokens,
       path: "system_2",
       additionalPromptSections: [additionalRetrievalBlock, planSection],
+      tracer: this.tracer,
+      turnId: context.turnId,
     });
-    const thoughtsPersisted = await persistDeliberationThoughts(streamWriter, thoughts);
+    const persistedThoughtEntries = await persistDeliberationThoughts(streamWriter, thoughts);
+    const thoughtsPersisted = persistedThoughtEntries.length > 0;
+
+    if (this.tracer.enabled && context.turnId !== undefined) {
+      const persistedEntry = persistedThoughtEntries[0];
+
+      if (persistedEntry !== undefined) {
+        this.tracer.emit("plan_persisted", {
+          turnId: context.turnId,
+          streamEntryId: persistedEntry.id,
+        });
+      } else {
+        this.tracer.emit("plan_persistence_skipped", {
+          turnId: context.turnId,
+          reason:
+            plan === null
+              ? "no_plan_extracted"
+              : streamWriter === undefined
+                ? "stream_writer_unavailable"
+                : "empty_thoughts",
+        });
+      }
+    }
     const usage = aggregateUsage(planner.usage, finalResponse.usage);
 
     return {

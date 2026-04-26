@@ -56,6 +56,10 @@ export {
 } from "./borg.js";
 export {
   TurnOrchestrator,
+  JsonlTracer,
+  NOOP_TRACER,
+  NoopTracer,
+  createTurnTracer,
   computeRetrievalLimit,
   computeWeights,
   SuppressionSet,
@@ -68,6 +72,11 @@ export {
   type TurnInput,
   type TurnResult,
   type TurnStakes,
+  type CreateTurnTracerOptions,
+  type JsonlTracerOptions,
+  type TurnTraceData,
+  type TurnTraceEventName,
+  type TurnTracer,
 } from "./cognition/index.js";
 export {
   DEFAULT_CONFIG,

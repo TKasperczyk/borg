@@ -1,5 +1,6 @@
 // Chooses the S1/S2 deliberation path from perception, stakes, and retrieval signals.
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 import type { CognitiveMode } from "../types.js";
 import type { TurnStakes } from "./types.js";
@@ -7,6 +8,11 @@ import type { TurnStakes } from "./types.js";
 export type DeliberationPathDecision = {
   path: "system_1" | "system_2";
   reason: string;
+};
+
+export type DeliberationPathTrace = {
+  tracer: TurnTracer;
+  turnId: string;
 };
 
 // When no RetrievalConfidence is supplied, fall back to the old score-average.
@@ -60,52 +66,61 @@ export function chooseDeliberationPath(
   retrievedEpisodes: readonly RetrievedEpisode[],
   contradictionPresent = false,
   retrievalConfidence?: RetrievalConfidence | null,
+  trace?: DeliberationPathTrace,
 ): DeliberationPathDecision {
   const confidence =
     retrievalConfidence !== undefined && retrievalConfidence !== null
       ? retrievalConfidence.overall
       : fallbackConfidence(retrievedEpisodes);
+  const contextContradiction =
+    contradictionPresent || retrievalConfidence?.contradictionPresent === true;
+
+  const select = (
+    path: DeliberationPathDecision["path"],
+    reason: string,
+    effectiveContradiction = contextContradiction,
+  ): DeliberationPathDecision => {
+    if (trace?.tracer.enabled === true) {
+      trace.tracer.emit("path_selected", {
+        turnId: trace.turnId,
+        path,
+        reason,
+        confidenceOverall: confidence,
+        contradictionPresent: effectiveContradiction,
+      });
+    }
+
+    return {
+      path,
+      reason,
+    };
+  };
 
   if (mode === "idle") {
-    return {
-      path: "system_1",
-      reason: "Idle mode keeps the response on the cheap path.",
-    };
+    return select("system_1", "Idle mode keeps the response on the cheap path.");
   }
 
   if (mode === "reflective") {
-    return {
-      path: "system_2",
-      reason: "Reflective mode always takes the deeper reasoning path.",
-    };
+    return select("system_2", "Reflective mode always takes the deeper reasoning path.");
   }
 
-  const effectiveContradiction =
-    contradictionPresent || retrievalConfidence?.contradictionPresent === true;
+  const episodeContradiction = hasContradictionSignal(retrievedEpisodes);
 
-  if (effectiveContradiction || hasContradictionSignal(retrievedEpisodes)) {
-    return {
-      path: "system_2",
-      reason: "Retrieved-context contradiction triggered deeper reasoning.",
-    };
+  if (contextContradiction || episodeContradiction) {
+    return select(
+      "system_2",
+      "Retrieved-context contradiction triggered deeper reasoning.",
+      true,
+    );
   }
 
   if (stakes === "high") {
-    return {
-      path: "system_2",
-      reason: "High-stakes request requires explicit planning.",
-    };
+    return select("system_2", "High-stakes request requires explicit planning.");
   }
 
   if (confidence < 0.45) {
-    return {
-      path: "system_2",
-      reason: "Low retrieval confidence triggered deeper reasoning.",
-    };
+    return select("system_2", "Low retrieval confidence triggered deeper reasoning.");
   }
 
-  return {
-    path: "system_1",
-    reason: "Retrieval confidence is strong enough for a direct response.",
-  };
+  return select("system_1", "Retrieval confidence is strong enough for a direct response.");
 }

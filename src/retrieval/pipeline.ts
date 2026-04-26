@@ -15,9 +15,11 @@ import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
 import type { SemanticNode } from "../memory/semantic/types.js";
 import type { SocialProfile } from "../memory/social/index.js";
 import type { StreamEntryIndexRepository } from "../stream/index.js";
+import { NOOP_TRACER, type TurnTracer } from "../cognition/tracing/tracer.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
 import type { EntityId } from "../util/ids.js";
+import type { JsonValue } from "../util/json-value.js";
 
 import { CitationResolver, type CitationResolverOptions } from "./citations.js";
 import { assembleRetrievedContext, type RetrievedContext } from "./context-assembly.js";
@@ -60,6 +62,7 @@ export type RetrievalPipelineOptions = {
   semanticGraph?: SemanticGraph;
   openQuestionsRepository?: OpenQuestionsRepository;
   clock?: Clock;
+  tracer?: TurnTracer;
   scoreWeights?: ScoreWeights;
   mmrLambda?: number;
   decayOptions?: Omit<DecayOptions, "nowMs">;
@@ -84,6 +87,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   audienceProfile?: SocialProfile | null;
   audienceTerms?: readonly string[];
   entityTerms?: readonly string[];
+  traceTurnId?: string;
 };
 
 export type RetrievalGetEpisodeOptions = {
@@ -96,9 +100,11 @@ export class RetrievalPipeline {
   private readonly scoreWeights: ScoreWeights;
   private readonly mmrLambda: number;
   private readonly decayOptions?: Omit<DecayOptions, "nowMs">;
+  private readonly tracer: TurnTracer;
 
   constructor(private readonly options: RetrievalPipelineOptions) {
     this.clock = options.clock ?? new SystemClock();
+    this.tracer = options.tracer ?? NOOP_TRACER;
     this.scoreWeights = options.scoreWeights ?? {
       similarity: 0.7,
       salience: 0.3,
@@ -125,6 +131,14 @@ export class RetrievalPipeline {
     query: string,
     options: RetrievalSearchOptions = {},
   ): Promise<RetrievedContext> {
+    if (this.tracer.enabled && options.traceTurnId !== undefined) {
+      this.tracer.emit("retrieval_started", {
+        turnId: options.traceTurnId,
+        query,
+        options: summarizeRetrievalOptions(options),
+      });
+    }
+
     const nowMs = this.clock.now();
     const limit = Math.max(1, options.limit ?? 5);
     const queryVector = await this.options.embeddingClient.embed(query);
@@ -221,13 +235,24 @@ export class RetrievalPipeline {
       results.push(result);
     }
 
-    return assembleRetrievedContext({
+    const context = assembleRetrievedContext({
       episodes: results,
       semantic: toRetrievedSemantic(semantic),
       openQuestions,
       contradictionPresent: semantic.contradictionPresent,
       expectedCount: limit,
     });
+
+    if (this.tracer.enabled && options.traceTurnId !== undefined) {
+      this.tracer.emit("retrieval_completed", {
+        turnId: options.traceTurnId,
+        episodeCount: context.episodes.length,
+        semanticHits: countSemanticHits(context.semantic),
+        confidence: context.confidence,
+      });
+    }
+
+    return context;
   }
 
   async search(query: string, options: RetrievalSearchOptions = {}): Promise<RetrievedEpisode[]> {
@@ -329,4 +354,41 @@ export class RetrievalPipeline {
   ): MergedEpisodeCandidate[] {
     return mergeEpisodeCandidates(candidateSets);
   }
+}
+
+function summarizeRetrievalOptions(options: RetrievalSearchOptions): JsonValue {
+  return {
+    limit: options.limit ?? null,
+    strictTimeRange: options.strictTimeRange ?? false,
+    includeOpenQuestions: options.includeOpenQuestions ?? false,
+    temporalCue: summarizeTemporalCue(options.temporalCue ?? null),
+    attentionWeights: options.attentionWeights ?? null,
+    goalCount: options.goalDescriptions?.length ?? 0,
+    activeValueCount: options.activeValues?.length ?? 0,
+    audienceTermCount: options.audienceTerms?.length ?? 0,
+    entityTerms: options.entityTerms === undefined ? [] : [...options.entityTerms],
+    graphWalkDepth: options.graphWalkDepth ?? null,
+    maxGraphNodes: options.maxGraphNodes ?? null,
+  };
+}
+
+function summarizeTemporalCue(cue: TemporalCue | null): JsonValue {
+  if (cue === null) {
+    return null;
+  }
+
+  return {
+    ...(cue.sinceTs === undefined ? {} : { sinceTs: cue.sinceTs }),
+    ...(cue.untilTs === undefined ? {} : { untilTs: cue.untilTs }),
+    ...(cue.label === undefined ? {} : { label: cue.label }),
+  };
+}
+
+function countSemanticHits(semantic: RetrievedSemantic): number {
+  return (
+    semantic.matched_nodes.length +
+    semantic.support_hits.length +
+    semantic.contradiction_hits.length +
+    semantic.category_hits.length
+  );
 }

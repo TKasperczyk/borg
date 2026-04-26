@@ -8,6 +8,9 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import type { JsonValue } from "../../util/json-value.js";
+import type { TurnTracer } from "../tracing/tracer.js";
+import { toTraceJsonValue } from "../tracing/tracer.js";
 import type { DeliberationUsage, SelfSnapshot } from "./types.js";
 import { renderTaggedPromptSection } from "./prompt/sections.js";
 import { summarizeVoiceAnchors } from "./prompt/voice-anchors.js";
@@ -53,6 +56,8 @@ export type RunS2PlannerOptions = {
   dialogueMessages: readonly LLMMessage[];
   selfSnapshot: SelfSnapshot;
   maxTokens: number;
+  tracer?: TurnTracer;
+  turnId?: string;
 };
 
 export type S2PlannerResult = {
@@ -66,28 +71,83 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     "borg_voice_anchors",
     summarizeVoiceAnchors(options.selfSnapshot),
   );
+  const systemPrompt = [
+    options.baseSystemPrompt,
+    plannerVoiceAnchors,
+    [
+      "You are about to answer a reflective, high-stakes, or contradictory turn.",
+      `Emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
+      "The plan is passed back to you in the next call so you can execute it. Keep it short and grounded in the current turn -- do NOT try to draft the answer itself here.",
+    ].join("\n"),
+  ]
+    .filter((section): section is string => section !== null)
+    .join("\n\n");
+  const tools = [TURN_PLAN_TOOL];
+
+  if (options.tracer?.enabled === true && options.turnId !== undefined) {
+    options.tracer.emit("llm_call_started", {
+      turnId: options.turnId,
+      label: "s2_planner",
+      model: options.model,
+      promptCharCount: countCompletePromptChars(systemPrompt, options.dialogueMessages),
+      toolSchemas: summarizeToolSchemas(tools),
+      ...(options.tracer.includePayloads
+        ? {
+            prompt: toTraceJsonValue({
+              system: systemPrompt,
+              messages: options.dialogueMessages,
+              tools,
+            }),
+          }
+        : {}),
+    });
+  }
+
   const planner = await options.llmClient.complete({
     model: options.model,
-    system: [
-      options.baseSystemPrompt,
-      plannerVoiceAnchors,
-      [
-        "You are about to answer a reflective, high-stakes, or contradictory turn.",
-        `Emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
-        "The plan is passed back to you in the next call so you can execute it. Keep it short and grounded in the current turn -- do NOT try to draft the answer itself here.",
-      ].join("\n"),
-    ]
-      .filter((section): section is string => section !== null)
-      .join("\n\n"),
+    system: systemPrompt,
     messages: options.dialogueMessages,
-    tools: [TURN_PLAN_TOOL],
+    tools,
     tool_choice: { type: "tool", name: TURN_PLAN_TOOL_NAME },
     max_tokens: options.maxTokens,
     budget: "cognition-plan",
   });
+  const extraction = extractTurnPlan(planner.tool_calls);
+
+  if (options.tracer?.enabled === true && options.turnId !== undefined) {
+    options.tracer.emit("llm_call_response", {
+      turnId: options.turnId,
+      label: "s2_planner",
+      responseShape: {
+        textLength: planner.text.length,
+        toolUseBlocks: planner.tool_calls.map((call) => ({
+          id: call.id,
+          name: call.name,
+        })),
+      },
+      stopReason: planner.stop_reason,
+      usage: {
+        inputTokens: planner.input_tokens,
+        outputTokens: planner.output_tokens,
+      },
+      ...(options.tracer.includePayloads
+        ? {
+            response: toTraceJsonValue({
+              text: planner.text,
+              toolCalls: planner.tool_calls,
+            }),
+          }
+        : {}),
+    });
+    options.tracer.emit("plan_extraction", {
+      turnId: options.turnId,
+      success: extraction.plan !== null,
+      ...(extraction.reason === null ? {} : { reason: extraction.reason }),
+    });
+  }
 
   return {
-    plan: extractTurnPlan(planner.tool_calls),
+    plan: extraction.plan,
     reasoning: planner.text,
     usage: {
       input_tokens: planner.input_tokens,
@@ -97,13 +157,53 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
   };
 }
 
-function extractTurnPlan(toolCalls: readonly LLMToolCall[]): TurnPlan | null {
+type ExtractTurnPlanResult = {
+  plan: TurnPlan | null;
+  reason: string | null;
+};
+
+function extractTurnPlan(toolCalls: readonly LLMToolCall[]): ExtractTurnPlanResult {
   const call = toolCalls.find((entry) => entry.name === TURN_PLAN_TOOL_NAME);
 
   if (call === undefined) {
-    return null;
+    return {
+      plan: null,
+      reason: "missing_emit_turn_plan_tool_use",
+    };
   }
 
   const parsed = turnPlanSchema.safeParse(call.input);
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) {
+    return {
+      plan: null,
+      reason: "invalid_emit_turn_plan_input",
+    };
+  }
+
+  return {
+    plan: parsed.data,
+    reason: null,
+  };
+}
+
+function countCompletePromptChars(
+  systemPrompt: string,
+  messages: readonly LLMMessage[],
+): number {
+  return (
+    systemPrompt.length +
+    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
+  );
+}
+
+function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
+  return tools.map((tool) => ({
+    name: tool.name,
+    propertyCount:
+      tool.inputSchema.properties === undefined
+        ? 0
+        : Object.keys(tool.inputSchema.properties).length,
+    required:
+      Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
+  }));
 }

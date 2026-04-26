@@ -16,7 +16,7 @@ import { EpisodicRepository, createEpisodesTableSchema } from "../memory/episodi
 import { selfMigrations } from "../memory/self/migrations.js";
 import { retrievalMigrations } from "../retrieval/migrations.js";
 import { FixedClock } from "../util/clock.js";
-import { readJsonFile, writeJsonFileAtomic } from "../util/atomic-write.js";
+import { readJsonFile, writeFileAtomic, writeJsonFileAtomic } from "../util/atomic-write.js";
 import { runCli } from "./app.js";
 
 const CONSOLIDATION_TOOL_NAME = "EmitConsolidation";
@@ -120,6 +120,46 @@ describe("cli", () => {
 
     expect(exitCode).toBe(0);
     expect(stdout.read()).toContain("borg 0.1.0");
+    expect(stderr.read()).toBe("");
+  });
+
+  it("inspects a trace JSONL file", async () => {
+    const tempDir = createCliTempDir(tempDirs);
+    const tracePath = join(tempDir, "trace.jsonl");
+    writeFileAtomic(
+      tracePath,
+      [
+        JSON.stringify({
+          ts: 1_000,
+          turnId: "turn_a",
+          event: "perception_started",
+          inputCharCount: 12,
+        }),
+        JSON.stringify({
+          ts: 1_001,
+          turnId: "turn_a",
+          event: "llm_call_started",
+          label: "s2_planner",
+          prompt: {
+            system: "large prompt",
+          },
+        }),
+        "",
+      ].join("\n"),
+    );
+    const stdout = createOutputBuffer();
+    const stderr = createOutputBuffer();
+
+    const exitCode = await runCli(["node", "borg", "trace", "inspect", tracePath], {
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout.read()).toContain("turn turn_a");
+    expect(stdout.read()).toContain("perception_started");
+    expect(stdout.read()).toContain("llm_call_started");
+    expect(stdout.read()).toContain("[collapsed; use --full]");
     expect(stderr.read()).toBe("");
   });
 

@@ -2,6 +2,7 @@
 
 import { SystemClock } from "../util/clock.js";
 import { SessionLock } from "../cognition/index.js";
+import { createTurnTracer } from "../cognition/tracing/tracer.js";
 import type { LLMClient } from "../llm/index.js";
 import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
@@ -32,6 +33,11 @@ export async function openBorgDependencies(
 
   try {
     const config = resolveBorgConfig(options);
+    const tracer = createTurnTracer({
+      tracerPath: options.tracerPath,
+      env: options.env ?? process.env,
+      clock,
+    });
     const storage = openBorgStorage(config);
     sqlite = storage.sqlite;
     lance = storage.lance;
@@ -49,6 +55,7 @@ export async function openBorgDependencies(
       skillsTable: tables.skillsTable,
       embeddingClient,
       clock,
+      tracer,
       getDeferredLlm: () => deferredLlm,
     });
     const sessionLock = new SessionLock({
@@ -134,6 +141,7 @@ export async function openBorgDependencies(
       streamIngestionCoordinator,
       createStreamWriter: repositories.createStreamWriter,
       clock,
+      tracer,
     });
     const autonomyScheduler = buildAutonomyScheduler({
       config,

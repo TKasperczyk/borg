@@ -2,6 +2,7 @@
 import type { LLMClient, LLMContentBlockMessage } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/index.js";
 import type { SessionId } from "../../util/ids.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../action/index.js";
 
 export type RunFinalizerOptions = {
@@ -16,6 +17,8 @@ export type RunFinalizerOptions = {
   maxTokens: number;
   path: "system_1" | "system_2";
   additionalPromptSections?: readonly (string | null)[];
+  tracer?: TurnTracer;
+  turnId?: string;
 };
 
 export async function runFinalizer(options: RunFinalizerOptions): Promise<ToolLoopResult> {
@@ -40,5 +43,8 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<ToolLo
     provenance: toolProvenance,
     maxTokens: options.maxTokens,
     budget: options.path === "system_1" ? "cognition-system-1" : "cognition-system-2",
+    tracer: options.tracer,
+    turnId: options.turnId,
+    traceLabel: `${options.path}_finalizer`,
   });
 }

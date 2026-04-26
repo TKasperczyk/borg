@@ -600,6 +600,12 @@ async function main(): Promise<void> {
   let borg: Borg | undefined;
 
   info(`Using LLM: ${selection.llmMode}, Embeddings: ${selection.embeddingMode}`);
+  const tracePath = process.env.BORG_TRACE?.trim();
+  if (tracePath !== undefined && tracePath.length > 0) {
+    note(
+      `Turn tracing enabled: ${tracePath}${process.env.BORG_TRACE_PROMPTS === "1" ? " (full prompts/responses)" : ""}`,
+    );
+  }
 
   const state: DebugState = {
     sessionId: DEFAULT_SESSION_ID,

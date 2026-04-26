@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { Config } from "../config/index.js";
 import { SuppressionSet, computeRetrievalLimit, computeWeights } from "./attention/index.js";
 import { performAction, type ToolLoopCallRecord } from "./action/index.js";
@@ -41,6 +43,7 @@ import type { ToolDispatcher } from "../tools/index.js";
 import { ConfigError, SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
+import { NOOP_TRACER, type TurnTracer } from "./tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
 import { SessionLock } from "./session-lock.js";
 
@@ -148,6 +151,7 @@ export type TurnOrchestratorOptions = {
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   affectiveSignalDetector?: typeof detectAffectiveSignal;
   sessionLock?: SessionLock;
+  tracer?: TurnTracer;
 };
 
 export class TurnOrchestrator {
@@ -155,9 +159,11 @@ export class TurnOrchestrator {
   private readonly turnContextCompiler: TurnContextCompiler;
   private readonly createStreamReader: (sessionId: SessionId) => StreamReader;
   private readonly sessionLock: SessionLock;
+  private readonly tracer: TurnTracer;
 
   constructor(private readonly options: TurnOrchestratorOptions) {
     this.clock = options.clock ?? new SystemClock();
+    this.tracer = options.tracer ?? NOOP_TRACER;
     this.turnContextCompiler = options.turnContextCompiler ?? new TurnContextCompiler();
     this.sessionLock =
       options.sessionLock ??
@@ -300,6 +306,7 @@ export class TurnOrchestrator {
       });
     }
 
+    const turnId = randomUUID();
     const streamWriter = this.options.createStreamWriter(sessionId);
 
     try {
@@ -323,6 +330,8 @@ export class TurnOrchestrator {
           onAffectiveError: (error) =>
             this.appendHookFailureEvent(streamWriter, "affective_extraction", error),
           clock: this.clock,
+          tracer: this.tracer,
+          turnId,
         });
         const llmClient = this.options.llmFactory();
         const selfSnapshot = this.buildSelfSnapshot();
@@ -352,6 +361,13 @@ export class TurnOrchestrator {
             includeSelfTurns: isSelfAudience,
           },
         );
+        if (this.tracer.enabled) {
+          this.tracer.emit("recency_compiled", {
+            turnId,
+            messageCount: recencyWindow.messages.length,
+            sourceEntryIds: recencyWindow.messages.map((message) => message.stream_entry_id),
+          });
+        }
         const recentHistoryStrings = recencyWindow.messages.map(
           (message) => `${message.role}: ${message.content}`,
         );
@@ -539,6 +555,7 @@ export class TurnOrchestrator {
           entityTerms: perception.entities,
           suppressionSet,
           includeOpenQuestions: perception.mode === "reflective",
+          traceTurnId: turnId,
         };
         const retrieval = await this.options.retrievalPipeline.searchWithContext(
           cognitionInput,
@@ -560,10 +577,12 @@ export class TurnOrchestrator {
           toolDispatcher: this.options.toolDispatcher,
           cognitionModel: this.options.config.anthropic.models.cognition,
           backgroundModel: this.options.config.anthropic.models.background,
+          tracer: this.tracer,
         });
         const deliberation = await deliberator.run(
           {
             sessionId,
+            turnId,
             audience: input.audience,
             userMessage: input.userMessage,
             userEntryId: persistedUserEntry.id,
@@ -618,6 +637,18 @@ export class TurnOrchestrator {
           commitments: applicableCommitments,
           relevantEntities: perception.entities,
         });
+        if (this.tracer.enabled) {
+          this.tracer.emit("commitment_check", {
+            turnId,
+            verdict: commitmentCheck.fallback_applied
+              ? "fallback_applied"
+              : commitmentCheck.revised
+                ? "rewritten"
+                : "passed",
+            rewriteTriggered: commitmentCheck.revised,
+            violationCount: commitmentCheck.violations.length,
+          });
+        }
 
         if (commitmentCheck.fallback_applied) {
           await streamWriter.append({
@@ -711,24 +742,36 @@ export class TurnOrchestrator {
           },
           streamWriter,
         );
+        const nextPendingSocialAttribution =
+          audienceEntityId !== null &&
+          interactionRecord !== null &&
+          pendingSocialAttribution === null
+            ? {
+                entity_id: audienceEntityId,
+                interaction_id: interactionRecord.interaction_id,
+                agent_response_summary:
+                  actionResult.response.trim().length === 0
+                    ? null
+                    : actionResult.response.replace(/\s+/g, " ").trim().slice(0, 240),
+                turn_completed_ts: persistedAgentEntry.timestamp,
+              }
+            : pendingSocialAttribution;
+
+        if (this.tracer.enabled) {
+          this.tracer.emit("reflection_emitted", {
+            turnId,
+            attributions: {
+              pending_social: nextPendingSocialAttribution !== null,
+              pending_trait: reflectedWorkingMemory.pending_trait_attribution !== null,
+              pending_intents: reflectedWorkingMemory.pending_intents.length,
+            },
+          });
+        }
 
         this.options.workingMemoryStore.save({
           ...reflectedWorkingMemory,
           mood: moodSnapshot,
-          pending_social_attribution:
-            audienceEntityId !== null &&
-            interactionRecord !== null &&
-            pendingSocialAttribution === null
-              ? {
-                  entity_id: audienceEntityId,
-                  interaction_id: interactionRecord.interaction_id,
-                  agent_response_summary:
-                    actionResult.response.trim().length === 0
-                      ? null
-                      : actionResult.response.replace(/\s+/g, " ").trim().slice(0, 240),
-                  turn_completed_ts: persistedAgentEntry.timestamp,
-                }
-              : pendingSocialAttribution,
+          pending_social_attribution: nextPendingSocialAttribution,
           suppressed: suppressionSet.snapshot(),
           updated_at: this.clock.now(),
         });

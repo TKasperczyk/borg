@@ -1,5 +1,6 @@
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { LLMClient } from "../../llm/index.js";
+import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
 import { perceptionResultSchema, type CognitiveMode, type PerceptionResult } from "../types.js";
 import {
   createNeutralAffectiveSignal,
@@ -26,6 +27,8 @@ export type PerceiverOptions = {
   clock?: Clock;
   detectAffectiveSignal?: typeof detectAffectiveSignal;
   onAffectiveError?: (error: unknown) => Promise<void> | void;
+  tracer?: TurnTracer;
+  turnId?: string;
   /**
    * Mode returned when LLM-based mode detection isn't firing (either the
    * fallback is disabled or no LLM client is configured). Test harnesses
@@ -45,6 +48,8 @@ export class Perceiver {
   private readonly temporalCueUseLlmFallback: boolean;
   private readonly detectAffectiveSignal: typeof detectAffectiveSignal;
   private readonly onAffectiveError?: (error: unknown) => Promise<void> | void;
+  private readonly tracer: TurnTracer;
+  private readonly turnId?: string;
 
   constructor(options: PerceiverOptions = {}) {
     this.clock = options.clock ?? new SystemClock();
@@ -54,6 +59,8 @@ export class Perceiver {
     this.temporalCueUseLlmFallback = options.temporalCueUseLlmFallback ?? true;
     this.detectAffectiveSignal = options.detectAffectiveSignal ?? detectAffectiveSignal;
     this.onAffectiveError = options.onAffectiveError;
+    this.tracer = options.tracer ?? NOOP_TRACER;
+    this.turnId = options.turnId;
     this.entityExtractor = new EntityExtractor({
       llmClient: options.llmClient,
       model: options.model,
@@ -88,6 +95,14 @@ export class Perceiver {
   }
 
   async perceive(text: string, recentHistory: readonly string[] = []): Promise<PerceptionResult> {
+    if (this.tracer.enabled && this.turnId !== undefined) {
+      this.tracer.emit("perception_started", {
+        turnId: this.turnId,
+        inputCharCount: text.length,
+        recentHistoryCount: recentHistory.length,
+      });
+    }
+
     const nowMs = this.clock.now();
     const [entities, mode, affectiveSignal, temporalCue] = await Promise.all([
       this.entityExtractor.extractEntities(text),
@@ -102,12 +117,23 @@ export class Perceiver {
       }),
     ]);
 
-    return perceptionResultSchema.parse({
+    const perception = perceptionResultSchema.parse({
       entities,
       mode,
       affectiveSignal,
       temporalCue,
     });
+
+    if (this.tracer.enabled && this.turnId !== undefined) {
+      this.tracer.emit("perception_completed", {
+        turnId: this.turnId,
+        mode: perception.mode,
+        entities: perception.entities,
+        temporalCue: perception.temporalCue,
+      });
+    }
+
+    return perception;
   }
 }
 

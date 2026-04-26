@@ -3,11 +3,15 @@ import type {
   LLMContentBlock,
   LLMContentBlockMessage,
   LLMConverseOptions,
+  LLMToolDefinition,
   LLMToolUseBlock,
 } from "../../llm/index.js";
 import { toAnthropicToolDefinitions } from "../../tools/anthropic.js";
 import type { ToolDefinition, ToolDispatchResult, ToolDispatcher, ToolOrigin } from "../../tools/index.js";
+import type { TurnTracer } from "../tracing/tracer.js";
+import { toTraceJsonValue } from "../tracing/tracer.js";
 import type { SessionId } from "../../util/ids.js";
+import type { JsonValue } from "../../util/json-value.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 
 const DEFAULT_MAX_ITERATIONS = 5;
@@ -44,6 +48,9 @@ export type ExecuteToolLoopOptions = {
   thinking?: LLMConverseOptions["thinking"];
   maxIterations?: number;
   maxToolCallsPerIteration?: number;
+  tracer?: TurnTracer;
+  turnId?: string;
+  traceLabel?: string;
 };
 
 export type ToolLoopResult = {
@@ -183,8 +190,30 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
     output_tokens: 0,
     stop_reason: null,
   };
+  const traceEnabled = options.tracer?.enabled === true && options.turnId !== undefined;
+  const traceLabel = options.traceLabel ?? options.budget;
 
   while (true) {
+    if (traceEnabled && options.turnId !== undefined) {
+      options.tracer?.emit("llm_call_started", {
+        turnId: options.turnId,
+        label: traceLabel,
+        iteration: iterations + 1,
+        model: options.model,
+        promptCharCount: countConversePromptChars(options.systemPrompt, messages),
+        toolSchemas: summarizeToolSchemas(anthropicTools),
+        ...(options.tracer.includePayloads
+          ? {
+              prompt: toTraceJsonValue({
+                system: options.systemPrompt ?? null,
+                messages,
+                tools: anthropicTools,
+              }),
+            }
+          : {}),
+      });
+    }
+
     const response = await options.llmClient.converse({
       model: options.model,
       system: options.systemPrompt,
@@ -198,6 +227,27 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
     usage = aggregateUsage(usage, response);
 
     const toolUseBlocks = response.messageBlocks.filter(isToolUseBlock);
+
+    if (traceEnabled && options.turnId !== undefined) {
+      options.tracer?.emit("llm_call_response", {
+        turnId: options.turnId,
+        label: traceLabel,
+        iteration: iterations + 1,
+        responseShape: summarizeResponseShape(response.messageBlocks),
+        stopReason: response.stop_reason,
+        usage: {
+          inputTokens: response.input_tokens,
+          outputTokens: response.output_tokens,
+        },
+        ...(options.tracer.includePayloads
+          ? {
+              response: toTraceJsonValue({
+                messageBlocks: response.messageBlocks,
+              }),
+            }
+          : {}),
+      });
+    }
 
     if (!toolsEnabled || toolUseBlocks.length === 0) {
       return {
@@ -219,6 +269,14 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
     const toolResultBlocks: Array<Extract<LLMContentBlock, { type: "tool_result" }>> = [];
 
     for (const block of runnableBlocks) {
+      if (traceEnabled && options.turnId !== undefined) {
+        options.tracer?.emit("tool_call_dispatched", {
+          turnId: options.turnId,
+          callId: block.id,
+          toolName: block.name,
+        });
+      }
+
       if (!allowedToolNames.has(block.name)) {
         const skippedResult = await options.dispatcher.recordSkippedCall({
           callId: block.id,
@@ -231,6 +289,15 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         });
         toolCallsMade.push(toCallRecord(block, skippedResult));
         toolResultBlocks.push(buildUnavailableToolResultBlock(block));
+        if (traceEnabled && options.turnId !== undefined) {
+          options.tracer?.emit("tool_call_completed", {
+            turnId: options.turnId,
+            callId: skippedResult.callId,
+            toolName: skippedResult.toolName,
+            success: skippedResult.ok,
+            ms: skippedResult.durationMs,
+          });
+        }
         continue;
       }
 
@@ -245,9 +312,28 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       );
       toolCallsMade.push(toCallRecord(block, dispatchResult));
       toolResultBlocks.push(buildToolResultBlock(dispatchResult));
+      if (traceEnabled && options.turnId !== undefined) {
+        options.tracer?.emit("tool_call_completed", {
+          turnId: options.turnId,
+          callId: dispatchResult.callId,
+          toolName: dispatchResult.toolName,
+          success: dispatchResult.ok,
+          ms: dispatchResult.durationMs,
+        });
+      }
     }
 
     for (const block of droppedBlocks) {
+      if (traceEnabled && options.turnId !== undefined) {
+        options.tracer?.emit("tool_call_dispatched", {
+          turnId: options.turnId,
+          callId: block.id,
+          toolName: block.name,
+          skipped: true,
+          reason: "max_tool_calls_per_iteration",
+        });
+      }
+
       const skippedResult = await options.dispatcher.recordSkippedCall({
         callId: block.id,
         toolName: block.name,
@@ -259,6 +345,15 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       });
       toolCallsMade.push(toCallRecord(block, skippedResult));
       toolResultBlocks.push(buildDroppedToolResultBlock(block, maxToolCallsPerIteration));
+      if (traceEnabled && options.turnId !== undefined) {
+        options.tracer?.emit("tool_call_completed", {
+          turnId: options.turnId,
+          callId: skippedResult.callId,
+          toolName: skippedResult.toolName,
+          success: skippedResult.ok,
+          ms: skippedResult.durationMs,
+        });
+      }
     }
 
     messages.push({
@@ -273,4 +368,78 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       forcedTextOnly = true;
     }
   }
+}
+
+function countSystemPromptChars(system: LLMConverseOptions["system"]): number {
+  if (system === undefined) {
+    return 0;
+  }
+
+  if (typeof system === "string") {
+    return system.length;
+  }
+
+  return system.reduce((sum, block) => sum + block.text.length, 0);
+}
+
+function countBlockChars(block: LLMContentBlock): number {
+  if (block.type === "text") {
+    return block.text.length;
+  }
+
+  if (block.type === "tool_use") {
+    return block.name.length + (JSON.stringify(block.input) ?? "").length;
+  }
+
+  const content =
+    typeof block.content === "string"
+      ? block.content
+      : block.content.map((textBlock) => textBlock.text).join("");
+  return block.tool_use_id.length + content.length;
+}
+
+function countConversePromptChars(
+  system: LLMConverseOptions["system"],
+  messages: readonly LLMContentBlockMessage[],
+): number {
+  return (
+    countSystemPromptChars(system) +
+    messages.reduce(
+      (sum, message) =>
+        sum +
+        message.role.length +
+        message.content.reduce((blockSum, block) => blockSum + countBlockChars(block), 0),
+      0,
+    )
+  );
+}
+
+function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
+  return tools.map((tool) => ({
+    name: tool.name,
+    propertyCount:
+      tool.inputSchema.properties === undefined
+        ? 0
+        : Object.keys(tool.inputSchema.properties).length,
+    required:
+      Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
+  }));
+}
+
+function summarizeResponseShape(blocks: readonly LLMContentBlock[]): JsonValue {
+  const textLength = blocks.reduce(
+    (sum, block) => (block.type === "text" ? sum + block.text.length : sum),
+    0,
+  );
+  const toolUseBlocks = blocks
+    .filter((block): block is LLMToolUseBlock => block.type === "tool_use")
+    .map((block) => ({
+      id: block.id,
+      name: block.name,
+    }));
+
+  return {
+    textLength,
+    toolUseBlocks,
+  };
 }

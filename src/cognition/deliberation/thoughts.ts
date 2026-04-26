@@ -1,22 +1,21 @@
 // Persists deliberation thoughts and formats S2 plans for the thought stream.
-import { StreamWriter } from "../../stream/index.js";
+import { StreamWriter, type StreamEntry } from "../../stream/index.js";
 import type { TurnPlan } from "./s2-planner.js";
 
 export async function persistDeliberationThoughts(
   streamWriter: StreamWriter | undefined,
   thoughts: readonly string[],
-): Promise<boolean> {
+): Promise<StreamEntry[]> {
   if (streamWriter === undefined || thoughts.length === 0) {
-    return false;
+    return [];
   }
 
-  await streamWriter.appendMany(
+  return streamWriter.appendMany(
     thoughts.map((thought) => ({
       kind: "thought",
       content: thought,
     })),
   );
-  return true;
 }
 
 /**

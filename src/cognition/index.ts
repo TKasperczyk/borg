@@ -22,6 +22,17 @@ export {
 export { Perceiver, perceive } from "./perception/index.js";
 export { Reflector, type ReflectionContext, type ReflectorOptions } from "./reflection/index.js";
 export {
+  JsonlTracer,
+  NOOP_TRACER,
+  NoopTracer,
+  createTurnTracer,
+  type CreateTurnTracerOptions,
+  type JsonlTracerOptions,
+  type TurnTraceData,
+  type TurnTraceEventName,
+  type TurnTracer,
+} from "./tracing/tracer.js";
+export {
   SessionLock,
   type SessionLockAcquireOptions,
   type SessionLockLease,

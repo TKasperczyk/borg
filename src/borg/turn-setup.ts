@@ -25,6 +25,7 @@ import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import type { Clock } from "../util/clock.js";
+import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { BorgStreamWriterFactory } from "./types.js";
 
 export type BuildTurnOrchestratorOptions = {
@@ -52,6 +53,7 @@ export type BuildTurnOrchestratorOptions = {
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
+  tracer?: TurnTracer;
 };
 
 export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): TurnOrchestrator {
@@ -78,6 +80,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     toolDispatcher: options.toolDispatcher,
     sessionLock: options.sessionLock,
     clock: options.clock,
+    tracer: options.tracer,
     createStreamWriter: options.createStreamWriter,
     // Explicit so borg.ts wires a single compiler instance per process;
     // turn-orchestrator.ts falls back to defaults if omitted, but doing

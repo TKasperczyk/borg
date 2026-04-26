@@ -423,6 +423,14 @@ async function main(): Promise<void> {
   writeLine(
     `borg chat ready. session=${state.session.label} audience=${state.audience} stakes=${state.stakes} (${selection.llmMode} llm, ${selection.embeddingMode} embeddings). /help for commands.`,
   );
+  const tracePath = process.env.BORG_TRACE?.trim();
+  if (tracePath !== undefined && tracePath.length > 0) {
+    writeLine(
+      ansi.dim(
+        `turn tracing enabled: ${tracePath}${process.env.BORG_TRACE_PROMPTS === "1" ? " (full prompts/responses)" : ""}`,
+      ),
+    );
+  }
 
   const rl = createInterface({
     input: process.stdin,

@@ -13,6 +13,7 @@ import { registerSemanticCommands } from "./commands/semantic.js";
 import { registerSocialCommands } from "./commands/social.js";
 import { registerStreamCommands } from "./commands/stream.js";
 import { registerToolCommands } from "./commands/tools.js";
+import { registerTraceCommands } from "./commands/trace.js";
 import { writeLine } from "./helpers/formatters.js";
 import { VERSION } from "../index.js";
 import type { CliCommandDeps, RunCliOptions } from "./types.js";
@@ -47,6 +48,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   registerCommitmentCommands(cli, deps);
   registerReviewCommands(cli, deps);
   registerCorrectionCommands(cli, deps);
+  registerTraceCommands(cli, deps);
 
   try {
     const parsed = cli.parse(argv, { run: false });

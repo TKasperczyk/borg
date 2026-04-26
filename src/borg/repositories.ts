@@ -37,6 +37,7 @@ import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
+import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { BorgDependencies, BorgStreamWriterFactory } from "./types.js";
 import { backfillStreamEntryIndex } from "./reconciliation.js";
 
@@ -77,6 +78,7 @@ export type BuildBorgRepositoriesOptions = {
   skillsTable: LanceDbTable;
   embeddingClient: EmbeddingClient;
   clock: Clock;
+  tracer?: TurnTracer;
   getDeferredLlm: () => LLMClient | undefined;
 };
 
@@ -271,6 +273,7 @@ export async function buildBorgRepositories(
     dataDir: config.dataDir,
     entryIndex,
     clock,
+    tracer: options.tracer,
   });
   const correctionService = new CorrectionService({
     config,

@@ -97,6 +97,7 @@ export type BorgOpenOptions = {
   embeddingClient?: EmbeddingClient;
   llmClient?: LLMClient;
   clock?: Clock;
+  tracerPath?: string;
   /**
    * When true, every completed turn triggers watermark-based episodic
    * extraction so the next turn's retrieval sees material from the turn
