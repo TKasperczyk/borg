@@ -8,7 +8,11 @@ import { Borg } from "../borg.js";
 import { DEFAULT_CONFIG } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient } from "../llm/index.js";
-import { createEpisodeFixture, createOfflineTestHarness } from "../offline/test-support.js";
+import {
+  createEpisodeFixture,
+  createOfflineTestHarness,
+  createSemanticNodeFixture,
+} from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
 import { CorrectionService } from "./service.js";
 
@@ -20,6 +24,30 @@ class TestEmbeddingClient implements EmbeddingClient {
   async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
     return texts.map(() => Float32Array.from([1, 0, 0, 0]));
   }
+}
+
+function createHarnessCorrectionService(
+  harness: Awaited<ReturnType<typeof createOfflineTestHarness>>,
+): CorrectionService {
+  return new CorrectionService({
+    config: harness.config,
+    clock: harness.clock,
+    retrievalPipeline: harness.retrievalPipeline,
+    episodicRepository: harness.episodicRepository,
+    semanticNodeRepository: harness.semanticNodeRepository,
+    semanticEdgeRepository: harness.semanticEdgeRepository,
+    semanticGraph: harness.semanticGraph,
+    valuesRepository: harness.valuesRepository,
+    goalsRepository: harness.goalsRepository,
+    traitsRepository: harness.traitsRepository,
+    openQuestionsRepository: harness.openQuestionsRepository,
+    socialRepository: harness.socialRepository,
+    entityRepository: harness.entityRepository,
+    commitmentRepository: harness.commitmentRepository,
+    reviewQueueRepository: harness.reviewQueueRepository,
+    identityService: harness.identityService,
+    identityEventRepository: harness.identityEventRepository,
+  });
 }
 
 describe("correction service", () => {
@@ -263,6 +291,107 @@ describe("correction service", () => {
           }),
         ]),
       );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("invalidates semantic edges manually with explicit event time idempotently", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(5_000),
+    });
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+      const episodeId = createEpisodeFixture().id;
+      const first = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "Atlas manual revoke source",
+            description: "Atlas was stable.",
+            source_episode_ids: [episodeId],
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const second = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "Atlas manual revoke target",
+            description: "Rollback was complete.",
+            source_episode_ids: [episodeId],
+          },
+          [0, 1, 0, 0],
+        ),
+      );
+      const edge = harness.semanticEdgeRepository.addEdge({
+        from_node_id: first.id,
+        to_node_id: second.id,
+        relation: "supports",
+        confidence: 0.8,
+        evidence_episode_ids: [episodeId],
+        created_at: 4_000,
+        last_verified_at: 4_000,
+        valid_from: 4_000,
+      });
+
+      const invalidated = correction.invalidateSemanticEdge(edge.id, {
+        at: 4_500,
+        reason: "manual revoke",
+      });
+      const secondCall = correction.invalidateSemanticEdge(edge.id, {
+        at: 4_900,
+        reason: "second call should be idempotent",
+      });
+      const events = harness.identityEventRepository.list({
+        recordType: "semantic_edge",
+        recordId: edge.id,
+      });
+
+      expect(edge.id).toMatch(/^seme_/);
+      expect(invalidated).toEqual(
+        expect.objectContaining({
+          id: edge.id,
+          valid_to: 4_500,
+          invalidated_at: 5_000,
+          invalidated_by_process: "manual",
+          invalidated_reason: "manual revoke",
+        }),
+      );
+      expect(secondCall).toEqual(invalidated);
+      expect(events).toHaveLength(1);
+      expect(events[0]?.new_value).toEqual(
+        expect.objectContaining({
+          edge_id: edge.id,
+          prior_valid_to: null,
+          new_valid_to: 4_500,
+          by_process: "manual",
+          reason: "manual revoke",
+        }),
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("surfaces a clean error for nonexistent semantic edge invalidation", async () => {
+    const harness = await createOfflineTestHarness();
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+
+      let thrown: unknown;
+      try {
+        correction.invalidateSemanticEdge("seme_aaaaaaaaaaaaaaaa");
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown).toMatchObject({
+        code: "SEMANTIC_EDGE_NOT_FOUND",
+        message: expect.stringContaining("Unknown semantic edge id"),
+      });
     } finally {
       await harness.cleanup();
     }

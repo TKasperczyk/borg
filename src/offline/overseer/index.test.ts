@@ -153,6 +153,103 @@ describe("overseer process", () => {
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
   });
 
+  it("queues temporal drift reviews for semantic edges without mutating them", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const suggestedValidTo = nowMs - 500;
+    const llm = new FakeLLMClient({
+      responses: [
+        createOverseerResponse([
+          {
+            kind: "temporal_drift",
+            reason: "The edge only held before the later rollback evidence.",
+            confidence: 0.82,
+            suggested_valid_to: suggestedValidTo,
+          },
+        ]),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: {
+        offline: {
+          ...DEFAULT_CONFIG.offline,
+          overseer: {
+            ...DEFAULT_CONFIG.offline.overseer,
+            maxChecksPerRun: 1,
+          },
+        },
+      },
+    });
+    cleanup.push(harness.cleanup);
+
+    const episodeId = createEpisodeFixture().id;
+    const first = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas edge source",
+          description: "Atlas was stable.",
+          source_episode_ids: [episodeId],
+          created_at: nowMs - 2_000,
+          updated_at: nowMs - 2_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const second = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas edge target",
+          description: "Rollback had completed.",
+          source_episode_ids: [episodeId],
+          created_at: nowMs - 1_900,
+          updated_at: nowMs - 1_900,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: first.id,
+      to_node_id: second.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: [episodeId],
+      created_at: nowMs - 100,
+      last_verified_at: nowMs - 100,
+      valid_from: nowMs - 100,
+    });
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const result = await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes[0]).toMatchObject({
+      targets: {
+        kind: "temporal_drift",
+        target_type: "semantic_edge",
+        target_id: edge.id,
+      },
+      preview: {
+        suggested_valid_to: suggestedValidTo,
+      },
+    });
+    expect(harness.reviewQueueRepository.getOpen()[0]).toMatchObject({
+      kind: "temporal_drift",
+      refs: {
+        target_type: "semantic_edge",
+        target_kind: "semantic_edge",
+        target_id: edge.id,
+        suggested_valid_to: suggestedValidTo,
+      },
+    });
+    expect(harness.semanticEdgeRepository.getEdge(edge.id)?.valid_to).toBeNull();
+  });
+
   it("halts further llm work after budget exhaustion", async () => {
     const llm = new FakeLLMClient({
       responses: [

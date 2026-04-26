@@ -3,10 +3,10 @@ import { z } from "zod";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { SemanticError } from "../../util/errors.js";
-import { serializeJsonValue } from "../../util/json-value.js";
+import { serializeJsonValue, type JsonValue } from "../../util/json-value.js";
 import { parseReviewProvenance, provenanceSchema, type Provenance } from "../common/provenance.js";
 import { EpisodicRepository, episodeIdSchema, episodePatchSchema } from "../episodic/index.js";
-import { type IdentityService } from "../identity/index.js";
+import { type IdentityEventRepository, type IdentityService } from "../identity/index.js";
 import {
   AutobiographicalRepository,
   GoalsRepository,
@@ -19,8 +19,8 @@ import {
   valueIdSchema,
 } from "../self/index.js";
 import { CommitmentRepository, commitmentIdSchema } from "../commitments/index.js";
-import type { SemanticNodeRepository } from "./repository.js";
-import { semanticNodeIdSchema } from "./types.js";
+import type { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
+import { semanticEdgeIdSchema, semanticNodeIdSchema, type SemanticEdge } from "./types.js";
 
 export const REVIEW_KINDS = [
   "contradiction",
@@ -83,12 +83,14 @@ export type ReviewQueueRepositoryOptions = {
   clock?: Clock;
   episodicRepository?: EpisodicRepository;
   semanticNodeRepository?: SemanticNodeRepository;
+  semanticEdgeRepository?: SemanticEdgeRepository;
   valuesRepository?: ValuesRepository;
   goalsRepository?: GoalsRepository;
   traitsRepository?: TraitsRepository;
   autobiographicalRepository?: AutobiographicalRepository;
   commitmentRepository?: CommitmentRepository;
   identityService?: IdentityService;
+  identityEventRepository?: IdentityEventRepository;
   applyCorrection?: (item: ReviewQueueItem) => Promise<void> | void;
   onEnqueue?: (item: ReviewQueueItem, input: ReviewQueueInsertInput) => void;
   onEnqueueError?: (error: unknown, item: ReviewQueueItem, input: ReviewQueueInsertInput) => void;
@@ -156,7 +158,29 @@ const temporalDriftRefsSchema = z.discriminatedUnion("target_type", [
     patch_description: z.string().min(1).optional(),
     proposed_provenance: provenanceSchema.optional(),
   }),
+  z.object({
+    target_type: z.literal("semantic_edge"),
+    target_kind: z.literal("semantic_edge").optional(),
+    target_id: semanticEdgeIdSchema,
+    suggested_valid_to: z.number().finite().optional(),
+    by_edge_id: semanticEdgeIdSchema.optional(),
+    reason: z.string().min(1).optional(),
+    proposed_provenance: provenanceSchema.optional(),
+  }),
 ]);
+
+const semanticEdgeReviewClosureRefsSchema = z
+  .object({
+    target_type: z.literal("semantic_edge").optional(),
+    target_kind: z.literal("semantic_edge").optional(),
+    target_id: semanticEdgeIdSchema.optional(),
+    loser_edge_id: semanticEdgeIdSchema.optional(),
+    suggested_valid_to: z.number().finite().optional(),
+    by_edge_id: semanticEdgeIdSchema.optional(),
+    winner_edge_id: semanticEdgeIdSchema.optional(),
+    reason: z.string().min(1).optional(),
+  })
+  .passthrough();
 
 const identityInconsistencyTargetTypeSchema = z.enum([
   "trait",
@@ -184,6 +208,12 @@ const reviewApplyingStateSchema = z
   .strict();
 
 type ReviewApplyingState = z.infer<typeof reviewApplyingStateSchema>;
+type SemanticEdgeClosureRefs = {
+  edgeId: SemanticEdge["id"];
+  validTo: number;
+  byEdgeId?: SemanticEdge["id"];
+  reason: string;
+};
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -388,6 +418,127 @@ export class ReviewQueueRepository {
     return next;
   }
 
+  private parseSemanticEdgeClosureRefs(item: ReviewQueueItem): SemanticEdgeClosureRefs | null {
+    const parsed = semanticEdgeReviewClosureRefsSchema.safeParse(item.refs);
+
+    if (!parsed.success) {
+      return null;
+    }
+
+    const refs = parsed.data;
+    const describesSemanticEdge =
+      refs.loser_edge_id !== undefined ||
+      refs.target_type === "semantic_edge" ||
+      refs.target_kind === "semantic_edge";
+
+    if (!describesSemanticEdge) {
+      return null;
+    }
+
+    const edgeId = refs.loser_edge_id ?? refs.target_id;
+
+    if (edgeId === undefined) {
+      throw new SemanticError("semantic edge review row is missing target edge id", {
+        code: "REVIEW_QUEUE_EDGE_TARGET_REQUIRED",
+        cause: { itemId: item.id, kind: item.kind },
+      });
+    }
+
+    return {
+      edgeId,
+      validTo: refs.suggested_valid_to ?? this.clock.now(),
+      byEdgeId: refs.by_edge_id ?? refs.winner_edge_id,
+      reason: refs.reason ?? item.reason,
+    };
+  }
+
+  private recordSemanticEdgeInvalidationAudit(input: {
+    item: ReviewQueueItem;
+    previous: SemanticEdge;
+    next: SemanticEdge;
+  }): void {
+    const identityEventRepository = this.options.identityEventRepository;
+
+    if (identityEventRepository === undefined) {
+      return;
+    }
+
+    const existing = identityEventRepository.findByReviewKey({
+      reviewItemId: input.item.id,
+      recordType: "semantic_edge",
+      recordId: input.next.id,
+      action: "edge_invalidate",
+    });
+
+    if (existing !== null) {
+      return;
+    }
+
+    const auditShape = {
+      edge_id: input.next.id,
+      prior_valid_to: input.previous.valid_to,
+      new_valid_to: input.next.valid_to,
+      by_process: input.next.invalidated_by_process,
+      by_review_id: input.next.invalidated_by_review_id,
+      reason: input.next.invalidated_reason,
+      by_edge_id: input.next.invalidated_by_edge_id,
+    } satisfies JsonValue;
+
+    identityEventRepository.record({
+      record_type: "semantic_edge",
+      record_id: input.next.id,
+      action: "edge_invalidate",
+      old_value: {
+        edge_id: input.previous.id,
+        prior_valid_to: input.previous.valid_to,
+      },
+      new_value: auditShape,
+      reason: input.next.invalidated_reason,
+      provenance: {
+        kind: "manual",
+      },
+      review_item_id: input.item.id,
+    });
+  }
+
+  private closeSemanticEdgeFromReview(item: ReviewQueueItem, refs: SemanticEdgeClosureRefs): void {
+    if (this.options.semanticEdgeRepository === undefined) {
+      throw new SemanticError("Semantic edge repository is required for edge review repair", {
+        code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
+      });
+    }
+
+    const current = this.options.semanticEdgeRepository.getEdge(refs.edgeId);
+
+    if (current === null) {
+      throw new SemanticError(`Unknown semantic edge id for review repair: ${refs.edgeId}`, {
+        code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
+      });
+    }
+
+    const invalidated = this.options.semanticEdgeRepository.invalidateEdge(refs.edgeId, {
+      at: refs.validTo,
+      by_edge_id: refs.byEdgeId,
+      by_process: "review",
+      by_review_id: item.id,
+      reason: refs.reason,
+    });
+
+    if (invalidated === null) {
+      throw new SemanticError(`Unknown semantic edge id for review repair: ${refs.edgeId}`, {
+        code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
+      });
+    }
+
+    if (current.valid_to === null) {
+      this.recordSemanticEdgeInvalidationAudit({
+        item,
+        previous: current,
+        next: invalidated,
+      });
+    }
+  }
+
   private targetLooksCrossStore(targetId: unknown): boolean {
     return (
       typeof targetId === "string" && (targetId.startsWith("ep_") || targetId.startsWith("semn_"))
@@ -407,7 +558,10 @@ export class ReviewQueueRepository {
     }
 
     if (item.kind === "contradiction" || item.kind === "duplicate") {
-      return resolution.decision === "supersede" || resolution.decision === "invalidate";
+      return (
+        (resolution.decision === "supersede" || resolution.decision === "invalidate") &&
+        this.parseSemanticEdgeClosureRefs(item) === null
+      );
     }
 
     if (item.kind === "new_insight") {
@@ -419,7 +573,10 @@ export class ReviewQueueRepository {
     }
 
     if (item.kind === "misattribution" || item.kind === "temporal_drift") {
-      return resolution.decision === "accept";
+      return (
+        resolution.decision === "accept" &&
+        (item.kind !== "temporal_drift" || this.parseSemanticEdgeClosureRefs(item) === null)
+      );
     }
 
     return false;
@@ -644,10 +801,18 @@ export class ReviewQueueRepository {
     item: ReviewQueueItem,
     decision: ResolvedReviewDecision,
   ): Promise<void> {
-    if (
-      this.options.semanticNodeRepository === undefined ||
-      (decision.decision !== "supersede" && decision.decision !== "invalidate")
-    ) {
+    if (decision.decision !== "supersede" && decision.decision !== "invalidate") {
+      return;
+    }
+
+    const edgeClosureRefs = this.parseSemanticEdgeClosureRefs(item);
+
+    if (edgeClosureRefs !== null) {
+      this.closeSemanticEdgeFromReview(item, edgeClosureRefs);
+      return;
+    }
+
+    if (this.options.semanticNodeRepository === undefined) {
       return;
     }
 
@@ -859,6 +1024,16 @@ export class ReviewQueueRepository {
 
     const refs = parsed.data;
 
+    if (refs.target_type === "semantic_edge") {
+      this.closeSemanticEdgeFromReview(item, {
+        edgeId: refs.target_id,
+        validTo: refs.suggested_valid_to ?? this.clock.now(),
+        byEdgeId: refs.by_edge_id,
+        reason: refs.reason ?? item.reason,
+      });
+      return;
+    }
+
     if (refs.target_type === "episode") {
       if (this.options.episodicRepository === undefined) {
         throw new SemanticError("Episode repository is required for temporal drift repair", {
@@ -927,6 +1102,13 @@ export class ReviewQueueRepository {
     decision: ResolvedReviewDecision,
   ): Promise<void> {
     if (decision.decision !== "accept") {
+      return;
+    }
+
+    const edgeClosureRefs = this.parseSemanticEdgeClosureRefs(item);
+
+    if (edgeClosureRefs !== null) {
+      this.closeSemanticEdgeFromReview(item, edgeClosureRefs);
       return;
     }
 

@@ -5,6 +5,7 @@ import { provenanceSchema } from "../common/provenance.js";
 export const IDENTITY_RECORD_TYPES = [
   "episode",
   "semantic_node",
+  "semantic_edge",
   "value",
   "goal",
   "trait",

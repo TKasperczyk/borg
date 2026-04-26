@@ -8,6 +8,7 @@ import { writeLine } from "../helpers/formatters.js";
 import { resolveSemanticNodeId } from "../helpers/id-resolvers.js";
 import {
   parseIdList,
+  parseOptionalAsOf,
   parseLimit,
   parsePositiveInteger,
   parseRequiredText,
@@ -30,6 +31,10 @@ export function registerSemanticCommands(cli: CAC, deps: CliCommandDeps): void {
     .option("--from <id>", "From node id")
     .option("--to <id>", "To node id")
     .option("--relation <relation>", "Semantic relation")
+    .option("--as-of <timestamp>", "Semantic edge validity time (ISO timestamp or epoch ms)")
+    .option("--at <timestamp>", "Semantic edge invalidation time (ISO timestamp or epoch ms)")
+    .option("--include-invalid", "Include invalid semantic edges")
+    .option("--reason <text>", "Semantic edge invalidation reason")
     .option("--confidence <confidence>", "Confidence", {
       type: [Number],
     })
@@ -149,9 +154,25 @@ export function registerSemanticCommands(cli: CAC, deps: CliCommandDeps): void {
                   commandOptions.relation === undefined
                     ? undefined
                     : parseSemanticRelation(commandOptions.relation),
+                asOf: parseOptionalAsOf(commandOptions.asOf ?? commandOptions["as-of"]),
+                includeInvalid:
+                  commandOptions.includeInvalid === true ||
+                  commandOptions["include-invalid"] === true,
               }),
             );
             writeLine(stdout, JSON.stringify(edges, null, 2));
+            return;
+          }
+
+          if (action === "invalidate") {
+            const edge = await withBorg(options, async (borg) =>
+              borg.correction.invalidateSemanticEdge(parseRequiredText(arg, "<edge-id>"), {
+                at: parseOptionalAsOf(commandOptions.at, "--at"),
+                reason:
+                  typeof commandOptions.reason === "string" ? commandOptions.reason : undefined,
+              }),
+            );
+            writeLine(stdout, JSON.stringify(edge, null, 2));
             return;
           }
         }
@@ -160,6 +181,7 @@ export function registerSemanticCommands(cli: CAC, deps: CliCommandDeps): void {
           const walked = await withBorg(options, async (borg) =>
             borg.semantic.walk(resolveSemanticNodeId(action), {
               depth: parsePositiveInteger(commandOptions.depth, "--depth"),
+              asOf: parseOptionalAsOf(commandOptions.asOf ?? commandOptions["as-of"]),
             }),
           );
           writeLine(stdout, JSON.stringify(walked, null, 2));

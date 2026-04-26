@@ -345,6 +345,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     correction: {
       forget: (...args) => deps.correctionService.forget(...args),
       why: (...args) => deps.correctionService.why(...args),
+      invalidateSemanticEdge: (...args) => deps.correctionService.invalidateSemanticEdge(...args),
       correct: (...args) => deps.correctionService.correct(...args),
       rememberAboutMe: (...args) => deps.correctionService.rememberAboutMe(...args),
       listIdentityEvents: (...args) => deps.correctionService.listIdentityEvents(...args),

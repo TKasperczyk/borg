@@ -5,21 +5,20 @@ import {
   parseEpisodeId,
   parseGoalId,
   parseOpenQuestionId,
+  parseSemanticEdgeId,
   parseSemanticNodeId,
   parseTraitId,
   parseValueId,
   type EntityId,
 } from "../util/ids.js";
+import { SystemClock, type Clock } from "../util/clock.js";
 import type { Config } from "../config/index.js";
 import {
   parseReviewProvenance,
   provenanceSchema,
   type Provenance,
 } from "../memory/common/provenance.js";
-import {
-  type EpisodePatch,
-  type EpisodicRepository,
-} from "../memory/episodic/index.js";
+import { type EpisodePatch, type EpisodicRepository } from "../memory/episodic/index.js";
 import {
   type IdentityEventRepository,
   type IdentityRecordType,
@@ -35,6 +34,7 @@ import {
   type ReviewQueueItem,
   type ReviewQueueRepository,
   semanticNodePatchSchema,
+  type SemanticEdge,
   type SemanticEdgeRepository,
   type SemanticGraph,
   type SemanticNodeRepository,
@@ -48,10 +48,7 @@ import {
   ValuesRepository,
 } from "../memory/self/index.js";
 import { episodePatchSchema } from "../memory/episodic/types.js";
-import {
-  openQuestionPatchSchema,
-  type OpenQuestionPatch,
-} from "../memory/self/open-questions.js";
+import { openQuestionPatchSchema, type OpenQuestionPatch } from "../memory/self/open-questions.js";
 
 const MANUAL_PROVENANCE = {
   kind: "manual" as const,
@@ -60,6 +57,7 @@ const MANUAL_PROVENANCE = {
 type CorrectionTargetType =
   | "episode"
   | "semantic_node"
+  | "semantic_edge"
   | "value"
   | "goal"
   | "trait"
@@ -69,6 +67,7 @@ type CorrectionTargetType =
 type ParsedCorrectionTarget =
   | { type: "episode"; id: ReturnType<typeof parseEpisodeId> }
   | { type: "semantic_node"; id: ReturnType<typeof parseSemanticNodeId> }
+  | { type: "semantic_edge"; id: ReturnType<typeof parseSemanticEdgeId> }
   | { type: "value"; id: ReturnType<typeof parseValueId> }
   | { type: "goal"; id: ReturnType<typeof parseGoalId> }
   | { type: "trait"; id: ReturnType<typeof parseTraitId> }
@@ -85,6 +84,9 @@ function parseTarget(id: string): ParsedCorrectionTarget {
   }
   if (id.startsWith("semn_")) {
     return { type: "semantic_node", id: parseSemanticNodeId(id) };
+  }
+  if (id.startsWith("seme_")) {
+    return { type: "semantic_edge", id: parseSemanticEdgeId(id) };
   }
   if (id.startsWith("val_")) {
     return { type: "value", id: parseValueId(id) };
@@ -238,6 +240,7 @@ function reviewPromptSummary(
 
 export type CorrectionServiceOptions = {
   config: Config;
+  clock?: Clock;
   retrievalPipeline: RetrievalPipeline;
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
@@ -256,11 +259,13 @@ export type CorrectionServiceOptions = {
 };
 
 export class CorrectionService {
-  constructor(private readonly options: CorrectionServiceOptions) {}
+  private readonly clock: Clock;
 
-  private async resolveTargetMetadata(
-    target: ParsedCorrectionTarget,
-  ): Promise<{
+  constructor(private readonly options: CorrectionServiceOptions) {
+    this.clock = options.clock ?? new SystemClock();
+  }
+
+  private async resolveTargetMetadata(target: ParsedCorrectionTarget): Promise<{
     targetLabel: string;
     audienceEntityId: EntityId | null;
   }> {
@@ -290,6 +295,20 @@ export class CorrectionService {
 
         return {
           targetLabel: node.label,
+          audienceEntityId: null,
+        };
+      }
+      case "semantic_edge": {
+        const edge = this.options.semanticEdgeRepository.getEdge(target.id);
+
+        if (edge === null) {
+          throw new StorageError(`Unknown semantic edge id: ${target.id}`, {
+            code: "SEMANTIC_EDGE_NOT_FOUND",
+          });
+        }
+
+        return {
+          targetLabel: `${edge.relation} ${edge.from_node_id} -> ${edge.to_node_id}`,
           audienceEntityId: null,
         };
       }
@@ -429,6 +448,14 @@ export class CorrectionService {
           provenance: MANUAL_PROVENANCE,
         });
         break;
+      }
+      case "semantic_edge": {
+        throw new StorageError(
+          `Semantic edges are revoked with semantic edge invalidate: ${target.id}`,
+          {
+            code: "SEMANTIC_EDGE_FORGET_UNSUPPORTED",
+          },
+        );
       }
       case "value": {
         const current = this.options.valuesRepository.get(target.id);
@@ -583,6 +610,22 @@ export class CorrectionService {
           }),
         };
       }
+      case "semantic_edge": {
+        const edge = this.options.semanticEdgeRepository.getEdge(target.id);
+
+        if (edge === null) {
+          throw new StorageError(`Unknown semantic edge id: ${target.id}`, {
+            code: "SEMANTIC_EDGE_NOT_FOUND",
+          });
+        }
+
+        return {
+          target_type: "semantic_edge",
+          record: edge,
+          from_node: await this.options.semanticNodeRepository.get(edge.from_node_id),
+          to_node: await this.options.semanticNodeRepository.get(edge.to_node_id),
+        };
+      }
       case "value": {
         const record = this.options.valuesRepository.get(target.id);
 
@@ -678,6 +721,79 @@ export class CorrectionService {
     }
   }
 
+  invalidateSemanticEdge(
+    id: string,
+    options: {
+      at?: number;
+      reason?: string;
+    } = {},
+  ): SemanticEdge {
+    const target = parseTarget(id);
+
+    if (target.type !== "semantic_edge") {
+      throw new StorageError(`Expected semantic edge id: ${id}`, {
+        code: "SEMANTIC_EDGE_ID_REQUIRED",
+      });
+    }
+
+    const current = this.options.semanticEdgeRepository.getEdge(target.id);
+
+    if (current === null) {
+      throw new StorageError(`Unknown semantic edge id: ${target.id}`, {
+        code: "SEMANTIC_EDGE_NOT_FOUND",
+      });
+    }
+
+    const at = options.at ?? this.clock.now();
+
+    if (!Number.isFinite(at)) {
+      throw new StorageError("Semantic edge invalidation time must be finite", {
+        code: "SEMANTIC_EDGE_INVALIDATION_TIME_INVALID",
+      });
+    }
+
+    const reason =
+      typeof options.reason === "string" && options.reason.trim().length > 0
+        ? options.reason.trim()
+        : undefined;
+    const next = this.options.semanticEdgeRepository.invalidateEdge(target.id, {
+      at,
+      by_process: "manual",
+      reason,
+    });
+
+    if (next === null) {
+      throw new StorageError(`Unknown semantic edge id: ${target.id}`, {
+        code: "SEMANTIC_EDGE_NOT_FOUND",
+      });
+    }
+
+    if (current.valid_to === null) {
+      this.options.identityEventRepository.record({
+        record_type: "semantic_edge",
+        record_id: target.id,
+        action: "edge_invalidate",
+        old_value: toIdentityJsonValue({
+          edge_id: current.id,
+          prior_valid_to: current.valid_to,
+        }),
+        new_value: toIdentityJsonValue({
+          edge_id: next.id,
+          prior_valid_to: current.valid_to,
+          new_valid_to: next.valid_to,
+          by_process: next.invalidated_by_process,
+          by_review_id: next.invalidated_by_review_id,
+          reason: next.invalidated_reason,
+          by_edge_id: next.invalidated_by_edge_id,
+        }),
+        reason: next.invalidated_reason,
+        provenance: MANUAL_PROVENANCE,
+      });
+    }
+
+    return next;
+  }
+
   async correct(
     id: string,
     patch: Record<string, unknown>,
@@ -690,6 +806,16 @@ export class CorrectionService {
     }
 
     const target = parseTarget(id);
+
+    if (target.type === "semantic_edge") {
+      throw new StorageError(
+        `Semantic edge corrections are applied with semantic edge invalidate: ${id}`,
+        {
+          code: "SEMANTIC_EDGE_CORRECTION_UNSUPPORTED",
+        },
+      );
+    }
+
     const metadata = await this.resolveTargetMetadata(target);
     const createdAtIso = new Date().toISOString();
 
@@ -871,12 +997,25 @@ export class CorrectionService {
         }
         return;
       }
+      case "semantic_edge": {
+        throw new StorageError(
+          `Semantic edge corrections are applied with semantic edge invalidate: ${target.id}`,
+          {
+            code: "SEMANTIC_EDGE_CORRECTION_UNSUPPORTED",
+          },
+        );
+      }
       case "value": {
-        const result = this.options.identityService.updateValue(target.id, patch, proposedProvenance, {
-          throughReview: true,
-          reason: item.reason,
-          reviewItemId: item.id,
-        });
+        const result = this.options.identityService.updateValue(
+          target.id,
+          patch,
+          proposedProvenance,
+          {
+            throughReview: true,
+            reason: item.reason,
+            reviewItemId: item.id,
+          },
+        );
 
         if (result.status !== "applied") {
           throw new StorageError(`Correction for value ${target.id} still requires review`, {
@@ -902,11 +1041,16 @@ export class CorrectionService {
         return;
       }
       case "trait": {
-        const result = this.options.identityService.updateTrait(target.id, patch, proposedProvenance, {
-          throughReview: true,
-          reason: item.reason,
-          reviewItemId: item.id,
-        });
+        const result = this.options.identityService.updateTrait(
+          target.id,
+          patch,
+          proposedProvenance,
+          {
+            throughReview: true,
+            reason: item.reason,
+            reviewItemId: item.id,
+          },
+        );
 
         if (result.status !== "applied") {
           throw new StorageError(`Correction for trait ${target.id} still requires review`, {
@@ -949,9 +1093,12 @@ export class CorrectionService {
         );
 
         if (next.status !== "applied") {
-          throw new StorageError(`Correction for open question ${target.id} still requires review`, {
-            code: "IDENTITY_REVIEW_REQUIRED",
-          });
+          throw new StorageError(
+            `Correction for open question ${target.id} still requires review`,
+            {
+              code: "IDENTITY_REVIEW_REQUIRED",
+            },
+          );
         }
       }
     }

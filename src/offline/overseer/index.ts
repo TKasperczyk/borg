@@ -9,7 +9,9 @@ import {
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
   reviewKindSchema,
+  semanticEdgeIdSchema,
   semanticNodeIdSchema,
+  type SemanticEdge,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
 import { BudgetExceededError } from "../../util/errors.js";
@@ -44,6 +46,8 @@ const reviewFlagSchema = z.object({
   repair_target_id: z.string().min(1).optional(),
   repair_op: z.enum(["reinforce", "contradict", "patch"]).optional(),
   evidence_episode_ids: z.array(z.string().min(1)).optional(),
+  suggested_valid_to: z.number().finite().optional(),
+  by_edge_id: semanticEdgeIdSchema.optional(),
 });
 
 const overseerResponseSchema = z.object({
@@ -67,6 +71,10 @@ const overseerTargetSchema = z.discriminatedUnion("target_type", [
     target_type: z.literal("semantic_node"),
     target_id: semanticNodeIdSchema,
   }),
+  z.object({
+    target_type: z.literal("semantic_edge"),
+    target_id: semanticEdgeIdSchema,
+  }),
 ]);
 
 const overseerPlanItemBaseSchema = z.object({
@@ -83,6 +91,8 @@ const overseerPlanItemBaseSchema = z.object({
   repair_target_id: z.string().min(1).optional(),
   repair_op: z.enum(["reinforce", "contradict", "patch"]).optional(),
   evidence_episode_ids: z.array(z.string().min(1)).optional(),
+  suggested_valid_to: z.number().finite().optional(),
+  by_edge_id: semanticEdgeIdSchema.optional(),
 });
 
 const overseerPlanItemSchema = z
@@ -94,6 +104,10 @@ const overseerPlanItemSchema = z
     z.object({
       target_type: z.literal("semantic_node"),
       target_id: semanticNodeIdSchema,
+    }),
+    z.object({
+      target_type: z.literal("semantic_edge"),
+      target_id: semanticEdgeIdSchema,
     }),
   ])
   .and(overseerPlanItemBaseSchema);
@@ -128,6 +142,12 @@ type OverseerTarget =
       id: SemanticNode["id"];
       created_at: number;
       content: SemanticNode;
+    }
+  | {
+      type: "semantic_edge";
+      id: SemanticEdge["id"];
+      created_at: number;
+      content: SemanticEdge;
     };
 
 type OverseerReversal = {
@@ -196,26 +216,48 @@ function buildPrompt(target: OverseerTarget, ctx: OfflineContext): string {
             emotional_arc: target.content.emotional_arc,
           },
         }
-      : {
-          type: target.type,
-          content: {
-            id: target.content.id,
-            kind: target.content.kind,
-            label: target.content.label,
-            description: target.content.description,
-            aliases: target.content.aliases,
-            confidence: target.content.confidence,
-            source_episode_ids: target.content.source_episode_ids,
-            archived: target.content.archived,
-            superseded_by: target.content.superseded_by,
-          },
-        };
+      : target.type === "semantic_node"
+        ? {
+            type: target.type,
+            content: {
+              id: target.content.id,
+              kind: target.content.kind,
+              label: target.content.label,
+              description: target.content.description,
+              aliases: target.content.aliases,
+              confidence: target.content.confidence,
+              source_episode_ids: target.content.source_episode_ids,
+              archived: target.content.archived,
+              superseded_by: target.content.superseded_by,
+            },
+          }
+        : {
+            type: target.type,
+            content: {
+              id: target.content.id,
+              from_node_id: target.content.from_node_id,
+              to_node_id: target.content.to_node_id,
+              relation: target.content.relation,
+              confidence: target.content.confidence,
+              evidence_episode_ids: target.content.evidence_episode_ids,
+              created_at: target.content.created_at,
+              last_verified_at: target.content.last_verified_at,
+              valid_from: target.content.valid_from,
+              valid_to: target.content.valid_to,
+              invalidated_at: target.content.invalidated_at,
+              invalidated_by_edge_id: target.content.invalidated_by_edge_id,
+              invalidated_by_review_id: target.content.invalidated_by_review_id,
+              invalidated_by_process: target.content.invalidated_by_process,
+              invalidated_reason: target.content.invalidated_reason,
+            },
+          };
 
   return [
     "Check the memory item for misattribution, temporal drift, and identity inconsistency.",
     "If you flag an issue, include the concrete repair payload needed to fix it.",
     "For misattribution, provide patch fields that directly correct the target memory.",
     "For temporal drift, provide corrected timestamps and/or a replacement description.",
+    "For semantic_edge temporal drift or identity inconsistency, provide suggested_valid_to and optional by_edge_id; only flag edges that should be reviewed for closure.",
     "For identity inconsistency, target a specific value, goal, trait, commitment, or autobiographical period by id and propose reinforce, contradict, or patch.",
     `Emit your result by calling the ${OVERSEER_TOOL_NAME} tool exactly once.`,
     summarizeSelfState(ctx),
@@ -232,6 +274,7 @@ async function collectTargets(ctx: OfflineContext): Promise<OverseerTarget[]> {
       limit: 200,
     }),
   ]);
+  const edges = ctx.semanticEdgeRepository.listEdges();
 
   return [
     ...episodes.map(
@@ -250,6 +293,15 @@ async function collectTargets(ctx: OfflineContext): Promise<OverseerTarget[]> {
           id: node.id,
           created_at: node.created_at,
           content: node,
+        }) satisfies OverseerTarget,
+    ),
+    ...edges.map(
+      (edge) =>
+        ({
+          type: "semantic_edge",
+          id: edge.id,
+          created_at: edge.created_at,
+          content: edge,
         }) satisfies OverseerTarget,
     ),
   ];
@@ -278,6 +330,10 @@ function buildChange(item: OverseerPlan["items"][number]): OfflineChange {
       ...(item.patch_description === undefined
         ? {}
         : { patch_description: item.patch_description }),
+      ...(item.suggested_valid_to === undefined
+        ? {}
+        : { suggested_valid_to: item.suggested_valid_to }),
+      ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
       ...(item.repair_target_type === undefined
         ? {}
         : {
@@ -344,61 +400,57 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
             ).flags.filter((flag) => flag.confidence >= 0.5);
 
             for (const flag of flags) {
+              if (target.type === "semantic_edge" && flag.kind === "misattribution") {
+                continue;
+              }
+
+              const baseItem = {
+                kind: flag.kind,
+                reason: flag.reason,
+                confidence: flag.confidence,
+                ...(flag.patch === undefined ? {} : { patch: flag.patch }),
+                ...(flag.corrected_start_time === undefined
+                  ? {}
+                  : { corrected_start_time: flag.corrected_start_time }),
+                ...(flag.corrected_end_time === undefined
+                  ? {}
+                  : { corrected_end_time: flag.corrected_end_time }),
+                ...(flag.patch_description === undefined
+                  ? {}
+                  : { patch_description: flag.patch_description }),
+                ...(flag.suggested_valid_to === undefined
+                  ? {}
+                  : { suggested_valid_to: flag.suggested_valid_to }),
+                ...(flag.by_edge_id === undefined ? {} : { by_edge_id: flag.by_edge_id }),
+                ...(flag.repair_target_type === undefined
+                  ? {}
+                  : {
+                      repair_target_type: flag.repair_target_type,
+                      repair_target_id: flag.repair_target_id,
+                      repair_op: flag.repair_op,
+                    }),
+                ...(flag.evidence_episode_ids === undefined
+                  ? {}
+                  : { evidence_episode_ids: flag.evidence_episode_ids }),
+              };
+
               if (target.type === "episode") {
                 items.push({
                   target_type: "episode",
                   target_id: target.id,
-                  kind: flag.kind,
-                  reason: flag.reason,
-                  confidence: flag.confidence,
-                  ...(flag.patch === undefined ? {} : { patch: flag.patch }),
-                  ...(flag.corrected_start_time === undefined
-                    ? {}
-                    : { corrected_start_time: flag.corrected_start_time }),
-                  ...(flag.corrected_end_time === undefined
-                    ? {}
-                    : { corrected_end_time: flag.corrected_end_time }),
-                  ...(flag.patch_description === undefined
-                    ? {}
-                    : { patch_description: flag.patch_description }),
-                  ...(flag.repair_target_type === undefined
-                    ? {}
-                    : {
-                        repair_target_type: flag.repair_target_type,
-                        repair_target_id: flag.repair_target_id,
-                        repair_op: flag.repair_op,
-                      }),
-                  ...(flag.evidence_episode_ids === undefined
-                    ? {}
-                    : { evidence_episode_ids: flag.evidence_episode_ids }),
+                  ...baseItem,
                 });
-              } else {
+              } else if (target.type === "semantic_node") {
                 items.push({
                   target_type: "semantic_node",
                   target_id: target.id,
-                  kind: flag.kind,
-                  reason: flag.reason,
-                  confidence: flag.confidence,
-                  ...(flag.patch === undefined ? {} : { patch: flag.patch }),
-                  ...(flag.corrected_start_time === undefined
-                    ? {}
-                    : { corrected_start_time: flag.corrected_start_time }),
-                  ...(flag.corrected_end_time === undefined
-                    ? {}
-                    : { corrected_end_time: flag.corrected_end_time }),
-                  ...(flag.patch_description === undefined
-                    ? {}
-                    : { patch_description: flag.patch_description }),
-                  ...(flag.repair_target_type === undefined
-                    ? {}
-                    : {
-                        repair_target_type: flag.repair_target_type,
-                        repair_target_id: flag.repair_target_id,
-                        repair_op: flag.repair_op,
-                      }),
-                  ...(flag.evidence_episode_ids === undefined
-                    ? {}
-                    : { evidence_episode_ids: flag.evidence_episode_ids }),
+                  ...baseItem,
+                });
+              } else {
+                items.push({
+                  target_type: "semantic_edge",
+                  target_id: target.id,
+                  ...baseItem,
                 });
               }
             }
@@ -460,18 +512,32 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
     for (const item of plan.items) {
       const refs =
         item.kind === "identity_inconsistency"
-          ? {
-              target_type: item.repair_target_type ?? item.target_type,
-              target_id: item.repair_target_id ?? item.target_id,
-              repair_op: item.repair_op ?? "patch",
-              ...(item.patch === undefined ? {} : { patch: item.patch }),
-              ...(item.evidence_episode_ids === undefined
-                ? {}
-                : { evidence_episode_ids: item.evidence_episode_ids }),
-              proposed_provenance: proposedProvenance,
-              source_target_type: item.target_type,
-              source_target_id: item.target_id,
-            }
+          ? item.target_type === "semantic_edge"
+            ? {
+                target_type: "semantic_edge",
+                target_kind: "semantic_edge",
+                target_id: item.target_id,
+                ...(item.suggested_valid_to === undefined
+                  ? {}
+                  : { suggested_valid_to: item.suggested_valid_to }),
+                ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
+                reason: item.reason,
+                proposed_provenance: proposedProvenance,
+                source_target_type: item.target_type,
+                source_target_id: item.target_id,
+              }
+            : {
+                target_type: item.repair_target_type ?? item.target_type,
+                target_id: item.repair_target_id ?? item.target_id,
+                repair_op: item.repair_op ?? "patch",
+                ...(item.patch === undefined ? {} : { patch: item.patch }),
+                ...(item.evidence_episode_ids === undefined
+                  ? {}
+                  : { evidence_episode_ids: item.evidence_episode_ids }),
+                proposed_provenance: proposedProvenance,
+                source_target_type: item.target_type,
+                source_target_id: item.target_id,
+              }
           : item.kind === "misattribution"
             ? {
                 target_type: item.target_type,
@@ -492,6 +558,16 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   ...(item.patch_description === undefined
                     ? {}
                     : { patch_description: item.patch_description }),
+                  ...(item.target_type === "semantic_edge"
+                    ? {
+                        target_kind: "semantic_edge",
+                        reason: item.reason,
+                      }
+                    : {}),
+                  ...(item.suggested_valid_to === undefined
+                    ? {}
+                    : { suggested_valid_to: item.suggested_valid_to }),
+                  ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
                   proposed_provenance: proposedProvenance,
                 }
               : {

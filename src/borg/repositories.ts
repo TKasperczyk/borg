@@ -237,12 +237,14 @@ export async function buildBorgRepositories(
     clock,
     episodicRepository,
     semanticNodeRepository,
+    semanticEdgeRepository,
     valuesRepository,
     goalsRepository,
     traitsRepository,
     autobiographicalRepository,
     commitmentRepository,
     identityService,
+    identityEventRepository,
     applyCorrection: (item) => {
       if (applyCorrectionReview === undefined) {
         throw new Error("Correction service not initialized");
@@ -283,6 +285,7 @@ export async function buildBorgRepositories(
   });
   const correctionService = new CorrectionService({
     config,
+    clock,
     retrievalPipeline,
     episodicRepository,
     semanticNodeRepository,

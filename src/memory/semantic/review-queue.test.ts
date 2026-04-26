@@ -144,6 +144,93 @@ describe("review queue", () => {
     expect(updatedSecond?.confidence).toBe(0);
   });
 
+  it("closes loser semantic edges on contradiction review invalidation", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(1_000),
+    });
+    cleanup.push(harness.cleanup);
+
+    const episodeId = createEpisodeFixture().id;
+    const first = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas is stable",
+          description: "Atlas is stable after the rollback.",
+          source_episode_ids: [episodeId],
+          confidence: 0.8,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const second = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Rollback completed",
+          description: "Rollback completed before the review.",
+          source_episode_ids: [episodeId],
+          confidence: 0.7,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const loserEdge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: first.id,
+      to_node_id: second.id,
+      relation: "supports",
+      confidence: 0.73,
+      evidence_episode_ids: [episodeId],
+      created_at: 1_000,
+      last_verified_at: 1_000,
+    });
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "contradiction",
+      refs: {
+        loser_edge_id: loserEdge.id,
+        suggested_valid_to: 1_200,
+        reason: "newer review evidence superseded the support edge",
+      },
+      reason: "support edge lost the contradiction review",
+    });
+
+    const resolved = await harness.reviewQueueRepository.resolve(item.id, "invalidate");
+    const closedEdge = harness.semanticEdgeRepository.getEdge(loserEdge.id);
+    const firstAfter = await harness.semanticNodeRepository.get(first.id);
+    const secondAfter = await harness.semanticNodeRepository.get(second.id);
+    const auditEvents = harness.identityEventRepository.list({
+      recordType: "semantic_edge",
+      recordId: loserEdge.id,
+    });
+
+    expect(resolved?.resolution).toBe("invalidate");
+    expect(closedEdge).toEqual(
+      expect.objectContaining({
+        id: loserEdge.id,
+        confidence: 0.73,
+        evidence_episode_ids: [episodeId],
+        valid_to: 1_200,
+        invalidated_by_process: "review",
+        invalidated_by_review_id: item.id,
+        invalidated_reason: "newer review evidence superseded the support edge",
+      }),
+    );
+    expect(firstAfter).toEqual(expect.objectContaining({ archived: false, confidence: 0.8 }));
+    expect(secondAfter).toEqual(expect.objectContaining({ archived: false, confidence: 0.7 }));
+    expect(auditEvents[0]).toEqual(
+      expect.objectContaining({
+        action: "edge_invalidate",
+        review_item_id: item.id,
+        new_value: expect.objectContaining({
+          edge_id: loserEdge.id,
+          prior_valid_to: null,
+          new_valid_to: 1_200,
+          by_process: "review",
+          by_review_id: item.id,
+          reason: "newer review evidence superseded the support edge",
+        }),
+      }),
+    );
+  });
+
   it("logs hook failures without aborting edge insertion", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({

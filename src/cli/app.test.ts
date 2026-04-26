@@ -73,7 +73,7 @@ function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
+        modeWhenLlmAbsent: "problem_solving",
       },
       embedding: {
         baseUrl: "http://localhost:1234/v1",
@@ -1519,9 +1519,9 @@ describe("cli", () => {
           atlasNode.id,
         ],
         {
-        stdout: resolveReviewOut.stream,
-        stderr: createOutputBuffer().stream,
-        ...cliOptions,
+          stdout: resolveReviewOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
         },
       ),
     ).toBe(0);
@@ -1554,6 +1554,212 @@ describe("cli", () => {
       }),
     ).toBe(0);
     expect(JSON.parse(listCommitmentsAfterOut.read())).toEqual([]);
+  });
+
+  it("parses semantic as-of flags for edge list and graph walk", async () => {
+    const tempDir = createCliTempDir(tempDirs);
+    const cliOptions = {
+      dataDir: tempDir,
+      openBorg: async () => openTestBorg(tempDir),
+    };
+    const borg = await openTestBorg(tempDir);
+    const atlas = await borg.semantic.nodes.add({
+      kind: "entity",
+      label: "Atlas CLI as-of",
+      description: "Atlas service",
+      sourceEpisodeIds: ["ep_aaaaaaaaaaaaaaaa" as never],
+    });
+    const rollback = await borg.semantic.nodes.add({
+      kind: "concept",
+      label: "Rollback CLI as-of",
+      description: "Rollback plan",
+      sourceEpisodeIds: ["ep_aaaaaaaaaaaaaaaa" as never],
+    });
+    const edge = borg.semantic.edges.add({
+      from_node_id: atlas.id,
+      to_node_id: rollback.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+      created_at: 1_000,
+      last_verified_at: 1_000,
+    });
+    const borgWithDeps = borg as unknown as {
+      deps: {
+        semanticEdgeRepository: {
+          invalidateEdge: (
+            id: typeof edge.id,
+            input: { at: number; by_process: "manual" },
+          ) => unknown;
+        };
+      };
+    };
+    borgWithDeps.deps.semanticEdgeRepository.invalidateEdge(edge.id, {
+      at: 1_500,
+      by_process: "manual",
+    });
+    await borg.close();
+
+    const currentOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "semantic",
+          "edge",
+          "list",
+          "--from",
+          atlas.id,
+          "--as-of",
+          "1970-01-01T00:00:01.600Z",
+        ],
+        {
+          stdout: currentOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(currentOut.read())).toEqual([]);
+
+    const includeInvalidOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "semantic",
+          "edge",
+          "list",
+          "--from",
+          atlas.id,
+          "--as-of",
+          "1600",
+          "--include-invalid",
+        ],
+        {
+          stdout: includeInvalidOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(includeInvalidOut.read())).toEqual([
+      expect.objectContaining({
+        id: edge.id,
+      }),
+    ]);
+
+    const walkOut = createOutputBuffer();
+    expect(
+      await runCli(
+        ["node", "borg", "semantic", "walk", atlas.id, "--depth", "1", "--as-of", "1250"],
+        {
+          stdout: walkOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(walkOut.read())).toEqual([
+      expect.objectContaining({
+        node: expect.objectContaining({
+          id: rollback.id,
+        }),
+      }),
+    ]);
+  });
+
+  it("invalidates semantic edges through the semantic CLI", async () => {
+    const tempDir = createCliTempDir(tempDirs);
+    const cliOptions = {
+      dataDir: tempDir,
+      openBorg: async () => openTestBorg(tempDir),
+    };
+    const borg = await openTestBorg(tempDir);
+    const atlas = await borg.semantic.nodes.add({
+      kind: "entity",
+      label: "Atlas CLI invalidate",
+      description: "Atlas service",
+      sourceEpisodeIds: ["ep_aaaaaaaaaaaaaaaa" as never],
+    });
+    const rollback = await borg.semantic.nodes.add({
+      kind: "concept",
+      label: "Rollback CLI invalidate",
+      description: "Rollback plan",
+      sourceEpisodeIds: ["ep_aaaaaaaaaaaaaaaa" as never],
+    });
+    const edge = borg.semantic.edges.add({
+      from_node_id: atlas.id,
+      to_node_id: rollback.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+      created_at: 800,
+      last_verified_at: 800,
+      valid_from: 800,
+    });
+    await borg.close();
+
+    const invalidateOut = createOutputBuffer();
+    expect(
+      await runCli(
+        [
+          "node",
+          "borg",
+          "semantic",
+          "edge",
+          "invalidate",
+          edge.id,
+          "--at",
+          "1970-01-01T00:00:00.900Z",
+          "--reason",
+          "manual CLI revoke",
+        ],
+        {
+          stdout: invalidateOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(invalidateOut.read())).toEqual(
+      expect.objectContaining({
+        id: edge.id,
+        valid_to: 900,
+        invalidated_by_process: "manual",
+        invalidated_reason: "manual CLI revoke",
+      }),
+    );
+
+    const defaultListOut = createOutputBuffer();
+    expect(
+      await runCli(["node", "borg", "semantic", "edge", "list", "--from", atlas.id], {
+        stdout: defaultListOut.stream,
+        stderr: createOutputBuffer().stream,
+        ...cliOptions,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(defaultListOut.read())).toEqual([]);
+
+    const includeInvalidOut = createOutputBuffer();
+    expect(
+      await runCli(
+        ["node", "borg", "semantic", "edge", "list", "--from", atlas.id, "--include-invalid"],
+        {
+          stdout: includeInvalidOut.stream,
+          stderr: createOutputBuffer().stream,
+          ...cliOptions,
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(includeInvalidOut.read())).toEqual([
+      expect.objectContaining({
+        id: edge.id,
+        valid_to: 900,
+      }),
+    ]);
   });
 
   it("manages skill, mood, and social commands", async () => {

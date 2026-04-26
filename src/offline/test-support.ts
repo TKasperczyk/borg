@@ -381,12 +381,14 @@ export async function createOfflineTestHarness(
     clock,
     episodicRepository,
     semanticNodeRepository,
+    semanticEdgeRepository,
     valuesRepository,
     goalsRepository,
     traitsRepository,
     autobiographicalRepository,
     commitmentRepository,
     identityService,
+    identityEventRepository,
     onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
     onEnqueueError: (error) => {
       const promise = appendOpenQuestionHookFailureEvent(
