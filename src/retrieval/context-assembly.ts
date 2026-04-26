@@ -20,9 +20,12 @@ export function assembleRetrievedContext(input: {
   contradictionPresent: boolean;
   expectedCount?: number;
 }): RetrievedContext {
+  const contradictionEdges = input.semantic.contradiction_hits.flatMap((hit) => hit.edgePath);
   const confidence = computeRetrievalConfidence({
     episodes: input.episodes,
     contradictionPresent: input.contradictionPresent,
+    contradictionEdges: contradictionEdges.length === 0 ? undefined : contradictionEdges,
+    asOf: input.semantic.as_of ?? undefined,
     expectedCount: input.expectedCount,
   });
 

@@ -8,6 +8,7 @@
 // from the semantic walk, so S1/S2 routing and uncertainty surfacing can key off it.
 
 import type { RetrievedEpisode } from "./scoring.js";
+import type { SemanticEdge } from "../memory/semantic/index.js";
 
 export type RetrievalConfidence = {
   overall: number;
@@ -21,6 +22,8 @@ export type RetrievalConfidence = {
 export type ComputeRetrievalConfidenceInput = {
   episodes: readonly RetrievedEpisode[];
   contradictionPresent: boolean;
+  contradictionEdges?: readonly Pick<SemanticEdge, "valid_from" | "valid_to">[];
+  asOf?: number;
   expectedCount?: number;
   topN?: number;
 };
@@ -37,12 +40,21 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+function isEdgeValidAt(edge: Pick<SemanticEdge, "valid_from" | "valid_to">, asOf: number): boolean {
+  return edge.valid_from <= asOf && (edge.valid_to === null || edge.valid_to > asOf);
+}
+
 export function computeRetrievalConfidence(
   input: ComputeRetrievalConfidenceInput,
 ): RetrievalConfidence {
   const topN = input.topN ?? DEFAULT_TOP_N;
   const expectedCount = input.expectedCount ?? DEFAULT_EXPECTED_COUNT;
   const episodes = input.episodes;
+  const contradictionPresent =
+    input.contradictionEdges === undefined
+      ? input.contradictionPresent
+      : input.contradictionPresent &&
+        input.contradictionEdges.some((edge) => isEdgeValidAt(edge, input.asOf ?? Date.now()));
 
   if (episodes.length === 0) {
     return {
@@ -50,7 +62,7 @@ export function computeRetrievalConfidence(
       evidenceStrength: 0,
       coverage: 0,
       sourceDiversity: 0,
-      contradictionPresent: input.contradictionPresent,
+      contradictionPresent,
       sampleSize: 0,
     };
   }
@@ -91,14 +103,14 @@ export function computeRetrievalConfidence(
   // Contradiction multiplicatively penalizes the final number further.
   const modulation = 0.7 + 0.2 * coverage + 0.1 * sourceDiversity;
   const rawOverall = evidenceStrength * modulation;
-  const contradictionFactor = input.contradictionPresent ? CONTRADICTION_PENALTY : 1;
+  const contradictionFactor = contradictionPresent ? CONTRADICTION_PENALTY : 1;
 
   return {
     overall: clamp01(rawOverall * contradictionFactor),
     evidenceStrength,
     coverage,
     sourceDiversity,
-    contradictionPresent: input.contradictionPresent,
+    contradictionPresent,
     sampleSize: episodes.length,
   };
 }

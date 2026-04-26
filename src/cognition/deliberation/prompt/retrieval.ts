@@ -107,17 +107,45 @@ function summarizeEpisodeIds(ids: readonly string[], limit = 3): string {
   return `${displayed.join(", ")}${suffix}`;
 }
 
+function formatIsoDate(timestamp: number): string {
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+function summarizeValidityTag(
+  edge: RetrievedSemantic["support_hits"][number]["edgePath"][number],
+): string {
+  if (edge.valid_to === null) {
+    return "";
+  }
+
+  const closedAt = edge.invalidated_at ?? edge.valid_to;
+
+  return ` [valid ${formatIsoDate(edge.valid_from)}..${formatIsoDate(edge.valid_to)}, closed ${formatIsoDate(closedAt)}]`;
+}
+
+function semanticHitHasClosedEdge(
+  hit: RetrievedSemantic["support_hits"][number],
+  asOf: number,
+): boolean {
+  return hit.edgePath.some((edge) => edge.valid_to !== null && edge.valid_to <= asOf);
+}
+
 function summarizeSemanticNode(node: SemanticNode): string {
   return `${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)})`;
 }
 
-function summarizeSemanticNodeWithSources(node: SemanticNode): string {
-  return `${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(node.source_episode_ids)})`;
+function summarizeSemanticNodeWithSources(
+  node: RetrievedSemantic["matched_nodes"][number],
+): string {
+  const label = `${node.label}${node.historical === true ? " [historical]" : ""}`;
+
+  return `${label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(node.source_episode_ids)})`;
 }
 
 function summarizeSemanticHit(
   hit: RetrievedSemantic["support_hits"][number],
   rootNodesById: ReadonlyMap<string, SemanticNode>,
+  options: { tagClosedEdges: boolean },
 ): string {
   const root = rootNodesById.get(hit.root_node_id);
   const rootLabel = root?.label ?? hit.root_node_id;
@@ -126,10 +154,11 @@ function summarizeSemanticHit(
 
   for (const [index, edge] of hit.edgePath.entries()) {
     const evidence = summarizeEpisodeIds(edge.evidence_episode_ids);
+    const validityTag = options.tagClosedEdges ? summarizeValidityTag(edge) : "";
     const relation =
       edge.from_node_id === currentNodeId
-        ? `-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}]->`
-        : `<-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}]-`;
+        ? `-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}]${validityTag}->`
+        : `<-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}]${validityTag}-`;
 
     pathParts.push(relation);
 
@@ -164,6 +193,7 @@ function summarizeSemanticHitBucket(
   label: string,
   hits: ReadonlyArray<RetrievedSemantic["support_hits"][number]>,
   rootNodesById: ReadonlyMap<string, SemanticNode>,
+  options: { tagClosedEdges: boolean },
   limit = 3,
 ): string[] {
   if (hits.length === 0) {
@@ -172,7 +202,7 @@ function summarizeSemanticHitBucket(
 
   return [
     `${label}:`,
-    ...hits.slice(0, limit).map((hit) => `- ${summarizeSemanticHit(hit, rootNodesById)}`),
+    ...hits.slice(0, limit).map((hit) => `- ${summarizeSemanticHit(hit, rootNodesById, options)}`),
   ];
 }
 
@@ -212,6 +242,17 @@ export function summarizeSemanticContext(
   const bucketLimit = maxContextTokens <= 2_000 ? 3 : maxContextTokens <= 8_000 ? 5 : 8;
   const maxChars = Math.max(480, Math.min(maxContextTokens * 6, 6_000));
   const rootNodesById = new Map(matchedNodes.map((node) => [node.id, node] as const));
+  const historicalMode = retrievedSemantic.as_of !== undefined && retrievedSemantic.as_of !== null;
+  const currentAsOf = Date.now();
+  const visibleSupportHits = historicalMode
+    ? supportHits
+    : supportHits.filter((hit) => !semanticHitHasClosedEdge(hit, currentAsOf));
+  const visibleContradictionHits = historicalMode
+    ? contradictionHits
+    : contradictionHits.filter((hit) => !semanticHitHasClosedEdge(hit, currentAsOf));
+  const visibleCategoryHits = historicalMode
+    ? categoryHits
+    : categoryHits.filter((hit) => !semanticHitHasClosedEdge(hit, currentAsOf));
   const initialLine = "Related semantic context:";
   const sections: string[] = [initialLine];
   let totalChars = initialLine.length;
@@ -229,17 +270,41 @@ export function summarizeSemanticContext(
   const bucketLines = [
     ...directMatchLines,
     ...(supportHits.length > 0
-      ? summarizeSemanticHitBucket("supports", supportHits, rootNodesById, bucketLimit)
+      ? summarizeSemanticHitBucket(
+          "supports",
+          visibleSupportHits,
+          rootNodesById,
+          {
+            tagClosedEdges: historicalMode,
+          },
+          bucketLimit,
+        )
       : [summarizeSemanticBucket("supports", supports, bucketLimit)].filter(
           (value): value is string => value !== null,
         )),
     ...(contradictionHits.length > 0
-      ? summarizeSemanticHitBucket("contradicts", contradictionHits, rootNodesById, bucketLimit)
+      ? summarizeSemanticHitBucket(
+          "contradicts",
+          visibleContradictionHits,
+          rootNodesById,
+          {
+            tagClosedEdges: historicalMode,
+          },
+          bucketLimit,
+        )
       : [summarizeSemanticBucket("contradicts", contradicts, bucketLimit)].filter(
           (value): value is string => value !== null,
         )),
     ...(categoryHits.length > 0
-      ? summarizeSemanticHitBucket("categories", categoryHits, rootNodesById, bucketLimit)
+      ? summarizeSemanticHitBucket(
+          "categories",
+          visibleCategoryHits,
+          rootNodesById,
+          {
+            tagClosedEdges: historicalMode,
+          },
+          bucketLimit,
+        )
       : [summarizeSemanticBucket("categories", categories, bucketLimit)].filter(
           (value): value is string => value !== null,
         )),

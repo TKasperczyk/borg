@@ -81,6 +81,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   suppressionSet?: SuppressionLookup;
   graphWalkDepth?: number;
   maxGraphNodes?: number;
+  asOf?: number;
   includeOpenQuestions?: boolean;
   openQuestionsLimit?: number;
   moodState?: MoodState | null;
@@ -249,6 +250,7 @@ export class RetrievalPipeline {
         turnId: options.traceTurnId,
         episodeCount: context.episodes.length,
         semanticHits: countSemanticHits(context.semantic),
+        asOf: options.asOf ?? null,
         confidence: context.confidence,
       });
     }
@@ -371,6 +373,7 @@ function summarizeRetrievalOptions(options: RetrievalSearchOptions): JsonValue {
     entityTerms: options.entityTerms === undefined ? [] : [...options.entityTerms],
     graphWalkDepth: options.graphWalkDepth ?? null,
     maxGraphNodes: options.maxGraphNodes ?? null,
+    asOf: options.asOf ?? null,
   };
 }
 

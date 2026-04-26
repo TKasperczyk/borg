@@ -12,6 +12,7 @@ import {
   StreamWriter,
   ToolDispatcher,
   createEpisodeId,
+  createSemanticNodeId,
   createCommitmentsListTool,
   createEpisodicSearchTool,
   createIdentityEventsListTool,
@@ -285,6 +286,37 @@ describe("internal tools", () => {
     } finally {
       await borg.close();
     }
+  });
+
+  it("forwards semantic walk as-of to the graph", async () => {
+    let receivedOptions: Parameters<Parameters<typeof createSemanticWalkTool>[0]["walkGraph"]>[1];
+    const nodeId = createSemanticNodeId();
+    const tool = createSemanticWalkTool({
+      walkGraph: async (_fromId, options) => {
+        receivedOptions = options;
+        return [];
+      },
+    });
+
+    const result = await tool.invoke(
+      {
+        node_id: nodeId,
+        relation: "supports",
+        asOf: 1_250,
+      },
+      {
+        sessionId: DEFAULT_SESSION_ID,
+        origin: "autonomous",
+      },
+    );
+
+    expect(result.steps).toEqual([]);
+    expect(receivedOptions).toMatchObject({
+      asOf: 1_250,
+      depth: 2,
+      maxNodes: 16,
+      relations: ["supports"],
+    });
   });
 
   it("lists active commitments", async () => {

@@ -16,7 +16,7 @@ import {
 } from "../stream/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
-import { FixedClock } from "../util/clock.js";
+import { FixedClock, ManualClock } from "../util/clock.js";
 import { OpenQuestionsRepository } from "../memory/self/index.js";
 import { selfMigrations } from "../memory/self/migrations.js";
 import { semanticMigrations } from "../memory/semantic/migrations.js";
@@ -512,7 +512,9 @@ describe("retrieval pipeline", () => {
       content: "not cited",
     });
 
-    await episodicRepository.insert(createEpisode("ep_multisession0001", defaultEntry.id, [1, 0, 0, 0]));
+    await episodicRepository.insert(
+      createEpisode("ep_multisession0001", defaultEntry.id, [1, 0, 0, 0]),
+    );
     await episodicRepository.insert(
       createEpisode("ep_multisession0002", secondaryEntry.id, [0.9, 0.1, 0, 0]),
     );
@@ -867,6 +869,139 @@ describe("retrieval pipeline", () => {
         }),
       ],
     });
+  });
+
+  it("threads semantic as-of through graph retrieval and confidence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [
+        ...episodicMigrations,
+        ...selfMigrations,
+        ...retrievalMigrations,
+        ...semanticMigrations,
+      ],
+    });
+    const episodeTable = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const semanticTable = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new ManualClock(1_000_000);
+    const repo = new EpisodicRepository({
+      table: episodeTable,
+      db,
+      clock,
+    });
+    const semanticNodeRepository = new SemanticNodeRepository({
+      table: semanticTable,
+      db,
+      clock,
+    });
+    const semanticEdgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const semanticGraph = new SemanticGraph({
+      nodeRepository: semanticNodeRepository,
+      edgeRepository: semanticEdgeRepository,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const entry = await writer.append({
+      kind: "user_msg",
+      content: "Atlas deploy note",
+    });
+
+    await repo.insert(createEpisode("ep_aaaaaaaaaaaaaaaa", entry.id, [0, 0, 1, 0]));
+    const atlas = await semanticNodeRepository.insert({
+      id: "semn_aaaaaaaaaaaaaaaa" as never,
+      kind: "entity",
+      label: "Atlas",
+      description: "Atlas entity",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as Episode["id"]],
+      created_at: 1_000_000,
+      updated_at: 1_000_000,
+      last_verified_at: 1_000_000,
+      embedding: Float32Array.from([0, 0, 1, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const contradiction = await semanticNodeRepository.insert({
+      id: "semn_bbbbbbbbbbbbbbbb" as never,
+      kind: "proposition",
+      label: "Atlas needs no deployment work",
+      description: "A stale claim that Atlas deployment needs no action.",
+      aliases: [],
+      confidence: 0.7,
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as Episode["id"]],
+      created_at: 1_000_000,
+      updated_at: 1_000_000,
+      last_verified_at: 1_000_000,
+      embedding: Float32Array.from([0, 0, 1, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const edge = semanticEdgeRepository.addEdge({
+      from_node_id: atlas.id,
+      to_node_id: contradiction.id,
+      relation: "contradicts",
+      confidence: 0.7,
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as Episode["id"]],
+      created_at: 1_000_000,
+      last_verified_at: 1_000_000,
+    });
+    semanticEdgeRepository.invalidateEdge(edge.id, {
+      at: 1_000_500,
+      by_process: "manual",
+    });
+    clock.set(1_001_000);
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: new ScriptedEmbeddingClient(),
+      episodicRepository: repo,
+      semanticNodeRepository,
+      semanticGraph,
+      dataDir: tempDir,
+      clock,
+    });
+
+    const current = await pipeline.searchWithContext("Atlas", {
+      limit: 1,
+      graphWalkDepth: 1,
+      maxGraphNodes: 4,
+    });
+    const historical = await pipeline.searchWithContext("Atlas", {
+      limit: 1,
+      graphWalkDepth: 1,
+      maxGraphNodes: 4,
+      asOf: 1_000_250,
+    });
+
+    expect(current.contradiction_present).toBe(false);
+    expect(current.semantic.contradiction_hits).toEqual([]);
+    expect(current.confidence.contradictionPresent).toBe(false);
+    expect(historical.semantic.as_of).toBe(1_000_250);
+    expect(historical.contradiction_present).toBe(true);
+    expect(historical.semantic.contradiction_hits[0]?.edgePath[0]?.id).toBe(edge.id);
+    expect(historical.confidence.contradictionPresent).toBe(true);
   });
 
   it("attaches relevant open questions when requested", async () => {

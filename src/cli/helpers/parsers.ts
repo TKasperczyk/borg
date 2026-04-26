@@ -282,6 +282,43 @@ export function parseOptionalPositiveInteger(value: unknown, flag: string): numb
   return parsePositiveInteger(candidate, flag);
 }
 
+export function parseOptionalAsOf(value: unknown, flag = "--as-of"): number | undefined {
+  const candidate = Array.isArray(value) ? value.at(-1) : value;
+
+  if (
+    candidate === undefined ||
+    candidate === null ||
+    candidate === false ||
+    (typeof candidate === "number" && Number.isNaN(candidate)) ||
+    (typeof candidate === "string" && candidate.trim() === "")
+  ) {
+    return undefined;
+  }
+
+  if (typeof candidate === "number" && Number.isFinite(candidate)) {
+    return candidate;
+  }
+
+  if (typeof candidate !== "string") {
+    throw new CliError(`${flag} must be an ISO timestamp or epoch milliseconds`);
+  }
+
+  const trimmed = candidate.trim();
+  const epochMs = Number(trimmed);
+
+  if (Number.isFinite(epochMs)) {
+    return epochMs;
+  }
+
+  const parsed = Date.parse(trimmed);
+
+  if (!Number.isFinite(parsed)) {
+    throw new CliError(`${flag} must be an ISO timestamp or epoch milliseconds`);
+  }
+
+  return parsed;
+}
+
 export function parseFiniteNumber(value: unknown, label: string): number {
   const candidate = Array.isArray(value) ? value.at(-1) : value;
   const numeric =

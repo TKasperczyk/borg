@@ -48,25 +48,35 @@ export class SemanticGraph {
     options: {
       relations?: readonly SemanticRelation[];
       direction: "out" | "in" | "both";
+      asOf?: number;
+      includeInvalid?: boolean;
     },
   ): Promise<Array<{ node: SemanticNode; edge: SemanticEdge }>> {
+    const validityOptions = {
+      asOf: options.asOf,
+      includeInvalid: options.includeInvalid,
+    };
     const edges =
       options.direction === "both"
         ? [
             ...this.options.edgeRepository.listEdges({
               fromId: id,
+              ...validityOptions,
             }),
             ...this.options.edgeRepository.listEdges({
               toId: id,
+              ...validityOptions,
             }),
           ]
         : this.options.edgeRepository.listEdges(
             options.direction === "out"
               ? {
                   fromId: id,
+                  ...validityOptions,
                 }
               : {
                   toId: id,
+                  ...validityOptions,
                 },
           );
     const filtered =
@@ -128,6 +138,8 @@ export class SemanticGraph {
       const neighbors = await this.neighbors(next.id, {
         relations: options.relations,
         direction,
+        asOf: options.asOf,
+        includeInvalid: options.includeInvalid,
       });
 
       for (const neighbor of neighbors) {

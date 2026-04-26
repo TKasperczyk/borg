@@ -130,6 +130,41 @@ describe("computeRetrievalConfidence", () => {
     expect(withContradiction.contradictionPresent).toBe(true);
   });
 
+  it("only penalizes contradiction edges valid at the query as-of", () => {
+    const episodes = [
+      makeEpisode({ id: "epi_aaaaaaaaaaaaaaaa", decayedSalience: 0.9, participants: ["alice"] }),
+      makeEpisode({ id: "epi_bbbbbbbbbbbbbbbb", decayedSalience: 0.85, participants: ["bob"] }),
+    ];
+    const current = computeRetrievalConfidence({
+      episodes,
+      contradictionPresent: true,
+      contradictionEdges: [
+        {
+          valid_from: 1_000,
+          valid_to: 1_500,
+        },
+      ],
+      asOf: 2_000,
+      expectedCount: 5,
+    });
+    const historical = computeRetrievalConfidence({
+      episodes,
+      contradictionPresent: true,
+      contradictionEdges: [
+        {
+          valid_from: 1_000,
+          valid_to: 1_500,
+        },
+      ],
+      asOf: 1_250,
+      expectedCount: 5,
+    });
+
+    expect(current.contradictionPresent).toBe(false);
+    expect(historical.contradictionPresent).toBe(true);
+    expect(historical.overall).toBeLessThan(current.overall);
+  });
+
   it("drops coverage when fewer episodes than expected were found", () => {
     const episode = makeEpisode({
       id: "epi_aaaaaaaaaaaaaaaa",

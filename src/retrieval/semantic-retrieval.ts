@@ -9,6 +9,10 @@ import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
 import type { SemanticContext, SemanticNode, SemanticWalkStep } from "../memory/semantic/types.js";
 import type { EntityId } from "../util/ids.js";
 
+export type RetrievedSemanticNode = SemanticNode & {
+  historical?: boolean;
+};
+
 export type RetrievedSemanticHit = {
   root_node_id: SemanticNode["id"];
   node: SemanticNode;
@@ -16,8 +20,9 @@ export type RetrievedSemanticHit = {
 };
 
 export type RetrievedSemantic = SemanticContext & {
+  as_of?: number | null;
   matched_node_ids: SemanticNode["id"][];
-  matched_nodes: SemanticNode[];
+  matched_nodes: RetrievedSemanticNode[];
   support_hits: RetrievedSemanticHit[];
   contradiction_hits: RetrievedSemanticHit[];
   category_hits: RetrievedSemanticHit[];
@@ -28,6 +33,7 @@ export type SemanticRetrievalOptions = {
   crossAudience?: boolean;
   graphWalkDepth?: number;
   maxGraphNodes?: number;
+  asOf?: number;
 };
 
 export type SemanticRetrievalDependencies = {
@@ -41,10 +47,11 @@ export type ResolvedSemanticRetrieval = {
   context: SemanticContext;
   contradictionPresent: boolean;
   matchedNodeIds: SemanticNode["id"][];
-  matchedNodes: SemanticNode[];
+  matchedNodes: RetrievedSemanticNode[];
   supportHits: RetrievedSemanticHit[];
   contradictionHits: RetrievedSemanticHit[];
   categoryHits: RetrievedSemanticHit[];
+  asOf?: number;
 };
 
 function emptySemanticRetrieval(): ResolvedSemanticRetrieval {
@@ -114,6 +121,44 @@ function isSemanticWalkStepVisible(
   );
 }
 
+async function isHistoricalPropositionMatch(
+  node: SemanticNode,
+  semanticGraph: SemanticGraph,
+  asOf: number | undefined,
+): Promise<boolean> {
+  if (node.kind !== "proposition") {
+    return false;
+  }
+
+  const supportNeighbors = await semanticGraph.neighbors(node.id, {
+    relations: ["supports"],
+    direction: "both",
+    includeInvalid: true,
+  });
+
+  if (supportNeighbors.length === 0) {
+    return false;
+  }
+
+  if (!supportNeighbors.some(({ edge }) => edge.valid_to !== null)) {
+    return false;
+  }
+
+  if (asOf === undefined) {
+    const currentSupportNeighbors = await semanticGraph.neighbors(node.id, {
+      relations: ["supports"],
+      direction: "both",
+    });
+
+    return (
+      currentSupportNeighbors.length === 0 &&
+      supportNeighbors.every(({ edge }) => edge.valid_to !== null)
+    );
+  }
+
+  return supportNeighbors.every(({ edge }) => edge.valid_to !== null && edge.valid_to <= asOf);
+}
+
 export async function resolveSemanticContext(
   query: string,
   options: SemanticRetrievalOptions,
@@ -175,18 +220,21 @@ export async function resolveSemanticContext(
       direction: "both",
       depth: walkDepth,
       maxNodes: maxGraphNodes,
+      asOf: options.asOf,
     });
     const walkedContradictions = await semanticGraph.walk(node.id, {
       relations: ["contradicts"],
       direction: "both",
       depth: walkDepth,
       maxNodes: maxGraphNodes,
+      asOf: options.asOf,
     });
     const walkedCategories = await semanticGraph.walk(node.id, {
       relations: ["is_a"],
       direction: "out",
       depth: walkDepth,
       maxNodes: maxGraphNodes,
+      asOf: options.asOf,
     });
 
     supportNeighbors.push(...walkedSupports.map((step) => ({ rootNodeId: node.id, step })));
@@ -216,8 +264,19 @@ export async function resolveSemanticContext(
     options,
   );
 
-  const visibleMatchedNodes = [...uniqueNodes.values()].filter((node) =>
-    isSemanticNodeVisible(node, semanticVisibility),
+  const visibleMatchedNodes = await Promise.all(
+    [...uniqueNodes.values()]
+      .filter((node) => isSemanticNodeVisible(node, semanticVisibility))
+      .map(async (node): Promise<RetrievedSemanticNode> => {
+        if (await isHistoricalPropositionMatch(node, semanticGraph, options.asOf)) {
+          return {
+            ...node,
+            historical: true,
+          };
+        }
+
+        return node;
+      }),
   );
 
   for (const item of supportNeighbors) {
@@ -271,11 +330,13 @@ export async function resolveSemanticContext(
     supportHits,
     contradictionHits,
     categoryHits,
+    asOf: options.asOf,
   };
 }
 
 export function toRetrievedSemantic(resolved: ResolvedSemanticRetrieval): RetrievedSemantic {
   return {
+    as_of: resolved.asOf ?? null,
     supports: resolved.context.supports,
     contradicts: resolved.context.contradicts,
     categories: resolved.context.categories,

@@ -15,6 +15,7 @@ const semanticWalkInputSchema = z.object({
   relation: semanticRelationSchema,
   depth: z.number().int().positive().max(4).optional(),
   maxNodes: z.number().int().positive().max(32).optional(),
+  asOf: z.number().finite().optional(),
 });
 
 const semanticWalkOutputSchema = z.object({
@@ -52,6 +53,7 @@ export function createSemanticWalkTool(
           relations: [input.relation],
           depth: input.depth ?? 2,
           maxNodes: input.maxNodes ?? 16,
+          asOf: input.asOf,
         }),
       };
     },
