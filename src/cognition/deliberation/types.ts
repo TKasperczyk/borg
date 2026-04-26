@@ -1,5 +1,6 @@
 // Shared deliberation data shapes used by the orchestrator and extracted helpers.
 import type { LLMClient } from "../../llm/index.js";
+import type { MoodHistoryEntry } from "../../memory/affective/index.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type {
   AutobiographicalPeriod,
@@ -73,6 +74,11 @@ export type DeliberationContext = {
   selectedSkill?: SkillSelectionResult | null;
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;
+  /**
+   * Recent affective history for this session, newest first. The current
+   * mood snapshot remains in workingMemory; this lane shows prior turns.
+   */
+  affectiveTrajectory?: readonly MoodHistoryEntry[];
   selfSnapshot: SelfSnapshot;
   /**
    * Social band: the profile of the person the being is talking to, when

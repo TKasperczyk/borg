@@ -521,6 +521,9 @@ export class TurnOrchestrator {
             return correctionAudience === null || correctionAudience === audienceEntityId;
           });
         const currentMood = this.options.moodRepository.current(sessionId);
+        const affectiveTrajectory = this.options.moodRepository.history(sessionId, {
+          limit: 5,
+        });
         const activeValues = selectActiveValues(selfSnapshot.values);
 
         const attentionWeights = computeWeights(perception.mode, {
@@ -598,6 +601,7 @@ export class TurnOrchestrator {
             selectedSkill,
             entityRepository: this.options.entityRepository,
             workingMemory,
+            affectiveTrajectory,
             selfSnapshot,
             audienceProfile,
             recencyMessages: recencyWindow.messages,

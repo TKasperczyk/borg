@@ -720,7 +720,7 @@ describe("deliberator", () => {
     expect(llm.requests[1]?.system).toContain(
       "You are an AI being with continuous existence across sessions through a persistent memory substrate.",
     );
-    expect(llm.requests[1]?.system).not.toContain("Skill you might try");
+    expect(llm.requests[1]?.system).not.toContain("Skill candidates considered");
   });
 
   it("includes related semantic context in the Sonnet prompt", async () => {
@@ -1082,9 +1082,12 @@ describe("deliberator", () => {
 
     expect(llm.requests[0]?.system).toContain(TRUSTED_GUIDANCE_PREAMBLE);
     expect(llm.requests[0]?.system).toContain("<borg_procedural_guidance>");
-    expect(llm.requests[0]?.system).toContain("### Skill you might try");
-    expect(llm.requests[0]?.system).toContain("Applies when: Rust lifetime debugging");
-    expect(llm.requests[0]?.system).toContain("Approach: Shrink borrow scopes.");
+    expect(llm.requests[0]?.system).toContain(
+      "Skill candidates considered (winner first; activation_sample is a Thompson draw, not confidence):",
+    );
+    expect(llm.requests[0]?.system).toContain(
+      "- winner: Rust lifetime debugging -- Shrink borrow scopes. (activation_sample=0.82 posterior_mean=0.67 ci95_width=0.50 similarity=0.90)",
+    );
     expect(llm.requests[0]?.system).toContain("</borg_procedural_guidance>");
   });
 
@@ -1133,7 +1136,7 @@ describe("deliberator", () => {
       },
     });
 
-    expect(llm.requests[0]?.system).not.toContain("Skill you might try");
+    expect(llm.requests[0]?.system).not.toContain("Skill candidates considered");
   });
 
   it("includes reflective open questions in the prompt", async () => {

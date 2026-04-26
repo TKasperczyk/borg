@@ -7,7 +7,11 @@ import type {
   OpenQuestion,
 } from "../../../memory/self/index.js";
 import type { SocialProfile } from "../../../memory/social/index.js";
-import type { SkillSelectionResult } from "../../../memory/procedural/index.js";
+import type {
+  SkillSelectionCandidate,
+  SkillSelectionResult,
+} from "../../../memory/procedural/index.js";
+import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
@@ -59,6 +63,13 @@ export function buildBaseSystemPrompt(
     {
       tag: "borg_working_state",
       content: summarizeWorkingMemory(context.workingMemory),
+    },
+    {
+      tag: "borg_affective_trajectory",
+      content: summarizeAffectiveTrajectory(
+        context.affectiveTrajectory,
+        context.workingMemory.updated_at,
+      ),
     },
     {
       tag: "borg_audience_profile",
@@ -385,6 +396,51 @@ function summarizeAudienceProfile(profile: SocialProfile | null | undefined): st
   return parts.join(" | ");
 }
 
+function compactPromptText(text: string, maxLength: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function formatPromptNumber(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(2) : "unknown";
+}
+
+function formatRelativeAge(timestampMs: number, nowMs: number): string {
+  const elapsedMs = Math.max(0, nowMs - timestampMs);
+  const elapsedMinutes = Math.floor(elapsedMs / 60_000);
+
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m ago`;
+  }
+
+  return `${Math.floor(elapsedMinutes / 60)}h ago`;
+}
+
+function summarizeAffectiveTrajectory(
+  entries: readonly MoodHistoryEntry[] | null | undefined,
+  nowMs: number,
+): string | null {
+  if (entries === null || entries === undefined || entries.length === 0) {
+    return null;
+  }
+
+  return [
+    "Affective trajectory (newest first; current snapshot in working state):",
+    ...entries.slice(0, 5).map((entry) => {
+      const triggerText =
+        entry.trigger_reason === null ? "" : compactPromptText(entry.trigger_reason, 120);
+      const trigger =
+        triggerText.length === 0 ? "" : ` trigger="${triggerText.replace(/"/g, '\\"')}"`;
+      return `- ${formatRelativeAge(entry.ts, nowMs)}: valence=${formatPromptNumber(entry.valence)} arousal=${formatPromptNumber(entry.arousal)}${trigger}`;
+    }),
+  ].join("\n");
+}
+
 function summarizeSelectedSkill(
   mode: DeliberationContext["perception"]["mode"],
   selectedSkill: SkillSelectionResult | null | undefined,
@@ -398,18 +454,43 @@ function summarizeSelectedSkill(
     return null;
   }
 
-  const stats = selectedSkill.evaluatedCandidates.find(
+  if (selectedSkill.evaluatedCandidates.length === 0) {
+    return null;
+  }
+
+  const winner = selectedSkill.evaluatedCandidates.find(
     (candidate) => candidate.skill.id === selectedSkill.skill.id,
-  )?.stats;
-  const successRate =
-    stats === undefined
-      ? "unknown"
-      : `${stats.mean.toFixed(2)} ± ${((stats.ci_95[1] - stats.ci_95[0]) / 2).toFixed(2)}`;
+  );
+
+  if (winner === undefined) {
+    return null;
+  }
+
+  const displayedCandidates = [
+    winner,
+    ...selectedSkill.evaluatedCandidates.filter(
+      (candidate) => candidate.skill.id !== winner.skill.id,
+    ),
+  ].slice(0, 3);
 
   return [
-    "### Skill you might try",
-    `Applies when: ${selectedSkill.skill.applies_when}`,
-    `Approach: ${selectedSkill.skill.approach}`,
-    `Success rate: ${successRate}`,
+    "Skill candidates considered (winner first; activation_sample is a Thompson draw, not confidence):",
+    ...displayedCandidates.map((candidate, index) =>
+      summarizeSkillCandidate(candidate, index === 0 ? "winner" : "alternative"),
+    ),
   ].join("\n");
+}
+
+function summarizeSkillCandidate(
+  candidate: SkillSelectionCandidate,
+  label: "winner" | "alternative",
+): string {
+  const ciWidth = Math.max(0, candidate.stats.ci_95[1] - candidate.stats.ci_95[0]);
+  const appliesWhen = compactPromptText(candidate.skill.applies_when, 80);
+  const approach = compactPromptText(candidate.skill.approach, 120);
+
+  return [
+    `- ${label}: ${appliesWhen} -- ${approach}`,
+    `(activation_sample=${formatPromptNumber(candidate.sampledValue)} posterior_mean=${formatPromptNumber(candidate.stats.mean)} ci95_width=${formatPromptNumber(ciWidth)} similarity=${formatPromptNumber(candidate.similarity)})`,
+  ].join(" ");
 }
