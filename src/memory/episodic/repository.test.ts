@@ -57,6 +57,41 @@ function createEpisode(id: string, nowMs: number, overrides: Partial<Episode> = 
   };
 }
 
+function toRawEpisodeRow(episode: Episode): Record<string, unknown> {
+  const audienceEntityId = episode.audience_entity_id ?? null;
+
+  return {
+    id: episode.id,
+    title: episode.title,
+    narrative: episode.narrative,
+    participants: JSON.stringify(episode.participants),
+    location: episode.location,
+    start_time: episode.start_time,
+    end_time: episode.end_time,
+    source_stream_ids: JSON.stringify(episode.source_stream_ids),
+    significance: episode.significance,
+    tags: JSON.stringify(episode.tags),
+    confidence: episode.confidence,
+    lineage_derived_from: JSON.stringify(episode.lineage.derived_from),
+    lineage_supersedes: JSON.stringify(episode.lineage.supersedes),
+    source_fingerprint: [...new Set(episode.source_stream_ids)].sort().join("\n"),
+    audience_entity_id: audienceEntityId,
+    shared: episode.shared ?? audienceEntityId === null,
+    emotional_arc: episode.emotional_arc === null ? null : JSON.stringify(episode.emotional_arc),
+    embedding: Array.from(episode.embedding),
+    created_at: episode.created_at,
+    updated_at: episode.updated_at,
+  };
+}
+
+function explainQueryPlan(harness: Harness, sql: string, ...params: unknown[]): string {
+  return (
+    harness.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail: string }>
+  )
+    .map((row) => row.detail)
+    .join("\n");
+}
+
 async function createHarness(): Promise<Harness> {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
   const clock = new ManualClock(1_700_000_000_000);
@@ -587,6 +622,198 @@ describe("episodic repository", () => {
           .get(logOnlyOrphanEpisodeId) as { count: number }
       ).count,
     ).toBe(0);
+  });
+
+  it("creates SQL indexes for hot-path episodic retrieval lanes", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const audienceEntityId = "ent_aaaaaaaaaaaaaaaa" as Episode["audience_entity_id"];
+
+    const recentPlan = explainQueryPlan(
+      harness,
+      `
+        SELECT episode_id
+        FROM episode_index INDEXED BY idx_episode_index_recent
+        WHERE archived = 0
+        ORDER BY updated_at DESC, episode_id DESC
+        LIMIT 5
+      `,
+    );
+    const audiencePlan = explainQueryPlan(
+      harness,
+      `
+        SELECT episode_id
+        FROM episode_index INDEXED BY idx_episode_index_audience_recent
+        WHERE archived = 0 AND audience_entity_id = ?
+        ORDER BY updated_at DESC, episode_id DESC
+        LIMIT 5
+      `,
+      audienceEntityId,
+    );
+    const heatPlan = explainQueryPlan(
+      harness,
+      `
+        SELECT episode_id
+        FROM episode_index INDEXED BY idx_episode_index_heat
+        WHERE archived = 0
+        ORDER BY heat_score DESC, updated_at DESC, episode_id DESC
+        LIMIT 5
+      `,
+    );
+    const participantPlan = explainQueryPlan(
+      harness,
+      `
+        SELECT ei.episode_id
+        FROM episode_participants AS ep INDEXED BY idx_episode_participants_term
+        JOIN episode_index AS ei ON ei.episode_id = ep.episode_id
+        WHERE ep.term = ? AND ei.archived = 0
+      `,
+      "sam",
+    );
+    const tagPlan = explainQueryPlan(
+      harness,
+      `
+        SELECT ei.episode_id
+        FROM episode_tags AS et INDEXED BY idx_episode_tags_term
+        JOIN episode_index AS ei ON ei.episode_id = et.episode_id
+        WHERE et.term = ? AND ei.archived = 0
+      `,
+      "atlas",
+    );
+
+    expect(recentPlan).toContain("idx_episode_index_recent");
+    expect(audiencePlan).toContain("idx_episode_index_audience_recent");
+    expect(heatPlan).toContain("idx_episode_index_heat");
+    expect(participantPlan).toContain("idx_episode_participants_term");
+    expect(tagPlan).toContain("idx_episode_tags_term");
+  });
+
+  it("serves indexed retrieval lanes without scanning visible episodes", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const sam = "ent_bbbbbbbbbbbbbbbb" as NonNullable<Episode["audience_entity_id"]>;
+    const older = createEpisode("ep_indexolder000001", harness.clock.now() - 10_000, {
+      source_stream_ids: ["strm_indexolder000001" as Episode["source_stream_ids"][number]],
+      tags: ["archive"],
+      participants: ["team"],
+    });
+    const scoped = createEpisode("ep_indexscoped00001", harness.clock.now() - 5_000, {
+      source_stream_ids: ["strm_indexscoped00001" as Episode["source_stream_ids"][number]],
+      audience_entity_id: sam,
+      shared: false,
+      participants: ["Sam"],
+    });
+    const entity = createEpisode("ep_indexentity00001", harness.clock.now() - 3_000, {
+      source_stream_ids: ["strm_indexentity00001" as Episode["source_stream_ids"][number]],
+      tags: ["Atlas"],
+      participants: ["Jordan"],
+    });
+    const hot = createEpisode("ep_indexhot00000001", harness.clock.now() - 8_000, {
+      source_stream_ids: ["strm_indexhot00000001" as Episode["source_stream_ids"][number]],
+      tags: ["heat"],
+      participants: ["ops"],
+    });
+
+    await harness.repo.insert(older);
+    await harness.repo.insert(scoped);
+    await harness.repo.insert(entity);
+    await harness.repo.insert(hot);
+    harness.repo.updateStats(hot.id, {
+      retrieval_count: 20,
+      win_rate: 1,
+      last_retrieved: harness.clock.now(),
+    });
+
+    const visibleSpy = vi.spyOn(harness.repo, "listVisibleEpisodes");
+    const recent = await harness.repo.listRecent({
+      limit: 1,
+      crossAudience: true,
+    });
+    const audience = await harness.repo.listByAudience(sam, {
+      limit: 1,
+      orderBy: "recent",
+    });
+    const participantOrTag = await harness.repo.searchByParticipantsOrTags(["atlas"], {
+      limit: 1,
+      crossAudience: true,
+    });
+    const hottest = await harness.repo.listHottest({
+      limit: 1,
+      crossAudience: true,
+    });
+
+    expect(recent[0]?.episode.id).toBe(entity.id);
+    expect(audience[0]?.episode.id).toBe(scoped.id);
+    expect(participantOrTag[0]?.episode.id).toBe(entity.id);
+    expect(hottest[0]?.episode.id).toBe(hot.id);
+    expect(visibleSpy).not.toHaveBeenCalled();
+  });
+
+  it("backfills normalized episode indexes from existing Lance rows", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const legacy = createEpisode("ep_indexlegacy00001", harness.clock.now(), {
+      source_stream_ids: ["strm_indexlegacy00001" as Episode["source_stream_ids"][number]],
+      participants: ["Sam"],
+      tags: ["Atlas"],
+    });
+
+    await harness.table.upsert([toRawEpisodeRow(legacy)], { on: "id" });
+
+    expect(harness.repo.getStats(legacy.id)).toBeNull();
+
+    const matches = await harness.repo.searchByParticipantsOrTags(["atlas"], {
+      limit: 1,
+      crossAudience: true,
+    });
+    const participantRows = harness.db
+      .prepare("SELECT term FROM episode_participants WHERE episode_id = ?")
+      .all(legacy.id) as Array<{ term: string }>;
+    const tagRows = harness.db
+      .prepare("SELECT term FROM episode_tags WHERE episode_id = ?")
+      .all(legacy.id) as Array<{ term: string }>;
+
+    expect(matches[0]?.episode.id).toBe(legacy.id);
+    expect(harness.repo.getStats(legacy.id)).toEqual(
+      expect.objectContaining({ episode_id: legacy.id }),
+    );
+    expect(participantRows.map((row) => row.term)).toEqual(["sam"]);
+    expect(tagRows.map((row) => row.term)).toEqual(["atlas"]);
+  });
+
+  it("hydrates only the requested indexed slice from a 1000-episode fixture", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const episodes = Array.from({ length: 1_000 }, (_, index) =>
+      createEpisode(createEpisodeId(), harness.clock.now() + index, {
+        title: `Indexed fixture ${index}`,
+        source_stream_ids: [
+          createEpisodeId().replace("ep_", "strm_") as Episode["source_stream_ids"][number],
+        ],
+        tags: [`fixture-${index}`],
+        participants: ["fixture"],
+        embedding: Float32Array.from([1, 0, 0, 0]),
+      }),
+    );
+
+    await harness.table.upsert(
+      episodes.map((episode) => toRawEpisodeRow(episode)),
+      { on: "id" },
+    );
+    await harness.repo.reconcileCrossStoreState();
+
+    const visibleSpy = vi.spyOn(harness.repo, "listVisibleEpisodes");
+    const getManySpy = vi.spyOn(harness.repo, "getMany");
+    const results = await harness.repo.listRecent({
+      limit: 7,
+      crossAudience: true,
+    });
+
+    expect(results).toHaveLength(7);
+    expect(results[0]?.episode.updated_at).toBe(harness.clock.now() + 999);
+    expect(getManySpy).toHaveBeenCalledTimes(1);
+    expect(getManySpy.mock.calls[0]?.[0]).toHaveLength(7);
+    expect(visibleSpy).not.toHaveBeenCalled();
   });
 
   it("skips stale rollback restores when a newer Lance update wins the race", async () => {

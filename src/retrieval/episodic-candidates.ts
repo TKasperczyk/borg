@@ -1,10 +1,6 @@
 /* Episodic candidate generation for multi-lane retrieval. */
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
-import type {
-  Episode,
-  EpisodeSearchCandidate,
-  EpisodeSearchOptions,
-} from "../memory/episodic/types.js";
+import type { EpisodeSearchCandidate, EpisodeSearchOptions } from "../memory/episodic/types.js";
 import type { EntityId } from "../util/ids.js";
 
 import {
@@ -99,21 +95,17 @@ async function generateAudienceCandidates(
   repository: EpisodicRepository,
   audienceEntityId: EntityId,
   limit: number,
-  visibleEpisodes: Promise<readonly Episode[]>,
 ): Promise<MergedEpisodeCandidate[]> {
   const recentLimit = Math.max(1, Math.ceil(limit / 2));
   const heatLimit = Math.max(1, limit - recentLimit);
-  const sharedVisibleEpisodes = await visibleEpisodes;
   const [recent, hottest] = await Promise.all([
     repository.listByAudience(audienceEntityId, {
       limit: recentLimit,
       orderBy: "recent",
-      visibleEpisodes: sharedVisibleEpisodes,
     }),
     repository.listByAudience(audienceEntityId, {
       limit: heatLimit,
       orderBy: "heat",
-      visibleEpisodes: sharedVisibleEpisodes,
     }),
   ]);
 
@@ -124,23 +116,19 @@ async function generateRecentAndHeatCandidates(
   repository: EpisodicRepository,
   options: EpisodicCandidateSearchOptions,
   limit: number,
-  visibleEpisodes: Promise<readonly Episode[]>,
 ): Promise<MergedEpisodeCandidate[]> {
   const recentLimit = Math.max(1, Math.ceil(limit / 2));
   const heatLimit = Math.max(1, limit - recentLimit);
-  const sharedVisibleEpisodes = await visibleEpisodes;
   const [recent, hottest] = await Promise.all([
     repository.listRecent({
       limit: recentLimit,
       audienceEntityId: options.audienceEntityId,
       crossAudience: options.crossAudience,
-      visibleEpisodes: sharedVisibleEpisodes,
     }),
     repository.listHottest({
       limit: heatLimit,
       audienceEntityId: options.audienceEntityId,
       crossAudience: options.crossAudience,
-      visibleEpisodes: sharedVisibleEpisodes,
     }),
   ]);
 
@@ -161,10 +149,6 @@ export async function generateEpisodicCandidates(params: {
   const audienceBudget = Math.max(limit * 2, 8);
   const entityBudget = Math.max(limit * 2, 8);
   const recentHeatBudget = Math.max(limit, 4);
-  const visibleEpisodes = repository.listVisibleEpisodes({
-    audienceEntityId: options.audienceEntityId,
-    crossAudience: options.crossAudience,
-  });
   const vectorSearchOptions: EpisodeSearchOptions = {
     ...options,
     timeRange: timeSignals.strictFilterRange ?? undefined,
@@ -174,7 +158,7 @@ export async function generateEpisodicCandidates(params: {
       ...vectorSearchOptions,
       limit: vectorBudget,
     }).then((candidates) => tagCandidates("vector", candidates)),
-    generateRecentAndHeatCandidates(repository, options, recentHeatBudget, visibleEpisodes),
+    generateRecentAndHeatCandidates(repository, options, recentHeatBudget),
   ];
 
   if (timeSignals.scoringRange !== null) {
@@ -194,12 +178,7 @@ export async function generateEpisodicCandidates(params: {
     options.crossAudience !== true
   ) {
     generatorCalls.push(
-      generateAudienceCandidates(
-        repository,
-        options.audienceEntityId,
-        audienceBudget,
-        visibleEpisodes,
-      ),
+      generateAudienceCandidates(repository, options.audienceEntityId, audienceBudget),
     );
   }
 
@@ -210,7 +189,6 @@ export async function generateEpisodicCandidates(params: {
           limit: entityBudget,
           audienceEntityId: options.audienceEntityId,
           crossAudience: options.crossAudience,
-          visibleEpisodes: await visibleEpisodes,
         })
         .then((candidates) => tagCandidates("entity", candidates)),
     );

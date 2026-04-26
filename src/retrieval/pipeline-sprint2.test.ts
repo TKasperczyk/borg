@@ -24,7 +24,9 @@ function defaultWeights() {
   };
 }
 
-function searchWeights(overrides: Partial<Record<keyof ReturnType<typeof defaultWeights>, number>> = {}) {
+function searchWeights(
+  overrides: Partial<Record<keyof ReturnType<typeof defaultWeights>, number>> = {},
+) {
   return {
     ...defaultWeights(),
     ...overrides,
@@ -291,9 +293,11 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     await harness.episodicRepository.insert(shared);
 
     const queryVector = await harness.embeddingClient.embed(QUERY);
-    const vectorCandidate = (await harness.episodicRepository.searchByVector(queryVector, {
-      limit: 5,
-    })).find((item) => item.episode.id === shared.id);
+    const vectorCandidate = (
+      await harness.episodicRepository.searchByVector(queryVector, {
+        limit: 5,
+      })
+    ).find((item) => item.episode.id === shared.id);
     const temporalCandidate = (
       await harness.episodicRepository.searchByTimeRange(
         {
@@ -560,7 +564,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     expect(results).toEqual([]);
   });
 
-  it("reuses a single visible-corpus scan across scan-based generators", async () => {
+  it("avoids visible-corpus scans across indexed generators", async () => {
     harness = await createHarness();
     const sam = harness.entityRepository.resolve("Sam");
     const scanned = createEpisodeFixture({
@@ -591,7 +595,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       }),
     });
 
-    expect(visibleSpy).toHaveBeenCalledTimes(1);
+    expect(visibleSpy).not.toHaveBeenCalled();
   });
 
   it("keeps every non-vector generator audience-safe", async () => {
@@ -683,6 +687,8 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     });
 
     expect(results.map((item) => item.episode.id)).toContain(rescued.id);
-    expect(results.find((item) => item.episode.id === rescued.id)?.scoreBreakdown.similarity).toBe(0);
+    expect(results.find((item) => item.episode.id === rescued.id)?.scoreBreakdown.similarity).toBe(
+      0,
+    );
   });
 });
