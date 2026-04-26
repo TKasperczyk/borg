@@ -1808,6 +1808,73 @@ describe("deliberator", () => {
     }
   });
 
+  it("renders an empty commitments block with a placeholder when no commitments apply", async () => {
+    // Without this, the channel disappears entirely and the being can't tell
+    // whether commitments are ambient (current) or only available via tool call.
+    // Empty-but-present is the honest signal.
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({
+      db,
+      clock,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Acknowledged.",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    try {
+      await deliberator.run({
+        sessionId: DEFAULT_SESSION_ID,
+        userMessage: "Hello.",
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          affectiveSignal: { valence: 0, arousal: 0 },
+          temporalCue: null,
+        },
+        retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
+        applicableCommitments: [],
+        entityRepository: entities,
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: null,
+          hot_entities: [],
+          pending_intents: [],
+          suppressed: [],
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        options: {
+          stakes: "low",
+        },
+      });
+
+      const system = llm.requests[0]?.system as string;
+      expect(system).toContain("<borg_commitment_records>");
+      expect(system).toContain("No active commitments apply to this turn.");
+      expect(system).toContain("</borg_commitment_records>");
+    } finally {
+      db.close();
+    }
+  });
+
   it("renders pending corrections in an untrusted prompt block", async () => {
     const llm = new FakeLLMClient({
       responses: [

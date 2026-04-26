@@ -34,12 +34,15 @@ export function buildBaseSystemPrompt(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
 ): string {
+  // Always render the block when commitments were populated, even if empty.
+  // Otherwise the channel disappears entirely and the being can't tell whether
+  // commitments are ambient (current) or only available via tool call.
   const commitmentSection =
-    context.applicableCommitments !== undefined &&
-    context.applicableCommitments.length > 0 &&
-    context.entityRepository !== undefined
-      ? formatCommitmentsForPrompt(context.applicableCommitments, context.entityRepository)
-      : null;
+    context.applicableCommitments === undefined || context.entityRepository === undefined
+      ? null
+      : context.applicableCommitments.length > 0
+        ? formatCommitmentsForPrompt(context.applicableCommitments, context.entityRepository)
+        : "No active commitments apply to this turn. Use tool.commitments.list to inspect the full registry if needed.";
   const untrustedDynamicBlock = renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
     {
       tag: "borg_self_snapshot",
