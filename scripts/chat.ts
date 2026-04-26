@@ -4,13 +4,13 @@ import { createInterface } from "node:readline";
 import {
   Borg,
   OFFLINE_PROCESS_NAMES,
-  WorkingMemoryStore,
-  computeBetaStats,
   parseSessionId,
   type OfflineProcessName,
   type SessionId,
   type TurnStakes,
 } from "../src/index.ts";
+import { computeBetaStats } from "../src/memory/procedural/index.js";
+import { WorkingMemoryStore } from "../src/memory/working/index.js";
 import { BorgError } from "../src/util/errors.js";
 import { createAnsi } from "./_ansi.ts";
 import { selectScriptClients, type ScriptClientSelectionMode } from "./_clients.ts";

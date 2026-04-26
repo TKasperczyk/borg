@@ -3,22 +3,24 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  DEFAULT_SESSION_ID,
   StreamReader,
   StreamWatermarkRepository,
   StreamWriter,
+  streamWatermarkMigrations,
+} from "../stream/index.js";
+import {
   ToolDispatcher,
-  autonomyMigrations,
   createCommitmentsListTool,
   createIdentityEventsListTool,
-  streamWatermarkMigrations,
-} from "../index.js";
+} from "../tools/index.js";
 import { ManualClock } from "../util/clock.js";
+import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import { createOfflineTestHarness } from "../offline/test-support.js";
 import { openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { SessionBusyError } from "../util/errors.js";
 
 import { createCommitmentExpiringTrigger, createScheduledReflectionTrigger } from "./index.js";
+import { autonomyMigrations } from "./migrations.js";
 import { AutonomyScheduler, type AutonomySchedulerOptions } from "./scheduler.js";
 import { AutonomyWakesRepository } from "./wakes-repository.js";
 

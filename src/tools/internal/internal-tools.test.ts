@@ -4,30 +4,27 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  Borg,
-  DEFAULT_SESSION_ID,
-  FakeLLMClient,
-  ManualClock,
-  StreamWriter,
-  ToolDispatcher,
-  createEpisodeId,
-  createSemanticNodeId,
-  createCommitmentsListTool,
-  createEpisodicSearchTool,
-  createIdentityEventsListTool,
-  createOpenQuestionsCreateTool,
-  createSemanticWalkTool,
-  createSkillsListTool,
-  SemanticGraph,
-} from "../../index.js";
+import { Borg, DEFAULT_SESSION_ID, FakeLLMClient } from "../../index.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
+import { SemanticGraph } from "../../memory/semantic/index.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
   createSemanticNodeFixture,
   TestEmbeddingClient,
 } from "../../offline/test-support.js";
+import { StreamWriter } from "../../stream/index.js";
+import {
+  ToolDispatcher,
+  createCommitmentsListTool,
+  createEpisodicSearchTool,
+  createIdentityEventsListTool,
+  createOpenQuestionsCreateTool,
+  createSemanticWalkTool,
+  createSkillsListTool,
+} from "../../tools/index.js";
+import { ManualClock } from "../../util/clock.js";
+import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
 
 async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
   return Borg.open({

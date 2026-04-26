@@ -3,10 +3,10 @@ import type {
   Clock,
   EmbeddingClient,
   Episode,
-  EpisodicRepository,
   TraitRecord,
   ValueRecord,
 } from "../../src/index.js";
+import type { EpisodicRepository } from "../../src/memory/episodic/index.js";
 
 import { createEpisodeFixture } from "../../src/offline/test-support.js";
 
