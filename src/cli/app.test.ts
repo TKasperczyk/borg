@@ -859,14 +859,17 @@ describe("cli", () => {
               id: "toolu_2",
               name: "EmitSelfNarratorObservations",
               input: {
-                observation: {
-                  category: "understanding",
-                  what_changed: "Atlas debugging became clearer.",
-                  before_description: "The failure path was fuzzy.",
-                  after_description: "The failure path is clearer now.",
-                  confidence: 0.8,
-                  evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
-                },
+                observations: [
+                  {
+                    theme: "atlas debugging",
+                    category: "understanding",
+                    what_changed: "Atlas debugging became clearer.",
+                    before_description: "The failure path was fuzzy.",
+                    after_description: "The failure path is clearer now.",
+                    confidence: 0.8,
+                    evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+                  },
+                ],
               },
             },
           ],
@@ -1235,6 +1238,24 @@ describe("cli", () => {
           output_tokens: 10,
           stop_reason: "end_turn",
           tool_calls: [],
+        },
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_reflection_cli",
+              name: "EmitTurnReflection",
+              input: {
+                advanced_goals: [],
+                procedural_outcomes: [],
+                trait_demonstrations: [],
+                intent_updates: [],
+              },
+            },
+          ],
         },
       ],
     });

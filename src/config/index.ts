@@ -424,8 +424,8 @@ export const DEFAULT_CONFIG: Config = {
     useLlmFallback: true,
   },
   affective: {
-    // Low-confidence affective heuristics may add up to one background-model
-    // call per user turn, capped in the extractor, to catch short subtle affect.
+    // Affective perception uses the background model as the primary classifier
+    // when configured; heuristics are the offline/test fallback path.
     useLlmFallback: true,
     incomingMoodWeight: 0.3,
     moodHistoryRetentionDays: 90,
@@ -443,9 +443,9 @@ export const DEFAULT_CONFIG: Config = {
     models: {
       // All slots default to Opus 4.7. borg runs under OAuth subscription
       // (not per-token billing), so cost optimization is not a concern. We
-      // accept the latency hit on synchronous classifier fallbacks in
-      // exchange for consistent quality across extraction, reflection, and
-      // all offline maintenance. The three slots still exist so individual
+      // accept the latency hit on synchronous classifier calls in exchange
+      // for consistent quality across extraction, reflection, and all
+      // offline maintenance. The three slots still exist so individual
       // deployments CAN split them via config or env vars if they ever
       // need to.
       cognition: "claude-opus-4-7",

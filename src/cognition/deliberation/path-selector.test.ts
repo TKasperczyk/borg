@@ -4,7 +4,7 @@ import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/inde
 
 import { chooseDeliberationPath } from "./path-selector.js";
 
-function makeEpisode(score: number): RetrievedEpisode {
+function makeEpisode(score: number, tags: string[] = []): RetrievedEpisode {
   return {
     episode: {
       id: "epi_aaaaaaaaaaaaaaaa" as RetrievedEpisode["episode"]["id"],
@@ -18,7 +18,7 @@ function makeEpisode(score: number): RetrievedEpisode {
         "strm_aaaaaaaaaaaaaaaa" as RetrievedEpisode["episode"]["source_stream_ids"][number],
       ],
       significance: 0.8,
-      tags: [],
+      tags,
       confidence: 0.8,
       lineage: {
         derived_from: [],
@@ -151,6 +151,18 @@ describe("chooseDeliberationPath", () => {
 
     expect(decision.path).toBe("system_2");
     expect(decision.reason).toMatch(/contradiction/i);
+  });
+
+  it("ignores warning/recommended tags as contradiction cues", () => {
+    const decision = chooseDeliberationPath(
+      "problem_solving",
+      "low",
+      [makeEpisode(0.9, ["warning"]), makeEpisode(0.9, ["recommended"])],
+      false,
+      makeConfidence(0.9, false),
+    );
+
+    expect(decision.path).toBe("system_1");
   });
 
   it("routes to S2 for high stakes even with confident retrieval", () => {

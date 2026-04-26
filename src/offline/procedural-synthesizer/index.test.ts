@@ -37,6 +37,7 @@ function createSkillCandidateResponse(input: {
   applies_when: string;
   approach?: string;
   abstraction_fit?: "too_narrow" | "usable" | "too_broad";
+  rejection_reason?: "unusable_abstraction" | "centered_proper_noun" | null;
   inputTokens?: number;
   outputTokens?: number;
 }) {
@@ -54,6 +55,7 @@ function createSkillCandidateResponse(input: {
           approach:
             input.approach ?? "Compare the failing state against the last known-good state.",
           abstraction_fit: input.abstraction_fit ?? "usable",
+          rejection_reason: input.rejection_reason ?? null,
         },
       },
     ],
@@ -76,6 +78,7 @@ function createReflectionResponse(evidence: string) {
             {
               classification: "success",
               evidence,
+              grounded: true,
             },
           ],
         },
@@ -99,6 +102,7 @@ async function addSuccessEvidence(
     problemText?: string;
     approachSummary?: string;
     evidenceText?: string;
+    grounded?: boolean;
     audienceEntityId?: EntityId | null;
     selectedSkillId?: SkillId | null;
   } = {},
@@ -130,6 +134,7 @@ async function addSuccessEvidence(
     },
     classification: "success",
     evidenceText: input.evidenceText ?? "User confirmed the deploy worked.",
+    grounded: input.grounded ?? true,
     resolvedEpisodeIds: [episode.id],
     audienceEntityId: input.audienceEntityId ?? null,
   });
@@ -459,16 +464,42 @@ describe("ProceduralSynthesizerProcess", () => {
     expect(harness.skillRepository.list()).toEqual([]);
   });
 
-  it("does not synthesize self-validating assistant-only success evidence", async () => {
+  it("uses LLM-provided centered-proper-noun rejection", async () => {
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({ minSupport: 2 }),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSkillCandidateResponse({
+            applies_when: "Atlas deployment rollback comparison",
+            rejection_reason: "centered_proper_noun",
+          }),
+        ],
+      }),
+    });
+    await addSuccessEvidence(harness);
+    await addSuccessEvidence(harness, {
+      problemText: "Atlas deploy failed after a second rollback.",
+    });
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+
+    expect(result.changes).toEqual([]);
+    expect(harness.skillRepository.list()).toEqual([]);
+  });
+
+  it("does not synthesize ungrounded success evidence", async () => {
     harness = await createOfflineTestHarness({
       configOverrides: proceduralConfig({ minSupport: 2 }),
     });
     await addSuccessEvidence(harness, {
       evidenceText: "The assistant response said this works.",
+      grounded: false,
     });
     await addSuccessEvidence(harness, {
       problemText: "Atlas deploy failed after a second rollback.",
       evidenceText: "The assistant response said this works.",
+      grounded: false,
     });
 
     const process = createProcess(harness);

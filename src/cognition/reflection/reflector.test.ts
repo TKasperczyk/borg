@@ -30,12 +30,18 @@ function createReflectionResponse(
   proceduralOutcomes: Array<{
     classification: "success" | "failure" | "unclear";
     evidence: string;
+    grounded?: boolean;
   }> = [],
   intentUpdates: Array<{
     description: string;
     next_action: string | null;
     status: "completed" | "abandoned";
     evidence: string;
+  }> = [],
+  traitDemonstrations: Array<{
+    trait_label: string;
+    evidence: string;
+    strength_delta: number;
   }> = [],
 ) {
   return {
@@ -49,7 +55,11 @@ function createReflectionResponse(
         name: "EmitTurnReflection",
         input: {
           advanced_goals: advancedGoals,
-          procedural_outcomes: proceduralOutcomes,
+          procedural_outcomes: proceduralOutcomes.map((outcome) => ({
+            grounded: true,
+            ...outcome,
+          })),
+          trait_demonstrations: traitDemonstrations,
           intent_updates: intentUpdates,
         },
       },
@@ -187,7 +197,7 @@ describe("reflector", () => {
     }
   });
 
-  it("bumps LLM-marked goal progress, marks episode use, skips S1 trait evidence, and ticks suppression", async () => {
+  it("bumps LLM-marked goal progress, skips unreferenced episode use, and ticks suppression", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new FixedClock(1_000);
     const store = new LanceDbStore({
@@ -368,10 +378,10 @@ describe("reflector", () => {
     expect(goalsRepository.list({ status: "active" })[0]?.progress_notes).toContain(
       "Updated the Atlas release stabilization plan.",
     );
-    expect(episodicRepository.getStats(episode.id)?.use_count).toBe(1);
+    expect(episodicRepository.getStats(episode.id)?.use_count).toBe(0);
     expect(traitsRepository.list()).toEqual([]);
     expect(reflected.pending_trait_attribution).toBeNull();
-    expect(suppressionSet.isSuppressed(episode.id)).toBe(true);
+    expect(suppressionSet.isSuppressed(episode.id)).toBe(false);
     expect(suppressionSet.isSuppressed("ep_stale")).toBe(false);
     // Phase E removed scratchpad/recent_thoughts from working memory. The
     // reflector no longer clears scratchpad or pushes thoughts into the
@@ -593,24 +603,28 @@ describe("reflector", () => {
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({
         responses: [
-          createReflectionResponse([], [], [
-            {
-              ...pendingIntents[0],
-              status: "completed",
-              evidence: "The response reviewed the deploy status.",
-            },
-            {
-              ...pendingIntents[1],
-              status: "abandoned",
-              evidence: "The user said not to create an incident.",
-            },
-            {
-              description: "Hallucinated intent",
-              next_action: null,
-              status: "completed",
-              evidence: "Not present in prior pending intents.",
-            },
-          ]),
+          createReflectionResponse(
+            [],
+            [],
+            [
+              {
+                ...pendingIntents[0],
+                status: "completed",
+                evidence: "The response reviewed the deploy status.",
+              },
+              {
+                ...pendingIntents[1],
+                status: "abandoned",
+                evidence: "The user said not to create an incident.",
+              },
+              {
+                description: "Hallucinated intent",
+                next_action: null,
+                status: "completed",
+                evidence: "Not present in prior pending intents.",
+              },
+            ],
+          ),
         ],
       }),
     });
@@ -738,7 +752,7 @@ describe("reflector", () => {
     });
   });
 
-  it("counts an episode as used when the response echoes title or narrative tokens", async () => {
+  it("counts an episode as used when the planner referenced it", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new FixedClock(1_000);
     const store = new LanceDbStore({
@@ -844,7 +858,7 @@ describe("reflector", () => {
         },
         deliberationResult: {
           path: "system_1",
-          response: "The database migration blocked the release, so prepare a rollback plan.",
+          response: "Use the safer recovery path.",
           thoughts: [],
           tool_calls: [],
           usage: {
@@ -859,7 +873,7 @@ describe("reflector", () => {
           thoughtsPersisted: false,
         },
         actionResult: {
-          response: "The database migration blocked the release, so prepare a rollback plan.",
+          response: "Use the safer recovery path.",
           tool_calls: [],
           intents: [],
           workingMemory: {
@@ -1581,6 +1595,7 @@ describe("reflector", () => {
               {
                 classification: "success",
                 evidence: "The assistant response said this works.",
+                grounded: false,
               },
             ],
           ),
@@ -1727,6 +1742,23 @@ describe("reflector", () => {
     const retrievedB = createRetrievedEpisode(episodeB);
     const reflector = new Reflector({
       clock: harness.clock,
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            [],
+            [
+              {
+                trait_label: "engaged",
+                evidence: "The response used both planning syncs as concrete evidence.",
+                strength_delta: 0.07,
+              },
+            ],
+          ),
+        ],
+      }),
+      model: "haiku",
     });
 
     const reflected = await reflector.reflect(
@@ -1809,6 +1841,7 @@ describe("reflector", () => {
 
     expect(reflected.pending_trait_attribution).toMatchObject({
       trait_label: "engaged",
+      strength_delta: 0.07,
       source_episode_ids: [episodeA.id, episodeB.id],
     });
   });
@@ -1821,6 +1854,23 @@ describe("reflector", () => {
     const retrieved = createRetrievedEpisode(episode);
     const reflector = new Reflector({
       clock: harness.clock,
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            [],
+            [
+              {
+                trait_label: "focused",
+                evidence: "The response narrowed the evidence to the retrieved episode.",
+                strength_delta: 0.04,
+              },
+            ],
+          ),
+        ],
+      }),
+      model: "haiku",
     });
 
     const reflected = await reflector.reflect(
@@ -1916,6 +1966,18 @@ describe("reflector", () => {
     const retrieved = createRetrievedEpisode(episode);
     const reflector = new Reflector({
       clock: harness.clock,
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse([], [], [], [
+            {
+              trait_label: "focused",
+              evidence: "The response narrowed the evidence to the retrieved episode.",
+              strength_delta: 0.04,
+            },
+          ]),
+        ],
+      }),
+      model: "haiku",
     });
 
     const reflected = await reflector.reflect(
@@ -1997,7 +2059,8 @@ describe("reflector", () => {
     );
 
     expect(reflected.pending_trait_attribution).toMatchObject({
-      trait_label: "engaged",
+      trait_label: "focused",
+      strength_delta: 0.04,
       source_episode_ids: [episode.id],
     });
   });
@@ -2091,7 +2154,7 @@ describe("reflector", () => {
     expect(harness.traitsRepository.list()).toEqual([]);
   });
 
-  it("maps reflective mode reinforcement onto introspective pending attribution", async () => {
+  it("uses LLM-judged trait demonstrations for pending attribution", async () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
@@ -2104,6 +2167,23 @@ describe("reflector", () => {
 
     const reflector = new Reflector({
       clock: harness.clock,
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            [],
+            [
+              {
+                trait_label: "patient",
+                evidence: "The response stayed with the feeling and traced it carefully.",
+                strength_delta: 0.06,
+              },
+            ],
+          ),
+        ],
+      }),
+      model: "haiku",
     });
     const retrieved: RetrievedEpisode = {
       episode,
@@ -2207,7 +2287,8 @@ describe("reflector", () => {
 
     expect(harness.traitsRepository.list()).toEqual([]);
     expect(reflected.pending_trait_attribution).toMatchObject({
-      trait_label: "introspective",
+      trait_label: "patient",
+      strength_delta: 0.06,
       source_episode_ids: [episode.id],
       audience_entity_id: null,
     });
@@ -2217,15 +2298,32 @@ describe("reflector", () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
-    const reflector = new Reflector({
-      clock: harness.clock,
-    });
     const episode = await harness.episodicRepository.insert(
       createEpisodeFixture({
         title: "Internal reflective note",
         narrative: "A private autonomous reflection about an earlier feeling.",
       }),
     );
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            [],
+            [
+              {
+                trait_label: "introspective",
+                evidence: "The autonomous response traced the private reflection.",
+                strength_delta: 0.05,
+              },
+            ],
+          ),
+        ],
+      }),
+      model: "haiku",
+    });
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.7,
@@ -2294,7 +2392,7 @@ describe("reflector", () => {
           },
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
-          referencedEpisodeIds: null,
+          referencedEpisodeIds: [episode.id],
           intents: [],
           thoughtsPersisted: false,
         },

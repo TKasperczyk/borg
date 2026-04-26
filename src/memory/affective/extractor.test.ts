@@ -44,7 +44,7 @@ describe("AffectiveExtractor", () => {
     expect((await extractor.analyze("okay")).valence).toBeLessThan(0.2);
   });
 
-  it("falls back to the llm for short low-confidence affect by default", async () => {
+  it("uses the llm as the primary affect classifier when configured", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -82,7 +82,7 @@ describe("AffectiveExtractor", () => {
     expect(llm.requests[0]?.budget).toBe("perception-affective");
   });
 
-  it("caps llm affective fallback calls for one extractor instance", async () => {
+  it("caps llm affective calls for one extractor instance", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -119,7 +119,45 @@ describe("AffectiveExtractor", () => {
     });
   });
 
-  it("falls back to the llm for long ambiguous text when enabled", async () => {
+  it("does not let coding-error lexicon words override the llm signal", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 10,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: AFFECTIVE_TOOL_NAME,
+              input: {
+                valence: 0,
+                arousal: 0.2,
+                dominant_emotion: "neutral",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const extractor = new AffectiveExtractor({
+      llmClient: llm,
+      model: "haiku",
+      useLlmFallback: true,
+    });
+
+    const signal = await extractor.analyze("The build is blocked by a broken test error.");
+
+    expect(signal).toMatchObject({
+      dominant_emotion: "neutral",
+      valence: 0,
+      arousal: 0.2,
+    });
+    expect(llm.requests).toHaveLength(1);
+  });
+
+  it("uses the llm for long ambiguous text when enabled", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -162,7 +200,7 @@ describe("AffectiveExtractor", () => {
     });
   });
 
-  it("populates emotional arcs during episodic extraction", async () => {
+  it("stores LLM-emitted emotional arcs during episodic extraction", async () => {
     const llm = new FakeLLMClient();
     harness = await createOfflineTestHarness({
       llmClient: llm,
@@ -210,6 +248,21 @@ describe("AffectiveExtractor", () => {
                 participants: ["user"],
                 location: null,
                 tags: ["rust", "debugging"],
+                emotional_arc: {
+                  start: {
+                    valence: -0.6,
+                    arousal: 0.5,
+                  },
+                  peak: {
+                    valence: -0.7,
+                    arousal: 0.6,
+                  },
+                  end: {
+                    valence: -0.2,
+                    arousal: 0.25,
+                  },
+                  dominant_emotion: "anger",
+                },
                 confidence: 0.8,
                 significance: 0.7,
               },
@@ -233,6 +286,6 @@ describe("AffectiveExtractor", () => {
     const [episode] = await harness.episodicRepository.listAll();
 
     expect(episode?.emotional_arc).not.toBeNull();
-    expect(episode?.emotional_arc?.start.valence ?? 0).toBeLessThan(0);
+    expect(episode?.emotional_arc?.start.valence).toBe(-0.6);
   });
 });

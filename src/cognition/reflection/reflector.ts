@@ -10,18 +10,13 @@ import {
 } from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import type { ReviewQueueRepository } from "../../memory/semantic/index.js";
-import {
-  isProceduralOutcomeEvidenceGrounded,
-  ProceduralEvidenceRepository,
-  SkillRepository,
-} from "../../memory/procedural/index.js";
+import { ProceduralEvidenceRepository, SkillRepository } from "../../memory/procedural/index.js";
 import {
   appendInternalFailureEvent,
   appendOpenQuestionHookFailureEvent,
 } from "../../memory/self/review-open-question-hook.js";
 import { EpisodicRepository } from "../../memory/episodic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
-import { tokenizeText } from "../../util/text/tokenize.js";
 import type { EntityId, EpisodeId, SkillId, StreamEntryId } from "../../util/ids.js";
 import { z } from "zod";
 
@@ -29,8 +24,6 @@ import type { ActionResult } from "../action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import { SuppressionSet } from "../attention/index.js";
 import { intentRecordSchema, type IntentRecord, type PerceptionResult } from "../types.js";
-import { MODE_TRAIT_MAP } from "./trait-signals.js";
-
 export type ReflectionContext = {
   origin?: "user" | "autonomous";
   userMessage: string;
@@ -54,7 +47,6 @@ export type ReflectionContext = {
   suppressionSet: SuppressionSet;
 };
 
-const TOKEN_STOPWORDS = ["the", "and", "with", "this", "that", "from", "into", "after", "before"];
 const SURFACED_TTL_TURNS = 4;
 const NOISE_TTL_TURNS = 2;
 // RetrievalConfidence is calibrated epistemic confidence, not the relevance
@@ -62,6 +54,12 @@ const NOISE_TTL_TURNS = 2;
 const OPEN_QUESTION_CONFIDENCE_THRESHOLD = 0.45;
 const REFLECTION_TOOL_NAME = "EmitTurnReflection";
 const DEFAULT_REFLECTION_MAX_TOKENS = 768;
+
+const traitDemonstrationSchema = z.object({
+  trait_label: z.string().min(1),
+  evidence: z.string().min(1),
+  strength_delta: z.number().min(0).max(0.2),
+});
 
 const reflectionOutputSchema = z.object({
   advanced_goals: z
@@ -80,10 +78,21 @@ const reflectionOutputSchema = z.object({
       z.object({
         classification: z.enum(["success", "failure", "unclear"]),
         evidence: z.string().min(1),
+        grounded: z
+          .boolean()
+          .describe(
+            "True only when evidence is grounded in an actual user signal about the pending attempt, not assistant self-narration.",
+          ),
       }),
     )
     .describe(
       "Outcomes for the prior pending_procedural_attempt. Judge success only from the user's follow-up signal, never from the assistant's wording.",
+    )
+    .default([]),
+  trait_demonstrations: z
+    .array(traitDemonstrationSchema)
+    .describe(
+      "Traits the completed assistant turn actually demonstrated through its content or actions. Do not infer a trait from cognitive mode alone.",
     )
     .default([]),
   intent_updates: z
@@ -104,57 +113,9 @@ type ReflectionOutput = z.infer<typeof reflectionOutputSchema>;
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
   description:
-    "Emit structured post-turn reflection. Mark advanced_goals only if the turn took a concrete step toward the goal, procedural_outcomes only from user follow-up evidence, and intent_updates only for prior pending intents resolved by the completed turn.",
+    "Emit structured post-turn reflection. Mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, and intent_updates only for prior pending intents resolved by the completed turn.",
   inputSchema: toToolInputSchema(reflectionOutputSchema),
 };
-
-function episodeUsed(result: RetrievedEpisode, response: string): boolean {
-  const normalized = response.toLowerCase();
-  const normalizedTitle = result.episode.title.trim().toLowerCase();
-
-  if (normalizedTitle.length > 0 && normalized.includes(normalizedTitle)) {
-    return true;
-  }
-
-  if (
-    result.episode.tags.some((tag) => normalized.includes(tag.toLowerCase())) ||
-    result.episode.participants.some((participant) =>
-      normalized.includes(participant.toLowerCase()),
-    )
-  ) {
-    return true;
-  }
-
-  const responseTokens = tokenizeText(response, {
-    stopwords: TOKEN_STOPWORDS,
-  });
-  const episodeTokens = tokenizeText(
-    [
-      result.episode.title,
-      result.episode.narrative,
-      result.episode.tags.join(" "),
-      result.episode.participants.join(" "),
-    ].join(" "),
-    {
-      stopwords: TOKEN_STOPWORDS,
-    },
-  );
-
-  if (responseTokens.size === 0 || episodeTokens.size === 0) {
-    return false;
-  }
-
-  let overlap = 0;
-
-  for (const token of responseTokens) {
-    if (episodeTokens.has(token)) {
-      overlap += 1;
-    }
-  }
-
-  const unionSize = new Set([...responseTokens, ...episodeTokens]).size;
-  return unionSize > 0 && overlap / unionSize >= 0.15;
-}
 
 function buildReflectionProvenance(retrievedEpisodes: readonly RetrievedEpisode[]) {
   const episodeIds = [...new Set(retrievedEpisodes.slice(0, 3).map((result) => result.episode.id))];
@@ -266,11 +227,10 @@ export class Reflector {
 
   async reflect(context: ReflectionContext, streamWriter: StreamWriter): Promise<WorkingMemory> {
     const reflectionProvenance = buildReflectionProvenance(context.retrievedEpisodes);
-    const effectiveMode = context.perception?.mode ?? context.workingMemory.mode ?? "idle";
-    const reflectedTrait = MODE_TRAIT_MAP[effectiveMode];
     let reflectionOutput: ReflectionOutput = {
       advanced_goals: [],
       procedural_outcomes: [],
+      trait_demonstrations: [],
       intent_updates: [],
     };
 
@@ -325,8 +285,14 @@ export class Reflector {
       }
     }
 
+    const referencedEpisodeIds = selectReferencedRetrievedEpisodeIds(
+      context.deliberationResult,
+      context.retrievedEpisodes,
+    );
+    const referencedEpisodeIdSet = new Set(referencedEpisodeIds);
+
     for (const result of context.retrievedEpisodes) {
-      const used = episodeUsed(result, context.actionResult.response);
+      const used = referencedEpisodeIdSet.has(result.episode.id);
 
       if (used) {
         const stats = context.episodicRepository.getStats(result.episode.id);
@@ -389,10 +355,8 @@ export class Reflector {
       };
     }
 
-    const traitEvidenceEpisodeIds = selectTraitEvidenceEpisodeIds(
-      context.deliberationResult,
-      context.retrievedEpisodes,
-    );
+    const traitEvidenceEpisodeIds = referencedEpisodeIds;
+    const traitDemonstration = selectTraitDemonstration(reflectionOutput.trait_demonstrations);
 
     if (
       // Lagged trait attribution must only come from user-visible turns.
@@ -400,13 +364,14 @@ export class Reflector {
       // user reply must not be treated as evidence about them.
       context.origin !== "autonomous" &&
       nextWorkingMemory.pending_trait_attribution === null &&
-      reflectedTrait !== null &&
+      traitDemonstration !== null &&
       traitEvidenceEpisodeIds.length > 0
     ) {
       nextWorkingMemory = {
         ...nextWorkingMemory,
         pending_trait_attribution: {
-          trait_label: reflectedTrait,
+          trait_label: traitDemonstration.trait_label,
+          strength_delta: traitDemonstration.strength_delta,
           source_episode_ids: traitEvidenceEpisodeIds,
           turn_completed_ts: this.clock.now(),
           audience_entity_id: context.audienceEntityId ?? null,
@@ -420,10 +385,7 @@ export class Reflector {
     if (pendingProceduralAttempt !== null) {
       try {
         if (proceduralOutcome !== undefined && context.proceduralEvidenceRepository !== undefined) {
-          const grounded = isProceduralOutcomeEvidenceGrounded({
-            classification: proceduralOutcome.classification,
-            evidence_text: proceduralOutcome.evidence,
-          });
+          const grounded = proceduralOutcome.grounded;
           const resolvedEpisodeIds = grounded
             ? await resolveAttemptEpisodeIds(context, pendingProceduralAttempt.source_stream_ids)
             : [];
@@ -433,6 +395,7 @@ export class Reflector {
               pendingAttemptSnapshot: pendingProceduralAttempt,
               classification: proceduralOutcome.classification,
               evidenceText: proceduralOutcome.evidence,
+              grounded,
               resolvedEpisodeIds,
               audienceEntityId: pendingProceduralAttempt.audience_entity_id,
             });
@@ -475,11 +438,14 @@ export class Reflector {
       this.model === undefined ||
       (context.selfSnapshot.goals.length === 0 &&
         pendingProceduralAttempt === null &&
-        pendingIntents.length === 0)
+        pendingIntents.length === 0 &&
+        selectReferencedRetrievedEpisodeIds(context.deliberationResult, context.retrievedEpisodes)
+          .length === 0)
     ) {
       return {
         advanced_goals: [],
         procedural_outcomes: [],
+        trait_demonstrations: [],
         intent_updates: [],
       };
     }
@@ -490,7 +456,10 @@ export class Reflector {
         "You are Borg's post-turn reflector. Read the completed turn and active goals, then emit only the structured reflection tool.",
         "Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
         "If pending_procedural_attempt is present, classify whether the user's current message shows that attempt succeeded, failed, or remains unclear.",
+        "For every procedural_outcome, set grounded=false when the evidence is assistant self-narration rather than an actual user signal.",
         "Do not infer procedural success or failure from the assistant response, confidence, phrasing, or intentions.",
+        "Emit trait_demonstrations only for traits actually shown by the completed assistant turn. Do not map from cognitive mode labels.",
+        "Use strength_delta 0.01-0.1 for grounded trait demonstrations, and omit weak or generic traits.",
         "If pending_intents are present, mark only prior pending intents completed or abandoned when the current user message and agent response give clear evidence. Otherwise omit them.",
       ].join("\n"),
       messages: [
@@ -506,6 +475,20 @@ export class Reflector {
             })),
             pending_procedural_attempt: pendingProceduralAttempt,
             pending_intents: pendingIntents,
+            referenced_episodes: selectReferencedRetrievedEpisodeIds(
+              context.deliberationResult,
+              context.retrievedEpisodes,
+            ).map((episodeId) => {
+              const result = context.retrievedEpisodes.find(
+                (item) => item.episode.id === episodeId,
+              );
+
+              return {
+                id: episodeId,
+                title: result?.episode.title,
+                narrative: result?.episode.narrative,
+              };
+            }),
           }),
         },
       ],
@@ -520,6 +503,7 @@ export class Reflector {
       return {
         advanced_goals: [],
         procedural_outcomes: [],
+        trait_demonstrations: [],
         intent_updates: [],
       };
     }
@@ -534,12 +518,11 @@ export class Reflector {
   }
 }
 
-function selectTraitEvidenceEpisodeIds(
+function selectReferencedRetrievedEpisodeIds(
   deliberationResult: DeliberationResult,
   retrievedEpisodes: readonly RetrievedEpisode[],
 ): RetrievedEpisode["episode"]["id"][] {
   if (
-    deliberationResult.path !== "system_2" ||
     deliberationResult.referencedEpisodeIds === null ||
     deliberationResult.referencedEpisodeIds.length === 0
   ) {
@@ -564,4 +547,24 @@ function selectTraitEvidenceEpisodeIds(
   }
 
   return selected;
+}
+
+function selectTraitDemonstration(
+  demonstrations: readonly ReflectionOutput["trait_demonstrations"][number][],
+): ReflectionOutput["trait_demonstrations"][number] | null {
+  const ranked = demonstrations
+    .map((demonstration) => ({
+      ...demonstration,
+      trait_label: demonstration.trait_label.trim(),
+      evidence: demonstration.evidence.trim(),
+    }))
+    .filter(
+      (demonstration) =>
+        demonstration.trait_label.length > 0 &&
+        demonstration.evidence.length > 0 &&
+        demonstration.strength_delta > 0,
+    )
+    .sort((left, right) => right.strength_delta - left.strength_delta);
+
+  return ranked[0] ?? null;
 }

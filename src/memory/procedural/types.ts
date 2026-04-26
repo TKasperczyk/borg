@@ -79,45 +79,15 @@ export const proceduralEvidenceSchema = z.object({
   pending_attempt_snapshot: pendingProceduralAttemptSchema,
   classification: proceduralOutcomeClassificationSchema,
   evidence_text: z.string().min(1),
+  grounded: z.boolean().default(true),
   resolved_episode_ids: z.array(episodeIdSchema),
   audience_entity_id: workingEntityIdSchema.nullable(),
   consumed_at: z.number().finite().nullable(),
   created_at: z.number().finite(),
 });
 
-export type ProceduralOutcomeClassification = z.infer<
-  typeof proceduralOutcomeClassificationSchema
->;
+export type ProceduralOutcomeClassification = z.infer<typeof proceduralOutcomeClassificationSchema>;
 export type ProceduralEvidenceRecord = z.infer<typeof proceduralEvidenceSchema>;
-
-const ASSISTANT_ONLY_EVIDENCE_PATTERN =
-  /\b(assistant|agent|model|borg|response|answer|i said|i suggested|we suggested|the suggestion)\b/i;
-const USER_SIGNAL_EVIDENCE_PATTERN =
-  /\b(user|they|them|their|reply|follow-up|message|reported|reports|confirmed|confirms)\b/i;
-
-export function isProceduralOutcomeEvidenceGrounded(input: {
-  classification: ProceduralOutcomeClassification;
-  evidence_text: string;
-}): boolean {
-  if (input.classification === "unclear") {
-    return true;
-  }
-
-  const evidence = input.evidence_text.trim();
-
-  if (evidence.length === 0) {
-    return false;
-  }
-
-  if (
-    ASSISTANT_ONLY_EVIDENCE_PATTERN.test(evidence) &&
-    !USER_SIGNAL_EVIDENCE_PATTERN.test(evidence)
-  ) {
-    return false;
-  }
-
-  return USER_SIGNAL_EVIDENCE_PATTERN.test(evidence);
-}
 
 export type SkillIdValue = SkillId;
 export type EpisodeIdValue = EpisodeId;

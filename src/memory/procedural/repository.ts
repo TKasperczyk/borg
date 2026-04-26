@@ -144,6 +144,8 @@ function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvid
     ),
     classification: row.classification,
     evidence_text: row.evidence_text,
+    grounded:
+      row.grounded === null || row.grounded === undefined ? true : Number(row.grounded) !== 0,
     resolved_episode_ids: parseJsonArray<string>(
       String(row.resolved_episode_ids ?? "[]"),
       "resolved_episode_ids",
@@ -154,9 +156,7 @@ function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvid
         ? null
         : (String(row.audience_entity_id) as EntityId),
     consumed_at:
-      row.consumed_at === null || row.consumed_at === undefined
-        ? null
-        : Number(row.consumed_at),
+      row.consumed_at === null || row.consumed_at === undefined ? null : Number(row.consumed_at),
     created_at: Number(row.created_at),
   });
 
@@ -542,6 +542,7 @@ export class ProceduralEvidenceRepository {
     pendingAttemptSnapshot: PendingProceduralAttemptValue;
     classification: ProceduralOutcomeClassification;
     evidenceText: string;
+    grounded?: boolean;
     resolvedEpisodeIds?: readonly EpisodeId[];
     audienceEntityId?: EntityId | null;
     createdAt?: number;
@@ -571,6 +572,7 @@ export class ProceduralEvidenceRepository {
       pending_attempt_snapshot: snapshot,
       classification: proceduralOutcomeClassificationSchema.parse(input.classification),
       evidence_text: input.evidenceText.trim(),
+      grounded: input.grounded ?? true,
       resolved_episode_ids: uniqueEpisodeIds([...(input.resolvedEpisodeIds ?? [])]),
       audience_entity_id: input.audienceEntityId ?? snapshot.audience_entity_id,
       consumed_at: null,
@@ -581,9 +583,9 @@ export class ProceduralEvidenceRepository {
       .prepare(
         `
           INSERT INTO procedural_evidence (
-            id, pending_attempt_snapshot, classification, evidence_text, resolved_episode_ids,
-            audience_entity_id, consumed_at, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            id, pending_attempt_snapshot, classification, evidence_text, grounded,
+            resolved_episode_ids, audience_entity_id, consumed_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -591,6 +593,7 @@ export class ProceduralEvidenceRepository {
         serializeJsonValue(record.pending_attempt_snapshot),
         record.classification,
         record.evidence_text,
+        record.grounded ? 1 : 0,
         serializeJsonValue(record.resolved_episode_ids),
         record.audience_entity_id,
         record.consumed_at,

@@ -115,19 +115,13 @@ const EMOTION_LEXICONS: Record<DominantEmotion, Set<string>> = {
   curiosity: new Set(["curious", "explore", "interesting", "wonder", "why"]),
   neutral: new Set(),
 };
-const GRATITUDE_PATTERNS = [
-  /\bthanks\b/i,
-  /\bthank\s+you\b/i,
-  /\bthx\b/i,
-  /\bty\b/i,
-] as const;
+const GRATITUDE_PATTERNS = [/\bthanks\b/i, /\bthank\s+you\b/i, /\bthx\b/i, /\bty\b/i] as const;
 const AFFECTIVE_FALLBACK_TOOL_NAME = "EmitAffectiveSignal";
 const affectiveFallbackSchema = z.object({
   valence: z.number().min(-1).max(1),
   arousal: z.number().min(0).max(1),
   dominant_emotion: dominantEmotionSchema.nullable(),
 });
-const DEFAULT_FALLBACK_CONFIDENCE_THRESHOLD = 0.5;
 const DEFAULT_MAX_LLM_FALLBACK_CALLS = 1;
 export const AFFECTIVE_FALLBACK_TOOL = {
   name: AFFECTIVE_FALLBACK_TOOL_NAME,
@@ -235,34 +229,27 @@ export type AffectiveExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
   useLlmFallback?: boolean;
-  fallbackConfidenceThreshold?: number;
   maxLlmFallbackCalls?: number;
 };
 
 export class AffectiveExtractor {
   private readonly useLlmFallback: boolean;
-  private readonly fallbackConfidenceThreshold: number;
   private readonly maxLlmFallbackCalls: number;
   private llmFallbackCalls = 0;
 
   constructor(private readonly options: AffectiveExtractorOptions = {}) {
     this.useLlmFallback = options.useLlmFallback ?? true;
-    this.fallbackConfidenceThreshold =
-      options.fallbackConfidenceThreshold ?? DEFAULT_FALLBACK_CONFIDENCE_THRESHOLD;
     this.maxLlmFallbackCalls = options.maxLlmFallbackCalls ?? DEFAULT_MAX_LLM_FALLBACK_CALLS;
   }
 
   async analyze(text: string, recentHistory: readonly string[] = []): Promise<AffectiveSignal> {
-    const heuristic = heuristicAnalysis(text);
-
     if (
       !this.useLlmFallback ||
       this.options.llmClient === undefined ||
       this.options.model === undefined ||
-      heuristic.confidence >= this.fallbackConfidenceThreshold ||
       this.llmFallbackCalls >= this.maxLlmFallbackCalls
     ) {
-      return heuristic.signal;
+      return heuristicAnalysis(text).signal;
     }
 
     this.llmFallbackCalls += 1;

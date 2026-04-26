@@ -8,6 +8,7 @@ import {
 import {
   affectiveSignalSchema,
   analyzeAffectiveSignalHeuristically,
+  emotionalArcSchema,
   type AffectiveSignal,
   type EmotionalArc,
 } from "../affective/index.js";
@@ -29,6 +30,7 @@ const extractorCandidateSchema = z.object({
   participants: z.array(z.string().min(1)),
   location: z.string().min(1).nullable(),
   tags: z.array(z.string().min(1)),
+  emotional_arc: emotionalArcSchema.nullable().default(null),
   confidence: z.number().min(0).max(1),
   significance: z.number().min(0).max(1),
 });
@@ -251,6 +253,7 @@ function buildExtractorPrompt(chunk: readonly StreamEntry[]): string {
     `Emit your result by calling the ${EXTRACT_EPISODES_TOOL_NAME} tool exactly once.`,
     "source_stream_ids MUST only reference ids present in the chunk.",
     "Narrative should be 2-5 concise sentences.",
+    "For each episode, emit emotional_arc directly from the episode text and user signals. Use null only when there is no meaningful affective signal.",
     "Chunk:",
     ...lines,
   ].join("\n");
@@ -320,7 +323,7 @@ function buildEpisodeFromCandidate(
       derived_from: [],
       supersedes: [],
     },
-    emotional_arc: buildEmotionalArc(sourceEntries, contextEntries),
+    emotional_arc: candidate.emotional_arc ?? buildEmotionalArc(sourceEntries, contextEntries),
     audience_entity_id: access.audience_entity_id,
     shared: access.shared,
     embedding,

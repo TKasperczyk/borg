@@ -167,6 +167,7 @@ describe("Borg Sprint 7", () => {
                   {
                     classification: "success",
                     evidence: "User confirmed the Rust lifetime error is fixed now.",
+                    grounded: true,
                   },
                 ],
               },

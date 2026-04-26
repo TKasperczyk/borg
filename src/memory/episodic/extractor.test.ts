@@ -325,7 +325,7 @@ describe("episodic extractor", () => {
     expect(listed[0]?.source_stream_ids).toEqual([user.id, agent.id]);
   });
 
-  it("derives emotional arcs from user messages without agent affect contamination", async () => {
+  it("stores LLM-emitted emotional arcs without agent affect contamination", async () => {
     const llm = new FakeLLMClient();
     const clock = new ManualClock(1_000);
     const harness = await createOfflineTestHarness({
@@ -361,6 +361,21 @@ describe("episodic extractor", () => {
           source_stream_ids: [user.id, agent.id],
           participants: ["user"],
           tags: ["implementation"],
+          emotional_arc: {
+            start: {
+              valence: -0.7,
+              arousal: 0.45,
+            },
+            peak: {
+              valence: -0.7,
+              arousal: 0.45,
+            },
+            end: {
+              valence: -0.55,
+              arousal: 0.35,
+            },
+            dominant_emotion: "anger",
+          },
           confidence: 0.8,
           significance: 0.7,
         },
@@ -381,12 +396,24 @@ describe("episodic extractor", () => {
     const [episode] = await harness.episodicRepository.listAll();
 
     expect(episode?.emotional_arc).not.toBeNull();
-    expect(episode?.emotional_arc?.start.valence ?? 0).toBeLessThan(0);
-    expect(episode?.emotional_arc?.peak.valence ?? 0).toBeLessThan(0);
-    expect(episode?.emotional_arc?.end.valence ?? 0).toBeLessThan(0);
+    expect(episode?.emotional_arc).toMatchObject({
+      start: {
+        valence: -0.7,
+        arousal: 0.45,
+      },
+      peak: {
+        valence: -0.7,
+        arousal: 0.45,
+      },
+      end: {
+        valence: -0.55,
+        arousal: 0.35,
+      },
+      dominant_emotion: "anger",
+    });
   });
 
-  it("prefers perception affective signals when deriving emotional arcs", async () => {
+  it("falls back to perception affective signals when LLM omits emotional arc", async () => {
     const llm = new FakeLLMClient();
     const clock = new ManualClock(1_000);
     const harness = await createOfflineTestHarness({

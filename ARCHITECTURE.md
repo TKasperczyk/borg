@@ -59,8 +59,16 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 6. **Forgetting is a feature.** Decay + win-rate modulation + affect-weighted decay. Unbounded growth kills performance and coherence.
 7. **Honest uncertainty beats false confidence.** Every claim carries confidence + source-type; every retrieval exposes its evidence chain.
 8. **Maintenance is auditable and reversible.** Dry-run, review queue, rollback.
-9. **Resource-bounded autonomy.** Every autonomous action has a cost accounting (LLM tokens, compute).
-10. **Composable over monolithic.** Runtime, memory, reflection, reasoning, skills are separate services with clear contracts.
+9. **LLM-by-default for classification.** Cognitive classifiers (mode,
+   entities, affect, temporal cues, contradiction, goal progress,
+   procedural outcomes, trait evidence, identity-relevant judgments) run
+   as LLM-mediated tool calls by default. Heuristic implementations exist
+   as fallbacks for offline or test environments. Cost is not a design
+   constraint at the OAuth scale borg targets.
+10. **Operationally bounded autonomy.** Autonomous action still accounts
+    for tokens, compute, latency, and rate limits so runs remain observable
+    and schedulable; this is not a mandate to avoid useful LLM calls.
+11. **Composable over monolithic.** Runtime, memory, reflection, reasoning, skills are separate services with clear contracts.
 
 ---
 
@@ -93,7 +101,7 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │    │
 │  │  │  PROCEDURAL  │  │   AFFECTIVE  │  │    SELF / IDENTITY   │  │    │
 │  │  │  (skills,    │  │  (valence,   │  │  (values, goals,     │  │    │
-│  │  │   heuristics,│  │   mood,      │  │   traits, narrative, │  │    │
+│  │  │   outcomes,  │  │   mood,      │  │   traits, narrative, │  │    │
 │  │  │   Bayesian   │  │   mood-      │  │   known blind spots) │  │    │
 │  │  │   priors)    │  │   history)   │  │                      │  │    │
 │  │  └──────────────┘  └──────────────┘  └──────────────────────┘  │    │
@@ -284,10 +292,10 @@ emotional_arc: {
 Mood is sourced from the user's perception (Sprint 18 fix), not the
 agent's own response. It decays continuously and influences retrieval
 weighting -- mood-congruent memories get a salience boost via the
-`mood` weight in the attention formula (Part 5.1).
-Low-confidence perception affect uses the background-model fallback by
-default, capped at one call per user turn, so short subtle messages can
-be classified without unbounded LLM spend.
+`mood` weight in the attention formula (Part 5.1). Perception affect is
+LLM-classified by default when a background model is configured; the
+lexical affect analyzer is an offline/test fallback when no LLM client is
+available.
 
 ### 6. Self / Identity
 
@@ -427,7 +435,7 @@ cannot flatter itself into a warm relationship by speaking warmly.
     turn_completed_ts,
   }?,
   pending_trait_attribution: {
-    trait_label, source_episode_ids,
+    trait_label, strength_delta, source_episode_ids,
     turn_completed_ts, audience_entity_id,
   }?,
   suppressed: [{ id, reason, until_turn }],
@@ -457,10 +465,18 @@ file) but normalized + bounded on every save to stay live-turn-ish.
 
 Per-turn: **Perception → Attention → Deliberation → Action → Reflection**.
 
-**Perception** (fast, deterministic)
-- Parse input, extract entities, detect affective signals, detect temporal cues
-- Update `working.hot_entities`
-- Detect "mode" (problem-solving, relational, reflective, idle)
+**Perception** (LLM-aided classification)
+- Run background-model tool calls in parallel for mode, entities,
+  affective signal, and temporal cues; update `working.hot_entities`
+  from the resulting entity set.
+- Outputs are deterministic given fixed model, seed, prompts, and inputs,
+  but perception is not pure-function deterministic in the old heuristic
+  sense.
+- OAuth-subscription pricing makes per-turn LLM classification calls
+  negligible for borg's target deployment. The substrate prioritizes
+  signal quality over minimizing LLM calls.
+- Heuristic paths remain as fallbacks when LLM clients are unavailable
+  (for example missing config or fake/offline tests).
 
 **Attention** (fast)
 - Context-aware relevance function (9 weighted components):
@@ -491,9 +507,9 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
   `overall` number. Evidence strength gates: weak evidence cannot be
   lifted over the S1/S2 threshold by high coverage or diversity.
   See `src/retrieval/confidence.ts`.
-- Cheap path (System 1): high retrieval confidence + low stakes →
+- Direct path (System 1): high retrieval confidence + low stakes →
   go straight to the response call (with the tool loop -- see Action).
-- Expensive path (System 2): low confidence OR high stakes OR
+- Planned path (System 2): low confidence OR high stakes OR
   contradiction detected → run an `EmitTurnPlan` planner pass first
   (structured tool-use that returns verification_steps, tensions,
   voice_note, uncertainty, referenced_episode_ids, and concrete
@@ -578,10 +594,11 @@ so all maintenance is dry-runnable and reversible.
   LLM-flag `misattribution`, `temporal_drift`, or
   `identity_inconsistency` items above a confidence threshold and
   enqueue review items with structured repair payloads.
-- **Self-narrator** -- cluster episodes by tag, ask the LLM whether
-  each cluster shows a growth observation, write growth markers when
-  it does, manage autobiographical period rollover (close current +
-  open next when themes diverge).
+- **Self-narrator** -- pass candidate episodes to the LLM so it can
+  identify thematic clusters and grounded growth observations, write
+  growth markers when evidence supports them, and manage
+  autobiographical period rollover (close current + open next when
+  themes diverge).
 
 Every `apply()` run emits a `dream_report` stream entry summarizing
 runs / changes / tokens / errors.
@@ -590,11 +607,10 @@ runs / changes / tokens / errors.
 (`src/offline/scheduler.ts`) runs maintenance on two cadences,
 independent of the autonomy scheduler (cognition wakes ≠ housekeeping):
 
-- **Light** (default 4h): consolidator + curator -- cheap,
-  low-risk, frequent.
+- **Light** (default 4h): consolidator + curator -- low-risk,
+  frequent.
 - **Heavy** (default 24h): reflector + overseer + ruminator +
-  self-narrator + procedural-synthesizer -- expensive, higher-risk,
-  conservative.
+  self-narrator + procedural-synthesizer -- higher-risk, conservative.
 
 Sprint 43 note: procedural skill synthesis uses a hybrid design. Online
 reflection records evidence about attempted approaches and outcomes;
@@ -666,9 +682,10 @@ Notes vs. an earlier sketch of this pipeline:
 
 ## Part 6: Novel Contributions
 
-Ranked by value / cost. Implementation status annotated.
+Ranked by architectural value and implementation risk. Implementation
+status annotated.
 
-### High value, moderate cost
+### High value, moderate implementation risk
 
 1. **Typed knowledge graph with `contradicts` + `supports` edges.**
    Implemented; retrieval walks both relations up to depth 2.
@@ -685,7 +702,7 @@ Ranked by value / cost. Implementation status annotated.
    attention. Implemented: `computeWeights(mode)` varies all 9 weight
    components per mode.
 
-### High value, high cost
+### High value, high implementation risk
 
 6. **Dream cycle with insight generation.** Implemented:
    `Reflector` gates by `minSupport`, caps confidence via
@@ -703,7 +720,7 @@ Ranked by value / cost. Implementation status annotated.
    is weak) is still not implemented -- each semantic node/edge
    carries its own confidence in isolation.
 
-### Moderate value, low cost
+### Moderate value, low implementation risk
 
 9. **Reason-tagged suppression list.** Implemented in
    `SuppressionSet` (working memory); reasons stored + TTL applied.

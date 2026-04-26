@@ -16,7 +16,6 @@ export {
 } from "./repository.js";
 export { SkillSelector, type SkillSelectorOptions } from "./selector.js";
 export {
-  isProceduralOutcomeEvidenceGrounded,
   proceduralEvidenceIdSchema,
   proceduralEvidenceSchema,
   proceduralOutcomeClassificationSchema,

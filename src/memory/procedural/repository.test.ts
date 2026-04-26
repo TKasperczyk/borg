@@ -149,7 +149,11 @@ describe("SkillRepository", () => {
     });
 
     expect(second.id).toBe(first.id);
-    expect(harness.proceduralEvidenceRepository.list()).toHaveLength(1);
+    expect(harness.proceduralEvidenceRepository.list()).toEqual([
+      expect.objectContaining({
+        grounded: true,
+      }),
+    ]);
   });
 
   it("does not select a skill below the configured similarity threshold", async () => {

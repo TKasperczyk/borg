@@ -12,7 +12,6 @@ import {
   type Episode,
 } from "../../memory/episodic/index.js";
 import {
-  isProceduralOutcomeEvidenceGrounded,
   proceduralEvidenceIdSchema,
   proceduralEvidenceSchema,
   skillIdSchema,
@@ -37,10 +36,16 @@ import type {
 const CLUSTER_SIMILARITY_THRESHOLD = 0.85;
 const SYNTHESIZER_TOOL_NAME = "EmitProceduralSkillCandidate";
 
+const proceduralSynthesizerRejectionReasonSchema = z.enum([
+  "unusable_abstraction",
+  "centered_proper_noun",
+]);
+
 const skillCandidateSchema = z.object({
   applies_when: z.string().min(1),
   approach: z.string().min(1),
   abstraction_fit: z.enum(["too_narrow", "usable", "too_broad"]),
+  rejection_reason: proceduralSynthesizerRejectionReasonSchema.nullable().default(null),
 });
 
 export const PROCEDURAL_SYNTHESIZER_TOOL = {
@@ -48,11 +53,6 @@ export const PROCEDURAL_SYNTHESIZER_TOOL = {
   description: "Emit a reusable procedural skill candidate from repeated successful attempts.",
   inputSchema: toToolInputSchema(skillCandidateSchema),
 } satisfies LLMToolDefinition;
-
-const proceduralSynthesizerRejectionReasonSchema = z.enum([
-  "unusable_abstraction",
-  "centered_proper_noun",
-]);
 
 const proceduralSynthesizerDedupDecisionSchema = z.object({
   skill_id: skillIdSchema.nullable(),
@@ -100,23 +100,6 @@ type EvidenceCluster = {
   evidence: ProceduralEvidenceRecord[];
   sourceEpisodeIds: EpisodeId[];
 };
-
-const COMMON_PROPER_NOUNS = new Set([
-  "I",
-  "The",
-  "A",
-  "An",
-  "User",
-  "Agent",
-  "Assistant",
-  "Borg",
-  "This",
-  "That",
-  "When",
-  "If",
-  "Use",
-  "Try",
-]);
 
 function cosineSimilarity(left: Float32Array, right: Float32Array): number {
   let dot = 0;
@@ -249,6 +232,7 @@ function buildPrompt(cluster: EvidenceCluster): string {
     "The skill should describe a reusable problem class and concrete checks or moves.",
     "Mark abstraction_fit as too_narrow when the skill is tied to a specific named project, person, or incident.",
     "Mark abstraction_fit as too_broad when it is generic advice rather than a reusable procedure.",
+    "Set rejection_reason to centered_proper_noun when an otherwise usable candidate remains centered on a project/person/product name instead of a reusable class; set unusable_abstraction when abstraction_fit is not usable; otherwise null.",
     `Cluster: ${cluster.key}`,
     "Evidence:",
     ...cluster.evidence.map((evidence) =>
@@ -274,38 +258,6 @@ function parseSkillCandidate(result: LLMCompleteResult) {
   }
 
   return skillCandidateSchema.parse(call.input);
-}
-
-function extractCenteredProperNouns(cluster: EvidenceCluster): string[] {
-  const counts = new Map<string, number>();
-
-  for (const evidence of cluster.evidence) {
-    const text = evidenceEmbeddingText(evidence);
-    const names = new Set(text.match(/\b[A-Z][A-Za-z0-9]{2,}\b/g) ?? []);
-
-    for (const name of names) {
-      if (COMMON_PROPER_NOUNS.has(name)) {
-        continue;
-      }
-
-      counts.set(name, (counts.get(name) ?? 0) + 1);
-    }
-  }
-
-  return [...counts.entries()]
-    .filter(([, count]) => count >= Math.min(2, cluster.evidence.length))
-    .map(([name]) => name);
-}
-
-function containsCenteredProperNoun(
-  candidateAppliesWhen: string,
-  cluster: EvidenceCluster,
-): boolean {
-  return extractCenteredProperNouns(cluster).some((properNoun) =>
-    new RegExp(`\\b${properNoun.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(
-      candidateAppliesWhen,
-    ),
-  );
 }
 
 function buildPlanChange(item: ProceduralSynthesizerPlan["items"][number]): OfflineChange {
@@ -420,7 +372,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
       .filter(
         (evidence) =>
           evidence.classification === "success" &&
-          isProceduralOutcomeEvidenceGrounded(evidence) &&
+          evidence.grounded &&
           isEpisodeInGlobalIdentityScope(
             { audience_entity_id: evidence.audience_entity_id },
             selfAudienceEntityId,
@@ -460,9 +412,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
             const rejectionReason =
               candidate.abstraction_fit !== "usable"
                 ? "unusable_abstraction"
-                : containsCenteredProperNoun(candidate.applies_when, cluster)
-                  ? "centered_proper_noun"
-                  : null;
+                : candidate.rejection_reason;
             const similarSkill =
               rejectionReason !== null
                 ? undefined

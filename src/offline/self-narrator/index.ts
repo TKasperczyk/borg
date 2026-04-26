@@ -34,22 +34,24 @@ import type {
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const GROWTH_MARKER_CONFIDENCE_CEILING = 0.6;
 
+const selfNarratorObservationItemSchema = z.object({
+  theme: z.string().min(1),
+  category: z.enum(GROWTH_MARKER_CATEGORIES),
+  what_changed: z.string().min(1),
+  before_description: z.string().nullable().optional(),
+  after_description: z.string().nullable().optional(),
+  confidence: z.number().min(0).max(1),
+  evidence_episode_ids: z.array(z.string().min(1)).min(2),
+});
+
 const selfNarratorObservationSchema = z.object({
-  observation: z
-    .object({
-      category: z.enum(GROWTH_MARKER_CATEGORIES),
-      what_changed: z.string().min(1),
-      before_description: z.string().nullable().optional(),
-      after_description: z.string().nullable().optional(),
-      confidence: z.number().min(0).max(1),
-      evidence_episode_ids: z.array(z.string().min(1)).min(2),
-    })
-    .nullable(),
+  observations: z.array(selfNarratorObservationItemSchema),
 });
 const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
 export const SELF_NARRATOR_TOOL = {
   name: SELF_NARRATOR_TOOL_NAME,
-  description: "Emit a grounded autobiographical growth observation or null.",
+  description:
+    "Emit grounded autobiographical growth observations from model-identified episode clusters.",
   inputSchema: toToolInputSchema(selfNarratorObservationSchema),
 } satisfies LLMToolDefinition;
 
@@ -99,11 +101,6 @@ export const selfNarratorPlanSchema = z.object({
 
 export type SelfNarratorPlan = z.infer<typeof selfNarratorPlanSchema>;
 
-type NarrativeCluster = {
-  key: string;
-  episodes: Episode[];
-};
-
 type SelfNarratorReversal = {
   previous?: AutobiographicalPeriod;
   period_id?: string;
@@ -125,21 +122,25 @@ function defaultQuarterLabel(nowMs: number): string {
   return `${year}-Q${quarter}`;
 }
 
-function buildObservationPrompt(cluster: NarrativeCluster): string {
+function buildObservationPrompt(
+  episodes: readonly Episode[],
+  minSupportEpisodes: number,
+  maxObservationsPerRun: number,
+): string {
   return [
-    "Infer one concise growth observation from this episode cluster if it shows meaningful change.",
+    "Identify thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
     `Emit your result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
-    "Return null if there is no grounded growth signal.",
+    "Return an empty observations array if there is no grounded growth signal.",
     "Only cite evidence_episode_ids from the provided episodes.",
-    `Cluster: ${cluster.key}`,
+    `Each observation must cite at least ${minSupportEpisodes} episodes.`,
+    `Emit at most ${maxObservationsPerRun} observations.`,
     "Episodes:",
-    ...cluster.episodes.map((episode) =>
+    ...episodes.map((episode) =>
       JSON.stringify({
         id: episode.id,
         title: episode.title,
         narrative: episode.narrative,
-        participants: episode.participants,
-        tags: episode.tags,
+        start_time: episode.start_time,
       }),
     ),
   ].join("\n");
@@ -155,32 +156,6 @@ function parseObservationResponse(result: LLMCompleteResult) {
   }
 
   return selfNarratorObservationSchema.parse(call.input);
-}
-
-function collectClusters(
-  episodes: readonly Episode[],
-  minSupportEpisodes: number,
-  maxObservationsPerRun: number,
-): NarrativeCluster[] {
-  const byKey = new Map<string, Episode[]>();
-
-  for (const episode of episodes) {
-    const key = episode.tags[0]?.trim().toLowerCase() || "untagged";
-    byKey.set(key, [...(byKey.get(key) ?? []), episode]);
-  }
-
-  return [...byKey.entries()]
-    .map(([key, clusterEpisodes]) => ({
-      key,
-      episodes: clusterEpisodes
-        .sort((left, right) => right.updated_at - left.updated_at)
-        .filter(
-          (episode, index, items) => items.findIndex((item) => item.id === episode.id) === index,
-        ),
-    }))
-    .filter((cluster) => cluster.episodes.length >= minSupportEpisodes)
-    .sort((left, right) => right.episodes.length - left.episodes.length)
-    .slice(0, maxObservationsPerRun);
 }
 
 function shouldStartNewPeriod(
@@ -322,37 +297,41 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const selfAudienceEntityId = ctx.entityRepository.findByName("self");
     // Existing global periods and growth markers may already cite older
     // audience-scoped evidence; this write-side guard only prevents new ones.
-    const sourceEpisodes = (await ctx.episodicRepository.listAll()).filter(
-      (episode) =>
-        isEpisodeInGlobalIdentityScope(episode, selfAudienceEntityId) &&
-        (currentPeriod === null ||
-          episode.start_time >= currentPeriod.start_ts ||
-          episode.end_time >= currentPeriod.start_ts),
-    );
-    const clusters = collectClusters(
-      sourceEpisodes,
-      ctx.config.offline.selfNarrator.minSupportEpisodes,
-      ctx.config.offline.selfNarrator.maxObservationsPerRun,
-    );
+    const sourceEpisodes = (await ctx.episodicRepository.listAll())
+      .filter(
+        (episode) =>
+          isEpisodeInGlobalIdentityScope(episode, selfAudienceEntityId) &&
+          (currentPeriod === null ||
+            episode.start_time >= currentPeriod.start_ts ||
+            episode.end_time >= currentPeriod.start_ts),
+      )
+      .sort((left, right) => left.start_time - right.start_time || left.id.localeCompare(right.id));
+    const minSupportEpisodes = ctx.config.offline.selfNarrator.minSupportEpisodes;
+    const maxObservationsPerRun = ctx.config.offline.selfNarrator.maxObservationsPerRun;
     const markerCandidates: Array<z.infer<typeof serializableGrowthMarkerSchema>> = [];
+    const markerThemes: string[] = [];
     let tokensUsed = 0;
     let budgetExhausted = false;
 
-    try {
-      const budgeted = await withBudget(this.name, budget, async ({ wrapClient }) => {
-        const llmClient: LLMClient = wrapClient(ctx.llm.background);
+    if (sourceEpisodes.length >= minSupportEpisodes) {
+      try {
+        const budgeted = await withBudget(this.name, budget, async ({ wrapClient }) => {
+          const llmClient: LLMClient = wrapClient(ctx.llm.background);
 
-        for (const cluster of clusters) {
           try {
             const response = parseObservationResponse(
               await llmClient.complete({
                 model: ctx.config.anthropic.models.background,
                 system:
-                  "You identify grounded autobiographical growth markers. Return null when the evidence is weak.",
+                  "You identify grounded autobiographical growth markers by clustering candidate episodes thematically. Return no observations when the evidence is weak.",
                 messages: [
                   {
                     role: "user",
-                    content: buildObservationPrompt(cluster),
+                    content: buildObservationPrompt(
+                      sourceEpisodes,
+                      minSupportEpisodes,
+                      maxObservationsPerRun,
+                    ),
                   },
                 ],
                 tools: [SELF_NARRATOR_TOOL],
@@ -361,44 +340,45 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                 budget: "offline-self-narrator",
               }),
             );
+            const allowedIds = new Set<string>(sourceEpisodes.map((episode) => episode.id));
 
-            if (response.observation === null) {
-              continue;
+            for (const observation of response.observations.slice(0, maxObservationsPerRun)) {
+              if (observation.evidence_episode_ids.length < minSupportEpisodes) {
+                throw new StorageError("Self-narrator observation cited too few episodes", {
+                  code: "SELF_NARRATOR_INVALID_REF",
+                });
+              }
+
+              if (!observation.evidence_episode_ids.every((id) => allowedIds.has(id))) {
+                throw new StorageError("Self-narrator referenced episodes outside candidates", {
+                  code: "SELF_NARRATOR_INVALID_REF",
+                });
+              }
+
+              const evidenceEpisodeIds = observation.evidence_episode_ids.map(
+                (id) => id as Episode["id"],
+              );
+
+              markerCandidates.push(
+                serializableGrowthMarkerSchema.parse({
+                  id: createGrowthMarkerId(),
+                  ts: nowMs,
+                  category: observation.category,
+                  what_changed: observation.what_changed,
+                  before_description: observation.before_description ?? null,
+                  after_description: observation.after_description ?? null,
+                  evidence_episode_ids: evidenceEpisodeIds,
+                  confidence: Math.min(GROWTH_MARKER_CONFIDENCE_CEILING, observation.confidence),
+                  source_process: "self-narrator",
+                  provenance: {
+                    kind: "offline",
+                    process: "self-narrator",
+                  },
+                  created_at: nowMs,
+                }),
+              );
+              markerThemes.push(observation.theme);
             }
-
-            const allowedIds = new Set<string>(cluster.episodes.map((episode) => episode.id));
-
-            if (!response.observation.evidence_episode_ids.every((id) => allowedIds.has(id))) {
-              throw new StorageError("Self-narrator referenced episodes outside the cluster", {
-                code: "SELF_NARRATOR_INVALID_REF",
-              });
-            }
-
-            const evidenceEpisodeIds = response.observation.evidence_episode_ids.map(
-              (id) => id as Episode["id"],
-            );
-
-            markerCandidates.push(
-              serializableGrowthMarkerSchema.parse({
-                id: createGrowthMarkerId(),
-                ts: nowMs,
-                category: response.observation.category,
-                what_changed: response.observation.what_changed,
-                before_description: response.observation.before_description ?? null,
-                after_description: response.observation.after_description ?? null,
-                evidence_episode_ids: evidenceEpisodeIds,
-                confidence: Math.min(
-                  GROWTH_MARKER_CONFIDENCE_CEILING,
-                  response.observation.confidence,
-                ),
-                source_process: "self-narrator",
-                provenance: {
-                  kind: "offline",
-                  process: "self-narrator",
-                },
-                created_at: nowMs,
-              }),
-            );
           } catch (error) {
             if (error instanceof BudgetExceededError) {
               throw error;
@@ -410,18 +390,18 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               code: error instanceof Error && "code" in error ? String(error.code) : undefined,
             });
           }
-        }
-      });
+        });
 
-      tokensUsed = budgeted.tokens_used;
-    } catch (error) {
-      tokensUsed = getBudgetErrorTokens(error);
-      budgetExhausted = error instanceof BudgetExceededError;
-      errors.push({
-        process: this.name,
-        message: error instanceof Error ? error.message : String(error),
-        code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-      });
+        tokensUsed = budgeted.tokens_used;
+      } catch (error) {
+        tokensUsed = getBudgetErrorTokens(error);
+        budgetExhausted = error instanceof BudgetExceededError;
+        errors.push({
+          process: this.name,
+          message: error instanceof Error ? error.message : String(error),
+          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
+        });
+      }
     }
 
     const observations = markerCandidates.map((marker) => marker.what_changed);
@@ -430,7 +410,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     ).slice(0, 8);
     const themes = uniqueStrings([
       ...markerCandidates.map((marker) => marker.category),
-      ...clusters.map((cluster) => cluster.key),
+      ...markerThemes,
     ]).slice(0, 6);
     const nextLabel =
       configuredLabel.length > 0

@@ -71,6 +71,7 @@ export const pendingSocialAttributionSchema = z.object({
 
 export const pendingTraitAttributionSchema = z.object({
   trait_label: z.string().min(1),
+  strength_delta: z.number().min(0).max(0.2).default(0.05),
   source_episode_ids: z.array(workingEpisodeIdSchema).min(1),
   turn_completed_ts: z.number().finite(),
   audience_entity_id: workingEntityIdSchema.nullable(),

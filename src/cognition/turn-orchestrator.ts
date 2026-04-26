@@ -476,7 +476,7 @@ export class TurnOrchestrator {
             try {
               this.options.traitsRepository.reinforce({
                 label: pendingTraitAttribution.trait_label,
-                delta: 0.05,
+                delta: pendingTraitAttribution.strength_delta,
                 provenance: {
                   kind: "episodes",
                   episode_ids: pendingTraitAttribution.source_episode_ids,
@@ -589,7 +589,10 @@ export class TurnOrchestrator {
         );
         const retrievedEpisodes = retrieval.episodes;
         const retrievedSemantic = retrieval.semantic;
-        const skillSelectionQuery = buildSkillSelectionQuery(input.userMessage, perception.entities);
+        const skillSelectionQuery = buildSkillSelectionQuery(
+          input.userMessage,
+          perception.entities,
+        );
         const selectedSkill =
           perception.mode === "problem_solving"
             ? await this.options.skillSelector.select(skillSelectionQuery, {

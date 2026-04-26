@@ -9,12 +9,7 @@ import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeEmbeddingClient } from "../../embeddings/index.js";
 import { FakeLLMClient } from "../../llm/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
-import {
-  JsonlTracer,
-  NoopTracer,
-  createTurnTracer,
-  type TurnTracer,
-} from "./tracer.js";
+import { JsonlTracer, NoopTracer, createTurnTracer, type TurnTracer } from "./tracer.js";
 
 type TraceEvent = {
   ts: number;
@@ -217,6 +212,24 @@ describe("TurnTracer", () => {
           input_tokens: 12,
           output_tokens: 6,
           stop_reason: "end_turn",
+        },
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_reflection",
+              name: "EmitTurnReflection",
+              input: {
+                advanced_goals: [],
+                procedural_outcomes: [],
+                trait_demonstrations: [],
+                intent_updates: [],
+              },
+            },
+          ],
         },
       ],
     });

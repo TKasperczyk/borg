@@ -59,7 +59,7 @@ describe("tool schemas", () => {
         required: ["label", "description", "confidence", "source_episode_ids"],
       },
       { tool: RUMINATOR_TOOL, required: ["resolution_note", "growth_marker"] },
-      { tool: SELF_NARRATOR_TOOL, required: ["observation"] },
+      { tool: SELF_NARRATOR_TOOL, required: ["observations"] },
       { tool: ENTITY_FALLBACK_TOOL, required: ["entities"] },
       { tool: MODE_FALLBACK_TOOL, required: ["mode"] },
       { tool: AFFECTIVE_FALLBACK_TOOL, required: ["valence", "arousal", "dominant_emotion"] },

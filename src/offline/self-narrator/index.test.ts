@@ -9,6 +9,7 @@ const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
 
 function createSelfNarratorResponse(input: {
   observation: {
+    theme?: string;
     category: string;
     what_changed: string;
     before_description: string | null;
@@ -17,6 +18,21 @@ function createSelfNarratorResponse(input: {
     evidence_episode_ids: string[];
   } | null;
 }) {
+  const observations =
+    input.observation === null
+      ? []
+      : [
+          {
+            theme: input.observation.theme ?? input.observation.category,
+            category: input.observation.category,
+            what_changed: input.observation.what_changed,
+            before_description: input.observation.before_description,
+            after_description: input.observation.after_description,
+            confidence: input.observation.confidence,
+            evidence_episode_ids: input.observation.evidence_episode_ids,
+          },
+        ];
+
   return {
     text: "",
     input_tokens: 40,
@@ -26,7 +42,9 @@ function createSelfNarratorResponse(input: {
       {
         id: "toolu_1",
         name: SELF_NARRATOR_TOOL_NAME,
-        input,
+        input: {
+          observations,
+        },
       },
     ],
   };

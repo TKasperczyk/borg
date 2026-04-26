@@ -45,4 +45,12 @@ export const proceduralMigrations = [
         ON procedural_evidence (audience_entity_id);
     `,
   },
+  {
+    id: 174,
+    name: "add-procedural-evidence-grounded",
+    up: `
+      ALTER TABLE procedural_evidence
+        ADD COLUMN grounded INTEGER NOT NULL DEFAULT 1;
+    `,
+  },
 ] as const satisfies readonly Migration[];
