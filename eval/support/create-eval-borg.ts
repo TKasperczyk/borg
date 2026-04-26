@@ -13,7 +13,6 @@ type EvalConfigOverrides = {
   anthropic?: Partial<Omit<Config["anthropic"], "models">> & {
     models?: Partial<Config["anthropic"]["models"]>;
   };
-  self?: Partial<Config["self"]>;
   procedural?: Partial<Config["procedural"]>;
   offline?: Partial<
     Omit<
@@ -87,10 +86,6 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
         background: "eval-background",
         extraction: "eval-extraction",
       },
-    },
-    self: {
-      ...DEFAULT_CONFIG.self,
-      ...options.config?.self,
     },
     procedural: {
       ...DEFAULT_CONFIG.procedural,

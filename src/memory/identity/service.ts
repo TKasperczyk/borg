@@ -48,7 +48,6 @@ export type IdentityUpdateResult<T> =
   | {
       status: "applied";
       record: T;
-      overwriteWithoutReview: boolean;
     }
   | {
       status: "requires_review";
@@ -70,38 +69,24 @@ export type IdentityServiceOptions = {
 function goalGuardState(current: GoalRecord): IdentityGuardState {
   return {
     state: current.status === "active" ? "established" : "candidate",
-    provenance: current.provenance,
   };
 }
 
 function autobiographicalPeriodGuardState(current: AutobiographicalPeriod): IdentityGuardState {
   return {
     state: "established",
-    provenance: current.provenance,
   };
 }
 
 function growthMarkerGuardState(current: GrowthMarker): IdentityGuardState {
   return {
     state: "established",
-    provenance: current.provenance,
   };
 }
 
 function openQuestionGuardState(current: OpenQuestion): IdentityGuardState {
-  const relatedEpisodeBackedProvenance =
-    current.provenance?.kind === "episodes"
-      ? current.provenance
-      : current.provenance === null && current.related_episode_ids.length > 0
-        ? {
-            kind: "episodes" as const,
-            episode_ids: [...new Set(current.related_episode_ids)],
-          }
-        : (current.provenance ?? undefined);
-
   return {
     state: current.status === "open" ? "established" : "candidate",
-    provenance: relatedEpisodeBackedProvenance,
   };
 }
 
@@ -163,7 +148,6 @@ export class IdentityService {
     return {
       status: "applied",
       record: this.options.valuesRepository.reinforce(valueId, provenance, timestamp),
-      overwriteWithoutReview: decision.overwrite_without_review,
     };
   }
 
@@ -215,7 +199,6 @@ export class IdentityService {
       return {
         status: "applied",
         record: this.options.traitsRepository.reinforce(input),
-        overwriteWithoutReview: false,
       };
     }
 
@@ -235,7 +218,6 @@ export class IdentityService {
     return {
       status: "applied",
       record: this.options.traitsRepository.reinforce(input),
-      overwriteWithoutReview: decision.overwrite_without_review,
     };
   }
 
@@ -259,7 +241,6 @@ export class IdentityService {
       return {
         status: "applied",
         record: current,
-        overwriteWithoutReview: false,
       };
     }
 
@@ -288,10 +269,8 @@ export class IdentityService {
         {
           reason: options.reason,
           reviewItemId: options.reviewItemId,
-          overwriteWithoutReview: decision.overwrite_without_review,
         },
       ),
-      overwriteWithoutReview: decision.overwrite_without_review,
     };
   }
 
@@ -315,7 +294,6 @@ export class IdentityService {
       return {
         status: "applied",
         record: current,
-        overwriteWithoutReview: false,
       };
     }
 
@@ -344,10 +322,8 @@ export class IdentityService {
         {
           reason: options.reason,
           reviewItemId: options.reviewItemId,
-          overwriteWithoutReview: decision.overwrite_without_review,
         },
       ),
-      overwriteWithoutReview: decision.overwrite_without_review,
     };
   }
 
@@ -371,7 +347,6 @@ export class IdentityService {
       return {
         status: "applied",
         record: current,
-        overwriteWithoutReview: false,
       };
     }
 
@@ -400,10 +375,8 @@ export class IdentityService {
         {
           reason: options.reason,
           reviewItemId: options.reviewItemId,
-          overwriteWithoutReview: decision.overwrite_without_review,
         },
       ),
-      overwriteWithoutReview: decision.overwrite_without_review,
     };
   }
 
@@ -427,7 +400,6 @@ export class IdentityService {
       return {
         status: "applied",
         record: current,
-        overwriteWithoutReview: false,
       };
     }
 
@@ -439,7 +411,6 @@ export class IdentityService {
           current.superseded_by === null
             ? "established"
             : "candidate",
-        provenance: current.provenance,
       },
       provenance,
       throughReview: options.throughReview,
@@ -462,7 +433,6 @@ export class IdentityService {
       {
         reason: options.reason,
         reviewItemId: options.reviewItemId,
-        overwriteWithoutReview: decision.overwrite_without_review,
       },
     );
 
@@ -475,7 +445,6 @@ export class IdentityService {
     return {
       status: "applied",
       record,
-      overwriteWithoutReview: decision.overwrite_without_review,
     };
   }
 
@@ -499,7 +468,6 @@ export class IdentityService {
       return {
         status: "applied",
         record: current,
-        overwriteWithoutReview: false,
       };
     }
 
@@ -535,7 +503,6 @@ export class IdentityService {
         reason: options.reason ?? null,
         provenance,
         review_item_id: options.reviewItemId ?? null,
-        overwrite_without_review: decision.overwrite_without_review,
       });
 
       return updated;
@@ -544,7 +511,6 @@ export class IdentityService {
     return {
       status: "applied",
       record,
-      overwriteWithoutReview: decision.overwrite_without_review,
     };
   }
 
@@ -568,7 +534,6 @@ export class IdentityService {
       return {
         status: "applied",
         record: current,
-        overwriteWithoutReview: false,
       };
     }
 
@@ -603,7 +568,6 @@ export class IdentityService {
         reason: options.reason ?? null,
         provenance,
         review_item_id: options.reviewItemId ?? null,
-        overwrite_without_review: decision.overwrite_without_review,
       });
 
       return updated;
@@ -612,7 +576,6 @@ export class IdentityService {
     return {
       status: "applied",
       record,
-      overwriteWithoutReview: decision.overwrite_without_review,
     };
   }
 
@@ -636,7 +599,6 @@ export class IdentityService {
       return {
         status: "applied",
         record: current,
-        overwriteWithoutReview: false,
       };
     }
 
@@ -671,7 +633,6 @@ export class IdentityService {
         reason: options.reason ?? null,
         provenance,
         review_item_id: options.reviewItemId ?? null,
-        overwrite_without_review: decision.overwrite_without_review,
       });
 
       return updated;
@@ -680,7 +641,6 @@ export class IdentityService {
     return {
       status: "applied",
       record,
-      overwriteWithoutReview: decision.overwrite_without_review,
     };
   }
 }

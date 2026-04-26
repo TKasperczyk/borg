@@ -453,8 +453,8 @@ export class ValuesRepository {
   }
 
   /**
-   * @internal Prefer IdentityService.updateValue() so episode-backed established
-   * records cannot bypass review gating.
+   * @internal Prefer IdentityService.updateValue() so established records cannot
+   * bypass review gating.
    */
   update(
     valueId: ValueId,

@@ -130,7 +130,7 @@ describe("SelfNarratorProcess", () => {
     }
   });
 
-  it("closes the current period and opens a new one atomically without losing same-label history", async () => {
+  it("queues period rollover for review without mutating established period history", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createSelfNarratorResponse({
@@ -195,16 +195,29 @@ describe("SelfNarratorProcess", () => {
         ]),
       );
 
+      const nextPeriod = plan.items.find((item) => item.action === "open_period")?.period;
+
       await process.apply(harness.createContext(), plan);
 
+      const reviewItem = harness.reviewQueueRepository.getOpen()[0];
       const periods = harness.autobiographicalRepository.listPeriods({
         limit: 10,
       });
       const matchingLabels = periods.filter((period) => period.label === "2026-Q1");
 
-      expect(matchingLabels).toHaveLength(2);
+      expect(reviewItem).toEqual(
+        expect.objectContaining({
+          kind: "identity_inconsistency",
+          refs: expect.objectContaining({
+            target_type: "autobiographical_period",
+            next_period_open_payload: expect.objectContaining({
+              id: nextPeriod?.id,
+            }),
+          }),
+        }),
+      );
+      expect(matchingLabels).toHaveLength(1);
       expect(matchingLabels[0]?.end_ts).toBeNull();
-      expect(matchingLabels[1]?.end_ts).not.toBeNull();
     } finally {
       await harness.cleanup();
     }

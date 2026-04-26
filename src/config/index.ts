@@ -54,12 +54,6 @@ const configFileSchema = z
       })
       .partial()
       .optional(),
-    self: z
-      .object({
-        autoBootstrapPeriod: z.boolean().optional(),
-      })
-      .partial()
-      .optional(),
     procedural: z
       .object({
         skillSelectionMinSimilarity: z.number().min(0).max(1).optional(),
@@ -291,9 +285,6 @@ export const configSchema = z.object({
         });
       }
     }),
-  self: z.object({
-    autoBootstrapPeriod: z.boolean(),
-  }),
   procedural: z.object({
     skillSelectionMinSimilarity: z.number().min(0).max(1),
   }),
@@ -457,9 +448,6 @@ export const DEFAULT_CONFIG: Config = {
       background: "claude-opus-4-7",
       extraction: "claude-opus-4-7",
     },
-  },
-  self: {
-    autoBootstrapPeriod: true,
   },
   procedural: {
     skillSelectionMinSimilarity: 0.5,
@@ -812,12 +800,6 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           DEFAULT_CONFIG.anthropic.models.extraction,
       },
     },
-    self: {
-      autoBootstrapPeriod:
-        readOptionalEnvBoolean(env, "BORG_SELF_AUTO_BOOTSTRAP_PERIOD") ??
-        fileConfig.self?.autoBootstrapPeriod ??
-        DEFAULT_CONFIG.self.autoBootstrapPeriod,
-    },
     procedural: {
       skillSelectionMinSimilarity:
         readOptionalEnvUnitInterval(env, "BORG_PROCEDURAL_SKILL_SELECTION_MIN_SIMILARITY") ??
@@ -1160,9 +1142,6 @@ export function redactConfig(config: Config): Config {
     anthropic: {
       ...config.anthropic,
       apiKey: redactSecret(config.anthropic.apiKey),
-    },
-    self: {
-      ...config.self,
     },
     procedural: {
       ...config.procedural,

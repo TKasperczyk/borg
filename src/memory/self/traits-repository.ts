@@ -432,8 +432,8 @@ export class TraitsRepository {
   }
 
   /**
-   * @internal Prefer IdentityService.updateTrait() so episode-backed established
-   * records cannot bypass review gating.
+   * @internal Prefer IdentityService.updateTrait() so established records cannot
+   * bypass review gating.
    */
   update(
     traitId: TraitId,

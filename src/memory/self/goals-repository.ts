@@ -285,8 +285,8 @@ export class GoalsRepository {
   }
 
   /**
-   * @internal Prefer IdentityService.updateGoal() so episode-backed established
-   * records cannot bypass review gating.
+   * @internal Prefer IdentityService.updateGoal() so established records cannot
+   * bypass review gating.
    */
   update(
     goalId: GoalId,

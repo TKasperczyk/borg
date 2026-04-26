@@ -2,13 +2,11 @@ import { isEpisodeProvenance, type Provenance } from "../common/provenance.js";
 
 export type IdentityGuardState = {
   state?: "candidate" | "established";
-  provenance?: Provenance;
 };
 
 export type IdentityGuardDecision = {
   allowed: boolean;
   requires_review: boolean;
-  overwrite_without_review: boolean;
 };
 
 export class IdentityGuard {
@@ -21,7 +19,6 @@ export class IdentityGuard {
       return {
         allowed: true,
         requires_review: false,
-        overwrite_without_review: false,
       };
     }
 
@@ -29,34 +26,26 @@ export class IdentityGuard {
       return {
         allowed: true,
         requires_review: false,
-        overwrite_without_review: false,
       };
     }
 
-    if (
-      input.current.state !== "established" ||
-      input.current.provenance === undefined ||
-      !isEpisodeProvenance(input.current.provenance)
-    ) {
+    if (input.current.state !== "established") {
       return {
         allowed: true,
         requires_review: false,
-        overwrite_without_review: false,
       };
     }
 
-    if (input.provenance.kind === "episodes") {
+    if (isEpisodeProvenance(input.provenance)) {
       return {
         allowed: true,
         requires_review: false,
-        overwrite_without_review: false,
       };
     }
 
     return {
       allowed: false,
       requires_review: true,
-      overwrite_without_review: false,
     };
   }
 }

@@ -174,6 +174,102 @@ describe("identity service", () => {
     }
   });
 
+  it("guards established records even when current provenance is non-episode", () => {
+    const harness = createHarness(new FixedClock(1_500));
+
+    try {
+      const value = harness.valuesRepository.add({
+        label: "continuity",
+        description: "Keep identity changes grounded.",
+        priority: 6,
+        provenance: {
+          kind: "system",
+        },
+      });
+      harness.valuesRepository.update(
+        value.id,
+        {
+          state: "established",
+          established_at: 1_500,
+          provenance: {
+            kind: "system",
+          },
+        },
+        {
+          kind: "system",
+        },
+      );
+      const goal = harness.goalsRepository.add({
+        description: "Keep established goals protected",
+        priority: 3,
+        provenance: {
+          kind: "manual",
+        },
+      });
+      const period = harness.autobiographicalRepository.upsertPeriod({
+        label: "2026-Q2",
+        start_ts: 1_000,
+        narrative: "",
+        key_episode_ids: [],
+        themes: [],
+        provenance: {
+          kind: "system",
+        },
+      });
+
+      expect(
+        harness.identity.updateValue(
+          value.id,
+          {
+            description: "Offline rewrite.",
+          },
+          {
+            kind: "offline",
+            process: "reflector",
+          },
+        ),
+      ).toEqual(
+        expect.objectContaining({
+          status: "requires_review",
+        }),
+      );
+      expect(
+        harness.identity.updateGoal(
+          goal.id,
+          {
+            progress_notes: "Offline progress.",
+          },
+          {
+            kind: "offline",
+            process: "reflector",
+          },
+        ),
+      ).toEqual(
+        expect.objectContaining({
+          status: "requires_review",
+        }),
+      );
+      expect(
+        harness.identity.updatePeriod(
+          period.id,
+          {
+            narrative: "Offline rewrite.",
+          },
+          {
+            kind: "offline",
+            process: "self-narrator",
+          },
+        ),
+      ).toEqual(
+        expect.objectContaining({
+          status: "requires_review",
+        }),
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
   it("continues blocking manual trait overwrites after episode-backed promotion", () => {
     const clock = new ManualClock(1_000);
     const harness = createHarness(clock);

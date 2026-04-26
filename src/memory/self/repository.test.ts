@@ -260,7 +260,12 @@ describe("self repositories", () => {
         },
       });
 
-      expect(manual.state).toBe("established");
+      expect(manual).toEqual(
+        expect.objectContaining({
+          state: "candidate",
+          established_at: null,
+        }),
+      );
       expect(candidate.state).toBe("candidate");
 
       values.reinforce(candidate.id, {

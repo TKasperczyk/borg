@@ -91,13 +91,6 @@ export type BuildBorgRepositoriesOptions = {
   tracer?: TurnTracer;
 };
 
-function quarterLabel(timestamp: number): string {
-  const date = new Date(timestamp);
-  const year = date.getUTCFullYear();
-  const quarter = Math.floor(date.getUTCMonth() / 3) + 1;
-  return `${year}-Q${quarter}`;
-}
-
 export async function buildBorgRepositories(
   options: BuildBorgRepositoriesOptions,
 ): Promise<BorgRepositorySetup> {
@@ -194,21 +187,6 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
-
-  if (config.self.autoBootstrapPeriod && autobiographicalRepository.currentPeriod() === null) {
-    const nowMs = clock.now();
-    autobiographicalRepository.upsertPeriod({
-      label: quarterLabel(nowMs),
-      start_ts: nowMs,
-      end_ts: null,
-      narrative: "",
-      key_episode_ids: [],
-      themes: [],
-      provenance: {
-        kind: "system",
-      },
-    });
-  }
 
   const growthMarkersRepository = new GrowthMarkersRepository({
     db: sqlite,

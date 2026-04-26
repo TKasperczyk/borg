@@ -65,9 +65,11 @@ export function resolveValueInitialState(
   switch (provenance.kind) {
     case "manual":
     case "system":
+    case "offline":
+    case "online":
       return {
-        state: "established",
-        established_at: timestamp,
+        state: "candidate",
+        established_at: null,
       };
     case "episodes":
       return {
@@ -77,12 +79,6 @@ export function resolveValueInitialState(
             : "candidate",
         established_at:
           new Set(provenance.episode_ids).size >= VALUE_PROMOTION_THRESHOLD ? timestamp : null,
-      };
-    case "offline":
-    case "online":
-      return {
-        state: "candidate",
-        established_at: null,
       };
   }
 }

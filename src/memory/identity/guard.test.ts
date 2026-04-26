@@ -17,17 +17,12 @@ describe("IdentityGuard", () => {
     ).toEqual({
       allowed: true,
       requires_review: false,
-      overwrite_without_review: false,
     });
 
     expect(
       guard.evaluateChange({
         current: {
           state: "established",
-          provenance: {
-            kind: "episodes",
-            episode_ids: ["ep_aaaaaaaaaaaaaaaa" as const],
-          },
         },
         provenance: {
           kind: "offline",
@@ -38,19 +33,14 @@ describe("IdentityGuard", () => {
     ).toEqual({
       allowed: true,
       requires_review: false,
-      overwrite_without_review: false,
     });
   });
 
-  it("allows non-established or non-episode-backed records without review", () => {
+  it("allows non-established records without review", () => {
     expect(
       guard.evaluateChange({
         current: {
           state: "candidate",
-          provenance: {
-            kind: "episodes",
-            episode_ids: ["ep_aaaaaaaaaaaaaaaa" as const],
-          },
         },
         provenance: {
           kind: "manual",
@@ -59,38 +49,14 @@ describe("IdentityGuard", () => {
     ).toEqual({
       allowed: true,
       requires_review: false,
-      overwrite_without_review: false,
-    });
-
-    expect(
-      guard.evaluateChange({
-        current: {
-          state: "established",
-          provenance: {
-            kind: "system",
-          },
-        },
-        provenance: {
-          kind: "offline",
-          process: "reflector",
-        },
-      }),
-    ).toEqual({
-      allowed: true,
-      requires_review: false,
-      overwrite_without_review: false,
     });
   });
 
-  it("allows episode-backed evidence to update established episode-backed identity silently", () => {
+  it("allows episode-backed evidence to update established identity silently", () => {
     expect(
       guard.evaluateChange({
         current: {
           state: "established",
-          provenance: {
-            kind: "episodes",
-            episode_ids: ["ep_aaaaaaaaaaaaaaaa" as const],
-          },
         },
         provenance: {
           kind: "episodes",
@@ -100,17 +66,12 @@ describe("IdentityGuard", () => {
     ).toEqual({
       allowed: true,
       requires_review: false,
-      overwrite_without_review: false,
     });
   });
 
-  it("requires review for manual, system, and offline overwrites of established episode-backed identity", () => {
+  it("requires review for manual, system, and offline overwrites of established identity", () => {
     const current = {
       state: "established" as const,
-      provenance: {
-        kind: "episodes" as const,
-        episode_ids: ["ep_aaaaaaaaaaaaaaaa" as const],
-      },
     };
 
     expect(
@@ -123,7 +84,6 @@ describe("IdentityGuard", () => {
     ).toEqual({
       allowed: false,
       requires_review: true,
-      overwrite_without_review: false,
     });
 
     expect(
@@ -136,7 +96,6 @@ describe("IdentityGuard", () => {
     ).toEqual({
       allowed: false,
       requires_review: true,
-      overwrite_without_review: false,
     });
 
     expect(
@@ -150,7 +109,6 @@ describe("IdentityGuard", () => {
     ).toEqual({
       allowed: false,
       requires_review: true,
-      overwrite_without_review: false,
     });
   });
 });
