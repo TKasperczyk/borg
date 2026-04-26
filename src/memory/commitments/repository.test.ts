@@ -132,6 +132,60 @@ describe("commitment repository", () => {
     }
   });
 
+  it("applies commitments made to an entity only for that entity by default", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...commitmentMigrations, ...identityMigrations],
+    });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({
+      db,
+      clock,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const alice = entities.resolve("Alice");
+      const bob = entities.resolve("Bob");
+      const madeToAlice = commitments.add({
+        type: "promise",
+        directive: "Send Alice the deployment summary",
+        priority: 5,
+        madeToEntity: alice,
+        provenance: manualProvenance,
+      });
+      const global = commitments.add({
+        type: "rule",
+        directive: "Keep sources attached",
+        priority: 4,
+        provenance: manualProvenance,
+      });
+
+      expect(
+        commitments.getApplicable({
+          audience: alice,
+          nowMs: 1_000,
+        }),
+      ).toEqual([madeToAlice, global]);
+      expect(
+        commitments.getApplicable({
+          audience: bob,
+          nowMs: 1_000,
+        }),
+      ).toEqual([global]);
+      expect(
+        commitments.getApplicable({
+          audience: null,
+          nowMs: 1_000,
+        }),
+      ).toEqual([global]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("can look up an entity by name without creating one", () => {
     const db = openDatabase(":memory:", {
       migrations: commitmentMigrations,

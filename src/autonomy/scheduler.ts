@@ -36,7 +36,7 @@ export type AutonomySchedulerStopOptions = {
 export type AutonomySchedulerOptions = {
   enabled: boolean;
   intervalMs: number;
-  maxWakesPerHour: number;
+  maxWakesPerWindow: number;
   budgetWindowMs: number;
   sessionId?: SessionId;
   clock?: Clock;
@@ -172,7 +172,7 @@ export class AutonomyScheduler {
           const budgetCutoff = this.clock.now() - this.options.budgetWindowMs;
 
           if (
-            this.options.wakeRepository.countSince(budgetCutoff) >= this.options.maxWakesPerHour
+            this.options.wakeRepository.countSince(budgetCutoff) >= this.options.maxWakesPerWindow
           ) {
             budgetSkipped += 1;
             eventResults.push({

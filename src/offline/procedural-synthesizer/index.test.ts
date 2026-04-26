@@ -7,7 +7,12 @@ import type { EmbeddingClient } from "../../embeddings/index.js";
 import { SuppressionSet } from "../../cognition/attention/index.js";
 import { Reflector } from "../../cognition/reflection/index.js";
 import type { RetrievalConfidence } from "../../retrieval/index.js";
-import { DEFAULT_SESSION_ID, createStreamEntryId, type EntityId } from "../../util/ids.js";
+import {
+  DEFAULT_SESSION_ID,
+  createStreamEntryId,
+  type EntityId,
+  type SkillId,
+} from "../../util/ids.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -16,9 +21,7 @@ import {
 
 import { ProceduralSynthesizerProcess } from "./index.js";
 
-function proceduralConfig(
-  overrides: Partial<typeof DEFAULT_CONFIG.offline.proceduralSynthesizer>,
-) {
+function proceduralConfig(overrides: Partial<typeof DEFAULT_CONFIG.offline.proceduralSynthesizer>) {
   return {
     offline: {
       ...DEFAULT_CONFIG.offline,
@@ -34,11 +37,13 @@ function createSkillCandidateResponse(input: {
   applies_when: string;
   approach?: string;
   abstraction_fit?: "too_narrow" | "usable" | "too_broad";
+  inputTokens?: number;
+  outputTokens?: number;
 }) {
   return {
     text: "",
-    input_tokens: 10,
-    output_tokens: 5,
+    input_tokens: input.inputTokens ?? 10,
+    output_tokens: input.outputTokens ?? 5,
     stop_reason: "tool_use",
     tool_calls: [
       {
@@ -46,7 +51,8 @@ function createSkillCandidateResponse(input: {
         name: "EmitProceduralSkillCandidate",
         input: {
           applies_when: input.applies_when,
-          approach: input.approach ?? "Compare the failing state against the last known-good state.",
+          approach:
+            input.approach ?? "Compare the failing state against the last known-good state.",
           abstraction_fit: input.abstraction_fit ?? "usable",
         },
       },
@@ -94,6 +100,7 @@ async function addSuccessEvidence(
     approachSummary?: string;
     evidenceText?: string;
     audienceEntityId?: EntityId | null;
+    selectedSkillId?: SkillId | null;
   } = {},
 ) {
   const sourceStreamIds = [createStreamEntryId(), createStreamEntryId()];
@@ -116,7 +123,7 @@ async function addSuccessEvidence(
       problem_text: input.problemText ?? "Atlas deploy failed after rollback.",
       approach_summary:
         input.approachSummary ?? "Compare the failing deploy state to the last clean release.",
-      selected_skill_id: null,
+      selected_skill_id: input.selectedSkillId ?? null,
       source_stream_ids: sourceStreamIds,
       turn_counter: 1,
       audience_entity_id: input.audienceEntityId ?? null,
@@ -184,48 +191,229 @@ describe("ProceduralSynthesizerProcess", () => {
     expect(plan.items).toEqual([]);
   });
 
-  it.each([
-    { similarity: 0.87, expectedSkillCount: 2 },
-    { similarity: 0.89, expectedSkillCount: 1 },
-  ])("uses the dedup threshold boundary at $similarity", async ({ similarity, expectedSkillCount }) => {
+  it("plans the LLM-generated skill text and applies without another LLM call", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillCandidateResponse({
+          applies_when: "deployment rollback comparison",
+          approach: "Compare the failing deploy state against the last clean release.",
+        }),
+      ],
+    });
     harness = await createOfflineTestHarness({
-      embeddingClient: new BoundaryEmbeddingClient(similarity),
-      configOverrides: proceduralConfig({ minSupport: 2, dedupThreshold: 0.88 }),
+      configOverrides: proceduralConfig({ minSupport: 2 }),
+      llmClient: llm,
+    });
+    await addSuccessEvidence(harness);
+    await addSuccessEvidence(harness, {
+      problemText: "Atlas deploy failed after a second rollback.",
+    });
+
+    const process = createProcess(harness);
+    const plan = await process.plan(harness.createContext());
+    const preview = process.preview(plan);
+
+    expect(plan.items[0]).toMatchObject({
+      candidate: {
+        applies_when: "deployment rollback comparison",
+        approach: "Compare the failing deploy state against the last clean release.",
+      },
+      dedup_decision: {
+        skill_id: null,
+      },
+      rejection_reason: null,
+    });
+    expect(preview.changes[0]?.preview).toMatchObject({
+      applies_when: "deployment rollback comparison",
+      approach: "Compare the failing deploy state against the last clean release.",
+    });
+    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests[0]?.max_tokens).toBe(1_500);
+
+    const result = await process.apply(harness.createContext(), plan);
+
+    expect(result.errors).toEqual([]);
+    expect(llm.requests).toHaveLength(1);
+    expect(harness.skillRepository.list()).toEqual([
+      expect.objectContaining({
+        applies_when: "deployment rollback comparison",
+      }),
+    ]);
+  });
+
+  it("records one synthesized posterior outcome per supporting evidence row", async () => {
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({ minSupport: 3 }),
       llmClient: new FakeLLMClient({
         responses: [
           createSkillCandidateResponse({
-            applies_when: "candidate boundary skill",
+            applies_when: "deployment rollback comparison",
+          }),
+        ],
+      }),
+    });
+    await addSuccessEvidence(harness);
+    await addSuccessEvidence(harness, {
+      problemText: "Atlas deploy failed after a second rollback.",
+    });
+    await addSuccessEvidence(harness, {
+      problemText: "Atlas deploy failed after a third rollback.",
+    });
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+    const [skill] = harness.skillRepository.list();
+
+    expect(result.errors).toEqual([]);
+    expect(skill).toMatchObject({
+      alpha: 5,
+      attempts: 3,
+      successes: 3,
+    });
+  });
+
+  it("does not duplicate live-recorded selected skill outcomes during synthesis", async () => {
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({ minSupport: 2 }),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSkillCandidateResponse({
+            applies_when: "deployment rollback comparison",
           }),
         ],
       }),
     });
     const sourceEpisode = await harness.episodicRepository.insert(createEpisodeFixture());
     const existing = await harness.skillRepository.add({
-      applies_when: "existing boundary skill",
+      applies_when: "deployment rollback comparison",
       approach: "Existing approach.",
       sourceEpisodes: [sourceEpisode.id],
     });
-    await addSuccessEvidence(harness, {
-      problemText: "boundary problem one",
-      approachSummary: "boundary approach",
+    const first = await addSuccessEvidence(harness, {
+      selectedSkillId: existing.id,
     });
-    await addSuccessEvidence(harness, {
-      problemText: "boundary problem two",
-      approachSummary: "boundary approach",
+    const second = await addSuccessEvidence(harness, {
+      problemText: "Atlas deploy failed after a second rollback.",
+      selectedSkillId: existing.id,
     });
+
+    for (const evidence of [first, second]) {
+      harness.skillRepository.recordOutcome(existing.id, true, evidence.resolved_episode_ids);
+    }
 
     const process = createProcess(harness);
     const result = await process.run(harness.createContext(), {});
 
     expect(result.errors).toEqual([]);
-    expect(harness.skillRepository.list(10)).toHaveLength(expectedSkillCount);
-    if (similarity >= 0.88) {
-      expect(harness.skillRepository.get(existing.id)).toMatchObject({
-        attempts: 1,
-        successes: 1,
-      });
-    }
+    expect(harness.skillRepository.get(existing.id)).toMatchObject({
+      attempts: 2,
+      successes: 2,
+    });
   });
+
+  it("uses the default budget for two cluster syntheses and aborts the third cleanly", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillCandidateResponse({
+          applies_when: "deployment rollback comparison",
+          inputTokens: 1_000,
+          outputTokens: 500,
+        }),
+        createSkillCandidateResponse({
+          applies_when: "roadmap planning comparison",
+          inputTokens: 1_000,
+          outputTokens: 500,
+        }),
+        createSkillCandidateResponse({
+          applies_when: "reflective habit comparison",
+          inputTokens: 1_000,
+          outputTokens: 500,
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    await addSuccessEvidence(harness, {
+      problemText: "Atlas deploy failed after rollback.",
+      approachSummary: "Compare the failing deploy state to the last clean release.",
+    });
+    await addSuccessEvidence(harness, {
+      problemText: "Atlas deploy failed after another rollback.",
+      approachSummary: "Compare the failing deploy state to the last clean release.",
+    });
+    await addSuccessEvidence(harness, {
+      problemText: "Sprint roadmap plan stalled.",
+      approachSummary: "Compare the plan against the goal list.",
+    });
+    await addSuccessEvidence(harness, {
+      problemText: "Sprint planning roadmap stalled again.",
+      approachSummary: "Compare the plan against the goal list.",
+    });
+    await addSuccessEvidence(harness, {
+      problemText: "Reflective habit insight was hard to apply.",
+      approachSummary: "Compare the reflection pattern against prior insight notes.",
+    });
+    await addSuccessEvidence(harness, {
+      problemText: "Reflective pattern insight stalled again.",
+      approachSummary: "Compare the reflection pattern against prior insight notes.",
+    });
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+
+    expect(result.budget_exhausted).toBe(true);
+    expect(result.changes).toHaveLength(2);
+    expect(harness.skillRepository.list()).toHaveLength(2);
+    expect(llm.requests).toHaveLength(3);
+    expect(llm.requests.map((request) => request.max_tokens)).toEqual([1_500, 1_500, 1_500]);
+  });
+
+  it.each([
+    { similarity: 0.87, expectedSkillCount: 2 },
+    { similarity: 0.89, expectedSkillCount: 1 },
+  ])(
+    "uses the dedup threshold boundary at $similarity",
+    async ({ similarity, expectedSkillCount }) => {
+      harness = await createOfflineTestHarness({
+        embeddingClient: new BoundaryEmbeddingClient(similarity),
+        configOverrides: proceduralConfig({ minSupport: 2, dedupThreshold: 0.88 }),
+        llmClient: new FakeLLMClient({
+          responses: [
+            createSkillCandidateResponse({
+              applies_when: "candidate boundary skill",
+            }),
+          ],
+        }),
+      });
+      const sourceEpisode = await harness.episodicRepository.insert(createEpisodeFixture());
+      const existing = await harness.skillRepository.add({
+        applies_when: "existing boundary skill",
+        approach: "Existing approach.",
+        sourceEpisodes: [sourceEpisode.id],
+      });
+      await addSuccessEvidence(harness, {
+        problemText: "boundary problem one",
+        approachSummary: "boundary approach",
+      });
+      await addSuccessEvidence(harness, {
+        problemText: "boundary problem two",
+        approachSummary: "boundary approach",
+      });
+
+      const process = createProcess(harness);
+      const result = await process.run(harness.createContext(), {});
+
+      expect(result.errors).toEqual([]);
+      expect(harness.skillRepository.list(10)).toHaveLength(expectedSkillCount);
+      if (similarity >= 0.88) {
+        expect(harness.skillRepository.get(existing.id)).toMatchObject({
+          attempts: 2,
+          successes: 2,
+        });
+      }
+    },
+  );
 
   it("excludes private audience evidence from synthesis", async () => {
     harness = await createOfflineTestHarness({

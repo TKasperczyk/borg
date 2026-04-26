@@ -144,6 +144,53 @@ describe("Borg", () => {
     }
   });
 
+  it("exposes self writes through the identity guard instead of raw repositories", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const value = borg.self.values.add({
+        label: "evidence-backed clarity",
+        description: "Prefer evidence-backed changes.",
+        priority: 5,
+        provenance: {
+          kind: "episodes",
+          episode_ids: [createEpisodeId(), createEpisodeId(), createEpisodeId()],
+        },
+      });
+
+      expect(value.state).toBe("established");
+      expect("remove" in (borg.self.values as Record<string, unknown>)).toBe(false);
+      expect("recordContradiction" in (borg.self.values as Record<string, unknown>)).toBe(false);
+
+      const result = borg.self.values.update(
+        value.id,
+        {
+          description: "Manual overwrite should not bypass review.",
+        },
+        {
+          kind: "manual",
+        },
+      );
+
+      expect(result).toEqual({
+        status: "requires_review",
+        current: value,
+      });
+      expect(borg.self.values.get(value.id)?.description).toBe("Prefer evidence-backed changes.");
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("defaults episodic public APIs to public-only visibility unless audience access is explicit", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -2349,7 +2396,7 @@ describe("Borg", () => {
         autonomy: {
           enabled: true,
           intervalMs: 60_000,
-          maxWakesPerHour: 6,
+          maxWakesPerWindow: 6,
           budgetWindowMs: 86_400_000,
           triggers: {
             commitmentExpiring: {
@@ -2991,7 +3038,7 @@ describe("Borg", () => {
         autonomy: {
           enabled: true,
           intervalMs: 60_000,
-          maxWakesPerHour: 6,
+          maxWakesPerWindow: 6,
           budgetWindowMs: 86_400_000,
           triggers: {
             commitmentExpiring: {

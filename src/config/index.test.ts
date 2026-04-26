@@ -42,6 +42,24 @@ describe("config", () => {
     expect(config.offline.curator.episodeSalienceHalfLifeDays).toBe(30);
     expect(config.offline.curator.episodeHeatHalfLifeDays).toBe(7);
     expect(config.offline.curator.traitHalfLifeDays).toBe(30);
+    expect(config.autonomy.maxWakesPerWindow).toBe(6);
+    expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
+  });
+
+  it("names the autonomy wake cap for the configured rolling window", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_AUTONOMY_MAX_WAKES_PER_WINDOW: "9",
+        BORG_AUTONOMY_BUDGET_WINDOW_MS: "7200000",
+      },
+    });
+
+    expect(config.autonomy.maxWakesPerWindow).toBe(9);
+    expect(config.autonomy.budgetWindowMs).toBe(7_200_000);
   });
 
   it("merges config file values with environment overrides", () => {

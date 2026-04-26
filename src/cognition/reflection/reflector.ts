@@ -148,14 +148,14 @@ function episodeUsed(result: RetrievedEpisode, response: string): boolean {
 function buildReflectionProvenance(retrievedEpisodes: readonly RetrievedEpisode[]) {
   const episodeIds = [...new Set(retrievedEpisodes.slice(0, 3).map((result) => result.episode.id))];
   return episodeIds.length > 0
-    ? ({
+    ? {
         kind: "episodes" as const,
         episode_ids: episodeIds,
-      })
-    : ({
+      }
+    : {
         kind: "online" as const,
         process: "reflector",
-      });
+      };
 }
 
 function buildReflectionQuestion(userMessage: string, entities: readonly string[]): string {
@@ -367,53 +367,50 @@ export class Reflector {
     const pendingProceduralAttempt = context.workingMemory.pending_procedural_attempt;
     const proceduralOutcome = reflectionOutput.procedural_outcomes[0];
 
-    if (
-      pendingProceduralAttempt !== null &&
-      proceduralOutcome !== undefined &&
-      context.proceduralEvidenceRepository !== undefined
-    ) {
-      const grounded = isProceduralOutcomeEvidenceGrounded({
-        classification: proceduralOutcome.classification,
-        evidence_text: proceduralOutcome.evidence,
-      });
-
+    if (pendingProceduralAttempt !== null) {
       try {
-        const resolvedEpisodeIds = grounded
-          ? await resolveAttemptEpisodeIds(context, pendingProceduralAttempt.source_stream_ids)
-          : [];
-
-        if (grounded) {
-          context.proceduralEvidenceRepository.insert({
-            pendingAttemptSnapshot: pendingProceduralAttempt,
+        if (proceduralOutcome !== undefined && context.proceduralEvidenceRepository !== undefined) {
+          const grounded = isProceduralOutcomeEvidenceGrounded({
             classification: proceduralOutcome.classification,
-            evidenceText: proceduralOutcome.evidence,
-            resolvedEpisodeIds,
-            audienceEntityId: pendingProceduralAttempt.audience_entity_id,
+            evidence_text: proceduralOutcome.evidence,
           });
+          const resolvedEpisodeIds = grounded
+            ? await resolveAttemptEpisodeIds(context, pendingProceduralAttempt.source_stream_ids)
+            : [];
 
-          if (
-            pendingProceduralAttempt.selected_skill_id !== null &&
-            (proceduralOutcome.classification === "success" ||
-              proceduralOutcome.classification === "failure") &&
-            context.skillRepository !== undefined
-          ) {
-            context.skillRepository.recordOutcome(
-              pendingProceduralAttempt.selected_skill_id,
-              proceduralOutcome.classification === "success",
+          if (grounded) {
+            context.proceduralEvidenceRepository.insert({
+              pendingAttemptSnapshot: pendingProceduralAttempt,
+              classification: proceduralOutcome.classification,
+              evidenceText: proceduralOutcome.evidence,
               resolvedEpisodeIds,
-            );
+              audienceEntityId: pendingProceduralAttempt.audience_entity_id,
+            });
+
+            if (
+              pendingProceduralAttempt.selected_skill_id !== null &&
+              (proceduralOutcome.classification === "success" ||
+                proceduralOutcome.classification === "failure") &&
+              context.skillRepository !== undefined
+            ) {
+              context.skillRepository.recordOutcome(
+                pendingProceduralAttempt.selected_skill_id,
+                proceduralOutcome.classification === "success",
+                resolvedEpisodeIds,
+              );
+            }
           }
         }
-
-        nextWorkingMemory = {
-          ...nextWorkingMemory,
-          pending_procedural_attempt: null,
-          last_selected_skill_id: null,
-          last_selected_skill_turn: null,
-        };
       } catch (error) {
         await appendInternalFailureEvent(streamWriter, "procedural_evidence_record", error);
       }
+
+      nextWorkingMemory = {
+        ...nextWorkingMemory,
+        pending_procedural_attempt: null,
+        last_selected_skill_id: null,
+        last_selected_skill_turn: null,
+      };
     }
 
     return nextWorkingMemory;
@@ -472,12 +469,11 @@ export class Reflector {
 
     const parsed = reflectionOutputSchema.safeParse(toolCall.input);
 
-    return parsed.success
-      ? parsed.data
-      : {
-          advanced_goals: [],
-          procedural_outcomes: [],
-        };
+    if (!parsed.success) {
+      throw parsed.error;
+    }
+
+    return parsed.data;
   }
 }
 

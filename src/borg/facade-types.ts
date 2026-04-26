@@ -61,9 +61,60 @@ export type BorgEpisodicFacade = {
 };
 
 export type BorgSelfFacade = {
-  values: ValuesRepository;
-  goals: GoalsRepository;
-  traits: TraitsRepository;
+  values: {
+    get: (...args: Parameters<ValuesRepository["get"]>) => ReturnType<ValuesRepository["get"]>;
+    list: (...args: Parameters<ValuesRepository["list"]>) => ReturnType<ValuesRepository["list"]>;
+    add: (
+      ...args: Parameters<IdentityService["addValue"]>
+    ) => ReturnType<IdentityService["addValue"]>;
+    update: (
+      ...args: Parameters<IdentityService["updateValue"]>
+    ) => ReturnType<IdentityService["updateValue"]>;
+    reinforce: (
+      ...args: Parameters<IdentityService["reinforceValue"]>
+    ) => ReturnType<IdentityService["reinforceValue"]>;
+    listReinforcementEvents: (
+      ...args: Parameters<ValuesRepository["listReinforcementEvents"]>
+    ) => ReturnType<ValuesRepository["listReinforcementEvents"]>;
+    listContradictionEvents: (
+      ...args: Parameters<ValuesRepository["listContradictionEvents"]>
+    ) => ReturnType<ValuesRepository["listContradictionEvents"]>;
+  };
+  goals: {
+    get: (...args: Parameters<GoalsRepository["get"]>) => ReturnType<GoalsRepository["get"]>;
+    list: (...args: Parameters<GoalsRepository["list"]>) => ReturnType<GoalsRepository["list"]>;
+    add: (
+      ...args: Parameters<IdentityService["addGoal"]>
+    ) => ReturnType<IdentityService["addGoal"]>;
+    update: (
+      ...args: Parameters<IdentityService["updateGoal"]>
+    ) => ReturnType<IdentityService["updateGoal"]>;
+    updateStatus: (
+      ...args: Parameters<IdentityService["updateGoalStatus"]>
+    ) => ReturnType<IdentityService["updateGoalStatus"]>;
+    updateProgress: (
+      ...args: Parameters<IdentityService["updateGoalProgress"]>
+    ) => ReturnType<IdentityService["updateGoalProgress"]>;
+  };
+  traits: {
+    get: (...args: Parameters<TraitsRepository["get"]>) => ReturnType<TraitsRepository["get"]>;
+    list: (...args: Parameters<TraitsRepository["list"]>) => ReturnType<TraitsRepository["list"]>;
+    add: (
+      ...args: Parameters<IdentityService["addTrait"]>
+    ) => ReturnType<IdentityService["addTrait"]>;
+    update: (
+      ...args: Parameters<IdentityService["updateTrait"]>
+    ) => ReturnType<IdentityService["updateTrait"]>;
+    reinforce: (
+      ...args: Parameters<IdentityService["reinforceTrait"]>
+    ) => ReturnType<IdentityService["reinforceTrait"]>;
+    listReinforcementEvents: (
+      ...args: Parameters<TraitsRepository["listReinforcementEvents"]>
+    ) => ReturnType<TraitsRepository["listReinforcementEvents"]>;
+    listContradictionEvents: (
+      ...args: Parameters<TraitsRepository["listContradictionEvents"]>
+    ) => ReturnType<TraitsRepository["listContradictionEvents"]>;
+  };
   autobiographical: {
     currentPeriod: () => ReturnType<AutobiographicalRepository["currentPeriod"]>;
     listPeriods: (

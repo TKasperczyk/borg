@@ -114,7 +114,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
   return new AutonomyScheduler({
     enabled: options.config.autonomy.enabled,
     intervalMs: options.config.autonomy.intervalMs,
-    maxWakesPerHour: options.config.autonomy.maxWakesPerHour,
+    maxWakesPerWindow: options.config.autonomy.maxWakesPerWindow,
     budgetWindowMs: options.config.autonomy.budgetWindowMs,
     clock: options.clock,
     createStreamWriter: options.createStreamWriter,

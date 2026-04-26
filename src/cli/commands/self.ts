@@ -133,7 +133,15 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
       if (action === "affirm") {
         const valueId = resolveValueId(arg);
         await withBorg(options, async (borg) => {
-          borg.self.values.affirm(valueId);
+          borg.self.values.update(
+            valueId,
+            {
+              last_affirmed: Date.now(),
+            },
+            {
+              kind: "manual",
+            },
+          );
         });
         writeLine(stdout, JSON.stringify({ id: valueId, affirmed: true }));
         return;

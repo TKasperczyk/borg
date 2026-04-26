@@ -28,6 +28,7 @@ import {
 import {
   goalPatchSchema,
   type GoalRecord,
+  type GoalStatus,
   traitPatchSchema,
   valuePatchSchema,
   type TraitRecord,
@@ -115,6 +116,127 @@ export class IdentityService {
     ...args: Parameters<IdentityEventRepository["list"]>
   ): ReturnType<IdentityEventRepository["list"]> {
     return this.options.identityEventRepository.list(...args);
+  }
+
+  addValue(input: Parameters<ValuesRepository["add"]>[0]): ValueRecord {
+    const decision = this.guard.evaluateChange({
+      current: null,
+      provenance: input.provenance,
+    });
+
+    if (!decision.allowed) {
+      throw new StorageError("Value creation unexpectedly required review", {
+        code: "IDENTITY_GUARD_CREATE_REJECTED",
+      });
+    }
+
+    return this.options.valuesRepository.add(input);
+  }
+
+  reinforceValue(
+    valueId: ValueRecord["id"],
+    provenance: Provenance,
+    timestamp?: number,
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<ValueRecord> {
+    const current = this.options.valuesRepository.get(valueId);
+
+    if (current === null) {
+      throw new StorageError(`Unknown value id: ${valueId}`, {
+        code: "VALUE_NOT_FOUND",
+      });
+    }
+
+    const decision = this.guard.evaluateChange({
+      current,
+      provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    return {
+      status: "applied",
+      record: this.options.valuesRepository.reinforce(valueId, provenance, timestamp),
+      overwriteWithoutReview: decision.overwrite_without_review,
+    };
+  }
+
+  addGoal(input: Parameters<GoalsRepository["add"]>[0]): GoalRecord {
+    const decision = this.guard.evaluateChange({
+      current: null,
+      provenance: input.provenance,
+    });
+
+    if (!decision.allowed) {
+      throw new StorageError("Goal creation unexpectedly required review", {
+        code: "IDENTITY_GUARD_CREATE_REJECTED",
+      });
+    }
+
+    return this.options.goalsRepository.add(input);
+  }
+
+  updateGoalStatus(
+    goalId: GoalRecord["id"],
+    status: GoalStatus,
+    provenance: Provenance,
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<GoalRecord> {
+    return this.updateGoal(goalId, { status }, provenance, options);
+  }
+
+  updateGoalProgress(
+    goalId: GoalRecord["id"],
+    progressNotes: string,
+    provenance: Provenance,
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<GoalRecord> {
+    return this.updateGoal(goalId, { progress_notes: progressNotes }, provenance, options);
+  }
+
+  addTrait(input: Parameters<TraitsRepository["reinforce"]>[0]): IdentityUpdateResult<TraitRecord> {
+    return this.reinforceTrait(input);
+  }
+
+  reinforceTrait(
+    input: Parameters<TraitsRepository["reinforce"]>[0],
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<TraitRecord> {
+    const current =
+      this.options.traitsRepository.list().find((trait) => trait.label === input.label) ?? null;
+
+    if (current === null) {
+      return {
+        status: "applied",
+        record: this.options.traitsRepository.reinforce(input),
+        overwriteWithoutReview: false,
+      };
+    }
+
+    const decision = this.guard.evaluateChange({
+      current,
+      provenance: input.provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    return {
+      status: "applied",
+      record: this.options.traitsRepository.reinforce(input),
+      overwriteWithoutReview: decision.overwrite_without_review,
+    };
   }
 
   updateValue(

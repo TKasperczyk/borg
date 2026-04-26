@@ -184,7 +184,7 @@ const configFileSchema = z
       .object({
         enabled: z.boolean().optional(),
         intervalMs: z.number().int().positive().optional(),
-        maxWakesPerHour: z.number().int().positive().optional(),
+        maxWakesPerWindow: z.number().int().positive().optional(),
         budgetWindowMs: z.number().int().positive().optional(),
         triggers: z
           .object({
@@ -383,7 +383,7 @@ export const configSchema = z.object({
   autonomy: z.object({
     enabled: z.boolean(),
     intervalMs: z.number().int().positive(),
-    maxWakesPerHour: z.number().int().positive(),
+    maxWakesPerWindow: z.number().int().positive(),
     budgetWindowMs: z.number().int().positive(),
     triggers: z.object({
       commitmentExpiring: z.object({
@@ -527,12 +527,18 @@ export const DEFAULT_CONFIG: Config = {
     lightIntervalMs: 14_400_000,
     heavyIntervalMs: 86_400_000,
     lightProcesses: ["consolidator", "curator"],
-    heavyProcesses: ["reflector", "overseer", "ruminator", "self-narrator", "procedural-synthesizer"],
+    heavyProcesses: [
+      "reflector",
+      "overseer",
+      "ruminator",
+      "self-narrator",
+      "procedural-synthesizer",
+    ],
   },
   autonomy: {
     enabled: false,
     intervalMs: 60_000,
-    maxWakesPerHour: 6,
+    maxWakesPerWindow: 6,
     budgetWindowMs: 86_400_000,
     triggers: {
       commitmentExpiring: {
@@ -1021,10 +1027,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         readOptionalEnvNumber(env, "BORG_AUTONOMY_INTERVAL_MS") ??
         fileConfig.autonomy?.intervalMs ??
         DEFAULT_CONFIG.autonomy.intervalMs,
-      maxWakesPerHour:
-        readOptionalEnvNumber(env, "BORG_AUTONOMY_MAX_WAKES_PER_HOUR") ??
-        fileConfig.autonomy?.maxWakesPerHour ??
-        DEFAULT_CONFIG.autonomy.maxWakesPerHour,
+      maxWakesPerWindow:
+        readOptionalEnvNumber(env, "BORG_AUTONOMY_MAX_WAKES_PER_WINDOW") ??
+        fileConfig.autonomy?.maxWakesPerWindow ??
+        DEFAULT_CONFIG.autonomy.maxWakesPerWindow,
       budgetWindowMs:
         readOptionalEnvNumber(env, "BORG_AUTONOMY_BUDGET_WINDOW_MS") ??
         fileConfig.autonomy?.budgetWindowMs ??

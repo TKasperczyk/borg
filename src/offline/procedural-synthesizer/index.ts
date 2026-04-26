@@ -49,10 +49,23 @@ export const PROCEDURAL_SYNTHESIZER_TOOL = {
   inputSchema: toToolInputSchema(skillCandidateSchema),
 } satisfies LLMToolDefinition;
 
+const proceduralSynthesizerRejectionReasonSchema = z.enum([
+  "unusable_abstraction",
+  "centered_proper_noun",
+]);
+
+const proceduralSynthesizerDedupDecisionSchema = z.object({
+  skill_id: skillIdSchema.nullable(),
+  similarity: z.number().min(0).max(1).nullable(),
+});
+
 const proceduralSynthesizerPlanItemSchema = z.object({
   cluster_key: z.string().min(1),
   evidence: z.array(proceduralEvidenceSchema).min(2),
   source_episode_ids: z.array(episodeIdSchema).min(1),
+  candidate: skillCandidateSchema,
+  dedup_decision: proceduralSynthesizerDedupDecisionSchema,
+  rejection_reason: proceduralSynthesizerRejectionReasonSchema.nullable(),
 });
 
 export const proceduralSynthesizerPlanSchema = z.object({
@@ -222,12 +235,11 @@ async function collectEvidenceClusters(
     });
   }
 
-  return clusters
-    .sort(
-      (left, right) =>
-        right.evidence.length - left.evidence.length ||
-        left.evidence[0]!.created_at - right.evidence[0]!.created_at,
-    );
+  return clusters.sort(
+    (left, right) =>
+      right.evidence.length - left.evidence.length ||
+      left.evidence[0]!.created_at - right.evidence[0]!.created_at,
+  );
 }
 
 function buildPrompt(cluster: EvidenceCluster): string {
@@ -285,7 +297,10 @@ function extractCenteredProperNouns(cluster: EvidenceCluster): string[] {
     .map(([name]) => name);
 }
 
-function containsCenteredProperNoun(candidateAppliesWhen: string, cluster: EvidenceCluster): boolean {
+function containsCenteredProperNoun(
+  candidateAppliesWhen: string,
+  cluster: EvidenceCluster,
+): boolean {
   return extractCenteredProperNouns(cluster).some((properNoun) =>
     new RegExp(`\\b${properNoun.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(
       candidateAppliesWhen,
@@ -302,6 +317,11 @@ function buildPlanChange(item: ProceduralSynthesizerPlan["items"][number]): Offl
       evidence_ids: item.evidence.map((evidence) => evidence.id),
     },
     preview: {
+      applies_when: item.candidate.applies_when,
+      approach: item.candidate.approach,
+      abstraction_fit: item.candidate.abstraction_fit,
+      deduped: item.dedup_decision.skill_id !== null,
+      rejected_reason: item.rejection_reason,
       support: item.evidence.length,
       source_episode_ids: item.source_episode_ids,
     },
@@ -322,10 +342,43 @@ function buildAppliedChange(input: {
     },
     preview: {
       applies_when: input.skill.applies_when,
+      approach: input.skill.approach,
       deduped: input.deduped,
       support: input.item.evidence.length,
     },
   };
+}
+
+function shouldSkipSynthesizedOutcome(
+  evidence: ProceduralEvidenceRecord,
+  skill: SkillRecord,
+): boolean {
+  return (
+    evidence.pending_attempt_snapshot.selected_skill_id === skill.id &&
+    (evidence.classification === "success" || evidence.classification === "failure")
+  );
+}
+
+function recordClusterOutcomes(
+  ctx: OfflineContext,
+  skill: SkillRecord,
+  item: ProceduralSynthesizerPlan["items"][number],
+): SkillRecord {
+  let current = skill;
+
+  for (const evidence of item.evidence) {
+    if (evidence.classification === "unclear" || shouldSkipSynthesizedOutcome(evidence, skill)) {
+      continue;
+    }
+
+    current = ctx.skillRepository.recordOutcome(
+      skill.id,
+      evidence.classification === "success",
+      uniqueEpisodeIds([...evidence.resolved_episode_ids, ...item.source_episode_ids]),
+    );
+  }
+
+  return current;
 }
 
 export type ProceduralSynthesizerProcessOptions = {
@@ -374,56 +427,19 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
           ),
       );
     const clusters = await collectEvidenceClusters(ctx, sourceEvidence);
-    const items = clusters
+    const candidateClusters = clusters
       .filter((cluster) => cluster.evidence.length >= minSupport)
-      .slice(0, ctx.config.offline.proceduralSynthesizer.maxSkillsPerRun)
-      .map((cluster) => ({
-        cluster_key: cluster.key,
-        evidence: cluster.evidence,
-        source_episode_ids: cluster.sourceEpisodeIds,
-      }));
-
-    return proceduralSynthesizerPlanSchema.parse({
-      process: this.name,
-      items,
-      budget,
-      errors,
-      tokens_used: 0,
-      budget_exhausted: false,
-    });
-  }
-
-  preview(plan: ProceduralSynthesizerPlan): OfflineResult {
-    const parsed = proceduralSynthesizerPlanSchema.parse(plan);
-
-    return {
-      process: this.name,
-      dryRun: true,
-      changes: parsed.items.map((item) => buildPlanChange(item)),
-      tokens_used: parsed.tokens_used,
-      errors: parsed.errors,
-      budget_exhausted: parsed.budget_exhausted,
-    };
-  }
-
-  async apply(ctx: OfflineContext, rawPlan: ProceduralSynthesizerPlan): Promise<OfflineResult> {
-    const plan = proceduralSynthesizerPlanSchema.parse(rawPlan);
-    const changes: OfflineChange[] = [];
-    const errors: OfflineProcessError[] = [...plan.errors];
-    let tokensUsed = plan.tokens_used;
-    let budgetExhausted = plan.budget_exhausted;
+      .slice(0, ctx.config.offline.proceduralSynthesizer.maxSkillsPerRun);
+    const items: ProceduralSynthesizerPlan["items"] = [];
+    let tokensUsed = 0;
+    let budgetExhausted = false;
 
     try {
-      const budgeted = await withBudget(this.name, plan.budget, async ({ wrapClient }) => {
+      const budgeted = await withBudget(this.name, budget, async ({ wrapClient }) => {
         const llmClient: LLMClient = wrapClient(ctx.llm.background);
 
-        for (const item of plan.items) {
+        for (const cluster of candidateClusters) {
           try {
-            const cluster: EvidenceCluster = {
-              key: item.cluster_key,
-              evidence: item.evidence,
-              sourceEpisodeIds: item.source_episode_ids,
-            };
             const candidate = parseSkillCandidate(
               await llmClient.complete({
                 model: ctx.config.anthropic.models.background,
@@ -437,68 +453,35 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
                 ],
                 tools: [PROCEDURAL_SYNTHESIZER_TOOL],
                 tool_choice: { type: "tool", name: SYNTHESIZER_TOOL_NAME },
-                max_tokens: 4_000,
+                max_tokens: 1_500,
                 budget: "offline-procedural-synthesizer",
               }),
             );
+            const rejectionReason =
+              candidate.abstraction_fit !== "usable"
+                ? "unusable_abstraction"
+                : containsCenteredProperNoun(candidate.applies_when, cluster)
+                  ? "centered_proper_noun"
+                  : null;
+            const similarSkill =
+              rejectionReason !== null
+                ? undefined
+                : (await ctx.skillRepository.searchByContext(candidate.applies_when, 3)).find(
+                    (item) =>
+                      item.similarity >= ctx.config.offline.proceduralSynthesizer.dedupThreshold,
+                  );
 
-            if (
-              candidate.abstraction_fit !== "usable" ||
-              containsCenteredProperNoun(candidate.applies_when, cluster)
-            ) {
-              continue;
-            }
-
-            const similarSkill = (
-              await ctx.skillRepository.searchByContext(candidate.applies_when, 3)
-            ).find(
-              (item) =>
-                item.similarity >= ctx.config.offline.proceduralSynthesizer.dedupThreshold,
-            )?.skill;
-            const evidenceIds = item.evidence.map((evidence) => evidence.id);
-            let skill: SkillRecord;
-            let previousSkill: SkillRecord | undefined;
-            let inserted = false;
-
-            if (similarSkill === undefined) {
-              skill = await ctx.skillRepository.add({
-                applies_when: candidate.applies_when.trim(),
-                approach: candidate.approach.trim(),
-                sourceEpisodes: item.source_episode_ids,
-                priorAlpha: 2,
-                priorBeta: 1,
-              });
-              inserted = true;
-            } else {
-              previousSkill = similarSkill;
-              skill = ctx.skillRepository.recordOutcome(similarSkill.id, true, item.source_episode_ids);
-            }
-
-            for (const evidence of item.evidence) {
-              ctx.proceduralEvidenceRepository.updateResolvedEpisodeIds(
-                evidence.id,
-                item.source_episode_ids,
-              );
-            }
-
-            ctx.proceduralEvidenceRepository.markConsumed(evidenceIds, this.clock.now());
-            ctx.auditLog.record({
-              run_id: ctx.runId,
-              process: this.name,
-              action: "skill_synthesis",
-              targets: {
-                skillId: skill.id,
-                evidenceIds,
+            items.push({
+              cluster_key: cluster.key,
+              evidence: cluster.evidence,
+              source_episode_ids: cluster.sourceEpisodeIds,
+              candidate,
+              dedup_decision: {
+                skill_id: similarSkill?.skill.id ?? null,
+                similarity: similarSkill?.similarity ?? null,
               },
-              reversal: {
-                skillId: skill.id,
-                inserted,
-                ...(previousSkill === undefined ? {} : { previousSkill }),
-                newSkill: skill,
-                evidenceIds,
-              },
+              rejection_reason: rejectionReason,
             });
-            changes.push(buildAppliedChange({ item, skill, deduped: !inserted }));
           } catch (error) {
             if (error instanceof BudgetExceededError) {
               throw error;
@@ -522,6 +505,106 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
         message: error instanceof Error ? error.message : String(error),
         code: error instanceof Error && "code" in error ? String(error.code) : undefined,
       });
+    }
+
+    return proceduralSynthesizerPlanSchema.parse({
+      process: this.name,
+      items,
+      budget,
+      errors,
+      tokens_used: tokensUsed,
+      budget_exhausted: budgetExhausted,
+    });
+  }
+
+  preview(plan: ProceduralSynthesizerPlan): OfflineResult {
+    const parsed = proceduralSynthesizerPlanSchema.parse(plan);
+
+    return {
+      process: this.name,
+      dryRun: true,
+      changes: parsed.items.map((item) => buildPlanChange(item)),
+      tokens_used: parsed.tokens_used,
+      errors: parsed.errors,
+      budget_exhausted: parsed.budget_exhausted,
+    };
+  }
+
+  async apply(ctx: OfflineContext, rawPlan: ProceduralSynthesizerPlan): Promise<OfflineResult> {
+    const plan = proceduralSynthesizerPlanSchema.parse(rawPlan);
+    const changes: OfflineChange[] = [];
+    const errors: OfflineProcessError[] = [...plan.errors];
+    let tokensUsed = plan.tokens_used;
+    let budgetExhausted = plan.budget_exhausted;
+
+    for (const item of plan.items) {
+      if (item.rejection_reason !== null) {
+        continue;
+      }
+
+      try {
+        const evidenceIds = item.evidence.map((evidence) => evidence.id);
+        const similarSkill =
+          item.dedup_decision.skill_id === null
+            ? null
+            : ctx.skillRepository.get(item.dedup_decision.skill_id);
+        let skill: SkillRecord;
+        let previousSkill: SkillRecord | undefined;
+        let inserted = false;
+
+        if (item.dedup_decision.skill_id !== null && similarSkill === null) {
+          throw new StorageError(`Unknown dedup skill id: ${item.dedup_decision.skill_id}`, {
+            code: "PROCEDURAL_SYNTHESIZER_DEDUP_MISSING",
+          });
+        }
+
+        if (similarSkill === null) {
+          skill = await ctx.skillRepository.add({
+            applies_when: item.candidate.applies_when.trim(),
+            approach: item.candidate.approach.trim(),
+            sourceEpisodes: item.source_episode_ids,
+            priorAlpha: 2,
+            priorBeta: 1,
+          });
+          inserted = true;
+        } else {
+          previousSkill = similarSkill;
+          skill = similarSkill;
+        }
+
+        for (const evidence of item.evidence) {
+          ctx.proceduralEvidenceRepository.updateResolvedEpisodeIds(
+            evidence.id,
+            item.source_episode_ids,
+          );
+        }
+
+        skill = recordClusterOutcomes(ctx, skill, item);
+        ctx.proceduralEvidenceRepository.markConsumed(evidenceIds, this.clock.now());
+        ctx.auditLog.record({
+          run_id: ctx.runId,
+          process: this.name,
+          action: "skill_synthesis",
+          targets: {
+            skillId: skill.id,
+            evidenceIds,
+          },
+          reversal: {
+            skillId: skill.id,
+            inserted,
+            ...(previousSkill === undefined ? {} : { previousSkill }),
+            newSkill: skill,
+            evidenceIds,
+          },
+        });
+        changes.push(buildAppliedChange({ item, skill, deduped: !inserted }));
+      } catch (error) {
+        errors.push({
+          process: this.name,
+          message: error instanceof Error ? error.message : String(error),
+          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
+        });
+      }
     }
 
     return {

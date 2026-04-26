@@ -139,6 +139,25 @@ describe("commitment checker", () => {
     db.close();
   });
 
+  it("renders made-to scope in commitment prompts", () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({ db, clock });
+    const commitments = new CommitmentRepository({ db, clock });
+    const alice = entities.resolve("Alice");
+    const promise = commitments.add({
+      type: "promise",
+      directive: "Send the deployment summary",
+      priority: 5,
+      madeToEntity: alice,
+      provenance: { kind: "manual" },
+    });
+
+    expect(formatCommitmentsForPrompt([promise], entities)).toContain("made_to=Alice");
+
+    db.close();
+  });
+
   it("falls back to a brief reply when even the revised response still violates", async () => {
     const db = openDatabase(":memory:", { migrations: commitmentMigrations });
     const clock = new FixedClock(1_000);

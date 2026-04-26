@@ -198,9 +198,36 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       list: (...args) => deps.episodicRepository.list(...args),
     },
     self: {
-      values: deps.valuesRepository,
-      goals: deps.goalsRepository,
-      traits: deps.traitsRepository,
+      values: {
+        get: (...args) => deps.valuesRepository.get(...args),
+        list: (...args) => deps.valuesRepository.list(...args),
+        add: (...args) => deps.identityService.addValue(...args),
+        update: (...args) => deps.identityService.updateValue(...args),
+        reinforce: (...args) => deps.identityService.reinforceValue(...args),
+        listReinforcementEvents: (...args) =>
+          deps.valuesRepository.listReinforcementEvents(...args),
+        listContradictionEvents: (...args) =>
+          deps.valuesRepository.listContradictionEvents(...args),
+      },
+      goals: {
+        get: (...args) => deps.goalsRepository.get(...args),
+        list: (...args) => deps.goalsRepository.list(...args),
+        add: (...args) => deps.identityService.addGoal(...args),
+        update: (...args) => deps.identityService.updateGoal(...args),
+        updateStatus: (...args) => deps.identityService.updateGoalStatus(...args),
+        updateProgress: (...args) => deps.identityService.updateGoalProgress(...args),
+      },
+      traits: {
+        get: (...args) => deps.traitsRepository.get(...args),
+        list: (...args) => deps.traitsRepository.list(...args),
+        add: (...args) => deps.identityService.addTrait(...args),
+        update: (...args) => deps.identityService.updateTrait(...args),
+        reinforce: (...args) => deps.identityService.reinforceTrait(...args),
+        listReinforcementEvents: (...args) =>
+          deps.traitsRepository.listReinforcementEvents(...args),
+        listContradictionEvents: (...args) =>
+          deps.traitsRepository.listContradictionEvents(...args),
+      },
       autobiographical: {
         currentPeriod: () => deps.autobiographicalRepository.currentPeriod(),
         listPeriods: (...args) => deps.autobiographicalRepository.listPeriods(...args),

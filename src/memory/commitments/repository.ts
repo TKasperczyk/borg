@@ -422,9 +422,12 @@ export class CommitmentRepository {
     if (options.audience !== undefined) {
       if (options.audience === null) {
         filters.push("restricted_audience IS NULL");
+        filters.push("made_to_entity IS NULL");
       } else {
-        filters.push("(restricted_audience IS NULL OR restricted_audience = ?)");
-        values.push(options.audience);
+        filters.push(
+          "((restricted_audience IS NULL AND (made_to_entity IS NULL OR made_to_entity = ?)) OR restricted_audience = ?)",
+        );
+        values.push(options.audience, options.audience);
       }
     }
 

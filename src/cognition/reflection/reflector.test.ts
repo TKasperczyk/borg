@@ -21,7 +21,7 @@ import {
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
 
@@ -89,6 +89,85 @@ function createRetrievalConfidence(
     contradictionPresent: overrides.contradictionPresent ?? false,
     sampleSize: overrides.sampleSize ?? 3,
   };
+}
+
+function createPendingProceduralReflectionContext(
+  harness: Awaited<ReturnType<typeof createOfflineTestHarness>>,
+) {
+  const pendingAttempt = {
+    problem_text: "I hit a Rust lifetime issue again.",
+    approach_summary: "Shrink borrow scopes and use intermediate bindings.",
+    selected_skill_id: null,
+    source_stream_ids: [createStreamEntryId(), createStreamEntryId()],
+    turn_counter: 1,
+    audience_entity_id: null,
+  };
+  const workingMemory = {
+    session_id: DEFAULT_SESSION_ID,
+    turn_counter: 2,
+    current_focus: "Rust",
+    hot_entities: ["Rust"],
+    pending_intents: [],
+    pending_social_attribution: null,
+    pending_trait_attribution: null,
+    suppressed: [],
+    mood: null,
+    last_selected_skill_id: null,
+    last_selected_skill_turn: null,
+    pending_procedural_attempt: pendingAttempt,
+    mode: "problem_solving" as const,
+    updated_at: 0,
+  };
+
+  return {
+    userMessage: "No clear result yet.",
+    perception: {
+      entities: ["Rust"],
+      mode: "problem_solving" as const,
+      affectiveSignal: {
+        valence: 0,
+        arousal: 0,
+        dominant_emotion: null,
+      },
+      temporalCue: null,
+    },
+    workingMemory,
+    selfSnapshot: {
+      values: [],
+      goals: [],
+      traits: [],
+    },
+    deliberationResult: {
+      path: "system_1" as const,
+      response: "Next response.",
+      thoughts: [],
+      tool_calls: [],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "end_turn" as const,
+      },
+      decision_reason: "confidence" as const,
+      retrievedEpisodes: [],
+      referencedEpisodeIds: null,
+      thoughtsPersisted: false,
+    },
+    actionResult: {
+      response: "Next response.",
+      tool_calls: [],
+      intents: [],
+      workingMemory,
+    },
+    retrievedEpisodes: [],
+    retrievalConfidence: createRetrievalConfidence(),
+    episodicRepository: harness.episodicRepository,
+    goalsRepository: harness.goalsRepository,
+    traitsRepository: harness.traitsRepository,
+    openQuestionsRepository: harness.openQuestionsRepository,
+    proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+    selectedSkillId: null,
+    suppressionSet: new SuppressionSet(2),
+  } satisfies Parameters<Reflector["reflect"]>[0];
 }
 
 describe("reflector", () => {
@@ -483,6 +562,64 @@ describe("reflector", () => {
     );
 
     expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
+  });
+
+  it("clears a pending procedural attempt when reflection returns no procedural outcome", async () => {
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [createReflectionResponse([], [])],
+      }),
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+    });
+
+    const reflected = await reflector.reflect(
+      createPendingProceduralReflectionContext(harness),
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_procedural_attempt).toBeNull();
+    expect(harness.proceduralEvidenceRepository.list()).toEqual([]);
+  });
+
+  it("clears a pending procedural attempt when reflection judgment fails", async () => {
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [
+          () => {
+            throw new Error("reflection unavailable");
+          },
+        ],
+      }),
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+    });
+
+    const reflected = await reflector.reflect(
+      createPendingProceduralReflectionContext(harness),
+      harness.streamWriter,
+    );
+    const events = new StreamReader({
+      dataDir: harness.tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    }).tail(1);
+
+    expect(reflected.pending_procedural_attempt).toBeNull();
+    expect(harness.proceduralEvidenceRepository.list()).toEqual([]);
+    expect(events[0]).toMatchObject({
+      kind: "internal_event",
+      content: {
+        hook: "reflection_judgment",
+      },
+    });
   });
 
   it("counts an episode as used when the response echoes title or narrative tokens", async () => {
@@ -1046,17 +1183,20 @@ describe("reflector", () => {
       const harness = await createOfflineTestHarness({
         llmClient: new FakeLLMClient({
           responses: [
-            createReflectionResponse([], [
-              {
-                classification,
-                evidence:
-                  classification === "success"
-                    ? "User confirmed the fix worked."
-                    : classification === "failure"
-                      ? "User reported the same error is still happening."
-                      : "User replied without saying whether the attempt worked.",
-              },
-            ]),
+            createReflectionResponse(
+              [],
+              [
+                {
+                  classification,
+                  evidence:
+                    classification === "success"
+                      ? "User confirmed the fix worked."
+                      : classification === "failure"
+                        ? "User reported the same error is still happening."
+                        : "User replied without saying whether the attempt worked.",
+                },
+              ],
+            ),
           ],
         }),
       });
@@ -1313,12 +1453,15 @@ describe("reflector", () => {
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({
         responses: [
-          createReflectionResponse([], [
-            {
-              classification: "success",
-              evidence: "The assistant response said this works.",
-            },
-          ]),
+          createReflectionResponse(
+            [],
+            [
+              {
+                classification: "success",
+                evidence: "The assistant response said this works.",
+              },
+            ],
+          ),
         ],
       }),
     });

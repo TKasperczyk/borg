@@ -83,9 +83,10 @@ export function formatCommitmentsForPrompt(
   return [
     "Commitments you made to this person:",
     ...commitments.map((commitment) => {
+      const madeTo = entityName(entityRepository, commitment.made_to_entity);
       const audience = entityName(entityRepository, commitment.restricted_audience);
       const about = entityName(entityRepository, commitment.about_entity);
-      return `- [${commitment.type}] ${commitment.directive}${audience === null ? "" : ` audience=${audience}`}${about === null ? "" : ` about=${about}`} ${summarizeProvenanceForPrompt(commitment.provenance)}`;
+      return `- [${commitment.type}] ${commitment.directive}${madeTo === null ? "" : ` made_to=${madeTo}`}${audience === null ? "" : ` audience=${audience}`}${about === null ? "" : ` about=${about}`} ${summarizeProvenanceForPrompt(commitment.provenance)}`;
     }),
   ].join("\n");
 }
@@ -94,9 +95,11 @@ function describeCommitmentForJudge(
   commitment: CommitmentRecord,
   entityRepository: EntityRepository,
 ): string {
+  const madeTo = entityName(entityRepository, commitment.made_to_entity);
   const audience = entityName(entityRepository, commitment.restricted_audience);
   const about = entityName(entityRepository, commitment.about_entity);
   const scope = [
+    madeTo === null ? null : `made_to=${madeTo}`,
     audience === null ? null : `audience=${audience}`,
     about === null ? null : `about=${about}`,
   ]

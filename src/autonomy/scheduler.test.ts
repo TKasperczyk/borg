@@ -106,7 +106,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -143,7 +143,7 @@ describe("AutonomyScheduler", () => {
     expect(kinds).toEqual(["internal_event", "tool_call", "tool_result", "internal_event"]);
   });
 
-  it("respects maxWakesPerHour", async () => {
+  it("respects maxWakesPerWindow", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({
       clock,
@@ -195,7 +195,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 1,
+      maxWakesPerWindow: 1,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -273,7 +273,7 @@ describe("AutonomyScheduler", () => {
       }),
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 1,
+      maxWakesPerWindow: 1,
       budgetWindowMs: 60_000,
       clock,
       createStreamWriter: (sessionId) =>
@@ -366,7 +366,7 @@ describe("AutonomyScheduler", () => {
         }),
         enabled: true,
         intervalMs: 1_000,
-        maxWakesPerHour: 1,
+        maxWakesPerWindow: 1,
         budgetWindowMs: 60_000,
         clock,
         createStreamWriter: (sessionId) =>
@@ -431,7 +431,7 @@ describe("AutonomyScheduler", () => {
         }),
         enabled: true,
         intervalMs: 1_000,
-        maxWakesPerHour: 1,
+        maxWakesPerWindow: 1,
         budgetWindowMs: 60_000,
         clock,
         createStreamWriter: (sessionId) =>
@@ -527,7 +527,7 @@ describe("AutonomyScheduler", () => {
       wakeRepository,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       budgetWindowMs,
       clock,
       createStreamWriter: (sessionId) =>
@@ -597,7 +597,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -664,7 +664,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -736,7 +736,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -782,7 +782,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: false,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -897,7 +897,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -1025,7 +1025,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -1130,7 +1130,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -1246,7 +1246,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -1332,7 +1332,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({
@@ -1468,7 +1468,7 @@ describe("AutonomyScheduler", () => {
       db: harness.db,
       enabled: true,
       intervalMs: 1_000,
-      maxWakesPerHour: 6,
+      maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({

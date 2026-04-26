@@ -93,7 +93,7 @@ export function seedEstablishedValue(
   let current = value;
 
   for (const [index, episodeId] of restEpisodeIds.entries()) {
-    current = borg.self.values.reinforce(
+    const result = borg.self.values.reinforce(
       value.id,
       {
         kind: "episodes",
@@ -101,6 +101,12 @@ export function seedEstablishedValue(
       },
       input.createdAt + index + 1,
     );
+
+    if (result.status !== "applied") {
+      throw new Error(`Value reinforcement unexpectedly required review: ${value.id}`);
+    }
+
+    current = result.record;
   }
 
   return current;
@@ -122,7 +128,7 @@ export function seedEstablishedTrait(
   let current: TraitRecord | null = null;
 
   for (const [index, episodeId] of input.episodeIds.entries()) {
-    current = borg.self.traits.reinforce({
+    const result = borg.self.traits.reinforce({
       label: input.label,
       delta: input.delta,
       provenance: {
@@ -131,6 +137,12 @@ export function seedEstablishedTrait(
       },
       timestamp: input.timestampStart + index,
     });
+
+    if (result.status !== "applied") {
+      throw new Error(`Trait reinforcement unexpectedly required review: ${input.label}`);
+    }
+
+    current = result.record;
   }
 
   if (current === null) {
