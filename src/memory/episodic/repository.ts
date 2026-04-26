@@ -1587,6 +1587,22 @@ export class EpisodicRepository {
     apply();
   }
 
+  countRetrievalLogBefore(timestamp: number): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS count FROM retrieval_log WHERE timestamp < ?")
+      .get(timestamp) as { count: number };
+
+    return row.count;
+  }
+
+  pruneRetrievalLogBefore(timestamp: number): number {
+    const result = this.db
+      .prepare("DELETE FROM retrieval_log WHERE timestamp < ?")
+      .run(timestamp);
+
+    return result.changes;
+  }
+
   mergeEpisodeFields(current: Episode, patch: Partial<Episode>): Episode {
     const merged = normalizeEpisodeAccess({
       ...current,

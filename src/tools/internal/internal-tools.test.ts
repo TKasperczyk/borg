@@ -159,6 +159,90 @@ describe("internal tools", () => {
     }
   });
 
+  it("returns usable episodic evidence from search results", async () => {
+    const longNarrative = `${"The team traced the retrieval path and compared the tool payload to the prompt evidence. ".repeat(
+      8,
+    )}The final sentence should be truncated.`;
+    const episode = createEpisodeFixture({
+      title: "Retrieval evidence review",
+      narrative: longNarrative,
+      participants: ["Ari", "Sam"],
+      tags: ["retrieval", "tools"],
+      start_time: 1_700_000,
+      end_time: 1_701_000,
+    });
+    const tool = createEpisodicSearchTool({
+      searchEpisodes: async (_query, limit) => {
+        expect(limit).toBe(5);
+
+        return [
+          {
+            episode,
+            score: 0.82,
+            scoreBreakdown: {
+              similarity: 0.91,
+              decayedSalience: 0.73,
+              heat: 2,
+              goalRelevance: 0,
+              valueAlignment: 0,
+              timeRelevance: 0.44,
+              moodBoost: 0,
+              socialRelevance: 0,
+              entityRelevance: 0,
+              suppressionPenalty: 0,
+            },
+            citationChain: [
+              {
+                id: episode.source_stream_ids[0],
+                timestamp: 1_699_990,
+                kind: "user_msg",
+                content: "We need the search tool to return evidence, not only ids.",
+                session_id: DEFAULT_SESSION_ID,
+                compressed: false,
+              },
+            ],
+          },
+        ];
+      },
+    });
+
+    const result = await tool.invoke(
+      {
+        query: "retrieval evidence",
+      },
+      {
+        sessionId: DEFAULT_SESSION_ID,
+        origin: "deliberator",
+      },
+    );
+
+    expect(result.episodes).toHaveLength(1);
+    expect(result.episodes[0]).toMatchObject({
+      id: episode.id,
+      title: "Retrieval evidence review",
+      participants: ["Ari", "Sam"],
+      tags: ["retrieval", "tools"],
+      start_time: 1_700_000,
+      end_time: 1_701_000,
+      source_stream_ids: episode.source_stream_ids,
+      score: 0.82,
+      score_breakdown: {
+        similarity: 0.91,
+        decayed_salience: 0.73,
+        time_relevance: 0.44,
+      },
+      citation_chain: [
+        expect.objectContaining({
+          id: episode.source_stream_ids[0],
+          kind: "user_msg",
+          content: "We need the search tool to return evidence, not only ids.",
+        }),
+      ],
+    });
+    expect(result.episodes[0]?.narrative.length).toBeLessThanOrEqual(400);
+    expect(result.episodes[0]?.narrative).toContain("The team traced the retrieval path");
+  });
+
   it("scopes episodic search to the invocation audience", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -248,7 +332,7 @@ describe("internal tools", () => {
         toolName: "tool.episodic.search",
         input: {
           query: "planning roadmap",
-          limit: 10,
+          limit: 5,
         },
         origin: "deliberator",
         sessionId: DEFAULT_SESSION_ID,

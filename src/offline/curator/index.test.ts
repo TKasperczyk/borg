@@ -284,6 +284,65 @@ describe("curator process", () => {
     expect(late.changes.map((change) => change.action)).toContain("decay");
   });
 
+  it("prunes retrieval log rows older than the retention window", async () => {
+    const nowMs = 100 * DAY_MS;
+    const retentionDays = 30;
+    const cutoff = nowMs - retentionDays * DAY_MS;
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      configOverrides: {
+        offline: {
+          curator: {
+            retrievalLogRetentionDays: retentionDays,
+          },
+        },
+      },
+    });
+    cleanup.push(harness.cleanup);
+    const insertLog = (episodeId: string, timestamp: number) => {
+      harness.db
+        .prepare("INSERT INTO retrieval_log (episode_id, timestamp, score) VALUES (?, ?, ?)")
+        .run(episodeId, timestamp, 0.5);
+    };
+
+    insertLog("ep_old_retrieval", cutoff - 1);
+    insertLog("ep_boundary_retrieval", cutoff);
+    insertLog("ep_recent_retrieval", cutoff + 1);
+
+    const process = new CuratorProcess({
+      episodicRepository: harness.episodicRepository,
+      traitsRepository: harness.traitsRepository,
+      registry: harness.registry,
+    });
+    const result = await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+    const remaining = harness.db
+      .prepare("SELECT episode_id FROM retrieval_log ORDER BY timestamp ASC")
+      .all() as Array<{ episode_id: string }>;
+    const auditRow = harness.auditLog
+      .list({ process: "curator" })
+      .find((row) => row.action === "prune_retrieval_log");
+
+    expect(result.changes.map((change) => change.action)).toEqual(["prune_retrieval_log"]);
+    expect(remaining.map((row) => row.episode_id)).toEqual([
+      "ep_boundary_retrieval",
+      "ep_recent_retrieval",
+    ]);
+    expect(auditRow).toEqual(
+      expect.objectContaining({
+        targets: {
+          cutoff,
+        },
+        reversal: expect.objectContaining({
+          no_reverser: true,
+          retention_days: retentionDays,
+          deleted: 1,
+        }),
+      }),
+    );
+  });
+
   it("decays stale traits through curator and records a trait identity event", async () => {
     const nowMs = 100 * DAY_MS;
     const harness = await createOfflineTestHarness({

@@ -104,6 +104,7 @@ const configFileSchema = z
             episodeSalienceHalfLifeDays: z.number().positive().optional(),
             episodeHeatHalfLifeDays: z.number().positive().optional(),
             traitHalfLifeDays: z.number().positive().optional(),
+            retrievalLogRetentionDays: z.number().positive().optional(),
           })
           .partial()
           .optional(),
@@ -321,6 +322,7 @@ export const configSchema = z.object({
       episodeSalienceHalfLifeDays: z.number().positive(),
       episodeHeatHalfLifeDays: z.number().positive(),
       traitHalfLifeDays: z.number().positive(),
+      retrievalLogRetentionDays: z.number().positive(),
     }),
     overseer: z.object({
       enabled: z.boolean(),
@@ -487,6 +489,7 @@ export const DEFAULT_CONFIG: Config = {
       episodeSalienceHalfLifeDays: 30,
       episodeHeatHalfLifeDays: 7,
       traitHalfLifeDays: 30,
+      retrievalLogRetentionDays: 90,
     },
     overseer: {
       enabled: true,
@@ -916,6 +919,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_TRAIT_HALF_LIFE_DAYS") ??
           fileConfig.offline?.curator?.traitHalfLifeDays ??
           DEFAULT_CONFIG.offline.curator.traitHalfLifeDays,
+        retrievalLogRetentionDays:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_RETRIEVAL_LOG_RETENTION_DAYS") ??
+          fileConfig.offline?.curator?.retrievalLogRetentionDays ??
+          DEFAULT_CONFIG.offline.curator.retrievalLogRetentionDays,
       },
       overseer: {
         enabled:

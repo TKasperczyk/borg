@@ -14,4 +14,12 @@ export const retrievalMigrations = [
       ON retrieval_log (episode_id, timestamp DESC)
     `,
   },
+  {
+    id: 121,
+    name: "index-retrieval-log-timestamp",
+    up: `
+      CREATE INDEX IF NOT EXISTS retrieval_log_timestamp_idx
+      ON retrieval_log (timestamp)
+    `,
+  },
 ] as const satisfies readonly Migration[];

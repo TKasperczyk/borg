@@ -83,11 +83,19 @@ const traitDecayPlanItemSchema = z.object({
   previous: traitSchema,
 });
 
+const retrievalLogPrunePlanItemSchema = z.object({
+  action: z.literal("prune_retrieval_log"),
+  cutoff: z.number().finite(),
+  retention_days: z.number().positive(),
+  candidates: z.number().int().nonnegative(),
+});
+
 const curatorPlanItemSchema = z.discriminatedUnion("action", [
   episodePlanItemSchema,
   trimMoodHistoryPlanItemSchema,
   socialPlanItemSchema,
   traitDecayPlanItemSchema,
+  retrievalLogPrunePlanItemSchema,
 ]);
 
 export const curatorPlanSchema = z.object({
@@ -167,6 +175,20 @@ function buildChange(item: CuratorPlan["items"][number]): OfflineChange {
       action: item.action,
       targets: {
         removed: item.removed.length,
+      },
+    };
+  }
+
+  if (item.action === "prune_retrieval_log") {
+    return {
+      process: "curator",
+      action: item.action,
+      targets: {
+        cutoff: item.cutoff,
+      },
+      preview: {
+        retention_days: item.retention_days,
+        candidates: item.candidates,
       },
     };
   }
@@ -412,12 +434,34 @@ function buildTraitDecayItems(ctx: OfflineContext): CuratorPlan["items"] {
     }));
 }
 
+function buildRetrievalLogPruneItem(
+  ctx: OfflineContext,
+): z.infer<typeof retrievalLogPrunePlanItemSchema> | null {
+  const retentionDays = ctx.config.offline.curator.retrievalLogRetentionDays;
+  const cutoff = ctx.clock.now() - retentionDays * DAY_MS;
+  const candidates = ctx.episodicRepository.countRetrievalLogBefore(cutoff);
+
+  if (candidates === 0) {
+    return null;
+  }
+
+  return {
+    action: "prune_retrieval_log",
+    cutoff,
+    retention_days: retentionDays,
+    candidates,
+  };
+}
+
 function buildItems(ctx: OfflineContext, episodes: readonly Episode[]): CuratorPlan["items"] {
+  const retrievalLogPruneItem = buildRetrievalLogPruneItem(ctx);
+
   return [
     ...buildEpisodeItems(ctx, episodes),
     ...buildTraitDecayItems(ctx),
     ...buildMoodItems(ctx),
     ...buildSocialItems(ctx),
+    ...(retrievalLogPruneItem === null ? [] : [retrievalLogPruneItem]),
   ];
 }
 
@@ -568,6 +612,31 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
       }
 
       if (item.action === "decay_trait") {
+        continue;
+      }
+
+      if (item.action === "prune_retrieval_log") {
+        const deleted = ctx.episodicRepository.pruneRetrievalLogBefore(item.cutoff);
+
+        if (deleted > 0) {
+          // No reverser is registered for this action. retrieval_log is transient
+          // observability data, so the audit row records the destructive prune only.
+          ctx.auditLog.record({
+            run_id: ctx.runId,
+            process: this.name,
+            action: item.action,
+            targets: {
+              cutoff: item.cutoff,
+            },
+            reversal: {
+              no_reverser: true,
+              retention_days: item.retention_days,
+              planned_candidates: item.candidates,
+              deleted,
+            },
+          });
+        }
+
         continue;
       }
 
