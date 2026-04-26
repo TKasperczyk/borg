@@ -58,6 +58,9 @@ export class MaintenanceScheduler {
   private observer: MaintenanceSchedulerObserver | null = null;
 
   constructor(private readonly options: MaintenanceSchedulerOptions) {
+    // Defense in depth: the orchestrator serializes maintenance work because
+    // processes share stores. The cadence split should still avoid scheduling
+    // the same process through two interval groups.
     const overlappingProcesses = options.lightProcesses.filter((process) =>
       options.heavyProcesses.includes(process),
     );
@@ -231,10 +234,9 @@ export class MaintenanceScheduler {
   }
 
   private async runScheduledTick(cadence: MaintenanceCadence): Promise<void> {
-    // Guard only against overlap with the same cadence; light and heavy can
-    // run in parallel since they operate on disjoint processes and have
-    // independent cadences. Coalescing across cadences would cause the heavy
-    // cycle to be skipped forever whenever both interval timers fire together.
+    // Guard only against duplicate same-cadence interval callbacks here.
+    // Cross-cadence work is queued by the orchestrator so heavy and light
+    // ticks both run without sharing stores concurrently.
     if (this.activeTicks[cadence] !== null) {
       return;
     }

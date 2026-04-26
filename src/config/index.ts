@@ -90,6 +90,8 @@ const configFileSchema = z
             t3DemoteHeat: z.number().positive().optional(),
             archiveAgeDays: z.number().positive().optional(),
             archiveMinHeat: z.number().nonnegative().optional(),
+            episodeSalienceHalfLifeDays: z.number().positive().optional(),
+            episodeHeatHalfLifeDays: z.number().positive().optional(),
             traitHalfLifeDays: z.number().positive().optional(),
           })
           .partial()
@@ -279,6 +281,8 @@ export const configSchema = z.object({
       t3DemoteHeat: z.number().positive(),
       archiveAgeDays: z.number().positive(),
       archiveMinHeat: z.number().nonnegative(),
+      episodeSalienceHalfLifeDays: z.number().positive(),
+      episodeHeatHalfLifeDays: z.number().positive(),
       traitHalfLifeDays: z.number().positive(),
     }),
     overseer: z.object({
@@ -417,6 +421,8 @@ export const DEFAULT_CONFIG: Config = {
       t3DemoteHeat: 3,
       archiveAgeDays: 45,
       archiveMinHeat: 1,
+      episodeSalienceHalfLifeDays: 30,
+      episodeHeatHalfLifeDays: 7,
       traitHalfLifeDays: 30,
     },
     overseer: {
@@ -804,6 +810,14 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_ARCHIVE_MIN_HEAT") ??
           fileConfig.offline?.curator?.archiveMinHeat ??
           DEFAULT_CONFIG.offline.curator.archiveMinHeat,
+        episodeSalienceHalfLifeDays:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_SALIENCE_HALF_LIFE_DAYS") ??
+          fileConfig.offline?.curator?.episodeSalienceHalfLifeDays ??
+          DEFAULT_CONFIG.offline.curator.episodeSalienceHalfLifeDays,
+        episodeHeatHalfLifeDays:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_HEAT_HALF_LIFE_DAYS") ??
+          fileConfig.offline?.curator?.episodeHeatHalfLifeDays ??
+          DEFAULT_CONFIG.offline.curator.episodeHeatHalfLifeDays,
         traitHalfLifeDays:
           readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_TRAIT_HALF_LIFE_DAYS") ??
           fileConfig.offline?.curator?.traitHalfLifeDays ??

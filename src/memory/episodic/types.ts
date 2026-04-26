@@ -96,6 +96,7 @@ export const episodeStatsSchema = z.object({
   gist: z.string().min(1).nullable(),
   gist_generated_at: z.number().finite().nullable(),
   last_decayed_at: z.number().finite().nullable(),
+  heat_multiplier: z.number().nonnegative().default(1),
   valence_mean: z.number().min(-1).max(1).default(0),
   archived: z.boolean().default(false),
 });

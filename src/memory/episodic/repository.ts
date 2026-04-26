@@ -308,6 +308,7 @@ function defaultEpisodeStats(episode: Episode): EpisodeStats {
     gist: null,
     gist_generated_at: null,
     last_decayed_at: null,
+    heat_multiplier: 1,
     valence_mean: valenceMean,
     archived: false,
   };
@@ -338,6 +339,10 @@ function fromEpisodeStatsRow(row: Record<string, unknown>): EpisodeStats {
       row.last_decayed_at === null || row.last_decayed_at === undefined
         ? null
         : Number(row.last_decayed_at),
+    heat_multiplier:
+      row.heat_multiplier === null || row.heat_multiplier === undefined
+        ? 1
+        : Number(row.heat_multiplier),
     valence_mean:
       row.valence_mean === null || row.valence_mean === undefined ? 0 : Number(row.valence_mean),
     archived: row.archived === true || Number(row.archived) === 1,
@@ -529,8 +534,9 @@ export class EpisodicRepository {
         `
           INSERT INTO episode_stats (
             episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
-            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, valence_mean, archived
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at,
+            heat_multiplier, valence_mean, archived
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (episode_id) DO UPDATE SET
             retrieval_count = excluded.retrieval_count,
             use_count = excluded.use_count,
@@ -542,6 +548,7 @@ export class EpisodicRepository {
             gist = excluded.gist,
             gist_generated_at = excluded.gist_generated_at,
             last_decayed_at = excluded.last_decayed_at,
+            heat_multiplier = excluded.heat_multiplier,
             valence_mean = excluded.valence_mean,
             archived = excluded.archived
         `,
@@ -558,6 +565,7 @@ export class EpisodicRepository {
         parsed.gist,
         parsed.gist_generated_at,
         parsed.last_decayed_at,
+        parsed.heat_multiplier,
         parsed.valence_mean,
         parsed.archived ? 1 : 0,
       );
@@ -703,6 +711,36 @@ export class EpisodicRepository {
     }
   }
 
+  async updateSignificance(id: EpisodeId, significance: number): Promise<Episode | null> {
+    const current = await this.get(id);
+
+    if (current === null) {
+      return null;
+    }
+
+    const parsedEpisode = episodeSchema.safeParse({
+      ...current,
+      significance,
+    });
+
+    if (!parsedEpisode.success) {
+      throw new StorageError("Invalid episode significance patch", {
+        cause: parsedEpisode.error,
+        code: "EPISODE_PATCH_INVALID",
+      });
+    }
+
+    try {
+      await this.table.upsert([toEpisodeRow(parsedEpisode.data)], { on: "id" });
+      return parsedEpisode.data;
+    } catch (error) {
+      throw new StorageError(`Failed to update episode significance ${id}`, {
+        cause: error,
+        code: "EPISODE_UPDATE_FAILED",
+      });
+    }
+  }
+
   async delete(id: EpisodeId): Promise<boolean> {
     const existing = await this.get(id);
 
@@ -790,7 +828,8 @@ export class EpisodicRepository {
         `
           SELECT
             episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
-            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, valence_mean, archived
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at,
+            heat_multiplier, valence_mean, archived
           FROM episode_stats
           WHERE episode_id = ?
         `,
@@ -812,7 +851,8 @@ export class EpisodicRepository {
         `
           SELECT
             episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
-            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, valence_mean, archived
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at,
+            heat_multiplier, valence_mean, archived
           FROM episode_stats
           WHERE episode_id IN (${uniqueIds.map(() => "?").join(", ")})
         `,
@@ -860,7 +900,8 @@ export class EpisodicRepository {
         `
           SELECT
             episode_id, retrieval_count, use_count, last_retrieved, win_rate, tier,
-            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at, valence_mean, archived
+            promoted_at, promoted_from, gist, gist_generated_at, last_decayed_at,
+            heat_multiplier, valence_mean, archived
           FROM episode_stats
           ORDER BY promoted_at DESC, episode_id ASC
         `,

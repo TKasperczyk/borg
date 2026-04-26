@@ -38,6 +38,8 @@ describe("config", () => {
     });
     expect(config.self.autoBootstrapPeriod).toBe(true);
     expect(config.perception.useLlmFallback).toBe(true);
+    expect(config.offline.curator.episodeSalienceHalfLifeDays).toBe(30);
+    expect(config.offline.curator.episodeHeatHalfLifeDays).toBe(7);
     expect(config.offline.curator.traitHalfLifeDays).toBe(30);
   });
 

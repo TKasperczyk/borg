@@ -168,6 +168,73 @@ describe("curator process", () => {
     expect(harness.moodRepository.historyBefore(nowMs - 90 * DAY_MS)).toEqual([]);
   });
 
+  it("decays episode salience and heat based on elapsed half-lives", async () => {
+    const nowMs = 100 * DAY_MS;
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      configOverrides: {
+        offline: {
+          curator: {
+            episodeSalienceHalfLifeDays: 30,
+            episodeHeatHalfLifeDays: 30,
+          },
+        },
+      },
+    });
+    cleanup.push(harness.cleanup);
+
+    const episode = createEpisodeFixture(
+      {
+        title: "Stale but not archival",
+        significance: 0.8,
+        created_at: nowMs - 30 * DAY_MS,
+        updated_at: nowMs - 30 * DAY_MS,
+      },
+      [0, 1, 0, 0],
+    );
+    await harness.episodicRepository.insert(episode);
+    harness.episodicRepository.updateStats(episode.id, {
+      tier: "T2",
+      retrieval_count: 10,
+      last_decayed_at: nowMs - 30 * DAY_MS,
+    });
+
+    const process = new CuratorProcess({
+      episodicRepository: harness.episodicRepository,
+      traitsRepository: harness.traitsRepository,
+      registry: harness.registry,
+    });
+
+    const result = await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+    const decayedEpisode = await harness.episodicRepository.get(episode.id);
+    const decayedStats = harness.episodicRepository.getStats(episode.id);
+    const auditRow = harness.auditLog
+      .list({ process: "curator" })
+      .find((row) => row.action === "decay");
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes.map((change) => change.action)).toEqual(["decay"]);
+    expect(decayedEpisode?.significance).toBeCloseTo(0.4, 6);
+    expect(decayedStats?.heat_multiplier).toBeCloseTo(0.5, 6);
+    expect(decayedStats?.last_decayed_at).toBe(nowMs);
+    const decayAudit = auditRow?.reversal.decay as Array<Record<string, unknown>> | undefined;
+    expect(decayAudit).toHaveLength(1);
+    expect(decayAudit?.[0]).toMatchObject({
+      episode_id: episode.id,
+      old_salience: 0.8,
+      old_heat_multiplier: 1,
+    });
+    expect(decayAudit?.[0]?.new_salience as number).toBeCloseTo(0.4, 6);
+    expect(decayAudit?.[0]?.new_heat_multiplier as number).toBeCloseTo(0.5, 6);
+
+    await harness.auditLog.revert(auditRow!.id, "test");
+
+    expect((await harness.episodicRepository.get(episode.id))?.significance).toBe(0.8);
+    expect(harness.episodicRepository.getStats(episode.id)?.heat_multiplier).toBe(1);
+  });
+
   it("decays stale traits through curator and records a trait identity event", async () => {
     const nowMs = 100 * DAY_MS;
     const harness = await createOfflineTestHarness({

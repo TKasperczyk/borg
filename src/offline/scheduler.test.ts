@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { StreamWriter } from "../stream/index.js";
 import { ManualClock } from "../util/clock.js";
+import { DEFAULT_SESSION_ID } from "../util/ids.js";
 
 import { MaintenanceScheduler, type MaintenanceTickResult } from "./scheduler.js";
-import type { MaintenanceOrchestrator, MaintenanceRunOptions } from "./orchestrator.js";
-import type { OfflineProcess, OfflineProcessName, OrchestratorResult } from "./types.js";
+import { MaintenanceOrchestrator, type MaintenanceRunOptions } from "./orchestrator.js";
+import { createOfflineTestHarness } from "./test-support.js";
+import type {
+  OfflineProcess,
+  OfflineProcessName,
+  OfflineProcessPlan,
+  OfflineResult,
+  OrchestratorResult,
+} from "./types.js";
 import type { MaintenancePlan } from "./plan-file.js";
 
 type FakeOrchestratorSpy = {
@@ -73,8 +82,16 @@ function createFakeProcessRegistry(): Record<OfflineProcessName, OfflineProcess>
 }
 
 describe("MaintenanceScheduler", () => {
+  const cleanup: Array<() => Promise<void>> = [];
+
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  afterEach(async () => {
+    while (cleanup.length > 0) {
+      await cleanup.pop()?.();
+    }
   });
 
   it("runs the configured light cadence on tick", async () => {
@@ -211,7 +228,7 @@ describe("MaintenanceScheduler", () => {
     ).toThrow(/overlapping processes: reflector/);
   });
 
-  it("coalesces same-cadence concurrent ticks but runs different cadences in parallel", async () => {
+  it("coalesces same-cadence concurrent ticks without dropping different cadences", async () => {
     const clock = new ManualClock(1_000);
     const gates: Array<() => void> = [];
     const spy = createFakeOrchestrator(async () => {
@@ -245,7 +262,7 @@ describe("MaintenanceScheduler", () => {
     // Flush microtasks so both orchestrator.run invocations reach the gate.
     await new Promise((resolve) => setImmediate(resolve));
 
-    // Same-cadence calls coalesce to a single run; light and heavy are independent.
+    // Same-cadence calls coalesce to a single run; distinct cadences are both submitted.
     expect(spy.runCalls).toHaveLength(2);
 
     for (const release of gates) {
@@ -260,6 +277,125 @@ describe("MaintenanceScheduler", () => {
     expect(light1Result.cadence).toBe("light");
     expect(heavyResult.cadence).toBe("heavy");
     expect(heavyResult).not.toBe(light1Result);
+  });
+
+  it("does not run light and heavy maintenance process applies concurrently", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const processNames: OfflineProcessName[] = [
+      "consolidator",
+      "reflector",
+      "curator",
+      "overseer",
+      "ruminator",
+      "self-narrator",
+    ];
+    const events: string[] = [];
+    const releases: Array<() => void> = [];
+    let activeApplies = 0;
+    let maxActiveApplies = 0;
+    const resultFor = (name: OfflineProcessName): OfflineResult => ({
+      process: name,
+      dryRun: false,
+      changes: [],
+      tokens_used: 0,
+      errors: [],
+      budget_exhausted: false,
+    });
+    const processRegistry = processNames.reduce(
+      (acc, name) => {
+        acc[name] = {
+          name,
+          plan: async () =>
+            ({
+              process: name,
+              items: [],
+              errors: [],
+              tokens_used: 0,
+              budget_exhausted: false,
+            }) as OfflineProcessPlan,
+          preview: () => resultFor(name),
+          apply: async () => {
+            events.push(`${name}:start`);
+            activeApplies += 1;
+            maxActiveApplies = Math.max(maxActiveApplies, activeApplies);
+
+            await new Promise<void>((resolve) => {
+              releases.push(resolve);
+            });
+
+            activeApplies -= 1;
+            events.push(`${name}:end`);
+            return resultFor(name);
+          },
+          run: async () => resultFor(name),
+        };
+
+        return acc;
+      },
+      {} as Record<OfflineProcessName, OfflineProcess>,
+    );
+    const {
+      runId: _runId,
+      auditLog: _auditLog,
+      streamWriter: _streamWriter,
+      ...baseContext
+    } = harness.createContext();
+    const orchestrator = new MaintenanceOrchestrator({
+      baseContext,
+      auditLog: harness.auditLog,
+      createStreamWriter: () =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId: DEFAULT_SESSION_ID,
+          clock: harness.clock,
+        }),
+      processRegistry,
+    });
+    const scheduler = new MaintenanceScheduler({
+      enabled: true,
+      lightIntervalMs: 10_000,
+      heavyIntervalMs: 60_000,
+      lightProcesses: ["curator"],
+      heavyProcesses: ["reflector"],
+      orchestrator,
+      processRegistry,
+      clock: harness.clock,
+    });
+    const flush = async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    const waitForReleaseCount = async (count: number) => {
+      for (let attempt = 0; attempt < 20 && releases.length < count; attempt += 1) {
+        await flush();
+      }
+
+      expect(releases).toHaveLength(count);
+    };
+
+    const light = scheduler.tick("light");
+    const heavy = scheduler.tick("heavy");
+
+    await waitForReleaseCount(1);
+
+    expect(events).toEqual(["curator:start"]);
+    expect(maxActiveApplies).toBe(1);
+
+    releases[0]?.();
+    await waitForReleaseCount(2);
+
+    expect(events).toEqual(["curator:start", "curator:end", "reflector:start"]);
+    expect(maxActiveApplies).toBe(1);
+
+    releases[1]?.();
+
+    const [lightResult, heavyResult] = await Promise.all([light, heavy]);
+
+    expect(lightResult.status).toBe("ok");
+    expect(heavyResult.status).toBe("ok");
+    expect(events).toEqual(["curator:start", "curator:end", "reflector:start", "reflector:end"]);
+    expect(maxActiveApplies).toBe(1);
   });
 
   it("runs on interval when started and stops when stopped", async () => {

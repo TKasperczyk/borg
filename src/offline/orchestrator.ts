@@ -40,7 +40,26 @@ export type MaintenanceRunOptions = {
 };
 
 export class MaintenanceOrchestrator {
+  private operationQueue: Promise<void> = Promise.resolve();
+
   constructor(private readonly options: MaintenanceOrchestratorOptions) {}
+
+  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.operationQueue;
+    let release: () => void = () => {};
+
+    this.operationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
 
   private createContext(
     runId: ReturnType<typeof createMaintenanceRunId>,
@@ -94,7 +113,7 @@ export class MaintenanceOrchestrator {
     } satisfies OrchestratorResult;
   }
 
-  async plan(input: MaintenanceRunOptions): Promise<MaintenancePlan> {
+  private async planUnlocked(input: MaintenanceRunOptions): Promise<MaintenancePlan> {
     const runId = createMaintenanceRunId();
     const streamWriter = this.options.createStreamWriter();
 
@@ -122,6 +141,10 @@ export class MaintenanceOrchestrator {
     }
   }
 
+  async plan(input: MaintenanceRunOptions): Promise<MaintenancePlan> {
+    return this.runExclusive(() => this.planUnlocked(input));
+  }
+
   preview(rawPlan: MaintenancePlan): OrchestratorResult {
     const plan = maintenancePlanSchema.parse(rawPlan);
     const runId = createMaintenanceRunId();
@@ -133,7 +156,7 @@ export class MaintenanceOrchestrator {
     return this.summarizeResults(runId, results);
   }
 
-  async apply(rawPlan: MaintenancePlan): Promise<OrchestratorResult> {
+  private async applyUnlocked(rawPlan: MaintenancePlan): Promise<OrchestratorResult> {
     const plan = maintenancePlanSchema.parse(rawPlan);
     const runId = createMaintenanceRunId();
     const streamWriter = this.options.createStreamWriter();
@@ -180,8 +203,14 @@ export class MaintenanceOrchestrator {
     }
   }
 
+  async apply(rawPlan: MaintenancePlan): Promise<OrchestratorResult> {
+    return this.runExclusive(() => this.applyUnlocked(rawPlan));
+  }
+
   async run(input: MaintenanceRunOptions): Promise<OrchestratorResult> {
-    const plan = await this.plan(input);
-    return input.opts?.dryRun === true ? this.preview(plan) : this.apply(plan);
+    return this.runExclusive(async () => {
+      const plan = await this.planUnlocked(input);
+      return input.opts?.dryRun === true ? this.preview(plan) : this.applyUnlocked(plan);
+    });
   }
 }

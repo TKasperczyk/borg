@@ -34,11 +34,35 @@ const TIER_ORDER: Record<EpisodeTier, number> = {
   T4: 4,
 };
 
+const episodeSaliencePatchSchema = z.object({
+  significance: z.number().min(0).max(1),
+});
+
+const episodeDecayDetailsSchema = z.object({
+  elapsed_days: z.number().nonnegative(),
+  salience_half_life_days: z.number().positive(),
+  heat_half_life_days: z.number().positive(),
+  salience_factor: z.number().min(0).max(1),
+  heat_factor: z.number().min(0).max(1),
+  old_salience: z.number().min(0).max(1),
+  new_salience: z.number().min(0).max(1),
+  old_heat: z.number().nonnegative(),
+  new_heat: z.number().nonnegative(),
+  old_heat_multiplier: z.number().nonnegative(),
+  new_heat_multiplier: z.number().nonnegative(),
+});
+
+const episodeDecayReversalSchema = episodeDecayDetailsSchema.extend({
+  episode_id: episodeIdSchema,
+});
+
 const episodePlanItemSchema = z.object({
   action: z.enum(["promote", "demote", "archive", "decay"]),
   episode_id: episodeIdSchema,
   patch: episodeStatsPatchSchema,
+  episode_patch: episodeSaliencePatchSchema.optional(),
   previous: episodeStatsSchema,
+  decay: episodeDecayDetailsSchema.optional(),
 });
 
 const trimMoodHistoryPlanItemSchema = z.object({
@@ -88,6 +112,18 @@ function compareTiers(left: EpisodeTier, right: EpisodeTier): number {
   return TIER_ORDER[left] - TIER_ORDER[right];
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function decayFactor(elapsedMs: number, halfLifeDays: number): number {
+  if (elapsedMs <= 0) {
+    return 1;
+  }
+
+  return Math.pow(0.5, elapsedMs / (halfLifeDays * DAY_MS));
+}
+
 function buildEpisodeChange(item: z.infer<typeof episodePlanItemSchema>): OfflineChange {
   return {
     process: "curator",
@@ -95,7 +131,14 @@ function buildEpisodeChange(item: z.infer<typeof episodePlanItemSchema>): Offlin
     targets: {
       episode_id: item.episode_id,
     },
-    preview: item.patch,
+    preview:
+      item.action === "decay"
+        ? {
+            stats: item.patch,
+            episode: item.episode_patch,
+            decay: item.decay,
+          }
+        : item.patch,
   };
 }
 
@@ -142,6 +185,61 @@ function buildChange(item: CuratorPlan["items"][number]): OfflineChange {
   };
 }
 
+function buildEpisodeDecayItem(
+  ctx: OfflineContext,
+  episode: Episode,
+  stats: EpisodeStats,
+  nowMs: number,
+): z.infer<typeof episodePlanItemSchema> | null {
+  if (stats.last_decayed_at === nowMs) {
+    return null;
+  }
+
+  const lastDecayedAt = stats.last_decayed_at ?? stats.promoted_at;
+  const elapsedMs = Math.max(0, nowMs - lastDecayedAt);
+  const salienceHalfLifeDays = ctx.config.offline.curator.episodeSalienceHalfLifeDays;
+  const heatHalfLifeDays = ctx.config.offline.curator.episodeHeatHalfLifeDays;
+  const salienceFactor = decayFactor(elapsedMs, salienceHalfLifeDays);
+  const heatFactor = decayFactor(elapsedMs, heatHalfLifeDays);
+  const oldSalience = episode.significance;
+  const newSalience = clamp(oldSalience * salienceFactor, 0, 1);
+  const oldHeatMultiplier = stats.heat_multiplier ?? 1;
+  const newHeatMultiplier = Math.max(0, oldHeatMultiplier * heatFactor);
+  const oldHeat = computeEpisodeHeat(episode, stats, nowMs);
+  const nextStats = {
+    ...stats,
+    heat_multiplier: newHeatMultiplier,
+    last_decayed_at: nowMs,
+  };
+  const newHeat = computeEpisodeHeat(episode, nextStats, nowMs);
+
+  return {
+    action: "decay",
+    episode_id: episode.id,
+    patch: {
+      heat_multiplier: newHeatMultiplier,
+      last_decayed_at: nowMs,
+    },
+    episode_patch: {
+      significance: newSalience,
+    },
+    previous: stats,
+    decay: {
+      elapsed_days: elapsedMs / DAY_MS,
+      salience_half_life_days: salienceHalfLifeDays,
+      heat_half_life_days: heatHalfLifeDays,
+      salience_factor: salienceFactor,
+      heat_factor: heatFactor,
+      old_salience: oldSalience,
+      new_salience: newSalience,
+      old_heat: oldHeat,
+      new_heat: newHeat,
+      old_heat_multiplier: oldHeatMultiplier,
+      new_heat_multiplier: newHeatMultiplier,
+    },
+  };
+}
+
 function buildEpisodeItems(
   ctx: OfflineContext,
   episodes: readonly Episode[],
@@ -159,16 +257,10 @@ function buildEpisodeItems(
     const heat = computeEpisodeHeat(episode, stats, nowMs);
     const ageMs = Math.max(0, nowMs - episode.created_at);
     const lastUsedAt = stats.last_retrieved ?? stats.promoted_at;
+    const decayItem = buildEpisodeDecayItem(ctx, episode, stats, nowMs);
 
-    if (stats.last_decayed_at !== nowMs) {
-      items.push({
-        action: "decay",
-        episode_id: episode.id,
-        patch: {
-          last_decayed_at: nowMs,
-        },
-        previous: stats,
-      });
+    if (decayItem !== null) {
+      items.push(decayItem);
     }
 
     if (stats.tier === "T1" && heat >= ctx.config.offline.curator.t1Heat && ageMs >= 2 * HOUR_MS) {
@@ -341,6 +433,17 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
 
   constructor(private readonly options: CuratorProcessOptions) {
     const revertStats = async (input: { reversal: Record<string, unknown> }): Promise<void> => {
+      const decay = z.array(episodeDecayReversalSchema).safeParse(input.reversal.decay);
+
+      if (decay.success) {
+        for (const item of decay.data) {
+          await this.options.episodicRepository.updateSignificance(
+            item.episode_id,
+            item.old_salience,
+          );
+        }
+      }
+
       const previous = input.reversal.previous;
 
       if (!Array.isArray(previous)) {
@@ -428,6 +531,7 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
   async apply(ctx: OfflineContext, rawPlan: CuratorPlan): Promise<OfflineResult> {
     const plan = curatorPlanSchema.parse(rawPlan);
     const previousByAction = new Map<string, EpisodeStats[]>();
+    const decayByAction = new Map<string, Array<z.infer<typeof episodeDecayReversalSchema>>>();
     const traitDecayItems = plan.items.filter(
       (item): item is z.infer<typeof traitDecayPlanItemSchema> => item.action === "decay_trait",
     );
@@ -435,11 +539,29 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
 
     for (const item of plan.items) {
       if ("episode_id" in item) {
+        if (item.episode_patch !== undefined) {
+          await ctx.episodicRepository.updateSignificance(
+            item.episode_id,
+            item.episode_patch.significance,
+          );
+        }
+
         ctx.episodicRepository.updateStats(item.episode_id, item.patch);
         previousByAction.set(item.action, [
           ...(previousByAction.get(item.action) ?? []),
           item.previous,
         ]);
+
+        if (item.decay !== undefined) {
+          decayByAction.set(item.action, [
+            ...(decayByAction.get(item.action) ?? []),
+            {
+              episode_id: item.episode_id,
+              ...item.decay,
+            },
+          ]);
+        }
+
         continue;
       }
 
@@ -514,9 +636,15 @@ export class CuratorProcess implements OfflineProcess<CuratorPlan> {
         targets: {
           episode_ids: previous.map((stats) => stats.episode_id),
         },
-        reversal: {
-          previous,
-        },
+        reversal:
+          action === "decay"
+            ? {
+                previous,
+                decay: decayByAction.get(action) ?? [],
+              }
+            : {
+                previous,
+              },
       });
     }
 

@@ -39,4 +39,13 @@ export const episodicMigrations = [
       }
     },
   },
+  {
+    id: 103,
+    name: "add-episode-heat-multiplier",
+    up: (db) => {
+      if (!tableHasColumn(db, "episode_stats", "heat_multiplier")) {
+        db.exec("ALTER TABLE episode_stats ADD COLUMN heat_multiplier REAL NOT NULL DEFAULT 1");
+      }
+    },
+  },
 ] as const satisfies readonly Migration[];

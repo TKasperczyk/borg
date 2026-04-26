@@ -7,6 +7,9 @@ export function computeEpisodeHeat(episode: Episode, stats: EpisodeStats, nowMs:
   const elapsedMs = Math.max(0, nowMs - referenceTimestamp);
   const recencyScore =
     referenceTimestamp <= 0 ? 0 : Math.pow(0.5, elapsedMs / RECENCY_HALF_LIFE_MS);
+  const heatMultiplier = stats.heat_multiplier ?? 1;
 
-  return stats.retrieval_count + 2 * (stats.win_rate * 10) + 0.5 * (recencyScore * 10);
+  return (
+    (stats.retrieval_count + 2 * (stats.win_rate * 10) + 0.5 * (recencyScore * 10)) * heatMultiplier
+  );
 }
