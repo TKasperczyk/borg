@@ -216,6 +216,19 @@ describe("episodic repository", () => {
     ).rejects.toBeInstanceOf(StorageError);
   });
 
+  it("keeps missing emotional arcs unknown on read", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+
+    const episode = createEpisode("ep_unknownarc000000", harness.clock.now(), {
+      emotional_arc: null,
+    });
+
+    await harness.repo.insert(episode);
+
+    expect((await harness.repo.get(episode.id))?.emotional_arc).toBeNull();
+  });
+
   it("evolves a pre-sprint-7 LanceDB table and accepts emotional_arc on insert", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new ManualClock(1_700_000_000_000);

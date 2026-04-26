@@ -127,6 +127,8 @@ const affectiveFallbackSchema = z.object({
   arousal: z.number().min(0).max(1),
   dominant_emotion: dominantEmotionSchema.nullable(),
 });
+const DEFAULT_FALLBACK_CONFIDENCE_THRESHOLD = 0.5;
+const DEFAULT_MAX_LLM_FALLBACK_CALLS = 1;
 export const AFFECTIVE_FALLBACK_TOOL = {
   name: AFFECTIVE_FALLBACK_TOOL_NAME,
   description: "Emit a grounded affective signal for the input text.",
@@ -233,25 +235,37 @@ export type AffectiveExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
   useLlmFallback?: boolean;
+  fallbackConfidenceThreshold?: number;
+  maxLlmFallbackCalls?: number;
 };
 
 export class AffectiveExtractor {
-  constructor(private readonly options: AffectiveExtractorOptions = {}) {}
+  private readonly useLlmFallback: boolean;
+  private readonly fallbackConfidenceThreshold: number;
+  private readonly maxLlmFallbackCalls: number;
+  private llmFallbackCalls = 0;
+
+  constructor(private readonly options: AffectiveExtractorOptions = {}) {
+    this.useLlmFallback = options.useLlmFallback ?? true;
+    this.fallbackConfidenceThreshold =
+      options.fallbackConfidenceThreshold ?? DEFAULT_FALLBACK_CONFIDENCE_THRESHOLD;
+    this.maxLlmFallbackCalls = options.maxLlmFallbackCalls ?? DEFAULT_MAX_LLM_FALLBACK_CALLS;
+  }
 
   async analyze(text: string, recentHistory: readonly string[] = []): Promise<AffectiveSignal> {
     const heuristic = heuristicAnalysis(text);
-    const tokenCount = tokenizeText(text).size;
 
     if (
-      this.options.useLlmFallback !== true ||
+      !this.useLlmFallback ||
       this.options.llmClient === undefined ||
       this.options.model === undefined ||
-      tokenCount <= 40 ||
-      heuristic.confidence >= 0.25
+      heuristic.confidence >= this.fallbackConfidenceThreshold ||
+      this.llmFallbackCalls >= this.maxLlmFallbackCalls
     ) {
       return heuristic.signal;
     }
 
+    this.llmFallbackCalls += 1;
     const response = await this.options.llmClient.complete({
       model: this.options.model,
       system: "Infer a grounded affective signal from text.",

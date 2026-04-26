@@ -5,7 +5,12 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { analyzeAffectiveSignalHeuristically, type EmotionalArc } from "../affective/index.js";
+import {
+  affectiveSignalSchema,
+  analyzeAffectiveSignalHeuristically,
+  type AffectiveSignal,
+  type EmotionalArc,
+} from "../affective/index.js";
 import type { EntityRepository } from "../commitments/index.js";
 import { StreamReader, type StreamCursor, type StreamEntry } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -35,6 +40,10 @@ const extractorResponseSchema = z.object({
 type ExtractorCandidate = z.infer<typeof extractorCandidateSchema>;
 const EXTRACT_EPISODES_TOOL_NAME = "EmitEpisodeCandidates";
 const EPISODIC_SOURCE_STREAM_KINDS = ["user_msg", "agent_msg"] as const;
+const EPISODIC_CONTEXT_STREAM_KINDS = ["user_msg", "agent_msg", "perception"] as const;
+const perceptionAffectiveContentSchema = z.object({
+  affectiveSignal: affectiveSignalSchema,
+});
 export const EXTRACT_EPISODES_TOOL = {
   name: EXTRACT_EPISODES_TOOL_NAME,
   description: "Emit grounded episodic memory candidates for the provided stream chunk.",
@@ -117,13 +126,91 @@ function entryContentText(entry: StreamEntry): string {
   return typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content ?? null);
 }
 
-function buildEmotionalArc(sourceEntries: readonly StreamEntry[]): EmotionalArc | null {
-  if (sourceEntries.length === 0) {
+function isEpisodicSourceEntry(entry: StreamEntry): boolean {
+  return (EPISODIC_SOURCE_STREAM_KINDS as readonly string[]).includes(entry.kind);
+}
+
+function streamOrderComparator(
+  streamOrderById: ReadonlyMap<StreamEntry["id"], number>,
+): (left: StreamEntry, right: StreamEntry) => number {
+  return (left, right) => {
+    const leftOrder = streamOrderById.get(left.id);
+    const rightOrder = streamOrderById.get(right.id);
+
+    if (leftOrder !== undefined && rightOrder !== undefined) {
+      return leftOrder - rightOrder;
+    }
+
+    return left.timestamp - right.timestamp;
+  };
+}
+
+function perceptionSignalFromEntry(entry: StreamEntry): AffectiveSignal | null {
+  if (entry.kind !== "perception") {
     return null;
   }
 
-  const signals = sourceEntries.map((entry) =>
-    analyzeAffectiveSignalHeuristically(entryContentText(entry)),
+  const parsed = perceptionAffectiveContentSchema.safeParse(entry.content);
+
+  return parsed.success ? parsed.data.affectiveSignal : null;
+}
+
+function perceptionSignalForUserEntry(
+  userEntry: StreamEntry,
+  contextEntries: readonly StreamEntry[],
+  streamOrderById: ReadonlyMap<StreamEntry["id"], number>,
+): AffectiveSignal | null {
+  const userIndex = streamOrderById.get(userEntry.id);
+
+  if (userIndex === undefined) {
+    return null;
+  }
+
+  let nextSourceIndex = contextEntries.length;
+
+  for (let index = userIndex + 1; index < contextEntries.length; index += 1) {
+    const entry = contextEntries[index];
+
+    if (entry !== undefined && isEpisodicSourceEntry(entry)) {
+      nextSourceIndex = index;
+      break;
+    }
+  }
+
+  for (let index = userIndex + 1; index < nextSourceIndex; index += 1) {
+    const entry = contextEntries[index];
+
+    if (entry === undefined || (entry.audience ?? null) !== (userEntry.audience ?? null)) {
+      continue;
+    }
+
+    const signal = perceptionSignalFromEntry(entry);
+
+    if (signal !== null) {
+      return signal;
+    }
+  }
+
+  return null;
+}
+
+function buildEmotionalArc(
+  sourceEntries: readonly StreamEntry[],
+  contextEntries: readonly StreamEntry[],
+): EmotionalArc | null {
+  const streamOrderById = new Map(contextEntries.map((entry, index) => [entry.id, index]));
+  const userEntries = sourceEntries
+    .filter((entry) => entry.kind === "user_msg")
+    .sort(streamOrderComparator(streamOrderById));
+
+  if (userEntries.length === 0) {
+    return null;
+  }
+
+  const signals = userEntries.map(
+    (entry) =>
+      perceptionSignalForUserEntry(entry, contextEntries, streamOrderById) ??
+      analyzeAffectiveSignalHeuristically(entryContentText(entry)),
   );
   const byPeak = [...signals].sort(
     (left, right) =>
@@ -210,6 +297,7 @@ function sourceEntriesFromCandidate(
 function buildEpisodeFromCandidate(
   candidate: ExtractorCandidate,
   sourceEntries: readonly StreamEntry[],
+  contextEntries: readonly StreamEntry[],
   access: Pick<Episode, "audience_entity_id" | "shared">,
   embedding: Float32Array,
   nowMs: number,
@@ -232,7 +320,7 @@ function buildEpisodeFromCandidate(
       derived_from: [],
       supersedes: [],
     },
-    emotional_arc: buildEmotionalArc(sourceEntries),
+    emotional_arc: buildEmotionalArc(sourceEntries, contextEntries),
     audience_entity_id: access.audience_entity_id,
     shared: access.shared,
     embedding,
@@ -283,6 +371,7 @@ export class EpisodicExtractor {
   private async processCandidate(
     candidate: ExtractorCandidate,
     chunkById: Map<string, StreamEntry>,
+    contextEntries: readonly StreamEntry[],
   ): Promise<CandidateOutcome> {
     const sourceEntries = sourceEntriesFromCandidate(candidate, chunkById);
     const access = this.deriveEpisodeAccess(sourceEntries);
@@ -306,6 +395,7 @@ export class EpisodicExtractor {
     const nextEpisode = buildEpisodeFromCandidate(
       candidate,
       sourceEntries,
+      contextEntries,
       access,
       embedding,
       nowMs,
@@ -323,14 +413,19 @@ export class EpisodicExtractor {
       sessionId: session,
     });
     const streamEntries: StreamEntry[] = [];
+    const contextEntries: StreamEntry[] = [];
 
     for await (const entry of reader.iterate({
-      kinds: EPISODIC_SOURCE_STREAM_KINDS,
+      kinds: EPISODIC_CONTEXT_STREAM_KINDS,
       sinceTs: extractOptions.sinceTs,
       sinceCursor: extractOptions.sinceCursor,
       untilTs: extractOptions.untilTs,
     })) {
-      streamEntries.push(entry);
+      contextEntries.push(entry);
+
+      if (isEpisodicSourceEntry(entry)) {
+        streamEntries.push(entry);
+      }
     }
 
     if (streamEntries.length === 0) {
@@ -365,7 +460,7 @@ export class EpisodicExtractor {
       const candidates = parseLlmResponse(result);
 
       for (const candidate of candidates) {
-        const outcome = await this.processCandidate(candidate, chunkById);
+        const outcome = await this.processCandidate(candidate, chunkById, contextEntries);
 
         if (outcome === "inserted") {
           inserted += 1;

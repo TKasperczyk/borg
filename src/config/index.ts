@@ -422,7 +422,9 @@ export const DEFAULT_CONFIG: Config = {
     useLlmFallback: true,
   },
   affective: {
-    useLlmFallback: false,
+    // Low-confidence affective heuristics may add up to one background-model
+    // call per user turn, capped in the extractor, to catch short subtle affect.
+    useLlmFallback: true,
     incomingMoodWeight: 0.3,
     moodHistoryRetentionDays: 90,
     moodHalfLifeHours: 24,

@@ -37,6 +37,7 @@ describe("config", () => {
       extraction: "claude-opus-4-7",
     });
     expect(config.perception.useLlmFallback).toBe(true);
+    expect(config.affective.useLlmFallback).toBe(true);
     expect(config.offline.curator.episodeDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.offline.curator.episodeSalienceHalfLifeDays).toBe(30);
     expect(config.offline.curator.episodeHeatHalfLifeDays).toBe(7);

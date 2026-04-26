@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { FakeLLMClient } from "../../llm/index.js";
+import { createOfflineTestHarness } from "../../offline/test-support.js";
 import { StreamWriter } from "../../stream/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
@@ -322,6 +323,154 @@ describe("episodic extractor", () => {
     expect(prompt).not.toContain('"tool_call"');
     expect(prompt).not.toContain("non-conversational scaffolding");
     expect(listed[0]?.source_stream_ids).toEqual([user.id, agent.id]);
+  });
+
+  it("derives emotional arcs from user messages without agent affect contamination", async () => {
+    const llm = new FakeLLMClient();
+    const clock = new ManualClock(1_000);
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: "default",
+      clock,
+    });
+
+    cleanup.push(harness.cleanup);
+    cleanup.push(async () => {
+      writer.close();
+    });
+
+    const user = await writer.append({
+      kind: "user_msg",
+      content: "I'm frustrated with this.",
+    });
+    clock.advance(10);
+    const agent = await writer.append({
+      kind: "agent_msg",
+      content: "Great, happy, helpful, supportive, kind, and glad to help.",
+    });
+
+    llm.pushResponse(
+      createEpisodeToolResponse([
+        {
+          title: "Frustrated implementation turn",
+          narrative: "The user was frustrated and the agent offered help.",
+          source_stream_ids: [user.id, agent.id],
+          participants: ["user"],
+          tags: ["implementation"],
+          confidence: 0.8,
+          significance: 0.7,
+        },
+      ]),
+    );
+
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.episodicRepository,
+      embeddingClient: harness.embeddingClient,
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      clock,
+    });
+
+    await extractor.extractFromStream();
+    const [episode] = await harness.episodicRepository.listAll();
+
+    expect(episode?.emotional_arc).not.toBeNull();
+    expect(episode?.emotional_arc?.start.valence ?? 0).toBeLessThan(0);
+    expect(episode?.emotional_arc?.peak.valence ?? 0).toBeLessThan(0);
+    expect(episode?.emotional_arc?.end.valence ?? 0).toBeLessThan(0);
+  });
+
+  it("prefers perception affective signals when deriving emotional arcs", async () => {
+    const llm = new FakeLLMClient();
+    const clock = new ManualClock(1_000);
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: "default",
+      clock,
+    });
+
+    cleanup.push(harness.cleanup);
+    cleanup.push(async () => {
+      writer.close();
+    });
+
+    const user = await writer.append({
+      kind: "user_msg",
+      content: "Honestly, I am fine.",
+    });
+    clock.advance(10);
+    await writer.append({
+      kind: "perception",
+      content: {
+        mode: "relational",
+        entities: [],
+        temporalCue: null,
+        affectiveSignal: {
+          valence: -0.65,
+          arousal: 0.55,
+          dominant_emotion: "anger",
+        },
+      },
+    });
+    clock.advance(10);
+    const agent = await writer.append({
+      kind: "agent_msg",
+      content: "Wonderful, happy, helpful, supportive, kind, and glad to help.",
+    });
+
+    llm.pushResponse(
+      createEpisodeToolResponse([
+        {
+          title: "Guarded implementation turn",
+          narrative: "The user signaled guarded frustration while the agent responded warmly.",
+          source_stream_ids: [user.id, agent.id],
+          participants: ["user"],
+          tags: ["implementation"],
+          confidence: 0.8,
+          significance: 0.7,
+        },
+      ]),
+    );
+
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.episodicRepository,
+      embeddingClient: harness.embeddingClient,
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      clock,
+    });
+
+    await extractor.extractFromStream();
+    const [episode] = await harness.episodicRepository.listAll();
+
+    expect(episode?.source_stream_ids).toEqual([user.id, agent.id]);
+    expect(episode?.emotional_arc).toEqual({
+      start: {
+        valence: -0.65,
+        arousal: 0.55,
+      },
+      peak: {
+        valence: -0.65,
+        arousal: 0.55,
+      },
+      end: {
+        valence: -0.65,
+        arousal: 0.55,
+      },
+      dominant_emotion: "anger",
+    });
   });
 
   it("treats replayed chunks as idempotent no-ops keyed by source stream ids", async () => {

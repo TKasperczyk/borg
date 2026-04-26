@@ -285,6 +285,9 @@ Mood is sourced from the user's perception (Sprint 18 fix), not the
 agent's own response. It decays continuously and influences retrieval
 weighting -- mood-congruent memories get a salience boost via the
 `mood` weight in the attention formula (Part 5.1).
+Low-confidence perception affect uses the background-model fallback by
+default, capped at one call per user turn, so short subtle messages can
+be classified without unbounded LLM spend.
 
 ### 6. Self / Identity
 

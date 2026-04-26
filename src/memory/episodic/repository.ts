@@ -20,7 +20,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { parseEntityId, parseEpisodeId, type EntityId, type EpisodeId } from "../../util/ids.js";
-import { createNeutralEmotionalArc, emotionalArcSchema } from "../affective/types.js";
+import { emotionalArcSchema } from "../affective/types.js";
 import { computeEpisodeHeat } from "./heat.js";
 import {
   isEpisodeInGlobalIdentityScope,
@@ -218,7 +218,7 @@ function toEpisodeRow(episode: Episode): EpisodeRow {
 function fromEpisodeRow(row: Record<string, unknown>): Episode {
   const emotionalArc = (() => {
     if (row.emotional_arc === null || row.emotional_arc === undefined || row.emotional_arc === "") {
-      return createNeutralEmotionalArc();
+      return null;
     }
 
     try {

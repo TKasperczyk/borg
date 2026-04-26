@@ -44,6 +44,81 @@ describe("AffectiveExtractor", () => {
     expect((await extractor.analyze("okay")).valence).toBeLessThan(0.2);
   });
 
+  it("falls back to the llm for short low-confidence affect by default", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: AFFECTIVE_TOOL_NAME,
+              input: {
+                valence: -0.45,
+                arousal: 0.35,
+                dominant_emotion: "anger",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const extractor = new AffectiveExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    const signal = await extractor.analyze("Yeah great, exactly what I wanted");
+
+    expect(signal).toMatchObject({
+      dominant_emotion: "anger",
+      valence: -0.45,
+      arousal: 0.35,
+    });
+    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests[0]?.budget).toBe("perception-affective");
+  });
+
+  it("caps llm affective fallback calls for one extractor instance", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_1",
+              name: AFFECTIVE_TOOL_NAME,
+              input: {
+                valence: -0.45,
+                arousal: 0.35,
+                dominant_emotion: "anger",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const extractor = new AffectiveExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    await extractor.analyze("Yeah great, exactly what I wanted");
+    const capped = await extractor.analyze("Sure, perfect.");
+
+    expect(llm.requests).toHaveLength(1);
+    expect(capped).toMatchObject({
+      valence: 0,
+      dominant_emotion: "neutral",
+    });
+  });
+
   it("falls back to the llm for long ambiguous text when enabled", async () => {
     const llm = new FakeLLMClient({
       responses: [

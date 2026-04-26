@@ -55,7 +55,7 @@ export class Perceiver {
     this.clock = options.clock ?? new SystemClock();
     this.llmClient = options.llmClient;
     this.model = options.model;
-    this.affectiveUseLlmFallback = options.affectiveUseLlmFallback ?? false;
+    this.affectiveUseLlmFallback = options.affectiveUseLlmFallback ?? true;
     this.temporalCueUseLlmFallback = options.temporalCueUseLlmFallback ?? true;
     this.detectAffectiveSignal = options.detectAffectiveSignal ?? detectAffectiveSignal;
     this.onAffectiveError = options.onAffectiveError;
