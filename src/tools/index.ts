@@ -15,4 +15,5 @@ export {
   createIdentityEventsListTool,
   createOpenQuestionsCreateTool,
   createSemanticWalkTool,
+  createSkillsListTool,
 } from "./internal/index.js";

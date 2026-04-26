@@ -121,6 +121,7 @@ export {
   createIdentityEventsListTool,
   createOpenQuestionsCreateTool,
   createSemanticWalkTool,
+  createSkillsListTool,
   toAnthropicToolDefinitions,
   type ToolDefinition,
   type ToolDispatchCall,

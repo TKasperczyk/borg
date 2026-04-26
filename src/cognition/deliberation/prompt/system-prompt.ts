@@ -449,13 +449,16 @@ function summarizeSelectedSkill(
     return null;
   }
 
-  if (selectedSkill === null || selectedSkill === undefined) {
-    // Omit the section entirely when there is no useful procedural guidance.
-    return null;
-  }
-
-  if (selectedSkill.evaluatedCandidates.length === 0) {
-    return null;
+  // Empty-state placeholder: when problem_solving mode is active but no
+  // candidates surfaced, render the channel with an honest "nothing here yet"
+  // signal so the being can distinguish "no skills exist" from "block doesn't
+  // exist as a feature". Same pattern as the empty-commitments fix.
+  if (
+    selectedSkill === null ||
+    selectedSkill === undefined ||
+    selectedSkill.evaluatedCandidates.length === 0
+  ) {
+    return "No procedural skills matched this turn. Use tool.skills.list to inspect the registry, or tool.skills.add (when available) to record a procedural pattern after a turn that worked.";
   }
 
   const winner = selectedSkill.evaluatedCandidates.find(

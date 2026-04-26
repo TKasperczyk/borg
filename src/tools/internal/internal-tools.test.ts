@@ -15,6 +15,7 @@ import {
   createIdentityEventsListTool,
   createOpenQuestionsCreateTool,
   createSemanticWalkTool,
+  createSkillsListTool,
 } from "../../index.js";
 import { TestEmbeddingClient } from "../../offline/test-support.js";
 
@@ -287,6 +288,61 @@ describe("internal tools", () => {
       );
 
       expect(result.events.some((event) => event.record_type === "value")).toBe(true);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("lists procedural skills", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const borg = await openTestBorg(tempDir);
+
+    try {
+      const sourceEpisode = createEpisodeId();
+      const skill = await borg.skills.add({
+        applies_when: "debugging pgvector similarity drift after rollback",
+        approach: "Verify dimensions, compare operator class, then rebuild the index safely.",
+        sourceEpisodes: [sourceEpisode],
+      });
+
+      const tool = createSkillsListTool({
+        listSkills: (limit) => borg.skills.list(limit),
+      });
+      const result = await tool.invoke(
+        {
+          limit: 5,
+        },
+        {
+          sessionId: DEFAULT_SESSION_ID,
+          origin: "deliberator",
+        },
+      );
+
+      expect(result.skills.map((item) => item.id)).toContain(skill.id);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("returns an empty skills list when the registry is empty", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const borg = await openTestBorg(tempDir);
+
+    try {
+      const tool = createSkillsListTool({
+        listSkills: (limit) => borg.skills.list(limit),
+      });
+      const result = await tool.invoke(
+        {},
+        {
+          sessionId: DEFAULT_SESSION_ID,
+          origin: "deliberator",
+        },
+      );
+
+      expect(result.skills).toEqual([]);
     } finally {
       await borg.close();
     }

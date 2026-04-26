@@ -71,6 +71,7 @@ export async function openBorgDependencies(
       commitmentRepository: repositories.commitmentRepository,
       openQuestionsRepository: repositories.openQuestionsRepository,
       identityService: repositories.identityService,
+      skillRepository: repositories.skillRepository,
       createStreamWriter: repositories.createStreamWriter,
       clock,
     });

@@ -191,7 +191,11 @@ describe("buildBaseSystemPrompt", () => {
     expect(block.indexOf("- winner:")).toBeLessThan(block.indexOf("- alternative: Trace"));
   });
 
-  it("omits procedural guidance when no candidates were evaluated", () => {
+  it("renders an empty procedural placeholder when no candidates were evaluated", () => {
+    // Same pattern as the empty-commitments fix: when problem_solving mode is
+    // active but the procedural band has nothing to surface, render the channel
+    // with an honest placeholder so the being can distinguish "no skills exist
+    // yet" from "the channel doesn't exist".
     const selected = makeSkill(
       "skl_aaaaaaaaaaaaaaaa",
       "Trace the failing path",
@@ -204,7 +208,21 @@ describe("buildBaseSystemPrompt", () => {
       PROMPT_OPTIONS,
     );
 
-    expect(prompt).not.toContain("<borg_procedural_guidance>");
+    expect(prompt).toContain("<borg_procedural_guidance>");
+    expect(prompt).toContain("No procedural skills matched this turn.");
+    expect(prompt).toContain("tool.skills.list");
+  });
+
+  it("renders an empty procedural placeholder when no skill was selected at all", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        selectedSkill: null,
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(prompt).toContain("<borg_procedural_guidance>");
+    expect(prompt).toContain("No procedural skills matched this turn.");
   });
 
   it("omits procedural guidance outside problem-solving mode", () => {
