@@ -31,6 +31,12 @@ function createReflectionResponse(
     classification: "success" | "failure" | "unclear";
     evidence: string;
   }> = [],
+  intentUpdates: Array<{
+    description: string;
+    next_action: string | null;
+    status: "completed" | "abandoned";
+    evidence: string;
+  }> = [],
 ) {
   return {
     text: "",
@@ -44,6 +50,7 @@ function createReflectionResponse(
         input: {
           advanced_goals: advancedGoals,
           procedural_outcomes: proceduralOutcomes,
+          intent_updates: intentUpdates,
         },
       },
     ],
@@ -150,6 +157,7 @@ function createPendingProceduralReflectionContext(
       decision_reason: "confidence" as const,
       retrievedEpisodes: [],
       referencedEpisodeIds: null,
+      intents: [],
       thoughtsPersisted: false,
     },
     actionResult: {
@@ -327,6 +335,7 @@ describe("reflector", () => {
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
           referencedEpisodeIds: null,
+          intents: [],
           thoughtsPersisted: true,
         },
         actionResult: {
@@ -433,6 +442,7 @@ describe("reflector", () => {
           decision_reason: "confidence",
           retrievedEpisodes: [],
           referencedEpisodeIds: null,
+          intents: [],
           thoughtsPersisted: true,
         },
         actionResult: {
@@ -533,6 +543,7 @@ describe("reflector", () => {
           decision_reason: "confidence",
           retrievedEpisodes: [],
           referencedEpisodeIds: null,
+          intents: [],
           thoughtsPersisted: true,
         },
         actionResult: {
@@ -562,6 +573,111 @@ describe("reflector", () => {
     );
 
     expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
+  });
+
+  it("clears completed and abandoned pending intents from reflection output", async () => {
+    const pendingIntents = [
+      {
+        description: "Check the Atlas rollout after tests finish",
+        next_action: "review deploy status",
+      },
+      {
+        description: "Open a new incident if rollout fails",
+        next_action: "create incident",
+      },
+    ];
+    const newIntent = {
+      description: "Write a rollback note",
+      next_action: "draft rollback note",
+    };
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse([], [], [
+            {
+              ...pendingIntents[0],
+              status: "completed",
+              evidence: "The response reviewed the deploy status.",
+            },
+            {
+              ...pendingIntents[1],
+              status: "abandoned",
+              evidence: "The user said not to create an incident.",
+            },
+            {
+              description: "Hallucinated intent",
+              next_action: null,
+              status: "completed",
+              evidence: "Not present in prior pending intents.",
+            },
+          ]),
+        ],
+      }),
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+    });
+    const workingMemory = {
+      session_id: DEFAULT_SESSION_ID,
+      turn_counter: 2,
+      current_focus: "Atlas",
+      hot_entities: ["Atlas"],
+      pending_intents: pendingIntents,
+      suppressed: [],
+      mode: "problem_solving" as const,
+      updated_at: 0,
+    };
+
+    const reflected = await reflector.reflect(
+      {
+        userMessage: "The rollout passed and don't open a new incident.",
+        workingMemory,
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Rollout status is clean. I will write a rollback note.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [newIntent],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Rollout status is clean. I will write a rollback note.",
+          tool_calls: [],
+          intents: [newIntent],
+          workingMemory: {
+            ...workingMemory,
+            pending_intents: [...pendingIntents, newIntent],
+          },
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(),
+      },
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_intents).toEqual([newIntent]);
+    expect(harness.llmClient.requests[0]?.messages[0]?.content).toContain("pending_intents");
   });
 
   it("clears a pending procedural attempt when reflection returns no procedural outcome", async () => {
@@ -739,6 +855,7 @@ describe("reflector", () => {
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
           referencedEpisodeIds: [episode.id],
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -887,6 +1004,7 @@ describe("reflector", () => {
           decision_reason: "low confidence",
           retrievedEpisodes: [retrieved],
           referencedEpisodeIds: null,
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -979,6 +1097,7 @@ describe("reflector", () => {
           decision_reason: "low score",
           retrievedEpisodes: [retrieved],
           referencedEpisodeIds: null,
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1130,6 +1249,7 @@ describe("reflector", () => {
           decision_reason: "low confidence",
           retrievedEpisodes: [retrieved],
           referencedEpisodeIds: null,
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1276,6 +1396,7 @@ describe("reflector", () => {
             decision_reason: "confidence",
             retrievedEpisodes: [],
             referencedEpisodeIds: null,
+            intents: [],
             thoughtsPersisted: false,
           },
           actionResult: {
@@ -1405,6 +1526,7 @@ describe("reflector", () => {
           decision_reason: "confidence",
           retrievedEpisodes: [],
           referencedEpisodeIds: null,
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1537,6 +1659,7 @@ describe("reflector", () => {
           decision_reason: "confidence",
           retrievedEpisodes: [],
           referencedEpisodeIds: null,
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1651,6 +1774,7 @@ describe("reflector", () => {
           decision_reason: "reflective",
           retrievedEpisodes: [retrievedA, retrievedB],
           referencedEpisodeIds: [episodeA.id, episodeB.id],
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1744,6 +1868,7 @@ describe("reflector", () => {
           decision_reason: "reflective",
           retrievedEpisodes: [retrieved],
           referencedEpisodeIds: [],
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1838,6 +1963,7 @@ describe("reflector", () => {
           decision_reason: "reflective",
           retrievedEpisodes: [retrieved],
           referencedEpisodeIds: [episode.id, "ep_bbbbbbbbbbbbbbbb"],
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -1929,6 +2055,7 @@ describe("reflector", () => {
           decision_reason: "confidence",
           retrievedEpisodes: [],
           referencedEpisodeIds: null,
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -2045,6 +2172,7 @@ describe("reflector", () => {
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
           referencedEpisodeIds: [episode.id],
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {
@@ -2167,6 +2295,7 @@ describe("reflector", () => {
           decision_reason: "confidence",
           retrievedEpisodes: [retrieved],
           referencedEpisodeIds: null,
+          intents: [],
           thoughtsPersisted: false,
         },
         actionResult: {

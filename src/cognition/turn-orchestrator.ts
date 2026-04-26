@@ -688,6 +688,7 @@ export class TurnOrchestrator {
         const actionResult = await performAction({
           response: commitmentCheck.final_response,
           toolCalls: deliberation.tool_calls,
+          intents: deliberation.intents,
           audience: input.audience,
           perception,
           workingMemory,
@@ -750,7 +751,7 @@ export class TurnOrchestrator {
             userMessage: input.userMessage,
             perception,
             workingMemory: {
-              ...actionResult.workingMemory,
+              ...workingMemory,
               mood: moodSnapshot,
             },
             selfSnapshot,

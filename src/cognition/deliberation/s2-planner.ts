@@ -11,6 +11,7 @@ import {
 import type { JsonValue } from "../../util/json-value.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { toTraceJsonValue } from "../tracing/tracer.js";
+import { intentRecordSchema } from "../types.js";
 import type { DeliberationUsage, SelfSnapshot } from "./types.js";
 import { renderTaggedPromptSection } from "./prompt/sections.js";
 import { summarizeVoiceAnchors } from "./prompt/voice-anchors.js";
@@ -41,6 +42,11 @@ const turnPlanSchema = z.object({
     .describe(
       "List the episode_ids from borg_retrieved_episodes that you actually used as evidence; empty if none were drawn on.",
     ),
+  intents: z
+    .array(intentRecordSchema)
+    .describe(
+      "Follow-up intent records to carry into working memory after this turn. Include only concrete future actions you actually intend to track, not stylistic next-step wording.",
+    ),
 });
 
 export type TurnPlan = z.infer<typeof turnPlanSchema>;
@@ -50,7 +56,7 @@ export const TURN_PLAN_TOOL_NAME = "EmitTurnPlan";
 const TURN_PLAN_TOOL: LLMToolDefinition = {
   name: TURN_PLAN_TOOL_NAME,
   description:
-    "Emit a structured plan for this reflective/high-stakes turn before the final response. The plan is passed back to you in the final-response call so you can execute against it. List the episode_ids from borg_retrieved_episodes that you actually used as evidence; empty if none were drawn on.",
+    "Emit a structured plan for this reflective/high-stakes turn before the final response. The plan is passed back to you in the final-response call so you can execute against it. List the episode_ids from borg_retrieved_episodes that you actually used as evidence; empty if none were drawn on. Emit follow-up intents only for concrete future actions worth carrying in working memory.",
   inputSchema: toToolInputSchema(turnPlanSchema),
 };
 
@@ -86,6 +92,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
       "You are about to answer a reflective, high-stakes, or contradictory turn.",
       `Emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
       "The plan is passed back to you in the next call so you can execute it. Keep it short and grounded in the current turn -- do NOT try to draft the answer itself here.",
+      "Use plan.intents only for concrete future actions you mean to carry into later turns. Leave it empty when no follow-up state should persist.",
     ].join("\n"),
   ]
     .filter((section): section is string => section !== null)

@@ -1224,6 +1224,7 @@ describe("cli", () => {
                 tensions: [],
                 voice_note: "",
                 referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+                intents: [],
               },
             },
           ],

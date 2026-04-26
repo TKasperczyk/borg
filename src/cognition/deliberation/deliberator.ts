@@ -148,6 +148,7 @@ export class Deliberator {
         decision_reason: decision.reason,
         retrievedEpisodes: [...context.retrievalResult],
         referencedEpisodeIds: null,
+        intents: [],
         thoughtsPersisted: false,
       };
     }
@@ -244,6 +245,7 @@ export class Deliberator {
         ...secondaryRetrieval,
       ]),
       referencedEpisodeIds: plan?.referenced_episode_ids ?? null,
+      intents: plan === null ? [] : [...plan.intents],
       thoughtsPersisted,
     };
   }

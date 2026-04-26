@@ -289,8 +289,26 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
   // (current focus, hot entities, mood) that the model uses to anchor
   // the turn in the *right now*.
   const mood = workingMemory.mood;
+  const lines = [
+    `Working memory: focus=${workingMemory.current_focus ?? "none"}; entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${
+      mood === null || mood === undefined
+        ? "neutral"
+        : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`
+    }`,
+  ];
 
-  return `Working memory: focus=${workingMemory.current_focus ?? "none"}; entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${mood === null || mood === undefined ? "neutral" : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`}`;
+  if (workingMemory.pending_intents.length > 0) {
+    lines.push("Pending intents:");
+    for (const intent of workingMemory.pending_intents.slice(0, 8)) {
+      lines.push(
+        `- ${intent.description.trim()}${
+          intent.next_action === null ? "" : ` -> ${intent.next_action.trim()}`
+        }`,
+      );
+    }
+  }
+
+  return lines.join("\n");
 }
 
 function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string | null {

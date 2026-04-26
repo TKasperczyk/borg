@@ -40,6 +40,12 @@ describe("s2 planner", () => {
                 tensions: [],
                 voice_note: "stay direct",
                 referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+                intents: [
+                  {
+                    description: "Check rollback status after the next deploy",
+                    next_action: "review deploy status",
+                  },
+                ],
               },
             },
           ],
@@ -60,6 +66,12 @@ describe("s2 planner", () => {
       verification_steps: ["confirm rollback state"],
       voice_note: "stay direct",
       referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+      intents: [
+        {
+          description: "Check rollback status after the next deploy",
+          next_action: "review deploy status",
+        },
+      ],
     });
     expect(llm.requests).toHaveLength(2);
     expect(llm.requests[1]?.messages.at(-1)).toEqual({

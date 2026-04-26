@@ -569,6 +569,7 @@ describe("ProceduralSynthesizerProcess", () => {
             decision_reason: "confidence",
             retrievedEpisodes: [],
             referencedEpisodeIds: null,
+            intents: [],
             thoughtsPersisted: false,
           },
           actionResult: {

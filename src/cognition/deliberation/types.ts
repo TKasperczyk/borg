@@ -27,7 +27,7 @@ import type { ToolLoopCallRecord } from "../action/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
-import type { PerceptionResult } from "../types.js";
+import type { IntentRecord, PerceptionResult } from "../types.js";
 
 export type TurnStakes = "low" | "medium" | "high";
 
@@ -118,6 +118,7 @@ export type DeliberationResult = {
   decision_reason: string;
   retrievedEpisodes: RetrievedEpisode[];
   referencedEpisodeIds: readonly string[] | null;
+  intents: IntentRecord[];
   thoughtsPersisted: boolean;
 };
 

@@ -493,9 +493,10 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
 - Expensive path (System 2): low confidence OR high stakes OR
   contradiction detected → run an `EmitTurnPlan` planner pass first
   (structured tool-use that returns verification_steps, tensions,
-  voice_note, uncertainty), persist the plan as a `thought` stream
-  entry, then make the response call with the plan rendered into a
-  tagged `<borg_s2_plan>` block. The response call itself is one LLM
+  voice_note, uncertainty, referenced_episode_ids, and concrete
+  follow-up intents), persist the plan as a `thought` stream entry,
+  then make the response call with the plan rendered into a tagged
+  `<borg_s2_plan>` block. The response call itself is one LLM
   invocation enriched with the plan, not a second retrieval.
 - The prompt receives the confidence summary in a
   `<borg_retrieval_confidence>` block so the being can calibrate how
@@ -509,7 +510,9 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
   with `tool_call`/`tool_result` entries appended to the stream in
   order. Caps: 5 iterations, 3 tool calls per iteration.
 - Append the agent's text response as `agent_msg`.
-- Infer structured `intent` records from the response text for audit.
+- Carry structured `intent` records from the S2 `EmitTurnPlan` output
+  into `working.pending_intents`. S1 turns produce no intents; Action
+  does not infer state from response prose.
 - A separate `CommitmentChecker` runs as a post-hoc judge: if it
   detects a violation, an LLM rewrite pass produces a corrected text.
   This is detection-then-rewrite, not in-flight blocking.
@@ -520,6 +523,9 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
 - Stash `pending_social_attribution` and `pending_trait_attribution`
   in working memory so the NEXT user turn's affective signal becomes
   the evidence (Sprint 15/24).
+- Mark prior `pending_intents` completed or abandoned only when the
+  structured reflection pass sees clear evidence in a later completed
+  turn; unresolved intents persist and are rendered in working state.
 - Optionally enqueue review-queue items (e.g., reflection-driven open
   questions, identity inconsistencies surfaced this turn).
 - Note: episodic extraction does NOT run synchronously in reflection.

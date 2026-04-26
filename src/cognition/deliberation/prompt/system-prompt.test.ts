@@ -143,6 +143,27 @@ function extractBlock(prompt: string, tag: string): string {
 }
 
 describe("buildBaseSystemPrompt", () => {
+  it("renders pending intents in working state", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          pending_intents: [
+            {
+              description: "Check the Atlas rollout after tests finish",
+              next_action: "review deploy status",
+            },
+          ],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_working_state");
+
+    expect(block).toContain("Pending intents:");
+    expect(block).toContain("- Check the Atlas rollout after tests finish -> review deploy status");
+  });
+
   it("renders the selected skill first with up to two evaluated alternatives", () => {
     const tracePath = makeSkill(
       "skl_aaaaaaaaaaaaaaaa",

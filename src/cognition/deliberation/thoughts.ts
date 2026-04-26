@@ -42,5 +42,17 @@ export function formatTurnPlanForThought(plan: TurnPlan): string {
     parts.push(`voice: ${plan.voice_note.trim()}`);
   }
 
+  if (plan.intents.length > 0) {
+    parts.push(
+      `intents: ${plan.intents
+        .map((intent) =>
+          intent.next_action === null
+            ? intent.description.trim()
+            : `${intent.description.trim()} -> ${intent.next_action.trim()}`,
+        )
+        .join(" | ")}`,
+    );
+  }
+
   return parts.length === 0 ? "plan: (no changes needed)" : `plan: ${parts.join(" ; ")}`;
 }

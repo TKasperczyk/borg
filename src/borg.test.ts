@@ -36,6 +36,7 @@ function createTurnPlanResponse(referencedEpisodeIds: string[] = []) {
           tensions: [],
           voice_note: "",
           referenced_episode_ids: referencedEpisodeIds,
+          intents: [],
         },
       },
     ],
@@ -1005,6 +1006,10 @@ describe("Borg", () => {
     db.close();
     await store.close();
 
+    const expectedIntent = {
+      description: "Follow up on the Atlas deployment after rerunning pnpm install",
+      next_action: "rerun the deploy",
+    };
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -1022,6 +1027,7 @@ describe("Borg", () => {
                 tensions: [],
                 voice_note: "",
                 referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+                intents: [expectedIntent],
               },
             },
           ],
@@ -1100,8 +1106,9 @@ describe("Borg", () => {
       expect(result.path).toBe("system_2");
       expect(result.response).toContain("rerun pnpm install");
       expect(result.retrievedEpisodeIds).toEqual(["ep_aaaaaaaaaaaaaaaa"]);
-      expect(result.intents).toEqual([]);
+      expect(result.intents).toEqual([expectedIntent]);
       expect(borg.workmem.load().turn_counter).toBe(1);
+      expect(borg.workmem.load().pending_intents).toEqual([expectedIntent]);
       expect(borg.self.goals.list({ status: "active" })[0]?.id).toBe(goal.id);
       expect(borg.self.goals.list({ status: "active" })[0]?.progress_notes).toContain(
         "Reran the Atlas release stabilization plan.",
@@ -1151,6 +1158,7 @@ describe("Borg", () => {
                 tensions: [],
                 voice_note: "",
                 referenced_episode_ids: [],
+                intents: [],
               },
             },
           ],
@@ -1918,6 +1926,7 @@ describe("Borg", () => {
                   tensions: [],
                   voice_note: "",
                   referenced_episode_ids: [],
+                  intents: [],
                 },
               },
             ],

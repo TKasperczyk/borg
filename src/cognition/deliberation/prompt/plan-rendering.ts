@@ -15,7 +15,8 @@ export function formatTurnPlanForPrompt(plan: TurnPlan): string | null {
     plan.uncertainty.trim().length > 0 ||
     plan.verification_steps.length > 0 ||
     plan.tensions.length > 0 ||
-    plan.voice_note.trim().length > 0;
+    plan.voice_note.trim().length > 0 ||
+    plan.intents.length > 0;
 
   if (!hasContent) {
     return null;
@@ -41,6 +42,17 @@ export function formatTurnPlanForPrompt(plan: TurnPlan): string | null {
 
   if (plan.voice_note.trim().length > 0) {
     lines.push(`  Voice note: ${plan.voice_note.trim()}`);
+  }
+
+  if (plan.intents.length > 0) {
+    lines.push("  Follow-up intents:");
+    for (const intent of plan.intents) {
+      lines.push(
+        `    - ${intent.description.trim()}${
+          intent.next_action === null ? "" : ` -> ${intent.next_action.trim()}`
+        }`,
+      );
+    }
   }
 
   return renderTaggedPromptBlock(

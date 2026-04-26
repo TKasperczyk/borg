@@ -5,6 +5,7 @@ import type { ToolLoopCallRecord } from "./tool-loop.js";
 export type ActionContext = {
   response: string;
   toolCalls: ToolLoopCallRecord[];
+  intents: readonly IntentRecord[];
   audience?: string;
   perception: PerceptionResult;
   workingMemory: WorkingMemory;
@@ -18,7 +19,7 @@ export type ActionResult = {
 };
 
 export async function performAction(context: ActionContext): Promise<ActionResult> {
-  const intents: IntentRecord[] = [];
+  const intents = [...context.intents];
 
   return {
     response: context.response,
@@ -26,7 +27,7 @@ export async function performAction(context: ActionContext): Promise<ActionResul
     intents,
     workingMemory: {
       ...context.workingMemory,
-      pending_intents: [...context.workingMemory.pending_intents],
+      pending_intents: [...context.workingMemory.pending_intents, ...intents],
     },
   };
 }

@@ -28,7 +28,7 @@ import { z } from "zod";
 import type { ActionResult } from "../action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import { SuppressionSet } from "../attention/index.js";
-import type { PerceptionResult } from "../types.js";
+import { intentRecordSchema, type IntentRecord, type PerceptionResult } from "../types.js";
 import { MODE_TRAIT_MAP } from "./trait-signals.js";
 
 export type ReflectionContext = {
@@ -86,6 +86,17 @@ const reflectionOutputSchema = z.object({
       "Outcomes for the prior pending_procedural_attempt. Judge success only from the user's follow-up signal, never from the assistant's wording.",
     )
     .default([]),
+  intent_updates: z
+    .array(
+      intentRecordSchema.extend({
+        status: z.enum(["completed", "abandoned"]),
+        evidence: z.string().min(1),
+      }),
+    )
+    .describe(
+      "Prior pending_intents resolved by this completed turn. Include only exact prior intents with clear evidence, marked completed or abandoned.",
+    )
+    .default([]),
 });
 
 type ReflectionOutput = z.infer<typeof reflectionOutputSchema>;
@@ -93,7 +104,7 @@ type ReflectionOutput = z.infer<typeof reflectionOutputSchema>;
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
   description:
-    "Emit structured post-turn reflection. Mark advanced_goals only if the turn took a concrete step toward the goal, and procedural_outcomes only from user follow-up evidence.",
+    "Emit structured post-turn reflection. Mark advanced_goals only if the turn took a concrete step toward the goal, procedural_outcomes only from user follow-up evidence, and intent_updates only for prior pending intents resolved by the completed turn.",
   inputSchema: toToolInputSchema(reflectionOutputSchema),
 };
 
@@ -192,6 +203,31 @@ function buildIdentityPatchReviewRefs(
   };
 }
 
+function intentKey(intent: IntentRecord): string {
+  return JSON.stringify([
+    intent.description.trim().toLowerCase(),
+    intent.next_action === null ? null : intent.next_action.trim().toLowerCase(),
+  ]);
+}
+
+function selectResolvedIntentKeys(
+  pendingIntents: readonly IntentRecord[],
+  updates: readonly ReflectionOutput["intent_updates"][number][],
+): Set<string> {
+  const pendingKeys = new Set(pendingIntents.map((intent) => intentKey(intent)));
+  const resolved = new Set<string>();
+
+  for (const update of updates) {
+    const key = intentKey(update);
+
+    if (pendingKeys.has(key)) {
+      resolved.add(key);
+    }
+  }
+
+  return resolved;
+}
+
 async function resolveAttemptEpisodeIds(
   context: ReflectionContext,
   sourceStreamIds: readonly StreamEntryId[],
@@ -235,6 +271,7 @@ export class Reflector {
     let reflectionOutput: ReflectionOutput = {
       advanced_goals: [],
       procedural_outcomes: [],
+      intent_updates: [],
     };
 
     if (
@@ -338,6 +375,19 @@ export class Reflector {
       ...context.actionResult.workingMemory,
       updated_at: this.clock.now(),
     };
+    const resolvedIntentKeys = selectResolvedIntentKeys(
+      context.workingMemory.pending_intents,
+      reflectionOutput.intent_updates,
+    );
+
+    if (resolvedIntentKeys.size > 0) {
+      nextWorkingMemory = {
+        ...nextWorkingMemory,
+        pending_intents: nextWorkingMemory.pending_intents.filter(
+          (intent) => !resolvedIntentKeys.has(intentKey(intent)),
+        ),
+      };
+    }
 
     const traitEvidenceEpisodeIds = selectTraitEvidenceEpisodeIds(
       context.deliberationResult,
@@ -418,15 +468,19 @@ export class Reflector {
 
   private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
     const pendingProceduralAttempt = context.workingMemory.pending_procedural_attempt;
+    const pendingIntents = context.workingMemory.pending_intents;
 
     if (
       this.llmClient === undefined ||
       this.model === undefined ||
-      (context.selfSnapshot.goals.length === 0 && pendingProceduralAttempt === null)
+      (context.selfSnapshot.goals.length === 0 &&
+        pendingProceduralAttempt === null &&
+        pendingIntents.length === 0)
     ) {
       return {
         advanced_goals: [],
         procedural_outcomes: [],
+        intent_updates: [],
       };
     }
 
@@ -437,6 +491,7 @@ export class Reflector {
         "Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
         "If pending_procedural_attempt is present, classify whether the user's current message shows that attempt succeeded, failed, or remains unclear.",
         "Do not infer procedural success or failure from the assistant response, confidence, phrasing, or intentions.",
+        "If pending_intents are present, mark only prior pending intents completed or abandoned when the current user message and agent response give clear evidence. Otherwise omit them.",
       ].join("\n"),
       messages: [
         {
@@ -450,6 +505,7 @@ export class Reflector {
               progress_notes: goal.progress_notes,
             })),
             pending_procedural_attempt: pendingProceduralAttempt,
+            pending_intents: pendingIntents,
           }),
         },
       ],
@@ -464,6 +520,7 @@ export class Reflector {
       return {
         advanced_goals: [],
         procedural_outcomes: [],
+        intent_updates: [],
       };
     }
 
