@@ -22,7 +22,7 @@ import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
-import type { RetrievedEpisode } from "../../retrieval/index.js";
+import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
 
 function createReflectionResponse(
@@ -70,6 +70,19 @@ function createRetrievedEpisode(
       contradicts: [],
       categories: [],
     },
+  };
+}
+
+function createRetrievalConfidence(
+  overrides: Partial<RetrievalConfidence> = {},
+): RetrievalConfidence {
+  return {
+    overall: overrides.overall ?? 0.8,
+    evidenceStrength: overrides.evidenceStrength ?? 0.8,
+    coverage: overrides.coverage ?? 1,
+    sourceDiversity: overrides.sourceDiversity ?? 1,
+    contradictionPresent: overrides.contradictionPresent ?? false,
+    sampleSize: overrides.sampleSize ?? 3,
   };
 }
 
@@ -249,6 +262,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository,
         goalsRepository,
         traitsRepository,
@@ -353,6 +367,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -452,6 +467,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -599,6 +615,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository,
         goalsRepository,
         traitsRepository,
@@ -611,7 +628,7 @@ describe("reflector", () => {
     expect(episodicRepository.getStats(episode.id)?.use_count).toBe(1);
   });
 
-  it("adds an open question when system 2 finishes with low retrieval confidence", async () => {
+  it("adds an open question when high relevance score has low retrieval confidence", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new FixedClock(1_000);
     const store = new LanceDbStore({
@@ -680,11 +697,11 @@ describe("reflector", () => {
     });
     const retrieved: RetrievedEpisode = {
       episode,
-      score: 0.2,
+      score: 0.92,
       scoreBreakdown: {
-        similarity: 0.2,
-        decayedSalience: 0.2,
-        heat: 0.1,
+        similarity: 0.9,
+        decayedSalience: 0.1,
+        heat: 1,
         goalRelevance: 0,
         timeRelevance: 0,
         suppressionPenalty: 0,
@@ -746,6 +763,12 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence({
+          overall: 0.2,
+          evidenceStrength: 0.1,
+          coverage: 0.2,
+          sampleSize: 1,
+        }),
         episodicRepository,
         goalsRepository,
         traitsRepository,
@@ -765,6 +788,87 @@ describe("reflector", () => {
         },
       }),
     ]);
+  });
+
+  it("does not add an open question when low relevance score has high retrieval confidence", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        title: "Atlas settled cause",
+        narrative: "Atlas failures were traced to a known rollback gap.",
+        tags: ["atlas"],
+      }),
+    );
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+    const retrieved = createRetrievedEpisode(episode, 0.1);
+
+    await reflector.reflect(
+      {
+        userMessage: "Why is Atlas still failing?",
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: "Atlas",
+          hot_entities: ["Atlas"],
+          pending_intents: [],
+          suppressed: [],
+          mode: "reflective",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_2",
+          response: "The rollback gap explains the failure.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "low score",
+          retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: null,
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "The rollback gap explains the failure.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: "Atlas",
+            hot_entities: ["Atlas"],
+            pending_intents: [],
+            suppressed: [],
+            mode: "reflective",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence({
+          overall: 0.82,
+          evidenceStrength: 0.82,
+        }),
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([]);
   });
 
   it("logs and continues when the reflection open-question hook fails", async () => {
@@ -902,6 +1006,12 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence({
+          overall: 0.2,
+          evidenceStrength: 0.2,
+          coverage: 0.2,
+          sampleSize: 1,
+        }),
         episodicRepository,
         goalsRepository,
         traitsRepository,
@@ -1030,6 +1140,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -1093,6 +1204,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -1217,6 +1329,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -1280,6 +1393,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -1384,6 +1498,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrievedA, retrievedB],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -1476,6 +1591,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -1569,6 +1685,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -1659,6 +1776,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -1774,6 +1892,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,
@@ -1895,6 +2014,7 @@ describe("reflector", () => {
           },
         },
         retrievedEpisodes: [retrieved],
+        retrievalConfidence: createRetrievalConfidence(),
         episodicRepository: harness.episodicRepository,
         goalsRepository: harness.goalsRepository,
         traitsRepository: harness.traitsRepository,

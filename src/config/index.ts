@@ -428,7 +428,9 @@ export const DEFAULT_CONFIG: Config = {
     ruminator: {
       enabled: true,
       maxQuestionsPerRun: 3,
-      resolveConfidenceThreshold: 0.65,
+      // Threshold applies to RetrievalConfidence.overall, a conservative
+      // epistemic evidence-quality signal, not the relevance ranking score.
+      resolveConfidenceThreshold: 0.55,
       stalenessDays: 30,
       budget: 6_000,
       perQuestionBudget: 8_000,

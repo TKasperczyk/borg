@@ -1,4 +1,4 @@
-import type { RetrievedEpisode } from "../../retrieval/index.js";
+import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -36,6 +36,7 @@ export type ReflectionContext = {
   deliberationResult: DeliberationResult;
   actionResult: ActionResult;
   retrievedEpisodes: RetrievedEpisode[];
+  retrievalConfidence: RetrievalConfidence;
   episodicRepository: EpisodicRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
@@ -51,7 +52,9 @@ export type ReflectionContext = {
 const TOKEN_STOPWORDS = ["the", "and", "with", "this", "that", "from", "into", "after", "before"];
 const SURFACED_TTL_TURNS = 4;
 const NOISE_TTL_TURNS = 2;
-const OPEN_QUESTION_CONFIDENCE_THRESHOLD = 0.4;
+// RetrievalConfidence is calibrated epistemic confidence, not the relevance
+// ranking score. Keep this aligned with the S1/S2 low-confidence route.
+const OPEN_QUESTION_CONFIDENCE_THRESHOLD = 0.45;
 const SKILL_OUTCOME_WINDOW_TURNS = 2;
 const REFLECTION_TOOL_NAME = "EmitTurnReflection";
 const DEFAULT_REFLECTION_MAX_TOKENS = 768;
@@ -142,14 +145,6 @@ function episodeUsed(result: RetrievedEpisode, response: string): boolean {
 
   const unionSize = new Set([...responseTokens, ...episodeTokens]).size;
   return unionSize > 0 && overlap / unionSize >= 0.15;
-}
-
-function averageRetrievalConfidence(results: readonly RetrievedEpisode[]): number {
-  if (results.length === 0) {
-    return 0;
-  }
-
-  return results.reduce((sum, result) => sum + result.score, 0) / results.length;
 }
 
 function buildReflectionProvenance(retrievedEpisodes: readonly RetrievedEpisode[]) {
@@ -313,7 +308,7 @@ export class Reflector {
 
     if (
       context.deliberationResult.path === "system_2" &&
-      averageRetrievalConfidence(context.retrievedEpisodes) < OPEN_QUESTION_CONFIDENCE_THRESHOLD
+      context.retrievalConfidence.overall < OPEN_QUESTION_CONFIDENCE_THRESHOLD
     ) {
       try {
         const relatedEpisodeIds =

@@ -736,6 +736,7 @@ export class TurnOrchestrator {
             deliberationResult: deliberation,
             actionResult,
             retrievedEpisodes: deliberation.retrievedEpisodes,
+            retrievalConfidence: retrieval.confidence,
             episodicRepository: this.options.episodicRepository,
             goalsRepository: this.options.goalsRepository,
             traitsRepository: this.options.traitsRepository,

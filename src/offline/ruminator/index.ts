@@ -202,12 +202,15 @@ async function planResolution(
   const globalIdentityEpisodes = retrieval.episodes.filter((result) =>
     isEpisodeInGlobalIdentityScope(result.episode, selfAudienceEntityId),
   );
+  if (retrieval.confidence.overall < ctx.config.offline.ruminator.resolveConfidenceThreshold) {
+    return null;
+  }
+
+  // The confidence gate above decides whether evidence can resolve the
+  // question. Score is only a relevance ranking signal for choosing the
+  // anchor episode and ordering evidence for the prompt.
   const strongEvidence = globalIdentityEpisodes
-    .filter(
-      (result) =>
-        result.score >= ctx.config.offline.ruminator.resolveConfidenceThreshold &&
-        result.episode.updated_at > question.last_touched,
-    )
+    .filter((result) => result.episode.updated_at > question.last_touched)
     .sort(
       (left, right) =>
         right.score - left.score || right.episode.updated_at - left.episode.updated_at,
@@ -225,7 +228,7 @@ async function planResolution(
         title: result.episode.title,
         narrative: result.episode.narrative,
         tags: result.episode.tags,
-        score: Number(result.score.toFixed(3)),
+        relevance_score: Number(result.score.toFixed(3)),
       }),
     )
     .join("\n");

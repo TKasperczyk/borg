@@ -16,7 +16,7 @@ import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
-import type { RetrievedEpisode } from "../../retrieval/index.js";
+import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import { Deliberator } from "./deliberator.js";
 
 function makeRetrievedEpisode(id: string, score: number, tags: string[] = []): RetrievedEpisode {
@@ -56,6 +56,20 @@ function makeRetrievedEpisode(id: string, score: number, tags: string[] = []): R
       suppressionPenalty: 0,
     },
     citationChain: [],
+  };
+}
+
+function makeRetrievalConfidence(
+  overall = 0.9,
+  overrides: Partial<RetrievalConfidence> = {},
+): RetrievalConfidence {
+  return {
+    overall,
+    evidenceStrength: overrides.evidenceStrength ?? overall,
+    coverage: overrides.coverage ?? 1,
+    sourceDiversity: overrides.sourceDiversity ?? 1,
+    contradictionPresent: overrides.contradictionPresent ?? false,
+    sampleSize: overrides.sampleSize ?? 3,
   };
 }
 
@@ -124,6 +138,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       recencyMessages: [
         {
           role: "user",
@@ -220,6 +235,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
@@ -289,6 +305,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       recencyMessages: [
         {
           role: "user",
@@ -369,6 +386,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       audienceProfile: {
         entity_id: "ent_aaaaaaaaaaaaaaaa" as never,
         trust: 0.82,
@@ -466,6 +484,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [injectedEpisode],
+      retrievalConfidence: makeRetrievalConfidence(),
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
@@ -516,6 +535,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [injectedEpisode],
+      retrievalConfidence: makeRetrievalConfidence(),
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
@@ -565,6 +585,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
@@ -636,6 +657,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
@@ -659,6 +681,67 @@ describe("deliberator", () => {
     expect(result.path).toBe("system_1");
     expect(result.response).toBe("Direct answer");
     expect(result.thoughts).toEqual([]);
+  });
+
+  it("computes retrieval confidence when absent instead of averaging relevance scores", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_confidence",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "Sparse evidence despite a strong keyword match.",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+                referenced_episode_ids: [],
+              },
+            },
+          ],
+        },
+        {
+          text: "I need to stay tentative here.",
+          input_tokens: 12,
+          output_tokens: 6,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      userMessage: "What happened with Atlas?",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0 },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        current_focus: null,
+        hot_entities: [],
+        pending_intents: [],
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      options: { stakes: "low" },
+    });
+
+    expect(result.path).toBe("system_2");
+    expect(result.decision_reason).toMatch(/low retrieval confidence/i);
   });
 
   it("chooses system 2 for reflective mode even with high confidence", async () => {
@@ -704,6 +787,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
+      retrievalConfidence: makeRetrievalConfidence(),
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
@@ -760,6 +844,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.92, ["atlas"])],
+      retrievalConfidence: makeRetrievalConfidence(),
       retrievedSemantic: {
         matched_nodes: [
           {
@@ -981,6 +1066,12 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [],
+      retrievalConfidence: makeRetrievalConfidence(0, {
+        evidenceStrength: 0,
+        coverage: 0,
+        sourceDiversity: 0,
+        sampleSize: 0,
+      }),
       applicableCommitments: [],
       openQuestionsContext: [],
       workingMemory: {
@@ -1084,6 +1175,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       selectedSkill,
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
@@ -1140,6 +1232,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       selectedSkill: null,
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
@@ -1207,6 +1300,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.8, ["atlas"])],
+      retrievalConfidence: makeRetrievalConfidence(),
       openQuestionsContext: [
         {
           id: "oq_aaaaaaaaaaaaaaaa" as never,
@@ -1295,6 +1389,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
@@ -1362,6 +1457,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 1,
@@ -1432,6 +1528,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
+      retrievalConfidence: makeRetrievalConfidence(),
       contradictionPresent: true,
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
@@ -1524,6 +1621,7 @@ describe("deliberator", () => {
           temporalCue: null,
         },
         retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
+        retrievalConfidence: makeRetrievalConfidence(),
         applicableCommitments: [commitment],
         openQuestionsContext: [
           {
@@ -1690,6 +1788,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 3,
@@ -1832,6 +1931,7 @@ describe("deliberator", () => {
           temporalCue: null,
         },
         retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
+        retrievalConfidence: makeRetrievalConfidence(),
         applicableCommitments: [commitment],
         entityRepository: entities,
         workingMemory: {
@@ -1911,6 +2011,7 @@ describe("deliberator", () => {
           temporalCue: null,
         },
         retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
+        retrievalConfidence: makeRetrievalConfidence(),
         applicableCommitments: [],
         entityRepository: entities,
         workingMemory: {
@@ -1966,6 +2067,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
       pendingCorrectionsContext: [
         {
           id: 7,
@@ -2061,6 +2163,7 @@ describe("deliberator", () => {
             temporalCue: null,
           },
           retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.2, ["warning"])],
+          retrievalConfidence: makeRetrievalConfidence(),
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,

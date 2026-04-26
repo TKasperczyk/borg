@@ -90,8 +90,14 @@ describe("chooseDeliberationPath", () => {
     expect(decision.path).toBe("system_1");
   });
 
-  it("falls back to score-average when RetrievalConfidence is not supplied", () => {
-    const decision = chooseDeliberationPath("problem_solving", "low", [makeEpisode(0.2)]);
+  it("routes from explicit low retrieval confidence without averaging scores", () => {
+    const decision = chooseDeliberationPath(
+      "problem_solving",
+      "low",
+      [makeEpisode(0.9)],
+      false,
+      makeConfidence(0.2),
+    );
 
     expect(decision.path).toBe("system_2");
     expect(decision.reason).toMatch(/low retrieval confidence/i);

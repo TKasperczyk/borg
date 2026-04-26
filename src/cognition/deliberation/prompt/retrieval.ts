@@ -67,6 +67,8 @@ export function summarizeRetrievedEpisodes(
   let usedTokens = estimatePromptTokens(lines[0] ?? label);
 
   for (const result of retrievedEpisodes) {
+    // This is the relevance ranking score. Epistemic retrieval confidence is
+    // rendered separately in the retrieval-confidence prompt block.
     const normalizedNarrative = result.episode.narrative.replace(/\s+/g, " ").trim();
     const narrative =
       normalizedNarrative.length > 320

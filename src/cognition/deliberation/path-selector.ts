@@ -15,18 +15,6 @@ export type DeliberationPathTrace = {
   turnId: string;
 };
 
-// When no RetrievalConfidence is supplied, fall back to the old score-average.
-// This keeps test harnesses and other callers that don't pass confidence working;
-// production paths plumb RetrievalConfidence through pipeline -> deliberator.
-function fallbackConfidence(results: readonly RetrievedEpisode[]): number {
-  if (results.length === 0) {
-    return 0;
-  }
-
-  const total = results.reduce((sum, result) => sum + result.score, 0);
-  return total / results.length;
-}
-
 function hasContradictionSignal(retrievedEpisodes: readonly RetrievedEpisode[]): boolean {
   // Contradiction in retrieved context: a "warning"-tagged episode and a
   // "recommended"-tagged episode sharing topic tokens. This is matching on
@@ -65,15 +53,12 @@ export function chooseDeliberationPath(
   stakes: TurnStakes,
   retrievedEpisodes: readonly RetrievedEpisode[],
   contradictionPresent = false,
-  retrievalConfidence?: RetrievalConfidence | null,
+  retrievalConfidence: RetrievalConfidence,
   trace?: DeliberationPathTrace,
 ): DeliberationPathDecision {
-  const confidence =
-    retrievalConfidence !== undefined && retrievalConfidence !== null
-      ? retrievalConfidence.overall
-      : fallbackConfidence(retrievedEpisodes);
+  const confidence = retrievalConfidence.overall;
   const contextContradiction =
-    contradictionPresent || retrievalConfidence?.contradictionPresent === true;
+    contradictionPresent || retrievalConfidence.contradictionPresent === true;
 
   const select = (
     path: DeliberationPathDecision["path"],

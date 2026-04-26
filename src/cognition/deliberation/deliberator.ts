@@ -1,5 +1,5 @@
 // Thin deliberation orchestrator: selects S1/S2, calls planner/finalizer, and assembles results.
-import type { RetrievedEpisode } from "../../retrieval/index.js";
+import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import type { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import {
@@ -93,15 +93,26 @@ export class Deliberator {
             turnId: context.turnId,
           }
         : undefined;
+    const retrievalConfidence =
+      context.retrievalConfidence ??
+      computeRetrievalConfidence({
+        episodes: context.retrievalResult,
+        contradictionPresent: context.contradictionPresent ?? false,
+        nowMs: this.clock.now(),
+      });
+    const effectiveContext: DeliberationContext = {
+      ...context,
+      retrievalConfidence,
+    };
     const decision = chooseDeliberationPath(
       context.perception.mode,
       stakes,
       context.retrievalResult,
       context.contradictionPresent,
-      context.retrievalConfidence ?? null,
+      retrievalConfidence,
       trace,
     );
-    const baseSystemPrompt = buildBaseSystemPrompt(context, {
+    const baseSystemPrompt = buildBaseSystemPrompt(effectiveContext, {
       retrievalContextBudget,
       semanticContextBudget,
       nowMs: this.clock.now(),

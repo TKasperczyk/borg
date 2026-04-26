@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { computeWeights } from "../../cognition/attention/index.js";
 import { FakeLLMClient } from "../../llm/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
@@ -120,6 +121,66 @@ describe("RuminatorProcess", () => {
 
       expect(harness.growthMarkersRepository.list()).toHaveLength(0);
       expect(harness.openQuestionsRepository.get(question.id)?.status).toBe("open");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("does not resolve when high relevance score has low retrieval confidence", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const episode = createEpisodeFixture(
+        {
+          title: "Atlas deploy keyword match",
+          narrative: "Atlas deploy fix is mentioned without settled evidence.",
+          tags: ["atlas", "deploy"],
+          significance: 0.05,
+          created_at: 2_000_000,
+          updated_at: 2_000_000,
+        },
+        [1, 0, 0, 0],
+      );
+      await harness.episodicRepository.insert(episode);
+      const question = harness.openQuestionsRepository.add({
+        question: "Why does Atlas deploy fail?",
+        urgency: 0.7,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      const retrieval = await harness.retrievalPipeline.searchWithContext(question.question, {
+        limit: 3,
+        globalIdentitySelfAudienceEntityId: harness.entityRepository.findByName("self"),
+        attentionWeights: computeWeights("reflective", {
+          currentGoals: [],
+          hasActiveValues: false,
+          hasTemporalCue: false,
+        }),
+        goalDescriptions: [],
+        includeOpenQuestions: false,
+      });
+
+      expect(retrieval.episodes[0]?.score).toBeGreaterThan(
+        harness.config.offline.ruminator.resolveConfidenceThreshold,
+      );
+      expect(retrieval.confidence.overall).toBeLessThan(
+        harness.config.offline.ruminator.resolveConfidenceThreshold,
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items).toEqual([]);
+      expect(llm.requests).toHaveLength(0);
     } finally {
       await harness.cleanup();
     }
