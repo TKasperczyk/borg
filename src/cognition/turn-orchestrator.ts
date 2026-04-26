@@ -469,6 +469,14 @@ export class TurnOrchestrator {
           }
         }
 
+        const userEntry = {
+          kind: "user_msg",
+          content: input.userMessage,
+          ...(input.audience === undefined ? {} : { audience: input.audience }),
+        } satisfies Parameters<StreamWriter["append"]>[0];
+
+        const persistedUserEntry = await streamWriter.append(userEntry);
+
         workingMemory = this.options.workingMemoryStore.save({
           ...workingMemory,
           pending_social_attribution: pendingSocialAttribution,
@@ -477,13 +485,6 @@ export class TurnOrchestrator {
           updated_at: this.clock.now(),
         });
 
-        const userEntry = {
-          kind: "user_msg",
-          content: input.userMessage,
-          ...(input.audience === undefined ? {} : { audience: input.audience }),
-        } satisfies Parameters<StreamWriter["append"]>[0];
-
-        const persistedUserEntry = await streamWriter.append(userEntry);
         await streamWriter.append({
           kind: "perception",
           content: {
@@ -780,7 +781,9 @@ export class TurnOrchestrator {
         // it idempotent, and its own onError hook logs failures via its
         // own stream writer (the turn's writer is about to close below).
         if (this.options.streamIngestionCoordinator !== undefined) {
-          void this.options.streamIngestionCoordinator.ingest(sessionId);
+          void this.options.streamIngestionCoordinator.ingest(sessionId).catch((error) => {
+            console.error("Live stream ingestion failed", error);
+          });
         }
 
         return {

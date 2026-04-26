@@ -4,7 +4,11 @@ import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue, type JsonValue } from "../../util/json-value.js";
-import { parseStoredProvenance, toStoredProvenance, type Provenance } from "../common/provenance.js";
+import {
+  parseStoredProvenance,
+  toStoredProvenance,
+  type Provenance,
+} from "../common/provenance.js";
 
 import {
   identityEventSchema,
@@ -83,6 +87,10 @@ export class IdentityEventRepository {
     return this.options.db;
   }
 
+  runInTransaction<T>(callback: () => T): T {
+    return this.db.raw.transaction(callback)();
+  }
+
   record(input: {
     record_type: IdentityRecordType;
     record_id: string;
@@ -135,14 +143,20 @@ export class IdentityEventRepository {
     return mapRow(row);
   }
 
-  list(options: {
-    recordType?: IdentityRecordType;
-    recordId?: string;
-    limit?: number;
-  } = {}): IdentityEvent[] {
+  list(
+    options: {
+      recordType?: IdentityRecordType;
+      recordId?: string;
+      limit?: number;
+    } = {},
+  ): IdentityEvent[] {
     const filters: string[] = [];
     const values: unknown[] = [];
-    const limit = z.number().int().positive().parse(options.limit ?? 50);
+    const limit = z
+      .number()
+      .int()
+      .positive()
+      .parse(options.limit ?? 50);
 
     if (options.recordType !== undefined) {
       filters.push("record_type = ?");

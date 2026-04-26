@@ -203,9 +203,12 @@ export class StreamIngestionCoordinator {
           this.inFlight.delete(sessionId);
         }
 
+        const canStopTracking =
+          (settledError === undefined && settledResult?.error === undefined) ||
+          (this.closePromise !== null && settledResult?.error !== undefined);
+
         if (
-          settledError === undefined &&
-          settledResult?.error === undefined &&
+          canStopTracking &&
           !this.inFlight.has(sessionId) &&
           !this.pending.has(sessionId) &&
           !this.shutdownPendingDrain.has(sessionId)
@@ -370,7 +373,7 @@ export class StreamIngestionCoordinator {
       };
     } catch (error) {
       try {
-      await this.options.onError?.(error, sessionId);
+        await this.options.onError?.(error, sessionId);
       } catch {
         // Best-effort.
       }

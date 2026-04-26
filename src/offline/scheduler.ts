@@ -3,6 +3,7 @@
 // so it runs on its own interval loop with a busy-detection hook.
 
 import { SystemClock, type Clock } from "../util/clock.js";
+import { ConfigError } from "../util/errors.js";
 
 import type { MaintenanceOrchestrator } from "./orchestrator.js";
 import type { OfflineProcess, OfflineProcessName, OrchestratorResult } from "./types.js";
@@ -57,6 +58,21 @@ export class MaintenanceScheduler {
   private observer: MaintenanceSchedulerObserver | null = null;
 
   constructor(private readonly options: MaintenanceSchedulerOptions) {
+    const overlappingProcesses = options.lightProcesses.filter((process) =>
+      options.heavyProcesses.includes(process),
+    );
+
+    if (overlappingProcesses.length > 0) {
+      throw new ConfigError(
+        `Maintenance light/heavy process sets must be disjoint; overlapping processes: ${[
+          ...new Set(overlappingProcesses),
+        ].join(", ")}`,
+        {
+          code: "MAINTENANCE_PROCESS_CADENCE_OVERLAP",
+        },
+      );
+    }
+
     this.clock = options.clock ?? new SystemClock();
     this.setIntervalFn = options.setIntervalFn ?? setInterval;
     this.clearIntervalFn = options.clearIntervalFn ?? clearInterval;

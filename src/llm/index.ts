@@ -180,7 +180,11 @@ export type AnthropicLLMClientOptions = {
   clock?: Clock;
 };
 
-type FakeLLMResponseValue = string | readonly LLMContentBlock[] | LLMCompleteResult | LLMConverseResult;
+type FakeLLMResponseValue =
+  | string
+  | readonly LLMContentBlock[]
+  | LLMCompleteResult
+  | LLMConverseResult;
 
 export type FakeLLMResponse =
   | FakeLLMResponseValue
@@ -403,11 +407,51 @@ function transformSseEvent(
     .join("\n");
 }
 
+type RequestBodyInit = NonNullable<RequestInit["body"]>;
+
+function requestHasBody(request: Request): boolean {
+  const method = request.method.toUpperCase();
+  return method !== "GET" && method !== "HEAD" && request.body !== null;
+}
+
+async function requestToInit(
+  request: Request,
+  bodyOverride?: RequestBodyInit,
+): Promise<RequestInit> {
+  return {
+    method: request.method,
+    headers: new Headers(request.headers),
+    body:
+      bodyOverride ?? (requestHasBody(request) ? await request.clone().arrayBuffer() : undefined),
+    credentials: request.credentials,
+    cache: request.cache,
+    redirect: request.redirect,
+    referrer: request.referrer,
+    referrerPolicy: request.referrerPolicy,
+    integrity: request.integrity,
+    keepalive: request.keepalive,
+    mode: request.mode,
+    signal: request.signal,
+  };
+}
+
+function withBodyAndFreshLength(init: RequestInit, body: RequestBodyInit): RequestInit {
+  const headers = new Headers(init.headers);
+  headers.delete("content-length");
+
+  return {
+    ...init,
+    headers,
+    body,
+  };
+}
+
 export function createOAuthFetch(): typeof fetch {
   return async (
     input: Parameters<typeof fetch>[0],
     init?: Parameters<typeof fetch>[1],
   ): Promise<Response> => {
+    const inputRequest = input instanceof Request ? new Request(input, init) : null;
     let requestUrl: URL;
 
     if (typeof input === "string") {
@@ -424,12 +468,18 @@ export function createOAuthFetch(): typeof fetch {
       requestUrl.searchParams.set("beta", "true");
     }
 
-    let modifiedInit = init;
+    let modifiedInit = inputRequest === null ? init : await requestToInit(inputRequest);
     const originalNamesByTransformed = new Map<string, string>();
+    const requestBody =
+      inputRequest !== null && isMessagesRequest && requestHasBody(inputRequest)
+        ? await inputRequest.clone().text()
+        : undefined;
+    const bodyToTransform =
+      requestBody ?? (typeof modifiedInit?.body === "string" ? modifiedInit.body : undefined);
 
-    if (isMessagesRequest && init?.body && typeof init.body === "string") {
+    if (isMessagesRequest && bodyToTransform !== undefined && bodyToTransform.length > 0) {
       try {
-        const parsed = JSON.parse(init.body) as Record<string, unknown>;
+        const parsed = JSON.parse(bodyToTransform) as Record<string, unknown>;
         let modified = false;
 
         if (Array.isArray(parsed.tools)) {
@@ -478,10 +528,7 @@ export function createOAuthFetch(): typeof fetch {
         }
 
         if (modified) {
-          modifiedInit = {
-            ...init,
-            body: JSON.stringify(parsed),
-          };
+          modifiedInit = withBodyAndFreshLength(modifiedInit ?? {}, JSON.stringify(parsed));
         }
       } catch {
         // Leave non-JSON bodies unchanged.
@@ -704,12 +751,24 @@ export class AnthropicLLMClient implements LLMClient {
       return;
     }
 
-    this.initialization ??= (async () => {
-      this.auth = await resolveAnthropicAuth(this.options);
-      this.client = buildAnthropicClient(this.auth);
-    })();
+    if (this.initialization === undefined) {
+      const initialization = (async () => {
+        this.auth = await resolveAnthropicAuth(this.options);
+        this.client = buildAnthropicClient(this.auth);
+      })();
+      this.initialization = initialization;
+    }
 
-    await this.initialization;
+    const initialization = this.initialization;
+
+    try {
+      await initialization;
+    } catch (error) {
+      if (this.initialization === initialization) {
+        this.initialization = undefined;
+      }
+      throw error;
+    }
   }
 
   private resolveSystemPrompt(
@@ -1035,9 +1094,11 @@ export class FakeLLMClient implements LLMClient {
 
     const resolved =
       typeof response === "function"
-        ? await (response as (options: LLMCompleteOptions) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>)(
-            options,
-          )
+        ? await (
+            response as (
+              options: LLMCompleteOptions,
+            ) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>
+          )(options)
         : response;
     const normalized = normalizeFakeCompleteResponse(resolved);
 
@@ -1064,9 +1125,11 @@ export class FakeLLMClient implements LLMClient {
 
     const resolved =
       typeof response === "function"
-        ? await (response as (options: LLMConverseOptions) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>)(
-            options,
-          )
+        ? await (
+            response as (
+              options: LLMConverseOptions,
+            ) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>
+          )(options)
         : response;
     const normalized = normalizeFakeConverseResponse(resolved);
 

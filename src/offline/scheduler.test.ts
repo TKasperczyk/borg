@@ -3,15 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ManualClock } from "../util/clock.js";
 
 import { MaintenanceScheduler, type MaintenanceTickResult } from "./scheduler.js";
-import type {
-  MaintenanceOrchestrator,
-  MaintenanceRunOptions,
-} from "./orchestrator.js";
-import type {
-  OfflineProcess,
-  OfflineProcessName,
-  OrchestratorResult,
-} from "./types.js";
+import type { MaintenanceOrchestrator, MaintenanceRunOptions } from "./orchestrator.js";
+import type { OfflineProcess, OfflineProcessName, OrchestratorResult } from "./types.js";
 import type { MaintenancePlan } from "./plan-file.js";
 
 type FakeOrchestratorSpy = {
@@ -197,6 +190,25 @@ describe("MaintenanceScheduler", () => {
 
     expect(result.status).toBe("skipped_empty");
     expect(spy.runCalls).toHaveLength(0);
+  });
+
+  it("rejects overlapping light and heavy process sets", () => {
+    const clock = new ManualClock(1_000);
+    const spy = createFakeOrchestrator();
+
+    expect(
+      () =>
+        new MaintenanceScheduler({
+          enabled: true,
+          lightIntervalMs: 10_000,
+          heavyIntervalMs: 60_000,
+          lightProcesses: ["consolidator", "reflector"],
+          heavyProcesses: ["reflector"],
+          orchestrator: spy.orchestrator,
+          processRegistry: createFakeProcessRegistry(),
+          clock,
+        }),
+    ).toThrow(/overlapping processes: reflector/);
   });
 
   it("coalesces same-cadence concurrent ticks but runs different cadences in parallel", async () => {

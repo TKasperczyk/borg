@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
@@ -83,6 +83,10 @@ function createHarness(clock: FixedClock | ManualClock) {
 }
 
 describe("identity service", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("requires review for manual, system, and offline overwrites of established episode-backed values", () => {
     const harness = createHarness(new FixedClock(1_000));
 
@@ -344,6 +348,95 @@ describe("identity service", () => {
           status: "requires_review",
         }),
       );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("rolls back period, growth marker, and open question updates when event recording fails", () => {
+    const harness = createHarness(new FixedClock(4_000));
+
+    try {
+      const period = harness.autobiographicalRepository.upsertPeriod({
+        label: "2026-Q3",
+        start_ts: 1_000,
+        narrative: "Original period narrative.",
+        key_episode_ids: ["ep_periodrollbackaa" as const],
+        themes: ["stability"],
+        provenance: {
+          kind: "episodes",
+          episode_ids: ["ep_periodrollbackaa" as const],
+        },
+      });
+      const question = harness.openQuestionsRepository.add({
+        question: "Which invariant matters?",
+        urgency: 0.4,
+        related_episode_ids: ["ep_questionrollback" as const],
+        source: "reflection",
+      });
+      const marker = harness.growthMarkersRepository.add({
+        ts: 3_500,
+        category: "understanding",
+        what_changed: "Learned the original pattern.",
+        evidence_episode_ids: ["ep_markerrollbackaa" as const],
+        confidence: 0.6,
+        source_process: "self-narrator",
+        provenance: {
+          kind: "episodes",
+          episode_ids: ["ep_markerrollbackaa" as const],
+        },
+      });
+      const eventError = new Error("identity event insert failed");
+      const recordSpy = vi.spyOn(harness.identityEvents, "record").mockImplementation(() => {
+        throw eventError;
+      });
+      const provenance = {
+        kind: "system" as const,
+      };
+
+      expect(() =>
+        harness.identity.updatePeriod(
+          period.id,
+          {
+            narrative: "Updated period narrative.",
+          },
+          provenance,
+          {
+            throughReview: true,
+          },
+        ),
+      ).toThrow(eventError);
+      expect(() =>
+        harness.identity.updateGrowthMarker(
+          marker.id,
+          {
+            after_description: "Updated marker.",
+          },
+          provenance,
+          {
+            throughReview: true,
+          },
+        ),
+      ).toThrow(eventError);
+      expect(() =>
+        harness.identity.updateOpenQuestion(
+          question.id,
+          {
+            urgency: 0.9,
+          },
+          provenance,
+          {
+            throughReview: true,
+          },
+        ),
+      ).toThrow(eventError);
+
+      expect(recordSpy).toHaveBeenCalledTimes(3);
+      expect(harness.autobiographicalRepository.getPeriod(period.id)?.narrative).toBe(
+        "Original period narrative.",
+      );
+      expect(harness.growthMarkersRepository.get(marker.id)?.after_description).toBeNull();
+      expect(harness.openQuestionsRepository.get(question.id)?.urgency).toBe(0.4);
     } finally {
       harness.db.close();
     }

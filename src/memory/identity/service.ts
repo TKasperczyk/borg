@@ -6,7 +6,11 @@ import {
   type OpenQuestionId,
 } from "../../util/ids.js";
 import { type Provenance } from "../common/provenance.js";
-import { CommitmentRepository, commitmentPatchSchema, type CommitmentRecord } from "../commitments/index.js";
+import {
+  CommitmentRepository,
+  commitmentPatchSchema,
+  type CommitmentRecord,
+} from "../commitments/index.js";
 import {
   AutobiographicalRepository,
   GrowthMarkersRepository,
@@ -92,7 +96,7 @@ function openQuestionGuardState(current: OpenQuestion): IdentityGuardState {
             kind: "episodes" as const,
             episode_ids: [...new Set(current.related_episode_ids)],
           }
-        : current.provenance ?? undefined;
+        : (current.provenance ?? undefined);
 
   return {
     state: current.status === "open" ? "established" : "candidate",
@@ -390,22 +394,29 @@ export class IdentityService {
       };
     }
 
-    const record = this.options.autobiographicalRepository.upsertPeriod({
-      ...current,
-      ...parsedPatch,
-      provenance,
-    });
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const updated = this.options.autobiographicalRepository.upsertPeriod({
+        ...current,
+        ...parsedPatch,
+        provenance,
+      });
 
-    this.options.identityEventRepository.record({
-      record_type: "autobiographical_period",
-      record_id: periodId,
-      action: options.reviewItemId === null || options.reviewItemId === undefined ? "update" : "correction_apply",
-      old_value: current,
-      new_value: record,
-      reason: options.reason ?? null,
-      provenance,
-      review_item_id: options.reviewItemId ?? null,
-      overwrite_without_review: decision.overwrite_without_review,
+      this.options.identityEventRepository.record({
+        record_type: "autobiographical_period",
+        record_id: periodId,
+        action:
+          options.reviewItemId === null || options.reviewItemId === undefined
+            ? "update"
+            : "correction_apply",
+        old_value: current,
+        new_value: updated,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+        overwrite_without_review: decision.overwrite_without_review,
+      });
+
+      return updated;
     });
 
     return {
@@ -452,21 +463,28 @@ export class IdentityService {
       };
     }
 
-    const record = this.options.growthMarkersRepository.update(markerId, {
-      ...parsedPatch,
-      provenance,
-    });
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const updated = this.options.growthMarkersRepository.update(markerId, {
+        ...parsedPatch,
+        provenance,
+      });
 
-    this.options.identityEventRepository.record({
-      record_type: "growth_marker",
-      record_id: markerId,
-      action: options.reviewItemId === null || options.reviewItemId === undefined ? "update" : "correction_apply",
-      old_value: current,
-      new_value: record,
-      reason: options.reason ?? null,
-      provenance,
-      review_item_id: options.reviewItemId ?? null,
-      overwrite_without_review: decision.overwrite_without_review,
+      this.options.identityEventRepository.record({
+        record_type: "growth_marker",
+        record_id: markerId,
+        action:
+          options.reviewItemId === null || options.reviewItemId === undefined
+            ? "update"
+            : "correction_apply",
+        old_value: current,
+        new_value: updated,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+        overwrite_without_review: decision.overwrite_without_review,
+      });
+
+      return updated;
     });
 
     return {
@@ -513,21 +531,28 @@ export class IdentityService {
       };
     }
 
-    const record = this.options.openQuestionsRepository.update(openQuestionId, {
-      ...parsedPatch,
-      provenance,
-    });
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const updated = this.options.openQuestionsRepository.update(openQuestionId, {
+        ...parsedPatch,
+        provenance,
+      });
 
-    this.options.identityEventRepository.record({
-      record_type: "open_question",
-      record_id: openQuestionId,
-      action: options.reviewItemId === null || options.reviewItemId === undefined ? "update" : "correction_apply",
-      old_value: current,
-      new_value: record,
-      reason: options.reason ?? null,
-      provenance,
-      review_item_id: options.reviewItemId ?? null,
-      overwrite_without_review: decision.overwrite_without_review,
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: openQuestionId,
+        action:
+          options.reviewItemId === null || options.reviewItemId === undefined
+            ? "update"
+            : "correction_apply",
+        old_value: current,
+        new_value: updated,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+        overwrite_without_review: decision.overwrite_without_review,
+      });
+
+      return updated;
     });
 
     return {

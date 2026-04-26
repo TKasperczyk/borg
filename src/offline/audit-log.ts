@@ -227,16 +227,28 @@ export class AuditLog {
       });
     }
 
-    await reverser({
-      audit,
-      targets: audit.targets,
-      reversal: audit.reversal,
-    });
-
     const revertedAt = this.clock.now();
-    this.db
-      .prepare("UPDATE maintenance_audit SET reverted_at = ?, reverted_by = ? WHERE id = ?")
-      .run(revertedAt, revertedBy, auditId);
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      await reverser({
+        audit,
+        targets: audit.targets,
+        reversal: audit.reversal,
+      });
+
+      this.db
+        .prepare("UPDATE maintenance_audit SET reverted_at = ?, reverted_by = ? WHERE id = ?")
+        .run(revertedAt, revertedBy, auditId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the original failure.
+      }
+      throw error;
+    }
 
     return {
       ...audit,

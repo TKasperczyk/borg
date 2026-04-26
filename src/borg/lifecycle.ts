@@ -26,6 +26,8 @@ export async function closeBestEffort(
 }
 
 export async function closeBorgDependencies(deps: BorgDependencies): Promise<void> {
+  const errors: unknown[] = [];
+
   try {
     await deps.autonomyScheduler.stop({
       graceful: true,
@@ -35,7 +37,22 @@ export async function closeBorgDependencies(deps: BorgDependencies): Promise<voi
     });
     await deps.streamIngestionCoordinator?.close();
   } finally {
-    deps.sqlite.close();
-    await deps.lance.close();
+    try {
+      deps.sqlite.close();
+    } catch (error) {
+      errors.push(error);
+      console.error("Failed to close SQLite database", error);
+    }
+
+    try {
+      await deps.lance.close();
+    } catch (error) {
+      errors.push(error);
+      console.error("Failed to close LanceDB store", error);
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "One or more Borg dependencies failed to close");
   }
 }

@@ -796,6 +796,148 @@ describe("AutonomyScheduler", () => {
     });
   });
 
+  it("commits shared source watermarks to the processed event cursor", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const events = [
+      {
+        id: "event-a",
+        sourceName: "goal_followup_due" as const,
+        sourceType: "trigger" as const,
+        watermarkProcessName: "autonomy:test:shared-cursor",
+        sortTs: 100,
+        payload: {
+          goal_id: "goal_aaaaaaaaaaaaaaaa",
+        },
+      },
+      {
+        id: "event-b",
+        sourceName: "goal_followup_due" as const,
+        sourceType: "trigger" as const,
+        watermarkProcessName: "autonomy:test:shared-cursor",
+        sortTs: 100,
+        payload: {
+          goal_id: "goal_bbbbbbbbbbbbbbbb",
+        },
+      },
+    ];
+    const turnRunner = {
+      run: vi
+        .fn()
+        .mockResolvedValueOnce({
+          mode: "idle",
+          path: "system_1",
+          response: "Handled event A.",
+          thoughts: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          retrievedEpisodeIds: [],
+          intents: [],
+          toolCalls: [],
+          agentMessageId: "strm_event_a",
+        })
+        .mockRejectedValueOnce(new Error("event B failed"))
+        .mockResolvedValueOnce({
+          mode: "idle",
+          path: "system_1",
+          response: "Handled event B.",
+          thoughts: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          retrievedEpisodeIds: [],
+          intents: [],
+          toolCalls: [],
+          agentMessageId: "strm_event_b",
+        }),
+    };
+    const scheduler = new AutonomyScheduler({
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerHour: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: harness.tempDir,
+          sessionId,
+          clock,
+        }),
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({
+            dataDir: harness.tempDir,
+            sessionId,
+            clock,
+          }),
+        clock,
+      }),
+      sources: [
+        {
+          name: "goal_followup_due",
+          type: "trigger",
+          async scan() {
+            const watermark = watermarkRepository.get(
+              "autonomy:test:shared-cursor",
+              DEFAULT_SESSION_ID,
+            );
+
+            return events.filter(
+              (event) =>
+                watermark === null ||
+                event.sortTs > watermark.lastTs ||
+                (event.sortTs === watermark.lastTs && event.id > (watermark.lastEntryId ?? "")),
+            );
+          },
+          buildTurn(event) {
+            return {
+              audience: "self",
+              stakes: "low",
+              userMessage: `Handle ${event.id}`,
+            };
+          },
+        },
+      ],
+    });
+
+    const firstTick = await scheduler.tick();
+    expect(firstTick.firedEvents).toBe(1);
+    expect(firstTick.errorCount).toBe(1);
+    expect(
+      watermarkRepository.get("autonomy:test:shared-cursor", DEFAULT_SESSION_ID),
+    ).toMatchObject({
+      lastTs: 100,
+      lastEntryId: "event-a",
+    });
+
+    clock.advance(30_000);
+    const secondTick = await scheduler.tick();
+    expect(secondTick.firedEvents).toBe(1);
+    expect(secondTick.events[0]).toMatchObject({
+      id: "event-b",
+      status: "fired",
+    });
+    expect(
+      watermarkRepository.get("autonomy:test:shared-cursor", DEFAULT_SESSION_ID),
+    ).toMatchObject({
+      lastTs: 100,
+      lastEntryId: "event-b",
+    });
+  });
+
   it("dispatches mixed trigger and condition sources and records wake metadata", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({

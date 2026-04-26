@@ -392,6 +392,42 @@ describe("llm", () => {
     expect(text).not.toContain('"name":"Lookup"');
   });
 
+  it("preserves Request method, headers, and body in the OAuth fetch wrapper", async () => {
+    const requestBody = JSON.stringify({
+      messages: [{ role: "user", content: "hello" }],
+    });
+    const fetchMock = vi.fn(
+      async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const url = new URL(String(input));
+        const headers = new Headers(init?.headers);
+
+        expect(url.pathname).toBe("/v1/messages");
+        expect(url.searchParams.get("beta")).toBe("true");
+        expect(init?.method).toBe("POST");
+        expect(headers.get("content-type")).toBe("application/json");
+        expect(headers.get("x-borg-test")).toBe("preserve-me");
+        await expect(new Response(init?.body ?? null).text()).resolves.toBe(requestBody);
+
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const oauthFetch = createOAuthFetch();
+    await expect(
+      oauthFetch(
+        new Request("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-borg-test": "preserve-me",
+          },
+          body: requestBody,
+        }),
+      ),
+    ).resolves.toBeInstanceOf(Response);
+  });
+
   it("prefers API key auth when available", async () => {
     const credentialsPath = createTempCredentialsPath(tempDirs);
     writeJsonFileAtomic(credentialsPath, {
@@ -691,6 +727,47 @@ describe("llm", () => {
         budget: "test",
       }),
     ).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it("retries initialization after a transient auth resolution failure", async () => {
+    const credentialsPath = createTempCredentialsPath(tempDirs);
+    const client = new AnthropicLLMClient({
+      env: {
+        BORG_CLAUDE_CREDENTIALS_PATH: credentialsPath,
+      },
+    });
+
+    await expect(
+      client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).rejects.toBeInstanceOf(AuthError);
+
+    writeJsonFileAtomic(credentialsPath, {
+      claudeAiOauth: {
+        accessToken: "oauth-access",
+        refreshToken: "oauth-refresh",
+        expiresAt: Date.now() + 3_600_000,
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(createMessageBody())),
+    );
+
+    await expect(
+      client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello again" }],
+        max_tokens: 32,
+        budget: "test",
+      }),
+    ).resolves.toMatchObject({
+      text: "Hello",
+    });
   });
 
   it("retries once after a 401 by refreshing shared OAuth credentials", async () => {

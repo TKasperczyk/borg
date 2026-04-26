@@ -237,10 +237,12 @@ export class AutonomyScheduler {
 
           try {
             this.options.watermarkRepository.set(dueEvent.watermarkProcessName, this.sessionId, {
-              lastTs: wakeEntry.timestamp,
-              lastEntryId: wakeEntry.id,
+              lastTs: dueEvent.sortTs,
+              lastEntryId: dueEvent.id,
             });
-            this.retryBackoff.delete(`${dueEvent.sourceType}:${dueEvent.sourceName}:${dueEvent.id}`);
+            this.retryBackoff.delete(
+              `${dueEvent.sourceType}:${dueEvent.sourceName}:${dueEvent.id}`,
+            );
             firedEvents += 1;
             eventResults.push({
               id: dueEvent.id,

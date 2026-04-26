@@ -430,6 +430,53 @@ describe("StreamIngestionCoordinator", () => {
     }
   });
 
+  it("drops errored tracked sessions during close", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "boom", ts: 100 },
+      { kind: "agent_msg", content: "oops", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    let calls = 0;
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: {
+        async extractFromStream(): Promise<never> {
+          calls += 1;
+          throw new Error("persistent extractor failure");
+        },
+      } as unknown as never,
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+    });
+
+    try {
+      const result = await coordinator.ingest(DEFAULT_SESSION_ID);
+      expect(result.error).toBeInstanceOf(Error);
+      expect(
+        (
+          coordinator as unknown as {
+            trackedSessions: Set<string>;
+          }
+        ).trackedSessions.has(DEFAULT_SESSION_ID),
+      ).toBe(true);
+
+      await coordinator.close();
+
+      expect(calls).toBe(2);
+      expect(
+        (
+          coordinator as unknown as {
+            trackedSessions: Set<string>;
+          }
+        ).trackedSessions.has(DEFAULT_SESSION_ID),
+      ).toBe(false);
+    } finally {
+      close();
+    }
+  });
+
   it("keeps the watermark unchanged on embedding failure and retries next pass", async () => {
     const dataDir = createTempDir();
     const clock = new ManualClock(1_000);
