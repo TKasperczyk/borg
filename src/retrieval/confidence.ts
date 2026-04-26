@@ -29,6 +29,10 @@ export type ComputeRetrievalConfidenceInput = {
       root_node_id: SemanticNode["id"];
       edgePath: readonly Pick<SemanticEdge, "evidence_episode_ids">[];
     }[];
+    causal_hits?: readonly {
+      root_node_id: SemanticNode["id"];
+      edgePath: readonly Pick<SemanticEdge, "evidence_episode_ids">[];
+    }[];
   };
   nowMs: number;
   asOf?: number;
@@ -67,8 +71,12 @@ function computeSemanticEvidence(input: ComputeRetrievalConfidenceInput): {
   sourceSignatures: string[];
 } {
   const semanticEvidence = input.semanticEvidence;
+  const positiveHits =
+    semanticEvidence === undefined
+      ? []
+      : [...semanticEvidence.support_hits, ...(semanticEvidence.causal_hits ?? [])];
 
-  if (semanticEvidence === undefined || semanticEvidence.support_hits.length === 0) {
+  if (semanticEvidence === undefined || positiveHits.length === 0) {
     return {
       strength: 0,
       count: 0,
@@ -77,18 +85,18 @@ function computeSemanticEvidence(input: ComputeRetrievalConfidenceInput): {
   }
 
   const retrievedEpisodeIds = new Set(input.episodes.map((episode) => episode.episode.id));
-  const supportHitCountByRoot = new Map<string, number>();
+  const positiveHitCountByRoot = new Map<string, number>();
 
-  for (const hit of semanticEvidence.support_hits) {
+  for (const hit of positiveHits) {
     if (
       hit.edgePath.some((edge) => hasEpisodeOverlap(edge.evidence_episode_ids, retrievedEpisodeIds))
     ) {
       continue;
     }
 
-    supportHitCountByRoot.set(
+    positiveHitCountByRoot.set(
       hit.root_node_id,
-      (supportHitCountByRoot.get(hit.root_node_id) ?? 0) + 1,
+      (positiveHitCountByRoot.get(hit.root_node_id) ?? 0) + 1,
     );
   }
 
@@ -96,7 +104,7 @@ function computeSemanticEvidence(input: ComputeRetrievalConfidenceInput): {
     (node) =>
       node.confidence >= SEMANTIC_CONFIDENCE_THRESHOLD &&
       !hasEpisodeOverlap(node.source_episode_ids, retrievedEpisodeIds) &&
-      (supportHitCountByRoot.get(node.id) ?? 0) > 0,
+      (positiveHitCountByRoot.get(node.id) ?? 0) > 0,
   );
 
   if (supportedMatches.length === 0) {
@@ -110,13 +118,13 @@ function computeSemanticEvidence(input: ComputeRetrievalConfidenceInput): {
   const meanConfidence =
     supportedMatches.reduce((sum, node) => sum + clamp01(node.confidence), 0) /
     supportedMatches.length;
-  const supportHitCount = supportedMatches.reduce(
-    (sum, node) => sum + (supportHitCountByRoot.get(node.id) ?? 0),
+  const positiveHitCount = supportedMatches.reduce(
+    (sum, node) => sum + (positiveHitCountByRoot.get(node.id) ?? 0),
     0,
   );
 
   return {
-    strength: clamp01(0.3 * sigmoid(meanConfidence * supportHitCount)),
+    strength: clamp01(0.3 * sigmoid(meanConfidence * positiveHitCount)),
     count: supportedMatches.length,
     sourceSignatures: supportedMatches.map((node) => [...node.source_episode_ids].sort().join("|")),
   };

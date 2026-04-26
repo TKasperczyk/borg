@@ -497,10 +497,14 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
   contradiction detected → run an `EmitTurnPlan` planner pass first
   (structured tool-use that returns verification_steps, tensions,
   voice_note, uncertainty, referenced_episode_ids, and concrete
-  follow-up intents), persist the plan as a `thought` stream entry,
-  then make the response call with the plan rendered into a tagged
-  `<borg_s2_plan>` block. The response call itself is one LLM
-  invocation enriched with the plan, not a second retrieval.
+  follow-up intents). If `verification_steps` are present, S2 runs a
+  bounded secondary retrieval (typically `limit: 3`) scoped to that
+  verification query so planner-identified uncertainties can pull in
+  targeted evidence. The response call then receives the plan in a
+  tagged `<borg_s2_plan>` block plus any additional retrieval in a
+  separate tagged block. The plan is persisted as a `thought` stream
+  entry after the finalizer returns, so persistence remains audit
+  state rather than a dependency of the final response call.
 - The prompt receives the confidence summary in a
   `<borg_retrieval_confidence>` block so the being can calibrate how
   certain it speaks (internal signal -- not a user-facing percentage).
@@ -540,7 +544,7 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
 
 ### 5.2 Offline processes
 
-Six cooperative processes that share an orchestrator
+Seven cooperative processes that share an orchestrator
 (`MaintenanceOrchestrator`), a per-process budget, and an append-only
 audit log. Each emits its plan through `plan()`/`preview()`/`apply()`
 so all maintenance is dry-runnable and reversible.
@@ -563,6 +567,13 @@ so all maintenance is dry-runnable and reversible.
   resolution_note (and optional growth_marker); if no evidence and
   the question is stale + low-urgency, abandon it; otherwise bump
   urgency. No "next-step" suggestions today.
+- **Procedural-synthesizer** -- consume online procedural evidence
+  from grounded successful attempts in global/self-visible audience
+  scope, cluster problem/approach evidence offline, and ask the LLM
+  for reusable skill candidates per cluster. `plan()` gathers clusters
+  and candidates, `preview()` exposes the reversible synthesis changes,
+  and `apply()` creates or deduplicates skills, records Bayesian
+  outcomes, marks evidence consumed, and writes audit-log reversals.
 - **Overseer** -- QA pass over recent episodes and semantic nodes;
   LLM-flag `misattribution`, `temporal_drift`, or
   `identity_inconsistency` items above a confidence threshold and
@@ -582,7 +593,16 @@ independent of the autonomy scheduler (cognition wakes ≠ housekeeping):
 - **Light** (default 4h): consolidator + curator -- cheap,
   low-risk, frequent.
 - **Heavy** (default 24h): reflector + overseer + ruminator +
-  self-narrator -- expensive, higher-risk, conservative.
+  self-narrator + procedural-synthesizer -- expensive, higher-risk,
+  conservative.
+
+Sprint 43 note: procedural skill synthesis uses a hybrid design. Online
+reflection records evidence about attempted approaches and outcomes;
+offline clustering finds repeated successful problem classes. Skill
+creation is Bayesian (Beta priors plus outcome updates) and gated by
+`abstraction_fit` so too-narrow or too-generic candidates are rejected.
+Evidence inputs are audience-scoped: only global/self-visible evidence is
+eligible for general reusable skills.
 
 Cadences run independently: heavy is not blocked by an in-flight light
 tick and vice versa. Same-cadence concurrent ticks coalesce. An optional

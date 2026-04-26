@@ -4,6 +4,7 @@ import type {
   RetrievalConfidence,
   RetrievedEpisode,
   RetrievedSemantic,
+  RetrievedSemanticHit,
 } from "../../../retrieval/index.js";
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
 
@@ -114,7 +115,7 @@ function formatIsoDate(timestamp: number): string {
 }
 
 function summarizeValidityTag(
-  edge: RetrievedSemantic["support_hits"][number]["edgePath"][number],
+  edge: RetrievedSemanticHit["edgePath"][number],
 ): string {
   if (edge.valid_to === null) {
     return "";
@@ -126,7 +127,7 @@ function summarizeValidityTag(
 }
 
 function semanticHitHasClosedEdge(
-  hit: RetrievedSemantic["support_hits"][number],
+  hit: RetrievedSemanticHit,
   asOf: number,
 ): boolean {
   return hit.edgePath.some((edge) => edge.valid_to !== null && edge.valid_to <= asOf);
@@ -145,7 +146,7 @@ function summarizeSemanticNodeWithSources(
 }
 
 function summarizeSemanticHit(
-  hit: RetrievedSemantic["support_hits"][number],
+  hit: RetrievedSemanticHit,
   rootNodesById: ReadonlyMap<string, SemanticNode>,
   options: { tagClosedEdges: boolean },
 ): string {
@@ -193,7 +194,7 @@ function summarizeSemanticBucket(
 
 function summarizeSemanticHitBucket(
   label: string,
-  hits: ReadonlyArray<RetrievedSemantic["support_hits"][number]>,
+  hits: readonly RetrievedSemanticHit[],
   rootNodesById: ReadonlyMap<string, SemanticNode>,
   options: { tagClosedEdges: boolean },
   limit = 3,
@@ -223,6 +224,7 @@ export function summarizeSemanticContext(
     categories,
     matched_nodes: matchedNodes,
     support_hits: supportHits,
+    causal_hits: causalHits,
     contradiction_hits: contradictionHits,
     category_hits: categoryHits,
   } = retrievedSemantic;
@@ -230,6 +232,7 @@ export function summarizeSemanticContext(
   if (
     matchedNodes.length === 0 &&
     supportHits.length === 0 &&
+    causalHits.length === 0 &&
     contradictionHits.length === 0 &&
     categoryHits.length === 0 &&
     supports.length === 0 &&
@@ -250,6 +253,9 @@ export function summarizeSemanticContext(
   const visibleSupportHits = historicalMode
     ? supportHits
     : supportHits.filter((hit) => !semanticHitHasClosedEdge(hit, currentAsOf));
+  const visibleCausalHits = historicalMode
+    ? causalHits
+    : causalHits.filter((hit) => !semanticHitHasClosedEdge(hit, currentAsOf));
   const visibleContradictionHits = historicalMode
     ? contradictionHits
     : contradictionHits.filter((hit) => !semanticHitHasClosedEdge(hit, currentAsOf));
@@ -285,6 +291,15 @@ export function summarizeSemanticContext(
       : [summarizeSemanticBucket("supports", supports, bucketLimit)].filter(
           (value): value is string => value !== null,
         )),
+    ...summarizeSemanticHitBucket(
+      "causal",
+      visibleCausalHits,
+      rootNodesById,
+      {
+        tagClosedEdges: historicalMode,
+      },
+      bucketLimit,
+    ),
     ...(contradictionHits.length > 0
       ? summarizeSemanticHitBucket(
           "contradicts",

@@ -61,8 +61,8 @@ export type DeliberationContext = {
   perception: PerceptionResult;
   retrievalResult: RetrievedEpisode[];
   /**
-   * Semantic-band retrieval for this query: graph walks across supports/
-   * contradicts/is_a relations from matched semantic nodes. Previously
+   * Semantic-band retrieval for this query: graph walks across supports,
+   * causes/prevents, contradicts, and is_a relations from matched nodes. Previously
    * attached per-episode with the same value duplicated; Phase C lifted
    * it out so it can be rendered once regardless of episode count and
    * retrieved independently of episode hits.

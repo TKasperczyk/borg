@@ -7,7 +7,7 @@ import {
 } from "../offline/test-support.js";
 import { SemanticGraph } from "../memory/semantic/index.js";
 import { ManualClock } from "../util/clock.js";
-import { resolveSemanticContext } from "./semantic-retrieval.js";
+import { resolveSemanticContext, toRetrievedSemantic } from "./semantic-retrieval.js";
 
 describe("resolveSemanticContext temporal validity", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;
@@ -176,5 +176,84 @@ describe("resolveSemanticContext temporal validity", () => {
     expect(
       beforeClosure.matchedNodes.find((node) => node.id === proposition.id)?.historical,
     ).toBeUndefined();
+  });
+
+  it("walks causal edges outward into causal hits", async () => {
+    const clock = new ManualClock(1_000_000);
+    harness = await createOfflineTestHarness({ clock });
+    const episode = createEpisodeFixture({
+      title: "Atlas causal note",
+      tags: ["atlas"],
+    });
+    await harness.episodicRepository.insert(episode);
+    const cause = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        kind: "proposition",
+        label: "Atlas failed deploys",
+        description: "Atlas failed deploys create extra rollback pressure.",
+        source_episode_ids: [episode.id],
+      }),
+    );
+    const effect = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        kind: "proposition",
+        label: "Rollback pressure rises",
+        description: "Rollback pressure rises when Atlas deploys fail.",
+        source_episode_ids: [episode.id],
+      }),
+    );
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: cause.id,
+      to_node_id: effect.id,
+      relation: "causes",
+      confidence: 0.7,
+      evidence_episode_ids: [episode.id],
+      created_at: 1_000_000,
+      last_verified_at: 1_000_000,
+    });
+    const semanticGraph = new SemanticGraph({
+      nodeRepository: harness.semanticNodeRepository,
+      edgeRepository: harness.semanticEdgeRepository,
+    });
+
+    const fromCause = toRetrievedSemantic(
+      await resolveSemanticContext(
+        "Atlas failed deploys",
+        {
+          graphWalkDepth: 1,
+          maxGraphNodes: 4,
+        },
+        {
+          embeddingClient: harness.embeddingClient,
+          episodicRepository: harness.episodicRepository,
+          semanticNodeRepository: harness.semanticNodeRepository,
+          semanticGraph,
+        },
+      ),
+    );
+    const fromEffect = toRetrievedSemantic(
+      await resolveSemanticContext(
+        "Rollback pressure rises",
+        {
+          graphWalkDepth: 1,
+          maxGraphNodes: 4,
+        },
+        {
+          embeddingClient: harness.embeddingClient,
+          episodicRepository: harness.episodicRepository,
+          semanticNodeRepository: harness.semanticNodeRepository,
+          semanticGraph,
+        },
+      ),
+    );
+
+    expect(fromCause.causal_hits).toEqual([
+      expect.objectContaining({
+        root_node_id: cause.id,
+        node: expect.objectContaining({ id: effect.id }),
+        edgePath: [expect.objectContaining({ id: edge.id, relation: "causes" })],
+      }),
+    ]);
+    expect(fromEffect.causal_hits).toEqual([]);
   });
 });

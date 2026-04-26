@@ -68,6 +68,40 @@ describe("computeRetrievalConfidence", () => {
     expect(confidence.contradictionPresent).toBe(false);
   });
 
+  it("counts causal semantic hits as positive evidence", () => {
+    const rootNodeId = "semn_aaaaaaaaaaaaaaaa" as never;
+    const confidence = computeRetrievalConfidence({
+      episodes: [],
+      contradictionPresent: false,
+      semanticEvidence: {
+        matched_nodes: [
+          {
+            id: rootNodeId,
+            confidence: 0.9,
+            source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+          },
+        ],
+        support_hits: [],
+        causal_hits: [
+          {
+            root_node_id: rootNodeId,
+            edgePath: [
+              {
+                evidence_episode_ids: ["ep_bbbbbbbbbbbbbbbb" as never],
+              },
+            ],
+          },
+        ],
+      },
+      nowMs: NOW_MS,
+      expectedCount: 1,
+    });
+
+    expect(confidence.sampleSize).toBe(1);
+    expect(confidence.evidenceStrength).toBeGreaterThan(0);
+    expect(confidence.overall).toBeGreaterThan(0);
+  });
+
   it("produces high confidence for strong, diverse, uncontested evidence", () => {
     const episodes = [
       makeEpisode({ id: "epi_aaaaaaaaaaaaaaaa", decayedSalience: 0.9, participants: ["alice"] }),

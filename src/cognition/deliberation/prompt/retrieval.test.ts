@@ -81,6 +81,7 @@ describe("semantic retrieval prompt rendering", () => {
             edgePath: [edge],
           },
         ],
+        causal_hits: [],
         contradiction_hits: [],
         category_hits: [],
       } satisfies RetrievedSemantic,
@@ -129,6 +130,7 @@ describe("semantic retrieval prompt rendering", () => {
             ],
           },
         ],
+        causal_hits: [],
         contradiction_hits: [],
         category_hits: [],
       } satisfies RetrievedSemantic,
@@ -171,6 +173,7 @@ describe("semantic retrieval prompt rendering", () => {
           edgePath: [edge],
         },
       ],
+      causal_hits: [],
       contradiction_hits: [],
       category_hits: [],
     } satisfies RetrievedSemantic;
@@ -181,5 +184,49 @@ describe("semantic retrieval prompt rendering", () => {
 
     expect(beforeClose).toContain("-[supports");
     expect(afterClose).not.toContain("-[supports");
+  });
+
+  it("renders causal semantic hits in a separate bucket", () => {
+    const root = makeNode({
+      id: "semn_aaaaaaaaaaaaaaaa" as SemanticNode["id"],
+      kind: "entity",
+      label: "Atlas",
+      description: "Atlas deployment service.",
+    });
+    const effect = makeNode({
+      id: "semn_bbbbbbbbbbbbbbbb" as SemanticNode["id"],
+      label: "Rollback pressure",
+      description: "Atlas rollback pressure rises after failed deploys.",
+    });
+    const edge = makeClosedEdge({
+      from_node_id: root.id,
+      to_node_id: effect.id,
+      relation: "causes",
+      valid_to: Date.UTC(2099, 0, 1),
+    });
+    const summary = summarizeSemanticContext(
+      {
+        matched_node_ids: [root.id],
+        matched_nodes: [root],
+        supports: [],
+        contradicts: [],
+        categories: [],
+        support_hits: [],
+        causal_hits: [
+          {
+            root_node_id: root.id,
+            node: effect,
+            edgePath: [edge],
+          },
+        ],
+        contradiction_hits: [],
+        category_hits: [],
+      } satisfies RetrievedSemantic,
+      1_000,
+      Date.UTC(2024, 0, 5),
+    );
+
+    expect(summary).toContain("causal:");
+    expect(summary).toContain("-[causes");
   });
 });

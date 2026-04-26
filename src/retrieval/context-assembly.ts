@@ -29,6 +29,7 @@ export function assembleRetrievedContext(input: {
     semanticEvidence: {
       matched_nodes: input.semantic.matched_nodes,
       support_hits: input.semantic.support_hits,
+      causal_hits: input.semantic.causal_hits,
     },
     nowMs: input.nowMs,
     asOf: input.semantic.as_of ?? undefined,

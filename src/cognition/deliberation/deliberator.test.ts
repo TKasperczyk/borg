@@ -934,6 +934,7 @@ describe("deliberator", () => {
             ],
           },
         ],
+        causal_hits: [],
         contradiction_hits: [
           {
             root_node_id: "semn_rootaaaaaaaaaaaa" as never,

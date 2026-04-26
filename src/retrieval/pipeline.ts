@@ -394,6 +394,7 @@ function countSemanticHits(semantic: RetrievedSemantic): number {
   return (
     semantic.matched_nodes.length +
     semantic.support_hits.length +
+    semantic.causal_hits.length +
     semantic.contradiction_hits.length +
     semantic.category_hits.length
   );

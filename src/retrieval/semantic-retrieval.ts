@@ -24,6 +24,7 @@ export type RetrievedSemantic = SemanticContext & {
   matched_node_ids: SemanticNode["id"][];
   matched_nodes: RetrievedSemanticNode[];
   support_hits: RetrievedSemanticHit[];
+  causal_hits: RetrievedSemanticHit[];
   contradiction_hits: RetrievedSemanticHit[];
   category_hits: RetrievedSemanticHit[];
 };
@@ -49,6 +50,7 @@ export type ResolvedSemanticRetrieval = {
   matchedNodeIds: SemanticNode["id"][];
   matchedNodes: RetrievedSemanticNode[];
   supportHits: RetrievedSemanticHit[];
+  causalHits: RetrievedSemanticHit[];
   contradictionHits: RetrievedSemanticHit[];
   categoryHits: RetrievedSemanticHit[];
   asOf?: number;
@@ -65,6 +67,7 @@ function emptySemanticRetrieval(): ResolvedSemanticRetrieval {
     matchedNodeIds: [],
     matchedNodes: [],
     supportHits: [],
+    causalHits: [],
     contradictionHits: [],
     categoryHits: [],
   };
@@ -238,16 +241,25 @@ export async function resolveSemanticContext(
   const walkDepth = options.graphWalkDepth ?? 2;
   const maxGraphNodes = options.maxGraphNodes ?? 16;
   const supportNeighbors: Array<{ rootNodeId: SemanticNode["id"]; step: SemanticWalkStep }> = [];
+  const causalNeighbors: Array<{ rootNodeId: SemanticNode["id"]; step: SemanticWalkStep }> = [];
   const contradictionNeighbors: Array<{ rootNodeId: SemanticNode["id"]; step: SemanticWalkStep }> =
     [];
   const categoryNeighbors: Array<{ rootNodeId: SemanticNode["id"]; step: SemanticWalkStep }> = [];
   const supportHits: RetrievedSemanticHit[] = [];
+  const causalHits: RetrievedSemanticHit[] = [];
   const contradictionHits: RetrievedSemanticHit[] = [];
   const categoryHits: RetrievedSemanticHit[] = [];
 
   for (const node of uniqueNodes.values()) {
     const walkedSupports = await semanticGraph.walk(node.id, {
       relations: ["supports"],
+      direction: "out",
+      depth: walkDepth,
+      maxNodes: maxGraphNodes,
+      asOf: options.asOf,
+    });
+    const walkedCausals = await semanticGraph.walk(node.id, {
+      relations: ["causes", "prevents"],
       direction: "out",
       depth: walkDepth,
       maxNodes: maxGraphNodes,
@@ -269,6 +281,7 @@ export async function resolveSemanticContext(
     });
 
     supportNeighbors.push(...walkedSupports.map((step) => ({ rootNodeId: node.id, step })));
+    causalNeighbors.push(...walkedCausals.map((step) => ({ rootNodeId: node.id, step })));
     contradictionNeighbors.push(
       ...walkedContradictions.map((step) => ({ rootNodeId: node.id, step })),
     );
@@ -280,6 +293,10 @@ export async function resolveSemanticContext(
     [
       ...[...uniqueNodes.values()].flatMap((node) => node.source_episode_ids),
       ...supportNeighbors.flatMap(({ step }) => [
+        ...step.node.source_episode_ids,
+        ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
+      ]),
+      ...causalNeighbors.flatMap(({ step }) => [
         ...step.node.source_episode_ids,
         ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
       ]),
@@ -323,6 +340,18 @@ export async function resolveSemanticContext(
     });
   }
 
+  for (const item of causalNeighbors) {
+    if (!isSemanticWalkStepVisible(item.step, semanticVisibility)) {
+      continue;
+    }
+
+    causalHits.push({
+      root_node_id: item.rootNodeId,
+      node: item.step.node,
+      edgePath: item.step.edgePath,
+    });
+  }
+
   for (const item of contradictionNeighbors) {
     if (!isSemanticWalkStepVisible(item.step, semanticVisibility)) {
       continue;
@@ -359,6 +388,7 @@ export async function resolveSemanticContext(
     matchedNodeIds: visibleMatchedNodes.map((node) => node.id),
     matchedNodes: visibleMatchedNodes,
     supportHits,
+    causalHits,
     contradictionHits,
     categoryHits,
     asOf: options.asOf,
@@ -374,6 +404,7 @@ export function toRetrievedSemantic(resolved: ResolvedSemanticRetrieval): Retrie
     matched_node_ids: resolved.matchedNodeIds,
     matched_nodes: resolved.matchedNodes,
     support_hits: resolved.supportHits,
+    causal_hits: resolved.causalHits,
     contradiction_hits: resolved.contradictionHits,
     category_hits: resolved.categoryHits,
   };
