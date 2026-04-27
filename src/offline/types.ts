@@ -15,6 +15,7 @@ import type {
   ValuesRepository,
 } from "../memory/self/index.js";
 import type {
+  SemanticBeliefDependencyRepository,
   ReviewQueueRepository,
   SemanticEdgeRepository,
   SemanticNodeRepository,
@@ -35,6 +36,7 @@ export const OFFLINE_PROCESS_NAMES = [
   "ruminator",
   "self-narrator",
   "procedural-synthesizer",
+  "belief-reviser",
 ] as const;
 
 export type OfflineProcessName = (typeof OFFLINE_PROCESS_NAMES)[number];
@@ -83,6 +85,7 @@ export type OfflineContext = {
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
+  semanticBeliefDependencyRepository: SemanticBeliefDependencyRepository;
   reviewQueueRepository: ReviewQueueRepository;
   identityService: IdentityService;
   valuesRepository: ValuesRepository;

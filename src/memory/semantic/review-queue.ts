@@ -37,6 +37,7 @@ export const REVIEW_KINDS = [
   "temporal_drift",
   "identity_inconsistency",
   "correction",
+  "belief_revision",
 ] as const;
 export const REVIEW_RESOLUTIONS = [
   "keep_both",
@@ -336,6 +337,7 @@ function isResolutionCompatible(kind: ReviewKind, resolution: ReviewResolution):
     case "misattribution":
     case "temporal_drift":
     case "identity_inconsistency":
+    case "belief_revision":
       return LIFECYCLE_REVIEW_RESOLUTIONS.has(resolution);
   }
 }
@@ -868,6 +870,8 @@ export class ReviewQueueRepository {
         return;
       case "identity_inconsistency":
         await this.applyIdentityInconsistencyResolution(item, decision);
+        return;
+      case "belief_revision":
         return;
     }
   }

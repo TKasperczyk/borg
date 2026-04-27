@@ -163,6 +163,7 @@ const configFileSchema = z
               "ruminator",
               "self-narrator",
               "procedural-synthesizer",
+              "belief-reviser",
             ]),
           )
           .optional(),
@@ -176,6 +177,7 @@ const configFileSchema = z
               "ruminator",
               "self-narrator",
               "procedural-synthesizer",
+              "belief-reviser",
             ]),
           )
           .optional(),
@@ -378,6 +380,7 @@ export const configSchema = z.object({
         "ruminator",
         "self-narrator",
         "procedural-synthesizer",
+        "belief-reviser",
       ]),
     ),
     heavyProcesses: z.array(
@@ -389,6 +392,7 @@ export const configSchema = z.object({
         "ruminator",
         "self-narrator",
         "procedural-synthesizer",
+        "belief-reviser",
       ]),
     ),
   }),
@@ -554,6 +558,7 @@ export const DEFAULT_CONFIG: Config = {
       "ruminator",
       "self-narrator",
       "procedural-synthesizer",
+      "belief-reviser",
     ],
   },
   autonomy: {

@@ -12,6 +12,12 @@ export {
   withBudget,
   wrapLlmClientWithSink,
 } from "./budget.js";
+export {
+  BeliefReviserProcess,
+  beliefReviserPlanSchema,
+  type BeliefReviserPlan,
+  type BeliefReviserProcessOptions,
+} from "./belief-reviser/index.js";
 export { ConsolidatorProcess, type ConsolidatorProcessOptions } from "./consolidator/index.js";
 export { CuratorProcess, type CuratorProcessOptions } from "./curator/index.js";
 export { offlineMigrations } from "./migrations.js";

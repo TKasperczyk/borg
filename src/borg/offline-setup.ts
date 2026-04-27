@@ -7,10 +7,7 @@ import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
-import type {
-  ProceduralEvidenceRepository,
-  SkillRepository,
-} from "../memory/procedural/index.js";
+import type { ProceduralEvidenceRepository, SkillRepository } from "../memory/procedural/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -21,12 +18,14 @@ import type {
 } from "../memory/self/index.js";
 import type {
   ReviewQueueRepository,
+  SemanticBeliefDependencyRepository,
   SemanticEdgeRepository,
   SemanticNodeRepository,
 } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import {
   AuditLog,
+  BeliefReviserProcess,
   ConsolidatorProcess,
   CuratorProcess,
   MaintenanceOrchestrator,
@@ -60,6 +59,7 @@ export type BuildOfflineSetupOptions = {
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
+  semanticBeliefDependencyRepository: SemanticBeliefDependencyRepository;
   reviewQueueRepository: ReviewQueueRepository;
   identityService: IdentityService;
   valuesRepository: ValuesRepository;
@@ -124,6 +124,9 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       registry: reverserRegistry,
       clock: options.clock,
     }),
+    "belief-reviser": new BeliefReviserProcess({
+      db: options.sqlite,
+    }),
   } satisfies Record<OfflineProcessName, OfflineProcess>;
   const maintenanceOrchestrator = new MaintenanceOrchestrator({
     baseContext: {
@@ -138,6 +141,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       episodicRepository: options.episodicRepository,
       semanticNodeRepository: options.semanticNodeRepository,
       semanticEdgeRepository: options.semanticEdgeRepository,
+      semanticBeliefDependencyRepository: options.semanticBeliefDependencyRepository,
       reviewQueueRepository: options.reviewQueueRepository,
       identityService: options.identityService,
       valuesRepository: options.valuesRepository,

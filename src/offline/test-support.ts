@@ -494,6 +494,7 @@ export async function createOfflineTestHarness(
       episodicRepository,
       semanticNodeRepository,
       semanticEdgeRepository,
+      semanticBeliefDependencyRepository,
       reviewQueueRepository,
       identityService,
       identityEventRepository,
