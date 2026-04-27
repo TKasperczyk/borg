@@ -47,20 +47,23 @@ export function chooseDeliberationPath(
     };
   };
 
-  if (mode === "idle") {
-    return select("system_1", "Idle mode keeps the response on the direct path.");
-  }
-
+  // Reflective always wins -- it's an explicit request for deeper thought.
   if (mode === "reflective") {
     return select("system_2", "Reflective mode always takes the deeper reasoning path.");
   }
 
+  // High-stakes and contradiction must escalate even in idle mode -- a
+  // misclassified high-stakes idle turn can't be allowed to skip S2.
   if (contextContradiction) {
     return select("system_2", "Retrieved-context contradiction triggered deeper reasoning.");
   }
 
   if (stakes === "high") {
     return select("system_2", "High-stakes request requires explicit planning.");
+  }
+
+  if (mode === "idle") {
+    return select("system_1", "Idle mode keeps the response on the direct path.");
   }
 
   if (confidence < 0.45) {

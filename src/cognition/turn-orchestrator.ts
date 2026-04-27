@@ -37,7 +37,12 @@ import {
 } from "../memory/self/index.js";
 import { ReviewQueueRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
-import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
+import {
+  PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS,
+  PENDING_PROCEDURAL_ATTEMPTS_LIMIT,
+  WorkingMemoryStore,
+  type WorkingMemory,
+} from "../memory/working/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { type IdentityService } from "../memory/identity/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
@@ -790,21 +795,37 @@ export class TurnOrchestrator {
                 turn_completed_ts: persistedAgentEntry.timestamp,
               }
             : pendingSocialAttribution;
-        const nextPendingProceduralAttempt =
-          reflectedWorkingMemory.pending_procedural_attempt !== null ||
-          !isUserTurn ||
-          perception.mode !== "problem_solving"
-            ? reflectedWorkingMemory.pending_procedural_attempt
-            : {
-                problem_text: compactTurnText(input.userMessage, 1_000),
-                approach_summary:
-                  selectedSkill?.skill.approach ??
-                  (compactTurnText(actionResult.response, 1_000) || "No explicit approach stated."),
-                selected_skill_id: selectedSkill?.skill.id ?? null,
-                source_stream_ids: [persistedUserEntry.id, persistedAgentEntry.id],
-                turn_counter: reflectedWorkingMemory.turn_counter,
-                audience_entity_id: audienceEntityId,
-              };
+        // Sprint 53: bounded list of pending procedural attempts.
+        // Reflection retires only grounded success/failure outcomes;
+        // unclear ones survive here until they age out (TTL) or get
+        // graded on a later turn.
+        const carriedAttempts = reflectedWorkingMemory.pending_procedural_attempts.filter(
+          (attempt) =>
+            reflectedWorkingMemory.turn_counter - attempt.turn_counter <
+            PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS,
+        );
+        const shouldAppendNewAttempt =
+          isUserTurn && perception.mode === "problem_solving";
+        const newAttempt = shouldAppendNewAttempt
+          ? {
+              problem_text: compactTurnText(input.userMessage, 1_000),
+              approach_summary:
+                selectedSkill?.skill.approach ??
+                (compactTurnText(actionResult.response, 1_000) || "No explicit approach stated."),
+              selected_skill_id: selectedSkill?.skill.id ?? null,
+              source_stream_ids: [persistedUserEntry.id, persistedAgentEntry.id],
+              turn_counter: reflectedWorkingMemory.turn_counter,
+              audience_entity_id: audienceEntityId,
+            }
+          : null;
+        const combinedAttempts = newAttempt === null
+          ? carriedAttempts
+          : [...carriedAttempts, newAttempt];
+        // Cap by dropping oldest if needed.
+        const nextPendingProceduralAttempts =
+          combinedAttempts.length > PENDING_PROCEDURAL_ATTEMPTS_LIMIT
+            ? combinedAttempts.slice(-PENDING_PROCEDURAL_ATTEMPTS_LIMIT)
+            : combinedAttempts;
 
         if (this.tracer.enabled) {
           this.tracer.emit("reflection_emitted", {
@@ -812,7 +833,7 @@ export class TurnOrchestrator {
             attributions: {
               pending_social: nextPendingSocialAttribution !== null,
               pending_trait: reflectedWorkingMemory.pending_trait_attribution !== null,
-              pending_procedural: nextPendingProceduralAttempt !== null,
+              pending_procedural: nextPendingProceduralAttempts.length > 0,
               pending_intents: reflectedWorkingMemory.pending_intents.length,
             },
           });
@@ -822,7 +843,7 @@ export class TurnOrchestrator {
           ...reflectedWorkingMemory,
           mood: moodSnapshot,
           pending_social_attribution: nextPendingSocialAttribution,
-          pending_procedural_attempt: nextPendingProceduralAttempt,
+          pending_procedural_attempts: nextPendingProceduralAttempts,
           suppressed: suppressionSet.snapshot(),
           updated_at: this.clock.now(),
         });

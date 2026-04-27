@@ -136,13 +136,16 @@ describe("consolidator process", () => {
 
     expect(merged).toBeDefined();
     expect(merged?.lineage.derived_from).toEqual([first.id, second.id]);
+    // Sprint 53: lineage now points the right way -- the merged episode
+    // supersedes its sources, sources stay untouched in lineage.
+    expect(merged?.lineage.supersedes).toEqual([first.id, second.id]);
     expect(harness.episodicRepository.getStats(merged!.id)?.tier).toBe("T2");
     expect(harness.episodicRepository.getStats(first.id)?.archived).toBe(true);
     expect(harness.episodicRepository.getStats(second.id)?.archived).toBe(true);
     expect(
       (await harness.episodicRepository.get(first.id, { includeArchived: true }))?.lineage
         .supersedes,
-    ).toContain(merged?.id);
+    ).toEqual([]);
 
     const auditEntry = harness.auditLog.list({ process: "consolidator" })[0];
     expect(auditEntry?.action).toBe("consolidate");

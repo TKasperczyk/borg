@@ -76,6 +76,7 @@ function createReflectionResponse(evidence: string) {
           advanced_goals: [],
           procedural_outcomes: [
             {
+              attempt_turn_counter: 1,
               classification: "success",
               evidence,
               grounded: true,
@@ -571,14 +572,16 @@ describe("ProceduralSynthesizerProcess", () => {
             mood: null,
             last_selected_skill_id: null,
             last_selected_skill_turn: null,
-            pending_procedural_attempt: {
-              problem_text: "Atlas deploy failed after rollback.",
-              approach_summary: "Compare the failing deploy state to the last clean release.",
-              selected_skill_id: null,
-              source_stream_ids: sourceStreamIds,
-              turn_counter: 1,
-              audience_entity_id: null,
-            },
+            pending_procedural_attempts: [
+              {
+                problem_text: "Atlas deploy failed after rollback.",
+                approach_summary: "Compare the failing deploy state to the last clean release.",
+                selected_skill_id: null,
+                source_stream_ids: sourceStreamIds,
+                turn_counter: 1,
+                audience_entity_id: null,
+              },
+            ],
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -617,14 +620,16 @@ describe("ProceduralSynthesizerProcess", () => {
               mood: null,
               last_selected_skill_id: null,
               last_selected_skill_turn: null,
-              pending_procedural_attempt: {
-                problem_text: "Atlas deploy failed after rollback.",
-                approach_summary: "Compare the failing deploy state to the last clean release.",
-                selected_skill_id: null,
-                source_stream_ids: sourceStreamIds,
-                turn_counter: 1,
-                audience_entity_id: null,
-              },
+              pending_procedural_attempts: [
+                {
+                  problem_text: "Atlas deploy failed after rollback.",
+                  approach_summary: "Compare the failing deploy state to the last clean release.",
+                  selected_skill_id: null,
+                  source_stream_ids: sourceStreamIds,
+                  turn_counter: 1,
+                  audience_entity_id: null,
+                },
+              ],
               mode: "problem_solving",
               updated_at: 0,
             },

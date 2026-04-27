@@ -103,10 +103,6 @@ type EpisodeCluster = {
 
 type ConsolidationReversal = {
   newEpisodeId: string;
-  sourceEpisodes: Array<{
-    id: string;
-    lineage: Episode["lineage"];
-  }>;
   sourceStats: EpisodeStats[];
 };
 
@@ -350,7 +346,7 @@ async function buildMergedEpisode(
       confidence,
       lineage: {
         derived_from: cluster.episodes.map((episode) => episode.id),
-        supersedes: [],
+        supersedes: cluster.episodes.map((episode) => episode.id),
       },
       emotional_arc:
         cluster.episodes.find((episode) => episode.emotional_arc !== null)?.emotional_arc ?? null,
@@ -407,21 +403,6 @@ export class ConsolidatorProcess implements OfflineProcess {
 
       if (typeof parsed.newEpisodeId === "string") {
         await this.options.episodicRepository.delete(parsed.newEpisodeId as Episode["id"]);
-      }
-
-      if (Array.isArray(parsed.sourceEpisodes)) {
-        for (const entry of parsed.sourceEpisodes) {
-          if (
-            entry !== null &&
-            typeof entry === "object" &&
-            typeof entry.id === "string" &&
-            entry.lineage !== undefined
-          ) {
-            await this.options.episodicRepository.update(entry.id as Episode["id"], {
-              lineage: entry.lineage,
-            });
-          }
-        }
       }
 
       if (Array.isArray(parsed.sourceStats)) {
@@ -538,10 +519,6 @@ export class ConsolidatorProcess implements OfflineProcess {
         });
       }
 
-      const previousSourceEpisodes = sourceEpisodes.map((episode) => ({
-        id: episode.id,
-        lineage: episode.lineage,
-      }));
       const previousSourceStats = sourceStats.map((stats) => ({ ...stats }));
 
       try {
@@ -553,18 +530,6 @@ export class ConsolidatorProcess implements OfflineProcess {
           archived: false,
         });
 
-        for (const sourceEpisode of sourceEpisodes) {
-          await ctx.episodicRepository.update(sourceEpisode.id, {
-            lineage: {
-              derived_from: sourceEpisode.lineage.derived_from,
-              supersedes: uniqueStrings([
-                ...sourceEpisode.lineage.supersedes,
-                mergedEpisode.id,
-              ]) as Episode["lineage"]["supersedes"],
-            },
-          });
-        }
-
         for (const sourceStat of sourceStats) {
           ctx.episodicRepository.updateStats(sourceStat.episode_id, {
             archived: true,
@@ -572,12 +537,6 @@ export class ConsolidatorProcess implements OfflineProcess {
         }
       } catch (error) {
         await ctx.episodicRepository.delete(mergedEpisode.id);
-
-        for (const sourceEpisode of previousSourceEpisodes) {
-          await ctx.episodicRepository.update(sourceEpisode.id as Episode["id"], {
-            lineage: sourceEpisode.lineage,
-          });
-        }
 
         for (const sourceStat of previousSourceStats) {
           ctx.episodicRepository.updateStats(sourceStat.episode_id, sourceStat);
@@ -596,7 +555,6 @@ export class ConsolidatorProcess implements OfflineProcess {
         },
         reversal: {
           newEpisodeId: mergedEpisode.id,
-          sourceEpisodes: previousSourceEpisodes,
           sourceStats: previousSourceStats,
         } satisfies ConsolidationReversal,
       });

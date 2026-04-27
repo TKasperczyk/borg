@@ -86,7 +86,14 @@ export const pendingProceduralAttemptSchema = z.object({
   audience_entity_id: workingEntityIdSchema.nullable(),
 });
 
-export const workingMemorySchema = z.object({
+// Sprint 53: pending procedural attempts are now a bounded list, not one
+// slot. Multi-step debugging or delayed-feedback work needs to track each
+// attempt independently; reflection retires only grounded success/failure
+// outcomes, leaving unclear ones pending until they age out via TTL.
+export const PENDING_PROCEDURAL_ATTEMPTS_LIMIT = 5;
+export const PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS = 8;
+
+const workingMemoryObjectSchema = z.object({
   session_id: workingSessionIdSchema,
   turn_counter: z.number().int().nonnegative(),
   current_focus: z.string().min(1).nullable(),
@@ -98,10 +105,37 @@ export const workingMemorySchema = z.object({
   mood: affectiveSignalSchema.nullable().default(null),
   last_selected_skill_id: workingSkillIdSchema.nullable().default(null),
   last_selected_skill_turn: z.number().int().nonnegative().nullable().default(null),
-  pending_procedural_attempt: pendingProceduralAttemptSchema.nullable().default(null),
+  pending_procedural_attempts: z.array(pendingProceduralAttemptSchema).default([]),
   mode: cognitiveModeSchema.nullable(),
   updated_at: z.number().finite(),
 });
+
+// Backward-compat preprocess: legacy persisted files have a singular
+// `pending_procedural_attempt: T | null`; migrate to the array shape on read.
+export const workingMemorySchema = z.preprocess((input) => {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return input;
+  }
+
+  const record = input as Record<string, unknown>;
+
+  if ("pending_procedural_attempts" in record) {
+    return record;
+  }
+
+  if (!("pending_procedural_attempt" in record)) {
+    return record;
+  }
+
+  const legacy = record.pending_procedural_attempt;
+  const { pending_procedural_attempt: _legacy, ...rest } = record;
+
+  return {
+    ...rest,
+    pending_procedural_attempts:
+      legacy === null || legacy === undefined ? [] : [legacy],
+  };
+}, workingMemoryObjectSchema);
 
 export type WorkingMemory = z.infer<typeof workingMemorySchema>;
 export type PendingSocialAttribution = z.infer<typeof pendingSocialAttributionSchema>;
@@ -129,7 +163,7 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
     mood: null,
     last_selected_skill_id: null,
     last_selected_skill_turn: null,
-    pending_procedural_attempt: null,
+    pending_procedural_attempts: [],
     mode: null,
     updated_at: timestamp,
   };

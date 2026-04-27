@@ -76,6 +76,13 @@ const reflectionOutputSchema = z.object({
   procedural_outcomes: z
     .array(
       z.object({
+        attempt_turn_counter: z
+          .number()
+          .int()
+          .nonnegative()
+          .describe(
+            "Identifier matching the turn_counter of the pending procedural attempt being graded.",
+          ),
         classification: z.enum(["success", "failure", "unclear"]),
         evidence: z.string().min(1),
         grounded: z
@@ -86,7 +93,7 @@ const reflectionOutputSchema = z.object({
       }),
     )
     .describe(
-      "Outcomes for the prior pending_procedural_attempt. Judge success only from the user's follow-up signal, never from the assistant's wording.",
+      "Outcomes for prior pending_procedural_attempts. Judge success only from the user's follow-up signal, never from the assistant's wording. Use attempt_turn_counter to identify which pending attempt each outcome refers to. Omit attempts that the current turn does not provide evidence about.",
     )
     .default([]),
   trait_demonstrations: z
@@ -379,48 +386,76 @@ export class Reflector {
       };
     }
 
-    const pendingProceduralAttempt = context.workingMemory.pending_procedural_attempt;
-    const proceduralOutcome = reflectionOutput.procedural_outcomes[0];
+    const pendingProceduralAttempts = context.workingMemory.pending_procedural_attempts ?? [];
 
-    if (pendingProceduralAttempt !== null) {
-      try {
-        if (proceduralOutcome !== undefined && context.proceduralEvidenceRepository !== undefined) {
-          const grounded = proceduralOutcome.grounded;
-          const resolvedEpisodeIds = grounded
-            ? await resolveAttemptEpisodeIds(context, pendingProceduralAttempt.source_stream_ids)
-            : [];
+    if (pendingProceduralAttempts.length > 0) {
+      const retiredTurnCounters = new Set<number>();
+      const outcomesByTurn = new Map(
+        reflectionOutput.procedural_outcomes.map((outcome) => [
+          outcome.attempt_turn_counter,
+          outcome,
+        ]),
+      );
 
-          if (grounded) {
+      for (const attempt of pendingProceduralAttempts) {
+        const outcome = outcomesByTurn.get(attempt.turn_counter);
+
+        if (outcome === undefined || !outcome.grounded) {
+          // Ungrounded outcomes and silence both leave the attempt
+          // pending for a later turn (or TTL expiry).
+          continue;
+        }
+
+        try {
+          if (context.proceduralEvidenceRepository !== undefined) {
+            const resolvedEpisodeIds = await resolveAttemptEpisodeIds(
+              context,
+              attempt.source_stream_ids,
+            );
+
             context.proceduralEvidenceRepository.insert({
-              pendingAttemptSnapshot: pendingProceduralAttempt,
-              classification: proceduralOutcome.classification,
-              evidenceText: proceduralOutcome.evidence,
-              grounded,
+              pendingAttemptSnapshot: attempt,
+              classification: outcome.classification,
+              evidenceText: outcome.evidence,
+              grounded: true,
               resolvedEpisodeIds,
-              audienceEntityId: pendingProceduralAttempt.audience_entity_id,
+              audienceEntityId: attempt.audience_entity_id,
             });
 
             if (
-              pendingProceduralAttempt.selected_skill_id !== null &&
-              (proceduralOutcome.classification === "success" ||
-                proceduralOutcome.classification === "failure") &&
+              attempt.selected_skill_id !== null &&
+              (outcome.classification === "success" ||
+                outcome.classification === "failure") &&
               context.skillRepository !== undefined
             ) {
               context.skillRepository.recordOutcome(
-                pendingProceduralAttempt.selected_skill_id,
-                proceduralOutcome.classification === "success",
+                attempt.selected_skill_id,
+                outcome.classification === "success",
                 resolvedEpisodeIds,
               );
             }
           }
+
+          // Only actionable signals retire the attempt; an "unclear" but
+          // grounded outcome stays pending in case later turns clarify.
+          if (
+            outcome.classification === "success" ||
+            outcome.classification === "failure"
+          ) {
+            retiredTurnCounters.add(attempt.turn_counter);
+          }
+        } catch (error) {
+          await appendInternalFailureEvent(streamWriter, "procedural_evidence_record", error);
         }
-      } catch (error) {
-        await appendInternalFailureEvent(streamWriter, "procedural_evidence_record", error);
       }
+
+      const survivingAttempts = pendingProceduralAttempts.filter(
+        (attempt) => !retiredTurnCounters.has(attempt.turn_counter),
+      );
 
       nextWorkingMemory = {
         ...nextWorkingMemory,
-        pending_procedural_attempt: null,
+        pending_procedural_attempts: survivingAttempts,
         last_selected_skill_id: null,
         last_selected_skill_turn: null,
       };
@@ -430,14 +465,15 @@ export class Reflector {
   }
 
   private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
-    const pendingProceduralAttempt = context.workingMemory.pending_procedural_attempt;
+    const pendingProceduralAttempts =
+      context.workingMemory.pending_procedural_attempts ?? [];
     const pendingIntents = context.workingMemory.pending_intents;
 
     if (
       this.llmClient === undefined ||
       this.model === undefined ||
       (context.selfSnapshot.goals.length === 0 &&
-        pendingProceduralAttempt === null &&
+        pendingProceduralAttempts.length === 0 &&
         pendingIntents.length === 0 &&
         selectReferencedRetrievedEpisodeIds(context.deliberationResult, context.retrievedEpisodes)
           .length === 0)
@@ -455,7 +491,8 @@ export class Reflector {
       system: [
         "You are Borg's post-turn reflector. Read the completed turn and active goals, then emit only the structured reflection tool.",
         "Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
-        "If pending_procedural_attempt is present, classify whether the user's current message shows that attempt succeeded, failed, or remains unclear.",
+        "If pending_procedural_attempts has any entries, emit a procedural_outcome per attempt the current turn provides evidence about. Identify each by its attempt_turn_counter and classify success, failure, or unclear.",
+        "Omit attempts the current turn says nothing about -- they will stay pending and may be graded on a later turn.",
         "For every procedural_outcome, set grounded=false when the evidence is assistant self-narration rather than an actual user signal.",
         "Do not infer procedural success or failure from the assistant response, confidence, phrasing, or intentions.",
         "Emit trait_demonstrations only for traits actually shown by the completed assistant turn. Do not map from cognitive mode labels.",
@@ -473,7 +510,7 @@ export class Reflector {
               description: goal.description,
               progress_notes: goal.progress_notes,
             })),
-            pending_procedural_attempt: pendingProceduralAttempt,
+            pending_procedural_attempts: pendingProceduralAttempts,
             pending_intents: pendingIntents,
             referenced_episodes: selectReferencedRetrievedEpisodeIds(
               context.deliberationResult,

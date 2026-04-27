@@ -165,6 +165,7 @@ describe("Borg Sprint 7", () => {
                 advanced_goals: [],
                 procedural_outcomes: [
                   {
+                    attempt_turn_counter: 1,
                     classification: "success",
                     evidence: "User confirmed the Rust lifetime error is fixed now.",
                     grounded: true,

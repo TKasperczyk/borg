@@ -177,4 +177,33 @@ describe("chooseDeliberationPath", () => {
     expect(decision.path).toBe("system_2");
     expect(decision.reason).toMatch(/high-stakes/i);
   });
+
+  it("escalates idle mode to S2 when stakes are high", () => {
+    // Sprint 53: idle was a hard early return that bypassed the high-stakes
+    // and contradiction checks below it. A misclassified high-stakes idle
+    // turn must still take the deeper path.
+    const decision = chooseDeliberationPath(
+      "idle",
+      "high",
+      [makeEpisode(0.9)],
+      false,
+      makeConfidence(0.95),
+    );
+
+    expect(decision.path).toBe("system_2");
+    expect(decision.reason).toMatch(/high-stakes/i);
+  });
+
+  it("escalates idle mode to S2 when retrieved context contradicts", () => {
+    const decision = chooseDeliberationPath(
+      "idle",
+      "low",
+      [makeEpisode(0.9)],
+      true,
+      makeConfidence(0.9, true),
+    );
+
+    expect(decision.path).toBe("system_2");
+    expect(decision.reason).toMatch(/contradiction/i);
+  });
 });

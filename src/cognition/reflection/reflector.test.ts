@@ -31,6 +31,7 @@ function createReflectionResponse(
     classification: "success" | "failure" | "unclear";
     evidence: string;
     grounded?: boolean;
+    attempt_turn_counter?: number;
   }> = [],
   intentUpdates: Array<{
     description: string;
@@ -57,6 +58,8 @@ function createReflectionResponse(
           advanced_goals: advancedGoals,
           procedural_outcomes: proceduralOutcomes.map((outcome) => ({
             grounded: true,
+            // Default to grading the turn-1 attempt unless the test specifies.
+            attempt_turn_counter: 1,
             ...outcome,
           })),
           trait_demonstrations: traitDemonstrations,
@@ -131,7 +134,7 @@ function createPendingProceduralReflectionContext(
     mood: null,
     last_selected_skill_id: null,
     last_selected_skill_turn: null,
-    pending_procedural_attempt: pendingAttempt,
+    pending_procedural_attempts: [pendingAttempt],
     mode: "problem_solving" as const,
     updated_at: 0,
   };
@@ -694,7 +697,9 @@ describe("reflector", () => {
     expect(harness.llmClient.requests[0]?.messages[0]?.content).toContain("pending_intents");
   });
 
-  it("clears a pending procedural attempt when reflection returns no procedural outcome", async () => {
+  it("preserves a pending procedural attempt when reflection returns no procedural outcome for it", async () => {
+    // Sprint 53: omitted outcomes leave the attempt pending so a later
+    // turn can grade it. The orchestrator expires attempts via TTL.
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({
         responses: [createReflectionResponse([], [])],
@@ -712,11 +717,11 @@ describe("reflector", () => {
       harness.streamWriter,
     );
 
-    expect(reflected.pending_procedural_attempt).toBeNull();
+    expect(reflected.pending_procedural_attempts).toHaveLength(1);
     expect(harness.proceduralEvidenceRepository.list()).toEqual([]);
   });
 
-  it("clears a pending procedural attempt when reflection judgment fails", async () => {
+  it("preserves a pending procedural attempt when reflection judgment fails", async () => {
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({
         responses: [
@@ -742,7 +747,7 @@ describe("reflector", () => {
       sessionId: DEFAULT_SESSION_ID,
     }).tail(1);
 
-    expect(reflected.pending_procedural_attempt).toBeNull();
+    expect(reflected.pending_procedural_attempts).toHaveLength(1);
     expect(harness.proceduralEvidenceRepository.list()).toEqual([]);
     expect(events[0]).toMatchObject({
       kind: "internal_event",
@@ -1381,14 +1386,16 @@ describe("reflector", () => {
             mood: null,
             last_selected_skill_id: null,
             last_selected_skill_turn: null,
-            pending_procedural_attempt: {
-              problem_text: "I hit a Rust lifetime issue again.",
-              approach_summary: "Shrink borrow scopes and use intermediate bindings.",
-              selected_skill_id: skill.id,
-              source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
-              turn_counter: 1,
-              audience_entity_id: null,
-            },
+            pending_procedural_attempts: [
+              {
+                problem_text: "I hit a Rust lifetime issue again.",
+                approach_summary: "Shrink borrow scopes and use intermediate bindings.",
+                selected_skill_id: skill.id,
+                source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
+                turn_counter: 1,
+                audience_entity_id: null,
+              },
+            ],
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -1427,14 +1434,16 @@ describe("reflector", () => {
               mood: null,
               last_selected_skill_id: null,
               last_selected_skill_turn: null,
-              pending_procedural_attempt: {
-                problem_text: "I hit a Rust lifetime issue again.",
-                approach_summary: "Shrink borrow scopes and use intermediate bindings.",
-                selected_skill_id: skill.id,
-                source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
-                turn_counter: 1,
-                audience_entity_id: null,
-              },
+              pending_procedural_attempts: [
+                {
+                  problem_text: "I hit a Rust lifetime issue again.",
+                  approach_summary: "Shrink borrow scopes and use intermediate bindings.",
+                  selected_skill_id: skill.id,
+                  source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
+                  turn_counter: 1,
+                  audience_entity_id: null,
+                },
+              ],
               mode: "problem_solving",
               updated_at: 0,
             },
@@ -1453,7 +1462,14 @@ describe("reflector", () => {
         harness.streamWriter,
       );
 
-      expect(reflected.pending_procedural_attempt).toBeNull();
+      // Sprint 53: only actionable (success/failure) outcomes retire the
+      // attempt. Grounded "unclear" still records evidence but keeps the
+      // attempt pending so a later turn can grade it.
+      if (classification === "unclear") {
+        expect(reflected.pending_procedural_attempts).toHaveLength(1);
+      } else {
+        expect(reflected.pending_procedural_attempts).toEqual([]);
+      }
       expect(harness.proceduralEvidenceRepository.list()).toEqual([
         expect.objectContaining({
           classification,
@@ -1511,14 +1527,16 @@ describe("reflector", () => {
           mood: null,
           last_selected_skill_id: null,
           last_selected_skill_turn: null,
-          pending_procedural_attempt: {
-            problem_text: "I hit a Rust lifetime issue again.",
-            approach_summary: "This works when you shrink the borrow scope.",
-            selected_skill_id: null,
-            source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"] as never,
-            turn_counter: 1,
-            audience_entity_id: null,
-          },
+          pending_procedural_attempts: [
+            {
+              problem_text: "I hit a Rust lifetime issue again.",
+              approach_summary: "This works when you shrink the borrow scope.",
+              selected_skill_id: null,
+              source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"] as never,
+              turn_counter: 1,
+              audience_entity_id: null,
+            },
+          ],
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -1557,14 +1575,16 @@ describe("reflector", () => {
             mood: null,
             last_selected_skill_id: null,
             last_selected_skill_turn: null,
-            pending_procedural_attempt: {
-              problem_text: "I hit a Rust lifetime issue again.",
-              approach_summary: "This works when you shrink the borrow scope.",
-              selected_skill_id: null,
-              source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"] as never,
-              turn_counter: 1,
-              audience_entity_id: null,
-            },
+            pending_procedural_attempts: [
+              {
+                problem_text: "I hit a Rust lifetime issue again.",
+                approach_summary: "This works when you shrink the borrow scope.",
+                selected_skill_id: null,
+                source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"] as never,
+                turn_counter: 1,
+                audience_entity_id: null,
+              },
+            ],
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -1645,14 +1665,16 @@ describe("reflector", () => {
           mood: null,
           last_selected_skill_id: null,
           last_selected_skill_turn: null,
-          pending_procedural_attempt: {
-            problem_text: "I hit a Rust lifetime issue again.",
-            approach_summary: "Shrink borrow scopes and use intermediate bindings.",
-            selected_skill_id: skill.id,
-            source_stream_ids: episode.source_stream_ids,
-            turn_counter: 1,
-            audience_entity_id: null,
-          },
+          pending_procedural_attempts: [
+            {
+              problem_text: "I hit a Rust lifetime issue again.",
+              approach_summary: "Shrink borrow scopes and use intermediate bindings.",
+              selected_skill_id: skill.id,
+              source_stream_ids: episode.source_stream_ids,
+              turn_counter: 1,
+              audience_entity_id: null,
+            },
+          ],
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -1691,14 +1713,16 @@ describe("reflector", () => {
             mood: null,
             last_selected_skill_id: null,
             last_selected_skill_turn: null,
-            pending_procedural_attempt: {
-              problem_text: "I hit a Rust lifetime issue again.",
-              approach_summary: "Shrink borrow scopes and use intermediate bindings.",
-              selected_skill_id: skill.id,
-              source_stream_ids: episode.source_stream_ids,
-              turn_counter: 1,
-              audience_entity_id: null,
-            },
+            pending_procedural_attempts: [
+              {
+                problem_text: "I hit a Rust lifetime issue again.",
+                approach_summary: "Shrink borrow scopes and use intermediate bindings.",
+                selected_skill_id: skill.id,
+                source_stream_ids: episode.source_stream_ids,
+                turn_counter: 1,
+                audience_entity_id: null,
+              },
+            ],
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -1717,7 +1741,10 @@ describe("reflector", () => {
       harness.streamWriter,
     );
 
-    expect(reflected.pending_procedural_attempt).toBeNull();
+    // Sprint 53: ungrounded outcomes leave the attempt pending instead of
+    // unconditionally clearing it. The attempt may get graded on a later
+    // turn or expire via TTL.
+    expect(reflected.pending_procedural_attempts).toHaveLength(1);
     expect(harness.proceduralEvidenceRepository.list()).toEqual([]);
     expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
   });
