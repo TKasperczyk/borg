@@ -12,6 +12,7 @@ import {
   workingEntityIdSchema,
   type PendingProceduralAttempt,
 } from "../working/types.js";
+import { proceduralContextSchema, type ProceduralContext } from "./context.js";
 
 export const skillIdSchema = z
   .string()
@@ -81,6 +82,7 @@ export const proceduralEvidenceSchema = z.object({
   evidence_text: z.string().min(1),
   grounded: z.boolean().default(true),
   skill_actually_applied: z.boolean().default(true),
+  procedural_context: proceduralContextSchema.nullable().optional(),
   resolved_episode_ids: z.array(episodeIdSchema),
   audience_entity_id: workingEntityIdSchema.nullable(),
   consumed_at: z.number().finite().nullable(),
@@ -90,8 +92,24 @@ export const proceduralEvidenceSchema = z.object({
 export type ProceduralOutcomeClassification = z.infer<typeof proceduralOutcomeClassificationSchema>;
 export type ProceduralEvidenceRecord = z.infer<typeof proceduralEvidenceSchema>;
 
+export const skillContextStatsSchema = z.object({
+  skill_id: skillIdSchema,
+  context_key: z.string().min(1),
+  alpha: z.number().positive(),
+  beta: z.number().positive(),
+  attempts: z.number().int().nonnegative(),
+  successes: z.number().int().nonnegative(),
+  failures: z.number().int().nonnegative(),
+  last_used: z.number().finite().nullable(),
+  last_successful: z.number().finite().nullable(),
+  updated_at: z.number().finite(),
+});
+
+export type SkillContextStatsRecord = z.infer<typeof skillContextStatsSchema>;
+
 export type SkillIdValue = SkillId;
 export type EpisodeIdValue = EpisodeId;
 export type EntityIdValue = EntityId;
 export type PendingProceduralAttemptValue = PendingProceduralAttempt;
 export type ProceduralEvidenceIdValue = ProceduralEvidenceId;
+export type ProceduralContextValue = ProceduralContext;

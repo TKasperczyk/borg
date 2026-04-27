@@ -20,6 +20,7 @@ import {
   type Episode,
 } from "../memory/episodic/index.js";
 import {
+  ProceduralContextStatsRepository,
   ProceduralEvidenceRepository,
   SkillRepository,
   createSkillsTableSchema,
@@ -129,6 +130,7 @@ export type OfflineTestHarness = {
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   skillRepository: SkillRepository;
+  proceduralContextStatsRepository: ProceduralContextStatsRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
   retrievalPipeline: RetrievalPipeline;
   registry: ReverserRegistry;
@@ -440,6 +442,10 @@ export async function createOfflineTestHarness(
     db,
     clock,
   });
+  const proceduralContextStatsRepository = new ProceduralContextStatsRepository({
+    db,
+    clock,
+  });
   const auditLog = new AuditLog({
     db,
     clock,
@@ -487,6 +493,7 @@ export async function createOfflineTestHarness(
     entityRepository,
     commitmentRepository,
     skillRepository,
+    proceduralContextStatsRepository,
     proceduralEvidenceRepository,
     retrievalPipeline,
     registry,

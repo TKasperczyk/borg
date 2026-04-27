@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
-import { createEpisodeId, createSkillId } from "../../util/ids.js";
+import { createEpisodeId, createProceduralEvidenceId, createSkillId } from "../../util/ids.js";
 
+import { deriveProceduralContextKey, proceduralContextSchema } from "./context.js";
 import { SkillSelector } from "./selector.js";
 
 describe("SkillRepository", () => {
@@ -126,6 +127,227 @@ describe("SkillRepository", () => {
     });
   });
 
+  it("records skill context outcomes by primary key and lists context usage", async () => {
+    harness = await createOfflineTestHarness();
+    const skillId = createSkillId();
+    const otherSkillId = createSkillId();
+    const contextKey = deriveProceduralContextKey({
+      problem_kind: "code_debugging",
+      domain_tags: ["TypeScript"],
+      audience_scope: "self",
+    });
+
+    expect(
+      harness.proceduralContextStatsRepository.getContextStats(skillId, contextKey),
+    ).toBeNull();
+
+    const success = harness.proceduralContextStatsRepository.recordContextOutcome({
+      skillId,
+      contextKey,
+      success: true,
+      ts: 1_000,
+    });
+    const failure = harness.proceduralContextStatsRepository.recordContextOutcome({
+      skillId,
+      contextKey,
+      success: false,
+      ts: 2_000,
+    });
+    harness.proceduralContextStatsRepository.recordContextOutcome({
+      skillId: otherSkillId,
+      contextKey,
+      success: true,
+      ts: 3_000,
+    });
+
+    expect(success).toMatchObject({
+      alpha: 2,
+      beta: 1,
+      attempts: 1,
+      successes: 1,
+      failures: 0,
+      last_used: 1_000,
+      last_successful: 1_000,
+    });
+    expect(failure).toMatchObject({
+      alpha: 2,
+      beta: 2,
+      attempts: 2,
+      successes: 1,
+      failures: 1,
+      last_used: 2_000,
+      last_successful: 1_000,
+    });
+    expect(harness.proceduralContextStatsRepository.listForSkill(skillId)).toEqual([failure]);
+    expect(
+      harness.proceduralContextStatsRepository
+        .listGlobalUsage(contextKey)
+        .map((stats) => stats.skill_id),
+    ).toEqual([otherSkillId, skillId]);
+  });
+
+  it("derives deterministic context keys from equivalent tag sets", () => {
+    const contexts = [
+      proceduralContextSchema.parse({
+        problem_kind: "code_debugging",
+        domain_tags: ["typescript", "debugging"],
+        audience_scope: "self",
+        context_key: "ignored",
+      }),
+      proceduralContextSchema.parse({
+        problem_kind: "code_debugging",
+        domain_tags: ["debugging", "typescript"],
+        audience_scope: "self",
+        context_key: "ignored",
+      }),
+      proceduralContextSchema.parse({
+        problem_kind: "code_debugging",
+        domain_tags: ["TypeScript"],
+        audience_scope: "self",
+        context_key: "ignored",
+      }),
+      proceduralContextSchema.parse({
+        problem_kind: "code_debugging",
+        domain_tags: ["typescript"],
+        audience_scope: "self",
+        context_key: "ignored",
+      }),
+    ];
+
+    expect(contexts.map((context) => context.context_key)).toEqual([
+      "code_debugging:typescript:self",
+      "code_debugging:typescript:self",
+      "code_debugging:typescript:self",
+      "code_debugging:typescript:self",
+    ]);
+  });
+
+  it("records global-only outcomes when no procedural context is present", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    const skill = await harness.skillRepository.add({
+      applies_when: "TypeScript generic inference fails",
+      approach: "Reduce the generic to a smaller reproduction.",
+      sourceEpisodes: [episode.id],
+    });
+
+    const updated = harness.skillRepository.recordOutcome(skill.id, true, episode.id, null);
+
+    expect(updated).toMatchObject({
+      attempts: 1,
+      successes: 1,
+      alpha: 2,
+      beta: 1,
+    });
+    expect(harness.proceduralContextStatsRepository.listForSkill(skill.id)).toEqual([]);
+  });
+
+  it("records global and context outcomes together when context is present", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    const skill = await harness.skillRepository.add({
+      applies_when: "TypeScript generic inference fails",
+      approach: "Reduce the generic to a smaller reproduction.",
+      sourceEpisodes: [episode.id],
+    });
+    const proceduralContext = proceduralContextSchema.parse({
+      problem_kind: "code_debugging",
+      domain_tags: ["TypeScript"],
+      audience_scope: "self",
+      context_key: "ignored",
+    });
+
+    const updated = harness.skillRepository.recordOutcome(
+      skill.id,
+      false,
+      episode.id,
+      proceduralContext,
+    );
+
+    expect(updated).toMatchObject({
+      attempts: 1,
+      failures: 1,
+      alpha: 1,
+      beta: 2,
+    });
+    expect(
+      harness.proceduralContextStatsRepository.getContextStats(
+        skill.id,
+        proceduralContext.context_key,
+      ),
+    ).toMatchObject({
+      attempts: 1,
+      failures: 1,
+      alpha: 1,
+      beta: 2,
+    });
+  });
+
+  it("does not leave context stats behind when a contextual global outcome fails", async () => {
+    harness = await createOfflineTestHarness();
+    const missingSkillId = createSkillId();
+    const proceduralContext = proceduralContextSchema.parse({
+      problem_kind: "planning",
+      domain_tags: ["roadmap"],
+      audience_scope: "known_other",
+      context_key: "ignored",
+    });
+
+    expect(() =>
+      harness?.skillRepository.recordOutcome(missingSkillId, true, undefined, proceduralContext),
+    ).toThrow(/Unknown skill id/);
+    expect(
+      harness.proceduralContextStatsRepository.getContextStats(
+        missingSkillId,
+        proceduralContext.context_key,
+      ),
+    ).toBeNull();
+  });
+
+  it("rolls back global skill counters when contextual stats recording fails", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    const skill = await harness.skillRepository.add({
+      applies_when: "TypeScript generic inference fails",
+      approach: "Reduce the generic to a smaller reproduction.",
+      sourceEpisodes: [episode.id],
+    });
+    const proceduralContext = proceduralContextSchema.parse({
+      problem_kind: "code_debugging",
+      domain_tags: ["TypeScript"],
+      audience_scope: "self",
+      context_key: "ignored",
+    });
+
+    harness.db.exec(`
+      CREATE TRIGGER fail_skill_context_stats_insert
+      BEFORE INSERT ON skill_context_stats
+      BEGIN
+        SELECT RAISE(ABORT, 'injected context stats failure');
+      END;
+    `);
+
+    expect(() =>
+      harness?.skillRepository.recordOutcome(skill.id, true, episode.id, proceduralContext),
+    ).toThrow(/injected context stats failure/);
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      alpha: 1,
+      beta: 1,
+      attempts: 0,
+      successes: 0,
+      failures: 0,
+    });
+    expect(
+      harness.proceduralContextStatsRepository.getContextStats(
+        skill.id,
+        proceduralContext.context_key,
+      ),
+    ).toBeNull();
+  });
+
   it("stages procedural evidence idempotently for the same pending attempt", async () => {
     harness = await createOfflineTestHarness();
     const pendingAttempt = {
@@ -181,6 +403,77 @@ describe("SkillRepository", () => {
     );
   });
 
+  it("persists procedural context on procedural evidence", async () => {
+    harness = await createOfflineTestHarness();
+    const proceduralContext = proceduralContextSchema.parse({
+      problem_kind: "code_debugging",
+      domain_tags: ["TypeScript"],
+      audience_scope: "self",
+      context_key: "ignored",
+    });
+    const pendingAttempt = {
+      problem_text: "Fix the flaky Atlas deploy.",
+      approach_summary: "Compare the failing deploy log against the last clean release.",
+      selected_skill_id: null,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
+      turn_counter: 7,
+      audience_entity_id: null,
+      procedural_context: proceduralContext,
+    };
+
+    const evidence = harness.proceduralEvidenceRepository.insert({
+      pendingAttemptSnapshot: pendingAttempt,
+      classification: "success",
+      evidenceText: "User confirmed the deploy worked.",
+    });
+
+    expect(evidence.procedural_context).toEqual(proceduralContext);
+    expect(evidence.pending_attempt_snapshot.procedural_context).toEqual(proceduralContext);
+    expect(harness.proceduralEvidenceRepository.get(evidence.id)).toMatchObject({
+      procedural_context: proceduralContext,
+      pending_attempt_snapshot: expect.objectContaining({
+        procedural_context: proceduralContext,
+      }),
+    });
+  });
+
+  it("reads pre-SP1 procedural evidence without procedural context", async () => {
+    harness = await createOfflineTestHarness();
+    const evidenceId = createProceduralEvidenceId();
+    const pendingAttempt = {
+      problem_text: "Fix the flaky Atlas deploy.",
+      approach_summary: "Compare the failing deploy log against the last clean release.",
+      selected_skill_id: null,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"],
+      turn_counter: 7,
+      audience_entity_id: null,
+    };
+
+    harness.db
+      .prepare(
+        `
+          INSERT INTO procedural_evidence (
+            id, pending_attempt_snapshot, classification, evidence_text,
+            resolved_episode_ids, audience_entity_id, consumed_at, created_at,
+            grounded, skill_actually_applied
+          ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 1, 1)
+        `,
+      )
+      .run(
+        evidenceId,
+        JSON.stringify(pendingAttempt),
+        "success",
+        "Legacy row without procedural context.",
+        "[]",
+        1_000,
+      );
+
+    const evidence = harness.proceduralEvidenceRepository.get(evidenceId);
+
+    expect(evidence?.procedural_context ?? null).toBeNull();
+    expect(evidence?.pending_attempt_snapshot.procedural_context ?? null).toBeNull();
+  });
+
   it("upgrades a grounded unclear evidence row when a later success/failure arrives", async () => {
     // Sprint 55 regression test: with Sprint 53's multi-turn pending
     // attempts, an early "unclear" outcome must not block a later
@@ -214,9 +507,7 @@ describe("SkillRepository", () => {
 
     expect(upgraded.id).toBe(initial.id);
     expect(upgraded.classification).toBe("success");
-    expect(upgraded.evidence_text).toBe(
-      "User confirmed the rollback comparison fixed it.",
-    );
+    expect(upgraded.evidence_text).toBe("User confirmed the rollback comparison fixed it.");
     const rows = harness.proceduralEvidenceRepository.list();
     expect(rows).toHaveLength(1);
     expect(rows[0]?.classification).toBe("success");

@@ -11,6 +11,7 @@ import { CommitmentRepository, EntityRepository } from "../memory/commitments/in
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
 import {
+  ProceduralContextStatsRepository,
   ProceduralEvidenceRepository,
   SkillRepository,
   SkillSelector,
@@ -74,6 +75,7 @@ export type BorgRepositorySetup = Pick<
   | "commitmentRepository"
   | "correctionService"
   | "skillRepository"
+  | "proceduralContextStatsRepository"
   | "proceduralEvidenceRepository"
   | "skillSelector"
   | "retrievalPipeline"
@@ -269,6 +271,10 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
+  const proceduralContextStatsRepository = new ProceduralContextStatsRepository({
+    db: sqlite,
+    clock,
+  });
   const skillSelector = new SkillSelector({
     repository: skillRepository,
     minSimilarity: config.procedural.skillSelectionMinSimilarity,
@@ -335,6 +341,7 @@ export async function buildBorgRepositories(
     commitmentRepository,
     correctionService,
     skillRepository,
+    proceduralContextStatsRepository,
     proceduralEvidenceRepository,
     skillSelector,
     retrievalPipeline,

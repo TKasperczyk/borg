@@ -13,6 +13,7 @@ import type { CommitmentRepository, EntityRepository } from "../memory/commitmen
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
 import type {
+  ProceduralContextStatsRepository,
   ProceduralEvidenceRepository,
   SkillRepository,
   SkillSelector,
@@ -84,6 +85,7 @@ export type BorgDependencies = {
   commitmentRepository: CommitmentRepository;
   correctionService: CorrectionService;
   skillRepository: SkillRepository;
+  proceduralContextStatsRepository: ProceduralContextStatsRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
   skillSelector: SkillSelector;
   retrievalPipeline: RetrievalPipeline;

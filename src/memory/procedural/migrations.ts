@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const proceduralMigrations = [
   {
@@ -60,5 +61,37 @@ export const proceduralMigrations = [
       ALTER TABLE procedural_evidence
         ADD COLUMN skill_actually_applied INTEGER NOT NULL DEFAULT 1;
     `,
+  },
+  {
+    id: 176,
+    name: "create-skill-context-stats-table",
+    up: `
+      CREATE TABLE IF NOT EXISTS skill_context_stats (
+        skill_id TEXT NOT NULL,
+        context_key TEXT NOT NULL,
+        alpha REAL NOT NULL,
+        beta REAL NOT NULL,
+        attempts INTEGER NOT NULL,
+        successes INTEGER NOT NULL,
+        failures INTEGER NOT NULL,
+        last_used INTEGER,
+        last_successful INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (skill_id, context_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_skill_context_stats_context
+        ON skill_context_stats (context_key, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_skill_context_stats_skill
+        ON skill_context_stats (skill_id, updated_at DESC);
+    `,
+  },
+  {
+    id: 177,
+    name: "add-procedural-evidence-context",
+    up: (db) => {
+      if (!tableHasColumn(db, "procedural_evidence", "procedural_context")) {
+        db.exec("ALTER TABLE procedural_evidence ADD COLUMN procedural_context TEXT");
+      }
+    },
   },
 ] as const satisfies readonly Migration[];

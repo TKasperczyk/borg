@@ -1,10 +1,4 @@
-import {
-  LanceDbTable,
-  float64Field,
-  schema,
-  utf8Field,
-  vectorField,
-} from "../../storage/lancedb/index.js";
+import { LanceDbTable, schema, utf8Field, vectorField } from "../../storage/lancedb/index.js";
 import {
   parseJsonArray,
   quoteSqlString,
@@ -27,14 +21,17 @@ import {
 } from "../../util/ids.js";
 
 import { computeBetaStats, type BetaStats } from "./bayes.js";
+import { proceduralContextSchema, type ProceduralContext } from "./context.js";
 import {
   proceduralEvidenceSchema,
   proceduralOutcomeClassificationSchema,
+  skillContextStatsSchema,
   skillInsertSchema,
   skillSchema,
   type PendingProceduralAttemptValue,
   type ProceduralEvidenceRecord,
   type ProceduralOutcomeClassification,
+  type SkillContextStatsRecord,
   type SkillRecord,
   type SkillSearchCandidate,
 } from "./types.js";
@@ -136,7 +133,28 @@ function parsePendingAttemptSnapshot(value: string): PendingProceduralAttemptVal
   }
 }
 
+function parseProceduralContextColumn(value: unknown): ProceduralContext | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  try {
+    const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+    return proceduralContextSchema.parse(parsed);
+  } catch (error) {
+    throw new StorageError("Failed to parse procedural context", {
+      cause: error,
+      code: "PROCEDURAL_CONTEXT_INVALID",
+    });
+  }
+}
+
+function serializeProceduralContext(context: ProceduralContext | null | undefined): string | null {
+  return context === null || context === undefined ? null : serializeJsonValue(context);
+}
+
 function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvidenceRecord {
+  const proceduralContext = parseProceduralContextColumn(row.procedural_context);
   const parsed = proceduralEvidenceSchema.safeParse({
     id: row.id,
     pending_attempt_snapshot: parsePendingAttemptSnapshot(
@@ -150,6 +168,7 @@ function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvid
       row.skill_actually_applied === null || row.skill_actually_applied === undefined
         ? true
         : Number(row.skill_actually_applied) !== 0,
+    ...(proceduralContext === undefined ? {} : { procedural_context: proceduralContext }),
     resolved_episode_ids: parseJsonArray<string>(
       String(row.resolved_episode_ids ?? "[]"),
       "resolved_episode_ids",
@@ -172,6 +191,97 @@ function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvid
   }
 
   return parsed.data;
+}
+
+function skillContextStatsFromRow(row: Record<string, unknown>): SkillContextStatsRecord {
+  const parsed = skillContextStatsSchema.safeParse({
+    skill_id: row.skill_id,
+    context_key: row.context_key,
+    alpha: Number(row.alpha),
+    beta: Number(row.beta),
+    attempts: Number(row.attempts),
+    successes: Number(row.successes),
+    failures: Number(row.failures),
+    last_used: row.last_used === null || row.last_used === undefined ? null : Number(row.last_used),
+    last_successful:
+      row.last_successful === null || row.last_successful === undefined
+        ? null
+        : Number(row.last_successful),
+    updated_at: Number(row.updated_at),
+  });
+
+  if (!parsed.success) {
+    throw new StorageError("Skill context stats row failed validation", {
+      cause: parsed.error,
+      code: "SKILL_CONTEXT_STATS_ROW_INVALID",
+    });
+  }
+
+  return parsed.data;
+}
+
+function assertContextKey(contextKey: string): string {
+  const trimmed = contextKey.trim();
+
+  if (trimmed.length === 0) {
+    throw new StorageError("Context key must not be empty", {
+      code: "SKILL_CONTEXT_KEY_INVALID",
+    });
+  }
+
+  return trimmed;
+}
+
+function recordContextOutcomeInTransaction(
+  db: SqliteDatabase,
+  input: {
+    skillId: SkillId;
+    contextKey: string;
+    success: boolean;
+    ts: number;
+  },
+): void {
+  const contextKey = assertContextKey(input.contextKey);
+  const incrementAlpha = input.success ? 1 : 0;
+  const incrementBeta = input.success ? 0 : 1;
+  const incrementSuccesses = input.success ? 1 : 0;
+  const incrementFailures = input.success ? 0 : 1;
+
+  db.prepare(
+    `
+      INSERT INTO skill_context_stats (
+        skill_id, context_key, alpha, beta, attempts, successes, failures,
+        last_used, last_successful, updated_at
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+      ON CONFLICT (skill_id, context_key) DO UPDATE SET
+        alpha = alpha + ?,
+        beta = beta + ?,
+        attempts = attempts + 1,
+        successes = successes + ?,
+        failures = failures + ?,
+        last_used = ?,
+        last_successful = CASE WHEN ? THEN ? ELSE last_successful END,
+        updated_at = ?
+    `,
+  ).run(
+    input.skillId,
+    contextKey,
+    1 + incrementAlpha,
+    1 + incrementBeta,
+    incrementSuccesses,
+    incrementFailures,
+    input.ts,
+    input.success ? input.ts : null,
+    input.ts,
+    incrementAlpha,
+    incrementBeta,
+    incrementSuccesses,
+    incrementFailures,
+    input.ts,
+    input.success ? 1 : 0,
+    input.ts,
+    input.ts,
+  );
 }
 
 export function createSkillsTableSchema(dimensions: number) {
@@ -375,6 +485,7 @@ export class SkillRepository {
 
     try {
       this.db.transaction(() => {
+        this.db.prepare("DELETE FROM skill_context_stats WHERE skill_id = ?").run(id);
         this.db.prepare("DELETE FROM skills WHERE id = ?").run(id);
       })();
       await this.table.remove(`id = ${quoteSqlString(id)}`);
@@ -430,8 +541,13 @@ export class SkillRepository {
     skillId: SkillId,
     success: boolean,
     episodeIds?: EpisodeId | readonly EpisodeId[],
+    proceduralContext?: ProceduralContext | null,
   ): SkillRecord {
     const nowMs = this.clock.now();
+    const parsedContext =
+      proceduralContext === null || proceduralContext === undefined
+        ? null
+        : proceduralContextSchema.parse(proceduralContext);
     const incrementAlpha = success ? 1 : 0;
     const incrementBeta = success ? 0 : 1;
     const incrementSuccesses = success ? 1 : 0;
@@ -495,6 +611,15 @@ export class SkillRepository {
       for (const episodeId of sourceEpisodeIds) {
         appendSourceEpisode.run(episodeId, episodeId, skillId);
       }
+
+      if (parsedContext !== null) {
+        recordContextOutcomeInTransaction(this.db, {
+          skillId,
+          contextKey: parsedContext.context_key,
+          success,
+          ts: nowMs,
+        });
+      }
     })();
 
     const next = this.get(skillId);
@@ -518,6 +643,96 @@ export class SkillRepository {
     }
 
     return computeBetaStats(current.alpha, current.beta);
+  }
+}
+
+export type ProceduralContextStatsRepositoryOptions = {
+  db: SqliteDatabase;
+  clock?: Clock;
+};
+
+export class ProceduralContextStatsRepository {
+  private readonly clock: Clock;
+
+  constructor(private readonly options: ProceduralContextStatsRepositoryOptions) {
+    this.clock = options.clock ?? new SystemClock();
+  }
+
+  private get db(): SqliteDatabase {
+    return this.options.db;
+  }
+
+  recordContextOutcome(input: {
+    skillId: SkillId;
+    contextKey: string;
+    success: boolean;
+    ts?: number;
+  }): SkillContextStatsRecord {
+    const ts = input.ts ?? this.clock.now();
+    const contextKey = assertContextKey(input.contextKey);
+
+    this.db.transaction(() => {
+      recordContextOutcomeInTransaction(this.db, {
+        skillId: input.skillId,
+        contextKey,
+        success: input.success,
+        ts,
+      });
+    })();
+
+    const next = this.getContextStats(input.skillId, contextKey);
+
+    if (next === null) {
+      throw new StorageError("Failed to record skill context outcome", {
+        code: "SKILL_CONTEXT_STATS_RECORD_FAILED",
+      });
+    }
+
+    return next;
+  }
+
+  getContextStats(skillId: SkillId, contextKey: string): SkillContextStatsRecord | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM skill_context_stats
+          WHERE skill_id = ? AND context_key = ?
+        `,
+      )
+      .get(skillId, assertContextKey(contextKey)) as Record<string, unknown> | undefined;
+
+    return row === undefined ? null : skillContextStatsFromRow(row);
+  }
+
+  listForSkill(skillId: SkillId): SkillContextStatsRecord[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM skill_context_stats
+          WHERE skill_id = ?
+          ORDER BY updated_at DESC, context_key ASC
+        `,
+      )
+      .all(skillId) as Record<string, unknown>[];
+
+    return rows.map((row) => skillContextStatsFromRow(row));
+  }
+
+  listGlobalUsage(contextKey: string): SkillContextStatsRecord[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM skill_context_stats
+          WHERE context_key = ?
+          ORDER BY updated_at DESC, skill_id ASC
+        `,
+      )
+      .all(assertContextKey(contextKey)) as Record<string, unknown>[];
+
+    return rows.map((row) => skillContextStatsFromRow(row));
   }
 }
 
@@ -548,12 +763,24 @@ export class ProceduralEvidenceRepository {
     evidenceText: string;
     grounded?: boolean;
     skillActuallyApplied?: boolean;
+    proceduralContext?: ProceduralContext | null;
     resolvedEpisodeIds?: readonly EpisodeId[];
     audienceEntityId?: EntityId | null;
     createdAt?: number;
   }): ProceduralEvidenceRecord {
+    const contextSource =
+      input.proceduralContext ?? input.pendingAttemptSnapshot.procedural_context ?? null;
+    const proceduralContext =
+      contextSource === null || contextSource === undefined
+        ? null
+        : proceduralContextSchema.parse(contextSource);
     const snapshot = proceduralEvidenceSchema.shape.pending_attempt_snapshot.parse(
-      input.pendingAttemptSnapshot,
+      proceduralContext === null
+        ? input.pendingAttemptSnapshot
+        : {
+            ...input.pendingAttemptSnapshot,
+            procedural_context: proceduralContext,
+          },
     );
     const snapshotJson = serializeJsonValue(snapshot);
     const existing = this.db
@@ -593,6 +820,7 @@ export class ProceduralEvidenceRepository {
         ...(input.resolvedEpisodeIds ?? []),
       ]);
       const skillActuallyApplied = input.skillActuallyApplied ?? true;
+      const nextProceduralContext = proceduralContext ?? existingRecord.procedural_context ?? null;
       this.db
         .prepare(
           `
@@ -601,6 +829,7 @@ export class ProceduralEvidenceRepository {
                 evidence_text = ?,
                 grounded = 1,
                 skill_actually_applied = ?,
+                procedural_context = ?,
                 resolved_episode_ids = ?,
                 audience_entity_id = ?
             WHERE id = ?
@@ -610,6 +839,7 @@ export class ProceduralEvidenceRepository {
           incomingClassification,
           input.evidenceText.trim(),
           skillActuallyApplied ? 1 : 0,
+          serializeProceduralContext(nextProceduralContext),
           serializeJsonValue(resolvedEpisodeIds),
           input.audienceEntityId ?? existingRecord.audience_entity_id,
           existingRecord.id,
@@ -621,6 +851,7 @@ export class ProceduralEvidenceRepository {
         evidence_text: input.evidenceText.trim(),
         grounded: true,
         skill_actually_applied: skillActuallyApplied,
+        ...(nextProceduralContext === null ? {} : { procedural_context: nextProceduralContext }),
         resolved_episode_ids: resolvedEpisodeIds,
         audience_entity_id: input.audienceEntityId ?? existingRecord.audience_entity_id,
       };
@@ -633,6 +864,7 @@ export class ProceduralEvidenceRepository {
       evidence_text: input.evidenceText.trim(),
       grounded: input.grounded ?? true,
       skill_actually_applied: input.skillActuallyApplied ?? true,
+      ...(proceduralContext === null ? {} : { procedural_context: proceduralContext }),
       resolved_episode_ids: uniqueEpisodeIds([...(input.resolvedEpisodeIds ?? [])]),
       audience_entity_id: input.audienceEntityId ?? snapshot.audience_entity_id,
       consumed_at: null,
@@ -644,9 +876,9 @@ export class ProceduralEvidenceRepository {
         `
           INSERT INTO procedural_evidence (
             id, pending_attempt_snapshot, classification, evidence_text, grounded,
-            skill_actually_applied, resolved_episode_ids, audience_entity_id, consumed_at,
-            created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            skill_actually_applied, procedural_context, resolved_episode_ids,
+            audience_entity_id, consumed_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -656,6 +888,7 @@ export class ProceduralEvidenceRepository {
         record.evidence_text,
         record.grounded ? 1 : 0,
         record.skill_actually_applied ? 1 : 0,
+        serializeProceduralContext(record.procedural_context),
         serializeJsonValue(record.resolved_episode_ids),
         record.audience_entity_id,
         record.consumed_at,

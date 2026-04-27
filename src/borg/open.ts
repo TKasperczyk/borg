@@ -192,6 +192,7 @@ export async function openBorgDependencies(
       commitmentRepository: repositories.commitmentRepository,
       correctionService: repositories.correctionService,
       skillRepository: repositories.skillRepository,
+      proceduralContextStatsRepository: repositories.proceduralContextStatsRepository,
       proceduralEvidenceRepository: repositories.proceduralEvidenceRepository,
       skillSelector: repositories.skillSelector,
       retrievalPipeline: repositories.retrievalPipeline,

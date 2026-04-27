@@ -327,6 +327,7 @@ function recordClusterOutcomes(
       skill.id,
       evidence.classification === "success",
       uniqueEpisodeIds([...evidence.resolved_episode_ids, ...item.source_episode_ids]),
+      evidence.procedural_context ?? evidence.pending_attempt_snapshot.procedural_context ?? null,
     );
   }
 

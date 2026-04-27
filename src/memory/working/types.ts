@@ -7,6 +7,7 @@ import {
   type IntentRecord,
 } from "../../cognition/types.js";
 import { affectiveSignalSchema } from "../affective/types.js";
+import { proceduralContextSchema } from "../procedural/context.js";
 import {
   entityIdHelpers,
   episodeIdHelpers,
@@ -90,6 +91,7 @@ export const pendingProceduralAttemptSchema = z.object({
   source_stream_ids: z.array(workingStreamEntryIdSchema).min(1),
   turn_counter: z.number().int().nonnegative(),
   audience_entity_id: workingEntityIdSchema.nullable(),
+  procedural_context: proceduralContextSchema.nullable().optional(),
 });
 
 // Sprint 53: pending procedural attempts are now a bounded list, not one
@@ -142,8 +144,7 @@ export const workingMemorySchema = z.preprocess((input) => {
 
   return {
     ...rest,
-    pending_procedural_attempts:
-      legacyAttempt === null ? [] : [legacyAttempt],
+    pending_procedural_attempts: legacyAttempt === null ? [] : [legacyAttempt],
   };
 }, workingMemoryObjectSchema);
 

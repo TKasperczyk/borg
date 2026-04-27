@@ -583,6 +583,7 @@ export class Reflector {
                 attempt.selected_skill_id,
                 outcome.classification === "success",
                 resolvedEpisodeIds,
+                attempt.procedural_context ?? null,
               );
             }
           }

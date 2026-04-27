@@ -1,6 +1,6 @@
 import type { ActionResult } from "../action/index.js";
 import type { PerceptionResult } from "../types.js";
-import type { SkillSelectionResult } from "../../memory/procedural/index.js";
+import type { ProceduralContext, SkillSelectionResult } from "../../memory/procedural/index.js";
 import {
   PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS,
   PENDING_PROCEDURAL_ATTEMPTS_LIMIT,
@@ -21,6 +21,7 @@ export type PendingProceduralAttemptTrackerInput = {
   perception: PerceptionResult;
   actionResult: ActionResult;
   selectedSkill: SkillSelectionResult | null;
+  proceduralContext?: ProceduralContext | null;
   reflectedWorkingMemory: WorkingMemory;
   persistedUserEntryId: StreamEntryId;
   persistedAgentEntryId: StreamEntryId;
@@ -49,6 +50,9 @@ export class PendingProceduralAttemptTracker {
           source_stream_ids: [input.persistedUserEntryId, input.persistedAgentEntryId],
           turn_counter: input.reflectedWorkingMemory.turn_counter,
           audience_entity_id: input.audienceEntityId,
+          ...(input.proceduralContext === undefined || input.proceduralContext === null
+            ? {}
+            : { procedural_context: input.proceduralContext }),
         }
       : null;
     const combinedAttempts =
