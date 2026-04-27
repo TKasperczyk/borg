@@ -55,12 +55,30 @@ function makeAttempt(turnCounter: number): PendingProceduralAttempt {
 
 describe("PendingProceduralAttemptTracker", () => {
   it("carries live attempts, drops expired ones, and appends a user problem-solving attempt", () => {
-    const selectedSkill = {
+    const selectedSkill: SkillSelectionResult = {
       skill: {
         id: skillId,
+        applies_when: "Known approach applies.",
         approach: "Use the known approach.",
+        status: "active",
+        alpha: 1,
+        beta: 1,
+        attempts: 0,
+        successes: 0,
+        failures: 0,
+        alternatives: [],
+        superseded_by: [],
+        superseded_at: null,
+        splitting_at: null,
+        source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+        last_used: null,
+        last_successful: null,
+        created_at: 0,
+        updated_at: 0,
       },
-    } as SkillSelectionResult;
+      sampledValue: 0.5,
+      evaluatedCandidates: [],
+    };
     const reflectedWorkingMemory = {
       ...createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
       turn_counter: 10,

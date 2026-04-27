@@ -94,4 +94,39 @@ export const proceduralMigrations = [
       }
     },
   },
+  {
+    id: 178,
+    name: "add-skill-supersession-metadata",
+    up: (db) => {
+      if (!tableHasColumn(db, "skills", "status")) {
+        db.exec("ALTER TABLE skills ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+      }
+      if (!tableHasColumn(db, "skills", "superseded_by")) {
+        db.exec("ALTER TABLE skills ADD COLUMN superseded_by TEXT NOT NULL DEFAULT '[]'");
+      }
+      if (!tableHasColumn(db, "skills", "superseded_at")) {
+        db.exec("ALTER TABLE skills ADD COLUMN superseded_at INTEGER");
+      }
+      if (!tableHasColumn(db, "skills", "splitting_at")) {
+        db.exec("ALTER TABLE skills ADD COLUMN splitting_at INTEGER");
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_skills_status_updated
+          ON skills (status, updated_at DESC);
+      `);
+    },
+  },
+  {
+    id: 179,
+    name: "add-skill-split-attempt-timestamp",
+    up: (db) => {
+      if (!tableHasColumn(db, "skills", "last_split_attempt_at")) {
+        db.exec("ALTER TABLE skills ADD COLUMN last_split_attempt_at INTEGER");
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_skills_split_attempt
+          ON skills (status, last_split_attempt_at DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

@@ -42,8 +42,20 @@ describe("procedural migrations", () => {
         .all() as Array<{
         name: string;
       }>;
+      const skillColumns = upgradedDb.prepare("PRAGMA table_info(skills)").all() as Array<{
+        name: string;
+      }>;
 
       expect(evidenceColumns.map((column) => column.name)).toContain("procedural_context");
+      expect(skillColumns.map((column) => column.name)).toEqual(
+        expect.arrayContaining([
+          "status",
+          "superseded_by",
+          "superseded_at",
+          "splitting_at",
+          "last_split_attempt_at",
+        ]),
+      );
       expect(statsColumns.map((column) => column.name)).toEqual([
         "skill_id",
         "context_key",

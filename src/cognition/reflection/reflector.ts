@@ -579,12 +579,21 @@ export class Reflector {
               // executed the suggested approach. If it ignored the skill,
               // the user's success or failure feedback isn't evidence
               // about the skill itself.
-              this.options.skillRepository.recordOutcome(
+              const updatedSkill = this.options.skillRepository.recordOutcome(
                 attempt.selected_skill_id,
                 outcome.classification === "success",
                 resolvedEpisodeIds,
                 attempt.procedural_context ?? null,
               );
+
+              if (updatedSkill.status === "superseded") {
+                await this.appendReflectorInternalEvent(streamWriter, {
+                  hook: "record_outcome_skipped_superseded",
+                  skill_id: attempt.selected_skill_id,
+                  attempt_turn_counter: attempt.turn_counter,
+                  classification: outcome.classification,
+                });
+              }
             }
           }
 

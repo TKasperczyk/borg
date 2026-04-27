@@ -788,6 +788,23 @@ describe("internal tools", () => {
 
       const tool = createSkillsListTool({
         listSkills: (limit) => borg.skills.list(limit),
+        listContextStatsForSkill: (skillId) =>
+          skillId === skill.id
+            ? [
+                {
+                  skill_id: skill.id,
+                  context_key: "code_debugging:typescript:self",
+                  alpha: 3,
+                  beta: 1,
+                  attempts: 2,
+                  successes: 2,
+                  failures: 0,
+                  last_used: 1_000,
+                  last_successful: 1_000,
+                  updated_at: 1_000,
+                },
+              ]
+            : [],
       });
       const result = await tool.invoke(
         {
@@ -800,6 +817,12 @@ describe("internal tools", () => {
       );
 
       expect(result.skills.map((item) => item.id)).toContain(skill.id);
+      expect(result.context_stats_by_skill_id?.[skill.id]).toEqual([
+        expect.objectContaining({
+          context_key: "code_debugging:typescript:self",
+          attempts: 2,
+        }),
+      ]);
     } finally {
       await borg.close();
     }

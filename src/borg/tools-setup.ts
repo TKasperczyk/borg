@@ -167,6 +167,8 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     .register(
       createSkillsListTool({
         listSkills: (limit: number) => options.skillRepository.list(limit),
+        listContextStatsForSkill: (skillId) =>
+          options.skillRepository.listContextStatsForSkill(skillId),
       }),
     );
 

@@ -23,6 +23,7 @@ import type {
   SemanticNodeRepository,
 } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
+import type { WorkingMemoryStore } from "../memory/working/index.js";
 import {
   AuditLog,
   BeliefReviserProcess,
@@ -74,6 +75,7 @@ export type BuildOfflineSetupOptions = {
   commitmentRepository: CommitmentRepository;
   skillRepository: SkillRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
+  workingMemoryStore?: WorkingMemoryStore;
   retrievalPipeline: RetrievalPipeline;
   createStreamWriter: BorgStreamWriterFactory;
 };
@@ -167,6 +169,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       commitmentRepository: options.commitmentRepository,
       skillRepository: options.skillRepository,
       proceduralEvidenceRepository: options.proceduralEvidenceRepository,
+      workingMemoryStore: options.workingMemoryStore,
       retrievalPipeline: options.retrievalPipeline,
     },
     auditLog,

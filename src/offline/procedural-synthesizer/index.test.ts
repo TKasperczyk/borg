@@ -3,12 +3,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeLLMClient } from "../../llm/index.js";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { SkillSelector } from "../../memory/procedural/index.js";
+import { createWorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { SuppressionSet } from "../../cognition/attention/index.js";
 import { Reflector } from "../../cognition/reflection/index.js";
 import type { RetrievalConfidence } from "../../retrieval/index.js";
+import { StreamReader } from "../../stream/index.js";
 import {
   DEFAULT_SESSION_ID,
+  createSkillId,
   createStreamEntryId,
   type EntityId,
   type SkillId,
@@ -56,6 +59,36 @@ function createSkillCandidateResponse(input: {
             input.approach ?? "Compare the failing state against the last known-good state.",
           abstraction_fit: input.abstraction_fit ?? "usable",
           rejection_reason: input.rejection_reason ?? null,
+        },
+      },
+    ],
+  };
+}
+
+function createSkillSplitResponse(input: {
+  decision: "split" | "no_split" | "refine_in_place";
+  parts?: Array<{
+    applies_when: string;
+    approach: string;
+    target_contexts: string[];
+  }>;
+  rationale?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}) {
+  return {
+    text: "",
+    input_tokens: input.inputTokens ?? 10,
+    output_tokens: input.outputTokens ?? 5,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_skill_split",
+        name: "EmitSkillSplit",
+        input: {
+          decision: input.decision,
+          ...(input.parts === undefined ? {} : { parts: input.parts }),
+          rationale: input.rationale ?? "Context buckets have divergent outcomes.",
         },
       },
     ],
@@ -142,6 +175,78 @@ async function addSuccessEvidence(
     resolvedEpisodeIds: [episode.id],
     audienceEntityId: input.audienceEntityId ?? null,
   });
+}
+
+async function addSkillWithContextStats(
+  harness: OfflineTestHarness,
+  input: {
+    alpha?: number;
+    beta?: number;
+    attempts?: number;
+    successes?: number;
+    failures?: number;
+    contexts?: Array<{
+      contextKey: string;
+      alpha: number;
+      beta: number;
+      attempts: number;
+      successes: number;
+      failures: number;
+    }>;
+  } = {},
+) {
+  const episode = await harness.episodicRepository.insert(createEpisodeFixture());
+  const skill = await harness.skillRepository.add({
+    applies_when: "reuse the comparison approach across work",
+    approach: "Compare the current failed state with the last known-good state.",
+    sourceEpisodes: [episode.id],
+  });
+  const updated = await harness.skillRepository.replace({
+    ...skill,
+    alpha: input.alpha ?? 10,
+    beta: input.beta ?? 2,
+    attempts: input.attempts ?? 10,
+    successes: input.successes ?? 9,
+    failures: input.failures ?? 1,
+  });
+  const contextRows = (
+    input.contexts ?? [
+      {
+        contextKey: "code_debugging:typescript:self",
+        alpha: 6,
+        beta: 1,
+        attempts: 5,
+        successes: 5,
+        failures: 0,
+      },
+      {
+        contextKey: "planning:roadmap:self",
+        alpha: 4,
+        beta: 1,
+        attempts: 3,
+        successes: 3,
+        failures: 0,
+      },
+    ]
+  ).map((context) => ({
+    skill_id: updated.id,
+    context_key: context.contextKey,
+    alpha: context.alpha,
+    beta: context.beta,
+    attempts: context.attempts,
+    successes: context.successes,
+    failures: context.failures,
+    last_used: 1_000,
+    last_successful: context.successes > 0 ? 1_000 : null,
+    updated_at: 1_000,
+  }));
+
+  harness.skillRepository.restoreContextStats(contextRows);
+
+  return {
+    skill: updated,
+    contextRows,
+  };
 }
 
 function createRetrievalConfidence(): RetrievalConfidence {
@@ -463,6 +568,657 @@ describe("ProceduralSynthesizerProcess", () => {
     expect(plan.items).toEqual([]);
   });
 
+  it("applies an LLM skill split and migrates context stats to the new skills", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "TypeScript debugging comparison",
+              approach: "Compare the compiler failure with the last passing TypeScript state.",
+              target_contexts: ["code_debugging:typescript:self"],
+            },
+            {
+              applies_when: "Roadmap planning comparison",
+              approach: "Compare the roadmap against the current goal list.",
+              target_contexts: ["planning:roadmap:self"],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+        skillSplitDryRun: false,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness);
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+    const original = harness.skillRepository.get(skill.id);
+    const newSkills = (original?.superseded_by ?? []).map((skillId) =>
+      harness.skillRepository.get(skillId),
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(llm.requests).toHaveLength(1);
+    expect(original).toMatchObject({
+      status: "superseded",
+    });
+    expect(newSkills).toEqual([
+      expect.objectContaining({
+        applies_when: "TypeScript debugging comparison",
+        alpha: 6,
+        beta: 1,
+        attempts: 5,
+      }),
+      expect.objectContaining({
+        applies_when: "Roadmap planning comparison",
+        alpha: 4,
+        beta: 1,
+        attempts: 3,
+      }),
+    ]);
+    expect(harness.skillRepository.listContextStatsForSkill(skill.id)).toEqual([]);
+    expect(harness.skillRepository.listContextStatsForSkill(newSkills[0]!.id)).toEqual([
+      expect.objectContaining({
+        context_key: "code_debugging:typescript:self",
+        alpha: 6,
+        beta: 1,
+      }),
+    ]);
+    expect(harness.skillRepository.listContextStatsForSkill(newSkills[1]!.id)).toEqual([
+      expect.objectContaining({
+        context_key: "planning:roadmap:self",
+        alpha: 4,
+        beta: 1,
+      }),
+    ]);
+  });
+
+  it("logs no_split decisions without mutating skills", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "no_split",
+          rationale: "The buckets reflect noisy use rather than a reusable distinction.",
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness);
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+    const entries = new StreamReader({ dataDir: harness.tempDir }).tail(5);
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toEqual([]);
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      status: "active",
+      superseded_by: [],
+    });
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        kind: "internal_event",
+        content: expect.objectContaining({
+          hook: "skill_split_decision",
+          decision: "no_split",
+          skill_id: skill.id,
+        }),
+      }),
+    );
+
+    const second = await process.run(harness.createContext(), {});
+
+    expect(second.changes).toEqual([]);
+    expect(llm.requests).toHaveLength(1);
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      last_split_attempt_at: expect.any(Number),
+      splitting_at: null,
+    });
+  });
+
+  it("logs malformed split tool output without mutating or retrying", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_bad_split",
+              name: "EmitSkillSplit",
+              input: {
+                decision: "split",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+        skillSplitDryRun: false,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness);
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+    const entries = new StreamReader({ dataDir: harness.tempDir }).tail(5);
+
+    expect(result.changes).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    expect(llm.requests).toHaveLength(1);
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      status: "active",
+      superseded_by: [],
+    });
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        kind: "internal_event",
+        content: expect.objectContaining({
+          hook: "skill_split_failed",
+          skill_id: skill.id,
+        }),
+      }),
+    );
+
+    const second = await process.run(harness.createContext(), {});
+
+    expect(second.changes).toEqual([]);
+    expect(llm.requests).toHaveLength(1);
+  });
+
+  it("rejects split proposals that do not cover every divergent bucket", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "TypeScript debugging comparison",
+              approach: "Compare the compiler failure with the last passing TypeScript state.",
+              target_contexts: ["code_debugging:typescript:self"],
+            },
+            {
+              applies_when: "Roadmap planning comparison",
+              approach: "Compare the roadmap against the current goal list.",
+              target_contexts: ["planning:roadmap:self"],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+        skillSplitDryRun: false,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness, {
+      contexts: [
+        {
+          contextKey: "code_debugging:typescript:self",
+          alpha: 6,
+          beta: 1,
+          attempts: 5,
+          successes: 5,
+          failures: 0,
+        },
+        {
+          contextKey: "planning:roadmap:self",
+          alpha: 5,
+          beta: 2,
+          attempts: 5,
+          successes: 4,
+          failures: 1,
+        },
+        {
+          contextKey: "research:sqlite:self",
+          alpha: 1,
+          beta: 6,
+          attempts: 5,
+          successes: 0,
+          failures: 5,
+        },
+      ],
+    });
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+    const entries = new StreamReader({ dataDir: harness.tempDir }).tail(5);
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toEqual([]);
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      status: "active",
+      superseded_by: [],
+      last_split_attempt_at: expect.any(Number),
+    });
+    expect(harness.skillRepository.listContextStatsForSkill(skill.id)).toHaveLength(3);
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        kind: "internal_event",
+        content: expect.objectContaining({
+          hook: "skill_split_decision",
+          decision: "no_split",
+          skill_id: skill.id,
+        }),
+      }),
+    );
+  });
+
+  it("keeps split proposals dry-run by default", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "TypeScript debugging comparison",
+              approach: "Compare the compiler failure with the last passing TypeScript state.",
+              target_contexts: ["code_debugging:typescript:self"],
+            },
+            {
+              applies_when: "Roadmap planning comparison",
+              approach: "Compare the roadmap against the current goal list.",
+              target_contexts: ["planning:roadmap:self"],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness);
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+    const entries = new StreamReader({ dataDir: harness.tempDir }).tail(5);
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toEqual([
+      expect.objectContaining({
+        action: "skill_split_proposal",
+      }),
+    ]);
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      status: "active",
+      superseded_by: [],
+    });
+    expect(harness.skillRepository.list()).toHaveLength(1);
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        kind: "internal_event",
+        content: expect.objectContaining({
+          hook: "skill_split_proposal",
+          dry_run: true,
+          skill_id: skill.id,
+        }),
+      }),
+    );
+
+    const second = await process.run(harness.createContext(), {});
+
+    expect(second.changes).toEqual([]);
+    expect(llm.requests).toHaveLength(1);
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      last_split_attempt_at: expect.any(Number),
+      splitting_at: null,
+    });
+  });
+
+  it("does not call the split LLM when another run already holds the claim", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "TypeScript debugging comparison",
+              approach: "Compare the compiler failure with the last passing TypeScript state.",
+              target_contexts: ["code_debugging:typescript:self"],
+            },
+            {
+              applies_when: "Roadmap planning comparison",
+              approach: "Compare the roadmap against the current goal list.",
+              target_contexts: ["planning:roadmap:self"],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+        skillSplitDryRun: false,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness);
+    harness.skillRepository.claimSplit({
+      skillId: skill.id,
+      claimedAt: 10_000,
+      staleBefore: 9_000,
+    });
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toEqual([]);
+    expect(llm.requests).toHaveLength(0);
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      splitting_at: 10_000,
+      last_split_attempt_at: null,
+    });
+  });
+
+  it("rejects split planning when skill source episodes span private audiences", async () => {
+    const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "TypeScript debugging comparison",
+              approach: "Compare the compiler failure with the last passing TypeScript state.",
+              target_contexts: ["code_debugging:typescript:self"],
+            },
+            {
+              applies_when: "Roadmap planning comparison",
+              approach: "Compare the roadmap against the current goal list.",
+              target_contexts: ["planning:roadmap:self"],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+        skillSplitDryRun: false,
+      }),
+      llmClient: llm,
+    });
+    const episodeA = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        title: "Audience A private skill evidence",
+        audience_entity_id: audienceA,
+        shared: false,
+      }),
+    );
+    const episodeB = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        title: "Audience B private skill evidence",
+        audience_entity_id: audienceB,
+        shared: false,
+      }),
+    );
+    const skill = await harness.skillRepository.add({
+      applies_when: "reuse the comparison approach across private work",
+      approach: "Compare the current failed state with the last known-good state.",
+      sourceEpisodes: [episodeA.id, episodeB.id],
+    });
+    harness.skillRepository.restoreContextStats([
+      {
+        skill_id: skill.id,
+        context_key: "code_debugging:typescript:self",
+        alpha: 6,
+        beta: 1,
+        attempts: 5,
+        successes: 5,
+        failures: 0,
+        last_used: 1_000,
+        last_successful: 1_000,
+        updated_at: 1_000,
+      },
+      {
+        skill_id: skill.id,
+        context_key: "planning:roadmap:self",
+        alpha: 1,
+        beta: 6,
+        attempts: 5,
+        successes: 0,
+        failures: 5,
+        last_used: 1_000,
+        last_successful: null,
+        updated_at: 1_000,
+      },
+    ]);
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+    const entries = new StreamReader({ dataDir: harness.tempDir }).tail(5);
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toEqual([]);
+    expect(llm.requests).toHaveLength(0);
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      status: "active",
+      last_split_attempt_at: expect.any(Number),
+      splitting_at: null,
+    });
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        kind: "internal_event",
+        content: expect.objectContaining({
+          hook: "skill_split_skipped",
+          reason: "skill_source_episodes_cross_audiences",
+          skill_id: skill.id,
+        }),
+      }),
+    );
+  });
+
+  it("clears pending attempts that referenced a superseded split skill", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "TypeScript debugging comparison",
+              approach: "Compare the compiler failure with the last passing TypeScript state.",
+              target_contexts: ["code_debugging:typescript:self"],
+            },
+            {
+              applies_when: "Roadmap planning comparison",
+              approach: "Compare the roadmap against the current goal list.",
+              target_contexts: ["planning:roadmap:self"],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+        skillSplitDryRun: false,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness);
+    const workingMemoryStore = new WorkingMemoryStore({
+      dataDir: harness.tempDir,
+      clock: harness.clock,
+    });
+    workingMemoryStore.save({
+      ...createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      pending_procedural_attempts: [
+        {
+          problem_text: "Fix the TypeScript failure.",
+          approach_summary: "Use the old comparison skill.",
+          selected_skill_id: skill.id,
+          source_stream_ids: [createStreamEntryId()],
+          turn_counter: 1,
+          audience_entity_id: null,
+        },
+      ],
+    });
+
+    const process = createProcess(harness);
+    const result = await process.run(
+      {
+        ...harness.createContext(),
+        workingMemoryStore,
+      },
+      {},
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(workingMemoryStore.load(DEFAULT_SESSION_ID).pending_procedural_attempts).toEqual([
+      expect.objectContaining({
+        selected_skill_id: null,
+      }),
+    ]);
+  });
+
+  it("does not cross-write split context stats across audience scopes", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "Self TypeScript debugging comparison",
+              approach: "Compare the self-scoped compiler failure with the last passing state.",
+              target_contexts: ["code_debugging:typescript:self"],
+            },
+            {
+              applies_when: "Known-audience TypeScript debugging comparison",
+              approach: "Compare the audience-scoped compiler failure with their known baseline.",
+              target_contexts: ["code_debugging:typescript:known_other"],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 5,
+        minDivergenceForSplit: 0.3,
+        skillSplitDryRun: false,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness, {
+      contexts: [
+        {
+          contextKey: "code_debugging:typescript:self",
+          alpha: 6,
+          beta: 1,
+          attempts: 5,
+          successes: 5,
+          failures: 0,
+        },
+        {
+          contextKey: "code_debugging:typescript:known_other",
+          alpha: 1,
+          beta: 6,
+          attempts: 5,
+          successes: 0,
+          failures: 5,
+        },
+      ],
+    });
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+    const original = harness.skillRepository.get(skill.id);
+    const newSkills = (original?.superseded_by ?? []).map((skillId) =>
+      harness.skillRepository.get(skillId),
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(newSkills).toHaveLength(2);
+    expect(harness.skillRepository.listContextStatsForSkill(newSkills[0]!.id)).toEqual([
+      expect.objectContaining({
+        context_key: "code_debugging:typescript:self",
+      }),
+    ]);
+    expect(harness.skillRepository.listContextStatsForSkill(newSkills[1]!.id)).toEqual([
+      expect.objectContaining({
+        context_key: "code_debugging:typescript:known_other",
+      }),
+    ]);
+  });
+
+  it("does not double-split the same planned skill on repeated apply", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "TypeScript debugging comparison",
+              approach: "Compare the compiler failure with the last passing TypeScript state.",
+              target_contexts: ["code_debugging:typescript:self"],
+            },
+            {
+              applies_when: "Roadmap planning comparison",
+              approach: "Compare the roadmap against the current goal list.",
+              target_contexts: ["planning:roadmap:self"],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+        skillSplitDryRun: false,
+      }),
+      llmClient: llm,
+    });
+    await addSkillWithContextStats(harness);
+
+    const process = createProcess(harness);
+    const plan = await process.plan(harness.createContext());
+    const first = await process.apply(harness.createContext(), plan);
+    const second = await process.apply(harness.createContext(), plan);
+
+    expect(first.errors).toEqual([]);
+    expect(first.changes).toHaveLength(1);
+    expect(second.errors).toEqual([]);
+    expect(second.changes).toEqual([]);
+    expect(llm.requests).toHaveLength(1);
+    expect(
+      harness.skillRepository.list(10).filter((skill) => skill.status === "active"),
+    ).toHaveLength(2);
+  });
+
   it("rejects non-usable abstraction fits", async () => {
     harness = await createOfflineTestHarness({
       configOverrides: proceduralConfig({ minSupport: 2 }),
@@ -529,6 +1285,126 @@ describe("ProceduralSynthesizerProcess", () => {
     const plan = await process.plan(harness.createContext());
 
     expect(plan.items).toEqual([]);
+  });
+
+  it("logs and retires late outcomes for superseded skills without mutating stats", async () => {
+    harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [createReflectionResponse("User confirmed the old approach worked.")],
+      }),
+    });
+    const sourceStreamIds = [createStreamEntryId(), createStreamEntryId()];
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        title: "Late superseded skill outcome",
+        source_stream_ids: sourceStreamIds,
+      }),
+    );
+    const replacementId = createSkillId();
+    const skill = await harness.skillRepository.add({
+      applies_when: "old deployment comparison",
+      approach: "Use the old comparison.",
+      sourceEpisodes: [episode.id],
+    });
+    const superseded = await harness.skillRepository.replace({
+      ...skill,
+      status: "superseded",
+      superseded_by: [replacementId],
+      superseded_at: 1_000,
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      skillRepository: harness.skillRepository,
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+    });
+    const workingMemory = {
+      ...createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      turn_counter: 2,
+      pending_procedural_attempts: [
+        {
+          problem_text: "Atlas deploy failed after rollback.",
+          approach_summary: "Compare the failing deploy state to the last clean release.",
+          selected_skill_id: superseded.id,
+          source_stream_ids: sourceStreamIds,
+          turn_counter: 1,
+          audience_entity_id: null,
+        },
+      ],
+    };
+
+    const nextWorkingMemory = await reflector.reflect(
+      {
+        userMessage: "That worked.",
+        perception: {
+          entities: ["Atlas"],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: 0.4,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        },
+        workingMemory,
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Next.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Next.",
+          tool_calls: [],
+          intents: [],
+          workingMemory,
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        selectedSkillId: superseded.id,
+        suppressionSet: new SuppressionSet(2),
+      },
+      harness.streamWriter,
+    );
+    const entries = new StreamReader({ dataDir: harness.tempDir }).tail(5);
+
+    expect(nextWorkingMemory.pending_procedural_attempts).toEqual([]);
+    expect(harness.skillRepository.get(superseded.id)).toMatchObject({
+      status: "superseded",
+      alpha: superseded.alpha,
+      beta: superseded.beta,
+      attempts: superseded.attempts,
+      successes: superseded.successes,
+      failures: superseded.failures,
+    });
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        kind: "internal_event",
+        content: expect.objectContaining({
+          hook: "record_outcome_skipped_superseded",
+          skill_id: superseded.id,
+        }),
+      }),
+    );
   });
 
   it("synthesizes evidence emitted by reflector and surfaces the skill on selection", async () => {

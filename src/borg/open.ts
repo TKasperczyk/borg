@@ -100,6 +100,7 @@ export async function openBorgDependencies(
       commitmentRepository: repositories.commitmentRepository,
       skillRepository: repositories.skillRepository,
       proceduralEvidenceRepository: repositories.proceduralEvidenceRepository,
+      workingMemoryStore: repositories.workingMemoryStore,
       retrievalPipeline: repositories.retrievalPipeline,
       createStreamWriter: repositories.createStreamWriter,
     });

@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import { skillSchema, type SkillRecord } from "../../memory/procedural/index.js";
+import {
+  skillContextStatsSchema,
+  skillSchema,
+  type SkillContextStatsRecord,
+  type SkillRecord,
+} from "../../memory/procedural/index.js";
 import type { ToolDefinition } from "../dispatcher.js";
 
 const skillsListInputSchema = z
@@ -11,10 +16,12 @@ const skillsListInputSchema = z
 
 const skillsListOutputSchema = z.object({
   skills: z.array(skillSchema),
+  context_stats_by_skill_id: z.record(z.string(), z.array(skillContextStatsSchema)).optional(),
 });
 
 export type SkillsListToolOptions = {
   listSkills: (limit: number) => SkillRecord[];
+  listContextStatsForSkill?: (skillId: SkillRecord["id"]) => SkillContextStatsRecord[];
 };
 
 const DEFAULT_LIMIT = 20;
@@ -34,8 +41,24 @@ export function createSkillsListTool(
     inputSchema: skillsListInputSchema,
     outputSchema: skillsListOutputSchema,
     async invoke(input) {
+      const skills = options.listSkills(input.limit ?? DEFAULT_LIMIT);
+      const contextStatsBySkillId =
+        options.listContextStatsForSkill === undefined
+          ? undefined
+          : Object.fromEntries(
+              skills
+                .map((skill) => [
+                  skill.id,
+                  options.listContextStatsForSkill?.(skill.id) ?? [],
+                ] as const)
+                .filter(([, stats]) => stats.length > 0),
+            );
+
       return {
-        skills: options.listSkills(input.limit ?? DEFAULT_LIMIT),
+        skills,
+        ...(contextStatsBySkillId === undefined
+          ? {}
+          : { context_stats_by_skill_id: contextStatsBySkillId }),
       };
     },
   };

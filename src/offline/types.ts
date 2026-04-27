@@ -21,6 +21,7 @@ import type {
   SemanticNodeRepository,
 } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
+import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
@@ -100,6 +101,7 @@ export type OfflineContext = {
   commitmentRepository: CommitmentRepository;
   skillRepository: SkillRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
+  workingMemoryStore?: WorkingMemoryStore;
   retrievalPipeline: RetrievalPipeline;
 };
 

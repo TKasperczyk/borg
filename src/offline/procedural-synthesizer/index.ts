@@ -9,11 +9,13 @@ import {
 import {
   episodeIdSchema,
   isEpisodeInGlobalIdentityScope,
+  isEpisodeVisibleToAudience,
   type Episode,
 } from "../../memory/episodic/index.js";
 import {
   proceduralEvidenceIdSchema,
   proceduralEvidenceSchema,
+  skillContextStatsSchema,
   skillIdSchema,
   skillSchema,
   type ProceduralEvidenceRecord,
@@ -21,7 +23,7 @@ import {
 } from "../../memory/procedural/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
-import type { EpisodeId } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, type EntityId, type EpisodeId } from "../../util/ids.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -32,9 +34,14 @@ import type {
   OfflineProcessError,
   OfflineResult,
 } from "../types.js";
+import {
+  detectDivergentSkillSplits,
+  type SkillSplitCandidate,
+} from "./split-detector.js";
 
 const CLUSTER_SIMILARITY_THRESHOLD = 0.85;
 const SYNTHESIZER_TOOL_NAME = "EmitProceduralSkillCandidate";
+const SKILL_SPLIT_TOOL_NAME = "EmitSkillSplit";
 
 const proceduralSynthesizerRejectionReasonSchema = z.enum([
   "unusable_abstraction",
@@ -48,10 +55,28 @@ const skillCandidateSchema = z.object({
   rejection_reason: proceduralSynthesizerRejectionReasonSchema.nullable().default(null),
 });
 
+const skillSplitPartSchema = z.object({
+  applies_when: z.string().min(1),
+  approach: z.string().min(1),
+  target_contexts: z.array(z.string().min(1)).min(1),
+});
+
+const skillSplitProposalSchema = z.object({
+  decision: z.enum(["split", "no_split", "refine_in_place"]),
+  parts: z.array(skillSplitPartSchema).optional(),
+  rationale: z.string().min(1),
+});
+
 export const PROCEDURAL_SYNTHESIZER_TOOL = {
   name: SYNTHESIZER_TOOL_NAME,
   description: "Emit a reusable procedural skill candidate from repeated successful attempts.",
   inputSchema: toToolInputSchema(skillCandidateSchema),
+} satisfies LLMToolDefinition;
+
+export const PROCEDURAL_SKILL_SPLIT_TOOL = {
+  name: SKILL_SPLIT_TOOL_NAME,
+  description: "Emit a conservative split proposal for a skill with divergent context outcomes.",
+  inputSchema: toToolInputSchema(skillSplitProposalSchema),
 } satisfies LLMToolDefinition;
 
 const proceduralSynthesizerDedupDecisionSchema = z.object({
@@ -68,9 +93,25 @@ const proceduralSynthesizerPlanItemSchema = z.object({
   rejection_reason: proceduralSynthesizerRejectionReasonSchema.nullable(),
 });
 
+const proceduralSkillSplitBucketSchema = z.object({
+  stats: skillContextStatsSchema,
+  posterior_mean: z.number().min(0).max(1),
+});
+
+const proceduralSynthesizerSplitItemSchema = z.object({
+  skill: skillSchema,
+  buckets: z.array(proceduralSkillSplitBucketSchema).min(2),
+  min_posterior_mean: z.number().min(0).max(1),
+  max_posterior_mean: z.number().min(0).max(1),
+  divergence: z.number().min(0).max(1),
+  split_claimed_at: z.number().finite().nullable().optional(),
+  proposal: skillSplitProposalSchema,
+});
+
 export const proceduralSynthesizerPlanSchema = z.object({
   process: z.literal("procedural-synthesizer"),
   items: z.array(proceduralSynthesizerPlanItemSchema),
+  split_items: z.array(proceduralSynthesizerSplitItemSchema).default([]),
   budget: z.number().int().positive(),
   errors: z
     .array(
@@ -93,6 +134,12 @@ const proceduralSynthesizerReversalSchema = z.object({
   previousSkill: skillSchema.optional(),
   newSkill: skillSchema.optional(),
   evidenceIds: z.array(proceduralEvidenceIdSchema),
+});
+
+const proceduralSkillSplitReversalSchema = z.object({
+  originalSkill: skillSchema,
+  createdSkills: z.array(skillSchema),
+  movedContextStats: z.array(skillContextStatsSchema),
 });
 
 type EvidenceCluster = {
@@ -260,6 +307,179 @@ function parseSkillCandidate(result: LLMCompleteResult) {
   return skillCandidateSchema.parse(call.input);
 }
 
+function parseSkillSplitProposal(result: LLMCompleteResult) {
+  const call = result.tool_calls.find((toolCall) => toolCall.name === SKILL_SPLIT_TOOL_NAME);
+
+  if (call === undefined) {
+    throw new StorageError(`Procedural synthesizer did not emit tool ${SKILL_SPLIT_TOOL_NAME}`, {
+      code: "PROCEDURAL_SKILL_SPLIT_INVALID",
+    });
+  }
+
+  return skillSplitProposalSchema.parse(call.input);
+}
+
+function parseContextKey(contextKey: string): {
+  problemKind: string;
+  domainTags: string[];
+  audienceScope: string;
+} {
+  const firstSeparator = contextKey.indexOf(":");
+  const lastSeparator = contextKey.lastIndexOf(":");
+
+  if (firstSeparator < 0 || lastSeparator <= firstSeparator) {
+    return {
+      problemKind: "other",
+      domainTags: [],
+      audienceScope: "unknown",
+    };
+  }
+
+  const problemKind = contextKey.slice(0, firstSeparator);
+  const domainTags = contextKey
+    .slice(firstSeparator + 1, lastSeparator)
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+  const audienceScope = contextKey.slice(lastSeparator + 1);
+
+  return {
+    problemKind,
+    domainTags,
+    audienceScope,
+  };
+}
+
+function sketchContextKey(contextKey: string): string {
+  const parsed = parseContextKey(contextKey);
+  const tagText = parsed.domainTags.length === 0 ? "no domain tags" : parsed.domainTags.join(", ");
+
+  return `${parsed.problemKind}; ${tagText}; audience=${parsed.audienceScope}`;
+}
+
+function buildSplitPrompt(candidate: SkillSplitCandidate): string {
+  return [
+    "A procedural skill has divergent outcomes across context buckets.",
+    `Emit your result by calling the ${SKILL_SPLIT_TOOL_NAME} tool exactly once.`,
+    "Prefer no_split when the evidence does not clearly imply distinct reusable procedures.",
+    "Use refine_in_place only when one narrower skill text would cover the divergence without creating child skills.",
+    "Use split only when each part is narrower than the original and can own one or more listed context_keys.",
+    "Do not combine context_keys with different audience scopes into the same part.",
+    "target_contexts must be exact context_key strings from the listed buckets.",
+    "Original skill:",
+    JSON.stringify({
+      id: candidate.skill.id,
+      applies_when: candidate.skill.applies_when,
+      approach: candidate.skill.approach,
+      source_episode_ids: candidate.skill.source_episode_ids,
+      alpha: candidate.skill.alpha,
+      beta: candidate.skill.beta,
+      attempts: candidate.skill.attempts,
+      successes: candidate.skill.successes,
+      failures: candidate.skill.failures,
+    }),
+    "Divergent context buckets:",
+    ...candidate.buckets.map((bucket) =>
+      JSON.stringify({
+        context_key: bucket.stats.context_key,
+        sketch: sketchContextKey(bucket.stats.context_key),
+        posterior_mean: Number(bucket.posterior_mean.toFixed(3)),
+        alpha: bucket.stats.alpha,
+        beta: bucket.stats.beta,
+        attempts: bucket.stats.attempts,
+        successes: bucket.stats.successes,
+        failures: bucket.stats.failures,
+        last_used: bucket.stats.last_used,
+        last_successful: bucket.stats.last_successful,
+      }),
+    ),
+    JSON.stringify({
+      divergence: Number(candidate.divergence.toFixed(3)),
+      min_posterior_mean: Number(candidate.min_posterior_mean.toFixed(3)),
+      max_posterior_mean: Number(candidate.max_posterior_mean.toFixed(3)),
+    }),
+  ].join("\n");
+}
+
+function inferSinglePrivateAudience(episodes: readonly Episode[]): EntityId | null | "multiple" {
+  const privateAudiences = new Set<EntityId>();
+
+  for (const episode of episodes) {
+    if (
+      episode.shared === true ||
+      episode.audience_entity_id === null ||
+      episode.audience_entity_id === undefined
+    ) {
+      continue;
+    }
+
+    privateAudiences.add(episode.audience_entity_id);
+  }
+
+  if (privateAudiences.size > 1) {
+    return "multiple";
+  }
+
+  return [...privateAudiences][0] ?? null;
+}
+
+async function audienceScopedSplitCandidate(
+  ctx: OfflineContext,
+  candidate: SkillSplitCandidate,
+): Promise<
+  | {
+      candidate: SkillSplitCandidate;
+      audience_entity_id: EntityId | null;
+    }
+  | {
+      rejected: true;
+      reason: string;
+    }
+> {
+  const sourceEpisodeIds = uniqueEpisodeIds(candidate.skill.source_episode_ids);
+  const episodes = (await ctx.episodicRepository.getMany(sourceEpisodeIds)).filter(
+    (episode): episode is Episode => episode !== null,
+  );
+  const audienceEntityId = inferSinglePrivateAudience(episodes);
+
+  if (audienceEntityId === "multiple") {
+    return {
+      rejected: true,
+      reason: "skill_source_episodes_cross_audiences",
+    };
+  }
+
+  const episodesById = new Map(episodes.map((episode) => [episode.id, episode]));
+  const visibleSourceEpisodeIds = candidate.skill.source_episode_ids.filter((episodeId) => {
+    const episode = episodesById.get(episodeId);
+
+    return (
+      episode !== undefined &&
+      isEpisodeVisibleToAudience(episode, audienceEntityId, {
+        crossAudience: false,
+      })
+    );
+  });
+
+  if (visibleSourceEpisodeIds.length === 0) {
+    return {
+      rejected: true,
+      reason: "skill_source_episode_audience_unresolved",
+    };
+  }
+
+  return {
+    audience_entity_id: audienceEntityId,
+    candidate: {
+      ...candidate,
+      skill: {
+        ...candidate.skill,
+        source_episode_ids: visibleSourceEpisodeIds,
+      },
+    },
+  };
+}
+
 function buildPlanChange(item: ProceduralSynthesizerPlan["items"][number]): OfflineChange {
   return {
     process: "procedural-synthesizer",
@@ -276,6 +496,30 @@ function buildPlanChange(item: ProceduralSynthesizerPlan["items"][number]): Offl
       rejected_reason: item.rejection_reason,
       support: item.evidence.length,
       source_episode_ids: item.source_episode_ids,
+    },
+  };
+}
+
+function buildSplitPlanChange(
+  item: ProceduralSynthesizerPlan["split_items"][number],
+): OfflineChange {
+  return {
+    process: "procedural-synthesizer",
+    action: "skill_split_proposal",
+    targets: {
+      skill_id: item.skill.id,
+      context_keys: item.buckets.map((bucket) => bucket.stats.context_key),
+    },
+    preview: {
+      decision: item.proposal.decision,
+      rationale: item.proposal.rationale,
+      divergence: item.divergence,
+      buckets: item.buckets.map((bucket) => ({
+        context_key: bucket.stats.context_key,
+        posterior_mean: bucket.posterior_mean,
+        attempts: bucket.stats.attempts,
+      })),
+      parts: item.proposal.parts ?? [],
     },
   };
 }
@@ -297,6 +541,31 @@ function buildAppliedChange(input: {
       approach: input.skill.approach,
       deduped: input.deduped,
       support: input.item.evidence.length,
+    },
+  };
+}
+
+function buildAppliedSplitChange(input: {
+  item: ProceduralSynthesizerPlan["split_items"][number];
+  created: readonly SkillRecord[];
+}): OfflineChange {
+  return {
+    process: "procedural-synthesizer",
+    action: "skill_split",
+    targets: {
+      original_skill_id: input.item.skill.id,
+      new_skill_ids: input.created.map((skill) => skill.id),
+    },
+    preview: {
+      original_applies_when: input.item.skill.applies_when,
+      divergence: input.item.divergence,
+      parts: input.created.map((skill) => ({
+        skill_id: skill.id,
+        applies_when: skill.applies_when,
+        alpha: skill.alpha,
+        beta: skill.beta,
+        attempts: skill.attempts,
+      })),
     },
   };
 }
@@ -334,6 +603,142 @@ function recordClusterOutcomes(
   return current;
 }
 
+function contextAudienceScope(contextKey: string): string {
+  return parseContextKey(contextKey).audienceScope;
+}
+
+function validateSplitParts(
+  item: ProceduralSynthesizerPlan["split_items"][number],
+): Array<{ applies_when: string; approach: string; target_contexts: string[] }> {
+  if (item.proposal.decision !== "split") {
+    return [];
+  }
+
+  const parts = item.proposal.parts ?? [];
+
+  if (parts.length < 2) {
+    throw new StorageError("Skill split decision must include at least two parts", {
+      code: "PROCEDURAL_SKILL_SPLIT_PARTS_INVALID",
+    });
+  }
+
+  const allowedContexts = new Set(item.buckets.map((bucket) => bucket.stats.context_key));
+  const assignedContexts = new Set<string>();
+
+  const normalizedParts = parts.map((part) => {
+    const targetContexts = [...new Set(part.target_contexts.map((contextKey) => contextKey.trim()))]
+      .filter((contextKey) => contextKey.length > 0)
+      .sort();
+
+    if (targetContexts.length === 0) {
+      throw new StorageError("Skill split part has no target contexts", {
+        code: "PROCEDURAL_SKILL_SPLIT_TARGETS_EMPTY",
+      });
+    }
+
+    const audienceScopes = new Set(targetContexts.map((contextKey) => contextAudienceScope(contextKey)));
+
+    if (audienceScopes.size > 1) {
+      throw new StorageError("Skill split part crosses audience scopes", {
+        code: "PROCEDURAL_SKILL_SPLIT_AUDIENCE_CROSSED",
+      });
+    }
+
+    for (const contextKey of targetContexts) {
+      if (!allowedContexts.has(contextKey)) {
+        throw new StorageError(`Unknown split target context: ${contextKey}`, {
+          code: "PROCEDURAL_SKILL_SPLIT_TARGET_UNKNOWN",
+        });
+      }
+
+      if (assignedContexts.has(contextKey)) {
+        throw new StorageError(`Split target context assigned more than once: ${contextKey}`, {
+          code: "PROCEDURAL_SKILL_SPLIT_TARGET_DUPLICATE",
+        });
+      }
+
+      assignedContexts.add(contextKey);
+    }
+
+    return {
+      applies_when: part.applies_when.trim(),
+      approach: part.approach.trim(),
+      target_contexts: targetContexts,
+    };
+  });
+
+  if (assignedContexts.size !== allowedContexts.size) {
+    const missingContexts = [...allowedContexts].filter((contextKey) => !assignedContexts.has(contextKey));
+
+    throw new StorageError(`Skill split did not cover all divergent context buckets: ${missingContexts.join(", ")}`, {
+      code: "PROCEDURAL_SKILL_SPLIT_TARGETS_INCOMPLETE",
+    });
+  }
+
+  return normalizedParts;
+}
+
+async function appendSkillSplitInternalEvent(
+  ctx: OfflineContext,
+  content: Record<string, unknown>,
+  errors: OfflineProcessError[],
+): Promise<void> {
+  try {
+    await ctx.streamWriter.append({
+      kind: "internal_event",
+      content,
+    });
+  } catch (error) {
+    errors.push({
+      process: "procedural-synthesizer",
+      message: error instanceof Error ? error.message : String(error),
+      code: "procedural_skill_split_log_failed",
+    });
+  }
+}
+
+function clearPendingSkillReferences(
+  ctx: OfflineContext,
+  skillId: SkillRecord["id"],
+  errors: OfflineProcessError[],
+): void {
+  if (ctx.workingMemoryStore === undefined) {
+    return;
+  }
+
+  try {
+    const workingMemory = ctx.workingMemoryStore.load(DEFAULT_SESSION_ID);
+    let changed = false;
+    const pendingProceduralAttempts = workingMemory.pending_procedural_attempts.map((attempt) => {
+      if (attempt.selected_skill_id !== skillId) {
+        return attempt;
+      }
+
+      changed = true;
+      return {
+        ...attempt,
+        selected_skill_id: null,
+      };
+    });
+
+    if (!changed) {
+      return;
+    }
+
+    ctx.workingMemoryStore.save({
+      ...workingMemory,
+      pending_procedural_attempts: pendingProceduralAttempts,
+      updated_at: ctx.clock.now(),
+    });
+  } catch (error) {
+    errors.push({
+      process: "procedural-synthesizer",
+      message: error instanceof Error ? error.message : String(error),
+      code: "procedural_skill_split_pending_reference_clear_failed",
+    });
+  }
+}
+
 export type ProceduralSynthesizerProcessOptions = {
   skillRepository: OfflineContext["skillRepository"];
   proceduralEvidenceRepository: OfflineContext["proceduralEvidenceRepository"];
@@ -358,16 +763,27 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
 
       this.options.proceduralEvidenceRepository.markUnconsumed(parsed.evidenceIds);
     });
+    this.options.registry.register(this.name, "skill_split", async ({ reversal }) => {
+      const parsed = proceduralSkillSplitReversalSchema.parse(reversal);
+
+      for (const skill of parsed.createdSkills) {
+        await this.options.skillRepository.delete(skill.id);
+      }
+
+      await this.options.skillRepository.replace(parsed.originalSkill);
+      this.options.skillRepository.restoreContextStats(parsed.movedContextStats);
+    });
   }
 
   async plan(
     ctx: OfflineContext,
-    opts: { budget?: number; params?: Record<string, unknown> } = {},
+    opts: { dryRun?: boolean; budget?: number; params?: Record<string, unknown> } = {},
   ): Promise<ProceduralSynthesizerPlan> {
     const errors: OfflineProcessError[] = [];
     const budget = opts.budget ?? ctx.config.offline.proceduralSynthesizer.budget;
     const selfAudienceEntityId = ctx.entityRepository.findByName("self");
     const minSupport = ctx.config.offline.proceduralSynthesizer.minSupport;
+    const synthesizerConfig = ctx.config.offline.proceduralSynthesizer;
     const sourceEvidence = ctx.proceduralEvidenceRepository
       .listUnconsumed()
       .filter(
@@ -383,8 +799,22 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
     const clusters = await collectEvidenceClusters(ctx, sourceEvidence);
     const candidateClusters = clusters
       .filter((cluster) => cluster.evidence.length >= minSupport)
-      .slice(0, ctx.config.offline.proceduralSynthesizer.maxSkillsPerRun);
+      .slice(0, synthesizerConfig.maxSkillsPerRun);
+    const skills = ctx.skillRepository.list(500);
+    const contextStatsBySkillId = ctx.skillRepository.batchListContextStatsForSkills(
+      skills.map((skill) => skill.id),
+    );
+    const splitCandidates = detectDivergentSkillSplits({
+      skills,
+      contextStatsBySkillId,
+      nowMs: this.clock.now(),
+      minContextAttemptsForSplit: synthesizerConfig.minContextAttemptsForSplit,
+      minDivergenceForSplit: synthesizerConfig.minDivergenceForSplit,
+      splitCooldownDays: synthesizerConfig.splitCooldownDays,
+      splitClaimStaleSec: synthesizerConfig.splitClaimStaleSec,
+    }).slice(0, synthesizerConfig.maxSkillsPerRun);
     const items: ProceduralSynthesizerPlan["items"] = [];
+    const splitItems: ProceduralSynthesizerPlan["split_items"] = [];
     let tokensUsed = 0;
     let budgetExhausted = false;
 
@@ -446,6 +876,145 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
             });
           }
         }
+
+        for (const candidate of splitCandidates) {
+          const claimedAt = this.clock.now();
+          const staleBefore = claimedAt - synthesizerConfig.splitClaimStaleSec * 1_000;
+
+          if (
+            !ctx.skillRepository.claimSplit({
+              skillId: candidate.skill.id,
+              claimedAt,
+              staleBefore,
+            })
+          ) {
+            await appendSkillSplitInternalEvent(
+              ctx,
+              {
+                hook: "skill_split_skipped",
+                reason: "claim_not_acquired",
+                skill_id: candidate.skill.id,
+              },
+              errors,
+            );
+            continue;
+          }
+
+          try {
+            const scoped = await audienceScopedSplitCandidate(ctx, candidate);
+
+            if ("rejected" in scoped) {
+              ctx.skillRepository.recordSplitAttemptAndClearClaim({
+                skillId: candidate.skill.id,
+                attemptedAt: this.clock.now(),
+                claimedAt,
+              });
+              await appendSkillSplitInternalEvent(
+                ctx,
+                {
+                  hook: "skill_split_skipped",
+                  reason: scoped.reason,
+                  skill_id: candidate.skill.id,
+                },
+                errors,
+              );
+              continue;
+            }
+
+            const proposal = parseSkillSplitProposal(
+              await llmClient.complete({
+                model: ctx.config.anthropic.models.background,
+                system:
+                  "You refactor procedural memory only when context-conditioned outcomes clearly show that one skill is hiding different reusable procedures. Be conservative.",
+                messages: [
+                  {
+                    role: "user",
+                    content: buildSplitPrompt(scoped.candidate),
+                  },
+                ],
+                tools: [PROCEDURAL_SKILL_SPLIT_TOOL],
+                tool_choice: { type: "tool", name: SKILL_SPLIT_TOOL_NAME },
+                max_tokens: 1_500,
+                budget: "offline-procedural-synthesizer",
+              }),
+            );
+            const splitItem = {
+              skill: scoped.candidate.skill,
+              buckets: scoped.candidate.buckets,
+              min_posterior_mean: scoped.candidate.min_posterior_mean,
+              max_posterior_mean: scoped.candidate.max_posterior_mean,
+              divergence: scoped.candidate.divergence,
+              split_claimed_at: claimedAt,
+              proposal,
+            } satisfies ProceduralSynthesizerPlan["split_items"][number];
+
+            if (proposal.decision === "split") {
+              try {
+                validateSplitParts(splitItem);
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+
+                ctx.skillRepository.recordSplitAttemptAndClearClaim({
+                  skillId: candidate.skill.id,
+                  attemptedAt: this.clock.now(),
+                  claimedAt,
+                });
+                splitItems.push({
+                  ...splitItem,
+                  proposal: {
+                    decision: "no_split",
+                    rationale: `Rejected split proposal: ${message}`,
+                  },
+                });
+                continue;
+              }
+            }
+
+            if (
+              proposal.decision !== "split" ||
+              opts.dryRun === true ||
+              synthesizerConfig.skillSplitDryRun
+            ) {
+              ctx.skillRepository.recordSplitAttemptAndClearClaim({
+                skillId: candidate.skill.id,
+                attemptedAt: this.clock.now(),
+                claimedAt,
+              });
+            }
+
+            splitItems.push(splitItem);
+          } catch (error) {
+            if (error instanceof BudgetExceededError) {
+              ctx.skillRepository.clearSplitClaim({
+                skillId: candidate.skill.id,
+                claimedAt,
+                clearedAt: this.clock.now(),
+              });
+              throw error;
+            }
+
+            const message = error instanceof Error ? error.message : String(error);
+            ctx.skillRepository.recordSplitAttemptAndClearClaim({
+              skillId: candidate.skill.id,
+              attemptedAt: this.clock.now(),
+              claimedAt,
+            });
+            errors.push({
+              process: this.name,
+              message,
+              code: error instanceof Error && "code" in error ? String(error.code) : undefined,
+            });
+            await appendSkillSplitInternalEvent(
+              ctx,
+              {
+                hook: "skill_split_failed",
+                error: message,
+                skill_id: candidate.skill.id,
+              },
+              errors,
+            );
+          }
+        }
       });
 
       tokensUsed += budgeted.tokens_used;
@@ -462,6 +1031,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
     return proceduralSynthesizerPlanSchema.parse({
       process: this.name,
       items,
+      split_items: splitItems,
       budget,
       errors,
       tokens_used: tokensUsed,
@@ -475,7 +1045,10 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
     return {
       process: this.name,
       dryRun: true,
-      changes: parsed.items.map((item) => buildPlanChange(item)),
+      changes: [
+        ...parsed.items.map((item) => buildPlanChange(item)),
+        ...parsed.split_items.map((item) => buildSplitPlanChange(item)),
+      ],
       tokens_used: parsed.tokens_used,
       errors: parsed.errors,
       budget_exhausted: parsed.budget_exhausted,
@@ -556,6 +1129,132 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
           message: error instanceof Error ? error.message : String(error),
           code: error instanceof Error && "code" in error ? String(error.code) : undefined,
         });
+      }
+    }
+
+    for (const item of plan.split_items) {
+      try {
+        if (item.proposal.decision !== "split") {
+          await appendSkillSplitInternalEvent(
+            ctx,
+            {
+              hook: "skill_split_decision",
+              skill_id: item.skill.id,
+              decision: item.proposal.decision,
+              rationale: item.proposal.rationale,
+              divergence: item.divergence,
+            },
+            errors,
+          );
+          ctx.skillRepository.recordSplitAttemptAndClearClaim({
+            skillId: item.skill.id,
+            attemptedAt: this.clock.now(),
+            claimedAt: item.split_claimed_at ?? null,
+          });
+          continue;
+        }
+
+        const parts = validateSplitParts(item);
+
+        if (ctx.config.offline.proceduralSynthesizer.skillSplitDryRun) {
+          await appendSkillSplitInternalEvent(
+            ctx,
+            {
+              hook: "skill_split_proposal",
+              dry_run: true,
+              skill_id: item.skill.id,
+              decision: item.proposal.decision,
+              rationale: item.proposal.rationale,
+              divergence: item.divergence,
+              parts,
+            },
+            errors,
+          );
+          ctx.skillRepository.recordSplitAttemptAndClearClaim({
+            skillId: item.skill.id,
+            attemptedAt: this.clock.now(),
+            claimedAt: item.split_claimed_at ?? null,
+          });
+          changes.push(buildSplitPlanChange(item));
+          continue;
+        }
+
+        const targetContexts = new Set(parts.flatMap((part) => part.target_contexts));
+        const movedContextStats = item.buckets
+          .map((bucket) => bucket.stats)
+          .filter((stats) => targetContexts.has(stats.context_key));
+        const split = await ctx.skillRepository.supersedeWithSplits({
+          skillId: item.skill.id,
+          parts,
+          supersededAt: this.clock.now(),
+          claimedAt: item.split_claimed_at ?? null,
+        });
+
+        if (split === null) {
+          ctx.skillRepository.recordSplitAttemptAndClearClaim({
+            skillId: item.skill.id,
+            attemptedAt: this.clock.now(),
+            claimedAt: item.split_claimed_at ?? null,
+          });
+          await appendSkillSplitInternalEvent(
+            ctx,
+            {
+              hook: "skill_split_skipped",
+              reason: "already_superseded",
+              skill_id: item.skill.id,
+            },
+            errors,
+          );
+          continue;
+        }
+
+        clearPendingSkillReferences(ctx, item.skill.id, errors);
+        ctx.auditLog.record({
+          run_id: ctx.runId,
+          process: this.name,
+          action: "skill_split",
+          targets: {
+            originalSkillId: item.skill.id,
+            newSkillIds: split.created.map((skill) => skill.id),
+          },
+          reversal: {
+            originalSkill: split.previous,
+            createdSkills: split.created,
+            movedContextStats,
+          },
+        });
+        changes.push(buildAppliedSplitChange({ item, created: split.created }));
+        await appendSkillSplitInternalEvent(
+          ctx,
+          {
+            hook: "skill_split_applied",
+            original_skill_id: item.skill.id,
+            new_skill_ids: split.created.map((skill) => skill.id),
+            divergence: item.divergence,
+          },
+          errors,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.skillRepository.recordSplitAttemptAndClearClaim({
+          skillId: item.skill.id,
+          attemptedAt: this.clock.now(),
+          claimedAt: item.split_claimed_at ?? null,
+        });
+        errors.push({
+          process: this.name,
+          message,
+          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
+        });
+        await appendSkillSplitInternalEvent(
+          ctx,
+          {
+            hook: "skill_split_failed",
+            error: message,
+            skill_id: item.skill.id,
+          },
+          errors,
+        );
       }
     }
 

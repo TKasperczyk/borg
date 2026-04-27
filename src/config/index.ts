@@ -106,6 +106,11 @@ const configFileSchema = z
             minSupport: z.number().int().positive().optional(),
             maxSkillsPerRun: z.number().int().positive().optional(),
             dedupThreshold: z.number().min(0).max(1).optional(),
+            minContextAttemptsForSplit: z.number().int().positive().optional(),
+            minDivergenceForSplit: z.number().min(0).max(1).optional(),
+            splitCooldownDays: z.number().positive().optional(),
+            splitClaimStaleSec: z.number().int().positive().optional(),
+            skillSplitDryRun: z.boolean().optional(),
             budget: z.number().int().positive().optional(),
           })
           .partial()
@@ -360,6 +365,11 @@ export const configSchema = z.object({
       minSupport: z.number().int().positive(),
       maxSkillsPerRun: z.number().int().positive(),
       dedupThreshold: z.number().min(0).max(1),
+      minContextAttemptsForSplit: z.number().int().positive(),
+      minDivergenceForSplit: z.number().min(0).max(1),
+      splitCooldownDays: z.number().positive(),
+      splitClaimStaleSec: z.number().int().positive(),
+      skillSplitDryRun: z.boolean(),
       budget: z.number().int().positive(),
     }),
     curator: z.object({
@@ -554,6 +564,11 @@ export const DEFAULT_CONFIG: Config = {
       minSupport: 2,
       maxSkillsPerRun: 3,
       dedupThreshold: 0.88,
+      minContextAttemptsForSplit: 5,
+      minDivergenceForSplit: 0.3,
+      splitCooldownDays: 7,
+      splitClaimStaleSec: 1_800,
+      skillSplitDryRun: true,
       budget: 4_000,
     },
     curator: {
@@ -986,6 +1001,41 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvUnitInterval(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_DEDUP_THRESHOLD") ??
           fileConfig.offline?.proceduralSynthesizer?.dedupThreshold ??
           DEFAULT_CONFIG.offline.proceduralSynthesizer.dedupThreshold,
+        minContextAttemptsForSplit:
+          readOptionalEnvNumber(
+            env,
+            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MIN_CONTEXT_ATTEMPTS_FOR_SPLIT",
+          ) ??
+          fileConfig.offline?.proceduralSynthesizer?.minContextAttemptsForSplit ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.minContextAttemptsForSplit,
+        minDivergenceForSplit:
+          readOptionalEnvUnitInterval(
+            env,
+            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MIN_DIVERGENCE_FOR_SPLIT",
+          ) ??
+          fileConfig.offline?.proceduralSynthesizer?.minDivergenceForSplit ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.minDivergenceForSplit,
+        splitCooldownDays:
+          readOptionalEnvFloat(
+            env,
+            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SPLIT_COOLDOWN_DAYS",
+          ) ??
+          fileConfig.offline?.proceduralSynthesizer?.splitCooldownDays ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.splitCooldownDays,
+        splitClaimStaleSec:
+          readOptionalEnvNumber(
+            env,
+            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SPLIT_CLAIM_STALE_SEC",
+          ) ??
+          fileConfig.offline?.proceduralSynthesizer?.splitClaimStaleSec ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.splitClaimStaleSec,
+        skillSplitDryRun:
+          readOptionalEnvBoolean(
+            env,
+            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SKILL_SPLIT_DRY_RUN",
+          ) ??
+          fileConfig.offline?.proceduralSynthesizer?.skillSplitDryRun ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.skillSplitDryRun,
         budget:
           readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_BUDGET") ??
           fileConfig.offline?.proceduralSynthesizer?.budget ??

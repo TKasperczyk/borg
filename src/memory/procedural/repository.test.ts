@@ -197,6 +197,19 @@ describe("SkillRepository", () => {
       successes: 1,
     });
     expect(batch.size).toBe(2);
+
+    const bySkill = harness.skillRepository.batchListContextStatsForSkills([
+      skillId,
+      otherSkillId,
+    ]);
+
+    expect(bySkill.get(skillId)).toEqual([failure]);
+    expect(bySkill.get(otherSkillId)).toEqual([
+      expect.objectContaining({
+        attempts: 1,
+        successes: 1,
+      }),
+    ]);
   });
 
   it("derives deterministic context keys from equivalent tag sets", () => {
@@ -295,6 +308,88 @@ describe("SkillRepository", () => {
       failures: 1,
       alpha: 1,
       beta: 2,
+    });
+  });
+
+  it("does not mutate superseded skills when recording late outcomes", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    const replacementId = createSkillId();
+    const skill = await harness.skillRepository.add({
+      applies_when: "Late procedural feedback",
+      approach: "Keep superseded skill history immutable.",
+      sourceEpisodes: [episode.id],
+    });
+    const superseded = await harness.skillRepository.replace({
+      ...skill,
+      status: "superseded",
+      superseded_by: [replacementId],
+      superseded_at: 1_000,
+    });
+
+    const updated = harness.skillRepository.recordOutcome(superseded.id, true, episode.id);
+
+    expect(updated).toMatchObject({
+      status: "superseded",
+      alpha: superseded.alpha,
+      beta: superseded.beta,
+      attempts: superseded.attempts,
+      successes: superseded.successes,
+      failures: superseded.failures,
+    });
+    expect(harness.skillRepository.get(superseded.id)).toMatchObject({
+      status: "superseded",
+      alpha: superseded.alpha,
+      beta: superseded.beta,
+      attempts: superseded.attempts,
+      successes: superseded.successes,
+      failures: superseded.failures,
+    });
+    expect(harness.proceduralContextStatsRepository.listForSkill(superseded.id)).toEqual([]);
+  });
+
+  it("atomically claims and clears skill split work", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    const skill = await harness.skillRepository.add({
+      applies_when: "Divergent split candidate",
+      approach: "Claim before planning the split.",
+      sourceEpisodes: [episode.id],
+    });
+
+    expect(
+      harness.skillRepository.claimSplit({
+        skillId: skill.id,
+        claimedAt: 10_000,
+        staleBefore: 8_000,
+      }),
+    ).toBe(true);
+    expect(
+      harness.skillRepository.claimSplit({
+        skillId: skill.id,
+        claimedAt: 11_000,
+        staleBefore: 8_000,
+      }),
+    ).toBe(false);
+    expect(
+      harness.skillRepository.claimSplit({
+        skillId: skill.id,
+        claimedAt: 20_000,
+        staleBefore: 12_000,
+      }),
+    ).toBe(true);
+
+    harness.skillRepository.recordSplitAttemptAndClearClaim({
+      skillId: skill.id,
+      attemptedAt: 21_000,
+      claimedAt: 20_000,
+    });
+
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      splitting_at: null,
+      last_split_attempt_at: 21_000,
     });
   });
 

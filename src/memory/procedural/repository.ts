@@ -40,12 +40,17 @@ type SkillSqlRow = {
   id: string;
   applies_when: string;
   approach: string;
+  status: "active" | "superseded";
   alpha: number;
   beta: number;
   attempts: number;
   successes: number;
   failures: number;
   alternatives: string;
+  superseded_by: string;
+  superseded_at: number | null;
+  splitting_at: number | null;
+  last_split_attempt_at: number | null;
   source_episode_ids: string;
   last_used: number | null;
   last_successful: number | null;
@@ -68,12 +73,17 @@ function rowFromSkill(skill: SkillRecord): SkillSqlRow {
     id: skill.id,
     applies_when: skill.applies_when,
     approach: skill.approach,
+    status: skill.status,
     alpha: skill.alpha,
     beta: skill.beta,
     attempts: skill.attempts,
     successes: skill.successes,
     failures: skill.failures,
     alternatives: serializeJsonValue(skill.alternatives),
+    superseded_by: serializeJsonValue(skill.superseded_by),
+    superseded_at: skill.superseded_at,
+    splitting_at: skill.splitting_at,
+    last_split_attempt_at: skill.last_split_attempt_at ?? null,
     source_episode_ids: serializeJsonValue(skill.source_episode_ids),
     last_used: skill.last_used,
     last_successful: skill.last_successful,
@@ -87,6 +97,7 @@ function skillFromRow(row: Record<string, unknown>): SkillRecord {
     id: row.id,
     applies_when: row.applies_when,
     approach: row.approach,
+    status: row.status ?? "active",
     alpha: Number(row.alpha),
     beta: Number(row.beta),
     attempts: Number(row.attempts),
@@ -97,6 +108,23 @@ function skillFromRow(row: Record<string, unknown>): SkillRecord {
       "alternatives",
       SKILL_JSON_ARRAY_CODEC,
     ).map((value) => parseSkillId(value)),
+    superseded_by: parseJsonArray<string>(
+      String(row.superseded_by ?? "[]"),
+      "superseded_by",
+      SKILL_JSON_ARRAY_CODEC,
+    ).map((value) => parseSkillId(value)),
+    superseded_at:
+      row.superseded_at === null || row.superseded_at === undefined
+        ? null
+        : Number(row.superseded_at),
+    splitting_at:
+      row.splitting_at === null || row.splitting_at === undefined
+        ? null
+        : Number(row.splitting_at),
+    last_split_attempt_at:
+      row.last_split_attempt_at === null || row.last_split_attempt_at === undefined
+        ? null
+        : Number(row.last_split_attempt_at),
     source_episode_ids: parseJsonArray<string>(
       String(row.source_episode_ids ?? "[]"),
       "source_episode_ids",
@@ -295,6 +323,18 @@ export type SkillRepositoryOptions = {
   clock?: Clock;
 };
 
+export type SkillSplitPartInput = {
+  applies_when: string;
+  approach: string;
+  target_contexts: readonly string[];
+};
+
+export type SkillSplitApplyResult = {
+  previous: SkillRecord;
+  superseded: SkillRecord;
+  created: SkillRecord[];
+};
+
 export class SkillRepository {
   private readonly clock: Clock;
 
@@ -317,18 +357,24 @@ export class SkillRepository {
       .prepare(
         `
           INSERT INTO skills (
-            id, applies_when, approach, alpha, beta, attempts, successes, failures,
-            alternatives, source_episode_ids, last_used, last_successful, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, applies_when, approach, status, alpha, beta, attempts, successes, failures,
+            alternatives, superseded_by, superseded_at, splitting_at, last_split_attempt_at,
+            source_episode_ids, last_used, last_successful, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             applies_when = excluded.applies_when,
             approach = excluded.approach,
+            status = excluded.status,
             alpha = excluded.alpha,
             beta = excluded.beta,
             attempts = excluded.attempts,
             successes = excluded.successes,
             failures = excluded.failures,
             alternatives = excluded.alternatives,
+            superseded_by = excluded.superseded_by,
+            superseded_at = excluded.superseded_at,
+            splitting_at = excluded.splitting_at,
+            last_split_attempt_at = excluded.last_split_attempt_at,
             source_episode_ids = excluded.source_episode_ids,
             last_used = excluded.last_used,
             last_successful = excluded.last_successful,
@@ -339,12 +385,17 @@ export class SkillRepository {
         row.id,
         row.applies_when,
         row.approach,
+        row.status,
         row.alpha,
         row.beta,
         row.attempts,
         row.successes,
         row.failures,
         row.alternatives,
+        row.superseded_by,
+        row.superseded_at,
+        row.splitting_at,
+        row.last_split_attempt_at,
         row.source_episode_ids,
         row.last_used,
         row.last_successful,
@@ -368,12 +419,17 @@ export class SkillRepository {
       id: input.id ?? createSkillId(),
       applies_when: input.applies_when,
       approach: input.approach,
+      status: "active",
       alpha: input.priorAlpha ?? 1,
       beta: input.priorBeta ?? 1,
       attempts: 0,
       successes: 0,
       failures: 0,
       alternatives: input.alternatives ?? [],
+      superseded_by: [],
+      superseded_at: null,
+      splitting_at: null,
+      last_split_attempt_at: null,
       source_episode_ids: input.sourceEpisodes,
       last_used: null,
       last_successful: null,
@@ -476,6 +532,378 @@ export class SkillRepository {
     return rows.map((row) => skillFromRow(row));
   }
 
+  listContextStatsForSkill(skillId: SkillId): SkillContextStatsRecord[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM skill_context_stats
+          WHERE skill_id = ?
+          ORDER BY updated_at DESC, context_key ASC
+        `,
+      )
+      .all(skillId) as Record<string, unknown>[];
+
+    return rows.map((row) => skillContextStatsFromRow(row));
+  }
+
+  batchListContextStatsForSkills(
+    skillIds: readonly SkillId[],
+  ): Map<SkillId, SkillContextStatsRecord[]> {
+    const uniqueSkillIds = [...new Set(skillIds)];
+
+    if (uniqueSkillIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM skill_context_stats
+          WHERE skill_id IN (${uniqueSkillIds.map(() => "?").join(", ")})
+          ORDER BY skill_id ASC, updated_at DESC, context_key ASC
+        `,
+      )
+      .all(...uniqueSkillIds) as Record<string, unknown>[];
+    const result = new Map<SkillId, SkillContextStatsRecord[]>(
+      uniqueSkillIds.map((skillId) => [skillId, []]),
+    );
+
+    for (const row of rows) {
+      const stats = skillContextStatsFromRow(row);
+      const bucket = result.get(stats.skill_id) ?? [];
+      bucket.push(stats);
+      result.set(stats.skill_id, bucket);
+    }
+
+    return result;
+  }
+
+  claimSplit(input: { skillId: SkillId; claimedAt: number; staleBefore: number }): boolean {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE skills
+          SET splitting_at = ?, updated_at = ?
+          WHERE id = ?
+            AND status = 'active'
+            AND (splitting_at IS NULL OR splitting_at < ?)
+        `,
+      )
+      .run(input.claimedAt, input.claimedAt, input.skillId, input.staleBefore);
+
+    return Number(result.changes) > 0;
+  }
+
+  recordSplitAttemptAndClearClaim(input: {
+    skillId: SkillId;
+    attemptedAt: number;
+    claimedAt?: number | null;
+  }): void {
+    if (input.claimedAt === undefined || input.claimedAt === null) {
+      this.db
+        .prepare(
+          `
+            UPDATE skills
+            SET
+              last_split_attempt_at = max(COALESCE(last_split_attempt_at, 0), ?),
+              updated_at = ?
+            WHERE id = ?
+          `,
+        )
+        .run(input.attemptedAt, input.attemptedAt, input.skillId);
+      return;
+    }
+
+    this.db
+      .prepare(
+        `
+          UPDATE skills
+          SET
+            last_split_attempt_at = max(COALESCE(last_split_attempt_at, 0), ?),
+            splitting_at = CASE WHEN splitting_at = ? THEN NULL ELSE splitting_at END,
+            updated_at = ?
+          WHERE id = ?
+        `,
+      )
+      .run(input.attemptedAt, input.claimedAt, input.attemptedAt, input.skillId);
+  }
+
+  clearSplitClaim(input: { skillId: SkillId; claimedAt: number; clearedAt: number }): void {
+    this.db
+      .prepare(
+        `
+          UPDATE skills
+          SET splitting_at = NULL, updated_at = ?
+          WHERE id = ? AND splitting_at = ?
+        `,
+      )
+      .run(input.clearedAt, input.skillId, input.claimedAt);
+  }
+
+  restoreContextStats(statsRows: readonly SkillContextStatsRecord[]): void {
+    const insert = this.db.prepare(
+      `
+        INSERT INTO skill_context_stats (
+          skill_id, context_key, alpha, beta, attempts, successes, failures,
+          last_used, last_successful, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (skill_id, context_key) DO UPDATE SET
+          alpha = excluded.alpha,
+          beta = excluded.beta,
+          attempts = excluded.attempts,
+          successes = excluded.successes,
+          failures = excluded.failures,
+          last_used = excluded.last_used,
+          last_successful = excluded.last_successful,
+          updated_at = excluded.updated_at
+      `,
+    );
+
+    this.db.transaction(() => {
+      for (const stats of statsRows) {
+        const parsed = skillContextStatsSchema.parse(stats);
+        insert.run(
+          parsed.skill_id,
+          parsed.context_key,
+          parsed.alpha,
+          parsed.beta,
+          parsed.attempts,
+          parsed.successes,
+          parsed.failures,
+          parsed.last_used,
+          parsed.last_successful,
+          parsed.updated_at,
+        );
+      }
+    })();
+  }
+
+  async supersedeWithSplits(input: {
+    skillId: SkillId;
+    parts: readonly SkillSplitPartInput[];
+    supersededAt?: number;
+    claimedAt?: number | null;
+  }): Promise<SkillSplitApplyResult | null> {
+    const original = this.get(input.skillId);
+
+    if (original === null) {
+      throw new StorageError(`Unknown skill id: ${input.skillId}`, {
+        code: "SKILL_NOT_FOUND",
+      });
+    }
+
+    if (original.status !== "active") {
+      return null;
+    }
+
+    if (
+      input.claimedAt !== undefined &&
+      input.claimedAt !== null &&
+      original.splitting_at !== input.claimedAt
+    ) {
+      return null;
+    }
+
+    if (input.parts.length === 0) {
+      throw new StorageError("Skill split must include at least one part", {
+        code: "SKILL_SPLIT_EMPTY",
+      });
+    }
+
+    const contextRowsByKey = new Map(
+      this.listContextStatsForSkill(input.skillId).map((stats) => [stats.context_key, stats]),
+    );
+    const assignedContexts = new Set<string>();
+    const nowMs = input.supersededAt ?? this.clock.now();
+    const newSkills = input.parts.map((part) => {
+      const targetContexts = [...new Set(part.target_contexts.map((contextKey) => contextKey.trim()))]
+        .filter((contextKey) => contextKey.length > 0)
+        .sort();
+
+      if (targetContexts.length === 0) {
+        throw new StorageError("Skill split part must target at least one context", {
+          code: "SKILL_SPLIT_TARGETS_EMPTY",
+        });
+      }
+
+      for (const contextKey of targetContexts) {
+        if (!contextRowsByKey.has(contextKey)) {
+          throw new StorageError(`Unknown split context bucket: ${contextKey}`, {
+            code: "SKILL_SPLIT_CONTEXT_MISSING",
+          });
+        }
+
+        if (assignedContexts.has(contextKey)) {
+          throw new StorageError(`Split context assigned to more than one part: ${contextKey}`, {
+            code: "SKILL_SPLIT_CONTEXT_DUPLICATE",
+          });
+        }
+
+        assignedContexts.add(contextKey);
+      }
+
+      const targetStats = targetContexts.map((contextKey) => contextRowsByKey.get(contextKey)!);
+      const lastUsed = Math.max(...targetStats.map((stats) => stats.last_used ?? 0));
+      const lastSuccessful = Math.max(...targetStats.map((stats) => stats.last_successful ?? 0));
+      const id = createSkillId();
+
+      return skillInsertSchema.parse({
+        id,
+        applies_when: part.applies_when.trim(),
+        approach: part.approach.trim(),
+        status: "active",
+        alpha: targetStats.reduce((sum, stats) => sum + stats.alpha, 0),
+        beta: targetStats.reduce((sum, stats) => sum + stats.beta, 0),
+        attempts: targetStats.reduce((sum, stats) => sum + stats.attempts, 0),
+        successes: targetStats.reduce((sum, stats) => sum + stats.successes, 0),
+        failures: targetStats.reduce((sum, stats) => sum + stats.failures, 0),
+        alternatives: [original.id, ...original.alternatives],
+        superseded_by: [],
+        superseded_at: null,
+        splitting_at: null,
+        last_split_attempt_at: null,
+        source_episode_ids: original.source_episode_ids,
+        last_used: lastUsed === 0 ? null : lastUsed,
+        last_successful: lastSuccessful === 0 ? null : lastSuccessful,
+        created_at: nowMs,
+        updated_at: nowMs,
+      });
+    });
+    const embeddings = await Promise.all(
+      newSkills.map((skill) => this.options.embeddingClient.embed(skill.applies_when)),
+    );
+    const insertedSkillIds = newSkills.map((skill) => skill.id);
+
+    try {
+      await this.table.upsert(
+        newSkills.map((skill, index) => ({
+          id: skill.id,
+          applies_when: skill.applies_when,
+          embedding: Array.from(embeddings[index]!),
+        })),
+        { on: "id" },
+      );
+
+      try {
+        this.db.transaction(() => {
+          const current = this.get(input.skillId);
+
+          if (current === null) {
+            throw new StorageError(`Unknown skill id: ${input.skillId}`, {
+              code: "SKILL_NOT_FOUND",
+            });
+          }
+
+          if (current.status !== "active") {
+            throw new StorageError(`Skill already superseded: ${input.skillId}`, {
+              code: "SKILL_SPLIT_ALREADY_APPLIED",
+            });
+          }
+
+          if (
+            input.claimedAt !== undefined &&
+            input.claimedAt !== null &&
+            current.splitting_at !== input.claimedAt
+          ) {
+            throw new StorageError(`Skill split claim lost: ${input.skillId}`, {
+              code: "SKILL_SPLIT_CLAIM_LOST",
+            });
+          }
+
+          for (const skill of newSkills) {
+            this.upsertSqlRow(skill);
+          }
+
+          const insertContextStats = this.db.prepare(
+            `
+              INSERT INTO skill_context_stats (
+                skill_id, context_key, alpha, beta, attempts, successes, failures,
+                last_used, last_successful, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+          );
+
+          for (const [partIndex, part] of input.parts.entries()) {
+            const newSkill = newSkills[partIndex]!;
+            const targetContexts = [...new Set(part.target_contexts.map((contextKey) => contextKey.trim()))]
+              .filter((contextKey) => contextKey.length > 0)
+              .sort();
+
+            for (const contextKey of targetContexts) {
+              const stats = contextRowsByKey.get(contextKey)!;
+              insertContextStats.run(
+                newSkill.id,
+                stats.context_key,
+                stats.alpha,
+                stats.beta,
+                stats.attempts,
+                stats.successes,
+                stats.failures,
+                stats.last_used,
+                stats.last_successful,
+                stats.updated_at,
+              );
+            }
+          }
+
+          this.db
+            .prepare(
+              `
+                DELETE FROM skill_context_stats
+                WHERE skill_id = ? AND context_key IN (${[...assignedContexts].map(() => "?").join(", ")})
+              `,
+            )
+            .run(input.skillId, ...assignedContexts);
+
+          this.upsertSqlRow(
+            skillSchema.parse({
+              ...current,
+              status: "superseded",
+              superseded_by: insertedSkillIds,
+              superseded_at: nowMs,
+              splitting_at: null,
+              last_split_attempt_at: nowMs,
+              updated_at: nowMs,
+            }),
+          );
+        })();
+      } catch (error) {
+        await Promise.all(insertedSkillIds.map((id) => this.table.remove(`id = ${quoteSqlString(id)}`)));
+
+        if (
+          error instanceof StorageError &&
+          (error.code === "SKILL_SPLIT_ALREADY_APPLIED" ||
+            error.code === "SKILL_SPLIT_CLAIM_LOST")
+        ) {
+          return null;
+        }
+
+        throw error;
+      }
+
+      const supersededOriginal = this.get(input.skillId);
+
+      if (supersededOriginal === null) {
+        throw new StorageError(`Unknown skill id: ${input.skillId}`, {
+          code: "SKILL_NOT_FOUND",
+        });
+      }
+
+      return {
+        previous: original,
+        superseded: supersededOriginal,
+        created: newSkills,
+      };
+    } catch (error) {
+      throw new StorageError(`Failed to split skill ${input.skillId}`, {
+        cause: error,
+        code: "SKILL_SPLIT_FAILED",
+      });
+    }
+  }
+
   async delete(id: SkillId): Promise<boolean> {
     const existing = this.get(id);
 
@@ -515,7 +943,7 @@ export class SkillRepository {
     const records = this.getMany(ids);
     const byId = new Map(
       records
-        .filter((record): record is SkillRecord => record !== null)
+        .filter((record): record is SkillRecord => record !== null && record.status === "active")
         .map((record) => [record.id, record]),
     );
 
@@ -565,6 +993,7 @@ export class SkillRepository {
           last_successful = CASE WHEN ? THEN ? ELSE last_successful END,
           updated_at = ?
         WHERE id = ?
+          AND status = 'active'
       `,
     );
     const appendSourceEpisode = this.db.prepare(
@@ -603,6 +1032,12 @@ export class SkillRepository {
       );
 
       if (Number(result.changes) === 0) {
+        const existing = this.get(skillId);
+
+        if (existing !== null && existing.status === "superseded") {
+          return;
+        }
+
         throw new StorageError(`Unknown skill id: ${skillId}`, {
           code: "SKILL_NOT_FOUND",
         });

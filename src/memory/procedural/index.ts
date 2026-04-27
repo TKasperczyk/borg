@@ -15,6 +15,8 @@ export {
   type ProceduralContextStatsRepositoryOptions,
   type ProceduralEvidenceRepositoryOptions,
   type SkillRepositoryOptions,
+  type SkillSplitApplyResult,
+  type SkillSplitPartInput,
 } from "./repository.js";
 export {
   deriveProceduralContextKey,

@@ -197,12 +197,30 @@ describe("TurnRetrievalCoordinator", () => {
     const retrieval = makeRetrievedContext();
     const searchWithContext = vi.fn(async () => retrieval);
     const search = vi.fn(async () => []);
-    const selectedSkill = {
+    const selectedSkill: SkillSelectionResult = {
       skill: {
-        id: "skill_1",
+        id: "skl_aaaaaaaaaaaaaaaa" as never,
+        applies_when: "Known fix applies.",
         approach: "Use the known fix.",
+        status: "active",
+        alpha: 1,
+        beta: 1,
+        attempts: 0,
+        successes: 0,
+        failures: 0,
+        alternatives: [],
+        superseded_by: [],
+        superseded_at: null,
+        splitting_at: null,
+        source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+        last_used: null,
+        last_successful: null,
+        created_at: 0,
+        updated_at: 0,
       },
-    } as SkillSelectionResult;
+      sampledValue: 0.5,
+      evaluatedCandidates: [],
+    };
     const select = vi.fn(async () => selectedSkill);
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {

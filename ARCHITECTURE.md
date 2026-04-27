@@ -277,6 +277,9 @@ intervals are derived on demand by `bayes.ts`.
   beta: number,                 // Beta posterior β (>0)
   attempts, successes, failures,// raw counts (alpha = α0+successes, etc.)
   alternatives: SkillId[],      // competing approaches for same problem
+  status: "active" | "superseded",
+  superseded_by: SkillId[],     // child skills when offline splitting refactors it
+  superseded_at?: number,
   last_used, last_successful,
   source_episode_ids: EpisodeId[],
   created_at, updated_at,
@@ -292,6 +295,13 @@ intervals are derived on demand by `bayes.ts`.
 // exist for a skill/context_key, SkillSelector samples a smoothed
 // context-conditioned posterior; otherwise it falls back to the global
 // Beta posterior above.
+
+// SP3: the offline procedural synthesizer also inspects context bucket
+// distributions. When one active skill has enough attempts in multiple
+// buckets and their posterior means diverge, it asks the background LLM
+// for a conservative split proposal. Splits are dry-run by default; when
+// enabled for apply, the original skill is marked superseded and narrower
+// child skills inherit the targeted context stats.
 
 // ProceduralEvidence (SQLite)
 {
@@ -701,7 +711,10 @@ so all maintenance is dry-runnable and reversible.
   cluster. `plan()` gathers clusters and candidates, `preview()` exposes
   the reversible synthesis changes, and `apply()` creates or deduplicates
   skills, records Bayesian outcomes, marks evidence consumed, and writes
-  audit-log reversals.
+  audit-log reversals. The same cadence also detects context-divergent
+  active skills and, by default, logs dry-run `skill_split_proposal`
+  internal events; applying split proposals marks the old skill
+  superseded rather than deleting it.
 - **Overseer** -- QA pass over recent episodes and semantic nodes;
   LLM-flag `misattribution`, `temporal_drift`, or
   `identity_inconsistency` items above a confidence threshold and
