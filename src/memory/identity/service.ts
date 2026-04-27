@@ -22,6 +22,7 @@ import {
   type GrowthMarker,
   type OpenQuestion,
   autobiographicalPeriodPatchSchema,
+  buildOpenQuestionDedupeKey,
   growthMarkerPatchSchema,
   openQuestionPatchSchema,
 } from "../self/index.js";
@@ -87,6 +88,52 @@ function growthMarkerGuardState(current: GrowthMarker): IdentityGuardState {
 function openQuestionGuardState(current: OpenQuestion): IdentityGuardState {
   return {
     state: current.status === "open" ? "established" : "candidate",
+  };
+}
+
+function identityEventAction(
+  defaultAction: string,
+  options: IdentityUpdateOptions,
+): "correction_apply" | string {
+  return options.reviewItemId === null || options.reviewItemId === undefined
+    ? defaultAction
+    : "correction_apply";
+}
+
+function openQuestionCreationProvenance(
+  input: Parameters<OpenQuestionsRepository["add"]>[0],
+): Provenance {
+  if (input.provenance !== undefined && input.provenance !== null) {
+    return input.provenance;
+  }
+
+  if (input.related_episode_ids !== undefined && input.related_episode_ids.length > 0) {
+    return {
+      kind: "episodes",
+      episode_ids: [...input.related_episode_ids],
+    };
+  }
+
+  if (input.source === "user") {
+    return {
+      kind: "manual",
+    };
+  }
+
+  if (
+    input.source === "reflection" ||
+    input.source === "contradiction" ||
+    input.source === "ruminator" ||
+    input.source === "overseer"
+  ) {
+    return {
+      kind: "offline",
+      process: input.source,
+    };
+  }
+
+  return {
+    kind: "system",
   };
 }
 
@@ -166,6 +213,91 @@ export class IdentityService {
     return this.options.goalsRepository.add(input);
   }
 
+  addPeriod(
+    input: Parameters<AutobiographicalRepository["upsertPeriod"]>[0],
+  ): AutobiographicalPeriod {
+    if (input.id !== undefined && this.options.autobiographicalRepository.getPeriod(input.id)) {
+      throw new StorageError(`Autobiographical period already exists: ${input.id}`, {
+        code: "AUTOBIOGRAPHICAL_PERIOD_ALREADY_EXISTS",
+      });
+    }
+
+    const currentOpenPeriod =
+      input.end_ts === undefined || input.end_ts === null
+        ? this.options.autobiographicalRepository.currentPeriod()
+        : null;
+    const periodClosedByCreate =
+      currentOpenPeriod !== null && (input.id === undefined || currentOpenPeriod.id !== input.id)
+        ? currentOpenPeriod
+        : null;
+
+    if (periodClosedByCreate !== null) {
+      const closeDecision = this.guard.evaluateChange({
+        current: autobiographicalPeriodGuardState(periodClosedByCreate),
+        provenance: input.provenance,
+      });
+
+      if (!closeDecision.allowed) {
+        throw new StorageError(
+          "Autobiographical period creation would close an established period and requires review",
+          {
+            code: "IDENTITY_GUARD_CREATE_REJECTED",
+          },
+        );
+      }
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: null,
+      provenance: input.provenance,
+    });
+
+    if (!decision.allowed) {
+      throw new StorageError("Autobiographical period creation unexpectedly required review", {
+        code: "IDENTITY_GUARD_CREATE_REJECTED",
+      });
+    }
+
+    return this.options.identityEventRepository.runInTransaction(() => {
+      const period = this.options.autobiographicalRepository.upsertPeriod(input);
+
+      if (periodClosedByCreate !== null) {
+        const closedPeriod = this.options.autobiographicalRepository.getPeriod(
+          periodClosedByCreate.id,
+        );
+
+        if (closedPeriod === null) {
+          throw new StorageError(
+            `Unknown autobiographical period id: ${periodClosedByCreate.id}`,
+            {
+              code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
+            },
+          );
+        }
+
+        this.options.identityEventRepository.record({
+          record_type: "autobiographical_period",
+          record_id: periodClosedByCreate.id,
+          action: "close",
+          old_value: periodClosedByCreate,
+          new_value: closedPeriod,
+          provenance: input.provenance,
+        });
+      }
+
+      this.options.identityEventRepository.record({
+        record_type: "autobiographical_period",
+        record_id: period.id,
+        action: "create",
+        old_value: null,
+        new_value: period,
+        provenance: input.provenance,
+      });
+
+      return period;
+    });
+  }
+
   updateGoalStatus(
     goalId: GoalRecord["id"],
     status: GoalStatus,
@@ -219,6 +351,81 @@ export class IdentityService {
       status: "applied",
       record: this.options.traitsRepository.reinforce(input),
     };
+  }
+
+  addGrowthMarker(input: Parameters<GrowthMarkersRepository["add"]>[0]): GrowthMarker {
+    const decision = this.guard.evaluateChange({
+      current: null,
+      provenance: input.provenance,
+    });
+
+    if (!decision.allowed) {
+      throw new StorageError("Growth marker creation unexpectedly required review", {
+        code: "IDENTITY_GUARD_CREATE_REJECTED",
+      });
+    }
+
+    return this.options.identityEventRepository.runInTransaction(() => {
+      const marker = this.options.growthMarkersRepository.add(input);
+
+      this.options.identityEventRepository.record({
+        record_type: "growth_marker",
+        record_id: marker.id,
+        action: "create",
+        old_value: null,
+        new_value: marker,
+        provenance: input.provenance,
+      });
+
+      return marker;
+    });
+  }
+
+  addOpenQuestion(input: Parameters<OpenQuestionsRepository["add"]>[0]): OpenQuestion {
+    const provenance = openQuestionCreationProvenance(input);
+    const existing = this.options.openQuestionsRepository.getByDedupeKey(
+      buildOpenQuestionDedupeKey({
+        question: input.question,
+        relatedEpisodeIds: input.related_episode_ids ?? [],
+        relatedSemanticNodeIds: input.related_semantic_node_ids ?? [],
+      }),
+    );
+
+    if (existing !== null) {
+      return existing;
+    }
+
+    if (input.id !== undefined && this.options.openQuestionsRepository.get(input.id) !== null) {
+      throw new StorageError(`Open question already exists: ${input.id}`, {
+        code: "OPEN_QUESTION_ALREADY_EXISTS",
+      });
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: null,
+      provenance,
+    });
+
+    if (!decision.allowed) {
+      throw new StorageError("Open question creation unexpectedly required review", {
+        code: "IDENTITY_GUARD_CREATE_REJECTED",
+      });
+    }
+
+    return this.options.identityEventRepository.runInTransaction(() => {
+      const question = this.options.openQuestionsRepository.add(input);
+
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: question.id,
+        action: "create",
+        old_value: null,
+        new_value: question,
+        provenance,
+      });
+
+      return question;
+    });
   }
 
   updateValue(
@@ -441,6 +648,213 @@ export class IdentityService {
         code: "COMMITMENT_NOT_FOUND",
       });
     }
+
+    return {
+      status: "applied",
+      record,
+    };
+  }
+
+  closePeriod(
+    periodId: AutobiographicalPeriodId,
+    closedAt: number,
+    provenance: Provenance,
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<AutobiographicalPeriod> {
+    const current = this.options.autobiographicalRepository.getPeriod(periodId);
+
+    if (current === null) {
+      throw new StorageError(`Unknown autobiographical period id: ${periodId}`, {
+        code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
+      });
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: autobiographicalPeriodGuardState(current),
+      provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      this.options.autobiographicalRepository.closePeriod(periodId, closedAt);
+      const updated = this.options.autobiographicalRepository.getPeriod(periodId);
+
+      if (updated === null) {
+        throw new StorageError(`Unknown autobiographical period id: ${periodId}`, {
+          code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
+        });
+      }
+
+      this.options.identityEventRepository.record({
+        record_type: "autobiographical_period",
+        record_id: periodId,
+        action: identityEventAction("close", options),
+        old_value: current,
+        new_value: updated,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return updated;
+    });
+
+    return {
+      status: "applied",
+      record,
+    };
+  }
+
+  resolveOpenQuestion(
+    openQuestionId: OpenQuestionId,
+    resolution: Parameters<OpenQuestionsRepository["resolve"]>[1],
+    provenance: Provenance,
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<OpenQuestion> {
+    const current = this.options.openQuestionsRepository.get(openQuestionId);
+
+    if (current === null) {
+      throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
+      });
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: openQuestionGuardState(current),
+      provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const resolved = this.options.openQuestionsRepository.resolve(openQuestionId, resolution);
+
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: openQuestionId,
+        action: identityEventAction("resolve", options),
+        old_value: current,
+        new_value: resolved,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return resolved;
+    });
+
+    return {
+      status: "applied",
+      record,
+    };
+  }
+
+  abandonOpenQuestion(
+    openQuestionId: OpenQuestionId,
+    reason: string,
+    provenance: Provenance,
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<OpenQuestion> {
+    const current = this.options.openQuestionsRepository.get(openQuestionId);
+
+    if (current === null) {
+      throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
+      });
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: openQuestionGuardState(current),
+      provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const abandoned = this.options.openQuestionsRepository.abandon(openQuestionId, reason);
+
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: openQuestionId,
+        action: identityEventAction("abandon", options),
+        old_value: current,
+        new_value: abandoned,
+        reason: options.reason ?? reason,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return abandoned;
+    });
+
+    return {
+      status: "applied",
+      record,
+    };
+  }
+
+  bumpOpenQuestionUrgency(
+    openQuestionId: OpenQuestionId,
+    delta: number,
+    provenance: Provenance,
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<OpenQuestion> {
+    const current = this.options.openQuestionsRepository.get(openQuestionId);
+
+    if (current === null) {
+      throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
+      });
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: openQuestionGuardState(current),
+      provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const bumped = this.options.openQuestionsRepository.bumpUrgency(openQuestionId, delta);
+
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: openQuestionId,
+        action: identityEventAction("bump_urgency", options),
+        old_value: current,
+        new_value: bumped,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return bumped;
+    });
 
     return {
       status: "applied",

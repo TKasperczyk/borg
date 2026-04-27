@@ -543,19 +543,26 @@ export class CorrectionService {
           });
         }
 
-        const next =
-          current.status === "open"
-            ? this.options.openQuestionsRepository.abandon(target.id, reason)
-            : current;
-        this.options.identityEventRepository.record({
-          record_type: "open_question",
-          record_id: target.id,
-          action: "forget",
-          old_value: current,
-          new_value: next,
+        if (current.status !== "open") {
+          break;
+        }
+
+        const result = this.options.identityService.abandonOpenQuestion(
+          target.id,
           reason,
-          provenance: MANUAL_PROVENANCE,
-        });
+          MANUAL_PROVENANCE,
+          {
+            throughReview: true,
+            reason,
+          },
+        );
+
+        if (result.status !== "applied") {
+          throw new StorageError(`Forget for open question ${target.id} still requires review`, {
+            code: "IDENTITY_REVIEW_REQUIRED",
+          });
+        }
+
         break;
       }
     }

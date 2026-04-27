@@ -1643,7 +1643,7 @@ export class ReviewQueueRepository {
 
         this.options.autobiographicalRepository.runInTransaction(() => {
           applyPeriodPatch();
-          this.options.autobiographicalRepository!.upsertPeriod(nextPeriodPayload);
+          this.options.identityService!.addPeriod(nextPeriodPayload);
         });
         return;
       }

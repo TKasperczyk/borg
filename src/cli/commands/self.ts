@@ -25,6 +25,27 @@ import {
 } from "../helpers/parsers.js";
 import type { CliCommandDeps, CommandOptions } from "../types.js";
 
+function requireIdentityApplied<T>(
+  result:
+    | {
+        status: "applied";
+        record: T;
+      }
+    | {
+        status: "requires_review";
+        current: T;
+      },
+  action: string,
+): T {
+  if (result.status === "applied") {
+    return result.record;
+  }
+
+  throw new CliError(`${action} requires identity review`, {
+    code: "IDENTITY_REVIEW_REQUIRED",
+  });
+}
+
 export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
   const { stdout, options } = deps;
 
@@ -193,7 +214,12 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
       if (action === "close") {
         const periodId = resolveAutobiographicalPeriodId(arg);
         await withBorg(options, async (borg) => {
-          borg.self.autobiographical.closePeriod(periodId, Date.now());
+          requireIdentityApplied(
+            borg.self.autobiographical.closePeriod(periodId, Date.now(), {
+              kind: "manual",
+            }),
+            "Closing period",
+          );
         });
         writeLine(stdout, JSON.stringify({ id: periodId, closed: true }));
         return;
@@ -320,13 +346,22 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
         if (action === "resolve") {
           const questionId = resolveOpenQuestionId(arg1);
           const resolved = await withBorg(options, async (borg) =>
-            borg.self.openQuestions.resolve(questionId, {
-              resolution_episode_id: resolveEpisodeId(commandOptions.episode),
-              resolution_note:
-                commandOptions.note === undefined
-                  ? null
-                  : parseRequiredText(commandOptions.note, "--note"),
-            }),
+            requireIdentityApplied(
+              borg.self.openQuestions.resolve(
+                questionId,
+                {
+                  resolution_episode_id: resolveEpisodeId(commandOptions.episode),
+                  resolution_note:
+                    commandOptions.note === undefined
+                      ? null
+                      : parseRequiredText(commandOptions.note, "--note"),
+                },
+                {
+                  kind: "manual",
+                },
+              ),
+              "Resolving open question",
+            ),
           );
           writeLine(stdout, JSON.stringify(resolved, null, 2));
           return;
@@ -335,11 +370,17 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
         if (action === "abandon") {
           const questionId = resolveOpenQuestionId(arg1);
           const abandoned = await withBorg(options, async (borg) =>
-            borg.self.openQuestions.abandon(
-              questionId,
-              typeof commandOptions.reason === "string"
-                ? commandOptions.reason
-                : "Abandoned from CLI",
+            requireIdentityApplied(
+              borg.self.openQuestions.abandon(
+                questionId,
+                typeof commandOptions.reason === "string"
+                  ? commandOptions.reason
+                  : "Abandoned from CLI",
+                {
+                  kind: "manual",
+                },
+              ),
+              "Abandoning open question",
             ),
           );
           writeLine(stdout, JSON.stringify(abandoned, null, 2));
@@ -349,7 +390,16 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
         if (action === "bump") {
           const questionId = resolveOpenQuestionId(arg1);
           const bumped = await withBorg(options, async (borg) =>
-            borg.self.openQuestions.bumpUrgency(questionId, parseFiniteNumber(arg2, "<delta>")),
+            requireIdentityApplied(
+              borg.self.openQuestions.bumpUrgency(
+                questionId,
+                parseFiniteNumber(arg2, "<delta>"),
+                {
+                  kind: "manual",
+                },
+              ),
+              "Bumping open question urgency",
+            ),
           );
           writeLine(stdout, JSON.stringify(bumped, null, 2));
           return;

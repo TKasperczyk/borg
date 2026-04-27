@@ -239,6 +239,70 @@ describe("Borg", () => {
         current: value,
       });
       expect(borg.self.values.get(value.id)?.description).toBe("Prefer evidence-backed changes.");
+
+      const periodEpisodeId = createEpisodeId();
+      const period = borg.self.autobiographical.upsertPeriod({
+        label: "2026-Q2",
+        start_ts: 1_100,
+        narrative: "Episode-backed period.",
+        key_episode_ids: [periodEpisodeId],
+        themes: ["guard"],
+        provenance: {
+          kind: "episodes",
+          episode_ids: [periodEpisodeId],
+        },
+      });
+      const closeResult = borg.self.autobiographical.closePeriod(period.id, 1_200, {
+        kind: "manual",
+      });
+
+      expect(closeResult).toEqual({
+        status: "requires_review",
+        current: period,
+      });
+      expect(borg.self.autobiographical.getPeriod(period.id)?.end_ts).toBeNull();
+
+      const markerEpisodeId = createEpisodeId();
+      const marker = borg.self.growthMarkers.add({
+        ts: 1_150,
+        category: "understanding",
+        what_changed: "Facade growth marker writes are audited.",
+        evidence_episode_ids: [markerEpisodeId],
+        confidence: 0.7,
+        source_process: "manual",
+        provenance: {
+          kind: "episodes",
+          episode_ids: [markerEpisodeId],
+        },
+      });
+
+      expect(
+        borg.identity.listEvents({
+          recordType: "growth_marker",
+          recordId: marker.id,
+        })[0]?.action,
+      ).toBe("create");
+
+      const questionEpisodeId = createEpisodeId();
+      const question = borg.self.openQuestions.add({
+        question: "Does the facade guard open question state changes?",
+        urgency: 0.5,
+        related_episode_ids: [questionEpisodeId],
+        provenance: {
+          kind: "episodes",
+          episode_ids: [questionEpisodeId],
+        },
+        source: "reflection",
+      });
+      const bumpResult = borg.self.openQuestions.bumpUrgency(question.id, 0.2, {
+        kind: "manual",
+      });
+
+      expect(bumpResult).toEqual({
+        status: "requires_review",
+        current: question,
+      });
+      expect(borg.self.openQuestions.list({ status: "open" })[0]?.urgency).toBe(0.5);
     } finally {
       await borg.close();
     }

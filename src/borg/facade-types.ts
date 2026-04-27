@@ -121,11 +121,11 @@ export type BorgSelfFacade = {
       ...args: Parameters<AutobiographicalRepository["listPeriods"]>
     ) => ReturnType<AutobiographicalRepository["listPeriods"]>;
     upsertPeriod: (
-      ...args: Parameters<AutobiographicalRepository["upsertPeriod"]>
-    ) => ReturnType<AutobiographicalRepository["upsertPeriod"]>;
+      ...args: Parameters<IdentityService["addPeriod"]>
+    ) => ReturnType<IdentityService["addPeriod"]>;
     closePeriod: (
-      ...args: Parameters<AutobiographicalRepository["closePeriod"]>
-    ) => ReturnType<AutobiographicalRepository["closePeriod"]>;
+      ...args: Parameters<IdentityService["closePeriod"]>
+    ) => ReturnType<IdentityService["closePeriod"]>;
     getPeriod: (
       ...args: Parameters<AutobiographicalRepository["getPeriod"]>
     ) => ReturnType<AutobiographicalRepository["getPeriod"]>;
@@ -138,8 +138,8 @@ export type BorgSelfFacade = {
       ...args: Parameters<GrowthMarkersRepository["list"]>
     ) => ReturnType<GrowthMarkersRepository["list"]>;
     add: (
-      ...args: Parameters<GrowthMarkersRepository["add"]>
-    ) => ReturnType<GrowthMarkersRepository["add"]>;
+      ...args: Parameters<IdentityService["addGrowthMarker"]>
+    ) => ReturnType<IdentityService["addGrowthMarker"]>;
     summarize: (
       ...args: Parameters<GrowthMarkersRepository["summarize"]>
     ) => ReturnType<GrowthMarkersRepository["summarize"]>;
@@ -149,17 +149,17 @@ export type BorgSelfFacade = {
       ...args: Parameters<OpenQuestionsRepository["list"]>
     ) => ReturnType<OpenQuestionsRepository["list"]>;
     add: (
-      ...args: Parameters<OpenQuestionsRepository["add"]>
-    ) => ReturnType<OpenQuestionsRepository["add"]>;
+      ...args: Parameters<IdentityService["addOpenQuestion"]>
+    ) => ReturnType<IdentityService["addOpenQuestion"]>;
     resolve: (
-      ...args: Parameters<OpenQuestionsRepository["resolve"]>
-    ) => ReturnType<OpenQuestionsRepository["resolve"]>;
+      ...args: Parameters<IdentityService["resolveOpenQuestion"]>
+    ) => ReturnType<IdentityService["resolveOpenQuestion"]>;
     abandon: (
-      ...args: Parameters<OpenQuestionsRepository["abandon"]>
-    ) => ReturnType<OpenQuestionsRepository["abandon"]>;
+      ...args: Parameters<IdentityService["abandonOpenQuestion"]>
+    ) => ReturnType<IdentityService["abandonOpenQuestion"]>;
     bumpUrgency: (
-      ...args: Parameters<OpenQuestionsRepository["bumpUrgency"]>
-    ) => ReturnType<OpenQuestionsRepository["bumpUrgency"]>;
+      ...args: Parameters<IdentityService["bumpOpenQuestionUrgency"]>
+    ) => ReturnType<IdentityService["bumpOpenQuestionUrgency"]>;
   };
 };
 

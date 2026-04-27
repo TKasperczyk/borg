@@ -584,6 +584,76 @@ describe("correction service", () => {
     }
   });
 
+  it("forgets open questions through the identity service transaction", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_500),
+    });
+
+    try {
+      const correction = createHarnessCorrectionService(harness);
+      const question = harness.openQuestionsRepository.add({
+        question: "Which forget path should be transactional?",
+        urgency: 0.5,
+        related_episode_ids: [createEpisodeFixture().id],
+        source: "reflection",
+      });
+
+      await expect(correction.forget(question.id)).resolves.toEqual(
+        expect.objectContaining({
+          id: question.id,
+          archived: true,
+        }),
+      );
+      expect(harness.openQuestionsRepository.get(question.id)).toEqual(
+        expect.objectContaining({
+          status: "abandoned",
+          abandoned_reason: "forgotten manually",
+        }),
+      );
+      expect(
+        harness.identityEventRepository.list({
+          recordType: "open_question",
+          recordId: question.id,
+        }),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "abandon",
+            reason: "forgotten manually",
+          }),
+        ]),
+      );
+
+      const rolledBackQuestion = harness.openQuestionsRepository.add({
+        question: "Will failed forget roll back?",
+        urgency: 0.4,
+        related_episode_ids: [createEpisodeFixture().id],
+        source: "reflection",
+      });
+      const eventError = new Error("identity event insert failed");
+      const recordSpy = vi
+        .spyOn(harness.identityEventRepository, "record")
+        .mockImplementation(() => {
+          throw eventError;
+        });
+
+      try {
+        await expect(correction.forget(rolledBackQuestion.id)).rejects.toThrow(eventError);
+      } finally {
+        recordSpy.mockRestore();
+      }
+
+      expect(harness.openQuestionsRepository.get(rolledBackQuestion.id)).toEqual(
+        expect.objectContaining({
+          status: "open",
+          abandoned_reason: null,
+        }),
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("uses the injected clock when synthesizing a missing remember-about-me entity", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(7_000),

@@ -73,7 +73,6 @@ function createHarnessToolDispatcher(
     semanticNodeRepository: harness.semanticNodeRepository,
     semanticGraph,
     commitmentRepository: harness.commitmentRepository,
-    openQuestionsRepository: harness.openQuestionsRepository,
     identityService: harness.identityService,
     skillRepository: harness.skillRepository,
     createStreamWriter: (sessionId) =>

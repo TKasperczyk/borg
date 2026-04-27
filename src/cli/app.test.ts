@@ -746,17 +746,15 @@ describe("cli", () => {
     ).toBe(0);
     const question = JSON.parse(questionOut.read()) as { id: string };
 
-    const bumpOut = createOutputBuffer();
+    const bumpErr = createOutputBuffer();
     expect(
       await runCli(["node", "borg", "question", "bump", question.id, "0.2"], {
-        stdout: bumpOut.stream,
-        stderr: createOutputBuffer().stream,
+        stdout: createOutputBuffer().stream,
+        stderr: bumpErr.stream,
         dataDir: tempDir,
       }),
-    ).toBe(0);
-    expect(JSON.parse(bumpOut.read())).toMatchObject({
-      id: question.id,
-    });
+    ).toBe(1);
+    expect(bumpErr.read()).toContain("requires identity review");
 
     const showPeriodOut = createOutputBuffer();
     expect(

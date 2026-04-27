@@ -203,7 +203,7 @@ export class OpenQuestionsRepository {
     return this.options.db;
   }
 
-  private getByDedupeKey(key: string): OpenQuestion | null {
+  getByDedupeKey(key: string): OpenQuestion | null {
     const row = this.db
       .prepare("SELECT * FROM open_questions WHERE dedupe_key = ? LIMIT 1")
       .get(key) as Record<string, unknown> | undefined;

@@ -24,6 +24,7 @@ export { selfMigrations } from "./migrations.js";
 export {
   OPEN_QUESTION_SOURCES,
   OPEN_QUESTION_STATUSES,
+  buildOpenQuestionDedupeKey,
   OpenQuestionsRepository,
   openQuestionIdSchema,
   openQuestionPatchSchema,

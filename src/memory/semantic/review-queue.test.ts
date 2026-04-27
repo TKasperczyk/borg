@@ -8,7 +8,11 @@ import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { createSemanticNodeId, type EpisodeId } from "../../util/ids.js";
+import {
+  createAutobiographicalPeriodId,
+  createSemanticNodeId,
+  type EpisodeId,
+} from "../../util/ids.js";
 import { OpenQuestionsRepository, selfMigrations } from "../self/index.js";
 import { enqueueOpenQuestionForReview } from "../self/review-open-question-hook.js";
 import { semanticMigrations } from "./migrations.js";
@@ -696,6 +700,83 @@ describe("review queue", () => {
           process: "self-narrator",
         },
       }),
+    );
+  });
+
+  it("records identity events for accepted autobiographical period rollovers", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(7_250),
+    });
+    cleanup.push(harness.cleanup);
+
+    const evidenceEpisode = createEpisodeFixture().id;
+    const currentPeriod = harness.autobiographicalRepository.upsertPeriod({
+      label: "2026-Q2",
+      start_ts: 1_000,
+      narrative: "Current period.",
+      key_episode_ids: [evidenceEpisode],
+      themes: ["stability"],
+      provenance: {
+        kind: "episodes",
+        episode_ids: [evidenceEpisode],
+      },
+    });
+    const nextPeriodId = createAutobiographicalPeriodId();
+    const rollover = harness.reviewQueueRepository.enqueue({
+      kind: "identity_inconsistency",
+      refs: {
+        target_type: "autobiographical_period",
+        target_id: currentPeriod.id,
+        repair_op: "patch",
+        patch: {
+          end_ts: 7_000,
+        },
+        proposed_provenance: {
+          kind: "offline",
+          process: "self-narrator",
+        },
+        next_period_open_payload: {
+          id: nextPeriodId,
+          label: "2026-Q3",
+          start_ts: 7_000,
+          end_ts: null,
+          narrative: "Next period.",
+          key_episode_ids: [evidenceEpisode],
+          themes: ["rollover"],
+          provenance: {
+            kind: "offline",
+            process: "self-narrator",
+          },
+          created_at: 7_000,
+          last_updated: 7_000,
+        },
+      },
+      reason: "period should roll over",
+    });
+
+    await harness.reviewQueueRepository.resolve(rollover.id, "accept");
+
+    expect(harness.autobiographicalRepository.getPeriod(currentPeriod.id)).toEqual(
+      expect.objectContaining({
+        end_ts: 7_000,
+      }),
+    );
+    expect(harness.autobiographicalRepository.getPeriod(nextPeriodId)).toEqual(
+      expect.objectContaining({
+        label: "2026-Q3",
+      }),
+    );
+    expect(
+      harness.identityEventRepository.list({
+        recordType: "autobiographical_period",
+        recordId: nextPeriodId,
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "create",
+        }),
+      ]),
     );
   });
 

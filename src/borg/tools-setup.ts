@@ -7,7 +7,6 @@ import { isEpisodeVisibleToAudience, type EpisodicRepository } from "../memory/e
 import type { IdentityEvent } from "../memory/identity/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { SkillRepository } from "../memory/procedural/index.js";
-import type { OpenQuestionsRepository } from "../memory/self/index.js";
 import type { SemanticGraph, SemanticNodeRepository } from "../memory/semantic/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import {
@@ -32,7 +31,6 @@ export type BuildToolDispatcherOptions = {
   semanticNodeRepository: SemanticNodeRepository;
   semanticGraph: SemanticGraph;
   commitmentRepository: CommitmentRepository;
-  openQuestionsRepository: OpenQuestionsRepository;
   identityService: IdentityService;
   skillRepository: SkillRepository;
   createStreamWriter: BorgStreamWriterFactory;
@@ -155,7 +153,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     )
     .register(
       createOpenQuestionsCreateTool({
-        createOpenQuestion: (input) => options.openQuestionsRepository.add(input),
+        createOpenQuestion: (input) => options.identityService.addOpenQuestion(input),
       }),
     )
     .register(
