@@ -105,6 +105,10 @@ export function resolveBorgConfig(options: {
     autonomy: {
       ...DEFAULT_CONFIG.autonomy,
       ...rawConfig.autonomy,
+      executiveFocus: {
+        ...DEFAULT_CONFIG.autonomy.executiveFocus,
+        ...rawConfig.autonomy?.executiveFocus,
+      },
       triggers: {
         ...DEFAULT_CONFIG.autonomy.triggers,
         ...rawConfig.autonomy?.triggers,

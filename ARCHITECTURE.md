@@ -716,6 +716,17 @@ and the new `borg maintenance tick --cadence light|heavy`). The
 scheduler is opt-in: `start()` must be called explicitly (same pattern
 as the autonomy scheduler).
 
+**Autonomy wakes.** The autonomy scheduler is the only runtime loop for
+self-initiated cognition. It scans enabled wake sources, enforces the
+rolling wake budget, and calls the normal turn orchestrator with
+`origin: "autonomous"` and `audience: "self"`; it does not have a
+separate executive agent. `executive_focus_due` is an opt-in trigger
+(`autonomy.executiveFocus.enabled`) that wakes when a selected goal is
+stale or a durable executive step is due. This closes the minimum
+executive loop: focus is selected, the top step is rendered into the
+turn prompt, reflection updates or proposes steps, and autonomy wakes
+again only when the focused work becomes due or stale.
+
 ### 5.3 Retrieval pipeline
 
 ```
@@ -776,7 +787,10 @@ Notes vs. an earlier sketch of this pipeline:
 Key runtime knobs live in `src/config/index.ts`. Executive focus adds
 `executive.goalFocusThreshold` (default `0.45`), the minimum score an
 active goal must clear before Borg renders `<borg_executive_focus>` or
-applies primary-goal retrieval bias.
+applies primary-goal retrieval bias. Autonomous executive wakes are
+controlled by `autonomy.executiveFocus.enabled` (default `false`),
+`autonomy.executiveFocus.stalenessSec` (default `86400`), and
+`autonomy.executiveFocus.dueLeadSec` (default `0`).
 
 ---
 

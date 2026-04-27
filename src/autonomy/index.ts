@@ -21,10 +21,13 @@ export {
 } from "./types.js";
 export {
   createCommitmentExpiringTrigger,
+  createExecutiveFocusDueTrigger,
   createGoalFollowupDueTrigger,
   createOpenQuestionDormantTrigger,
   createScheduledReflectionTrigger,
   type CommitmentExpiringTriggerOptions,
+  type ExecutiveFocusDuePayload,
+  type ExecutiveFocusDueTriggerOptions,
   type GoalFollowupDueTriggerOptions,
   type OpenQuestionDormantTriggerOptions,
   type ScheduledReflectionTriggerOptions,

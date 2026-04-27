@@ -5,6 +5,7 @@ import {
   type AutonomyWakesRepository,
   createCommitmentExpiringTrigger,
   createCommitmentRevokedCondition,
+  createExecutiveFocusDueTrigger,
   createGoalFollowupDueTrigger,
   createMoodValenceDropCondition,
   createOpenQuestionDormantTrigger,
@@ -13,8 +14,10 @@ import {
 } from "../autonomy/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
 import type { Config } from "../config/index.js";
+import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
+import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { GoalsRepository, OpenQuestionsRepository } from "../memory/self/index.js";
 import type { StreamWatermarkRepository } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
@@ -24,7 +27,9 @@ import type { BorgStreamWriterFactory } from "./types.js";
 export type BuildAutonomySchedulerOptions = {
   config: Config;
   commitmentRepository: CommitmentRepository;
+  episodicRepository: EpisodicRepository;
   goalsRepository: GoalsRepository;
+  executiveStepsRepository: ExecutiveStepsRepository;
   openQuestionsRepository: OpenQuestionsRepository;
   moodRepository: MoodRepository;
   streamWatermarkRepository: StreamWatermarkRepository;
@@ -54,6 +59,27 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             watermarkRepository: options.streamWatermarkRepository,
             lookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
             staleMs: options.config.autonomy.triggers.goalFollowupDue.staleMs,
+            clock: options.clock,
+          }),
+        ]
+      : []),
+    ...(options.config.autonomy.executiveFocus.enabled
+      ? [
+          createExecutiveFocusDueTrigger({
+            enabled: options.config.autonomy.executiveFocus.enabled,
+            goalsRepository: options.goalsRepository,
+            executiveStepsRepository: options.executiveStepsRepository,
+            episodicRepository: options.episodicRepository,
+            watermarkRepository: options.streamWatermarkRepository,
+            threshold: options.config.executive.goalFocusThreshold,
+            stalenessMs: options.config.autonomy.executiveFocus.stalenessSec * 1_000,
+            dueLeadMs: options.config.autonomy.executiveFocus.dueLeadSec * 1_000,
+            deadlineLookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
+            goalFollowupDue: {
+              enabled: options.config.autonomy.triggers.goalFollowupDue.enabled,
+              lookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
+              staleMs: options.config.autonomy.triggers.goalFollowupDue.staleMs,
+            },
             clock: options.clock,
           }),
         ]

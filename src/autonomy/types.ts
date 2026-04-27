@@ -5,6 +5,7 @@ export const AUTONOMY_TRIGGER_NAMES = [
   "open_question_dormant",
   "scheduled_reflection",
   "goal_followup_due",
+  "executive_focus_due",
 ] as const;
 
 export type AutonomyTriggerName = (typeof AUTONOMY_TRIGGER_NAMES)[number];
@@ -34,12 +35,13 @@ export type DueEvent<Payload extends Record<string, unknown> = Record<string, un
   payload: Payload;
 };
 
-export type AutonomyWakeSource<Payload extends Record<string, unknown> = Record<string, unknown>> = {
-  name: AutonomyWakeSourceName;
-  type: AutonomyWakeSourceType;
-  scan(): Promise<DueEvent<Payload>[]>;
-  buildTurn(event: DueEvent<Payload>): TurnInput;
-};
+export type AutonomyWakeSource<Payload extends Record<string, unknown> = Record<string, unknown>> =
+  {
+    name: AutonomyWakeSourceName;
+    type: AutonomyWakeSourceType;
+    scan(): Promise<DueEvent<Payload>[]>;
+    buildTurn(event: DueEvent<Payload>): TurnInput;
+  };
 
 export type AutonomyTrigger<Payload extends Record<string, unknown> = Record<string, unknown>> =
   AutonomyWakeSource<Payload>;

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { autonomyMigrations } from "../autonomy/index.js";
 import { DEFAULT_CONFIG, type Config } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
+import { executiveMigrations, ExecutiveStepsRepository } from "../executive/index.js";
 import { FakeLLMClient, type LLMClient } from "../llm/index.js";
 import { MoodRepository, affectiveMigrations } from "../memory/affective/index.js";
 import {
@@ -116,6 +117,7 @@ export type OfflineTestHarness = {
   identityService: IdentityService;
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
+  executiveStepsRepository: ExecutiveStepsRepository;
   traitsRepository: TraitsRepository;
   autobiographicalRepository: AutobiographicalRepository;
   growthMarkersRepository: GrowthMarkersRepository;
@@ -213,6 +215,10 @@ export async function createOfflineTestHarness(
     autonomy: {
       ...DEFAULT_CONFIG.autonomy,
       ...options.configOverrides?.autonomy,
+      executiveFocus: {
+        ...DEFAULT_CONFIG.autonomy.executiveFocus,
+        ...options.configOverrides?.autonomy?.executiveFocus,
+      },
       triggers: {
         ...DEFAULT_CONFIG.autonomy.triggers,
         ...options.configOverrides?.autonomy?.triggers,
@@ -258,6 +264,7 @@ export async function createOfflineTestHarness(
     migrations: [
       ...episodicMigrations,
       ...selfMigrations,
+      ...executiveMigrations,
       ...affectiveMigrations,
       ...retrievalMigrations,
       ...semanticMigrations,
@@ -338,6 +345,10 @@ export async function createOfflineTestHarness(
     db,
     clock,
     identityEventRepository,
+  });
+  const executiveStepsRepository = new ExecutiveStepsRepository({
+    db,
+    clock,
   });
   const traitsRepository = new TraitsRepository({
     db,
@@ -444,6 +455,7 @@ export async function createOfflineTestHarness(
     identityService,
     valuesRepository,
     goalsRepository,
+    executiveStepsRepository,
     traitsRepository,
     autobiographicalRepository,
     growthMarkersRepository,

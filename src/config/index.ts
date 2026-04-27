@@ -188,6 +188,14 @@ const configFileSchema = z
         intervalMs: z.number().int().positive().optional(),
         maxWakesPerWindow: z.number().int().positive().optional(),
         budgetWindowMs: z.number().int().positive().optional(),
+        executiveFocus: z
+          .object({
+            enabled: z.boolean().optional(),
+            stalenessSec: z.number().int().positive().optional(),
+            dueLeadSec: z.number().int().nonnegative().optional(),
+          })
+          .partial()
+          .optional(),
         triggers: z
           .object({
             commitmentExpiring: z
@@ -388,6 +396,11 @@ export const configSchema = z.object({
     intervalMs: z.number().int().positive(),
     maxWakesPerWindow: z.number().int().positive(),
     budgetWindowMs: z.number().int().positive(),
+    executiveFocus: z.object({
+      enabled: z.boolean(),
+      stalenessSec: z.number().int().positive(),
+      dueLeadSec: z.number().int().nonnegative(),
+    }),
     triggers: z.object({
       commitmentExpiring: z.object({
         enabled: z.boolean(),
@@ -546,6 +559,11 @@ export const DEFAULT_CONFIG: Config = {
     intervalMs: 60_000,
     maxWakesPerWindow: 6,
     budgetWindowMs: 86_400_000,
+    executiveFocus: {
+      enabled: false,
+      stalenessSec: 86_400,
+      dueLeadSec: 0,
+    },
     triggers: {
       commitmentExpiring: {
         enabled: true,
@@ -1045,6 +1063,20 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         readOptionalEnvNumber(env, "BORG_AUTONOMY_BUDGET_WINDOW_MS") ??
         fileConfig.autonomy?.budgetWindowMs ??
         DEFAULT_CONFIG.autonomy.budgetWindowMs,
+      executiveFocus: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_ENABLED") ??
+          fileConfig.autonomy?.executiveFocus?.enabled ??
+          DEFAULT_CONFIG.autonomy.executiveFocus.enabled,
+        stalenessSec:
+          readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_STALENESS_SEC") ??
+          fileConfig.autonomy?.executiveFocus?.stalenessSec ??
+          DEFAULT_CONFIG.autonomy.executiveFocus.stalenessSec,
+        dueLeadSec:
+          readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_DUE_LEAD_SEC") ??
+          fileConfig.autonomy?.executiveFocus?.dueLeadSec ??
+          DEFAULT_CONFIG.autonomy.executiveFocus.dueLeadSec,
+      },
       triggers: {
         commitmentExpiring: {
           enabled:
@@ -1187,6 +1219,9 @@ export function redactConfig(config: Config): Config {
     },
     autonomy: {
       ...config.autonomy,
+      executiveFocus: {
+        ...config.autonomy.executiveFocus,
+      },
       triggers: {
         ...config.autonomy.triggers,
         commitmentExpiring: {

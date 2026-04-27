@@ -2603,6 +2603,11 @@ describe("Borg", () => {
           intervalMs: 60_000,
           maxWakesPerWindow: 6,
           budgetWindowMs: 86_400_000,
+          executiveFocus: {
+            enabled: false,
+            stalenessSec: 86_400,
+            dueLeadSec: 0,
+          },
           triggers: {
             commitmentExpiring: {
               enabled: false,
@@ -3231,6 +3236,11 @@ describe("Borg", () => {
           intervalMs: 60_000,
           maxWakesPerWindow: 6,
           budgetWindowMs: 86_400_000,
+          executiveFocus: {
+            enabled: false,
+            stalenessSec: 86_400,
+            dueLeadSec: 0,
+          },
           triggers: {
             commitmentExpiring: {
               enabled: false,

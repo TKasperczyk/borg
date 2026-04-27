@@ -144,7 +144,9 @@ export async function openBorgDependencies(
     const autonomyScheduler = buildAutonomyScheduler({
       config,
       commitmentRepository: repositories.commitmentRepository,
+      episodicRepository: repositories.episodicRepository,
       goalsRepository: repositories.goalsRepository,
+      executiveStepsRepository: repositories.executiveStepsRepository,
       openQuestionsRepository: repositories.openQuestionsRepository,
       moodRepository: repositories.moodRepository,
       streamWatermarkRepository,
