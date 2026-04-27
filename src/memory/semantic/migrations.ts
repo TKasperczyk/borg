@@ -250,4 +250,71 @@ export const semanticMigrations: Migration[] = [
       );
     },
   },
+  {
+    id: 135,
+    name: "semantic_belief_revision_substrate",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS semantic_belief_dependencies (
+          target_type TEXT NOT NULL CHECK (target_type IN ('semantic_node', 'semantic_edge')),
+          target_id TEXT NOT NULL,
+          source_edge_id TEXT NOT NULL,
+          dependency_kind TEXT NOT NULL CHECK (dependency_kind IN ('supports', 'derived_from')),
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (target_type, target_id, source_edge_id, dependency_kind)
+        );
+
+        CREATE INDEX IF NOT EXISTS semantic_belief_dependencies_source_idx
+          ON semantic_belief_dependencies(source_edge_id);
+
+        CREATE TABLE IF NOT EXISTS semantic_edge_invalidation_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          edge_id TEXT NOT NULL,
+          valid_to INTEGER NOT NULL,
+          invalidated_at INTEGER NOT NULL,
+          processed_at INTEGER NULL
+        );
+      `);
+
+      if (!tableExists(db, "semantic_edges")) {
+        return;
+      }
+
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS semantic_edges_invalidation_outbox_insert
+        AFTER UPDATE OF valid_to ON semantic_edges
+        WHEN OLD.valid_to IS NULL AND NEW.valid_to IS NOT NULL
+        BEGIN
+          INSERT INTO semantic_edge_invalidation_events (
+            edge_id,
+            valid_to,
+            invalidated_at,
+            processed_at
+          ) VALUES (
+            NEW.id,
+            NEW.valid_to,
+            COALESCE(NEW.invalidated_at, NEW.valid_to),
+            NULL
+          );
+        END;
+
+        INSERT OR IGNORE INTO semantic_belief_dependencies (
+          target_type,
+          target_id,
+          source_edge_id,
+          dependency_kind,
+          created_at
+        )
+        SELECT
+          'semantic_node',
+          to_node_id,
+          id,
+          'supports',
+          created_at
+        FROM semantic_edges
+        WHERE relation = 'supports'
+          AND valid_to IS NULL;
+      `);
+    },
+  },
 ];

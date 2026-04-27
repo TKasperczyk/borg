@@ -1019,7 +1019,6 @@ export class ReviewQueueRepository {
             toId: edge.insight_node_id,
             relation: "supports",
           });
-
           if (duplicate.length > 0) {
             continue;
           }

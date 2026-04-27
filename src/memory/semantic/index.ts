@@ -20,10 +20,19 @@ export {
   type ReviewResolution,
   type ReviewResolutionInput,
 } from "./review-queue.js";
+export { SemanticReviewService, type SemanticReviewServiceOptions } from "./review-service.js";
 export {
-  SemanticReviewService,
-  type SemanticReviewServiceOptions,
-} from "./review-service.js";
+  SemanticBeliefDependencyRepository,
+  semanticBeliefDependencyInputSchema,
+  semanticBeliefDependencyKindSchema,
+  semanticBeliefDependencySchema,
+  semanticBeliefDependencyTargetTypeSchema,
+  type SemanticBeliefDependency,
+  type SemanticBeliefDependencyInput,
+  type SemanticBeliefDependencyKind,
+  type SemanticBeliefDependencyRepositoryOptions,
+  type SemanticBeliefDependencyTargetType,
+} from "./revision-dependencies.js";
 export {
   SemanticEdgeRepository,
   SemanticNodeRepository,

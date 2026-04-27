@@ -96,6 +96,51 @@ async function insertEdgeEndpoints(fixture: SemanticFixture) {
   return { atlas, deploy };
 }
 
+function listInvalidationEvents(db: ReturnType<typeof openDatabase>) {
+  return db
+    .prepare(
+      `
+        SELECT edge_id, valid_to, invalidated_at, processed_at
+        FROM semantic_edge_invalidation_events
+        ORDER BY id ASC
+      `,
+    )
+    .all() as Array<{
+    edge_id: string;
+    valid_to: number;
+    invalidated_at: number;
+    processed_at: number | null;
+  }>;
+}
+
+function listBeliefDependencies(db: ReturnType<typeof openDatabase>) {
+  return db
+    .prepare(
+      `
+        SELECT target_type, target_id, source_edge_id, dependency_kind, created_at
+        FROM semantic_belief_dependencies
+        ORDER BY target_type ASC, target_id ASC, source_edge_id ASC, dependency_kind ASC
+      `,
+    )
+    .all() as Array<{
+    target_type: string;
+    target_id: string;
+    source_edge_id: string;
+    dependency_kind: string;
+    created_at: number;
+  }>;
+}
+
+function runRevisionSubstrateMigration(db: ReturnType<typeof openDatabase>): void {
+  const migration = semanticMigrations.find((item) => item.id === 135);
+
+  if (typeof migration?.up !== "function") {
+    throw new Error("revision substrate migration is missing");
+  }
+
+  migration.up(db);
+}
+
 describe("semantic repositories", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -203,6 +248,199 @@ describe("semantic repositories", () => {
       valid_from: 250,
       valid_to: null,
     });
+  });
+
+  it("backfills support-edge belief dependencies during migration", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const dbPath = join(tempDir, "borg.db");
+    let db: ReturnType<typeof openDatabase> | null = null;
+
+    cleanup.push(async () => {
+      db?.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    db = openDatabase(dbPath, {
+      migrations: semanticMigrations.filter((migration) => migration.id < 135),
+    });
+    const supportEdgeId = createSemanticEdgeId();
+    const evidenceNodeId = createSemanticNodeId();
+    const insightNodeId = createSemanticNodeId();
+
+    db.prepare(
+      `
+        INSERT INTO semantic_edges (
+          id,
+          from_node_id,
+          to_node_id,
+          relation,
+          confidence,
+          evidence_episode_ids,
+          created_at,
+          last_verified_at,
+          valid_from,
+          valid_to,
+          invalidated_at,
+          invalidated_by_edge_id,
+          invalidated_by_review_id,
+          invalidated_by_process,
+          invalidated_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
+      `,
+    ).run(
+      supportEdgeId,
+      evidenceNodeId,
+      insightNodeId,
+      "supports",
+      0.7,
+      JSON.stringify(["ep_aaaaaaaaaaaaaaaa"]),
+      2_000,
+      2_000,
+      2_000,
+    );
+    db.close();
+    db = null;
+
+    db = openDatabase(dbPath, {
+      migrations: semanticMigrations,
+    });
+
+    const rows = db
+      .prepare(
+        `
+          SELECT target_type, target_id, source_edge_id, dependency_kind, created_at
+          FROM semantic_belief_dependencies
+          WHERE source_edge_id = ?
+        `,
+      )
+      .all(supportEdgeId);
+
+    expect(rows).toEqual([
+      {
+        target_type: "semantic_node",
+        target_id: insightNodeId,
+        source_edge_id: supportEdgeId,
+        dependency_kind: "supports",
+        created_at: 2_000,
+      },
+    ]);
+  });
+
+  it("does not backfill belief dependencies for invalidated support edges", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const dbPath = join(tempDir, "borg.db");
+    let db: ReturnType<typeof openDatabase> | null = null;
+
+    cleanup.push(async () => {
+      db?.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    db = openDatabase(dbPath, {
+      migrations: semanticMigrations.filter((migration) => migration.id < 135),
+    });
+
+    db.prepare(
+      `
+        INSERT INTO semantic_edges (
+          id,
+          from_node_id,
+          to_node_id,
+          relation,
+          confidence,
+          evidence_episode_ids,
+          created_at,
+          last_verified_at,
+          valid_from,
+          valid_to,
+          invalidated_at,
+          invalidated_by_edge_id,
+          invalidated_by_review_id,
+          invalidated_by_process,
+          invalidated_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+      `,
+    ).run(
+      createSemanticEdgeId(),
+      createSemanticNodeId(),
+      createSemanticNodeId(),
+      "supports",
+      0.7,
+      JSON.stringify(["ep_aaaaaaaaaaaaaaaa"]),
+      2_000,
+      2_000,
+      2_000,
+      2_500,
+      2_500,
+      "maintenance",
+      "closed before revision substrate existed",
+    );
+    db.close();
+    db = null;
+
+    db = openDatabase(dbPath, {
+      migrations: semanticMigrations,
+    });
+
+    expect(listBeliefDependencies(db)).toEqual([]);
+  });
+
+  it("backfills support-edge belief dependencies idempotently", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const dbPath = join(tempDir, "borg.db");
+    let db: ReturnType<typeof openDatabase> | null = null;
+
+    cleanup.push(async () => {
+      db?.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    db = openDatabase(dbPath, {
+      migrations: semanticMigrations.filter((migration) => migration.id < 135),
+    });
+
+    db.prepare(
+      `
+        INSERT INTO semantic_edges (
+          id,
+          from_node_id,
+          to_node_id,
+          relation,
+          confidence,
+          evidence_episode_ids,
+          created_at,
+          last_verified_at,
+          valid_from,
+          valid_to,
+          invalidated_at,
+          invalidated_by_edge_id,
+          invalidated_by_review_id,
+          invalidated_by_process,
+          invalidated_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
+      `,
+    ).run(
+      createSemanticEdgeId(),
+      createSemanticNodeId(),
+      createSemanticNodeId(),
+      "supports",
+      0.7,
+      JSON.stringify(["ep_aaaaaaaaaaaaaaaa"]),
+      2_000,
+      2_000,
+      2_000,
+    );
+    db.close();
+    db = null;
+
+    db = openDatabase(dbPath, {
+      migrations: semanticMigrations,
+    });
+
+    runRevisionSubstrateMigration(db);
+    runRevisionSubstrateMigration(db);
+
+    expect(listBeliefDependencies(db)).toHaveLength(1);
   });
 
   it("supports semantic node CRUD and vector search", async () => {
@@ -466,6 +704,29 @@ describe("semantic repositories", () => {
     expect(fixture.edgeRepository.getEdge(edge.id)).toEqual(edge);
   });
 
+  it("writes support-edge belief dependencies from addEdge", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const { atlas, deploy } = await insertEdgeEndpoints(fixture);
+    const edge = fixture.edgeRepository.addEdge(buildEdgeInput(atlas.id, deploy.id));
+
+    expect(listBeliefDependencies(fixture.db)).toEqual([
+      {
+        target_type: "semantic_node",
+        target_id: deploy.id,
+        source_edge_id: edge.id,
+        dependency_kind: "supports",
+        created_at: edge.created_at,
+      },
+    ]);
+  });
+
   it("rejects currently open duplicate semantic edges", async () => {
     const fixture = await createSemanticFixture();
 
@@ -636,6 +897,59 @@ describe("semantic repositories", () => {
     expect(fixture.edgeRepository.getEdge(edge.id)).toEqual(invalidated);
   });
 
+  it("writes exactly one invalidation outbox event when an edge closes", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const { atlas, deploy } = await insertEdgeEndpoints(fixture);
+    const edge = fixture.edgeRepository.addEdge(buildEdgeInput(atlas.id, deploy.id));
+
+    fixture.edgeRepository.invalidateEdge(edge.id, {
+      at: 1_200,
+      by_process: "manual",
+      reason: "superseded by newer evidence",
+    });
+
+    expect(listInvalidationEvents(fixture.db)).toEqual([
+      {
+        edge_id: edge.id,
+        valid_to: 1_200,
+        invalidated_at: 1_000,
+        processed_at: null,
+      },
+    ]);
+  });
+
+  it("does not duplicate invalidation outbox events when an edge is re-invalidated", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const { atlas, deploy } = await insertEdgeEndpoints(fixture);
+    const edge = fixture.edgeRepository.addEdge(buildEdgeInput(atlas.id, deploy.id));
+
+    fixture.edgeRepository.invalidateEdge(edge.id, {
+      at: 1_200,
+      by_process: "manual",
+    });
+    fixture.edgeRepository.invalidateEdge(edge.id, {
+      at: 1_300,
+      by_process: "review",
+      reason: "second pass",
+    });
+
+    expect(listInvalidationEvents(fixture.db)).toHaveLength(1);
+  });
+
   it("rejects invalidating an edge with 'at' before its valid_from", async () => {
     const fixture = await createSemanticFixture();
 
@@ -717,5 +1031,4 @@ describe("semantic repositories", () => {
       code: "SEMANTIC_EDGE_DANGLING",
     });
   });
-
 });

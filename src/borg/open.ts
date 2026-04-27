@@ -172,6 +172,7 @@ export async function openBorgDependencies(
       episodicRepository: repositories.episodicRepository,
       semanticNodeRepository: repositories.semanticNodeRepository,
       semanticEdgeRepository: repositories.semanticEdgeRepository,
+      semanticBeliefDependencyRepository: repositories.semanticBeliefDependencyRepository,
       semanticReviewService: repositories.semanticReviewService,
       semanticGraph: repositories.semanticGraph,
       reviewQueueRepository: repositories.reviewQueueRepository,

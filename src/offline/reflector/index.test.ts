@@ -201,6 +201,16 @@ describe("reflector process", () => {
         evidence_episode_ids: [episodes[0]!.id],
       }),
     ]);
+    expect(
+      harness.semanticBeliefDependencyRepository.listBySourceEdge(supportEdges[0]!.id),
+    ).toEqual([
+      expect.objectContaining({
+        target_type: "semantic_node",
+        target_id: insightNode?.id,
+        source_edge_id: supportEdges[0]!.id,
+        dependency_kind: "supports",
+      }),
+    ]);
 
     const afterRetrieval = await harness.retrievalPipeline.searchWithContext(
       "Deploys stabilize when rollback plans are documented",
@@ -216,10 +226,9 @@ describe("reflector process", () => {
     // surface the insight via the supports-out walk. Pre-fix the supports
     // edge ran insight->target, so walking supports OUT from the matched
     // anchor found nothing and the insight stayed invisible.
-    const anchorRetrieval = await harness.retrievalPipeline.searchWithContext(
-      "Rollback plan",
-      { limit: 1 },
-    );
+    const anchorRetrieval = await harness.retrievalPipeline.searchWithContext("Rollback plan", {
+      limit: 1,
+    });
     expect(anchorRetrieval.semantic.support_hits.map((hit) => hit.node.id)).toContain(
       insightNode?.id,
     );

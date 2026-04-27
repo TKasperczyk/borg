@@ -30,6 +30,7 @@ import {
 } from "../memory/self/review-open-question-hook.js";
 import {
   ReviewQueueRepository,
+  SemanticBeliefDependencyRepository,
   SemanticEdgeRepository,
   SemanticGraph,
   SemanticNodeRepository,
@@ -54,6 +55,7 @@ export type BorgRepositorySetup = Pick<
   | "episodicRepository"
   | "semanticNodeRepository"
   | "semanticEdgeRepository"
+  | "semanticBeliefDependencyRepository"
   | "semanticGraph"
   | "semanticReviewService"
   | "reviewQueueRepository"
@@ -165,6 +167,10 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
     enqueueReview,
+  });
+  const semanticBeliefDependencyRepository = new SemanticBeliefDependencyRepository({
+    db: sqlite,
+    clock,
   });
   const semanticGraph = new SemanticGraph({
     nodeRepository: semanticNodeRepository,
@@ -308,6 +314,7 @@ export async function buildBorgRepositories(
     episodicRepository,
     semanticNodeRepository,
     semanticEdgeRepository,
+    semanticBeliefDependencyRepository,
     semanticGraph,
     semanticReviewService,
     reviewQueueRepository: createdReviewQueueRepository,

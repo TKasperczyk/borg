@@ -27,6 +27,7 @@ import type {
 } from "../memory/self/index.js";
 import type {
   ReviewQueueRepository,
+  SemanticBeliefDependencyRepository,
   SemanticEdgeRepository,
   SemanticGraph,
   SemanticNodeRepository,
@@ -64,6 +65,7 @@ export type BorgDependencies = {
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
+  semanticBeliefDependencyRepository: SemanticBeliefDependencyRepository;
   semanticGraph: SemanticGraph;
   semanticReviewService: SemanticReviewService;
   reviewQueueRepository: ReviewQueueRepository;

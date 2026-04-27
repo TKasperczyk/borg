@@ -45,6 +45,7 @@ import {
 } from "../memory/self/review-open-question-hook.js";
 import {
   ReviewQueueRepository,
+  SemanticBeliefDependencyRepository,
   SemanticGraph,
   SemanticEdgeRepository,
   SemanticNodeRepository,
@@ -112,6 +113,7 @@ export type OfflineTestHarness = {
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
+  semanticBeliefDependencyRepository: SemanticBeliefDependencyRepository;
   reviewQueueRepository: ReviewQueueRepository;
   identityEventRepository: IdentityEventRepository;
   identityService: IdentityService;
@@ -328,6 +330,10 @@ export async function createOfflineTestHarness(
     clock,
     enqueueReview: (input) => reviewQueueRepository.enqueue(input),
   });
+  const semanticBeliefDependencyRepository = new SemanticBeliefDependencyRepository({
+    db,
+    clock,
+  });
   const semanticGraph = new SemanticGraph({
     nodeRepository: semanticNodeRepository,
     edgeRepository: semanticEdgeRepository,
@@ -451,6 +457,7 @@ export async function createOfflineTestHarness(
     episodicRepository,
     semanticNodeRepository,
     semanticEdgeRepository,
+    semanticBeliefDependencyRepository,
     reviewQueueRepository,
     identityEventRepository,
     identityService,

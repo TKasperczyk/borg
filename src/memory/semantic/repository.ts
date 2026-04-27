@@ -715,41 +715,7 @@ export class SemanticEdgeRepository {
     return row?.label ?? null;
   }
 
-  addEdge(input: SemanticEdgeInsertInput): SemanticEdge {
-    const now = this.clock.now();
-    const edge = semanticEdgeSchema.parse({
-      ...input,
-      id: input.id ?? createSemanticEdgeId(),
-      valid_from: input.valid_from ?? now,
-      valid_to: input.valid_to ?? null,
-      invalidated_at: input.invalidated_at ?? null,
-      invalidated_by_edge_id: input.invalidated_by_edge_id ?? null,
-      invalidated_by_review_id: input.invalidated_by_review_id ?? null,
-      invalidated_by_process: input.invalidated_by_process ?? null,
-      invalidated_reason: input.invalidated_reason ?? null,
-    });
-
-    this.assertNodeExists(edge.from_node_id, "from_node_id");
-    this.assertNodeExists(edge.to_node_id, "to_node_id");
-
-    if (edge.valid_to === null) {
-      const duplicate = this.db
-        .prepare(
-          `
-            SELECT id
-            FROM semantic_edges
-            WHERE from_node_id = ? AND to_node_id = ? AND relation = ? AND valid_to IS NULL
-          `,
-        )
-        .get(edge.from_node_id, edge.to_node_id, edge.relation);
-
-      if (duplicate !== undefined) {
-        throw new SemanticError("Duplicate semantic edge", {
-          code: "SEMANTIC_EDGE_DUPLICATE",
-        });
-      }
-    }
-
+  private insertEdgeRow(edge: SemanticEdge): void {
     this.db
       .prepare(
         `
@@ -789,6 +755,78 @@ export class SemanticEdgeRepository {
         edge.invalidated_by_process,
         edge.invalidated_reason,
       );
+  }
+
+  private insertSupportDependency(edge: SemanticEdge): void {
+    if (edge.relation !== "supports") {
+      return;
+    }
+
+    this.db
+      .prepare(
+        `
+          INSERT OR IGNORE INTO semantic_belief_dependencies (
+            target_type,
+            target_id,
+            source_edge_id,
+            dependency_kind,
+            created_at
+          ) VALUES ('semantic_node', ?, ?, 'supports', ?)
+        `,
+      )
+      .run(edge.to_node_id, edge.id, edge.created_at);
+  }
+
+  private insertEdgeWithDependencies(edge: SemanticEdge): void {
+    const write = () => {
+      this.insertEdgeRow(edge);
+      this.insertSupportDependency(edge);
+    };
+
+    if (this.db.raw.inTransaction) {
+      write();
+      return;
+    }
+
+    this.db.transaction(write)();
+  }
+
+  addEdge(input: SemanticEdgeInsertInput): SemanticEdge {
+    const now = this.clock.now();
+    const edge = semanticEdgeSchema.parse({
+      ...input,
+      id: input.id ?? createSemanticEdgeId(),
+      valid_from: input.valid_from ?? now,
+      valid_to: input.valid_to ?? null,
+      invalidated_at: input.invalidated_at ?? null,
+      invalidated_by_edge_id: input.invalidated_by_edge_id ?? null,
+      invalidated_by_review_id: input.invalidated_by_review_id ?? null,
+      invalidated_by_process: input.invalidated_by_process ?? null,
+      invalidated_reason: input.invalidated_reason ?? null,
+    });
+
+    this.assertNodeExists(edge.from_node_id, "from_node_id");
+    this.assertNodeExists(edge.to_node_id, "to_node_id");
+
+    if (edge.valid_to === null) {
+      const duplicate = this.db
+        .prepare(
+          `
+            SELECT id
+            FROM semantic_edges
+            WHERE from_node_id = ? AND to_node_id = ? AND relation = ? AND valid_to IS NULL
+          `,
+        )
+        .get(edge.from_node_id, edge.to_node_id, edge.relation);
+
+      if (duplicate !== undefined) {
+        throw new SemanticError("Duplicate semantic edge", {
+          code: "SEMANTIC_EDGE_DUPLICATE",
+        });
+      }
+    }
+
+    this.insertEdgeWithDependencies(edge);
 
     if (edge.relation === "contradicts" && this.options.enqueueReview !== undefined) {
       const conflictsWithSupportChain =
