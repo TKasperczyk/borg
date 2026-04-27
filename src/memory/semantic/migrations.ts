@@ -204,4 +204,50 @@ export const semanticMigrations: Migration[] = [
       createSemanticEdgeValidityIndexes(db);
     },
   },
+  {
+    id: 134,
+    name: "supports_edge_direction_flip",
+    up: (db) => {
+      if (!tableExists(db, "semantic_edges")) {
+        return;
+      }
+
+      // Sprint 52: supports edges were previously created as
+      // `insight --supports--> target`, which is backwards from the
+      // natural reading "X is evidence for Y". Retrieval walks supports
+      // OUT, so a query that matches the original target node could not
+      // surface the new insight. Flip existing supports edges so
+      // `from --supports--> to` reads as "from is evidence supporting to".
+      //
+      // Done row-by-row with a reverse-edge check to avoid violating the
+      // partial unique index on (from, to, relation) WHERE valid_to IS NULL.
+      const openSupports = db
+        .prepare(
+          "SELECT id, from_node_id, to_node_id FROM semantic_edges WHERE relation = 'supports' AND valid_to IS NULL",
+        )
+        .all() as Array<{ id: string; from_node_id: string; to_node_id: string }>;
+      const reverseOpenStmt = db.prepare(
+        "SELECT id FROM semantic_edges WHERE relation = 'supports' AND valid_to IS NULL AND from_node_id = ? AND to_node_id = ?",
+      );
+      const updateStmt = db.prepare(
+        "UPDATE semantic_edges SET from_node_id = ?, to_node_id = ? WHERE id = ?",
+      );
+
+      for (const edge of openSupports) {
+        const conflict = reverseOpenStmt.get(edge.to_node_id, edge.from_node_id) as
+          | { id: string }
+          | undefined;
+
+        if (conflict !== undefined && conflict.id !== edge.id) {
+          continue;
+        }
+
+        updateStmt.run(edge.to_node_id, edge.from_node_id, edge.id);
+      }
+
+      db.exec(
+        "UPDATE semantic_edges SET from_node_id = to_node_id, to_node_id = from_node_id WHERE relation = 'supports' AND valid_to IS NOT NULL",
+      );
+    },
+  },
 ];

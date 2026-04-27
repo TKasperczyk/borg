@@ -1009,9 +1009,14 @@ export class ReviewQueueRepository {
             );
           }
 
+          // Edge convention: `from --supports--> to` reads as
+          // "from is evidence supporting to". The existing anchor node
+          // (target_node_id) is the supporting evidence; the new insight
+          // is what gets supported. Retrieval walks supports OUT, so a
+          // query that matches the evidence anchor surfaces the insight.
           const duplicate = this.options.semanticEdgeRepository.listEdges({
-            fromId: edge.insight_node_id,
-            toId: edge.target_node_id,
+            fromId: edge.target_node_id,
+            toId: edge.insight_node_id,
             relation: "supports",
           });
 
@@ -1021,8 +1026,8 @@ export class ReviewQueueRepository {
 
           this.options.semanticEdgeRepository.addEdge({
             id: edge.id,
-            from_node_id: edge.insight_node_id,
-            to_node_id: edge.target_node_id,
+            from_node_id: edge.target_node_id,
+            to_node_id: edge.insight_node_id,
             relation: "supports",
             confidence: edge.confidence,
             evidence_episode_ids: edge.source_episode_ids,

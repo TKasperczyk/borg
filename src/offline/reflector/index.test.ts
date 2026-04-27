@@ -196,8 +196,8 @@ describe("reflector process", () => {
     const supportEdges = harness.semanticEdgeRepository.listEdges({ relation: "supports" });
     expect(supportEdges).toEqual([
       expect.objectContaining({
-        from_node_id: insightNode?.id,
-        to_node_id: evidenceAnchor.id,
+        from_node_id: evidenceAnchor.id,
+        to_node_id: insightNode?.id,
         evidence_episode_ids: [episodes[0]!.id],
       }),
     ]);
@@ -211,6 +211,18 @@ describe("reflector process", () => {
         id: insightNode?.id,
       }),
     ]);
+
+    // Sprint 52 regression: querying by the evidence anchor concept must
+    // surface the insight via the supports-out walk. Pre-fix the supports
+    // edge ran insight->target, so walking supports OUT from the matched
+    // anchor found nothing and the insight stayed invisible.
+    const anchorRetrieval = await harness.retrievalPipeline.searchWithContext(
+      "Rollback plan",
+      { limit: 1 },
+    );
+    expect(anchorRetrieval.semantic.support_hits.map((hit) => hit.node.id)).toContain(
+      insightNode?.id,
+    );
 
     const auditRow = harness.auditLog.list({ process: "reflector" })[0];
     await harness.auditLog.revert(auditRow!.id, "test");
