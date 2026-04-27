@@ -4,6 +4,7 @@ import { AutonomyWakesRepository } from "../autonomy/index.js";
 import type { Config } from "../config/index.js";
 import { CorrectionService } from "../correction/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
+import { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
@@ -64,6 +65,7 @@ export type BorgRepositorySetup = Pick<
   | "autobiographicalRepository"
   | "growthMarkersRepository"
   | "openQuestionsRepository"
+  | "executiveStepsRepository"
   | "moodRepository"
   | "socialRepository"
   | "entityRepository"
@@ -126,6 +128,10 @@ export async function buildBorgRepositories(
   let reviewQueueRepository: ReviewQueueRepository | undefined;
   let applyCorrectionReview: ((item: ReviewQueueItem) => Promise<void>) | undefined;
   const openQuestionsRepository = new OpenQuestionsRepository({
+    db: sqlite,
+    clock,
+  });
+  const executiveStepsRepository = new ExecutiveStepsRepository({
     db: sqlite,
     clock,
   });
@@ -312,6 +318,7 @@ export async function buildBorgRepositories(
     autobiographicalRepository,
     growthMarkersRepository,
     openQuestionsRepository,
+    executiveStepsRepository,
     moodRepository,
     socialRepository,
     entityRepository,

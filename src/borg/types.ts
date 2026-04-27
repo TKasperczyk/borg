@@ -6,6 +6,7 @@ import type { TurnOrchestrator } from "../cognition/index.js";
 import type { Config } from "../config/index.js";
 import type { CorrectionService } from "../correction/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
+import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
@@ -74,6 +75,7 @@ export type BorgDependencies = {
   autobiographicalRepository: AutobiographicalRepository;
   growthMarkersRepository: GrowthMarkersRepository;
   openQuestionsRepository: OpenQuestionsRepository;
+  executiveStepsRepository: ExecutiveStepsRepository;
   moodRepository: MoodRepository;
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;

@@ -82,6 +82,18 @@ export {
   type TickResult,
 } from "./autonomy/index.js";
 export {
+  ExecutiveStepsRepository,
+  type ExecutiveFocus,
+  type ExecutiveGoalScore,
+  type ExecutiveGoalScoreComponents,
+  type ExecutiveStep,
+  type ExecutiveStepAddInput,
+  type ExecutiveStepKind,
+  type ExecutiveStepPatch,
+  type ExecutiveStepsRepositoryOptions,
+  type ExecutiveStepStatus,
+} from "./executive/index.js";
+export {
   OFFLINE_PROCESS_NAMES,
   type MaintenanceAuditRecord,
   type MaintenanceCadence,
@@ -214,10 +226,13 @@ export {
 export {
   DEFAULT_SESSION_ID,
   createSessionId,
+  createExecutiveStepId,
   parseSessionId,
+  parseExecutiveStepId,
   type AuditId,
   type AutonomyWakeId,
   type BrandedId,
+  type ExecutiveStepId,
   type CommitmentId,
   type EntityId,
   type EpisodeId,

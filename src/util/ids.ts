@@ -28,6 +28,7 @@ export type SkillId = BrandedId<"SkillId">;
 export type ProceduralEvidenceId = BrandedId<"ProceduralEvidenceId">;
 export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
 export type AutonomyWakeId = BrandedId<"AutonomyWakeId">;
+export type ExecutiveStepId = BrandedId<"ExecutiveStepId">;
 export type AuditId = number & {
   readonly __brand: "AuditId";
 };
@@ -75,7 +76,8 @@ export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
 export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
   pattern: new RegExp(`^procevi_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
   create: () => `procevi_${createAutonomyWakeNanoId()}` as ProceduralEvidenceId,
-  is: (value: string): value is ProceduralEvidenceId => proceduralEvidenceIdHelpers.pattern.test(value),
+  is: (value: string): value is ProceduralEvidenceId =>
+    proceduralEvidenceIdHelpers.pattern.test(value),
   parse: (value: string): ProceduralEvidenceId => {
     if (!proceduralEvidenceIdHelpers.pattern.test(value)) {
       throw new TypeError(`Invalid procevi identifier: ${value}`);
@@ -85,6 +87,7 @@ export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
   },
 };
 export const maintenanceRunIdHelpers = createIdHelpers<"MaintenanceRunId">("run");
+export const executiveStepIdHelpers = createIdHelpers<"ExecutiveStepId">("exstep");
 export const autonomyWakeIdHelpers: IdHelpers<"AutonomyWakeId"> = {
   pattern: new RegExp(`^autonomy_wake_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
   create: () => `autonomy_wake_${createAutonomyWakeNanoId()}` as AutonomyWakeId,
@@ -116,6 +119,7 @@ export const createSkillId = (): SkillId => skillIdHelpers.create();
 export const createProceduralEvidenceId = (): ProceduralEvidenceId =>
   proceduralEvidenceIdHelpers.create();
 export const createMaintenanceRunId = (): MaintenanceRunId => maintenanceRunIdHelpers.create();
+export const createExecutiveStepId = (): ExecutiveStepId => executiveStepIdHelpers.create();
 export const createAutonomyWakeId = (): AutonomyWakeId => autonomyWakeIdHelpers.create();
 
 export function isSessionId(value: string): value is SessionId {
@@ -152,6 +156,10 @@ export function parseAutobiographicalPeriodId(value: string): AutobiographicalPe
 
 export function parseGrowthMarkerId(value: string): GrowthMarkerId {
   return growthMarkerIdHelpers.parse(value);
+}
+
+export function parseExecutiveStepId(value: string): ExecutiveStepId {
+  return executiveStepIdHelpers.parse(value);
 }
 
 export function parseOpenQuestionId(value: string): OpenQuestionId {

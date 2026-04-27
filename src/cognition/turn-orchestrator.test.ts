@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { Borg, FakeLLMClient, ManualClock, type LLMCompleteOptions } from "../index.js";
 import type { BorgDependencies } from "../borg/types.js";
+import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { SelfSnapshot } from "./deliberation/deliberator.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
 import { TestEmbeddingClient } from "../offline/test-support.js";
@@ -597,10 +598,84 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(blockStart).toBeGreaterThanOrEqual(0);
       expect(blockEnd).toBeGreaterThan(blockStart);
       expect(executiveBlock).toContain("Current driving goal: Apollo launch plan");
-      expect(executiveBlock).toContain("Use this only as a soft bias");
+      expect(executiveBlock).toContain(
+        "Use this as a bias, not an override of the user's request or commitments.",
+      );
+      expect(executiveBlock).not.toContain("Next step:");
       expect(executiveBlock).not.toContain("Background maintenance");
       expect(finalizerSystem).toContain("goals Background maintenance");
       expect(finalizerSystem).toContain("Apollo launch plan");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("renders the selected goal's top open executive step", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_700_000_000_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Apollo step answer.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          executiveStepsRepository: ExecutiveStepsRepository;
+        };
+      };
+      borg.self.goals.add({
+        description: "Background maintenance",
+        priority: 10,
+        provenance: {
+          kind: "system",
+        },
+      });
+      const selectedGoal = borg.self.goals.add({
+        description: "Apollo launch plan",
+        priority: 9,
+        provenance: {
+          kind: "system",
+        },
+      });
+      const dueAt = clock.now() + 86_400_000;
+
+      internal.deps.executiveStepsRepository.add({
+        goalId: selectedGoal.id,
+        description: "Inspect the launch readiness notes",
+        kind: "research",
+        dueAt,
+        provenance: {
+          kind: "system",
+        },
+      });
+
+      await borg.turn({
+        userMessage: "Let's work on the Apollo launch plan.",
+        stakes: "low",
+      });
+
+      const finalizerSystem = systemText(llm.requests[0]);
+      const blockStart = finalizerSystem.indexOf("<borg_executive_focus>");
+      const blockEnd = finalizerSystem.indexOf("</borg_executive_focus>");
+      const executiveBlock = finalizerSystem.slice(blockStart, blockEnd);
+
+      expect(executiveBlock).toContain("Current driving goal: Apollo launch plan");
+      expect(executiveBlock).toContain(
+        `Next step: Inspect the launch readiness notes (kind: research, due: ${new Date(
+          dueAt,
+        ).toISOString()})`,
+      );
     } finally {
       await borg.close();
     }

@@ -13,6 +13,7 @@ import { TurnOpeningPersistence } from "./persistence/turn-opening.js";
 import { PendingProceduralAttemptTracker } from "./procedural/pending-attempt-tracker.js";
 import { TurnContextCompiler } from "./recency/index.js";
 import { selectExecutiveFocus } from "../executive/index.js";
+import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import type { Reflector } from "./reflection/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
@@ -140,6 +141,7 @@ export type TurnOrchestratorOptions = {
   traitsRepository: TraitsRepository;
   autobiographicalRepository?: AutobiographicalRepository;
   growthMarkersRepository?: GrowthMarkersRepository;
+  executiveStepsRepository: ExecutiveStepsRepository;
   moodRepository: MoodRepository;
   socialRepository: SocialRepository;
   skillSelector: SkillSelector;
@@ -370,6 +372,15 @@ export class TurnOrchestrator {
           deadlineLookaheadMs: this.options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
           staleMs: this.options.config.autonomy.triggers.goalFollowupDue.staleMs,
         });
+        const executiveFocusWithStep =
+          executiveFocus.selected_goal === null
+            ? executiveFocus
+            : {
+                ...executiveFocus,
+                next_step: this.options.executiveStepsRepository.topOpen(
+                  executiveFocus.selected_goal.id,
+                ),
+              };
 
         const suppressionSet = SuppressionSet.fromEntries(
           workingMemory.suppressed,
@@ -415,7 +426,7 @@ export class TurnOrchestrator {
           perception,
           workingMemory,
           selfSnapshot,
-          executiveFocus,
+          executiveFocus: executiveFocusWithStep,
           suppressionSet,
           findEntityByName: (name) => this.options.entityRepository.findByName(name),
         });
@@ -456,7 +467,7 @@ export class TurnOrchestrator {
             workingMemory,
             affectiveTrajectory,
             selfSnapshot,
-            executiveFocus,
+            executiveFocus: executiveFocusWithStep,
             audienceProfile,
             recencyMessages: recencyWindow.messages,
             options: {

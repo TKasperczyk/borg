@@ -198,19 +198,26 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
   }
 
   const components = focus.selected_score.components;
+  const nextStep = focus.next_step ?? null;
 
   return [
     `Current driving goal: ${focus.selected_goal.description}`,
-    `Selection score: ${focus.selected_score.score.toFixed(2)} (threshold ${focus.threshold.toFixed(2)})`,
+    `Why selected: ${focus.selected_score.reason} (score ${focus.selected_score.score.toFixed(2)}, threshold ${focus.threshold.toFixed(2)})`,
     [
-      "Components:",
-      `priority=${components.priority.toFixed(2)}`,
+      `Components: priority=${components.priority.toFixed(2)}`,
       `deadline=${components.deadline_pressure.toFixed(2)}`,
       `context=${components.context_fit.toFixed(2)}`,
       `progress_debt=${components.progress_debt.toFixed(2)}`,
     ].join(" "),
-    "Use this only as a soft bias. The current user request, applicable commitments, and evidence quality still take precedence.",
-  ].join("\n");
+    nextStep === null
+      ? null
+      : `Next step: ${nextStep.description} (kind: ${nextStep.kind}, due: ${
+          nextStep.due_at === null ? "no deadline" : new Date(nextStep.due_at).toISOString()
+        })`,
+    "Use this as a bias, not an override of the user's request or commitments.",
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
 }
 
 function summarizePreferenceEvidence(

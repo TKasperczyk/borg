@@ -5,6 +5,7 @@ import type { SessionLock } from "../cognition/index.js";
 import { Reflector, TurnOrchestrator } from "../cognition/index.js";
 import { TurnContextCompiler } from "../cognition/recency/index.js";
 import type { Config } from "../config/index.js";
+import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
@@ -44,6 +45,7 @@ export type BuildTurnOrchestratorOptions = {
   traitsRepository: TraitsRepository;
   autobiographicalRepository: AutobiographicalRepository;
   growthMarkersRepository: GrowthMarkersRepository;
+  executiveStepsRepository: ExecutiveStepsRepository;
   moodRepository: MoodRepository;
   socialRepository: SocialRepository;
   skillRepository: SkillRepository;
@@ -72,6 +74,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     traitsRepository: options.traitsRepository,
     autobiographicalRepository: options.autobiographicalRepository,
     growthMarkersRepository: options.growthMarkersRepository,
+    executiveStepsRepository: options.executiveStepsRepository,
     moodRepository: options.moodRepository,
     socialRepository: options.socialRepository,
     skillSelector: options.skillSelector,
