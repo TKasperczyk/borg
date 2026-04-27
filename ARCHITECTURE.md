@@ -251,15 +251,15 @@ canonicalization (`canonicalizeDomain`) maps synonyms (`technology` →
 `tech`) so the homonym-anchor still merges intended-same-concept
 extractions.
 
-Belief revision is dependency-driven, not a separate theorem prover.
-When a semantic edge is invalidated, SQLite records an outbox event;
-the offline belief reviser follows explicit semantic belief
-dependencies and opens `belief_revision` review items for affected
-nodes/edges. Retrieval does not hide affected semantic nodes: open
-`belief_revision` targets are downranked and annotated inline in the
-deliberation prompt as under re-evaluation. If a target node has no
-surviving support edges, the belief reviser also lowers its confidence
-deterministically while leaving final re-grading to review.
+Belief revision is dependency-driven, not a separate theorem prover:
+edge invalidation records an outbox event, the offline belief reviser
+follows explicit semantic belief dependencies, and affected nodes/edges
+become `belief_revision` reviews. Open node reviews are downranked and
+annotated inline in deliberation prompts; unsupported nodes also get a
+deterministic confidence drop. A later offline tick re-grades those
+reviews with the background LLM using only the target-local record,
+invalidated edge, surviving supports, and audience-visible evidence,
+then keeps, weakens, archives, invalidates, or escalates the target.
 
 ### 4. Procedural (how I do things)
 

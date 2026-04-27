@@ -160,6 +160,13 @@ const configFileSchema = z
           .object({
             confidenceDropMultiplier: z.number().min(0).max(1).optional(),
             confidenceFloor: z.number().min(0).max(1).optional(),
+            regradeBatchSize: z.number().int().positive().optional(),
+            maxEventsPerRun: z.number().int().positive().optional(),
+            maxReviewsPerRun: z.number().int().positive().optional(),
+            claimStaleSec: z.number().positive().optional(),
+            maxParseFailures: z.number().int().positive().optional(),
+            budget: z.number().int().positive().optional(),
+            consecutiveParseFailureLimit: z.number().int().positive().optional(),
           })
           .partial()
           .optional(),
@@ -392,6 +399,13 @@ export const configSchema = z.object({
     beliefReviser: z.object({
       confidenceDropMultiplier: z.number().min(0).max(1),
       confidenceFloor: z.number().min(0).max(1),
+      regradeBatchSize: z.number().int().positive(),
+      maxEventsPerRun: z.number().int().positive(),
+      maxReviewsPerRun: z.number().int().positive(),
+      claimStaleSec: z.number().positive(),
+      maxParseFailures: z.number().int().positive(),
+      budget: z.number().int().positive(),
+      consecutiveParseFailureLimit: z.number().int().positive(),
     }),
   }),
   maintenance: z.object({
@@ -581,6 +595,13 @@ export const DEFAULT_CONFIG: Config = {
     beliefReviser: {
       confidenceDropMultiplier: 0.5,
       confidenceFloor: 0.05,
+      regradeBatchSize: 10,
+      maxEventsPerRun: 32,
+      maxReviewsPerRun: 128,
+      claimStaleSec: 600,
+      maxParseFailures: 3,
+      budget: 20,
+      consecutiveParseFailureLimit: 5,
     },
   },
   maintenance: {
@@ -1094,6 +1115,37 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvUnitInterval(env, "BORG_OFFLINE_BELIEF_REVISER_CONFIDENCE_FLOOR") ??
           fileConfig.offline?.beliefReviser?.confidenceFloor ??
           DEFAULT_CONFIG.offline.beliefReviser.confidenceFloor,
+        regradeBatchSize:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_REGRADE_BATCH_SIZE") ??
+          fileConfig.offline?.beliefReviser?.regradeBatchSize ??
+          DEFAULT_CONFIG.offline.beliefReviser.regradeBatchSize,
+        maxEventsPerRun:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_EVENTS_PER_RUN") ??
+          fileConfig.offline?.beliefReviser?.maxEventsPerRun ??
+          DEFAULT_CONFIG.offline.beliefReviser.maxEventsPerRun,
+        maxReviewsPerRun:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_REVIEWS_PER_RUN") ??
+          fileConfig.offline?.beliefReviser?.maxReviewsPerRun ??
+          DEFAULT_CONFIG.offline.beliefReviser.maxReviewsPerRun,
+        claimStaleSec:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_BELIEF_REVISER_CLAIM_STALE_SEC") ??
+          fileConfig.offline?.beliefReviser?.claimStaleSec ??
+          DEFAULT_CONFIG.offline.beliefReviser.claimStaleSec,
+        maxParseFailures:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_PARSE_FAILURES") ??
+          fileConfig.offline?.beliefReviser?.maxParseFailures ??
+          DEFAULT_CONFIG.offline.beliefReviser.maxParseFailures,
+        budget:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_BUDGET") ??
+          fileConfig.offline?.beliefReviser?.budget ??
+          DEFAULT_CONFIG.offline.beliefReviser.budget,
+        consecutiveParseFailureLimit:
+          readOptionalEnvNumber(
+            env,
+            "BORG_OFFLINE_BELIEF_REVISER_CONSECUTIVE_PARSE_FAILURE_LIMIT",
+          ) ??
+          fileConfig.offline?.beliefReviser?.consecutiveParseFailureLimit ??
+          DEFAULT_CONFIG.offline.beliefReviser.consecutiveParseFailureLimit,
       },
     },
     maintenance: {

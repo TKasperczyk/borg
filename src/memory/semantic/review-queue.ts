@@ -53,6 +53,10 @@ export const REVIEW_RESOLUTIONS = [
   "dismiss",
   "accept",
   "reject",
+  "keep",
+  "weaken",
+  "archive_node",
+  "invalidate_edge",
 ] as const;
 
 export const reviewKindSchema = z.enum(REVIEW_KINDS);
@@ -123,6 +127,13 @@ const NEW_INSIGHT_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
 ]);
 const LIFECYCLE_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject", "dismiss"]);
 const CORRECTION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject"]);
+const BELIEF_REVISION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
+  "keep",
+  "weaken",
+  "archive_node",
+  "invalidate_edge",
+  "dismiss",
+]);
 
 const misattributionEpisodePatchSchema = episodePatchSchema
   .pick({
@@ -394,8 +405,9 @@ function isResolutionCompatible(kind: ReviewKind, resolution: ReviewResolution):
     case "misattribution":
     case "temporal_drift":
     case "identity_inconsistency":
-    case "belief_revision":
       return LIFECYCLE_REVIEW_RESOLUTIONS.has(resolution);
+    case "belief_revision":
+      return BELIEF_REVISION_REVIEW_RESOLUTIONS.has(resolution);
   }
 }
 
@@ -543,6 +555,14 @@ export class ReviewQueueRepository {
     return this.list({
       openOnly: true,
     });
+  }
+
+  get(itemId: number): ReviewQueueItem | null {
+    const row = this.db.prepare("SELECT * FROM review_queue WHERE id = ?").get(itemId) as
+      | Record<string, unknown>
+      | undefined;
+
+    return row === undefined ? null : mapReviewRow(row);
   }
 
   private beliefRevisionEvidenceEpisodeIds(refs: BeliefRevisionRefs): Episode["id"][] {

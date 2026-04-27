@@ -129,6 +129,14 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       confidenceDropMultiplier:
         options.config.offline.beliefReviser.confidenceDropMultiplier,
       confidenceFloor: options.config.offline.beliefReviser.confidenceFloor,
+      regradeBatchSize: options.config.offline.beliefReviser.regradeBatchSize,
+      maxEventsPerRun: options.config.offline.beliefReviser.maxEventsPerRun,
+      maxReviewsPerRun: options.config.offline.beliefReviser.maxReviewsPerRun,
+      claimStaleSec: options.config.offline.beliefReviser.claimStaleSec,
+      maxParseFailures: options.config.offline.beliefReviser.maxParseFailures,
+      budget: options.config.offline.beliefReviser.budget,
+      consecutiveParseFailureLimit:
+        options.config.offline.beliefReviser.consecutiveParseFailureLimit,
     }),
   } satisfies Record<OfflineProcessName, OfflineProcess>;
   const maintenanceOrchestrator = new MaintenanceOrchestrator({

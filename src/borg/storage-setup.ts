@@ -101,6 +101,10 @@ export function resolveBorgConfig(options: {
         ...DEFAULT_CONFIG.offline.selfNarrator,
         ...rawConfig.offline?.selfNarrator,
       },
+      beliefReviser: {
+        ...DEFAULT_CONFIG.offline.beliefReviser,
+        ...rawConfig.offline?.beliefReviser,
+      },
     },
     autonomy: {
       ...DEFAULT_CONFIG.autonomy,
