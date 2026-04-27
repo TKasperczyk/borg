@@ -14,6 +14,9 @@ type EvalConfigOverrides = {
     models?: Partial<Config["anthropic"]["models"]>;
   };
   procedural?: Partial<Config["procedural"]>;
+  retrieval?: Partial<Omit<Config["retrieval"], "semantic">> & {
+    semantic?: Partial<Config["retrieval"]["semantic"]>;
+  };
   executive?: Partial<Config["executive"]>;
   offline?: Partial<
     Omit<
@@ -25,6 +28,7 @@ type EvalConfigOverrides = {
       | "overseer"
       | "ruminator"
       | "selfNarrator"
+      | "beliefReviser"
     >
   > & {
     consolidator?: Partial<Config["offline"]["consolidator"]>;
@@ -34,6 +38,7 @@ type EvalConfigOverrides = {
     overseer?: Partial<Config["offline"]["overseer"]>;
     ruminator?: Partial<Config["offline"]["ruminator"]>;
     selfNarrator?: Partial<Config["offline"]["selfNarrator"]>;
+    beliefReviser?: Partial<Config["offline"]["beliefReviser"]>;
   };
   autonomy?: Partial<Omit<Config["autonomy"], "triggers">> & {
     triggers?: Partial<Config["autonomy"]["triggers"]> & {
@@ -92,6 +97,14 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
       ...DEFAULT_CONFIG.procedural,
       ...options.config?.procedural,
     },
+    retrieval: {
+      ...DEFAULT_CONFIG.retrieval,
+      ...options.config?.retrieval,
+      semantic: {
+        ...DEFAULT_CONFIG.retrieval.semantic,
+        ...options.config?.retrieval?.semantic,
+      },
+    },
     executive: {
       ...DEFAULT_CONFIG.executive,
       ...options.config?.executive,
@@ -126,6 +139,10 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
       selfNarrator: {
         ...DEFAULT_CONFIG.offline.selfNarrator,
         ...options.config?.offline?.selfNarrator,
+      },
+      beliefReviser: {
+        ...DEFAULT_CONFIG.offline.beliefReviser,
+        ...options.config?.offline?.beliefReviser,
       },
     },
     maintenance: {

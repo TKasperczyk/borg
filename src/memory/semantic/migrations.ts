@@ -317,4 +317,25 @@ export const semanticMigrations: Migration[] = [
       `);
     },
   },
+  {
+    id: 136,
+    name: "review_queue_belief_revision_target_index",
+    up: (db) => {
+      if (!tableExists(db, "review_queue")) {
+        return;
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS review_queue_belief_revision_target_idx
+          ON review_queue (
+            json_extract(refs, '$.target_type'),
+            json_extract(refs, '$.target_id'),
+            created_at DESC,
+            id DESC
+          )
+          WHERE kind = 'belief_revision'
+            AND resolved_at IS NULL;
+      `);
+    },
+  },
 ];

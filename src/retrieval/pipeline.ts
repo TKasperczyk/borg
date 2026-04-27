@@ -11,6 +11,7 @@ import type { DecayOptions } from "../memory/episodic/decay.js";
 import type { OpenQuestion, OpenQuestionsRepository, ValueRecord } from "../memory/self/index.js";
 import type { SemanticGraph } from "../memory/semantic/graph.js";
 import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
+import type { ReviewQueueRepository } from "../memory/semantic/review-queue.js";
 import type { SemanticNode } from "../memory/semantic/types.js";
 import type { SocialProfile } from "../memory/social/index.js";
 import type { StreamEntryIndexRepository } from "../stream/index.js";
@@ -51,7 +52,12 @@ import { resolveTimeSignals } from "./time-signals.js";
 
 export type { RetrievedContext } from "./context-assembly.js";
 export type { RetrievedEpisode } from "./scoring.js";
-export type { RetrievedSemantic, RetrievedSemanticHit } from "./semantic-retrieval.js";
+export type {
+  RetrievedSemantic,
+  RetrievedSemanticHit,
+  RetrievedSemanticNode,
+  RetrievedSemanticUnderReview,
+} from "./semantic-retrieval.js";
 
 export type RetrievalPipelineOptions = {
   embeddingClient: EmbeddingClient;
@@ -60,12 +66,14 @@ export type RetrievalPipelineOptions = {
   entryIndex?: StreamEntryIndexRepository;
   semanticNodeRepository?: SemanticNodeRepository;
   semanticGraph?: SemanticGraph;
+  reviewQueueRepository?: Pick<ReviewQueueRepository, "listOpenBeliefRevisionsByTarget">;
   openQuestionsRepository?: OpenQuestionsRepository;
   clock?: Clock;
   tracer?: TurnTracer;
   scoreWeights?: ScoreWeights;
   mmrLambda?: number;
   decayOptions?: Omit<DecayOptions, "nowMs">;
+  semanticUnderReviewMultiplier?: number;
 };
 
 export type RetrievalSearchOptions = EpisodeSearchOptions & {
@@ -83,6 +91,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   graphWalkDepth?: number;
   maxGraphNodes?: number;
   asOf?: number;
+  underReviewMultiplier?: number;
   includeOpenQuestions?: boolean;
   openQuestionsLimit?: number;
   moodState?: RetrievalMoodState | null;
@@ -194,12 +203,21 @@ export class RetrievalPipeline {
     const citationEntries = await citationResolver.resolveCitationEntries(
       selected.flatMap((choice) => choice.item.candidate.episode.source_stream_ids),
     );
-    const semantic = await resolveSemanticContext(query, options, {
-      embeddingClient: this.options.embeddingClient,
-      episodicRepository: this.options.episodicRepository,
-      semanticNodeRepository: this.options.semanticNodeRepository,
-      semanticGraph: this.options.semanticGraph,
-    });
+    const semantic = await resolveSemanticContext(
+      query,
+      {
+        ...options,
+        underReviewMultiplier:
+          options.underReviewMultiplier ?? this.options.semanticUnderReviewMultiplier,
+      },
+      {
+        embeddingClient: this.options.embeddingClient,
+        episodicRepository: this.options.episodicRepository,
+        semanticNodeRepository: this.options.semanticNodeRepository,
+        semanticGraph: this.options.semanticGraph,
+        reviewQueueRepository: this.options.reviewQueueRepository,
+      },
+    );
     const openQuestions =
       options.includeOpenQuestions === true
         ? this.retrieveOpenQuestionsForQuery(query, {

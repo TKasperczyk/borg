@@ -10,6 +10,8 @@ export {
   type RetrievedContext,
   type RetrievedEpisode,
   type RetrievedSemanticHit,
+  type RetrievedSemanticNode,
+  type RetrievedSemanticUnderReview,
   type RetrievedSemantic,
   type RetrievalGetEpisodeOptions,
   type RetrievalPipelineOptions,

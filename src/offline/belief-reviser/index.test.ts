@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import { summarizeSemanticContext } from "../../cognition/deliberation/prompt/retrieval.js";
+import { SemanticGraph } from "../../memory/semantic/index.js";
+import { resolveSemanticContext, toRetrievedSemantic } from "../../retrieval/semantic-retrieval.js";
 import { StreamReader } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import type { EpisodeId } from "../../util/ids.js";
 import {
+  createEpisodeFixture,
   createOfflineTestHarness,
   createSemanticNodeFixture,
   type OfflineTestHarness,
@@ -54,7 +58,11 @@ function addEdge(
 
 async function runBeliefReviser(
   harness: OfflineTestHarness,
-  options: { maxReviewsPerEvent?: number } = {},
+  options: {
+    maxReviewsPerEvent?: number;
+    confidenceDropMultiplier?: number;
+    confidenceFloor?: number;
+  } = {},
 ) {
   const process = new BeliefReviserProcess({
     db: harness.db,
@@ -104,6 +112,20 @@ describe("belief reviser process", () => {
       await runBeliefReviser(harness);
 
       const [review] = openBeliefRevisionItems(harness);
+      const updatedTarget = await harness.semanticNodeRepository.get(target.id);
+      const confidenceDropEvent = new StreamReader({
+        dataDir: harness.tempDir,
+      })
+        .tail(10)
+        .find(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            typeof entry.content === "object" &&
+            entry.content !== null &&
+            "hook" in entry.content &&
+            entry.content.hook === "belief_reviser_confidence_dropped",
+        );
+
       expect(review).toEqual(
         expect.objectContaining({
           kind: "belief_revision",
@@ -117,12 +139,133 @@ describe("belief reviser process", () => {
           }),
         }),
       );
+      expect(updatedTarget?.confidence).toBeCloseTo(0.25);
+      expect(confidenceDropEvent?.content).toMatchObject({
+        hook: "belief_reviser_confidence_dropped",
+        target_id: target.id,
+        previous_confidence: 0.5,
+        next_confidence: 0.25,
+      });
       expect(invalidationEvents(harness)).toEqual([
         {
           edge_id: support.id,
           processed_at: 2_000,
         },
       ]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("does not drop confidence when a target still has surviving support", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const anchor = await insertNode(harness, "Anchor", [1, 0, 0, 0]);
+      const survivingAnchor = await insertNode(harness, "Surviving anchor", [0, 0, 1, 0]);
+      const target = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "Supported target",
+            description: "Supported target description",
+            confidence: 0.8,
+            source_episode_ids: [FRESH_EPISODE_ID],
+          },
+          [0, 1, 0, 0],
+        ),
+      );
+      const invalidatedSupport = addEdge(harness, anchor, target);
+      const survivingSupport = addEdge(harness, survivingAnchor, target);
+
+      harness.semanticEdgeRepository.invalidateEdge(invalidatedSupport.id, {
+        at: 2_000,
+        by_process: "manual",
+      });
+
+      await runBeliefReviser(harness);
+
+      const [review] = openBeliefRevisionItems(harness);
+      const updatedTarget = await harness.semanticNodeRepository.get(target.id);
+
+      expect(review?.refs).toEqual(
+        expect.objectContaining({
+          target_id: target.id,
+          invalidated_edge_id: invalidatedSupport.id,
+          surviving_support_edge_ids: [survivingSupport.id],
+        }),
+      );
+      expect(updatedTarget?.confidence).toBeCloseTo(0.8);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("does not drop confidence when a target has other valid incoming evidence edges", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const supportAnchor = await insertNode(harness, "Support anchor", [1, 0, 0, 0]);
+      const causeAnchor = await insertNode(harness, "Cause anchor", [0, 0, 1, 0]);
+      const target = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "Causally grounded target",
+            description: "Causally grounded target description",
+            confidence: 0.8,
+            source_episode_ids: [FRESH_EPISODE_ID],
+          },
+          [0, 1, 0, 0],
+        ),
+      );
+      const support = addEdge(harness, supportAnchor, target);
+
+      addEdge(harness, causeAnchor, target, "causes");
+      harness.semanticEdgeRepository.invalidateEdge(support.id, {
+        at: 2_000,
+        by_process: "manual",
+      });
+
+      await runBeliefReviser(harness);
+
+      expect(openBeliefRevisionItems(harness)).toHaveLength(1);
+      expect((await harness.semanticNodeRepository.get(target.id))?.confidence).toBeCloseTo(0.8);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("enforces the configured confidence floor when dropping unsupported nodes", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const anchor = await insertNode(harness, "Anchor", [1, 0, 0, 0]);
+      const target = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "Near-floor target",
+            description: "Near-floor target description",
+            confidence: 0.08,
+            source_episode_ids: [FRESH_EPISODE_ID],
+          },
+          [0, 1, 0, 0],
+        ),
+      );
+      const support = addEdge(harness, anchor, target);
+
+      harness.semanticEdgeRepository.invalidateEdge(support.id, {
+        at: 2_000,
+        by_process: "manual",
+      });
+
+      await runBeliefReviser(harness);
+
+      expect((await harness.semanticNodeRepository.get(target.id))?.confidence).toBeCloseTo(0.05);
     } finally {
       await harness.cleanup();
     }
@@ -266,6 +409,39 @@ describe("belief reviser process", () => {
     }
   });
 
+  it("does not double-drop confidence when a processed event is retried after review deletion", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const anchor = await insertNode(harness, "Anchor", [1, 0, 0, 0]);
+      const target = await insertNode(harness, "Target", [0, 1, 0, 0]);
+      const support = addEdge(harness, anchor, target);
+
+      harness.semanticEdgeRepository.invalidateEdge(support.id, {
+        at: 2_000,
+        by_process: "manual",
+      });
+
+      await runBeliefReviser(harness);
+
+      const [review] = openBeliefRevisionItems(harness);
+      expect((await harness.semanticNodeRepository.get(target.id))?.confidence).toBeCloseTo(0.25);
+
+      if (review !== undefined) {
+        harness.reviewQueueRepository.delete(review.id);
+      }
+
+      await runBeliefReviser(harness);
+
+      expect(openBeliefRevisionItems(harness)).toHaveLength(0);
+      expect((await harness.semanticNodeRepository.get(target.id))?.confidence).toBeCloseTo(0.25);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("dedupes open reviews by target and invalidated edge", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(2_000),
@@ -296,6 +472,7 @@ describe("belief reviser process", () => {
       await runBeliefReviser(harness);
 
       expect(openBeliefRevisionItems(harness)).toHaveLength(1);
+      expect((await harness.semanticNodeRepository.get(target.id))?.confidence).toBeCloseTo(0.25);
       expect(invalidationEvents(harness)).toEqual([
         {
           edge_id: support.id,
@@ -361,6 +538,68 @@ describe("belief reviser process", () => {
         review_cap: 2,
         planned_reviews: 2,
       });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("marks propagated belief revisions in semantic retrieval and prompt rendering", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const episode = createEpisodeFixture({
+        id: FRESH_EPISODE_ID,
+        title: "Target support evidence",
+        tags: ["target"],
+      });
+      await harness.episodicRepository.insert(episode);
+      const anchor = await insertNode(harness, "Anchor", [1, 0, 0, 0], [FRESH_EPISODE_ID]);
+      const target = await insertNode(harness, "Target belief", [0, 1, 0, 0], [
+        FRESH_EPISODE_ID,
+      ]);
+      const support = addEdge(harness, anchor, target, "supports", [FRESH_EPISODE_ID]);
+
+      harness.semanticEdgeRepository.invalidateEdge(support.id, {
+        at: 2_000,
+        by_process: "manual",
+      });
+
+      await runBeliefReviser(harness);
+
+      const semanticGraph = new SemanticGraph({
+        nodeRepository: harness.semanticNodeRepository,
+        edgeRepository: harness.semanticEdgeRepository,
+      });
+      const retrieved = toRetrievedSemantic(
+        await resolveSemanticContext(
+          "Target belief",
+          {
+            graphWalkDepth: 1,
+            maxGraphNodes: 4,
+            underReviewMultiplier: 0.5,
+          },
+          {
+            embeddingClient: harness.embeddingClient,
+            episodicRepository: harness.episodicRepository,
+            semanticNodeRepository: harness.semanticNodeRepository,
+            semanticGraph,
+            reviewQueueRepository: harness.reviewQueueRepository,
+          },
+        ),
+      );
+      const retrievedTarget = retrieved.matched_nodes.find((node) => node.id === target.id);
+      const promptBlock = summarizeSemanticContext(retrieved, 1_000, 2_000);
+
+      expect(retrievedTarget?.under_review).toMatchObject({
+        reason: "Supporting semantic edge was invalidated; target needs re-evaluation",
+      });
+      expect(retrievedTarget?.retrieval_score).toBeCloseTo(
+        (retrievedTarget?.base_retrieval_score ?? 0) * 0.5,
+      );
+      expect(promptBlock).toContain("[under re-evaluation:");
+      expect(promptBlock).toContain("Target belief");
     } finally {
       await harness.cleanup();
     }

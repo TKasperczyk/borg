@@ -5,6 +5,7 @@ import type {
   RetrievedEpisode,
   RetrievedSemantic,
   RetrievedSemanticHit,
+  RetrievedSemanticNode,
 } from "../../../retrieval/index.js";
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
 
@@ -133,14 +134,29 @@ function semanticHitHasClosedEdge(
   return hit.edgePath.some((edge) => edge.valid_to !== null && edge.valid_to <= asOf);
 }
 
-function summarizeSemanticNode(node: SemanticNode): string {
-  return `${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)})`;
+function summarizeUnderReviewPrefix(node: {
+  under_review?: RetrievedSemanticNode["under_review"];
+}): string {
+  if (node.under_review === undefined) {
+    return "";
+  }
+
+  return `[under re-evaluation: ${node.under_review.reason_code}] `;
+}
+
+function summarizeSemanticNode(
+  node: SemanticNode & { under_review?: RetrievedSemanticNode["under_review"] },
+): string {
+  return `${summarizeUnderReviewPrefix(node)}${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)})`;
 }
 
 function summarizeSemanticNodeWithSources(
   node: RetrievedSemantic["matched_nodes"][number],
 ): string {
-  const label = `${node.label}${node.historical === true ? " [historical]" : ""}`;
+  const label = [
+    `${summarizeUnderReviewPrefix(node)}${node.label}`,
+    node.historical === true ? " [historical]" : "",
+  ].join("");
 
   return `${label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(node.source_episode_ids)})`;
 }
@@ -174,12 +190,12 @@ function summarizeSemanticHit(
     pathParts.push("...");
   }
 
-  return `${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}; path ${pathParts.join(" ")})`;
+  return `${summarizeUnderReviewPrefix(hit.node)}${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}; path ${pathParts.join(" ")})`;
 }
 
 function summarizeSemanticBucket(
   label: string,
-  nodes: readonly SemanticNode[],
+  nodes: readonly (SemanticNode & { under_review?: RetrievedSemanticNode["under_review"] })[],
   limit = 3,
 ): string | null {
   if (nodes.length === 0) {

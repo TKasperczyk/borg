@@ -229,4 +229,103 @@ describe("semantic retrieval prompt rendering", () => {
     expect(summary).toContain("causal:");
     expect(summary).toContain("-[causes");
   });
+
+  it("labels under-review direct semantic matches", () => {
+    const underReview = {
+      ...makeNode({
+        label: "Atlas claim under review",
+      }),
+      under_review: {
+        review_id: 1,
+        reason: "Supporting semantic edge was invalidated; target needs re-evaluation",
+        reason_code: "support_chain_collapsed",
+        invalidated_edge_id: "seme_aaaaaaaaaaaaaaaa",
+      },
+    } satisfies RetrievedSemantic["matched_nodes"][number];
+    const summary = summarizeSemanticContext(
+      {
+        matched_node_ids: [underReview.id],
+        matched_nodes: [underReview],
+        supports: [],
+        contradicts: [],
+        categories: [],
+        support_hits: [],
+        causal_hits: [],
+        contradiction_hits: [],
+        category_hits: [],
+      } satisfies RetrievedSemantic,
+      1_000,
+    );
+
+    expect(summary).toContain("[under re-evaluation: support_chain_collapsed]");
+    expect(summary).toContain("Atlas claim under review");
+  });
+
+  it("does not label nodes without an open under-review marker", () => {
+    const closedReviewNode = makeNode({
+      label: "Closed review claim",
+    });
+    const summary = summarizeSemanticContext(
+      {
+        matched_node_ids: [closedReviewNode.id],
+        matched_nodes: [closedReviewNode],
+        supports: [],
+        contradicts: [],
+        categories: [],
+        support_hits: [],
+        causal_hits: [],
+        contradiction_hits: [],
+        category_hits: [],
+      } satisfies RetrievedSemantic,
+      1_000,
+    );
+
+    expect(summary).toContain("Closed review claim");
+    expect(summary).not.toContain("[under re-evaluation:");
+  });
+
+  it("labels multiple under-review semantic nodes inline", () => {
+    const first = {
+      ...makeNode({
+        id: "semn_bbbbbbbbbbbbbbbb" as SemanticNode["id"],
+        label: "First weak claim",
+      }),
+      under_review: {
+        review_id: 1,
+        reason: "First support was invalidated",
+        reason_code: "evidence_invalidated",
+        invalidated_edge_id: "seme_bbbbbbbbbbbbbbbb",
+      },
+    } satisfies RetrievedSemantic["matched_nodes"][number];
+    const second = {
+      ...makeNode({
+        id: "semn_cccccccccccccccc" as SemanticNode["id"],
+        label: "Second weak claim",
+      }),
+      under_review: {
+        review_id: 2,
+        reason: "Second support was invalidated",
+        reason_code: "support_chain_collapsed",
+        invalidated_edge_id: "seme_cccccccccccccccc",
+      },
+    } satisfies RetrievedSemantic["matched_nodes"][number];
+    const summary = summarizeSemanticContext(
+      {
+        matched_node_ids: [first.id, second.id],
+        matched_nodes: [first, second],
+        supports: [],
+        contradicts: [],
+        categories: [],
+        support_hits: [],
+        causal_hits: [],
+        contradiction_hits: [],
+        category_hits: [],
+      } satisfies RetrievedSemantic,
+      1_000,
+    );
+
+    expect(summary?.match(/\[under re-evaluation:/g)).toHaveLength(2);
+    expect(summary).toContain("First weak claim");
+    expect(summary).toContain("Second weak claim");
+  });
 });

@@ -19,6 +19,8 @@ import type {
 } from "../types.js";
 
 const DEFAULT_MAX_REVIEWS_PER_EVENT = 64;
+const DEFAULT_CONFIDENCE_DROP_MULTIPLIER = 0.5;
+const DEFAULT_CONFIDENCE_FLOOR = 0.05;
 const MAX_SUPPORT_DESCENDANT_HOPS = 2;
 const BELIEF_REVISION_REASON =
   "Supporting semantic edge was invalidated; target needs re-evaluation";
@@ -78,6 +80,8 @@ export type BeliefReviserPlan = z.infer<typeof beliefReviserPlanSchema>;
 export type BeliefReviserProcessOptions = {
   db: SqliteDatabase;
   maxReviewsPerEvent?: number;
+  confidenceDropMultiplier?: number;
+  confidenceFloor?: number;
 };
 
 type InvalidationEvent = z.infer<typeof invalidationEventSchema>;
@@ -91,6 +95,16 @@ type AddReviewResult = "added" | "duplicate" | "missing" | "capped";
 type BuildReviewsResult = {
   reviews: BeliefRevisionReview[];
   fanoutCapped: boolean;
+};
+type ConfidenceDrop = {
+  targetId: SemanticNode["id"];
+  previousConfidence: number;
+  nextConfidence: number;
+};
+type ApplyEventResult = {
+  enqueued: BeliefRevisionReview[];
+  confidenceDrops: ConfidenceDrop[];
+  processed: boolean;
 };
 
 function uniqueEpisodeIds(ids: readonly z.infer<typeof episodeIdSchema>[]) {
@@ -108,6 +122,22 @@ function normalizeMaxReviewsPerEvent(value: number | undefined): number {
 
   if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
     throw new TypeError("maxReviewsPerEvent must be a positive integer");
+  }
+
+  return value;
+}
+
+function normalizeUnitIntervalOption(
+  value: number | undefined,
+  fallback: number,
+  label: string,
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new TypeError(`${label} must be between 0 and 1`);
   }
 
   return value;
@@ -142,6 +172,22 @@ function buildChange(review: BeliefRevisionReview, eventId: number): OfflineChan
       dependency_path_edge_ids: review.dependency_path_edge_ids,
       surviving_support_edge_ids: review.surviving_support_edge_ids,
       evidence_episode_ids: review.evidence_episode_ids,
+    },
+  };
+}
+
+function buildConfidenceDropChange(drop: ConfidenceDrop, eventId: number): OfflineChange {
+  return {
+    process: "belief-reviser",
+    action: "drop_semantic_node_confidence",
+    targets: {
+      event_id: eventId,
+      target_type: "semantic_node",
+      target_id: drop.targetId,
+    },
+    preview: {
+      previous_confidence: drop.previousConfidence,
+      next_confidence: drop.nextConfidence,
     },
   };
 }
@@ -431,9 +477,94 @@ function refsForReview(review: BeliefRevisionReview): ReviewQueueInsertInput["re
 export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
   readonly name = "belief-reviser" as const;
   private readonly maxReviewsPerEvent: number;
+  private readonly confidenceDropMultiplier: number;
+  private readonly confidenceFloor: number;
 
   constructor(private readonly options: BeliefReviserProcessOptions) {
     this.maxReviewsPerEvent = normalizeMaxReviewsPerEvent(options.maxReviewsPerEvent);
+    this.confidenceDropMultiplier = normalizeUnitIntervalOption(
+      options.confidenceDropMultiplier,
+      DEFAULT_CONFIDENCE_DROP_MULTIPLIER,
+      "confidenceDropMultiplier",
+    );
+    this.confidenceFloor = normalizeUnitIntervalOption(
+      options.confidenceFloor,
+      DEFAULT_CONFIDENCE_FLOOR,
+      "confidenceFloor",
+    );
+  }
+
+  private hasValidNonSupportIncomingEdges(
+    ctx: OfflineContext,
+    review: BeliefRevisionReview,
+  ): boolean {
+    if (review.target_type !== "semantic_node") {
+      return false;
+    }
+
+    const dependencyPathEdgeIds = new Set(review.dependency_path_edge_ids);
+
+    return ctx.semanticEdgeRepository
+      .listEdges({
+        toId: review.target_id,
+      })
+      .some((edge) => edge.relation !== "supports" && !dependencyPathEdgeIds.has(edge.id));
+  }
+
+  private maybeDropUnsupportedNodeConfidenceInSqlite(
+    ctx: OfflineContext,
+    review: BeliefRevisionReview,
+  ): ConfidenceDrop | null {
+    if (review.target_type !== "semantic_node" || review.surviving_support_edge_ids.length > 0) {
+      return null;
+    }
+
+    if (this.hasValidNonSupportIncomingEdges(ctx, review)) {
+      return null;
+    }
+
+    const current = this.options.db
+      .prepare("SELECT confidence FROM semantic_nodes WHERE id = ?")
+      .get(review.target_id) as { confidence: number } | undefined;
+
+    if (current === undefined) {
+      return null;
+    }
+
+    const currentConfidence = Number(current.confidence);
+    const nextConfidence = Math.max(
+      this.confidenceFloor,
+      currentConfidence * this.confidenceDropMultiplier,
+    );
+
+    if (nextConfidence >= currentConfidence) {
+      return null;
+    }
+
+    this.options.db
+      .prepare("UPDATE semantic_nodes SET confidence = ?, updated_at = ? WHERE id = ?")
+      .run(nextConfidence, ctx.clock.now(), review.target_id);
+
+    return {
+      targetId: review.target_id,
+      previousConfidence: currentConfidence,
+      nextConfidence,
+    };
+  }
+
+  private async syncConfidenceDropToVectorStore(
+    ctx: OfflineContext,
+    drop: ConfidenceDrop,
+  ): Promise<void> {
+    const current = await ctx.semanticNodeRepository.get(drop.targetId);
+
+    if (current === null || current.confidence === drop.nextConfidence) {
+      return;
+    }
+
+    await ctx.semanticNodeRepository.update(drop.targetId, {
+      confidence: drop.nextConfidence,
+    });
   }
 
   async plan(ctx: OfflineContext): Promise<BeliefReviserPlan> {
@@ -481,16 +612,21 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
 
     for (const item of plan.items) {
       const applyEvent = this.options.db.transaction(() => {
-        const current = this.options.db
+        const latest = this.options.db
           .prepare("SELECT processed_at FROM semantic_edge_invalidation_events WHERE id = ?")
           .get(item.event_id) as { processed_at: number | null } | undefined;
 
-        if (current === undefined || current.processed_at !== null) {
-          return [] as BeliefRevisionReview[];
+        if (latest === undefined || latest.processed_at !== null) {
+          return {
+            enqueued: [],
+            confidenceDrops: [],
+            processed: false,
+          } satisfies ApplyEventResult;
         }
 
         const openKeys = collectOpenBeliefRevisionKeys(ctx);
         const enqueued: BeliefRevisionReview[] = [];
+        const confidenceDrops: ConfidenceDrop[] = [];
 
         for (const review of item.reviews) {
           const key = reviewKey(review);
@@ -499,6 +635,8 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
             continue;
           }
 
+          const drop = this.maybeDropUnsupportedNodeConfidenceInSqlite(ctx, review);
+
           ctx.reviewQueueRepository.enqueue({
             kind: "belief_revision",
             refs: refsForReview(review),
@@ -506,6 +644,10 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
           });
           openKeys.add(key);
           enqueued.push(review);
+
+          if (drop !== null) {
+            confidenceDrops.push(drop);
+          }
         }
 
         this.options.db
@@ -514,14 +656,56 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
           )
           .run(ctx.clock.now(), item.event_id);
 
-        return enqueued;
+        return {
+          enqueued,
+          confidenceDrops,
+          processed: true,
+        } satisfies ApplyEventResult;
       });
 
-      for (const review of applyEvent()) {
+      const result = applyEvent();
+
+      for (const review of result.enqueued) {
         changes.push(buildChange(review, item.event_id));
       }
 
-      if (item.fanout_capped) {
+      if (result.processed) {
+        for (const drop of result.confidenceDrops) {
+          try {
+            await this.syncConfidenceDropToVectorStore(ctx, drop);
+          } catch (error) {
+            errors.push({
+              process: this.name,
+              message: error instanceof Error ? error.message : String(error),
+              code: "belief_reviser_confidence_drop_vector_sync_failed",
+            });
+          }
+
+          changes.push(buildConfidenceDropChange(drop, item.event_id));
+
+          try {
+            await ctx.streamWriter.append({
+              kind: "internal_event",
+              content: {
+                hook: "belief_reviser_confidence_dropped",
+                event_id: item.event_id,
+                target_type: "semantic_node",
+                target_id: drop.targetId,
+                previous_confidence: drop.previousConfidence,
+                next_confidence: drop.nextConfidence,
+              },
+            });
+          } catch (error) {
+            errors.push({
+              process: this.name,
+              message: error instanceof Error ? error.message : String(error),
+              code: "belief_reviser_confidence_drop_log_failed",
+            });
+          }
+        }
+      }
+
+      if (result.processed && item.fanout_capped) {
         try {
           await ctx.streamWriter.append({
             kind: "internal_event",

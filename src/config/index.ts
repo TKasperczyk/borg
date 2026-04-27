@@ -61,6 +61,17 @@ const configFileSchema = z
       })
       .partial()
       .optional(),
+    retrieval: z
+      .object({
+        semantic: z
+          .object({
+            underReviewMultiplier: z.number().min(0).max(1).optional(),
+          })
+          .partial()
+          .optional(),
+      })
+      .partial()
+      .optional(),
     executive: z
       .object({
         goalFocusThreshold: z.number().min(0).max(1).optional(),
@@ -142,6 +153,13 @@ const configFileSchema = z
             maxObservationsPerRun: z.number().int().positive().optional(),
             minSupportEpisodes: z.number().int().positive().optional(),
             cadenceHintDays: z.number().positive().optional(),
+          })
+          .partial()
+          .optional(),
+        beliefReviser: z
+          .object({
+            confidenceDropMultiplier: z.number().min(0).max(1).optional(),
+            confidenceFloor: z.number().min(0).max(1).optional(),
           })
           .partial()
           .optional(),
@@ -307,6 +325,11 @@ export const configSchema = z.object({
   procedural: z.object({
     skillSelectionMinSimilarity: z.number().min(0).max(1),
   }),
+  retrieval: z.object({
+    semantic: z.object({
+      underReviewMultiplier: z.number().min(0).max(1),
+    }),
+  }),
   executive: z.object({
     goalFocusThreshold: z.number().min(0).max(1),
   }),
@@ -365,6 +388,10 @@ export const configSchema = z.object({
       maxObservationsPerRun: z.number().int().positive(),
       minSupportEpisodes: z.number().int().positive(),
       cadenceHintDays: z.number().positive(),
+    }),
+    beliefReviser: z.object({
+      confidenceDropMultiplier: z.number().min(0).max(1),
+      confidenceFloor: z.number().min(0).max(1),
     }),
   }),
   maintenance: z.object({
@@ -485,6 +512,11 @@ export const DEFAULT_CONFIG: Config = {
   procedural: {
     skillSelectionMinSimilarity: 0.5,
   },
+  retrieval: {
+    semantic: {
+      underReviewMultiplier: 0.5,
+    },
+  },
   executive: {
     goalFocusThreshold: DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD,
   },
@@ -545,6 +577,10 @@ export const DEFAULT_CONFIG: Config = {
       maxObservationsPerRun: 4,
       minSupportEpisodes: 2,
       cadenceHintDays: 7,
+    },
+    beliefReviser: {
+      confidenceDropMultiplier: 0.5,
+      confidenceFloor: 0.05,
     },
   },
   maintenance: {
@@ -850,6 +886,17 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         fileConfig.procedural?.skillSelectionMinSimilarity ??
         DEFAULT_CONFIG.procedural.skillSelectionMinSimilarity,
     },
+    retrieval: {
+      semantic: {
+        underReviewMultiplier:
+          readOptionalEnvUnitInterval(
+            env,
+            "BORG_RETRIEVAL_SEMANTIC_UNDER_REVIEW_MULTIPLIER",
+          ) ??
+          fileConfig.retrieval?.semantic?.underReviewMultiplier ??
+          DEFAULT_CONFIG.retrieval.semantic.underReviewMultiplier,
+      },
+    },
     executive: {
       goalFocusThreshold:
         readOptionalEnvUnitInterval(env, "BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD") ??
@@ -1035,6 +1082,19 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           fileConfig.offline?.selfNarrator?.cadenceHintDays ??
           DEFAULT_CONFIG.offline.selfNarrator.cadenceHintDays,
       },
+      beliefReviser: {
+        confidenceDropMultiplier:
+          readOptionalEnvUnitInterval(
+            env,
+            "BORG_OFFLINE_BELIEF_REVISER_CONFIDENCE_DROP_MULTIPLIER",
+          ) ??
+          fileConfig.offline?.beliefReviser?.confidenceDropMultiplier ??
+          DEFAULT_CONFIG.offline.beliefReviser.confidenceDropMultiplier,
+        confidenceFloor:
+          readOptionalEnvUnitInterval(env, "BORG_OFFLINE_BELIEF_REVISER_CONFIDENCE_FLOOR") ??
+          fileConfig.offline?.beliefReviser?.confidenceFloor ??
+          DEFAULT_CONFIG.offline.beliefReviser.confidenceFloor,
+      },
     },
     maintenance: {
       enabled:
@@ -1217,6 +1277,11 @@ export function redactConfig(config: Config): Config {
     },
     procedural: {
       ...config.procedural,
+    },
+    retrieval: {
+      semantic: {
+        ...config.retrieval.semantic,
+      },
     },
     executive: {
       ...config.executive,

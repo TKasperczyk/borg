@@ -6,16 +6,33 @@ import type { EpisodicRepository } from "../memory/episodic/repository.js";
 import type { Episode } from "../memory/episodic/types.js";
 import type { SemanticGraph } from "../memory/semantic/graph.js";
 import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
+import type {
+  BeliefRevisionTarget,
+  OpenBeliefRevisionStatus,
+  ReviewQueueRepository,
+} from "../memory/semantic/review-queue.js";
 import type { SemanticContext, SemanticNode, SemanticWalkStep } from "../memory/semantic/types.js";
 import type { EntityId } from "../util/ids.js";
 
+const DEFAULT_UNDER_REVIEW_MULTIPLIER = 0.5;
+
+export type RetrievedSemanticUnderReview = {
+  review_id: number;
+  reason: string;
+  reason_code: OpenBeliefRevisionStatus["reason_code"];
+  invalidated_edge_id: string;
+};
+
 export type RetrievedSemanticNode = SemanticNode & {
   historical?: boolean;
+  base_retrieval_score?: number;
+  retrieval_score?: number;
+  under_review?: RetrievedSemanticUnderReview;
 };
 
 export type RetrievedSemanticHit = {
   root_node_id: SemanticNode["id"];
-  node: SemanticNode;
+  node: RetrievedSemanticNode;
   edgePath: SemanticWalkStep["edgePath"];
 };
 
@@ -35,6 +52,7 @@ export type SemanticRetrievalOptions = {
   graphWalkDepth?: number;
   maxGraphNodes?: number;
   asOf?: number;
+  underReviewMultiplier?: number;
 };
 
 export type SemanticRetrievalDependencies = {
@@ -42,6 +60,7 @@ export type SemanticRetrievalDependencies = {
   episodicRepository: EpisodicRepository;
   semanticNodeRepository?: SemanticNodeRepository;
   semanticGraph?: SemanticGraph;
+  reviewQueueRepository?: Pick<ReviewQueueRepository, "listOpenBeliefRevisionsByTarget">;
 };
 
 export type ResolvedSemanticRetrieval = {
@@ -54,6 +73,11 @@ export type ResolvedSemanticRetrieval = {
   contradictionHits: RetrievedSemanticHit[];
   categoryHits: RetrievedSemanticHit[];
   asOf?: number;
+};
+
+type MatchedNodeCandidate = {
+  node: SemanticNode;
+  baseScore: number;
 };
 
 function emptySemanticRetrieval(): ResolvedSemanticRetrieval {
@@ -155,6 +179,119 @@ export async function filterSemanticWalkStepsByAudience(
   return steps.filter((step) => isSemanticWalkStepVisible(step, visibleEpisodeIds));
 }
 
+function normalizeUnderReviewMultiplier(value: number | undefined): number {
+  const multiplier = value ?? DEFAULT_UNDER_REVIEW_MULTIPLIER;
+
+  if (!Number.isFinite(multiplier) || multiplier < 0 || multiplier > 1) {
+    throw new TypeError("underReviewMultiplier must be between 0 and 1");
+  }
+
+  return multiplier;
+}
+
+function semanticNodeTargetKey(nodeId: SemanticNode["id"]): string {
+  return JSON.stringify(["semantic_node", nodeId]);
+}
+
+function labelMatchScore(node: SemanticNode, label: string, rank: number): number {
+  const normalized = label.trim().toLowerCase();
+  const nodeLabel = node.label.toLowerCase();
+  const aliases = node.aliases.map((alias) => alias.toLowerCase());
+  const base =
+    nodeLabel === normalized || aliases.includes(normalized)
+      ? 1
+      : nodeLabel.includes(normalized) || aliases.some((alias) => alias.includes(normalized))
+        ? 0.9
+        : 0.8;
+
+  return Math.max(0.01, base - rank * 0.01);
+}
+
+function recordMatchedNode(
+  candidatesById: Map<SemanticNode["id"], MatchedNodeCandidate>,
+  node: SemanticNode,
+  baseScore: number,
+): void {
+  const existing = candidatesById.get(node.id);
+
+  if (existing === undefined || baseScore > existing.baseScore) {
+    candidatesById.set(node.id, {
+      node,
+      baseScore,
+    });
+  }
+}
+
+function buildUnderReviewStatus(
+  status: OpenBeliefRevisionStatus | undefined,
+): RetrievedSemanticUnderReview | undefined {
+  if (status === undefined) {
+    return undefined;
+  }
+
+  return {
+    review_id: status.review_id,
+    reason: status.reason,
+    reason_code: status.reason_code,
+    invalidated_edge_id: status.invalidated_edge_id,
+  };
+}
+
+function annotateSemanticNode(
+  node: SemanticNode,
+  input: {
+    baseScore?: number;
+    underReviewByNodeId: ReadonlyMap<string, OpenBeliefRevisionStatus>;
+    underReviewMultiplier: number;
+  },
+): RetrievedSemanticNode {
+  const status = buildUnderReviewStatus(
+    input.underReviewByNodeId.get(semanticNodeTargetKey(node.id)),
+  );
+
+  if (input.baseScore === undefined) {
+    return status === undefined
+      ? node
+      : {
+          ...node,
+          under_review: status,
+        };
+  }
+
+  const retrievalScore =
+    status === undefined ? input.baseScore : input.baseScore * input.underReviewMultiplier;
+
+  return {
+    ...node,
+    base_retrieval_score: input.baseScore,
+    retrieval_score: retrievalScore,
+    ...(status === undefined ? {} : { under_review: status }),
+  };
+}
+
+async function collectUnderReviewStatuses(
+  nodes: readonly SemanticNode[],
+  dependencies: SemanticRetrievalDependencies,
+  options: Pick<SemanticRetrievalOptions, "audienceEntityId" | "crossAudience">,
+): Promise<Map<string, OpenBeliefRevisionStatus>> {
+  if (dependencies.reviewQueueRepository === undefined || nodes.length === 0) {
+    return new Map();
+  }
+
+  const targets = [...new Set(nodes.map((node) => node.id))].map(
+    (nodeId): BeliefRevisionTarget => ({
+      target_type: "semantic_node",
+      target_id: nodeId,
+    }),
+  );
+
+  return dependencies.reviewQueueRepository.listOpenBeliefRevisionsByTarget(targets, {
+    audienceEntityId: options.audienceEntityId,
+    crossAudience: options.crossAudience,
+    episodicRepository: dependencies.episodicRepository,
+  });
+}
+
 async function isHistoricalPropositionMatch(
   node: SemanticNode,
   semanticGraph: SemanticGraph,
@@ -205,35 +342,40 @@ export async function resolveSemanticContext(
     return emptySemanticRetrieval();
   }
 
+  const underReviewMultiplier = normalizeUnderReviewMultiplier(options.underReviewMultiplier);
   const labels = [...extractEntitiesHeuristically(query), ...query.split(/[,\n]+/)]
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
-  const matchedNodes: SemanticNode[] = [];
+  const matchedNodeCandidatesById = new Map<SemanticNode["id"], MatchedNodeCandidate>();
 
   for (const label of labels) {
     const matches = await semanticNodeRepository.findByLabelOrAlias(label, 3);
-    matchedNodes.push(...matches);
+    for (const [rank, node] of matches.entries()) {
+      recordMatchedNode(matchedNodeCandidatesById, node, labelMatchScore(node, label, rank));
+    }
   }
 
-  if (matchedNodes.length === 0) {
+  if (matchedNodeCandidatesById.size === 0) {
     const queryVector = await embeddingClient.embed(query);
     const byVector = await semanticNodeRepository.searchByVector(queryVector, {
       limit: 3,
       includeArchived: false,
     });
-    matchedNodes.push(...byVector.map((item) => item.node));
+    for (const item of byVector) {
+      recordMatchedNode(matchedNodeCandidatesById, item.node, item.similarity);
+    }
   }
 
-  const matchedNodeCandidates = [...new Map(matchedNodes.map((node) => [node.id, node])).values()];
+  const matchedNodeCandidates = [...matchedNodeCandidatesById.values()];
   const matchedNodeVisibility = await resolveVisibleEpisodeIds(
     episodicRepository,
-    matchedNodeCandidates.flatMap((node) => node.source_episode_ids),
+    matchedNodeCandidates.flatMap(({ node }) => node.source_episode_ids),
     options,
   );
   const uniqueNodes = new Map(
     matchedNodeCandidates
-      .filter((node) => isSemanticNodeVisible(node, matchedNodeVisibility))
-      .map((node) => [node.id, node] as const),
+      .filter(({ node }) => isSemanticNodeVisible(node, matchedNodeVisibility))
+      .map((candidate) => [candidate.node.id, candidate] as const),
   );
   const supports = new Map<string, SemanticNode>();
   const contradicts = new Map<string, SemanticNode>();
@@ -251,28 +393,28 @@ export async function resolveSemanticContext(
   const categoryHits: RetrievedSemanticHit[] = [];
 
   for (const node of uniqueNodes.values()) {
-    const walkedSupports = await semanticGraph.walk(node.id, {
+    const walkedSupports = await semanticGraph.walk(node.node.id, {
       relations: ["supports"],
       direction: "out",
       depth: walkDepth,
       maxNodes: maxGraphNodes,
       asOf: options.asOf,
     });
-    const walkedCausals = await semanticGraph.walk(node.id, {
+    const walkedCausals = await semanticGraph.walk(node.node.id, {
       relations: ["causes", "prevents"],
       direction: "out",
       depth: walkDepth,
       maxNodes: maxGraphNodes,
       asOf: options.asOf,
     });
-    const walkedContradictions = await semanticGraph.walk(node.id, {
+    const walkedContradictions = await semanticGraph.walk(node.node.id, {
       relations: ["contradicts"],
       direction: "both",
       depth: walkDepth,
       maxNodes: maxGraphNodes,
       asOf: options.asOf,
     });
-    const walkedCategories = await semanticGraph.walk(node.id, {
+    const walkedCategories = await semanticGraph.walk(node.node.id, {
       relations: ["is_a"],
       direction: "out",
       depth: walkDepth,
@@ -280,18 +422,18 @@ export async function resolveSemanticContext(
       asOf: options.asOf,
     });
 
-    supportNeighbors.push(...walkedSupports.map((step) => ({ rootNodeId: node.id, step })));
-    causalNeighbors.push(...walkedCausals.map((step) => ({ rootNodeId: node.id, step })));
+    supportNeighbors.push(...walkedSupports.map((step) => ({ rootNodeId: node.node.id, step })));
+    causalNeighbors.push(...walkedCausals.map((step) => ({ rootNodeId: node.node.id, step })));
     contradictionNeighbors.push(
-      ...walkedContradictions.map((step) => ({ rootNodeId: node.id, step })),
+      ...walkedContradictions.map((step) => ({ rootNodeId: node.node.id, step })),
     );
-    categoryNeighbors.push(...walkedCategories.map((step) => ({ rootNodeId: node.id, step })));
+    categoryNeighbors.push(...walkedCategories.map((step) => ({ rootNodeId: node.node.id, step })));
   }
 
   const semanticVisibility = await resolveVisibleEpisodeIds(
     episodicRepository,
     [
-      ...[...uniqueNodes.values()].flatMap((node) => node.source_episode_ids),
+      ...[...uniqueNodes.values()].flatMap(({ node }) => node.source_episode_ids),
       ...supportNeighbors.flatMap(({ step }) => [
         ...step.node.source_episode_ids,
         ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
@@ -312,68 +454,103 @@ export async function resolveSemanticContext(
     options,
   );
 
+  const visibleSupportNeighbors = supportNeighbors.filter(({ step }) =>
+    isSemanticWalkStepVisible(step, semanticVisibility),
+  );
+  const visibleCausalNeighbors = causalNeighbors.filter(({ step }) =>
+    isSemanticWalkStepVisible(step, semanticVisibility),
+  );
+  const visibleContradictionNeighbors = contradictionNeighbors.filter(({ step }) =>
+    isSemanticWalkStepVisible(step, semanticVisibility),
+  );
+  const visibleCategoryNeighbors = categoryNeighbors.filter(({ step }) =>
+    isSemanticWalkStepVisible(step, semanticVisibility),
+  );
+  const underReviewByNodeId = await collectUnderReviewStatuses(
+    [
+      ...[...uniqueNodes.values()].map(({ node }) => node),
+      ...visibleSupportNeighbors.map(({ step }) => step.node),
+      ...visibleCausalNeighbors.map(({ step }) => step.node),
+      ...visibleContradictionNeighbors.map(({ step }) => step.node),
+      ...visibleCategoryNeighbors.map(({ step }) => step.node),
+    ],
+    dependencies,
+    options,
+  );
   const visibleMatchedNodes = await Promise.all(
     [...uniqueNodes.values()]
-      .filter((node) => isSemanticNodeVisible(node, semanticVisibility))
-      .map(async (node): Promise<RetrievedSemanticNode> => {
-        if (await isHistoricalPropositionMatch(node, semanticGraph, options.asOf)) {
+      .filter(({ node }) => isSemanticNodeVisible(node, semanticVisibility))
+      .map(async (candidate): Promise<RetrievedSemanticNode> => {
+        const annotated = annotateSemanticNode(candidate.node, {
+          baseScore: candidate.baseScore,
+          underReviewByNodeId,
+          underReviewMultiplier,
+        });
+
+        if (await isHistoricalPropositionMatch(candidate.node, semanticGraph, options.asOf)) {
           return {
-            ...node,
+            ...annotated,
             historical: true,
           };
         }
 
-        return node;
+        return annotated;
       }),
   );
+  visibleMatchedNodes.sort(
+    (left, right) =>
+      (right.retrieval_score ?? 0) - (left.retrieval_score ?? 0) ||
+      (right.base_retrieval_score ?? 0) - (left.base_retrieval_score ?? 0) ||
+      right.updated_at - left.updated_at ||
+      left.id.localeCompare(right.id),
+  );
 
-  for (const item of supportNeighbors) {
-    if (!isSemanticWalkStepVisible(item.step, semanticVisibility)) {
-      continue;
-    }
-
-    supports.set(item.step.node.id, item.step.node);
+  for (const item of visibleSupportNeighbors) {
+    const node = annotateSemanticNode(item.step.node, {
+      underReviewByNodeId,
+      underReviewMultiplier,
+    });
+    supports.set(item.step.node.id, node);
     supportHits.push({
       root_node_id: item.rootNodeId,
-      node: item.step.node,
+      node,
       edgePath: item.step.edgePath,
     });
   }
 
-  for (const item of causalNeighbors) {
-    if (!isSemanticWalkStepVisible(item.step, semanticVisibility)) {
-      continue;
-    }
-
+  for (const item of visibleCausalNeighbors) {
     causalHits.push({
       root_node_id: item.rootNodeId,
-      node: item.step.node,
+      node: annotateSemanticNode(item.step.node, {
+        underReviewByNodeId,
+        underReviewMultiplier,
+      }),
       edgePath: item.step.edgePath,
     });
   }
 
-  for (const item of contradictionNeighbors) {
-    if (!isSemanticWalkStepVisible(item.step, semanticVisibility)) {
-      continue;
-    }
-
-    contradicts.set(item.step.node.id, item.step.node);
+  for (const item of visibleContradictionNeighbors) {
+    const node = annotateSemanticNode(item.step.node, {
+      underReviewByNodeId,
+      underReviewMultiplier,
+    });
+    contradicts.set(item.step.node.id, node);
     contradictionHits.push({
       root_node_id: item.rootNodeId,
-      node: item.step.node,
+      node,
       edgePath: item.step.edgePath,
     });
   }
 
-  for (const item of categoryNeighbors) {
-    if (!isSemanticWalkStepVisible(item.step, semanticVisibility)) {
-      continue;
-    }
-
-    categories.set(item.step.node.id, item.step.node);
+  for (const item of visibleCategoryNeighbors) {
+    const node = annotateSemanticNode(item.step.node, {
+      underReviewByNodeId,
+      underReviewMultiplier,
+    });
+    categories.set(item.step.node.id, node);
     categoryHits.push({
       root_node_id: item.rootNodeId,
-      node: item.step.node,
+      node,
       edgePath: item.step.edgePath,
     });
   }

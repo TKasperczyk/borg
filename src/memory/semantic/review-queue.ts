@@ -5,7 +5,13 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { SemanticError } from "../../util/errors.js";
 import { serializeJsonValue, type JsonValue } from "../../util/json-value.js";
 import { parseReviewProvenance, provenanceSchema, type Provenance } from "../common/provenance.js";
-import { EpisodicRepository, episodeIdSchema, episodePatchSchema } from "../episodic/index.js";
+import {
+  EpisodicRepository,
+  episodeIdSchema,
+  episodePatchSchema,
+  isEpisodeVisibleToAudience,
+  type Episode,
+} from "../episodic/index.js";
 import { type IdentityEventRepository, type IdentityService } from "../identity/index.js";
 import {
   AutobiographicalRepository,
@@ -19,6 +25,7 @@ import {
   valueIdSchema,
 } from "../self/index.js";
 import { CommitmentRepository, commitmentIdSchema } from "../commitments/index.js";
+import type { EntityId } from "../../util/ids.js";
 import type { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import {
   semanticEdgeIdSchema,
@@ -176,6 +183,29 @@ const temporalDriftRefsSchema = z.discriminatedUnion("target_type", [
   }),
 ]);
 
+const beliefRevisionRefsSchema = z.discriminatedUnion("target_type", [
+  z
+    .object({
+      target_type: z.literal("semantic_node"),
+      target_id: semanticNodeIdSchema,
+      invalidated_edge_id: semanticEdgeIdSchema,
+      dependency_path_edge_ids: z.array(semanticEdgeIdSchema),
+      surviving_support_edge_ids: z.array(semanticEdgeIdSchema),
+      evidence_episode_ids: z.array(episodeIdSchema),
+    })
+    .passthrough(),
+  z
+    .object({
+      target_type: z.literal("semantic_edge"),
+      target_id: semanticEdgeIdSchema,
+      invalidated_edge_id: semanticEdgeIdSchema,
+      dependency_path_edge_ids: z.array(semanticEdgeIdSchema),
+      surviving_support_edge_ids: z.array(semanticEdgeIdSchema),
+      evidence_episode_ids: z.array(episodeIdSchema),
+    })
+    .passthrough(),
+]);
+
 const semanticEdgeReviewClosureRefsSchema = z
   .object({
     target_type: z.literal("semantic_edge").optional(),
@@ -271,6 +301,33 @@ const reviewApplyingStateSchema = z
   .strict();
 
 type ReviewApplyingState = z.infer<typeof reviewApplyingStateSchema>;
+type BeliefRevisionRefs = z.infer<typeof beliefRevisionRefsSchema>;
+export type BeliefRevisionReasonCode =
+  | "evidence_invalidated"
+  | "support_chain_collapsed"
+  | "manual_review";
+export type BeliefRevisionTarget =
+  | {
+      target_type: "semantic_node";
+      target_id: SemanticNode["id"];
+    }
+  | {
+      target_type: "semantic_edge";
+      target_id: SemanticEdge["id"];
+    };
+export type OpenBeliefRevisionStatus = BeliefRevisionTarget & {
+  review_id: ReviewQueueItem["id"];
+  reason: string;
+  reason_code: BeliefRevisionReasonCode;
+  created_at: number;
+  invalidated_edge_id: SemanticEdge["id"];
+  evidence_episode_ids: Episode["id"][];
+};
+export type BeliefRevisionVisibilityOptions = {
+  audienceEntityId?: EntityId | null;
+  crossAudience?: boolean;
+  episodicRepository?: Pick<EpisodicRepository, "getMany">;
+};
 type SemanticEdgeClosureRefs = {
   edgeId: SemanticEdge["id"];
   validTo: number;
@@ -357,6 +414,26 @@ function parseRefs(value: string): Record<string, unknown> {
       code: "REVIEW_QUEUE_INVALID",
     });
   }
+}
+
+function beliefRevisionTargetKey(target: BeliefRevisionTarget): string {
+  return JSON.stringify([target.target_type, target.target_id]);
+}
+
+function beliefRevisionReasonCode(refs: BeliefRevisionRefs): BeliefRevisionReasonCode {
+  if (refs.target_type === "semantic_node" && refs.surviving_support_edge_ids.length === 0) {
+    return "support_chain_collapsed";
+  }
+
+  if (refs.invalidated_edge_id !== undefined) {
+    return "evidence_invalidated";
+  }
+
+  return "manual_review";
+}
+
+function uniqueEpisodeIds(ids: readonly Episode["id"][]): Episode["id"][] {
+  return [...new Set(ids)];
 }
 
 function mapReviewRow(row: Record<string, unknown>): ReviewQueueItem {
@@ -466,6 +543,125 @@ export class ReviewQueueRepository {
     return this.list({
       openOnly: true,
     });
+  }
+
+  private beliefRevisionEvidenceEpisodeIds(refs: BeliefRevisionRefs): Episode["id"][] {
+    const invalidatedEdge = this.options.semanticEdgeRepository?.getEdge(refs.invalidated_edge_id);
+
+    return uniqueEpisodeIds([
+      ...refs.evidence_episode_ids,
+      ...(invalidatedEdge?.evidence_episode_ids ?? []),
+    ]);
+  }
+
+  private async isBeliefRevisionVisible(
+    status: Pick<OpenBeliefRevisionStatus, "evidence_episode_ids">,
+    options: BeliefRevisionVisibilityOptions,
+  ): Promise<boolean> {
+    if (options.crossAudience === true || status.evidence_episode_ids.length === 0) {
+      return true;
+    }
+
+    const episodicRepository = options.episodicRepository ?? this.options.episodicRepository;
+
+    if (episodicRepository === undefined) {
+      return false;
+    }
+
+    const episodes = (await episodicRepository.getMany(status.evidence_episode_ids)).filter(
+      (episode): episode is Episode => episode !== null,
+    );
+
+    if (
+      episodes.some((episode) =>
+        isEpisodeVisibleToAudience(episode, options.audienceEntityId, {
+          crossAudience: options.crossAudience,
+        }),
+      )
+    ) {
+      return true;
+    }
+
+    return (
+      episodes.length === status.evidence_episode_ids.length &&
+      episodes.every((episode) => isEpisodeVisibleToAudience(episode, null))
+    );
+  }
+
+  async listOpenBeliefRevisionsByTarget(
+    targets: readonly BeliefRevisionTarget[],
+    options: BeliefRevisionVisibilityOptions = {},
+  ): Promise<Map<string, OpenBeliefRevisionStatus>> {
+    if (targets.length === 0) {
+      return new Map();
+    }
+
+    const targetsByKey = new Map(targets.map((target) => [beliefRevisionTargetKey(target), target]));
+    const whereTargets = [...targetsByKey.values()];
+    const targetFilter = whereTargets
+      .map(
+        () =>
+          "(json_extract(refs, '$.target_type') = ? AND json_extract(refs, '$.target_id') = ?)",
+      )
+      .join(" OR ");
+    const targetValues = whereTargets.flatMap((target) => [target.target_type, target.target_id]);
+    const rows = this.db
+      .prepare(
+        `
+          SELECT id, kind, refs, reason, created_at, resolved_at, resolution
+          FROM review_queue
+          WHERE kind = 'belief_revision'
+            AND resolved_at IS NULL
+            AND (${targetFilter})
+          ORDER BY created_at DESC, id DESC
+        `,
+      )
+      .all(...targetValues) as Record<string, unknown>[];
+    const results = new Map<string, OpenBeliefRevisionStatus>();
+
+    for (const item of rows.map((row) => mapReviewRow(row))) {
+      const parsed = beliefRevisionRefsSchema.safeParse(item.refs);
+
+      if (!parsed.success) {
+        continue;
+      }
+
+      const refs: BeliefRevisionRefs = parsed.data;
+      const target = {
+        target_type: refs.target_type,
+        target_id: refs.target_id,
+      } as BeliefRevisionTarget;
+      const key = beliefRevisionTargetKey(target);
+
+      if (!targetsByKey.has(key) || results.has(key)) {
+        continue;
+      }
+
+      const status: OpenBeliefRevisionStatus = {
+        ...target,
+        review_id: item.id,
+        reason: item.reason,
+        reason_code: beliefRevisionReasonCode(refs),
+        created_at: item.created_at,
+        invalidated_edge_id: refs.invalidated_edge_id,
+        evidence_episode_ids: this.beliefRevisionEvidenceEpisodeIds(refs),
+      };
+
+      if (await this.isBeliefRevisionVisible(status, options)) {
+        results.set(key, status);
+      }
+    }
+
+    return results;
+  }
+
+  async getOpenBeliefRevisionForTarget(
+    target: BeliefRevisionTarget,
+    options: BeliefRevisionVisibilityOptions = {},
+  ): Promise<OpenBeliefRevisionStatus | null> {
+    const results = await this.listOpenBeliefRevisionsByTarget([target], options);
+
+    return results.get(beliefRevisionTargetKey(target)) ?? null;
   }
 
   delete(itemId: number): boolean {

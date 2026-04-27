@@ -278,11 +278,13 @@ export async function buildBorgRepositories(
     episodicRepository,
     semanticNodeRepository,
     semanticGraph,
+    reviewQueueRepository: createdReviewQueueRepository,
     openQuestionsRepository,
     dataDir: config.dataDir,
     entryIndex,
     clock,
     tracer: options.tracer,
+    semanticUnderReviewMultiplier: config.retrieval.semantic.underReviewMultiplier,
   });
   const correctionService = new CorrectionService({
     config,

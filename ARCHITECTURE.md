@@ -251,6 +251,16 @@ canonicalization (`canonicalizeDomain`) maps synonyms (`technology` →
 `tech`) so the homonym-anchor still merges intended-same-concept
 extractions.
 
+Belief revision is dependency-driven, not a separate theorem prover.
+When a semantic edge is invalidated, SQLite records an outbox event;
+the offline belief reviser follows explicit semantic belief
+dependencies and opens `belief_revision` review items for affected
+nodes/edges. Retrieval does not hide affected semantic nodes: open
+`belief_revision` targets are downranked and annotated inline in the
+deliberation prompt as under re-evaluation. If a target node has no
+surviving support edges, the belief reviser also lowers its confidence
+deterministically while leaving final re-grading to review.
+
 ### 4. Procedural (how I do things)
 
 Skills as Bayesian beliefs about what works. The persisted shape stores
@@ -754,7 +764,8 @@ parallel candidate generation (RetrievalPipeline.searchWithContext):
   │     recent / heat
   ├─ semantic match: label/alias exact → vector fallback → graph walk
   │     (supports OUT; causes/prevents OUT; contradicts BOTH;
-  │      is_a OUT; default depth 2; archived nodes excluded)
+  │      is_a OUT; default depth 2; archived nodes excluded;
+  │      open belief-revision nodes downranked, not dropped)
   └─ open-question match
  ↓
 score with mode-conditioned attention weights
@@ -844,9 +855,10 @@ status annotated.
    nodes/edges, Beta-derived for skills). Retrieval aggregates
    per-result signals into a per-query `RetrievalConfidence`
    (Sprint 28) that feeds S1/S2 routing. Graph-edge confidence
-   propagation (weakening derived beliefs when supporting evidence
-   is weak) is still not implemented -- each semantic node/edge
-   carries its own confidence in isolation.
+   propagation is deliberately narrow: the belief reviser weakens
+   semantic nodes that lose all surviving support and retrieval labels
+   open belief-revision targets, while LLM-based re-grading remains a
+   review step rather than synchronous retrieval logic.
 
 ### Moderate value, low implementation risk
 

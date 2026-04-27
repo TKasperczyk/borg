@@ -182,6 +182,14 @@ export async function createOfflineTestHarness(
       ...DEFAULT_CONFIG.procedural,
       ...options.configOverrides?.procedural,
     },
+    retrieval: {
+      ...DEFAULT_CONFIG.retrieval,
+      ...options.configOverrides?.retrieval,
+      semantic: {
+        ...DEFAULT_CONFIG.retrieval.semantic,
+        ...options.configOverrides?.retrieval?.semantic,
+      },
+    },
     offline: {
       ...DEFAULT_CONFIG.offline,
       ...options.configOverrides?.offline,
@@ -212,6 +220,10 @@ export async function createOfflineTestHarness(
       selfNarrator: {
         ...DEFAULT_CONFIG.offline.selfNarrator,
         ...options.configOverrides?.offline?.selfNarrator,
+      },
+      beliefReviser: {
+        ...DEFAULT_CONFIG.offline.beliefReviser,
+        ...options.configOverrides?.offline?.beliefReviser,
       },
     },
     autonomy: {
@@ -438,10 +450,12 @@ export async function createOfflineTestHarness(
     episodicRepository,
     semanticNodeRepository,
     semanticGraph,
+    reviewQueueRepository,
     openQuestionsRepository,
     dataDir: tempDir,
     entryIndex,
     clock,
+    semanticUnderReviewMultiplier: config.retrieval.semantic.underReviewMultiplier,
   });
   const flushHookLogs = async () => {
     await Promise.all([...pendingHookLogs]);

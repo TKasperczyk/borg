@@ -126,6 +126,9 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
     }),
     "belief-reviser": new BeliefReviserProcess({
       db: options.sqlite,
+      confidenceDropMultiplier:
+        options.config.offline.beliefReviser.confidenceDropMultiplier,
+      confidenceFloor: options.config.offline.beliefReviser.confidenceFloor,
     }),
   } satisfies Record<OfflineProcessName, OfflineProcess>;
   const maintenanceOrchestrator = new MaintenanceOrchestrator({
