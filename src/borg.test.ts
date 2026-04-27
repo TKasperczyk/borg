@@ -777,6 +777,7 @@ describe("Borg", () => {
             stop_reason: "end_turn",
             tool_calls: [],
           },
+          createEmptyReflectionResponse(),
         ],
       }),
       liveExtraction: true,
@@ -900,6 +901,7 @@ describe("Borg", () => {
             stop_reason: "end_turn",
             tool_calls: [],
           },
+          createEmptyReflectionResponse(),
         ],
       }),
     });
@@ -984,6 +986,7 @@ describe("Borg", () => {
             stop_reason: "end_turn",
             tool_calls: [],
           },
+          createEmptyReflectionResponse(),
         ],
       }),
       liveExtraction: false,
@@ -1456,6 +1459,7 @@ describe("Borg", () => {
         },
       ]);
       llm.pushResponse("I found the planning sync in memory.");
+      llm.pushResponse(createEmptyReflectionResponse());
 
       const result = await borg.turn({
         userMessage: "What do you remember about the planning sync?",
@@ -1774,6 +1778,7 @@ describe("Borg", () => {
           },
         ],
       });
+      llm.pushResponse(createEmptyReflectionResponse());
       const result = await borg.turn({
         userMessage: "Update Sam on Atlas.",
         audience: "Sam",
@@ -1785,10 +1790,12 @@ describe("Borg", () => {
         "haiku",
         "sonnet",
         "haiku",
+        "haiku",
       ]);
       expect(llm.requests[1]?.budget).toBe("commitment-judge");
       expect(llm.requests[2]?.budget).toBe("commitment-revision");
       expect(llm.requests[3]?.budget).toBe("commitment-judge");
+      expect(llm.requests[4]?.budget).toBe("reflection");
     } finally {
       await borg.close();
     }
@@ -2101,6 +2108,7 @@ describe("Borg", () => {
             stop_reason: "end_turn",
             tool_calls: [],
           },
+          createEmptyReflectionResponse(),
         ],
       }),
     });
@@ -2111,6 +2119,10 @@ describe("Borg", () => {
           turnOrchestrator: {
             options: {
               openQuestionsRepository: OpenQuestionsRepository;
+              identityService: {
+                addOpenQuestion(input: unknown): unknown;
+                updateGoal(...args: unknown[]): unknown;
+              };
             };
           };
         };
@@ -2120,6 +2132,14 @@ describe("Borg", () => {
           throw new Error("hook exploded");
         },
       } as unknown as OpenQuestionsRepository;
+      internal.deps.turnOrchestrator.options.identityService = {
+        addOpenQuestion() {
+          throw new Error("hook exploded");
+        },
+        updateGoal() {
+          throw new Error("unexpected goal update");
+        },
+      };
 
       const result = await borg.turn({
         userMessage: "Why is Atlas still failing?",
@@ -3721,6 +3741,7 @@ describe("Borg", () => {
             stop_reason: "end_turn",
             tool_calls: [],
           },
+          createEmptyReflectionResponse(),
         ],
       }),
     });

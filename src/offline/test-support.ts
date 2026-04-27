@@ -388,7 +388,7 @@ export async function createOfflineTestHarness(
     commitmentRepository,
     identityService,
     identityEventRepository,
-    onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
+    onEnqueue: (item) => enqueueOpenQuestionForReview(identityService, item),
     onEnqueueError: (error) => {
       const promise = appendOpenQuestionHookFailureEvent(
         streamWriter,

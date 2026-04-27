@@ -128,6 +128,30 @@ describe("SelfNarratorProcess", () => {
           confidence: 0.6,
         }),
       ]);
+      expect(harness.identityEventRepository.list({ recordType: "autobiographical_period" })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "create",
+            record_type: "autobiographical_period",
+            provenance: {
+              kind: "offline",
+              process: "self-narrator",
+            },
+          }),
+        ]),
+      );
+      expect(harness.identityEventRepository.list({ recordType: "growth_marker" })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "create",
+            record_type: "growth_marker",
+            provenance: {
+              kind: "offline",
+              process: "self-narrator",
+            },
+          }),
+        ]),
+      );
 
       const audits = harness.auditLog.list({ process: "self-narrator" });
       const markerAudit = audits.find((item) => item.action === "add_growth_marker");

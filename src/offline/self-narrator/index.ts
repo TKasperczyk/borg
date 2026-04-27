@@ -562,7 +562,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
             previous: item.previous,
           } satisfies SelfNarratorReversal,
         });
-        ctx.autobiographicalRepository.upsertPeriod(nextItem.period);
+        ctx.identityService.addPeriod(nextItem.period);
         ctx.auditLog.record({
           run_id: ctx.runId,
           process: this.name,
@@ -581,7 +581,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       }
 
       if (item.action === "open_period") {
-        ctx.autobiographicalRepository.upsertPeriod(item.period);
+        ctx.identityService.addPeriod(item.period);
         ctx.auditLog.record({
           run_id: ctx.runId,
           process: this.name,
@@ -687,7 +687,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       }
 
       if (ctx.growthMarkersRepository.get(item.marker.id) === null) {
-        ctx.growthMarkersRepository.add(item.marker);
+        ctx.identityService.addGrowthMarker(item.marker);
       }
 
       ctx.auditLog.record({

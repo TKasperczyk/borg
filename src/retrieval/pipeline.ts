@@ -118,6 +118,7 @@ export class RetrievalPipeline {
     query: string,
     options: {
       relatedSemanticNodeIds?: readonly SemanticNode["id"][];
+      audienceEntityId?: EntityId | null;
       limit?: number;
     } = {},
   ): OpenQuestion[] {
@@ -202,6 +203,7 @@ export class RetrievalPipeline {
       options.includeOpenQuestions === true
         ? this.retrieveOpenQuestionsForQuery(query, {
             relatedSemanticNodeIds: semantic.matchedNodeIds,
+            audienceEntityId: options.audienceEntityId ?? null,
             limit: options.openQuestionsLimit,
           })
         : [];

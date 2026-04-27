@@ -7,7 +7,9 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { ProvenanceError, StorageError } from "../../util/errors.js";
 import {
   createOpenQuestionId,
+  entityIdHelpers,
   openQuestionIdHelpers,
+  type EntityId,
   type OpenQuestionId,
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
@@ -33,6 +35,12 @@ export const openQuestionIdSchema = z
     message: "Invalid open question id",
   })
   .transform((value) => value as OpenQuestionId);
+export const openQuestionAudienceEntityIdSchema = z
+  .string()
+  .refine((value) => entityIdHelpers.is(value), {
+    message: "Invalid open question audience entity id",
+  })
+  .transform((value) => value as EntityId);
 
 export const openQuestionStatusSchema = z.enum(OPEN_QUESTION_STATUSES);
 export const openQuestionSourceSchema = z.enum(OPEN_QUESTION_SOURCES);
@@ -42,6 +50,7 @@ export const openQuestionSchema = z.object({
   question: z.string().min(1),
   urgency: z.number().min(0).max(1),
   status: openQuestionStatusSchema,
+  audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().default(null),
   related_episode_ids: z.array(episodeIdSchema),
   related_semantic_node_ids: z.array(semanticNodeIdSchema),
   provenance: provenanceSchema.nullable(),
@@ -69,6 +78,7 @@ export const openQuestionPatchSchema = z.object({
   question: z.string().min(1).optional(),
   urgency: z.number().min(0).max(1).optional(),
   status: openQuestionStatusSchema.optional(),
+  audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().optional(),
   related_episode_ids: z.array(episodeIdSchema).optional(),
   related_semantic_node_ids: z.array(semanticNodeIdSchema).optional(),
   provenance: provenanceSchema.nullable().optional(),
@@ -128,10 +138,16 @@ export function buildOpenQuestionDedupeKey(input: {
   question: string;
   relatedEpisodeIds: readonly z.infer<typeof episodeIdSchema>[];
   relatedSemanticNodeIds: readonly z.infer<typeof semanticNodeIdSchema>[];
+  audienceEntityId?: EntityId | null;
 }): string {
   const relatedIdsPayload = JSON.stringify({
     relatedEpisodeIds: [...input.relatedEpisodeIds].sort(),
     relatedSemanticNodeIds: [...input.relatedSemanticNodeIds].sort(),
+    ...(input.audienceEntityId === null || input.audienceEntityId === undefined
+      ? {}
+      : {
+          audienceEntityId: input.audienceEntityId,
+        }),
   });
 
   return `${normalizeQuestion(input.question)}|${createHash("sha1").update(relatedIdsPayload).digest("hex")}`;
@@ -143,6 +159,10 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
     question: row.question,
     urgency: Number(row.urgency),
     status: row.status,
+    audience_entity_id:
+      row.audience_entity_id === null || row.audience_entity_id === undefined
+        ? null
+        : row.audience_entity_id,
     related_episode_ids: parseIdArray(
       String(row.related_episode_ids ?? "[]"),
       episodeIdSchema,
@@ -217,6 +237,7 @@ export class OpenQuestionsRepository {
     urgency: number;
     related_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
     related_semantic_node_ids?: readonly z.infer<typeof semanticNodeIdSchema>[];
+    audience_entity_id?: EntityId | null;
     provenance?: z.infer<typeof provenanceSchema> | null;
     source: OpenQuestionSource;
     created_at?: number;
@@ -242,6 +263,7 @@ export class OpenQuestionsRepository {
       question: input.question,
       urgency: input.urgency,
       status: "open",
+      audience_entity_id: input.audience_entity_id ?? null,
       related_episode_ids: relatedEpisodeIds,
       related_semantic_node_ids: relatedSemanticNodeIds,
       provenance: input.provenance ?? null,
@@ -258,6 +280,7 @@ export class OpenQuestionsRepository {
       question: question.question,
       relatedEpisodeIds: question.related_episode_ids,
       relatedSemanticNodeIds: question.related_semantic_node_ids,
+      audienceEntityId: question.audience_entity_id,
     });
     const existing = this.getByDedupeKey(key);
 
@@ -271,11 +294,11 @@ export class OpenQuestionsRepository {
       .prepare(
         `
           INSERT INTO open_questions (
-            id, question, dedupe_key, urgency, status, related_episode_ids, related_semantic_node_ids,
-            provenance_kind, provenance_episode_ids, provenance_process, source, created_at,
-            last_touched, resolution_episode_id, resolution_note, resolved_at, abandoned_reason,
-            abandoned_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, question, dedupe_key, urgency, status, audience_entity_id, related_episode_ids,
+            related_semantic_node_ids, provenance_kind, provenance_episode_ids,
+            provenance_process, source, created_at, last_touched, resolution_episode_id,
+            resolution_note, resolved_at, abandoned_reason, abandoned_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -284,6 +307,7 @@ export class OpenQuestionsRepository {
         key,
         question.urgency,
         question.status,
+        question.audience_entity_id,
         serializeJsonValue(question.related_episode_ids),
         serializeJsonValue(question.related_semantic_node_ids),
         storedProvenance?.provenance_kind ?? null,
@@ -306,6 +330,7 @@ export class OpenQuestionsRepository {
     options: {
       status?: OpenQuestionStatus;
       minUrgency?: number;
+      visibleToAudienceEntityId?: EntityId | null;
       limit?: number;
     } = {},
   ): OpenQuestion[] {
@@ -321,6 +346,15 @@ export class OpenQuestionsRepository {
     if (options.minUrgency !== undefined) {
       filters.push("urgency >= ?");
       values.push(options.minUrgency);
+    }
+
+    if (options.visibleToAudienceEntityId !== undefined) {
+      if (options.visibleToAudienceEntityId === null) {
+        filters.push("audience_entity_id IS NULL");
+      } else {
+        filters.push("(audience_entity_id IS NULL OR audience_entity_id = ?)");
+        values.push(openQuestionAudienceEntityIdSchema.parse(options.visibleToAudienceEntityId));
+      }
     }
 
     const whereClause = filters.length === 0 ? "" : `WHERE ${filters.join(" AND ")}`;
@@ -367,6 +401,7 @@ export class OpenQuestionsRepository {
       question: next.question,
       relatedEpisodeIds: next.related_episode_ids,
       relatedSemanticNodeIds: next.related_semantic_node_ids,
+      audienceEntityId: next.audience_entity_id,
     });
     const storedProvenance =
       next.provenance === null ? null : toStoredProvenance(next.provenance);
@@ -375,9 +410,10 @@ export class OpenQuestionsRepository {
       .prepare(
         `
           UPDATE open_questions
-          SET question = ?, urgency = ?, status = ?, related_episode_ids = ?, related_semantic_node_ids = ?,
-              provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, source = ?,
-              last_touched = ?, resolution_episode_id = ?, resolution_note = ?, resolved_at = ?,
+          SET question = ?, urgency = ?, status = ?, audience_entity_id = ?,
+              related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
+              provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
+              resolution_episode_id = ?, resolution_note = ?, resolved_at = ?,
               abandoned_reason = ?, abandoned_at = ?, dedupe_key = ?
           WHERE id = ?
         `,
@@ -386,6 +422,7 @@ export class OpenQuestionsRepository {
         next.question,
         next.urgency,
         next.status,
+        next.audience_entity_id,
         serializeJsonValue(next.related_episode_ids),
         serializeJsonValue(next.related_semantic_node_ids),
         storedProvenance?.provenance_kind ?? null,

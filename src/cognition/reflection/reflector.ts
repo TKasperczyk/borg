@@ -38,7 +38,7 @@ export type ReflectionContext = {
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
   openQuestionsRepository: OpenQuestionsRepository;
-  identityService?: Pick<IdentityService, "updateGoal">;
+  identityService?: Pick<IdentityService, "updateGoal" | "addOpenQuestion">;
   reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
   skillRepository?: SkillRepository;
   proceduralEvidenceRepository?: ProceduralEvidenceRepository;
@@ -337,16 +337,27 @@ export class Reflector {
         const relatedEpisodeIds =
           reflectionProvenance.kind === "episodes" ? reflectionProvenance.episode_ids : [];
 
-        context.openQuestionsRepository.add({
+        const openQuestionInput = {
           question: buildReflectionQuestion(
             context.userMessage,
             context.workingMemory.hot_entities,
           ),
           urgency: 0.45,
+          audience_entity_id: context.audienceEntityId ?? null,
           related_episode_ids: relatedEpisodeIds,
           provenance: reflectionProvenance,
           source: "reflection",
-        });
+        } satisfies Parameters<OpenQuestionsRepository["add"]>[0];
+
+        if (context.identityService === undefined) {
+          await appendOpenQuestionHookFailureEvent(
+            streamWriter,
+            "reflection_open_question",
+            new Error("identity_service_unavailable"),
+          );
+        } else {
+          context.identityService.addOpenQuestion(openQuestionInput);
+        }
       } catch (error) {
         await appendOpenQuestionHookFailureEvent(streamWriter, "reflection_open_question", error);
       }
@@ -493,15 +504,26 @@ export class Reflector {
     const pendingProceduralAttempts =
       context.workingMemory.pending_procedural_attempts ?? [];
     const pendingIntents = context.workingMemory.pending_intents;
+    const referencedEpisodeIds = selectReferencedRetrievedEpisodeIds(
+      context.deliberationResult,
+      context.retrievedEpisodes,
+    );
+    const isAutonomousTurn = context.origin === "autonomous";
+    const hasUserVisibleTurnPayload =
+      !isAutonomousTurn &&
+      (context.userMessage.trim().length > 0 || context.actionResult.response.trim().length > 0);
+    const hasReflectionWork =
+      context.selfSnapshot.goals.length > 0 ||
+      pendingProceduralAttempts.length > 0 ||
+      pendingIntents.length > 0 ||
+      referencedEpisodeIds.length > 0 ||
+      hasUserVisibleTurnPayload;
 
     if (
       this.llmClient === undefined ||
       this.model === undefined ||
-      (context.selfSnapshot.goals.length === 0 &&
-        pendingProceduralAttempts.length === 0 &&
-        pendingIntents.length === 0 &&
-        selectReferencedRetrievedEpisodeIds(context.deliberationResult, context.retrievedEpisodes)
-          .length === 0)
+      isAutonomousTurn ||
+      !hasReflectionWork
     ) {
       return {
         advanced_goals: [],
@@ -538,10 +560,7 @@ export class Reflector {
             })),
             pending_procedural_attempts: pendingProceduralAttempts,
             pending_intents: pendingIntents,
-            referenced_episodes: selectReferencedRetrievedEpisodeIds(
-              context.deliberationResult,
-              context.retrievedEpisodes,
-            ).map((episodeId) => {
+            referenced_episodes: referencedEpisodeIds.map((episodeId) => {
               const result = context.retrievedEpisodes.find(
                 (item) => item.episode.id === episodeId,
               );

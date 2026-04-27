@@ -17,6 +17,7 @@ import {
 import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../util/clock.js";
+import { createEntityId } from "../util/ids.js";
 import { OpenQuestionsRepository } from "../memory/self/index.js";
 import { selfMigrations } from "../memory/self/migrations.js";
 import { semanticMigrations } from "../memory/semantic/migrations.js";
@@ -1187,6 +1188,8 @@ describe("retrieval pipeline", () => {
       db,
       clock: new FixedClock(5_000),
     });
+    const alice = createEntityId();
+    const bob = createEntityId();
 
     cleanup.push(async () => {
       db.close();
@@ -1210,6 +1213,13 @@ describe("retrieval pipeline", () => {
       source: "user",
       provenance: { kind: "manual" },
     });
+    openQuestionsRepository.add({
+      question: "Why does Atlas deployment keep failing for Alice?",
+      urgency: 1,
+      audience_entity_id: alice,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
 
     const pipeline = new RetrievalPipeline({
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -1222,6 +1232,7 @@ describe("retrieval pipeline", () => {
     const reflective = await pipeline.searchWithContext("Atlas deployment", {
       limit: 1,
       includeOpenQuestions: true,
+      audienceEntityId: bob,
     });
     const defaultResult = await pipeline.searchWithContext("Atlas deployment", {
       limit: 1,

@@ -235,7 +235,7 @@ export async function buildBorgRepositories(
 
       return applyCorrectionReview(item);
     },
-    onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
+    onEnqueue: (item) => enqueueOpenQuestionForReview(identityService, item),
     onEnqueueError: (error) => {
       const writer = createDefaultStreamWriter();
       void appendOpenQuestionHookFailureEvent(writer, "review_queue_open_question", error).finally(

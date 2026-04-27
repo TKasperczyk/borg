@@ -388,6 +388,7 @@ export class IdentityService {
         question: input.question,
         relatedEpisodeIds: input.related_episode_ids ?? [],
         relatedSemanticNodeIds: input.related_semantic_node_ids ?? [],
+        audienceEntityId: input.audience_entity_id ?? null,
       }),
     );
 

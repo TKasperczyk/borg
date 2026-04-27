@@ -39,6 +39,27 @@ async function openTestBorg(tempDir: string, llm: FakeLLMClient) {
   });
 }
 
+function createEmptyReflectionResponse() {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_reflection",
+        name: "EmitTurnReflection",
+        input: {
+          advanced_goals: [],
+          procedural_outcomes: [],
+          trait_demonstrations: [],
+          intent_updates: [],
+        },
+      },
+    ],
+  };
+}
+
 describe("self-turn recency", () => {
   const tempDirs: string[] = [];
 
@@ -67,6 +88,7 @@ describe("self-turn recency", () => {
           stop_reason: "end_turn",
           tool_calls: [],
         },
+        createEmptyReflectionResponse(),
       ],
     });
     const borg = await openTestBorg(tempDir, llm);
@@ -83,7 +105,7 @@ describe("self-turn recency", () => {
         stakes: "low",
       });
 
-      expect(llm.requests).toHaveLength(2);
+      expect(llm.requests).toHaveLength(3);
       expect(llm.requests[1]?.messages).toEqual([
         {
           role: "user",

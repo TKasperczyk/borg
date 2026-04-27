@@ -1155,4 +1155,18 @@ export const selfMigrations = [
       `);
     },
   },
+  {
+    id: 266,
+    name: "add-open-question-audience-scope",
+    up: (db) => {
+      if (!tableHasColumn(db, "open_questions", "audience_entity_id")) {
+        db.exec("ALTER TABLE open_questions ADD COLUMN audience_entity_id TEXT");
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_open_questions_audience_status_urgency
+          ON open_questions (audience_entity_id, status, urgency DESC, last_touched DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

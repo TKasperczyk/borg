@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
-import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
+import { createEntityId, createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
 
 import { selfMigrations } from "./migrations.js";
 import { OpenQuestionsRepository } from "./open-questions.js";
@@ -165,6 +165,57 @@ describe("OpenQuestionsRepository", () => {
     expect(duplicate.id).toBe(inserted[999]?.id);
 
     db.close();
+  });
+
+  it("stores audience scope and dedupes private questions separately", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+    });
+    const alice = createEntityId();
+    const bob = createEntityId();
+
+    try {
+      const aliceQuestion = repository.add({
+        question: "What should I remember about Atlas?",
+        urgency: 0.4,
+        audience_entity_id: alice,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const aliceDuplicate = repository.add({
+        question: "What should I remember about atlas",
+        urgency: 0.9,
+        audience_entity_id: alice,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const bobQuestion = repository.add({
+        question: "What should I remember about atlas",
+        urgency: 0.6,
+        audience_entity_id: bob,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const publicQuestion = repository.add({
+        question: "What public Atlas detail matters?",
+        urgency: 0.8,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+
+      expect(aliceDuplicate.id).toBe(aliceQuestion.id);
+      expect(bobQuestion.id).not.toBe(aliceQuestion.id);
+      expect(repository.get(aliceQuestion.id)?.audience_entity_id).toBe(alice);
+      expect(repository.list({ visibleToAudienceEntityId: bob, limit: 10 }).map((item) => item.id))
+        .toEqual([publicQuestion.id, bobQuestion.id]);
+      expect(repository.list({ visibleToAudienceEntityId: null, limit: 10 }).map((item) => item.id))
+        .toEqual([publicQuestion.id]);
+    } finally {
+      db.close();
+    }
   });
 
   it("rejects questions without evidence or explicit provenance", () => {

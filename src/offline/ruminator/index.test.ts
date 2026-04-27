@@ -103,6 +103,30 @@ describe("RuminatorProcess", () => {
 
       expect(harness.openQuestionsRepository.get(question.id)?.status).toBe("resolved");
       expect(harness.growthMarkersRepository.list()).toHaveLength(1);
+      expect(harness.identityEventRepository.list({ recordType: "open_question" })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "resolve",
+            record_id: question.id,
+            provenance: {
+              kind: "offline",
+              process: "ruminator",
+            },
+          }),
+        ]),
+      );
+      expect(harness.identityEventRepository.list({ recordType: "growth_marker" })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "create",
+            record_type: "growth_marker",
+            provenance: {
+              kind: "offline",
+              process: "ruminator",
+            },
+          }),
+        ]),
+      );
 
       const audits = harness.auditLog.list({ process: "ruminator" });
       const growthAudit = audits.find((item) => item.action === "add_growth_marker");
@@ -225,6 +249,31 @@ describe("RuminatorProcess", () => {
           expect.objectContaining({
             action: "bump_urgency",
             question_id: agingQuestion.id,
+          }),
+        ]),
+      );
+
+      await process.apply(harness.createContext(), plan);
+
+      expect(harness.openQuestionsRepository.get(staleQuestion.id)?.status).toBe("abandoned");
+      expect(harness.openQuestionsRepository.get(agingQuestion.id)?.urgency).toBe(0.45);
+      expect(harness.identityEventRepository.list({ recordType: "open_question" })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "abandon",
+            record_id: staleQuestion.id,
+            provenance: {
+              kind: "offline",
+              process: "ruminator",
+            },
+          }),
+          expect.objectContaining({
+            action: "bump_urgency",
+            record_id: agingQuestion.id,
+            provenance: {
+              kind: "offline",
+              process: "ruminator",
+            },
           }),
         ]),
       );

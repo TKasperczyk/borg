@@ -180,6 +180,7 @@ describe("self migrations", () => {
       expect(openQuestions.list({ limit: 10 })).toEqual([
         expect.objectContaining({
           id: "oq_aaaaaaaaaaaaaaaa",
+          audience_entity_id: null,
           provenance: {
             kind: "episodes",
             episode_ids: [relatedEpisodeId],
@@ -187,6 +188,7 @@ describe("self migrations", () => {
         }),
         expect.objectContaining({
           id: "oq_bbbbbbbbbbbbbbbb",
+          audience_entity_id: null,
           provenance: { kind: "system" },
         }),
       ]);

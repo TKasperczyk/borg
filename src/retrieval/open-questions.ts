@@ -1,6 +1,7 @@
 /* Open-question scoring for retrieval context assembly. */
 import type { OpenQuestion, OpenQuestionsRepository } from "../memory/self/index.js";
 import type { SemanticNode } from "../memory/semantic/types.js";
+import type { EntityId } from "../util/ids.js";
 import { tokenizeText } from "../util/text/tokenize.js";
 
 export function retrieveOpenQuestionsForQuery(
@@ -8,6 +9,7 @@ export function retrieveOpenQuestionsForQuery(
   query: string,
   options: {
     relatedSemanticNodeIds?: readonly SemanticNode["id"][];
+    audienceEntityId?: EntityId | null;
     limit?: number;
   } = {},
 ): OpenQuestion[] {
@@ -20,6 +22,7 @@ export function retrieveOpenQuestionsForQuery(
   const limit = Math.max(1, options.limit ?? 3);
   const candidates = openQuestionsRepository.list({
     status: "open",
+    visibleToAudienceEntityId: options.audienceEntityId ?? null,
     limit: 100,
   });
   const scored = candidates

@@ -444,6 +444,10 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
   async apply(ctx: OfflineContext, rawPlan: RuminatorPlan): Promise<OfflineResult> {
     const plan = ruminatorPlanSchema.parse(rawPlan);
     const changes: OfflineChange[] = [];
+    const processProvenance = {
+      kind: "offline" as const,
+      process: this.name,
+    };
 
     for (const item of plan.items) {
       if (item.action === "resolve") {
@@ -460,10 +464,17 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           current.resolution_episode_id !== item.resolution_episode_id ||
           current.resolution_note !== item.resolution_note
         ) {
-          ctx.openQuestionsRepository.resolve(item.question_id, {
-            resolution_episode_id: item.resolution_episode_id,
-            resolution_note: item.resolution_note,
-          });
+          ctx.identityService.resolveOpenQuestion(
+            item.question_id,
+            {
+              resolution_episode_id: item.resolution_episode_id,
+              resolution_note: item.resolution_note,
+            },
+            processProvenance,
+            {
+              throughReview: true,
+            },
+          );
         }
 
         ctx.auditLog.record({
@@ -483,7 +494,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           item.growth_marker !== null &&
           ctx.growthMarkersRepository.get(item.growth_marker.id) === null
         ) {
-          ctx.growthMarkersRepository.add(item.growth_marker);
+          ctx.identityService.addGrowthMarker(item.growth_marker);
           ctx.auditLog.record({
             run_id: ctx.runId,
             process: this.name,
@@ -512,7 +523,14 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         }
 
         if (current.status !== "abandoned" || current.abandoned_reason !== item.reason) {
-          ctx.openQuestionsRepository.abandon(item.question_id, item.reason);
+          ctx.identityService.abandonOpenQuestion(
+            item.question_id,
+            item.reason,
+            processProvenance,
+            {
+              throughReview: true,
+            },
+          );
         }
 
         ctx.auditLog.record({
@@ -539,7 +557,14 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       }
 
       if (Math.abs(current.urgency - item.next_urgency) > 1e-6) {
-        ctx.openQuestionsRepository.setUrgency(item.question_id, item.next_urgency);
+        ctx.identityService.bumpOpenQuestionUrgency(
+          item.question_id,
+          item.next_urgency - current.urgency,
+          processProvenance,
+          {
+            throughReview: true,
+          },
+        );
       }
 
       ctx.auditLog.record({

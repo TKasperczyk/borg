@@ -26,6 +26,7 @@ export {
   OPEN_QUESTION_STATUSES,
   buildOpenQuestionDedupeKey,
   OpenQuestionsRepository,
+  openQuestionAudienceEntityIdSchema,
   openQuestionIdSchema,
   openQuestionPatchSchema,
   openQuestionSchema,

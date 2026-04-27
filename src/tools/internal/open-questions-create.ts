@@ -6,6 +6,7 @@ import {
 } from "../../memory/self/index.js";
 import { episodeIdSchema } from "../../memory/episodic/index.js";
 import { semanticNodeIdSchema } from "../../memory/semantic/types.js";
+import type { EntityId } from "../../util/ids.js";
 import type { ToolDefinition } from "../dispatcher.js";
 
 const openQuestionsCreateInputSchema = z.object({
@@ -25,6 +26,7 @@ export type OpenQuestionsCreateToolOptions = {
     urgency: number;
     related_episode_ids: readonly z.infer<typeof episodeIdSchema>[];
     related_semantic_node_ids: readonly z.infer<typeof semanticNodeIdSchema>[];
+    audience_entity_id: EntityId | null;
     provenance: { kind: "system" };
     source: "autonomy" | "deliberator";
   }) => OpenQuestion;
@@ -50,6 +52,7 @@ export function createOpenQuestionsCreateTool(
           urgency: input.urgency ?? 0.5,
           related_episode_ids: input.related_episode_ids ?? [],
           related_semantic_node_ids: input.related_semantic_node_ids ?? [],
+          audience_entity_id: context.audienceEntityId ?? null,
           provenance: {
             kind: "system",
           },

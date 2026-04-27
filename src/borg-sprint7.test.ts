@@ -71,6 +71,27 @@ function createEpisode(overrides: Partial<Episode>): Episode {
   };
 }
 
+function createEmptyReflectionResponse() {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_reflection_empty",
+        name: "EmitTurnReflection",
+        input: {
+          advanced_goals: [],
+          procedural_outcomes: [],
+          trait_demonstrations: [],
+          intent_updates: [],
+        },
+      },
+    ],
+  };
+}
+
 describe("Borg Sprint 7", () => {
   const tempDirs: string[] = [];
 
@@ -145,6 +166,7 @@ describe("Borg Sprint 7", () => {
           stop_reason: "end_turn",
           tool_calls: [],
         },
+        createEmptyReflectionResponse(),
         {
           text: "Reuse the scoped-binding approach; it still fits the Rust lifetime issue.",
           input_tokens: 20,

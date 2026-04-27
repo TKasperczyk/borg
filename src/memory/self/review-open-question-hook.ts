@@ -1,8 +1,31 @@
 import { StreamWriter } from "../../stream/index.js";
 import type { ReviewQueueItem } from "../semantic/review-queue.js";
-import { parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
+import { entityIdHelpers, parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
+import type { IdentityService } from "../identity/index.js";
 
 import type { OpenQuestionsRepository } from "./open-questions.js";
+
+type OpenQuestionCreateInput = Parameters<OpenQuestionsRepository["add"]>[0];
+type OpenQuestionWriter =
+  | OpenQuestionsRepository
+  | Pick<IdentityService, "addOpenQuestion">;
+
+function addOpenQuestion(writer: OpenQuestionWriter, input: OpenQuestionCreateInput): void {
+  if ("addOpenQuestion" in writer) {
+    writer.addOpenQuestion(input);
+    return;
+  }
+
+  writer.add(input);
+}
+
+function reviewItemAudienceEntityId(item: ReviewQueueItem) {
+  const audienceEntityId = item.refs.audience_entity_id;
+
+  return typeof audienceEntityId === "string" && entityIdHelpers.is(audienceEntityId)
+    ? audienceEntityId
+    : null;
+}
 
 export function formatHookError(error: unknown): string {
   if (error instanceof Error) {
@@ -13,7 +36,7 @@ export function formatHookError(error: unknown): string {
 }
 
 export function enqueueOpenQuestionForReview(
-  repository: OpenQuestionsRepository,
+  writer: OpenQuestionWriter,
   item: ReviewQueueItem,
 ): void {
   if (item.kind === "contradiction") {
@@ -30,9 +53,10 @@ export function enqueueOpenQuestionForReview(
         ? `${nodeLabels[0]} vs ${nodeLabels[1]}`
         : nodeIds.slice(0, 2).join(" vs ") || "these claims";
 
-    repository.add({
+    addOpenQuestion(writer, {
       question: `Which of these claims is right: ${summary}?`,
       urgency: 0.7,
+      audience_entity_id: reviewItemAudienceEntityId(item),
       related_semantic_node_ids: nodeIds.slice(0, 2),
       provenance: {
         kind: "offline",
@@ -53,12 +77,13 @@ export function enqueueOpenQuestionForReview(
         ? [parseSemanticNodeId(item.refs.target_id)]
         : [];
 
-    repository.add({
+    addOpenQuestion(writer, {
       question:
         item.kind === "misattribution"
           ? "What needs to be corrected about this memory's attribution?"
           : "How should I reconcile this memory with my active values, goals, or traits?",
       urgency: 0.55,
+      audience_entity_id: reviewItemAudienceEntityId(item),
       related_episode_ids: relatedEpisodeIds,
       related_semantic_node_ids: relatedSemanticNodeIds,
       provenance:

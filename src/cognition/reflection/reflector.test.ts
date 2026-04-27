@@ -938,6 +938,14 @@ describe("reflector", () => {
       db,
       clock,
     });
+    const identityService = {
+      addOpenQuestion(input: Parameters<OpenQuestionsRepository["add"]>[0]) {
+        return openQuestionsRepository.add(input);
+      },
+      updateGoal() {
+        throw new Error("unexpected goal update");
+      },
+    };
     const writer = new StreamWriter({
       dataDir: tempDir,
       sessionId: DEFAULT_SESSION_ID,
@@ -1054,6 +1062,7 @@ describe("reflector", () => {
         goalsRepository,
         traitsRepository,
         openQuestionsRepository,
+        identityService,
         suppressionSet: new SuppressionSet(1),
       },
       writer,
@@ -1066,6 +1075,195 @@ describe("reflector", () => {
         provenance: {
           kind: "episodes",
           episode_ids: [episode.id],
+        },
+      }),
+    ]);
+  });
+
+  it("logs and skips reflector-created open questions when identity service is unavailable", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+
+    await reflector.reflect(
+      {
+        userMessage: "Why is Atlas still failing?",
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: "Atlas",
+          hot_entities: ["Atlas"],
+          pending_intents: [],
+          suppressed: [],
+          mode: "reflective",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_2",
+          response: "I still need to compare more evidence.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "low confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "I still need to compare more evidence.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: "Atlas",
+            hot_entities: ["Atlas"],
+            pending_intents: [],
+            suppressed: [],
+            mode: "reflective",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence({
+          overall: 0.2,
+          evidenceStrength: 0.1,
+          coverage: 0.2,
+          sampleSize: 1,
+        }),
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    const entries = new StreamReader({
+      dataDir: harness.tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    }).tail(1);
+
+    expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([]);
+    expect(entries[0]).toMatchObject({
+      kind: "internal_event",
+      content: {
+        hook: "reflection_open_question",
+        error: "Error: identity_service_unavailable",
+      },
+    });
+  });
+
+  it("routes reflector-created open questions through identity events", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+
+    const audienceEntityId = harness.entityRepository.resolve("Bob");
+    const reflector = new Reflector({
+      clock: harness.clock,
+    });
+
+    await reflector.reflect(
+      {
+        userMessage: "Why is Atlas still failing?",
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: "Atlas",
+          hot_entities: ["Atlas"],
+          pending_intents: [],
+          suppressed: [],
+          mode: "reflective",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_2",
+          response: "I still need to compare more evidence.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "low confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "I still need to compare more evidence.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: "Atlas",
+            hot_entities: ["Atlas"],
+            pending_intents: [],
+            suppressed: [],
+            mode: "reflective",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence({
+          overall: 0.2,
+          evidenceStrength: 0.1,
+          coverage: 0.2,
+          sampleSize: 1,
+        }),
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        identityService: harness.identityService,
+        audienceEntityId,
+        suppressionSet: new SuppressionSet(1),
+      },
+      harness.streamWriter,
+    );
+
+    const openQuestion = harness.openQuestionsRepository.list({ status: "open" })[0];
+
+    expect(openQuestion).toEqual(
+      expect.objectContaining({
+        source: "reflection",
+        audience_entity_id: audienceEntityId,
+      }),
+    );
+    expect(
+      harness.identityEventRepository.list({
+        recordType: "open_question",
+        recordId: openQuestion?.id,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        action: "create",
+        record_type: "open_question",
+        provenance: {
+          kind: "online",
+          process: "reflector",
         },
       }),
     ]);
@@ -1179,6 +1377,10 @@ describe("reflector", () => {
       db,
       clock,
     });
+    const openQuestionsRepository = new OpenQuestionsRepository({
+      db,
+      clock,
+    });
     const writer = new StreamWriter({
       dataDir: tempDir,
       sessionId: DEFAULT_SESSION_ID,
@@ -1233,11 +1435,14 @@ describe("reflector", () => {
         categories: [],
       },
     };
-    const brokenOpenQuestionsRepository = {
-      add() {
+    const brokenIdentityService = {
+      addOpenQuestion() {
         throw new Error("hook exploded");
       },
-    } as unknown as OpenQuestionsRepository;
+      updateGoal() {
+        throw new Error("unexpected goal update");
+      },
+    };
 
     const reflected = await reflector.reflect(
       {
@@ -1298,7 +1503,8 @@ describe("reflector", () => {
         episodicRepository,
         goalsRepository,
         traitsRepository,
-        openQuestionsRepository: brokenOpenQuestionsRepository,
+        openQuestionsRepository,
+        identityService: brokenIdentityService,
         suppressionSet: new SuppressionSet(1),
       },
       writer,
@@ -1873,6 +2079,112 @@ describe("reflector", () => {
     expect(reflected.pending_procedural_attempts).toHaveLength(1);
     expect(harness.proceduralEvidenceRepository.list()).toEqual([]);
     expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
+  });
+
+  it("runs trait judgment on ordinary user turns with no goals, intents, attempts, or referenced episodes", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse([], [], [], [
+          {
+            trait_label: "careful",
+            evidence: "The response checked the user's constraint before answering.",
+            strength_delta: 0.05,
+          },
+        ]),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    const reflected = await reflector.reflect(
+      {
+        userMessage: "Please keep the answer short.",
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: null,
+          hot_entities: [],
+          pending_intents: [],
+          pending_trait_attribution: null,
+          suppressed: [],
+          mood: null,
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Short answer with the requested constraint respected.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Short answer with the requested constraint respected.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 1,
+            current_focus: null,
+            hot_entities: [],
+            pending_intents: [],
+            pending_trait_attribution: null,
+            suppressed: [],
+            mood: null,
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        suppressionSet: new SuppressionSet(1),
+        currentTurnStreamEntryIds: ["strm_aaaaaaaaaaaaaaaa" as never],
+      },
+      harness.streamWriter,
+    );
+
+    expect(llm.requests).toHaveLength(1);
+    expect(reflected.pending_trait_attribution).toMatchObject({
+      trait_label: "careful",
+      strength_delta: 0.05,
+      source_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa"],
+    });
   });
 
   it("anchors S2 trait demonstrations to the current turn's stream entries", async () => {
@@ -2453,24 +2765,25 @@ describe("reflector", () => {
         narrative: "A private autonomous reflection about an earlier feeling.",
       }),
     );
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [],
+          [
+            {
+              trait_label: "introspective",
+              evidence: "The autonomous response traced the private reflection.",
+              strength_delta: 0.05,
+            },
+          ],
+        ),
+      ],
+    });
     const reflector = new Reflector({
       clock: harness.clock,
-      llmClient: new FakeLLMClient({
-        responses: [
-          createReflectionResponse(
-            [],
-            [],
-            [],
-            [
-              {
-                trait_label: "introspective",
-                evidence: "The autonomous response traced the private reflection.",
-                strength_delta: 0.05,
-              },
-            ],
-          ),
-        ],
-      }),
+      llmClient: llm,
       model: "haiku",
     });
     const retrieved: RetrievedEpisode = {
@@ -2572,6 +2885,7 @@ describe("reflector", () => {
     );
 
     expect(harness.traitsRepository.list()).toEqual([]);
+    expect(llm.requests).toHaveLength(0);
     expect(reflected.pending_trait_attribution).toBeNull();
   });
 });
