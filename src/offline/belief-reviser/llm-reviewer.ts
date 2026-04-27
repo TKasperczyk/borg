@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { type Episode, isEpisodeVisibleToAudience } from "../../memory/episodic/index.js";
+import {
+  filterEpisodesByAudience,
+  inferSinglePrivateAudience,
+  type Episode,
+} from "../../memory/episodic/index.js";
 import {
   type LLMClient,
   type LLMCompleteResult,
@@ -251,30 +255,17 @@ export async function evaluateBeliefRevision(
 }
 
 export function inferBeliefRevisionAudience(episodes: readonly Episode[]): EntityId | null {
-  const privateAudiences = new Set<EntityId>();
-
-  for (const episode of episodes) {
-    if (
-      episode.shared === true ||
-      episode.audience_entity_id === null ||
-      episode.audience_entity_id === undefined
-    ) {
-      continue;
-    }
-
-    privateAudiences.add(episode.audience_entity_id);
-  }
-
-  return privateAudiences.size === 1 ? ([...privateAudiences][0] ?? null) : null;
+  const inferred = inferSinglePrivateAudience(episodes);
+  return inferred === "multiple" ? null : inferred;
 }
 
 export function visibleBeliefRevisionEpisodes(
   episodes: readonly Episode[],
   audienceEntityId: EntityId | null,
 ): Episode[] {
-  return episodes.filter((episode) =>
-    isEpisodeVisibleToAudience(episode, audienceEntityId, {
-      crossAudience: false,
-    }),
+  const visibleEpisodeIds = new Set(
+    filterEpisodesByAudience(episodes, audienceEntityId, "filter").visibleEpisodeIds,
   );
+
+  return episodes.filter((episode) => visibleEpisodeIds.has(episode.id));
 }

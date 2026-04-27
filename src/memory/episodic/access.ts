@@ -1,24 +1,11 @@
 import type { EntityId } from "../../util/ids.js";
+import {
+  isEpisodeAccessVisible,
+  normalizeEpisodeAccess,
+  type EpisodeAccessLike,
+} from "./audience-filter.js";
 
-export type EpisodeAccessLike = {
-  audience_entity_id?: EntityId | null;
-  shared?: boolean;
-};
-
-export function normalizeEpisodeAccess<T extends EpisodeAccessLike>(
-  input: T,
-): T & {
-  audience_entity_id: EntityId | null;
-  shared: boolean;
-} {
-  const audienceEntityId = input.audience_entity_id ?? null;
-
-  return {
-    ...input,
-    audience_entity_id: audienceEntityId,
-    shared: input.shared ?? audienceEntityId === null,
-  };
-}
+export { normalizeEpisodeAccess, type EpisodeAccessLike } from "./audience-filter.js";
 
 export function episodeAccessScopeKey(input: EpisodeAccessLike): string {
   const normalized = normalizeEpisodeAccess(input);
@@ -43,17 +30,7 @@ export function isEpisodeVisibleToAudience(
     return true;
   }
 
-  const normalized = normalizeEpisodeAccess(input);
-
-  if (normalized.audience_entity_id === null || normalized.shared) {
-    return true;
-  }
-
-  if (audienceEntityId === null || audienceEntityId === undefined) {
-    return false;
-  }
-
-  return normalized.audience_entity_id === audienceEntityId;
+  return isEpisodeAccessVisible(input, audienceEntityId);
 }
 
 export function isEpisodeInGlobalIdentityScope(

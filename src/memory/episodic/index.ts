@@ -1,5 +1,13 @@
 export { applyEpisodeDecay, type DecayOptions, type DecayResult } from "./decay.js";
 export {
+  filterEpisodesByAudience,
+  inferSinglePrivateAudience,
+  isEpisodeAccessVisible,
+  type AudienceEpisodeAccess,
+  type AudienceFilterResult,
+  type AudiencePolicy,
+} from "./audience-filter.js";
+export {
   episodeAccessScopeKey,
   hasSameEpisodeAccessScope,
   isEpisodeInGlobalIdentityScope,

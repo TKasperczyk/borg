@@ -8,8 +8,9 @@ import {
 } from "../../llm/index.js";
 import {
   episodeIdSchema,
+  filterEpisodesByAudience,
+  inferSinglePrivateAudience,
   isEpisodeInGlobalIdentityScope,
-  isEpisodeVisibleToAudience,
   type Episode,
 } from "../../memory/episodic/index.js";
 import {
@@ -409,28 +410,6 @@ function buildSplitPrompt(candidate: SkillSplitCandidate): string {
   ].join("\n");
 }
 
-function inferSinglePrivateAudience(episodes: readonly Episode[]): EntityId | null | "multiple" {
-  const privateAudiences = new Set<EntityId>();
-
-  for (const episode of episodes) {
-    if (
-      episode.shared === true ||
-      episode.audience_entity_id === null ||
-      episode.audience_entity_id === undefined
-    ) {
-      continue;
-    }
-
-    privateAudiences.add(episode.audience_entity_id);
-  }
-
-  if (privateAudiences.size > 1) {
-    return "multiple";
-  }
-
-  return [...privateAudiences][0] ?? null;
-}
-
 async function audienceScopedSplitCandidate(
   ctx: OfflineContext,
   candidate: SkillSplitCandidate,
@@ -457,17 +436,19 @@ async function audienceScopedSplitCandidate(
     };
   }
 
-  const episodesById = new Map(episodes.map((episode) => [episode.id, episode]));
-  const visibleSourceEpisodeIds = candidate.skill.source_episode_ids.filter((episodeId) => {
-    const episode = episodesById.get(episodeId);
+  const filtered = filterEpisodesByAudience(episodes, audienceEntityId, "reject_if_mixed");
 
-    return (
-      episode !== undefined &&
-      isEpisodeVisibleToAudience(episode, audienceEntityId, {
-        crossAudience: false,
-      })
-    );
-  });
+  if (filtered.hasPrivateMix) {
+    return {
+      rejected: true,
+      reason: "skill_source_episodes_cross_audiences",
+    };
+  }
+
+  const visibleEpisodeIds = new Set(filtered.visibleEpisodeIds);
+  const visibleSourceEpisodeIds = candidate.skill.source_episode_ids.filter((episodeId) =>
+    visibleEpisodeIds.has(episodeId),
+  );
 
   if (visibleSourceEpisodeIds.length === 0) {
     return {
