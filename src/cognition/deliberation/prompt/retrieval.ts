@@ -115,9 +115,7 @@ function formatIsoDate(timestamp: number): string {
   return new Date(timestamp).toISOString().slice(0, 10);
 }
 
-function summarizeValidityTag(
-  edge: RetrievedSemanticHit["edgePath"][number],
-): string {
+function summarizeValidityTag(edge: RetrievedSemanticHit["edgePath"][number]): string {
   if (edge.valid_to === null) {
     return "";
   }
@@ -127,10 +125,7 @@ function summarizeValidityTag(
   return ` [valid ${formatIsoDate(edge.valid_from)}..${formatIsoDate(edge.valid_to)}, closed ${formatIsoDate(closedAt)}]`;
 }
 
-function semanticHitHasClosedEdge(
-  hit: RetrievedSemanticHit,
-  asOf: number,
-): boolean {
+function semanticHitHasClosedEdge(hit: RetrievedSemanticHit, asOf: number): boolean {
   return hit.edgePath.some((edge) => edge.valid_to !== null && edge.valid_to <= asOf);
 }
 

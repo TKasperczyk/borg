@@ -45,8 +45,10 @@ const CONFIDENCE_ALPHA = 2;
 const CONFIDENCE_BETA = 1;
 
 function computeEvidenceConfidence(supportCount: number, contradictionCount: number): number {
-  return (CONFIDENCE_ALPHA + supportCount) /
-    (CONFIDENCE_ALPHA + CONFIDENCE_BETA + supportCount + contradictionCount);
+  return (
+    (CONFIDENCE_ALPHA + supportCount) /
+    (CONFIDENCE_ALPHA + CONFIDENCE_BETA + supportCount + contradictionCount)
+  );
 }
 
 export const selfMigrations = [
@@ -275,13 +277,13 @@ export const selfMigrations = [
     name: "add-self-provenance",
     up: (db) => {
       if (!tableHasColumn(db, "values", "provenance_kind")) {
-        db.exec("ALTER TABLE \"values\" ADD COLUMN provenance_kind TEXT");
+        db.exec('ALTER TABLE "values" ADD COLUMN provenance_kind TEXT');
       }
       if (!tableHasColumn(db, "values", "provenance_episode_ids")) {
-        db.exec("ALTER TABLE \"values\" ADD COLUMN provenance_episode_ids TEXT");
+        db.exec('ALTER TABLE "values" ADD COLUMN provenance_episode_ids TEXT');
       }
       if (!tableHasColumn(db, "values", "provenance_process")) {
-        db.exec("ALTER TABLE \"values\" ADD COLUMN provenance_process TEXT");
+        db.exec('ALTER TABLE "values" ADD COLUMN provenance_process TEXT');
       }
       if (!tableHasColumn(db, "goals", "provenance_kind")) {
         db.exec("ALTER TABLE goals ADD COLUMN provenance_kind TEXT");
@@ -448,10 +450,10 @@ export const selfMigrations = [
     name: "add-self-identity-state",
     up: (db) => {
       if (!tableHasColumn(db, "values", "state")) {
-        db.exec("ALTER TABLE \"values\" ADD COLUMN state TEXT");
+        db.exec('ALTER TABLE "values" ADD COLUMN state TEXT');
       }
       if (!tableHasColumn(db, "values", "established_at")) {
-        db.exec("ALTER TABLE \"values\" ADD COLUMN established_at INTEGER");
+        db.exec('ALTER TABLE "values" ADD COLUMN established_at INTEGER');
       }
       if (!tableHasColumn(db, "traits", "state")) {
         db.exec("ALTER TABLE traits ADD COLUMN state TEXT");
@@ -493,9 +495,11 @@ export const selfMigrations = [
         `,
       );
       const existingValueEventCount = Number(
-        (db.prepare("SELECT COUNT(*) AS count FROM value_reinforcement_events").get() as {
-          count: number;
-        }).count,
+        (
+          db.prepare("SELECT COUNT(*) AS count FROM value_reinforcement_events").get() as {
+            count: number;
+          }
+        ).count,
       );
       const insertValueEvent = db.prepare(
         `
@@ -514,9 +518,9 @@ export const selfMigrations = [
 
       if (existingValueEventCount === 0) {
         for (const row of valueRows) {
-          const episodeIds = (valueSourcesStatement.all(row.id) as Array<{ episode_id: string }>).map(
-            (entry) => entry.episode_id,
-          );
+          const episodeIds = (
+            valueSourcesStatement.all(row.id) as Array<{ episode_id: string }>
+          ).map((entry) => entry.episode_id);
 
           for (const episodeId of episodeIds) {
             insertValueEvent.run(
@@ -531,9 +535,9 @@ export const selfMigrations = [
 
       for (const row of valueRows) {
         const storedKind = String(row.provenance_kind ?? "system");
-        const sourceEpisodeIds = (valueSourcesStatement.all(row.id) as Array<{ episode_id: string }>).map(
-          (entry) => entry.episode_id,
-        );
+        const sourceEpisodeIds = (
+          valueSourcesStatement.all(row.id) as Array<{ episode_id: string }>
+        ).map((entry) => entry.episode_id);
         const distinctEpisodeCount = new Set(sourceEpisodeIds).size;
         const establishedAt =
           Number(row.last_affirmed ?? row.created_at ?? 0) || Number(row.created_at ?? 0);
@@ -609,10 +613,14 @@ export const selfMigrations = [
     up: (db) => {
       for (const table of ["values", "traits"] as const) {
         if (!tableHasColumn(db, table, "confidence")) {
-          db.exec(`ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN confidence REAL`);
+          db.exec(
+            `ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN confidence REAL`,
+          );
         }
         if (!tableHasColumn(db, table, "last_tested_at")) {
-          db.exec(`ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN last_tested_at INTEGER`);
+          db.exec(
+            `ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN last_tested_at INTEGER`,
+          );
         }
         if (!tableHasColumn(db, table, "last_contradicted_at")) {
           db.exec(
@@ -620,7 +628,9 @@ export const selfMigrations = [
           );
         }
         if (!tableHasColumn(db, table, "support_count")) {
-          db.exec(`ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN support_count INTEGER`);
+          db.exec(
+            `ALTER TABLE ${table === "values" ? '"values"' : table} ADD COLUMN support_count INTEGER`,
+          );
         }
         if (!tableHasColumn(db, table, "contradiction_count")) {
           db.exec(

@@ -784,7 +784,7 @@ describe("semantic extractor", () => {
       archived: false,
       superseded_by: null,
     });
-    const embed = vi.fn(async () => Float32Array.from([1, 0, 0, 0]));
+    const embed = vi.fn(async (_text: string) => Float32Array.from([1, 0, 0, 0]));
     const embeddingClient: EmbeddingClient = {
       embed,
       embedBatch: async (texts) => Promise.all(texts.map((text) => embed(text))),

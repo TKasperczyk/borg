@@ -190,7 +190,10 @@ export function registerTraceCommands(cli: CAC, deps: CliCommandDeps): void {
       if (requestedTurn.length === 0) {
         const turnCount = new Set(records.map((record) => record.turnId)).size;
         if (turnCount > 1) {
-          writeLine(stdout, ansi.dim(`showing latest turn from ${turnCount} turns; use --turn to filter`));
+          writeLine(
+            stdout,
+            ansi.dim(`showing latest turn from ${turnCount} turns; use --turn to filter`),
+          );
         }
       }
 

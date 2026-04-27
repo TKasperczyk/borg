@@ -1596,9 +1596,7 @@ export class EpisodicRepository {
   }
 
   pruneRetrievalLogBefore(timestamp: number): number {
-    const result = this.db
-      .prepare("DELETE FROM retrieval_log WHERE timestamp < ?")
-      .run(timestamp);
+    const result = this.db.prepare("DELETE FROM retrieval_log WHERE timestamp < ?").run(timestamp);
 
     return result.changes;
   }

@@ -60,7 +60,9 @@ describe("stream entry index", () => {
       db.prepare("DELETE FROM stream_entry_index WHERE entry_id = ?").run(middle.id);
 
       expect(entryIndex.lookup(middle.id)).toBeNull();
-      await expect(entryIndex.backfillSession(DEFAULT_SESSION_ID)).resolves.toEqual({ inserted: 1 });
+      await expect(entryIndex.backfillSession(DEFAULT_SESSION_ID)).resolves.toEqual({
+        inserted: 1,
+      });
       expect(entryIndex.lookup(first.id)).not.toBeNull();
       expect(entryIndex.lookup(middle.id)).toEqual(middleRecord);
       expect(entryIndex.lookup(last.id)).not.toBeNull();

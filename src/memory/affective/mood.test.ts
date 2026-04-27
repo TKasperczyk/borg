@@ -50,7 +50,7 @@ describe("MoodRepository", () => {
     harness = await createOfflineTestHarness();
 
     expect(() =>
-      harness.moodRepository.update(DEFAULT_SESSION_ID, {
+      harness!.moodRepository.update(DEFAULT_SESSION_ID, {
         valence: 0.1,
         arousal: 0.2,
         provenance: undefined as never,

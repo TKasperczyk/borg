@@ -40,7 +40,7 @@ describe("scheduled reflection trigger", () => {
     expect(sameWindowScan).toHaveLength(1);
     expect(sameWindowScan[0]?.id).toBe(firstScan[0]?.id);
 
-    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default", {
+    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default" as never, {
       lastTs: clock.now(),
       lastEntryId: null,
     });

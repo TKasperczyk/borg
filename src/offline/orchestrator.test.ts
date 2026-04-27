@@ -28,29 +28,20 @@ describe("maintenance orchestrator", () => {
     await harness.episodicRepository.insert(episode);
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
+      traitsRepository: harness.traitsRepository,
+      moodRepository: harness.moodRepository,
+      socialRepository: harness.socialRepository,
       registry: harness.registry,
     });
 
+    const {
+      runId: _runId,
+      auditLog: _auditLog,
+      streamWriter: _streamWriter,
+      ...baseContext
+    } = harness.createContext();
     const orchestrator = new MaintenanceOrchestrator({
-      baseContext: {
-        config: harness.config,
-        clock: harness.clock,
-        embeddingClient: harness.embeddingClient,
-        llm: {
-          cognition: harness.llmClient,
-          background: harness.llmClient,
-          extraction: harness.llmClient,
-        },
-        episodicRepository: harness.episodicRepository,
-        semanticNodeRepository: harness.semanticNodeRepository,
-        semanticEdgeRepository: harness.semanticEdgeRepository,
-        reviewQueueRepository: harness.reviewQueueRepository,
-        valuesRepository: harness.valuesRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        entityRepository: harness.entityRepository,
-        commitmentRepository: harness.commitmentRepository,
-      },
+      baseContext,
       auditLog: harness.auditLog,
       createStreamWriter: () =>
         new StreamWriter({
@@ -63,6 +54,10 @@ describe("maintenance orchestrator", () => {
         reflector: process,
         curator: process,
         overseer: process,
+        ruminator: process,
+        "self-narrator": process,
+        "procedural-synthesizer": process,
+        "belief-reviser": process,
       },
     });
 

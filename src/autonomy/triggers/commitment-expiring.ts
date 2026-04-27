@@ -50,8 +50,7 @@ export function createCommitmentExpiringTrigger(
         .sort(
           (left, right) =>
             (left.expires_at ?? Number.MAX_SAFE_INTEGER) -
-              (right.expires_at ?? Number.MAX_SAFE_INTEGER) ||
-            right.priority - left.priority,
+              (right.expires_at ?? Number.MAX_SAFE_INTEGER) || right.priority - left.priority,
         );
 
       return dueEvents

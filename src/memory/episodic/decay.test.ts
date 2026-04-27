@@ -24,6 +24,7 @@ function createEpisode(overrides: Partial<Episode> = {}): Episode {
     created_at: 0,
     updated_at: 0,
     ...overrides,
+    emotional_arc: overrides.emotional_arc ?? null,
   };
 }
 
@@ -41,6 +42,9 @@ function createStats(overrides: Partial<EpisodeStats> = {}): EpisodeStats {
     gist_generated_at: null,
     last_decayed_at: null,
     ...overrides,
+    heat_multiplier: overrides.heat_multiplier ?? 1,
+    valence_mean: overrides.valence_mean ?? 0,
+    archived: overrides.archived ?? false,
   };
 }
 

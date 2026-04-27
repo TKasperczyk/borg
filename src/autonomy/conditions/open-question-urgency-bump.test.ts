@@ -53,7 +53,7 @@ describe("open question urgency bump condition", () => {
     });
     expect(firstScan[0]?.payload.open_question_id).not.toBe(resolved.id);
 
-    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default", {
+    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default" as never, {
       lastTs: clock.now(),
       lastEntryId: null,
     });

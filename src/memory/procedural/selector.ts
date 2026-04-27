@@ -84,13 +84,12 @@ export class SkillSelector {
     const contextStatsBySkill: ReadonlyMap<
       SkillRecord["id"],
       NonNullable<SkillSelectionCandidate["contextStats"]>
-    > =
-      proceduralContext === null || this.options.contextStatsRepository === undefined
-        ? new Map<SkillRecord["id"], NonNullable<SkillSelectionCandidate["contextStats"]>>()
-        : this.options.contextStatsRepository.batchGetContextStats(
-            proceduralContext.context_key,
-            eligibleCandidates.map((candidate) => candidate.skill.id),
-          );
+    > = proceduralContext === null || this.options.contextStatsRepository === undefined
+      ? new Map<SkillRecord["id"], NonNullable<SkillSelectionCandidate["contextStats"]>>()
+      : this.options.contextStatsRepository.batchGetContextStats(
+          proceduralContext.context_key,
+          eligibleCandidates.map((candidate) => candidate.skill.id),
+        );
 
     const evaluatedCandidates = eligibleCandidates
       .map((candidate) => {

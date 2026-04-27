@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../config/index.js";
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient, type LLMCompleteOptions } from "../../llm/index.js";
 
 import {
   createEpisodeFixture,
@@ -828,7 +828,7 @@ describe("reflector process", () => {
   it("halts further llm work after budget exhaustion", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        ({ messages }) => {
+        ({ messages }: LLMCompleteOptions) => {
           const ids = [...messages[0]!.content.matchAll(/"id":"(ep_[a-z0-9]{16})"/g)].map(
             (match) => match[1]!,
           );
@@ -852,7 +852,7 @@ describe("reflector process", () => {
             ],
           };
         },
-        ({ messages }) => {
+        ({ messages }: LLMCompleteOptions) => {
           const ids = [...messages[0]!.content.matchAll(/"id":"(ep_[a-z0-9]{16})"/g)].map(
             (match) => match[1]!,
           );
@@ -876,7 +876,7 @@ describe("reflector process", () => {
             ],
           };
         },
-        ({ messages }) => {
+        ({ messages }: LLMCompleteOptions) => {
           const ids = [...messages[0]!.content.matchAll(/"id":"(ep_[a-z0-9]{16})"/g)].map(
             (match) => match[1]!,
           );

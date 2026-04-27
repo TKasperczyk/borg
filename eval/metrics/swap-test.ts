@@ -12,10 +12,7 @@ import {
   seedEstablishedValue,
   seedStreamBackedEpisode,
 } from "../support/identity-seeding.js";
-import {
-  compareSubstrateBlocks,
-  extractSubstrateBlocks,
-} from "../support/swap-test-helper.js";
+import { compareSubstrateBlocks, extractSubstrateBlocks } from "../support/swap-test-helper.js";
 import type { EvalCaseResult, EvalMetricModule, EvalMetricResult } from "../support/scorecard.js";
 
 const METRIC_NAME = "swap_test";
@@ -348,10 +345,7 @@ async function seedBaseSnapshot(tempDir: string): Promise<void> {
   }
 }
 
-function buildScript(
-  turn: SwapTurnFixture,
-  variant: "A" | "B",
-): FakeLLMResponse[] {
+function buildScript(turn: SwapTurnFixture, variant: "A" | "B"): FakeLLMResponse[] {
   const plan =
     variant === "A"
       ? {

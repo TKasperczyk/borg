@@ -133,7 +133,9 @@ export const preferenceFormationMetric = {
           actual: {
             vector_only_top_id: vectorOnly[0]?.episode.id ?? null,
             value_aligned_top_id: withPreference[0]?.episode.id ?? null,
-            value_alignment: Number((withPreference[0]?.scoreBreakdown.valueAlignment ?? 0).toFixed(3)),
+            value_alignment: Number(
+              (withPreference[0]?.scoreBreakdown.valueAlignment ?? 0).toFixed(3),
+            ),
           },
           expected: {
             vector_only_top_id_not: rescuedId,

@@ -710,7 +710,7 @@ describe("stream", () => {
         kind: "user_msg",
         content: { bad: 1n },
       }),
-    ).rejects.toMatchObject<Partial<StreamError>>({
+    ).rejects.toMatchObject({
       code: "STREAM_SERIALIZE_FAILED",
     });
   });

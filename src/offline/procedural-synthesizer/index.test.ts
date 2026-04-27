@@ -604,7 +604,7 @@ describe("ProceduralSynthesizerProcess", () => {
     const result = await process.run(harness.createContext(), {});
     const original = harness.skillRepository.get(skill.id);
     const newSkills = (original?.superseded_by ?? []).map((skillId) =>
-      harness.skillRepository.get(skillId),
+      harness!.skillRepository.get(skillId),
     );
 
     expect(result.errors).toEqual([]);
@@ -1258,7 +1258,7 @@ describe("ProceduralSynthesizerProcess", () => {
     const result = await process.run(harness.createContext(), {});
     const original = harness.skillRepository.get(skill.id);
     const newSkills = (original?.superseded_by ?? []).map((skillId) =>
-      harness.skillRepository.get(skillId),
+      harness!.skillRepository.get(skillId),
     );
 
     expect(result.errors).toEqual([]);
@@ -1572,8 +1572,10 @@ describe("ProceduralSynthesizerProcess", () => {
             current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
-            suppressed: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
             mood: null,
+            suppressed: [],
             pending_procedural_attempts: [
               {
                 problem_text: "Atlas deploy failed after rollback.",
@@ -1618,8 +1620,10 @@ describe("ProceduralSynthesizerProcess", () => {
               current_focus: "Atlas",
               hot_entities: ["Atlas"],
               pending_intents: [],
-              suppressed: [],
+              pending_social_attribution: null,
+              pending_trait_attribution: null,
               mood: null,
+              suppressed: [],
               pending_procedural_attempts: [
                 {
                   problem_text: "Atlas deploy failed after rollback.",

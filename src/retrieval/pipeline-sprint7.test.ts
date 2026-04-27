@@ -49,6 +49,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       attentionWeights: {
         semantic: 0.7,
         goal_relevance: 0,
+        value_alignment: 0,
         mood: 0.2,
         time: 0,
         social: 0,
@@ -57,12 +58,8 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
         suppression_penalty: 0.5,
       },
       moodState: {
-        session_id: "default",
         valence: -0.7,
         arousal: 0.6,
-        updated_at: 1_000_000,
-        half_life_hours: 24,
-        recent_triggers: [],
       },
     });
 
@@ -93,6 +90,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       attentionWeights: {
         semantic: 0.7,
         goal_relevance: 0,
+        value_alignment: 0,
         mood: 0,
         time: 0,
         social: 0.2,

@@ -111,7 +111,7 @@ describe("executive focus due trigger", () => {
           }),
         watermarkRepository: input.harness.watermarkRepository,
         wakeRepository,
-        turnOrchestrator,
+        turnOrchestrator: turnOrchestrator as never,
         toolDispatcher: new ToolDispatcher({
           createStreamWriter: (sessionId) =>
             new StreamWriter({

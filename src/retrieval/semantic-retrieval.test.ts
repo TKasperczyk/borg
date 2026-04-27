@@ -522,7 +522,9 @@ describe("resolveSemanticContext temporal validity", () => {
       ),
     );
 
-    expect(forAudienceA.matched_nodes.find((match) => match.id === node.id)?.under_review).toBeUndefined();
+    expect(
+      forAudienceA.matched_nodes.find((match) => match.id === node.id)?.under_review,
+    ).toBeUndefined();
     expect(forAudienceB.matched_nodes.find((match) => match.id === node.id)?.under_review).toEqual(
       expect.objectContaining({
         invalidated_edge_id: invalidatedEdge.id,

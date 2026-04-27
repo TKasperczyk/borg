@@ -44,10 +44,7 @@ export function quoteSqlString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-export function toFloat32Array(
-  vector: unknown,
-  options: Float32ArrayCodecOptions,
-): Float32Array {
+export function toFloat32Array(vector: unknown, options: Float32ArrayCodecOptions): Float32Array {
   if (vector instanceof Float32Array) {
     return vector;
   }

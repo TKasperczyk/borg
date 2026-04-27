@@ -260,10 +260,7 @@ function extractTurnPlan(toolCalls: readonly LLMToolCall[]): ExtractTurnPlanResu
   };
 }
 
-function countCompletePromptChars(
-  systemPrompt: string,
-  messages: readonly LLMMessage[],
-): number {
+function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
   return (
     systemPrompt.length +
     messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
@@ -277,7 +274,6 @@ function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
       tool.inputSchema.properties === undefined
         ? 0
         : Object.keys(tool.inputSchema.properties).length,
-    required:
-      Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
+    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
   }));
 }

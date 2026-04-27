@@ -119,7 +119,11 @@ describe("TurnContextCompiler", () => {
     try {
       await writer.append({ kind: "user_msg", content: "scheduled reflection", audience: "self" });
       clock.advance(10);
-      await writer.append({ kind: "agent_msg", content: "I reflected on recent changes.", audience: "self" });
+      await writer.append({
+        kind: "agent_msg",
+        content: "I reflected on recent changes.",
+        audience: "self",
+      });
       clock.advance(10);
       await writer.append({ kind: "user_msg", content: "hello" });
       clock.advance(10);
@@ -141,11 +145,19 @@ describe("TurnContextCompiler", () => {
     try {
       await writer.append({ kind: "user_msg", content: "scheduled reflection", audience: "self" });
       clock.advance(10);
-      await writer.append({ kind: "agent_msg", content: "I reflected on recent changes.", audience: "self" });
+      await writer.append({
+        kind: "agent_msg",
+        content: "I reflected on recent changes.",
+        audience: "self",
+      });
       clock.advance(10);
       await writer.append({ kind: "user_msg", content: "another self prompt", audience: "self" });
       clock.advance(10);
-      await writer.append({ kind: "agent_msg", content: "Another self response.", audience: "self" });
+      await writer.append({
+        kind: "agent_msg",
+        content: "Another self response.",
+        audience: "self",
+      });
     } finally {
       writer.close();
     }
@@ -290,7 +302,9 @@ describe("TurnContextCompiler", () => {
     // With 100-char messages, the compiler keeps the newest (agent "d")
     // then hits the cap on the next; the dangling assistant is dropped to
     // respect the "starts with user" invariant, leaving zero messages.
-    expect(window.total_chars).toBeLessThanOrEqual(window.messages.reduce((s, m) => s + m.content.length, 0) + 1);
+    expect(window.total_chars).toBeLessThanOrEqual(
+      window.messages.reduce((s, m) => s + m.content.length, 0) + 1,
+    );
     expect(window.messages.length).toBeLessThanOrEqual(2);
   });
 });

@@ -50,7 +50,7 @@ describe("commitment expiring trigger", () => {
     const firstScan = await trigger.scan();
     expect(firstScan.map((event) => event.payload.commitment_id)).toEqual([dueCommitment.id]);
 
-    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default", {
+    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default" as never, {
       lastTs: clock.now(),
       lastEntryId: null,
     });

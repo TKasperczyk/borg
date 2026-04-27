@@ -136,8 +136,6 @@ describe("deriveProceduralContext", () => {
     });
 
     expect(context?.domain_tags).toHaveLength(3);
-    expect(new Set(context?.domain_tags)).toEqual(
-      new Set(["typescript", "lifetime", "borrow"]),
-    );
+    expect(new Set(context?.domain_tags)).toEqual(new Set(["typescript", "lifetime", "borrow"]));
   });
 });

@@ -108,7 +108,7 @@ describe("goal followup due trigger", () => {
     expect(firstScan).toHaveLength(1);
     expect(firstScan[0]?.payload.reason).toBe("both");
 
-    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default", {
+    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default" as never, {
       lastTs: clock.now(),
       lastEntryId: null,
     });

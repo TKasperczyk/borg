@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-import {
-  DEFAULT_SESSION_ID,
-  sessionIdHelpers,
-  type SessionId,
-} from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, sessionIdHelpers, type SessionId } from "../../util/ids.js";
 import { provenanceSchema } from "../common/provenance.js";
 
 export const affectiveSessionIdSchema = z

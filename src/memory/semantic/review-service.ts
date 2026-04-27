@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-import {
-  type LLMClient,
-  type LLMToolDefinition,
-  toToolInputSchema,
-} from "../../llm/index.js";
+import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import type { ReviewQueueInsertInput } from "./review-queue.js";
 import type { SemanticNodeRepository } from "./repository.js";
 import type { SemanticNode } from "./types.js";

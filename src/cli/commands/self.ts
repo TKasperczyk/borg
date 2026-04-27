@@ -391,13 +391,9 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
           const questionId = resolveOpenQuestionId(arg1);
           const bumped = await withBorg(options, async (borg) =>
             requireIdentityApplied(
-              borg.self.openQuestions.bumpUrgency(
-                questionId,
-                parseFiniteNumber(arg2, "<delta>"),
-                {
-                  kind: "manual",
-                },
-              ),
+              borg.self.openQuestions.bumpUrgency(questionId, parseFiniteNumber(arg2, "<delta>"), {
+                kind: "manual",
+              }),
               "Bumping open question urgency",
             ),
           );

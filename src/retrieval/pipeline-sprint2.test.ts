@@ -15,6 +15,7 @@ function defaultWeights() {
   return {
     semantic: 0.2,
     goal_relevance: 0,
+    value_alignment: 0,
     mood: 0,
     time: 0,
     social: 0,
@@ -422,8 +423,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     const results = await harness.retrievalPipeline.search(QUERY, {
       limit: 10,
       temporalCue: {
-        phrase: "yesterday",
-        granularity: "day",
+        label: "yesterday",
         sinceTs: 140_000,
         untilTs: 170_000,
       },
@@ -463,8 +463,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     const results = await harness.retrievalPipeline.search(QUERY, {
       limit: 10,
       temporalCue: {
-        phrase: "yesterday",
-        granularity: "day",
+        label: "yesterday",
         sinceTs: 140_000,
         untilTs: 170_000,
       },
@@ -520,8 +519,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
         end: 340_000,
       },
       temporalCue: {
-        phrase: "yesterday",
-        granularity: "day",
+        label: "yesterday",
         sinceTs: 140_000,
         untilTs: 170_000,
       },
@@ -547,8 +545,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     const results = await harness.retrievalPipeline.search(QUERY, {
       limit: 3,
       temporalCue: {
-        phrase: "yesterday",
-        granularity: "day",
+        label: "yesterday",
         sinceTs: 140_000,
         untilTs: 170_000,
       },

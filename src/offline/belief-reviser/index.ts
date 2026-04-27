@@ -216,7 +216,10 @@ function uniqueEdgeIds(ids: readonly z.infer<typeof semanticEdgeIdSchema>[]) {
   return [...new Set(ids)];
 }
 
-function collectEpisodeIds(value: unknown, collector = new Set<Episode["id"]>()): Set<Episode["id"]> {
+function collectEpisodeIds(
+  value: unknown,
+  collector = new Set<Episode["id"]>(),
+): Set<Episode["id"]> {
   if (typeof value === "string") {
     const parsed = episodeIdSchema.safeParse(value);
 
@@ -498,7 +501,9 @@ function listPendingRegradeItems(
       kind: "belief_revision",
       openOnly: true,
     })
-    .filter((item) => !hasFreshBeliefRevisionClaim(item, staleBefore) && !isEscalatedBeliefRevision(item))
+    .filter(
+      (item) => !hasFreshBeliefRevisionClaim(item, staleBefore) && !isEscalatedBeliefRevision(item),
+    )
     .slice(0, batchSize)
     .map((item) => ({
       review_id: item.id,
@@ -1141,10 +1146,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     const survivingSupports = refs.surviving_support_edge_ids
       .map((edgeId) => ctx.semanticEdgeRepository.getEdge(edgeId))
       .filter((edge): edge is SemanticEdge => edge !== null);
-    const evidenceEpisodes = (await ctx.episodicRepository.getMany(refs.evidence_episode_ids)).filter(
-      (episode): episode is Episode => episode !== null,
-    );
-    const audienceEntityId = refs.audience_entity_id ?? inferBeliefRevisionAudience(evidenceEpisodes);
+    const evidenceEpisodes = (
+      await ctx.episodicRepository.getMany(refs.evidence_episode_ids)
+    ).filter((episode): episode is Episode => episode !== null);
+    const audienceEntityId =
+      refs.audience_entity_id ?? inferBeliefRevisionAudience(evidenceEpisodes);
     const visibleEpisodes = visibleBeliefRevisionEpisodes(evidenceEpisodes, audienceEntityId);
 
     if (refs.target_type === "semantic_node") {
@@ -1351,7 +1357,10 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
           claimed_at: expectedClaim.claimed_at,
           verdict: "weaken",
           target_id: refs.target_id,
-          confidence: Math.max(this.confidenceFloor, currentConfidence + (verdict.confidence_delta ?? 0)),
+          confidence: Math.max(
+            this.confidenceFloor,
+            currentConfidence + (verdict.confidence_delta ?? 0),
+          ),
         } satisfies z.infer<typeof beliefRevisionApplyingSchema>;
         const result = this.options.db
           .prepare(

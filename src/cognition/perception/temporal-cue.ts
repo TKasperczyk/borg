@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-import {
-  toToolInputSchema,
-  type LLMClient,
-  type LLMToolDefinition,
-} from "../../llm/index.js";
+import { toToolInputSchema, type LLMClient, type LLMToolDefinition } from "../../llm/index.js";
 import type { TemporalCue } from "../types.js";
 
 const temporalCueJudgeSchema = z.object({
@@ -67,9 +63,7 @@ export async function detectTemporalCue(
       budget: "perception-temporal-cue",
     });
 
-    const call = response.tool_calls.find(
-      (toolCall) => toolCall.name === TEMPORAL_CUE_TOOL_NAME,
-    );
+    const call = response.tool_calls.find((toolCall) => toolCall.name === TEMPORAL_CUE_TOOL_NAME);
     if (call === undefined) {
       return null;
     }

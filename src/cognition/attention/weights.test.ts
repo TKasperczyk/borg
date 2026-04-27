@@ -8,14 +8,16 @@ describe("attention weights", () => {
     const reflective = computeWeights("reflective", {
       currentGoals: [
         {
-          id: "goal_aaaaaaaaaaaaaaaa",
+          id: "goal_aaaaaaaaaaaaaaaa" as never,
           description: "Ship release",
           priority: 1,
           parent_goal_id: null,
           status: "active",
           progress_notes: null,
+          last_progress_ts: null,
           created_at: 0,
           target_at: null,
+          provenance: { kind: "system" },
         },
       ],
       hasActiveValues: true,

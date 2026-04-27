@@ -1060,7 +1060,7 @@ describe("review queue", () => {
     await expect(
       harness.reviewQueueRepository.resolve(malformedDuplicate.id, {
         decision: "supersede",
-        winner_node_id: "semn_aaaaaaaaaaaaaaaa",
+        winner_node_id: "semn_aaaaaaaaaaaaaaaa" as never,
       }),
     ).rejects.toMatchObject({
       name: "SemanticError",
@@ -1069,7 +1069,7 @@ describe("review queue", () => {
     await expect(
       harness.reviewQueueRepository.resolve(malformedContradiction.id, {
         decision: "invalidate",
-        winner_node_id: "semn_bbbbbbbbbbbbbbbb",
+        winner_node_id: "semn_bbbbbbbbbbbbbbbb" as never,
       }),
     ).rejects.toMatchObject({
       name: "SemanticError",

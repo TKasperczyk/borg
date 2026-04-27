@@ -56,7 +56,7 @@ describe("commitment revoked condition", () => {
     });
     expect(firstScan[0]?.payload.commitment_id).not.toBe(active.id);
 
-    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default", {
+    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default" as never, {
       lastTs: clock.now(),
       lastEntryId: null,
     });

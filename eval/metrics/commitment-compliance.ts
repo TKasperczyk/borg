@@ -39,7 +39,9 @@ const commitmentFixtureSchema = z.object({
   rewrite_response: z.string().min(1),
 });
 
-function createPlanResponse(plan: z.infer<typeof commitmentFixtureSchema>["plan"]): LLMCompleteResult {
+function createPlanResponse(
+  plan: z.infer<typeof commitmentFixtureSchema>["plan"],
+): LLMCompleteResult {
   return {
     text: "",
     input_tokens: 12,
@@ -65,10 +67,7 @@ function createTextResponse(text: string): LLMCompleteResult {
   };
 }
 
-function createJudgeResponse(
-  commitmentId: string,
-  reason: string | null,
-): LLMCompleteResult {
+function createJudgeResponse(commitmentId: string, reason: string | null): LLMCompleteResult {
   return {
     text: "",
     input_tokens: 10,

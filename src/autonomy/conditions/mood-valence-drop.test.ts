@@ -31,13 +31,13 @@ describe("mood valence drop condition", () => {
       clock,
     });
 
-    harness.moodRepository.update("default", {
+    harness.moodRepository.update("default" as never, {
       valence: -0.8,
       arousal: 0.4,
       provenance: { kind: "system" },
     });
     clock.advance(1_000);
-    harness.moodRepository.update("default", {
+    harness.moodRepository.update("default" as never, {
       valence: -0.7,
       arousal: 0.3,
       provenance: { kind: "system" },
@@ -46,7 +46,7 @@ describe("mood valence drop condition", () => {
     expect(await condition.scan()).toEqual([]);
 
     clock.advance(1_000);
-    harness.moodRepository.update("default", {
+    harness.moodRepository.update("default" as never, {
       valence: -0.9,
       arousal: 0.5,
       provenance: { kind: "system" },
@@ -56,7 +56,7 @@ describe("mood valence drop condition", () => {
     expect(firstScan).toHaveLength(1);
     expect(firstScan[0]?.payload.average_valence).toBeLessThan(-0.5);
 
-    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default", {
+    watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default" as never, {
       lastTs: clock.now(),
       lastEntryId: null,
     });

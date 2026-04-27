@@ -72,6 +72,7 @@ function createEpisode(id: string, sourceId: string, embedding: number[]): Episo
       derived_from: [],
       supersedes: [],
     },
+    emotional_arc: null,
     embedding: Float32Array.from(embedding),
     created_at: 1_000,
     updated_at: 1_000,
@@ -707,16 +708,19 @@ describe("retrieval pipeline", () => {
       attentionWeights: computeWeights("reflective", {
         currentGoals: [
           {
-            id: "goal_aaaaaaaaaaaaaaaa",
+            id: "goal_aaaaaaaaaaaaaaaa" as never,
             description: "release goal",
             priority: 1,
             parent_goal_id: null,
             status: "active",
             progress_notes: null,
+            last_progress_ts: null,
             created_at: 0,
             target_at: null,
+            provenance: { kind: "system" },
           },
         ],
+        hasActiveValues: false,
         hasTemporalCue: false,
       }),
       goalDescriptions: ["release goal"],

@@ -40,8 +40,7 @@ export function createCommitmentRevokedCondition(
         )
         .sort((left, right) => left.revoked_at - right.revoked_at)
         .map<DueEvent<CommitmentRevokedPayload> | null>((commitment) => {
-          const watermarkProcessName =
-            `${WATERMARK_PREFIX}:${commitment.id}:${commitment.revoked_at}`;
+          const watermarkProcessName = `${WATERMARK_PREFIX}:${commitment.id}:${commitment.revoked_at}`;
 
           if (options.watermarkRepository.get(watermarkProcessName, sessionId) !== null) {
             return null;

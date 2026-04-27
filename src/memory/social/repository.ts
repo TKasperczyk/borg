@@ -4,7 +4,12 @@ import { ProvenanceError, StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import type { CommitmentRepository } from "../commitments/index.js";
 import type { EntityId } from "../../util/ids.js";
-import { parseStoredProvenance, provenanceSchema, toStoredProvenance, type Provenance } from "../common/provenance.js";
+import {
+  parseStoredProvenance,
+  provenanceSchema,
+  toStoredProvenance,
+  type Provenance,
+} from "../common/provenance.js";
 
 import {
   socialEventSchema,

@@ -3,7 +3,12 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { ProvenanceError, StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { type SessionId } from "../../util/ids.js";
-import { parseStoredProvenance, provenanceSchema, toStoredProvenance, type Provenance } from "../common/provenance.js";
+import {
+  parseStoredProvenance,
+  provenanceSchema,
+  toStoredProvenance,
+  type Provenance,
+} from "../common/provenance.js";
 
 import {
   moodHistoryEntrySchema,

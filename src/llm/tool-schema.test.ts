@@ -67,7 +67,7 @@ describe("tool schemas", () => {
 
     for (const { tool, required } of cases) {
       expectObjectSchema(tool.inputSchema);
-      expect(tool.inputSchema.required ?? []).toEqual(expect.arrayContaining(required));
+      expect(tool.inputSchema.required ?? []).toEqual(expect.arrayContaining([...required]));
     }
   });
 

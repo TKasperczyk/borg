@@ -198,10 +198,7 @@ describe("SkillRepository", () => {
     });
     expect(batch.size).toBe(2);
 
-    const bySkill = harness.skillRepository.batchListContextStatsForSkills([
-      skillId,
-      otherSkillId,
-    ]);
+    const bySkill = harness.skillRepository.batchListContextStatsForSkills([skillId, otherSkillId]);
 
     expect(bySkill.get(skillId)).toEqual([failure]);
     expect(bySkill.get(otherSkillId)).toEqual([

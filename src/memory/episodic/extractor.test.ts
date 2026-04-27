@@ -334,7 +334,7 @@ describe("episodic extractor", () => {
     });
     const writer = new StreamWriter({
       dataDir: harness.tempDir,
-      sessionId: "default",
+      sessionId: "default" as never,
       clock,
     });
 
@@ -422,7 +422,7 @@ describe("episodic extractor", () => {
     });
     const writer = new StreamWriter({
       dataDir: harness.tempDir,
-      sessionId: "default",
+      sessionId: "default" as never,
       clock,
     });
 

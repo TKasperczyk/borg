@@ -29,6 +29,7 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
       affectiveSignal: {
         valence: 0,
         arousal: 0,
+        dominant_emotion: null,
       },
       temporalCue: null,
     },
@@ -47,6 +48,7 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
         arousal: 0.9,
         dominant_emotion: null,
       },
+      pending_procedural_attempts: [],
       mode: "problem_solving",
       updated_at: NOW_MS,
     },
@@ -332,6 +334,7 @@ describe("buildBaseSystemPrompt", () => {
           affectiveSignal: {
             valence: 0,
             arousal: 0,
+            dominant_emotion: null,
           },
           temporalCue: null,
         },

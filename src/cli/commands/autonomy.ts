@@ -194,7 +194,9 @@ export function registerAutonomyCommands(cli: CAC, deps: CliCommandDeps): void {
       const cadence = commandOptions.cadence;
 
       if (cadence !== "light" && cadence !== "heavy") {
-        throw new CliError(`Unknown maintenance cadence: ${String(cadence)} (expected light|heavy)`);
+        throw new CliError(
+          `Unknown maintenance cadence: ${String(cadence)} (expected light|heavy)`,
+        );
       }
 
       const result = await withBorg(options, async (borg) =>

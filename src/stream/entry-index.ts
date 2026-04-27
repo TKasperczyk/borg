@@ -3,11 +3,7 @@ import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { type Migration, type SqliteDatabase } from "../storage/sqlite/index.js";
 
 import { getSessionStreamPath } from "./path.js";
-import {
-  type SessionId,
-  type StreamEntry,
-  streamEntrySchema,
-} from "./types.js";
+import { type SessionId, type StreamEntry, streamEntrySchema } from "./types.js";
 
 type LoggerLike = Pick<Console, "error">;
 
@@ -285,9 +281,17 @@ export class StreamEntryIndexRepository {
         );
         let inserted = 0;
 
-        scanForwardStreamEntries(fileDescriptor, fileSize, streamPath, this.logger, (entry, byteOffset) => {
-          inserted += Number(insert.run(entry.id, sessionId, byteOffset, entry.timestamp).changes);
-        });
+        scanForwardStreamEntries(
+          fileDescriptor,
+          fileSize,
+          streamPath,
+          this.logger,
+          (entry, byteOffset) => {
+            inserted += Number(
+              insert.run(entry.id, sessionId, byteOffset, entry.timestamp).changes,
+            );
+          },
+        );
 
         return inserted;
       });

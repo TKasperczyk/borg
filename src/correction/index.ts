@@ -1,4 +1,1 @@
-export {
-  CorrectionService,
-  type CorrectionServiceOptions,
-} from "./service.js";
+export { CorrectionService, type CorrectionServiceOptions } from "./service.js";

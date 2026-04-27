@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { Borg, FakeLLMClient, ManualClock } from "../index.js";
-import { TestEmbeddingClient } from "../offline/test-support.js";
+import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
 
 async function openTestBorg(tempDir: string, llm: FakeLLMClient) {
   return Borg.open({
-    config: {
+    config: createTestConfig({
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
@@ -30,7 +30,7 @@ async function openTestBorg(tempDir: string, llm: FakeLLMClient) {
           extraction: "test-extraction",
         },
       },
-    },
+    }),
     clock: new ManualClock(1_000_000),
     embeddingDimensions: 4,
     embeddingClient: new TestEmbeddingClient(),

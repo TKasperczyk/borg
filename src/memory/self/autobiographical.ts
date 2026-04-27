@@ -10,7 +10,11 @@ import {
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { episodeIdSchema } from "../episodic/types.js";
-import { parseStoredProvenance, provenanceSchema, toStoredProvenance } from "../common/provenance.js";
+import {
+  parseStoredProvenance,
+  provenanceSchema,
+  toStoredProvenance,
+} from "../common/provenance.js";
 
 export const autobiographicalPeriodIdSchema = z
   .string()

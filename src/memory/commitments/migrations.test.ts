@@ -55,14 +55,7 @@ describe("commitment migrations", () => {
             ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, NULL, NULL)
           `,
         )
-        .run(
-          "cmt_bbbbbbbbbbbbbbbb",
-          "promise",
-          "Follow up later",
-          5,
-          "[]",
-          2_000,
-        );
+        .run("cmt_bbbbbbbbbbbbbbbb", "promise", "Follow up later", 5, "[]", 2_000);
     } finally {
       legacyDb.close();
     }

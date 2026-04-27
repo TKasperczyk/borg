@@ -118,7 +118,7 @@ describe("TurnTracer", () => {
   it("keeps NoopTracer inert", () => {
     const tempDir = createTempDir();
     const tracePath = join(tempDir, "noop.jsonl");
-    const tracer = new NoopTracer();
+    const tracer: TurnTracer = new NoopTracer();
 
     expect(tracer.enabled).toBe(false);
     expect(tracer.includePayloads).toBe(false);

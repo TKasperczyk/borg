@@ -57,12 +57,7 @@ function canonicalizeDomainTags(
   for (const value of domainTags) {
     const tag = canonicalizeDomainTag(value);
 
-    if (
-      tag.length === 0 ||
-      seen.has(tag) ||
-      genericTags.has(tag) ||
-      GENERIC_DOMAIN_TAGS.has(tag)
-    ) {
+    if (tag.length === 0 || seen.has(tag) || genericTags.has(tag) || GENERIC_DOMAIN_TAGS.has(tag)) {
       continue;
     }
 

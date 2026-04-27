@@ -158,7 +158,7 @@ function makeRetrievedContext(): RetrievedContext {
     open_questions: [],
     contradiction_present: false,
     confidence: {},
-  } as RetrievedContext;
+  } as unknown as RetrievedContext;
 }
 
 describe("TurnRetrievalCoordinator", () => {

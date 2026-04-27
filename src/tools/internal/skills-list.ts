@@ -38,10 +38,7 @@ function toSkillToolOutput(skill: SkillRecord): z.infer<typeof skillToolSchema> 
 
 export function createSkillsListTool(
   options: SkillsListToolOptions,
-): ToolDefinition<
-  z.infer<typeof skillsListInputSchema>,
-  z.infer<typeof skillsListOutputSchema>
-> {
+): ToolDefinition<z.infer<typeof skillsListInputSchema>, z.infer<typeof skillsListOutputSchema>> {
   return {
     name: "tool.skills.list",
     description:
@@ -58,10 +55,10 @@ export function createSkillsListTool(
           ? undefined
           : Object.fromEntries(
               skills
-                .map((skill) => [
-                  skill.id,
-                  options.listContextStatsForSkill?.(skill.id) ?? [],
-                ] as const)
+                .map(
+                  (skill) =>
+                    [skill.id, options.listContextStatsForSkill?.(skill.id) ?? []] as const,
+                )
                 .filter(([, stats]) => stats.length > 0),
             );
 

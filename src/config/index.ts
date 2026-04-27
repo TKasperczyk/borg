@@ -928,10 +928,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     retrieval: {
       semantic: {
         underReviewMultiplier:
-          readOptionalEnvUnitInterval(
-            env,
-            "BORG_RETRIEVAL_SEMANTIC_UNDER_REVIEW_MULTIPLIER",
-          ) ??
+          readOptionalEnvUnitInterval(env, "BORG_RETRIEVAL_SEMANTIC_UNDER_REVIEW_MULTIPLIER") ??
           fileConfig.retrieval?.semantic?.underReviewMultiplier ??
           DEFAULT_CONFIG.retrieval.semantic.underReviewMultiplier,
       },
@@ -1019,17 +1016,11 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           fileConfig.offline?.proceduralSynthesizer?.minDivergenceForSplit ??
           DEFAULT_CONFIG.offline.proceduralSynthesizer.minDivergenceForSplit,
         splitCooldownDays:
-          readOptionalEnvFloat(
-            env,
-            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SPLIT_COOLDOWN_DAYS",
-          ) ??
+          readOptionalEnvFloat(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SPLIT_COOLDOWN_DAYS") ??
           fileConfig.offline?.proceduralSynthesizer?.splitCooldownDays ??
           DEFAULT_CONFIG.offline.proceduralSynthesizer.splitCooldownDays,
         splitClaimStaleSec:
-          readOptionalEnvNumber(
-            env,
-            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SPLIT_CLAIM_STALE_SEC",
-          ) ??
+          readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SPLIT_CLAIM_STALE_SEC") ??
           fileConfig.offline?.proceduralSynthesizer?.splitClaimStaleSec ??
           DEFAULT_CONFIG.offline.proceduralSynthesizer.splitClaimStaleSec,
         maxSplitParseFailures:
@@ -1040,10 +1031,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           fileConfig.offline?.proceduralSynthesizer?.maxSplitParseFailures ??
           DEFAULT_CONFIG.offline.proceduralSynthesizer.maxSplitParseFailures,
         skillSplitDryRun:
-          readOptionalEnvBoolean(
-            env,
-            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SKILL_SPLIT_DRY_RUN",
-          ) ??
+          readOptionalEnvBoolean(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SKILL_SPLIT_DRY_RUN") ??
           fileConfig.offline?.proceduralSynthesizer?.skillSplitDryRun ??
           DEFAULT_CONFIG.offline.proceduralSynthesizer.skillSplitDryRun,
         budget:

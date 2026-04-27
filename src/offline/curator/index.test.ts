@@ -83,6 +83,8 @@ describe("curator process", () => {
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
       traitsRepository: harness.traitsRepository,
+      moodRepository: harness.moodRepository,
+      socialRepository: harness.socialRepository,
       registry: harness.registry,
     });
 
@@ -129,7 +131,7 @@ describe("curator process", () => {
     });
     cleanup.push(harness.cleanup);
 
-    harness.moodRepository.update("default", {
+    harness.moodRepository.update("default" as never, {
       valence: -0.6,
       arousal: 0.4,
       reason: "recent frustration",
@@ -138,7 +140,7 @@ describe("curator process", () => {
     harness.moodRepository.restoreHistory([
       {
         id: 10_000,
-        session_id: "default",
+        session_id: "default" as never,
         ts: nowMs - 120 * DAY_MS,
         valence: -0.7,
         arousal: 0.5,
@@ -151,6 +153,8 @@ describe("curator process", () => {
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
       traitsRepository: harness.traitsRepository,
+      moodRepository: harness.moodRepository,
+      socialRepository: harness.socialRepository,
       registry: harness.registry,
     });
 
@@ -202,6 +206,8 @@ describe("curator process", () => {
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
       traitsRepository: harness.traitsRepository,
+      moodRepository: harness.moodRepository,
+      socialRepository: harness.socialRepository,
       registry: harness.registry,
     });
 
@@ -265,11 +271,15 @@ describe("curator process", () => {
     const earlyProcess = new CuratorProcess({
       episodicRepository: earlyHarness.episodicRepository,
       traitsRepository: earlyHarness.traitsRepository,
+      moodRepository: earlyHarness.moodRepository,
+      socialRepository: earlyHarness.socialRepository,
       registry: earlyHarness.registry,
     });
     const lateProcess = new CuratorProcess({
       episodicRepository: lateHarness.episodicRepository,
       traitsRepository: lateHarness.traitsRepository,
+      moodRepository: lateHarness.moodRepository,
+      socialRepository: lateHarness.socialRepository,
       registry: lateHarness.registry,
     });
 
@@ -312,6 +322,8 @@ describe("curator process", () => {
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
       traitsRepository: harness.traitsRepository,
+      moodRepository: harness.moodRepository,
+      socialRepository: harness.socialRepository,
       registry: harness.registry,
     });
     const result = await process.run(harness.createContext(), {
@@ -374,6 +386,8 @@ describe("curator process", () => {
     const process = new CuratorProcess({
       episodicRepository: harness.episodicRepository,
       traitsRepository: auditedTraits,
+      moodRepository: harness.moodRepository,
+      socialRepository: harness.socialRepository,
       registry: harness.registry,
     });
 

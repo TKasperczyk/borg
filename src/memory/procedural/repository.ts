@@ -124,9 +124,7 @@ function skillFromRow(row: Record<string, unknown>): SkillRecord {
         ? null
         : Number(row.superseded_at),
     splitting_at:
-      row.splitting_at === null || row.splitting_at === undefined
-        ? null
-        : Number(row.splitting_at),
+      row.splitting_at === null || row.splitting_at === undefined ? null : Number(row.splitting_at),
     last_split_attempt_at:
       row.last_split_attempt_at === null || row.last_split_attempt_at === undefined
         ? null
@@ -663,7 +661,10 @@ export class SkillRepository {
     manualReviewThreshold?: number;
   }): SkillRecord | null {
     const boundedError = input.error.trim().slice(0, 2_000) || "skill split parse failure";
-    const manualReviewThreshold = Math.max(1, input.manualReviewThreshold ?? Number.MAX_SAFE_INTEGER);
+    const manualReviewThreshold = Math.max(
+      1,
+      input.manualReviewThreshold ?? Number.MAX_SAFE_INTEGER,
+    );
 
     if (input.claimedAt === undefined || input.claimedAt === null) {
       this.db
@@ -809,7 +810,9 @@ export class SkillRepository {
     const assignedContexts = new Set<string>();
     const nowMs = input.supersededAt ?? this.clock.now();
     const newSkills = input.parts.map((part) => {
-      const targetContexts = [...new Set(part.target_contexts.map((contextKey) => contextKey.trim()))]
+      const targetContexts = [
+        ...new Set(part.target_contexts.map((contextKey) => contextKey.trim())),
+      ]
         .filter((contextKey) => contextKey.length > 0)
         .sort();
 
@@ -918,7 +921,9 @@ export class SkillRepository {
 
           for (const [partIndex, part] of input.parts.entries()) {
             const newSkill = newSkills[partIndex]!;
-            const targetContexts = [...new Set(part.target_contexts.map((contextKey) => contextKey.trim()))]
+            const targetContexts = [
+              ...new Set(part.target_contexts.map((contextKey) => contextKey.trim())),
+            ]
               .filter((contextKey) => contextKey.length > 0)
               .sort();
 
@@ -961,12 +966,13 @@ export class SkillRepository {
           );
         })();
       } catch (error) {
-        await Promise.all(insertedSkillIds.map((id) => this.table.remove(`id = ${quoteSqlString(id)}`)));
+        await Promise.all(
+          insertedSkillIds.map((id) => this.table.remove(`id = ${quoteSqlString(id)}`)),
+        );
 
         if (
           error instanceof StorageError &&
-          (error.code === "SKILL_SPLIT_ALREADY_APPLIED" ||
-            error.code === "SKILL_SPLIT_CLAIM_LOST")
+          (error.code === "SKILL_SPLIT_ALREADY_APPLIED" || error.code === "SKILL_SPLIT_CLAIM_LOST")
         ) {
           return null;
         }

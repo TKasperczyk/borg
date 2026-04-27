@@ -157,9 +157,7 @@ describe("Sprint 28 integration", () => {
       expect(tick.result).toBeNull();
 
       // No dream_report should have been emitted -- maintenance was skipped.
-      const dreamReports = borg.stream
-        .tail(10)
-        .filter((entry) => entry.kind === "dream_report");
+      const dreamReports = borg.stream.tail(10).filter((entry) => entry.kind === "dream_report");
       expect(dreamReports).toHaveLength(0);
     } finally {
       await borg.close();
@@ -225,9 +223,7 @@ describe("Sprint 28 integration", () => {
               id: "toolu_plan_1",
               name: "EmitTurnPlan",
               input: {
-                verification_steps: [
-                  "No retrieval evidence was found for this query.",
-                ],
+                verification_steps: ["No retrieval evidence was found for this query."],
                 tensions: [],
                 voice_note: "Speak honestly about uncertainty.",
                 uncertainty: "high",

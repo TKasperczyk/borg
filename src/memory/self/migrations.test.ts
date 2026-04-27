@@ -267,13 +267,7 @@ describe("self migrations", () => {
             ) VALUES (?, ?, ?, ?, NULL, 'episodes', ?, NULL, 'candidate', NULL)
           `,
         )
-        .run(
-          "trt_aaaaaaaaaaaaaaaa",
-          "warm",
-          0.4,
-          4_000,
-          JSON.stringify([relatedEpisodeIds[0]]),
-        );
+        .run("trt_aaaaaaaaaaaaaaaa", "warm", 0.4, 4_000, JSON.stringify([relatedEpisodeIds[0]]));
       legacyDb
         .prepare(
           `
@@ -310,11 +304,7 @@ describe("self migrations", () => {
           last_tested_at: 3_000,
           last_contradicted_at: null,
           confidence: 5 / 6,
-          evidence_episode_ids: [
-            relatedEpisodeIds[2],
-            relatedEpisodeIds[1],
-            relatedEpisodeIds[0],
-          ],
+          evidence_episode_ids: [relatedEpisodeIds[2], relatedEpisodeIds[1], relatedEpisodeIds[0]],
         }),
       );
 
@@ -339,7 +329,10 @@ describe("self migrations", () => {
     tempDirs.push(tempDir);
 
     const legacyDb = openDatabase(dbPath, {
-      migrations: [...selfMigrations.filter((migration) => migration.id < 262), ...identityMigrations],
+      migrations: [
+        ...selfMigrations.filter((migration) => migration.id < 262),
+        ...identityMigrations,
+      ],
     });
 
     try {
@@ -510,16 +503,7 @@ describe("self migrations", () => {
             ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
           `,
         )
-        .run(
-          "grw_cccccccccccccccc",
-          3_000,
-          "skill",
-          "Fallback marker",
-          "[]",
-          0.4,
-          "",
-          3_000,
-        );
+        .run("grw_cccccccccccccccc", 3_000, "skill", "Fallback marker", "[]", 0.4, "", 3_000);
     } finally {
       legacyDb.close();
     }

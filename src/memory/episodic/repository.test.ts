@@ -54,6 +54,7 @@ function createEpisode(id: string, nowMs: number, overrides: Partial<Episode> = 
     created_at: nowMs,
     updated_at: nowMs,
     ...overrides,
+    emotional_arc: overrides.emotional_arc ?? null,
   };
 }
 

@@ -44,8 +44,7 @@ export function createOpenQuestionUrgencyBumpCondition(
         })
         .sort((left, right) => left.last_touched - right.last_touched)
         .map<DueEvent<OpenQuestionUrgencyBumpPayload> | null>((question) => {
-          const watermarkProcessName =
-            `${WATERMARK_PREFIX}:${question.id}:${urgencyFloor(question.urgency)}`;
+          const watermarkProcessName = `${WATERMARK_PREFIX}:${question.id}:${urgencyFloor(question.urgency)}`;
 
           if (options.watermarkRepository.get(watermarkProcessName, sessionId) !== null) {
             return null;

@@ -67,7 +67,7 @@ function truncateText(text: string, maxChars: number): string {
 
 function summarizeCitationContent(content: unknown): string {
   const serialized = JSON.stringify(content ?? null);
-  const text = typeof content === "string" ? content : serialized ?? String(content);
+  const text = typeof content === "string" ? content : (serialized ?? String(content));
 
   return truncateText(text, MAX_CITATION_CONTENT_CHARS);
 }

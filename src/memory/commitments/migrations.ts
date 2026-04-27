@@ -76,7 +76,11 @@ export const commitmentMigrations: Migration[] = [
         const episodeIds = Array.isArray(parsed)
           ? parsed.filter((value): value is string => typeof value === "string" && value.length > 0)
           : [];
-        update.run(episodeIds.length > 0 ? "episodes" : "system", JSON.stringify(episodeIds), row.id);
+        update.run(
+          episodeIds.length > 0 ? "episodes" : "system",
+          JSON.stringify(episodeIds),
+          row.id,
+        );
       }
     },
   },

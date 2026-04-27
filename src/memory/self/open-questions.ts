@@ -16,7 +16,11 @@ import { serializeJsonValue } from "../../util/json-value.js";
 import { tokenizeText } from "../../util/text/tokenize.js";
 import { episodeIdSchema } from "../episodic/types.js";
 import { semanticNodeIdSchema } from "../semantic/types.js";
-import { parseStoredProvenance, provenanceSchema, toStoredProvenance } from "../common/provenance.js";
+import {
+  parseStoredProvenance,
+  provenanceSchema,
+  toStoredProvenance,
+} from "../common/provenance.js";
 
 export const OPEN_QUESTION_STATUSES = ["open", "resolved", "abandoned"] as const;
 export const OPEN_QUESTION_SOURCES = [
@@ -45,34 +49,36 @@ export const openQuestionAudienceEntityIdSchema = z
 export const openQuestionStatusSchema = z.enum(OPEN_QUESTION_STATUSES);
 export const openQuestionSourceSchema = z.enum(OPEN_QUESTION_SOURCES);
 
-export const openQuestionSchema = z.object({
-  id: openQuestionIdSchema,
-  question: z.string().min(1),
-  urgency: z.number().min(0).max(1),
-  status: openQuestionStatusSchema,
-  audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().default(null),
-  related_episode_ids: z.array(episodeIdSchema),
-  related_semantic_node_ids: z.array(semanticNodeIdSchema),
-  provenance: provenanceSchema.nullable(),
-  source: openQuestionSourceSchema,
-  created_at: z.number().finite(),
-  last_touched: z.number().finite(),
-  resolution_episode_id: episodeIdSchema.nullable(),
-  resolution_note: z.string().nullable(),
-  resolved_at: z.number().finite().nullable(),
-  abandoned_reason: z.string().nullable(),
-  abandoned_at: z.number().finite().nullable(),
-}).refine(
-  (value) =>
-    value.related_episode_ids.length > 0 ||
-    value.related_semantic_node_ids.length > 0 ||
-    value.provenance !== null,
-  {
-    message:
-      "Open question requires related_episode_ids, related_semantic_node_ids, or explicit provenance",
-    path: ["provenance"],
-  },
-);
+export const openQuestionSchema = z
+  .object({
+    id: openQuestionIdSchema,
+    question: z.string().min(1),
+    urgency: z.number().min(0).max(1),
+    status: openQuestionStatusSchema,
+    audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().default(null),
+    related_episode_ids: z.array(episodeIdSchema),
+    related_semantic_node_ids: z.array(semanticNodeIdSchema),
+    provenance: provenanceSchema.nullable(),
+    source: openQuestionSourceSchema,
+    created_at: z.number().finite(),
+    last_touched: z.number().finite(),
+    resolution_episode_id: episodeIdSchema.nullable(),
+    resolution_note: z.string().nullable(),
+    resolved_at: z.number().finite().nullable(),
+    abandoned_reason: z.string().nullable(),
+    abandoned_at: z.number().finite().nullable(),
+  })
+  .refine(
+    (value) =>
+      value.related_episode_ids.length > 0 ||
+      value.related_semantic_node_ids.length > 0 ||
+      value.provenance !== null,
+    {
+      message:
+        "Open question requires related_episode_ids, related_semantic_node_ids, or explicit provenance",
+      path: ["provenance"],
+    },
+  );
 
 export const openQuestionPatchSchema = z.object({
   question: z.string().min(1).optional(),
@@ -250,12 +256,9 @@ export class OpenQuestionsRepository {
       relatedSemanticNodeIds.length === 0 &&
       input.provenance === undefined
     ) {
-      throw new ProvenanceError(
-        "Open question requires related ids or explicit provenance",
-        {
-          code: "PROVENANCE_REQUIRED",
-        },
-      );
+      throw new ProvenanceError("Open question requires related ids or explicit provenance", {
+        code: "PROVENANCE_REQUIRED",
+      });
     }
     const nowMs = this.clock.now();
     const question = openQuestionSchema.parse({
@@ -403,8 +406,7 @@ export class OpenQuestionsRepository {
       relatedSemanticNodeIds: next.related_semantic_node_ids,
       audienceEntityId: next.audience_entity_id,
     });
-    const storedProvenance =
-      next.provenance === null ? null : toStoredProvenance(next.provenance);
+    const storedProvenance = next.provenance === null ? null : toStoredProvenance(next.provenance);
 
     this.db
       .prepare(

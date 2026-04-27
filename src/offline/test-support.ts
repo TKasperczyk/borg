@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { autonomyMigrations } from "../autonomy/index.js";
+import type { AffectiveSignal } from "../memory/affective/index.js";
 import { DEFAULT_CONFIG, type Config } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { executiveMigrations, ExecutiveStepsRepository } from "../executive/index.js";
@@ -25,6 +26,7 @@ import {
   SkillRepository,
   createSkillsTableSchema,
   proceduralMigrations,
+  type SkillRecord,
 } from "../memory/procedural/index.js";
 import {
   IdentityEventRepository,
@@ -39,6 +41,8 @@ import {
   TraitsRepository,
   ValuesRepository,
   selfMigrations,
+  type AutobiographicalPeriod,
+  type GoalRecord,
 } from "../memory/self/index.js";
 import {
   appendOpenQuestionHookFailureEvent,
@@ -52,10 +56,11 @@ import {
   SemanticNodeRepository,
   createSemanticNodesTableSchema,
   semanticMigrations,
+  type SemanticEdge,
   type SemanticNode,
 } from "../memory/semantic/index.js";
 import { SocialRepository, socialMigrations } from "../memory/social/index.js";
-import { retrievalMigrations } from "../retrieval/index.js";
+import { retrievalMigrations, type RetrievedEpisode } from "../retrieval/index.js";
 import { RetrievalPipeline } from "../retrieval/index.js";
 import {
   StreamEntryIndexRepository,
@@ -69,12 +74,19 @@ import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { FixedClock, type Clock } from "../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
+  createAutobiographicalPeriodId,
   createEpisodeId,
+  createGoalId,
   createMaintenanceRunId,
+  createSemanticEdgeId,
   createSemanticNodeId,
+  createSessionId,
+  createSkillId,
   createStreamEntryId,
   type MaintenanceRunId,
+  type SessionId,
 } from "../util/ids.js";
+import type { WorkingMemory } from "../memory/working/index.js";
 
 import { AuditLog, ReverserRegistry, offlineMigrations, type OfflineContext } from "./index.js";
 
@@ -104,6 +116,154 @@ export class TestEmbeddingClient implements EmbeddingClient {
   }
 }
 
+export type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends Array<infer U>
+    ? Array<U>
+    : T[K] extends ReadonlyArray<infer U>
+      ? ReadonlyArray<U>
+      : T[K] extends object
+        ? DeepPartial<T[K]>
+        : T[K];
+};
+
+export function testSessionId(value?: SessionId | string): SessionId {
+  return value === undefined ? createSessionId() : (value as SessionId);
+}
+
+export function createTestConfig(
+  overrides: DeepPartial<Config> = {},
+  options: { embeddingDimensions?: number } = {},
+): Config {
+  const embeddingDimensions = options.embeddingDimensions ?? overrides.embedding?.dims ?? 4;
+
+  return {
+    ...DEFAULT_CONFIG,
+    ...overrides,
+    dataDir: overrides.dataDir ?? "/tmp/borg-test",
+    perception: {
+      ...DEFAULT_CONFIG.perception,
+      ...overrides.perception,
+    },
+    affective: {
+      ...DEFAULT_CONFIG.affective,
+      ...overrides.affective,
+    },
+    embedding: {
+      ...DEFAULT_CONFIG.embedding,
+      ...overrides.embedding,
+      dims: embeddingDimensions,
+    },
+    anthropic: {
+      ...DEFAULT_CONFIG.anthropic,
+      ...overrides.anthropic,
+      models: {
+        ...DEFAULT_CONFIG.anthropic.models,
+        ...overrides.anthropic?.models,
+      },
+    },
+    procedural: {
+      ...DEFAULT_CONFIG.procedural,
+      ...overrides.procedural,
+    },
+    retrieval: {
+      ...DEFAULT_CONFIG.retrieval,
+      ...overrides.retrieval,
+      semantic: {
+        ...DEFAULT_CONFIG.retrieval.semantic,
+        ...overrides.retrieval?.semantic,
+      },
+    },
+    executive: {
+      ...DEFAULT_CONFIG.executive,
+      ...overrides.executive,
+    },
+    offline: {
+      ...DEFAULT_CONFIG.offline,
+      ...overrides.offline,
+      consolidator: {
+        ...DEFAULT_CONFIG.offline.consolidator,
+        ...overrides.offline?.consolidator,
+      },
+      reflector: {
+        ...DEFAULT_CONFIG.offline.reflector,
+        ...overrides.offline?.reflector,
+      },
+      proceduralSynthesizer: {
+        ...DEFAULT_CONFIG.offline.proceduralSynthesizer,
+        ...overrides.offline?.proceduralSynthesizer,
+      },
+      curator: {
+        ...DEFAULT_CONFIG.offline.curator,
+        ...overrides.offline?.curator,
+      },
+      overseer: {
+        ...DEFAULT_CONFIG.offline.overseer,
+        ...overrides.offline?.overseer,
+      },
+      ruminator: {
+        ...DEFAULT_CONFIG.offline.ruminator,
+        ...overrides.offline?.ruminator,
+      },
+      selfNarrator: {
+        ...DEFAULT_CONFIG.offline.selfNarrator,
+        ...overrides.offline?.selfNarrator,
+      },
+      beliefReviser: {
+        ...DEFAULT_CONFIG.offline.beliefReviser,
+        ...overrides.offline?.beliefReviser,
+      },
+    },
+    maintenance: {
+      ...DEFAULT_CONFIG.maintenance,
+      ...overrides.maintenance,
+    },
+    autonomy: {
+      ...DEFAULT_CONFIG.autonomy,
+      ...overrides.autonomy,
+      executiveFocus: {
+        ...DEFAULT_CONFIG.autonomy.executiveFocus,
+        ...overrides.autonomy?.executiveFocus,
+      },
+      triggers: {
+        ...DEFAULT_CONFIG.autonomy.triggers,
+        ...overrides.autonomy?.triggers,
+        commitmentExpiring: {
+          ...DEFAULT_CONFIG.autonomy.triggers.commitmentExpiring,
+          ...overrides.autonomy?.triggers?.commitmentExpiring,
+        },
+        openQuestionDormant: {
+          ...DEFAULT_CONFIG.autonomy.triggers.openQuestionDormant,
+          ...overrides.autonomy?.triggers?.openQuestionDormant,
+        },
+        scheduledReflection: {
+          ...DEFAULT_CONFIG.autonomy.triggers.scheduledReflection,
+          ...overrides.autonomy?.triggers?.scheduledReflection,
+        },
+        goalFollowupDue: {
+          ...DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue,
+          ...overrides.autonomy?.triggers?.goalFollowupDue,
+        },
+      },
+      conditions: {
+        ...DEFAULT_CONFIG.autonomy.conditions,
+        ...overrides.autonomy?.conditions,
+        commitmentRevoked: {
+          ...DEFAULT_CONFIG.autonomy.conditions.commitmentRevoked,
+          ...overrides.autonomy?.conditions?.commitmentRevoked,
+        },
+        moodValenceDrop: {
+          ...DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop,
+          ...overrides.autonomy?.conditions?.moodValenceDrop,
+        },
+        openQuestionUrgencyBump: {
+          ...DEFAULT_CONFIG.autonomy.conditions.openQuestionUrgencyBump,
+          ...overrides.autonomy?.conditions?.openQuestionUrgencyBump,
+        },
+      },
+    },
+  };
+}
+
 export type OfflineTestHarness = {
   tempDir: string;
   config: Config;
@@ -114,6 +274,7 @@ export type OfflineTestHarness = {
   episodicRepository: EpisodicRepository;
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
+  semanticGraph: SemanticGraph;
   semanticBeliefDependencyRepository: SemanticBeliefDependencyRepository;
   reviewQueueRepository: ReviewQueueRepository;
   identityEventRepository: IdentityEventRepository;
@@ -147,7 +308,7 @@ export async function createOfflineTestHarness(
     llmClient?: LLMClient;
     embeddingClient?: EmbeddingClient;
     embeddingDimensions?: number;
-    configOverrides?: Partial<Config>;
+    configOverrides?: DeepPartial<Config>;
   } = {},
 ): Promise<OfflineTestHarness> {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -155,124 +316,13 @@ export async function createOfflineTestHarness(
   const embeddingClient = options.embeddingClient ?? new TestEmbeddingClient();
   const llmClient = options.llmClient ?? new FakeLLMClient();
   const embeddingDimensions = options.embeddingDimensions ?? 4;
-  const config: Config = {
-    ...DEFAULT_CONFIG,
-    ...options.configOverrides,
-    dataDir: tempDir,
-    perception: {
-      ...DEFAULT_CONFIG.perception,
-      ...options.configOverrides?.perception,
+  const config = createTestConfig(
+    {
+      ...options.configOverrides,
+      dataDir: tempDir,
     },
-    affective: {
-      ...DEFAULT_CONFIG.affective,
-      ...options.configOverrides?.affective,
-    },
-    embedding: {
-      ...DEFAULT_CONFIG.embedding,
-      ...options.configOverrides?.embedding,
-      dims: embeddingDimensions,
-    },
-    anthropic: {
-      ...DEFAULT_CONFIG.anthropic,
-      ...options.configOverrides?.anthropic,
-      models: {
-        ...DEFAULT_CONFIG.anthropic.models,
-        ...options.configOverrides?.anthropic?.models,
-      },
-    },
-    procedural: {
-      ...DEFAULT_CONFIG.procedural,
-      ...options.configOverrides?.procedural,
-    },
-    retrieval: {
-      ...DEFAULT_CONFIG.retrieval,
-      ...options.configOverrides?.retrieval,
-      semantic: {
-        ...DEFAULT_CONFIG.retrieval.semantic,
-        ...options.configOverrides?.retrieval?.semantic,
-      },
-    },
-    offline: {
-      ...DEFAULT_CONFIG.offline,
-      ...options.configOverrides?.offline,
-      consolidator: {
-        ...DEFAULT_CONFIG.offline.consolidator,
-        ...options.configOverrides?.offline?.consolidator,
-      },
-      reflector: {
-        ...DEFAULT_CONFIG.offline.reflector,
-        ...options.configOverrides?.offline?.reflector,
-      },
-      proceduralSynthesizer: {
-        ...DEFAULT_CONFIG.offline.proceduralSynthesizer,
-        ...options.configOverrides?.offline?.proceduralSynthesizer,
-      },
-      curator: {
-        ...DEFAULT_CONFIG.offline.curator,
-        ...options.configOverrides?.offline?.curator,
-      },
-      overseer: {
-        ...DEFAULT_CONFIG.offline.overseer,
-        ...options.configOverrides?.offline?.overseer,
-      },
-      ruminator: {
-        ...DEFAULT_CONFIG.offline.ruminator,
-        ...options.configOverrides?.offline?.ruminator,
-      },
-      selfNarrator: {
-        ...DEFAULT_CONFIG.offline.selfNarrator,
-        ...options.configOverrides?.offline?.selfNarrator,
-      },
-      beliefReviser: {
-        ...DEFAULT_CONFIG.offline.beliefReviser,
-        ...options.configOverrides?.offline?.beliefReviser,
-      },
-    },
-    autonomy: {
-      ...DEFAULT_CONFIG.autonomy,
-      ...options.configOverrides?.autonomy,
-      executiveFocus: {
-        ...DEFAULT_CONFIG.autonomy.executiveFocus,
-        ...options.configOverrides?.autonomy?.executiveFocus,
-      },
-      triggers: {
-        ...DEFAULT_CONFIG.autonomy.triggers,
-        ...options.configOverrides?.autonomy?.triggers,
-        commitmentExpiring: {
-          ...DEFAULT_CONFIG.autonomy.triggers.commitmentExpiring,
-          ...options.configOverrides?.autonomy?.triggers?.commitmentExpiring,
-        },
-        openQuestionDormant: {
-          ...DEFAULT_CONFIG.autonomy.triggers.openQuestionDormant,
-          ...options.configOverrides?.autonomy?.triggers?.openQuestionDormant,
-        },
-        scheduledReflection: {
-          ...DEFAULT_CONFIG.autonomy.triggers.scheduledReflection,
-          ...options.configOverrides?.autonomy?.triggers?.scheduledReflection,
-        },
-        goalFollowupDue: {
-          ...DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue,
-          ...options.configOverrides?.autonomy?.triggers?.goalFollowupDue,
-        },
-      },
-      conditions: {
-        ...DEFAULT_CONFIG.autonomy.conditions,
-        ...options.configOverrides?.autonomy?.conditions,
-        commitmentRevoked: {
-          ...DEFAULT_CONFIG.autonomy.conditions.commitmentRevoked,
-          ...options.configOverrides?.autonomy?.conditions?.commitmentRevoked,
-        },
-        moodValenceDrop: {
-          ...DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop,
-          ...options.configOverrides?.autonomy?.conditions?.moodValenceDrop,
-        },
-        openQuestionUrgencyBump: {
-          ...DEFAULT_CONFIG.autonomy.conditions.openQuestionUrgencyBump,
-          ...options.configOverrides?.autonomy?.conditions?.openQuestionUrgencyBump,
-        },
-      },
-    },
-  };
+    { embeddingDimensions },
+  );
   const lance = new LanceDbStore({
     uri: join(tempDir, "lancedb"),
   });
@@ -477,6 +527,7 @@ export async function createOfflineTestHarness(
     episodicRepository,
     semanticNodeRepository,
     semanticEdgeRepository,
+    semanticGraph,
     semanticBeliefDependencyRepository,
     reviewQueueRepository,
     identityEventRepository,
@@ -574,6 +625,50 @@ export function createEpisodeFixture(
   };
 }
 
+export function createAffectiveSignalFixture(
+  overrides: Partial<AffectiveSignal> = {},
+): AffectiveSignal {
+  return {
+    valence: overrides.valence ?? 0,
+    arousal: overrides.arousal ?? 0,
+    dominant_emotion: overrides.dominant_emotion ?? null,
+  };
+}
+
+export function createWorkingMemoryFixture(overrides: Partial<WorkingMemory> = {}): WorkingMemory {
+  return {
+    session_id: overrides.session_id ?? DEFAULT_SESSION_ID,
+    turn_counter: overrides.turn_counter ?? 1,
+    current_focus: overrides.current_focus ?? null,
+    hot_entities: overrides.hot_entities ?? [],
+    pending_intents: overrides.pending_intents ?? [],
+    pending_social_attribution: overrides.pending_social_attribution ?? null,
+    pending_trait_attribution: overrides.pending_trait_attribution ?? null,
+    suppressed: overrides.suppressed ?? [],
+    mood: overrides.mood ?? null,
+    pending_procedural_attempts: overrides.pending_procedural_attempts ?? [],
+    mode: overrides.mode ?? "problem_solving",
+    updated_at: overrides.updated_at ?? 0,
+  };
+}
+
+export function createRetrievalScoreFixture(
+  overrides: Partial<RetrievedEpisode["scoreBreakdown"]> = {},
+): RetrievedEpisode["scoreBreakdown"] {
+  return {
+    similarity: overrides.similarity ?? 0.8,
+    decayedSalience: overrides.decayedSalience ?? 0.4,
+    heat: overrides.heat ?? 0.3,
+    goalRelevance: overrides.goalRelevance ?? 0,
+    valueAlignment: overrides.valueAlignment ?? 0,
+    timeRelevance: overrides.timeRelevance ?? 0,
+    moodBoost: overrides.moodBoost ?? 0,
+    socialRelevance: overrides.socialRelevance ?? 0,
+    entityRelevance: overrides.entityRelevance ?? 0,
+    suppressionPenalty: overrides.suppressionPenalty ?? 0,
+  };
+}
+
 export function createSemanticNodeFixture(
   overrides: Partial<SemanticNode> = {},
   vector = [0, 0, 1, 0],
@@ -597,5 +692,96 @@ export function createSemanticNodeFixture(
     embedding: overrides.embedding ?? Float32Array.from(vector),
     archived: overrides.archived ?? false,
     superseded_by: overrides.superseded_by ?? null,
+  };
+}
+
+export function createSemanticEdgeFixture(overrides: Partial<SemanticEdge> = {}): SemanticEdge {
+  const nowMs = overrides.created_at ?? 1_000_000;
+
+  return {
+    id: overrides.id ?? createSemanticEdgeId(),
+    from_node_id: overrides.from_node_id ?? createSemanticNodeId(),
+    to_node_id: overrides.to_node_id ?? createSemanticNodeId(),
+    relation: overrides.relation ?? "supports",
+    confidence: overrides.confidence ?? 0.7,
+    evidence_episode_ids: overrides.evidence_episode_ids ?? [createEpisodeId()],
+    created_at: nowMs,
+    last_verified_at: overrides.last_verified_at ?? nowMs,
+    valid_from: overrides.valid_from ?? nowMs,
+    valid_to: overrides.valid_to ?? null,
+    invalidated_at: overrides.invalidated_at ?? null,
+    invalidated_by_edge_id: overrides.invalidated_by_edge_id ?? null,
+    invalidated_by_review_id: overrides.invalidated_by_review_id ?? null,
+    invalidated_by_process: overrides.invalidated_by_process ?? null,
+    invalidated_reason: overrides.invalidated_reason ?? null,
+  };
+}
+
+export function createGoalFixture(overrides: Partial<GoalRecord> = {}): GoalRecord {
+  const nowMs = overrides.created_at ?? 1_000_000;
+
+  return {
+    id: overrides.id ?? createGoalId(),
+    description: overrides.description ?? "Stabilize Atlas release workflow",
+    priority: overrides.priority ?? 1,
+    parent_goal_id: overrides.parent_goal_id ?? null,
+    status: overrides.status ?? "active",
+    progress_notes: overrides.progress_notes ?? null,
+    last_progress_ts: overrides.last_progress_ts ?? null,
+    created_at: nowMs,
+    target_at: overrides.target_at ?? null,
+    provenance: overrides.provenance ?? {
+      kind: "system",
+    },
+  };
+}
+
+export function createAutobiographicalPeriodFixture(
+  overrides: Partial<AutobiographicalPeriod> = {},
+): AutobiographicalPeriod {
+  const nowMs = overrides.created_at ?? 1_000_000;
+
+  return {
+    id: overrides.id ?? createAutobiographicalPeriodId(),
+    label: overrides.label ?? "2026-Q1",
+    start_ts: overrides.start_ts ?? nowMs - 10_000,
+    end_ts: overrides.end_ts ?? null,
+    narrative: overrides.narrative ?? "A test autobiographical period.",
+    key_episode_ids: overrides.key_episode_ids ?? [],
+    themes: overrides.themes ?? ["testing"],
+    provenance: overrides.provenance ?? {
+      kind: "system",
+    },
+    created_at: nowMs,
+    last_updated: overrides.last_updated ?? nowMs,
+  };
+}
+
+export function createSkillFixture(overrides: Partial<SkillRecord> = {}): SkillRecord {
+  const nowMs = overrides.created_at ?? 1_000_000;
+
+  return {
+    id: overrides.id ?? createSkillId(),
+    applies_when: overrides.applies_when ?? "Debugging a flaky deployment",
+    approach: overrides.approach ?? "Compare the failing state with the last known-good state.",
+    status: overrides.status ?? "active",
+    alpha: overrides.alpha ?? 1,
+    beta: overrides.beta ?? 1,
+    attempts: overrides.attempts ?? 0,
+    successes: overrides.successes ?? 0,
+    failures: overrides.failures ?? 0,
+    alternatives: overrides.alternatives ?? [],
+    superseded_by: overrides.superseded_by ?? [],
+    superseded_at: overrides.superseded_at ?? null,
+    splitting_at: overrides.splitting_at ?? null,
+    last_split_attempt_at: overrides.last_split_attempt_at ?? null,
+    split_failure_count: overrides.split_failure_count ?? 0,
+    last_split_error: overrides.last_split_error ?? null,
+    requires_manual_review: overrides.requires_manual_review ?? false,
+    source_episode_ids: overrides.source_episode_ids ?? [createEpisodeId()],
+    last_used: overrides.last_used ?? null,
+    last_successful: overrides.last_successful ?? null,
+    created_at: nowMs,
+    updated_at: overrides.updated_at ?? nowMs,
   };
 }

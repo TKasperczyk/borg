@@ -804,7 +804,7 @@ describe("AutonomyScheduler", () => {
         clock,
       }),
       sources: [],
-      setIntervalFn,
+      setIntervalFn: setIntervalFn as unknown as typeof setInterval,
       clearIntervalFn: vi.fn(),
     });
 
@@ -848,9 +848,9 @@ describe("AutonomyScheduler", () => {
     });
 
     let intervalCallback: (() => void) | undefined;
-    const setIntervalFn = vi.fn<typeof setInterval>((callback) => {
+    const setIntervalFn = vi.fn((callback: () => void) => {
       intervalCallback = callback;
-      return 1 as ReturnType<typeof setInterval>;
+      return 1 as unknown as ReturnType<typeof setInterval>;
     });
     const clearIntervalFn = vi.fn<typeof clearInterval>();
     let resolveTurn:
@@ -909,7 +909,7 @@ describe("AutonomyScheduler", () => {
       turnOrchestrator: turnRunner,
       toolDispatcher: dispatcher,
       sources: [trigger],
-      setIntervalFn,
+      setIntervalFn: setIntervalFn as unknown as typeof setInterval,
       clearIntervalFn,
     });
 
@@ -1456,9 +1456,9 @@ describe("AutonomyScheduler", () => {
     cleanup = harness.cleanup;
 
     let intervalCallback: (() => void) | undefined;
-    const setIntervalFn = vi.fn<typeof setInterval>((callback) => {
+    const setIntervalFn = vi.fn((callback: () => void) => {
       intervalCallback = callback;
-      return 1 as ReturnType<typeof setInterval>;
+      return 1 as unknown as ReturnType<typeof setInterval>;
     });
     const onTick = vi.fn();
     const onError = vi.fn();
@@ -1508,7 +1508,7 @@ describe("AutonomyScheduler", () => {
           buildTurn: vi.fn(),
         },
       ],
-      setIntervalFn,
+      setIntervalFn: setIntervalFn as unknown as typeof setInterval,
       clearIntervalFn: vi.fn(),
     });
     scheduler.setObserver({

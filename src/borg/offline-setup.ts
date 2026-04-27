@@ -128,8 +128,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
     }),
     "belief-reviser": new BeliefReviserProcess({
       db: options.sqlite,
-      confidenceDropMultiplier:
-        options.config.offline.beliefReviser.confidenceDropMultiplier,
+      confidenceDropMultiplier: options.config.offline.beliefReviser.confidenceDropMultiplier,
       confidenceFloor: options.config.offline.beliefReviser.confidenceFloor,
       regradeBatchSize: options.config.offline.beliefReviser.regradeBatchSize,
       maxEventsPerRun: options.config.offline.beliefReviser.maxEventsPerRun,

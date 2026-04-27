@@ -128,7 +128,9 @@ describe("SelfNarratorProcess", () => {
           confidence: 0.6,
         }),
       ]);
-      expect(harness.identityEventRepository.list({ recordType: "autobiographical_period" })).toEqual(
+      expect(
+        harness.identityEventRepository.list({ recordType: "autobiographical_period" }),
+      ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             action: "create",

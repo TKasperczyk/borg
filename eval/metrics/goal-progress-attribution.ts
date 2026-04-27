@@ -112,8 +112,7 @@ export const goalProgressAttributionMetric = {
           expected: {
             updated_goal_descriptions: expectedGoals,
           },
-          note:
-            "This checks only that the correct goal was flagged. Semantic note quality remains out of scope.",
+          note: "This checks only that the correct goal was flagged. Semantic note quality remains out of scope.",
         });
       } finally {
         await borg.close();

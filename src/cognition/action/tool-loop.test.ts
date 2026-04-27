@@ -6,9 +6,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { Borg } from "../../borg.js";
-import { TestEmbeddingClient } from "../../offline/test-support.js";
+import { createTestConfig, TestEmbeddingClient } from "../../offline/test-support.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
-import { ToolDispatcher, createOpenQuestionsCreateTool, type ToolDefinition } from "../../tools/index.js";
+import {
+  ToolDispatcher,
+  createOpenQuestionsCreateTool,
+  type ToolDefinition,
+} from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { FakeLLMClient, type LLMContentBlockMessage } from "../../llm/index.js";
@@ -42,7 +46,7 @@ function baseMessages(text = "hi"): LLMContentBlockMessage[] {
 
 async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
   return Borg.open({
-    config: {
+    config: createTestConfig({
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
@@ -63,7 +67,7 @@ async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
           extraction: "test-extraction",
         },
       },
-    },
+    }),
     clock: new ManualClock(1_000_000),
     embeddingDimensions: 4,
     embeddingClient: new TestEmbeddingClient(),
@@ -125,7 +129,7 @@ describe("executeToolLoop", () => {
       outputSchema: z.object({
         echoed: z.string().min(1),
       }),
-      async invoke(input) {
+      async invoke(input: { value: string }) {
         return { echoed: input.value };
       },
     });
@@ -204,7 +208,7 @@ describe("executeToolLoop", () => {
       outputSchema: z.object({
         echoed: z.string().min(1),
       }),
-      async invoke(input) {
+      async invoke(input: { value: string }) {
         events.push(`start:${input.value}`);
         await Promise.resolve();
         events.push(`end:${input.value}`);
@@ -299,7 +303,7 @@ describe("executeToolLoop", () => {
       outputSchema: z.object({
         echoed: z.string().min(1),
       }),
-      async invoke(input) {
+      async invoke(input: { value: string }) {
         return { echoed: input.value };
       },
     });
@@ -441,7 +445,7 @@ describe("executeToolLoop", () => {
       outputSchema: z.object({
         echoed: z.string().min(1),
       }),
-      async invoke(input) {
+      async invoke(input: { value: string }) {
         invoked = true;
         return { echoed: input.value };
       },
@@ -531,7 +535,7 @@ describe("executeToolLoop", () => {
       outputSchema: z.object({
         echoed: z.string().min(1),
       }),
-      async invoke(input) {
+      async invoke(input: { value: string }) {
         return { echoed: input.value };
       },
     });
@@ -595,7 +599,7 @@ describe("executeToolLoop", () => {
       outputSchema: z.object({
         echoed: z.string().min(1),
       }),
-      async invoke(input) {
+      async invoke(input: { value: string }) {
         invokeCount += 1;
         return { echoed: input.value };
       },
@@ -749,7 +753,9 @@ describe("executeToolLoop", () => {
       expect(result.text).toBe("Logged it.");
       const openQuestions = borg.self.openQuestions.list({ limit: 10 });
       expect(
-        openQuestions.find((question) => question.question === "What should I verify before I answer?"),
+        openQuestions.find(
+          (question) => question.question === "What should I verify before I answer?",
+        ),
       ).toMatchObject({
         source: "deliberator",
       });

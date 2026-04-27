@@ -48,7 +48,7 @@ describe("ToolDispatcher", () => {
       outputSchema: z.object({
         echoed: z.string().min(1),
       }),
-      async invoke(input) {
+      async invoke(input: { value: string }) {
         return {
           echoed: input.value,
         };
@@ -113,7 +113,7 @@ describe("ToolDispatcher", () => {
       outputSchema: z.object({
         echoed: z.string().min(1),
       }),
-      async invoke(input) {
+      async invoke(input: { value: string }) {
         return {
           echoed: input.value,
         };
@@ -166,7 +166,7 @@ describe("ToolDispatcher", () => {
       outputSchema: z.object({
         echoed: z.string().min(1),
       }),
-      async invoke(input) {
+      async invoke(input: { value: string }) {
         return {
           echoed: input.value,
         };

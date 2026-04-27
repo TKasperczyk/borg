@@ -9,9 +9,9 @@ import { GoalsRepository, TraitsRepository, ValuesRepository } from "./repositor
 describe("self repositories", () => {
   const manualProvenance = { kind: "manual" } as const;
   const episodeProvenance = {
-    kind: "episodes",
-    episode_ids: ["ep_aaaaaaaaaaaaaaaa" as const],
-  } as const;
+    kind: "episodes" as const,
+    episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+  };
 
   it("manages values and episode bindings", () => {
     const db = openDatabase(":memory:", {
@@ -172,11 +172,11 @@ describe("self repositories", () => {
       clock: new FixedClock(1_000),
     });
     const episodeIds = [
-      "ep_aaaaaaaaaaaaaaaa",
-      "ep_bbbbbbbbbbbbbbbb",
-      "ep_cccccccccccccccc",
-      "ep_dddddddddddddddd",
-      "ep_eeeeeeeeeeeeeeee",
+      "ep_aaaaaaaaaaaaaaaa" as never,
+      "ep_bbbbbbbbbbbbbbbb" as never,
+      "ep_cccccccccccccccc" as never,
+      "ep_dddddddddddddddd" as never,
+      "ep_eeeeeeeeeeeeeeee" as never,
     ] as const;
 
     try {
@@ -238,9 +238,9 @@ describe("self repositories", () => {
       clock: new FixedClock(1_000),
     });
     const episodeIds = [
-      "ep_aaaaaaaaaaaaaaaa",
-      "ep_bbbbbbbbbbbbbbbb",
-      "ep_cccccccccccccccc",
+      "ep_aaaaaaaaaaaaaaaa" as never,
+      "ep_bbbbbbbbbbbbbbbb" as never,
+      "ep_cccccccccccccccc" as never,
     ] as const;
 
     try {
@@ -286,9 +286,9 @@ describe("self repositories", () => {
           provenance: {
             kind: "episodes",
             episode_ids: [
-              "ep_aaaaaaaaaaaaaaaa",
-              "ep_bbbbbbbbbbbbbbbb",
-              "ep_cccccccccccccccc",
+              "ep_aaaaaaaaaaaaaaaa" as never,
+              "ep_bbbbbbbbbbbbbbbb" as never,
+              "ep_cccccccccccccccc" as never,
             ],
           },
         }),
@@ -322,10 +322,7 @@ describe("self repositories", () => {
           SET provenance_kind = 'episodes', provenance_episode_ids = ?
           WHERE id = ?
         `,
-      ).run(
-        '["not-an-episode-id"]',
-        value.id,
-      );
+      ).run('["not-an-episode-id"]', value.id);
 
       expect(() => values.list()).toThrow();
     } finally {
@@ -357,12 +354,12 @@ describe("self repositories", () => {
         provenance: manualProvenance,
       });
 
-      expect(() =>
-        goals.updateProgress(goal.id, "Updated", undefined as never),
-      ).toThrow(ProvenanceError);
-      expect(() =>
-        goals.updateStatus(goal.id, "done", undefined as never),
-      ).toThrow(ProvenanceError);
+      expect(() => goals.updateProgress(goal.id, "Updated", undefined as never)).toThrow(
+        ProvenanceError,
+      );
+      expect(() => goals.updateStatus(goal.id, "done", undefined as never)).toThrow(
+        ProvenanceError,
+      );
       expect(() =>
         traits.reinforce({
           label: "patient",
@@ -428,9 +425,9 @@ describe("self repositories", () => {
         contradiction_count: 0,
         last_tested_at: 3_000,
         evidence_episode_ids: [
-          "ep_cccccccccccccccc",
-          "ep_bbbbbbbbbbbbbbbb",
-          "ep_aaaaaaaaaaaaaaaa",
+          "ep_cccccccccccccccc" as never,
+          "ep_bbbbbbbbbbbbbbbb" as never,
+          "ep_aaaaaaaaaaaaaaaa" as never,
         ],
       });
       expect(establishedValue.confidence).toBeCloseTo(5 / 6, 6);
@@ -461,7 +458,7 @@ describe("self repositories", () => {
         support_count: 1,
         contradiction_count: 0,
         last_tested_at: 5_000,
-        evidence_episode_ids: ["ep_dddddddddddddddd"],
+        evidence_episode_ids: ["ep_dddddddddddddddd" as never],
       });
       expect(reinforcedTrait.confidence).toBeCloseTo(0.75, 6);
 

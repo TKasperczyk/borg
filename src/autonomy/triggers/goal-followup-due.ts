@@ -71,15 +71,13 @@ export function createGoalFollowupDueTrigger(
 
           const targetAtKey = goal.target_at ?? "no-target";
           const progressKey = goal.last_progress_ts ?? goal.created_at;
-          const watermarkProcessName =
-            `${WATERMARK_PREFIX}:${goal.id}:${targetAtKey}:${progressKey}`;
+          const watermarkProcessName = `${WATERMARK_PREFIX}:${goal.id}:${targetAtKey}:${progressKey}`;
 
           if (options.watermarkRepository.get(watermarkProcessName, sessionId) !== null) {
             return null;
           }
 
-          const reason =
-            deadlineDue && staleDue ? "both" : deadlineDue ? "deadline" : "stale";
+          const reason = deadlineDue && staleDue ? "both" : deadlineDue ? "deadline" : "stale";
           const staleSinceMs = Math.max(0, nowMs - baseProgressTs);
           const sortTs =
             goal.target_at === null
@@ -106,7 +104,8 @@ export function createGoalFollowupDueTrigger(
         .filter((event): event is DueEvent<GoalFollowupDuePayload> => event !== null);
 
       return dueEvents.sort(
-        (left, right) => left.sortTs - right.sortTs || right.payload.priority - left.payload.priority,
+        (left, right) =>
+          left.sortTs - right.sortTs || right.payload.priority - left.payload.priority,
       );
     },
     buildTurn(event) {

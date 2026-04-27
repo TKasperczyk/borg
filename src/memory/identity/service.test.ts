@@ -98,16 +98,16 @@ describe("identity service", () => {
         priority: 8,
         provenance: {
           kind: "episodes",
-          episode_ids: ["ep_aaaaaaaaaaaaaaaa" as const],
+          episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
         },
       });
       harness.valuesRepository.reinforce(value.id, {
         kind: "episodes",
-        episode_ids: ["ep_bbbbbbbbbbbbbbbb" as const],
+        episode_ids: ["ep_bbbbbbbbbbbbbbbb" as never],
       });
       harness.valuesRepository.reinforce(value.id, {
         kind: "episodes",
-        episode_ids: ["ep_cccccccccccccccc" as const],
+        episode_ids: ["ep_cccccccccccccccc" as never],
       });
 
       expect(harness.valuesRepository.get(value.id)?.state).toBe("established");
@@ -300,7 +300,7 @@ describe("identity service", () => {
           delta: 0.05,
           provenance: {
             kind: "episodes",
-            episode_ids: [episodeId],
+            episode_ids: [episodeId as never],
           },
           timestamp: clock.now(),
         });
@@ -338,7 +338,7 @@ describe("identity service", () => {
         priority: 5,
         provenance: {
           kind: "episodes",
-          episode_ids: ["ep_goalgoalgoalgoal" as const],
+          episode_ids: ["ep_goalgoalgoalgoal" as never],
         },
       });
 
@@ -372,29 +372,29 @@ describe("identity service", () => {
         label: "2026-Q2",
         start_ts: 1_000,
         narrative: "Grounded in lived evidence.",
-        key_episode_ids: ["ep_periodperiodperi" as const],
+        key_episode_ids: ["ep_periodperiodperi" as never],
         themes: ["learning"],
         provenance: {
           kind: "episodes",
-          episode_ids: ["ep_periodperiodperi" as const],
+          episode_ids: ["ep_periodperiodperi" as never],
         },
       });
       const question = harness.openQuestionsRepository.add({
         question: "What pattern am I missing?",
         urgency: 0.6,
-        related_episode_ids: ["ep_openquestionaaaa" as const],
+        related_episode_ids: ["ep_openquestionaaaa" as never],
         source: "reflection",
       });
       const marker = harness.growthMarkersRepository.add({
         ts: 2_500,
         category: "understanding",
         what_changed: "Became more precise about review gates.",
-        evidence_episode_ids: ["ep_growthmarkeraaaa" as const],
+        evidence_episode_ids: ["ep_growthmarkeraaaa" as never],
         confidence: 0.7,
         source_process: "self-narrator",
         provenance: {
           kind: "episodes",
-          episode_ids: ["ep_growthmarkeraaaa" as const],
+          episode_ids: ["ep_growthmarkeraaaa" as never],
         },
       });
 
@@ -690,29 +690,29 @@ describe("identity service", () => {
         label: "2026-Q3",
         start_ts: 1_000,
         narrative: "Original period narrative.",
-        key_episode_ids: ["ep_periodrollbackaa" as const],
+        key_episode_ids: ["ep_periodrollbackaa" as never],
         themes: ["stability"],
         provenance: {
           kind: "episodes",
-          episode_ids: ["ep_periodrollbackaa" as const],
+          episode_ids: ["ep_periodrollbackaa" as never],
         },
       });
       const question = harness.openQuestionsRepository.add({
         question: "Which invariant matters?",
         urgency: 0.4,
-        related_episode_ids: ["ep_questionrollback" as const],
+        related_episode_ids: ["ep_questionrollback" as never],
         source: "reflection",
       });
       const marker = harness.growthMarkersRepository.add({
         ts: 3_500,
         category: "understanding",
         what_changed: "Learned the original pattern.",
-        evidence_episode_ids: ["ep_markerrollbackaa" as const],
+        evidence_episode_ids: ["ep_markerrollbackaa" as never],
         confidence: 0.6,
         source_process: "self-narrator",
         provenance: {
           kind: "episodes",
-          episode_ids: ["ep_markerrollbackaa" as const],
+          episode_ids: ["ep_markerrollbackaa" as never],
         },
       });
       const eventError = new Error("identity event insert failed");

@@ -24,7 +24,7 @@ describe("SocialRepository", () => {
     expect(second.interaction_count).toBe(0);
 
     for (let index = 0; index < 60; index += 1) {
-      harness.socialRepository.recordInteraction(entityId, {
+      harness!.socialRepository.recordInteraction(entityId, {
         valence: index % 2 === 0 ? 0.4 : -0.2,
         now: 1_000_000 + index,
         provenance: manualProvenance,
@@ -48,13 +48,13 @@ describe("SocialRepository", () => {
     const entityId = harness.entityRepository.resolve("Sam");
 
     expect(() =>
-      harness.socialRepository.recordInteraction(entityId, {
+      harness!.socialRepository.recordInteraction(entityId, {
         provenance: undefined as never,
       }),
     ).toThrow(ProvenanceError);
-    expect(() =>
-      harness.socialRepository.adjustTrust(entityId, 0.2, undefined as never),
-    ).toThrow(ProvenanceError);
+    expect(() => harness!.socialRepository.adjustTrust(entityId, 0.2, undefined as never)).toThrow(
+      ProvenanceError,
+    );
   });
 
   it("attaches lagged sentiment without incrementing interaction count", async () => {

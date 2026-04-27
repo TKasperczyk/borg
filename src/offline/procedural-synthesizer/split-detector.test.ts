@@ -2,34 +2,18 @@ import { describe, expect, it } from "vitest";
 
 import { createSkillId, type SkillId } from "../../util/ids.js";
 import type { SkillContextStatsRecord, SkillRecord } from "../../memory/procedural/index.js";
+import { createSkillFixture } from "../test-support.js";
 import { detectDivergentSkillSplits } from "./split-detector.js";
 
 const NOW_MS = 10 * 24 * 60 * 60 * 1_000;
 
 function makeSkill(overrides: Partial<SkillRecord> = {}): SkillRecord {
-  const id = overrides.id ?? createSkillId();
-
-  return {
-    id,
+  return createSkillFixture({
+    id: overrides.id ?? createSkillId(),
     applies_when: "deployment rollback comparison",
     approach: "Compare the failing state with the last known-good state.",
-    status: "active",
-    alpha: 1,
-    beta: 1,
-    attempts: 0,
-    successes: 0,
-    failures: 0,
-    alternatives: [],
-    superseded_by: [],
-    superseded_at: null,
-    splitting_at: null,
-    source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as SkillRecord["source_episode_ids"][number]],
-    last_used: null,
-    last_successful: null,
-    created_at: 1_000,
-    updated_at: 1_000,
     ...overrides,
-  };
+  });
 }
 
 function makeStats(

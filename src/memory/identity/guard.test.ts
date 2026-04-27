@@ -60,7 +60,7 @@ describe("IdentityGuard", () => {
         },
         provenance: {
           kind: "episodes",
-          episode_ids: ["ep_bbbbbbbbbbbbbbbb" as const],
+          episode_ids: ["ep_bbbbbbbbbbbbbbbb" as never],
         },
       }),
     ).toEqual({

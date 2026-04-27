@@ -1,9 +1,6 @@
 import { z } from "zod";
 
-import {
-  type OpenQuestion,
-  openQuestionSchema,
-} from "../../memory/self/index.js";
+import { type OpenQuestion, openQuestionSchema } from "../../memory/self/index.js";
 import { episodeIdSchema } from "../../memory/episodic/index.js";
 import { semanticNodeIdSchema } from "../../memory/semantic/types.js";
 import type { EntityId } from "../../util/ids.js";

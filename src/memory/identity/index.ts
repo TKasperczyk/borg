@@ -6,10 +6,7 @@ export {
   type IdentityUpdateOptions,
   type IdentityUpdateResult,
 } from "./service.js";
-export {
-  IdentityEventRepository,
-  type IdentityEventRepositoryOptions,
-} from "./repository.js";
+export { IdentityEventRepository, type IdentityEventRepositoryOptions } from "./repository.js";
 export {
   IDENTITY_RECORD_TYPES,
   identityEventSchema,

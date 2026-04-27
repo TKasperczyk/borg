@@ -14,10 +14,7 @@ export type SemanticGraphOptions = {
   edgeRepository: SemanticEdgeRepository;
 };
 
-const SYMMETRIC_WALK_RELATIONS = new Set<SemanticRelation>([
-  "contradicts",
-  "related_to",
-]);
+const SYMMETRIC_WALK_RELATIONS = new Set<SemanticRelation>(["contradicts", "related_to"]);
 
 function defaultDirectionForRelation(relation: SemanticRelation): "out" | "both" {
   return SYMMETRIC_WALK_RELATIONS.has(relation) ? "both" : "out";

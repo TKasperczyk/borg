@@ -6,9 +6,7 @@ import type { IdentityService } from "../identity/index.js";
 import type { OpenQuestionsRepository } from "./open-questions.js";
 
 type OpenQuestionCreateInput = Parameters<OpenQuestionsRepository["add"]>[0];
-type OpenQuestionWriter =
-  | OpenQuestionsRepository
-  | Pick<IdentityService, "addOpenQuestion">;
+type OpenQuestionWriter = OpenQuestionsRepository | Pick<IdentityService, "addOpenQuestion">;
 
 function addOpenQuestion(writer: OpenQuestionWriter, input: OpenQuestionCreateInput): void {
   if ("addOpenQuestion" in writer) {

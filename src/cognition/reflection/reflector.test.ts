@@ -24,7 +24,12 @@ import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, createExecutiveStepId, createStreamEntryId } from "../../util/ids.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
-import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
+import {
+  createEpisodeFixture,
+  createOfflineTestHarness,
+  createRetrievalScoreFixture,
+  createWorkingMemoryFixture,
+} from "../../offline/test-support.js";
 
 function createReflectionResponse(
   advancedGoals: Array<{ goal_id: string; evidence: string }> = [],
@@ -96,24 +101,12 @@ function createRetrievedEpisode(
   return {
     episode,
     score,
-    scoreBreakdown: {
+    scoreBreakdown: createRetrievalScoreFixture({
       similarity: score,
       decayedSalience: 0.4,
       heat: 0.3,
-      goalRelevance: 0,
-      valueAlignment: 0,
-      timeRelevance: 0,
-      moodBoost: 0,
-      socialRelevance: 0,
-      entityRelevance: 0,
-      suppressionPenalty: 0,
-    },
+    }),
     citationChain: [],
-    semantic_context: {
-      supports: [],
-      contradicts: [],
-      categories: [],
-    },
   };
 }
 
@@ -996,6 +989,7 @@ describe("reflector", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -1032,20 +1026,15 @@ describe("reflector", () => {
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.9,
-      scoreBreakdown: {
+      scoreBreakdown: createRetrievalScoreFixture({
         similarity: 0.9,
         decayedSalience: 0.3,
         heat: 1,
         goalRelevance: 0.2,
         timeRelevance: 0,
         suppressionPenalty: 0,
-      },
+      }),
       citationChain: [],
-      semantic_context: {
-        supports: [],
-        contradicts: [],
-        categories: [],
-      },
     };
     const reflected = await reflector.reflect(
       {
@@ -1056,7 +1045,10 @@ describe("reflector", () => {
           current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
+          pending_social_attribution: null,
           pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -1092,7 +1084,10 @@ describe("reflector", () => {
             current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
+            pending_social_attribution: null,
             pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -1132,7 +1127,7 @@ describe("reflector", () => {
       priority: 5,
       provenance: {
         kind: "episodes",
-        episode_ids: ["ep_aaaaaaaaaaaaaaaa" as const],
+        episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
       },
     });
     const llm = new FakeLLMClient({
@@ -1162,6 +1157,10 @@ describe("reflector", () => {
           current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -1197,6 +1196,10 @@ describe("reflector", () => {
             current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -1257,6 +1260,10 @@ describe("reflector", () => {
           current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -1292,6 +1299,10 @@ describe("reflector", () => {
             current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -1308,7 +1319,7 @@ describe("reflector", () => {
   });
 
   it("clears completed and abandoned pending intents from reflection output", async () => {
-    const pendingIntents = [
+    const pendingIntents: Array<{ description: string; next_action: string | null }> = [
       {
         description: "Check the Atlas rollout after tests finish",
         next_action: "review deploy status",
@@ -1322,33 +1333,34 @@ describe("reflector", () => {
       description: "Write a rollback note",
       next_action: "draft rollback note",
     };
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [
+            {
+              ...pendingIntents[0]!,
+              status: "completed",
+              evidence: "The response reviewed the deploy status.",
+            },
+            {
+              ...pendingIntents[1]!,
+              status: "abandoned",
+              evidence: "The user said not to create an incident.",
+            },
+            {
+              description: "Hallucinated intent",
+              next_action: null,
+              status: "completed",
+              evidence: "Not present in prior pending intents.",
+            },
+          ],
+        ),
+      ],
+    });
     const harness = await createOfflineTestHarness({
-      llmClient: new FakeLLMClient({
-        responses: [
-          createReflectionResponse(
-            [],
-            [],
-            [
-              {
-                ...pendingIntents[0],
-                status: "completed",
-                evidence: "The response reviewed the deploy status.",
-              },
-              {
-                ...pendingIntents[1],
-                status: "abandoned",
-                evidence: "The user said not to create an incident.",
-              },
-              {
-                description: "Hallucinated intent",
-                next_action: null,
-                status: "completed",
-                evidence: "Not present in prior pending intents.",
-              },
-            ],
-          ),
-        ],
-      }),
+      llmClient: llm,
     });
     cleanup.push(harness.cleanup);
     const reflector = createHarnessReflector(harness, {
@@ -1357,16 +1369,13 @@ describe("reflector", () => {
       model: "haiku",
       proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
-    const workingMemory = {
-      session_id: DEFAULT_SESSION_ID,
+    const workingMemory = createWorkingMemoryFixture({
       turn_counter: 2,
       current_focus: "Atlas",
       hot_entities: ["Atlas"],
       pending_intents: pendingIntents,
-      suppressed: [],
       mode: "problem_solving" as const,
-      updated_at: 0,
-    };
+    });
 
     const reflected = await reflector.reflect(
       {
@@ -1410,7 +1419,7 @@ describe("reflector", () => {
     );
 
     expect(reflected.pending_intents).toEqual([newIntent]);
-    expect(harness.llmClient.requests[0]?.messages[0]?.content).toContain("pending_intents");
+    expect(llm.requests[0]?.messages[0]?.content).toContain("pending_intents");
   });
 
   it("preserves a pending procedural attempt when reflection returns no procedural outcome for it", async () => {
@@ -1534,6 +1543,7 @@ describe("reflector", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -1548,20 +1558,15 @@ describe("reflector", () => {
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.9,
-      scoreBreakdown: {
+      scoreBreakdown: createRetrievalScoreFixture({
         similarity: 0.9,
         decayedSalience: 0.3,
         heat: 1,
         goalRelevance: 0.2,
         timeRelevance: 0,
         suppressionPenalty: 0,
-      },
+      }),
       citationChain: [],
-      semantic_context: {
-        supports: [],
-        contradicts: [],
-        categories: [],
-      },
     };
 
     await reflector.reflect(
@@ -1573,6 +1578,10 @@ describe("reflector", () => {
           current_focus: null,
           hot_entities: [],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -1608,6 +1617,10 @@ describe("reflector", () => {
             current_focus: null,
             hot_entities: [],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -1690,6 +1703,7 @@ describe("reflector", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -1705,20 +1719,15 @@ describe("reflector", () => {
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.92,
-      scoreBreakdown: {
+      scoreBreakdown: createRetrievalScoreFixture({
         similarity: 0.9,
         decayedSalience: 0.1,
         heat: 1,
         goalRelevance: 0,
         timeRelevance: 0,
         suppressionPenalty: 0,
-      },
+      }),
       citationChain: [],
-      semantic_context: {
-        supports: [],
-        contradicts: [],
-        categories: [],
-      },
     };
 
     await reflector.reflect(
@@ -1730,6 +1739,10 @@ describe("reflector", () => {
           current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
           suppressed: [],
           mode: "reflective",
           updated_at: 0,
@@ -1765,6 +1778,10 @@ describe("reflector", () => {
             current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
             suppressed: [],
             mode: "reflective",
             updated_at: 0,
@@ -1811,6 +1828,10 @@ describe("reflector", () => {
           current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
           suppressed: [],
           mode: "reflective",
           updated_at: 0,
@@ -1846,6 +1867,10 @@ describe("reflector", () => {
             current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
             suppressed: [],
             mode: "reflective",
             updated_at: 0,
@@ -1897,6 +1922,10 @@ describe("reflector", () => {
           current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
           suppressed: [],
           mode: "reflective",
           updated_at: 0,
@@ -1932,6 +1961,10 @@ describe("reflector", () => {
             current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
             suppressed: [],
             mode: "reflective",
             updated_at: 0,
@@ -2000,6 +2033,10 @@ describe("reflector", () => {
           current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
           suppressed: [],
           mode: "reflective",
           updated_at: 0,
@@ -2035,6 +2072,10 @@ describe("reflector", () => {
             current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
             suppressed: [],
             mode: "reflective",
             updated_at: 0,
@@ -2112,6 +2153,7 @@ describe("reflector", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -2119,20 +2161,15 @@ describe("reflector", () => {
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.2,
-      scoreBreakdown: {
+      scoreBreakdown: createRetrievalScoreFixture({
         similarity: 0.2,
         decayedSalience: 0.2,
         heat: 0.1,
         goalRelevance: 0,
         timeRelevance: 0,
         suppressionPenalty: 0,
-      },
+      }),
       citationChain: [],
-      semantic_context: {
-        supports: [],
-        contradicts: [],
-        categories: [],
-      },
     };
     const brokenIdentityService = {
       addOpenQuestion() {
@@ -2159,6 +2196,10 @@ describe("reflector", () => {
           current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
           suppressed: [],
           mode: "reflective",
           updated_at: 0,
@@ -2194,6 +2235,10 @@ describe("reflector", () => {
             current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
             suppressed: [],
             mode: "reflective",
             updated_at: 0,
@@ -2293,6 +2338,8 @@ describe("reflector", () => {
             current_focus: "Rust",
             hot_entities: ["Rust"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
             suppressed: [],
             mood: null,
             pending_procedural_attempts: [
@@ -2339,6 +2386,8 @@ describe("reflector", () => {
               current_focus: "Rust",
               hot_entities: ["Rust"],
               pending_intents: [],
+              pending_social_attribution: null,
+              pending_trait_attribution: null,
               suppressed: [],
               mood: null,
               pending_procedural_attempts: [
@@ -2464,6 +2513,8 @@ describe("reflector", () => {
           current_focus: "Rust",
           hot_entities: ["Rust"],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
           suppressed: [],
           mood: null,
           pending_procedural_attempts: [pendingAttempt],
@@ -2501,6 +2552,8 @@ describe("reflector", () => {
             current_focus: "Rust",
             hot_entities: ["Rust"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
             suppressed: [],
             mood: null,
             pending_procedural_attempts: [pendingAttempt],
@@ -2555,6 +2608,8 @@ describe("reflector", () => {
           current_focus: "Rust",
           hot_entities: ["Rust"],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
           suppressed: [],
           mood: null,
           pending_procedural_attempts: [
@@ -2601,6 +2656,8 @@ describe("reflector", () => {
             current_focus: "Rust",
             hot_entities: ["Rust"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
             suppressed: [],
             mood: null,
             pending_procedural_attempts: [
@@ -2686,6 +2743,8 @@ describe("reflector", () => {
           current_focus: "Rust",
           hot_entities: ["Rust"],
           pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
           suppressed: [],
           mood: null,
           pending_procedural_attempts: [
@@ -2732,6 +2791,8 @@ describe("reflector", () => {
             current_focus: "Rust",
             hot_entities: ["Rust"],
             pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
             suppressed: [],
             mood: null,
             pending_procedural_attempts: [
@@ -2811,9 +2872,11 @@ describe("reflector", () => {
           current_focus: null,
           hot_entities: [],
           pending_intents: [],
+          pending_social_attribution: null,
           pending_trait_attribution: null,
-          suppressed: [],
           mood: null,
+          pending_procedural_attempts: [],
+          suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -2848,9 +2911,11 @@ describe("reflector", () => {
             current_focus: null,
             hot_entities: [],
             pending_intents: [],
+            pending_social_attribution: null,
             pending_trait_attribution: null,
-            suppressed: [],
             mood: null,
+            pending_procedural_attempts: [],
+            suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -2929,9 +2994,11 @@ describe("reflector", () => {
           current_focus: null,
           hot_entities: [],
           pending_intents: [],
+          pending_social_attribution: null,
           pending_trait_attribution: null,
-          suppressed: [],
           mood: null,
+          pending_procedural_attempts: [],
+          suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -2966,9 +3033,11 @@ describe("reflector", () => {
             current_focus: null,
             hot_entities: [],
             pending_intents: [],
+            pending_social_attribution: null,
             pending_trait_attribution: null,
-            suppressed: [],
             mood: null,
+            pending_procedural_attempts: [],
+            suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -3040,9 +3109,11 @@ describe("reflector", () => {
           current_focus: null,
           hot_entities: [],
           pending_intents: [],
+          pending_social_attribution: null,
           pending_trait_attribution: null,
-          suppressed: [],
           mood: null,
+          pending_procedural_attempts: [],
+          suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -3077,9 +3148,11 @@ describe("reflector", () => {
             current_focus: null,
             hot_entities: [],
             pending_intents: [],
+            pending_social_attribution: null,
             pending_trait_attribution: null,
-            suppressed: [],
             mood: null,
+            pending_procedural_attempts: [],
+            suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -3144,9 +3217,11 @@ describe("reflector", () => {
           current_focus: null,
           hot_entities: [],
           pending_intents: [],
+          pending_social_attribution: null,
           pending_trait_attribution: null,
-          suppressed: [],
           mood: null,
+          pending_procedural_attempts: [],
+          suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -3181,9 +3256,11 @@ describe("reflector", () => {
             current_focus: null,
             hot_entities: [],
             pending_intents: [],
+            pending_social_attribution: null,
             pending_trait_attribution: null,
-            suppressed: [],
             mood: null,
+            pending_procedural_attempts: [],
+            suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -3233,9 +3310,11 @@ describe("reflector", () => {
           current_focus: null,
           hot_entities: [],
           pending_intents: [],
+          pending_social_attribution: null,
           pending_trait_attribution: null,
-          suppressed: [],
           mood: null,
+          pending_procedural_attempts: [],
+          suppressed: [],
           mode: "reflective",
           updated_at: 0,
         },
@@ -3270,9 +3349,11 @@ describe("reflector", () => {
             current_focus: null,
             hot_entities: [],
             pending_intents: [],
+            pending_social_attribution: null,
             pending_trait_attribution: null,
-            suppressed: [],
             mood: null,
+            pending_procedural_attempts: [],
+            suppressed: [],
             mode: "reflective",
             updated_at: 0,
           },
@@ -3321,7 +3402,7 @@ describe("reflector", () => {
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.7,
-      scoreBreakdown: {
+      scoreBreakdown: createRetrievalScoreFixture({
         similarity: 0.7,
         decayedSalience: 0.4,
         heat: 0.2,
@@ -3331,13 +3412,8 @@ describe("reflector", () => {
         moodBoost: 0,
         socialRelevance: 0,
         suppressionPenalty: 0,
-      },
+      }),
       citationChain: [],
-      semantic_context: {
-        supports: [],
-        contradicts: [],
-        categories: [],
-      },
     };
 
     const reflected = await reflector.reflect(
@@ -3359,9 +3435,11 @@ describe("reflector", () => {
           current_focus: null,
           hot_entities: [],
           pending_intents: [],
+          pending_social_attribution: null,
           pending_trait_attribution: null,
-          suppressed: [],
           mood: null,
+          pending_procedural_attempts: [],
+          suppressed: [],
           mode: "reflective",
           updated_at: 0,
         },
@@ -3396,9 +3474,11 @@ describe("reflector", () => {
             current_focus: null,
             hot_entities: [],
             pending_intents: [],
+            pending_social_attribution: null,
             pending_trait_attribution: null,
-            suppressed: [],
             mood: null,
+            pending_procedural_attempts: [],
+            suppressed: [],
             mode: "reflective",
             updated_at: 0,
           },
@@ -3458,7 +3538,7 @@ describe("reflector", () => {
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.7,
-      scoreBreakdown: {
+      scoreBreakdown: createRetrievalScoreFixture({
         similarity: 0.7,
         decayedSalience: 0.4,
         heat: 0.2,
@@ -3469,13 +3549,8 @@ describe("reflector", () => {
         socialRelevance: 0,
         entityRelevance: 0,
         suppressionPenalty: 0,
-      },
+      }),
       citationChain: [],
-      semantic_context: {
-        supports: [],
-        contradicts: [],
-        categories: [],
-      },
     };
 
     const reflected = await reflector.reflect(
@@ -3498,9 +3573,11 @@ describe("reflector", () => {
           current_focus: null,
           hot_entities: [],
           pending_intents: [],
+          pending_social_attribution: null,
           pending_trait_attribution: null,
-          suppressed: [],
           mood: null,
+          pending_procedural_attempts: [],
+          suppressed: [],
           mode: "reflective",
           updated_at: 0,
         },
@@ -3535,9 +3612,11 @@ describe("reflector", () => {
             current_focus: null,
             hot_entities: [],
             pending_intents: [],
+            pending_social_attribution: null,
             pending_trait_attribution: null,
-            suppressed: [],
             mood: null,
+            pending_procedural_attempts: [],
+            suppressed: [],
             mode: "reflective",
             updated_at: 0,
           },

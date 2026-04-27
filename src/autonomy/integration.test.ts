@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg, FakeLLMClient, ManualClock } from "../index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMCompleteOptions } from "../llm/index.js";
-import { TestEmbeddingClient } from "../offline/test-support.js";
+import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
 
 function systemText(request: LLMCompleteOptions | undefined): string {
   const system = request?.system;
@@ -59,7 +59,7 @@ describe("autonomy integration", () => {
       ],
     });
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -125,7 +125,7 @@ describe("autonomy integration", () => {
             },
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new TestEmbeddingClient(),
@@ -215,7 +215,7 @@ describe("autonomy integration", () => {
       ],
     });
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -281,7 +281,7 @@ describe("autonomy integration", () => {
             },
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new TestEmbeddingClient(),
@@ -366,7 +366,7 @@ describe("autonomy integration", () => {
       ],
     });
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -435,7 +435,7 @@ describe("autonomy integration", () => {
             },
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new TestEmbeddingClient(),

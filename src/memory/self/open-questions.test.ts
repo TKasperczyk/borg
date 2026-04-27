@@ -209,10 +209,12 @@ describe("OpenQuestionsRepository", () => {
       expect(aliceDuplicate.id).toBe(aliceQuestion.id);
       expect(bobQuestion.id).not.toBe(aliceQuestion.id);
       expect(repository.get(aliceQuestion.id)?.audience_entity_id).toBe(alice);
-      expect(repository.list({ visibleToAudienceEntityId: bob, limit: 10 }).map((item) => item.id))
-        .toEqual([publicQuestion.id, bobQuestion.id]);
-      expect(repository.list({ visibleToAudienceEntityId: null, limit: 10 }).map((item) => item.id))
-        .toEqual([publicQuestion.id]);
+      expect(
+        repository.list({ visibleToAudienceEntityId: bob, limit: 10 }).map((item) => item.id),
+      ).toEqual([publicQuestion.id, bobQuestion.id]);
+      expect(
+        repository.list({ visibleToAudienceEntityId: null, limit: 10 }).map((item) => item.id),
+      ).toEqual([publicQuestion.id]);
     } finally {
       db.close();
     }

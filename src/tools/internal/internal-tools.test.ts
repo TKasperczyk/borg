@@ -11,6 +11,7 @@ import {
   createEpisodeFixture,
   createOfflineTestHarness,
   createSemanticNodeFixture,
+  createTestConfig,
   TestEmbeddingClient,
 } from "../../offline/test-support.js";
 import { StreamWriter } from "../../stream/index.js";
@@ -28,7 +29,7 @@ import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
 
 async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
   return Borg.open({
-    config: {
+    config: createTestConfig({
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
@@ -49,7 +50,7 @@ async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
           extraction: "test-extraction",
         },
       },
-    },
+    }),
     clock: new ManualClock(1_000_000),
     embeddingDimensions: 4,
     embeddingClient: new TestEmbeddingClient(),
@@ -171,7 +172,7 @@ describe("internal tools", () => {
       end_time: 1_701_000,
     });
     const tool = createEpisodicSearchTool({
-      searchEpisodes: async (_query, limit) => {
+      searchEpisodes: async (_query, limit, _context) => {
         expect(limit).toBe(5);
 
         return [
@@ -192,7 +193,7 @@ describe("internal tools", () => {
             },
             citationChain: [
               {
-                id: episode.source_stream_ids[0],
+                id: episode.source_stream_ids[0]!,
                 timestamp: 1_699_990,
                 kind: "user_msg",
                 content: "We need the search tool to return evidence, not only ids.",

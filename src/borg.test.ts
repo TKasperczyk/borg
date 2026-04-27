@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_CONFIG } from "./config/index.js";
 import type { EmbeddingClient } from "./embeddings/index.js";
 import { Reflector, type ReflectorOptions } from "./cognition/index.js";
 import { FakeLLMClient, type LLMClient } from "./llm/index.js";
@@ -16,6 +17,8 @@ import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, SqliteDatabase } from "./storage/sqlite/index.js";
 import { ManualClock } from "./util/clock.js";
 import { createEpisodeId, createSessionId, createStreamEntryId } from "./util/ids.js";
+import { createTestConfig } from "./offline/test-support.js";
+import { resolveBorgConfig } from "./borg/storage-setup.js";
 import { Borg } from "./borg.js";
 
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
@@ -123,6 +126,51 @@ describe("Borg", () => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
+  });
+
+  it("merges sparse Borg.open config with required defaults", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = resolveBorgConfig({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "test-cognition",
+          },
+        },
+      } as never,
+    });
+
+    expect(config.dataDir).toBe(tempDir);
+    expect(config.perception.useLlmFallback).toBe(false);
+    expect(config.perception.modeWhenLlmAbsent).toBe("idle");
+    expect(config.embedding.dims).toBe(4);
+    expect(config.anthropic.auth).toBe("api-key");
+    expect(config.anthropic.models).toEqual({
+      ...DEFAULT_CONFIG.anthropic.models,
+      cognition: "test-cognition",
+    });
+    expect(config.affective).toEqual(DEFAULT_CONFIG.affective);
+    expect(config.procedural).toEqual(DEFAULT_CONFIG.procedural);
+    expect(config.retrieval).toEqual(DEFAULT_CONFIG.retrieval);
+    expect(config.executive).toEqual(DEFAULT_CONFIG.executive);
+    expect(config.offline.beliefReviser).toEqual(DEFAULT_CONFIG.offline.beliefReviser);
+    expect(config.maintenance).toEqual(DEFAULT_CONFIG.maintenance);
+    expect(config.autonomy.executiveFocus).toEqual(DEFAULT_CONFIG.autonomy.executiveFocus);
   });
 
   it("opens the sprint 2 facade and reuses injected clients", async () => {
@@ -413,6 +461,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       audience_entity_id: null,
       shared: true,
       embedding: Float32Array.from([1, 0, 0, 0]),
@@ -435,6 +484,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       audience_entity_id: alice,
       shared: false,
       embedding: Float32Array.from([1, 0, 0, 0]),
@@ -517,6 +567,7 @@ describe("Borg", () => {
           derived_from: [],
           supersedes: [],
         },
+        emotional_arc: null,
         audience_entity_id: null,
         shared: true,
         embedding: Float32Array.from([1, 0, 0, 0]),
@@ -542,6 +593,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       audience_entity_id: null,
       shared: true,
       embedding: Float32Array.from([0, 1, 0, 0]),
@@ -617,6 +669,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       audience_entity_id: null,
       shared: true,
       embedding: Float32Array.from([1, 0, 0, 0]),
@@ -646,6 +699,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       audience_entity_id: null,
       shared: true,
       embedding: Float32Array.from([0, 1, 0, 0]),
@@ -744,7 +798,7 @@ describe("Borg", () => {
 
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -765,7 +819,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -868,7 +922,7 @@ describe("Borg", () => {
 
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -889,7 +943,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -953,7 +1007,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -974,7 +1028,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock: new ManualClock(1_000),
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -1016,7 +1070,7 @@ describe("Borg", () => {
     const sessionId = createSessionId();
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -1037,7 +1091,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -1146,6 +1200,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -1217,7 +1272,7 @@ describe("Borg", () => {
       ],
     });
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -1238,7 +1293,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -1334,7 +1389,7 @@ describe("Borg", () => {
       ],
     });
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -1355,7 +1410,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -1383,7 +1438,7 @@ describe("Borg", () => {
     const clock = new ManualClock(1_000);
     const llm = new FakeLLMClient();
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -1404,7 +1459,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -1544,6 +1599,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -1581,7 +1637,7 @@ describe("Borg", () => {
       ],
     });
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -1602,7 +1658,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -1685,6 +1741,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -1694,7 +1751,7 @@ describe("Borg", () => {
 
     const llm = new FakeLLMClient();
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -1715,7 +1772,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -1839,6 +1896,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -1859,6 +1917,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -1867,7 +1926,7 @@ describe("Borg", () => {
     await store.close();
 
     const firstBorg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -1888,7 +1947,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -1927,7 +1986,7 @@ describe("Borg", () => {
     }
 
     const reopenedBorg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -1948,7 +2007,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -1989,7 +2048,7 @@ describe("Borg", () => {
 
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -2010,7 +2069,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -2055,7 +2114,7 @@ describe("Borg", () => {
 
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -2076,7 +2135,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -2180,7 +2239,7 @@ describe("Borg", () => {
 
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -2207,7 +2266,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -2270,7 +2329,7 @@ describe("Borg", () => {
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
       dataDir: tempDir,
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -2297,7 +2356,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -2363,7 +2422,7 @@ describe("Borg", () => {
 
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -2390,7 +2449,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -2460,7 +2519,7 @@ describe("Borg", () => {
 
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -2487,7 +2546,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -2571,7 +2630,7 @@ describe("Borg", () => {
 
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -2643,7 +2702,7 @@ describe("Borg", () => {
             },
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -2766,6 +2825,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -2774,7 +2834,7 @@ describe("Borg", () => {
     await store.close();
 
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -2801,7 +2861,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -2921,6 +2981,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -2929,7 +2990,7 @@ describe("Borg", () => {
     await store.close();
 
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -2956,7 +3017,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -3054,6 +3115,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -3062,7 +3124,7 @@ describe("Borg", () => {
     await store.close();
 
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -3089,7 +3151,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -3196,6 +3258,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -3204,7 +3267,7 @@ describe("Borg", () => {
     await store.close();
 
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -3276,7 +3339,7 @@ describe("Borg", () => {
             },
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -3403,6 +3466,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -3411,7 +3475,7 @@ describe("Borg", () => {
     await store.close();
 
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -3438,7 +3502,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -3547,6 +3611,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 0,
       updated_at: 0,
@@ -3555,7 +3620,7 @@ describe("Borg", () => {
     await store.close();
 
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -3582,7 +3647,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -3662,7 +3727,7 @@ describe("Borg", () => {
 
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -3689,7 +3754,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -3711,8 +3776,8 @@ describe("Borg", () => {
         userMessage: "Status update on Atlas build.",
       });
 
-      expect(borg.mood.current("default").valence).toBe(0);
-      expect(borg.mood.history("default")[0]?.valence).toBe(0);
+      expect(borg.mood.current("default" as never).valence).toBe(0);
+      expect(borg.mood.history("default" as never)[0]?.valence).toBe(0);
     } finally {
       await borg.close();
     }
@@ -3724,7 +3789,7 @@ describe("Borg", () => {
 
     const clock = new ManualClock(1_000);
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -3751,7 +3816,7 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
@@ -3850,6 +3915,7 @@ describe("Borg", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([0, 1, 0, 0]),
       created_at: nowMs - 50 * 24 * 60 * 60 * 1_000,
       updated_at: nowMs - 50 * 24 * 60 * 60 * 1_000,
@@ -3858,7 +3924,7 @@ describe("Borg", () => {
     await store.close();
 
     const borg = await Borg.open({
-      config: {
+      config: createTestConfig({
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
@@ -3909,7 +3975,7 @@ describe("Borg", () => {
             budget: 20_000,
           },
         },
-      },
+      }),
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),

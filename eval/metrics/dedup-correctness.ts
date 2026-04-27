@@ -41,7 +41,10 @@ const dedupFixtureSchema = z.object({
 
 type DedupFixture = z.infer<typeof dedupFixtureSchema>;
 
-function createEpisodeExtractionResponse(entry: StreamEntry, event: DedupFixture["events"][number]): LLMCompleteResult {
+function createEpisodeExtractionResponse(
+  entry: StreamEntry,
+  event: DedupFixture["events"][number],
+): LLMCompleteResult {
   return {
     text: "",
     input_tokens: 18,

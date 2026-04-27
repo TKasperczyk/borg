@@ -9,7 +9,7 @@ import type { BorgDependencies } from "../borg/types.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { SelfSnapshot } from "./deliberation/deliberator.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
-import { TestEmbeddingClient } from "../offline/test-support.js";
+import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
 import {
   createEpisodeId,
   createStreamEntryId,
@@ -19,7 +19,7 @@ import {
 
 async function openTestBorg(tempDir: string, llm: FakeLLMClient, clock: ManualClock) {
   return Borg.open({
-    config: {
+    config: createTestConfig({
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
@@ -43,7 +43,7 @@ async function openTestBorg(tempDir: string, llm: FakeLLMClient, clock: ManualCl
           extraction: "test-extraction",
         },
       },
-    },
+    }),
     clock,
     embeddingDimensions: 4,
     embeddingClient: new TestEmbeddingClient(),
@@ -554,7 +554,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
               ? provenance.episode_ids
               : [alicePrivateEpisodeId],
           themes: ["visibility"],
-          provenance,
+          provenance: provenance as never,
         });
         snapshot = await internal.deps.turnOrchestrator.buildSelfSnapshot(bobEntityId);
         expect(snapshot.currentPeriod?.label).toBe(label);

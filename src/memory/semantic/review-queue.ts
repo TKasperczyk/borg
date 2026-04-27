@@ -621,12 +621,13 @@ export class ReviewQueueRepository {
       return new Map();
     }
 
-    const targetsByKey = new Map(targets.map((target) => [beliefRevisionTargetKey(target), target]));
+    const targetsByKey = new Map(
+      targets.map((target) => [beliefRevisionTargetKey(target), target]),
+    );
     const whereTargets = [...targetsByKey.values()];
     const targetFilter = whereTargets
       .map(
-        () =>
-          "(json_extract(refs, '$.target_type') = ? AND json_extract(refs, '$.target_id') = ?)",
+        () => "(json_extract(refs, '$.target_type') = ? AND json_extract(refs, '$.target_id') = ?)",
       )
       .join(" OR ");
     const targetValues = whereTargets.flatMap((target) => [target.target_type, target.target_id]);

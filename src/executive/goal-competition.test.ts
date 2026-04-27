@@ -8,7 +8,9 @@ import { selectExecutiveFocus } from "./goal-competition.js";
 const nowMs = 1_000_000;
 const dayMs = 24 * 60 * 60 * 1_000;
 
-function goal(input: Partial<GoalRecord> & { id: string; description: string }): GoalRecord {
+function goal(
+  input: Omit<Partial<GoalRecord>, "id" | "description"> & { id: string; description: string },
+): GoalRecord {
   return {
     id: input.id as GoalId,
     description: input.description,

@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { summarizeSemanticContext } from "../../cognition/deliberation/prompt/retrieval.js";
 import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
-import { SemanticGraph, type ReviewQueueItem, type SemanticEdge } from "../../memory/semantic/index.js";
+import {
+  SemanticGraph,
+  type ReviewQueueItem,
+  type SemanticEdge,
+} from "../../memory/semantic/index.js";
 import { resolveSemanticContext, toRetrievedSemantic } from "../../retrieval/semantic-retrieval.js";
 import { StreamReader } from "../../stream/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
@@ -176,9 +180,7 @@ describe("belief reviser process", () => {
 
     try {
       const anchor = await insertNode(harness, "Anchor", [1, 0, 0, 0]);
-      const target = await insertNode(harness, "Target", [0, 1, 0, 0], [
-        FRESH_EPISODE_ID,
-      ]);
+      const target = await insertNode(harness, "Target", [0, 1, 0, 0], [FRESH_EPISODE_ID]);
       const support = addEdge(harness, anchor, target);
 
       harness.semanticEdgeRepository.invalidateEdge(support.id, {
@@ -400,10 +402,12 @@ describe("belief reviser process", () => {
 
     try {
       const anchor = await insertNode(harness, "Anchor", [1, 0, 0, 0], [STALE_EPISODE_ID]);
-      const target = await insertNode(harness, "Target", [0, 1, 0, 0], [
-        STALE_EPISODE_ID,
-        FRESH_EPISODE_ID,
-      ]);
+      const target = await insertNode(
+        harness,
+        "Target",
+        [0, 1, 0, 0],
+        [STALE_EPISODE_ID, FRESH_EPISODE_ID],
+      );
       const support = addEdge(harness, anchor, target, "supports", [STALE_EPISODE_ID]);
 
       harness.semanticEdgeRepository.invalidateEdge(support.id, {
@@ -633,9 +637,7 @@ describe("belief reviser process", () => {
       });
       await harness.episodicRepository.insert(episode);
       const anchor = await insertNode(harness, "Anchor", [1, 0, 0, 0], [FRESH_EPISODE_ID]);
-      const target = await insertNode(harness, "Target belief", [0, 1, 0, 0], [
-        FRESH_EPISODE_ID,
-      ]);
+      const target = await insertNode(harness, "Target belief", [0, 1, 0, 0], [FRESH_EPISODE_ID]);
       const support = addEdge(harness, anchor, target, "supports", [FRESH_EPISODE_ID]);
 
       harness.semanticEdgeRepository.invalidateEdge(support.id, {
@@ -1042,10 +1044,12 @@ describe("belief reviser process", () => {
       await harness.episodicRepository.insert(hidden);
       const anchor = await insertNode(harness, "Anchor", [1, 0, 0, 0], [visible.id, hidden.id]);
       const survivor = await insertNode(harness, "Survivor", [0, 0, 1, 0], [visible.id]);
-      const target = await insertNode(harness, "Sanitized target", [0, 1, 0, 0], [
-        visible.id,
-        hidden.id,
-      ]);
+      const target = await insertNode(
+        harness,
+        "Sanitized target",
+        [0, 1, 0, 0],
+        [visible.id, hidden.id],
+      );
       const invalidated = addEdge(harness, anchor, target, "supports", [visible.id, hidden.id]);
       const surviving = addEdge(harness, survivor, target, "supports", [visible.id, hidden.id]);
 

@@ -105,9 +105,7 @@ export class StreamWatermarkRepository {
 
   reset(processName: string, sessionId: SessionId): void {
     this.db
-      .prepare(
-        `DELETE FROM stream_watermarks WHERE process_name = ? AND session_id = ?`,
-      )
+      .prepare(`DELETE FROM stream_watermarks WHERE process_name = ? AND session_id = ?`)
       .run(processName, sessionId);
   }
 }

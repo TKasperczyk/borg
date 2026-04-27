@@ -267,12 +267,9 @@ export class IdentityService {
         );
 
         if (closedPeriod === null) {
-          throw new StorageError(
-            `Unknown autobiographical period id: ${periodClosedByCreate.id}`,
-            {
-              code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
-            },
-          );
+          throw new StorageError(`Unknown autobiographical period id: ${periodClosedByCreate.id}`, {
+            code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
+          });
         }
 
         this.options.identityEventRepository.record({

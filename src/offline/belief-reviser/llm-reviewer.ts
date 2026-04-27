@@ -5,11 +5,7 @@ import {
   inferSinglePrivateAudience,
   type Episode,
 } from "../../memory/episodic/index.js";
-import {
-  type LLMClient,
-  type LLMCompleteResult,
-  toToolInputSchema,
-} from "../../llm/index.js";
+import { type LLMClient, type LLMCompleteResult, toToolInputSchema } from "../../llm/index.js";
 import type { EntityId } from "../../util/ids.js";
 
 const EMIT_BELIEF_REVISION_TOOL_NAME = "EmitBeliefRevision";
@@ -118,9 +114,7 @@ function sanitizedRecord(value: unknown, visibleEpisodeIds: ReadonlySet<string>)
       Object.entries(value).map(([key, entry]) => {
         if (
           Array.isArray(entry) &&
-          (key === "episode_ids" ||
-            key.endsWith("_episode_ids") ||
-            key.endsWith("EpisodeIds"))
+          (key === "episode_ids" || key.endsWith("_episode_ids") || key.endsWith("EpisodeIds"))
         ) {
           return [
             key,
@@ -151,13 +145,7 @@ function promptPayload(input: BeliefRevisionLlmInput): string {
       invalidated_edge: sanitizedRecord(input.invalidated_edge, visibleEpisodeIds),
       surviving_supports: sanitizedRecord(input.surviving_supports, visibleEpisodeIds),
       evidence_episodes: serializableRecord(input.evidence_episodes),
-      allowed_verdicts: [
-        "keep",
-        "weaken",
-        "archive_node",
-        "invalidate_edge",
-        "manual_review",
-      ],
+      allowed_verdicts: ["keep", "weaken", "archive_node", "invalidate_edge", "manual_review"],
     },
     null,
     2,
@@ -230,9 +218,7 @@ export async function evaluateBeliefRevision(
   options: EvaluateBeliefRevisionOptions,
 ): Promise<EvaluateBeliefRevisionResult> {
   const result = await completeWithRetry(options);
-  const toolCall = result.tool_calls.find(
-    (call) => call.name === EMIT_BELIEF_REVISION_TOOL_NAME,
-  );
+  const toolCall = result.tool_calls.find((call) => call.name === EMIT_BELIEF_REVISION_TOOL_NAME);
 
   if (toolCall === undefined) {
     throw new BeliefRevisionParseError(

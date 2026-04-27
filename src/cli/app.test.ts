@@ -13,6 +13,7 @@ import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
 import { episodicMigrations } from "../memory/episodic/migrations.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "../memory/episodic/repository.js";
+import { createTestConfig } from "../offline/test-support.js";
 import { selfMigrations } from "../memory/self/migrations.js";
 import { retrievalMigrations } from "../retrieval/migrations.js";
 import { FixedClock } from "../util/clock.js";
@@ -69,7 +70,7 @@ function createCliTempDir(tempDirs: string[]): string {
 
 function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
   return Borg.open({
-    config: {
+    config: createTestConfig({
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
@@ -91,7 +92,7 @@ function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
         },
       },
       offline: DEFAULT_CONFIG.offline,
-    },
+    }),
     clock: new FixedClock(1_000),
     embeddingDimensions: 4,
     embeddingClient: new ScriptedEmbeddingClient(),
@@ -312,6 +313,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 1,
       updated_at: 1,
@@ -455,6 +457,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       audience_entity_id: null,
       shared: true,
       embedding: Float32Array.from([1, 0, 0, 0]),
@@ -477,6 +480,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       audience_entity_id: sam,
       shared: false,
       embedding: Float32Array.from([1, 0, 0, 0]),
@@ -591,6 +595,7 @@ describe("cli", () => {
           derived_from: [],
           supersedes: [],
         },
+        emotional_arc: null,
         audience_entity_id: null,
         shared: true,
         embedding: Float32Array.from([1, 0, 0, 0]),
@@ -615,6 +620,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       audience_entity_id: null,
       shared: true,
       embedding: Float32Array.from([0, 1, 0, 0]),
@@ -695,6 +701,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 1,
       updated_at: 1,
@@ -802,6 +809,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 1,
       updated_at: 1,
@@ -822,6 +830,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 2,
       updated_at: 2,
@@ -924,7 +933,7 @@ describe("cli", () => {
       }),
     ).toBe(0);
     expect(JSON.parse(showOut.read())).toMatchObject({
-      session_id: "default",
+      session_id: "default" as never,
       turn_counter: 0,
     });
     expect(showErr.read()).toBe("");
@@ -940,7 +949,7 @@ describe("cli", () => {
       }),
     ).toBe(0);
     expect(JSON.parse(clearOut.read())).toEqual({
-      session: "default",
+      session: "default" as never,
       cleared: true,
     });
     expect(clearErr.read()).toBe("");
@@ -981,6 +990,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([0, 1, 0, 0]),
       created_at: 1,
       updated_at: 1,
@@ -1061,6 +1071,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 1,
       updated_at: 1,
@@ -1081,6 +1092,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([0.99, 0, 0, 0]),
       created_at: 3,
       updated_at: 3,
@@ -1199,6 +1211,7 @@ describe("cli", () => {
         derived_from: [],
         supersedes: [],
       },
+      emotional_arc: null,
       embedding: Float32Array.from([1, 0, 0, 0]),
       created_at: 1,
       updated_at: 1,
@@ -1818,7 +1831,7 @@ describe("cli", () => {
     });
     await borg.episodic.extract();
     const [storedEpisode] = (await borg.episodic.list()).items;
-    borg.mood.update("default", {
+    borg.mood.update("default" as never, {
       valence: -0.4,
       arousal: 0.5,
       reason: "seeded",
@@ -1866,7 +1879,7 @@ describe("cli", () => {
 
     const moodOut = createOutputBuffer();
     expect(
-      await runCli(["node", "borg", "mood", "current", "--session", "default"], {
+      await runCli(["node", "borg", "mood", "current", "--session", "default" as never], {
         stdout: moodOut.stream,
         stderr: createOutputBuffer().stream,
         dataDir: tempDir,
@@ -1874,7 +1887,7 @@ describe("cli", () => {
       }),
     ).toBe(0);
     expect(JSON.parse(moodOut.read())).toMatchObject({
-      session_id: "default",
+      session_id: "default" as never,
     });
 
     const socialUpsertOut = createOutputBuffer();

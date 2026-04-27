@@ -35,10 +35,7 @@ import type {
   OfflineProcessError,
   OfflineResult,
 } from "../types.js";
-import {
-  detectDivergentSkillSplits,
-  type SkillSplitCandidate,
-} from "./split-detector.js";
+import { detectDivergentSkillSplits, type SkillSplitCandidate } from "./split-detector.js";
 
 const CLUSTER_SIMILARITY_THRESHOLD = 0.85;
 const SYNTHESIZER_TOOL_NAME = "EmitProceduralSkillCandidate";
@@ -625,7 +622,9 @@ function validateSplitParts(
       });
     }
 
-    const audienceScopes = new Set(targetContexts.map((contextKey) => contextAudienceScope(contextKey)));
+    const audienceScopes = new Set(
+      targetContexts.map((contextKey) => contextAudienceScope(contextKey)),
+    );
 
     if (audienceScopes.size > 1) {
       throw new StorageError("Skill split part crosses audience scopes", {
@@ -657,11 +656,16 @@ function validateSplitParts(
   });
 
   if (assignedContexts.size !== allowedContexts.size) {
-    const missingContexts = [...allowedContexts].filter((contextKey) => !assignedContexts.has(contextKey));
+    const missingContexts = [...allowedContexts].filter(
+      (contextKey) => !assignedContexts.has(contextKey),
+    );
 
-    throw new StorageError(`Skill split did not cover all divergent context buckets: ${missingContexts.join(", ")}`, {
-      code: "PROCEDURAL_SKILL_SPLIT_TARGETS_INCOMPLETE",
-    });
+    throw new StorageError(
+      `Skill split did not cover all divergent context buckets: ${missingContexts.join(", ")}`,
+      {
+        code: "PROCEDURAL_SKILL_SPLIT_TARGETS_INCOMPLETE",
+      },
+    );
   }
 
   return normalizedParts;

@@ -22,7 +22,7 @@ import {
 } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { EmbeddingError } from "../../util/errors.js";
-import { DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, type StreamEntryId } from "../../util/ids.js";
 
 import { StreamIngestionCoordinator } from "./coordinator.js";
 
@@ -31,7 +31,7 @@ type ExtractCall = {
   sinceTs?: number;
   sinceCursor?: {
     ts: number;
-    entryId: string;
+    entryId: StreamEntryId;
   };
   untilTs?: number;
 };

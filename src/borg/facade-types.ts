@@ -69,15 +69,15 @@ export type BorgEpisodicFacade = {
 type AutobiographicalUpsertPeriodInput = Parameters<IdentityService["addPeriod"]>[0];
 
 type BorgAutobiographicalUpsertPeriod = {
-  (input: AutobiographicalUpsertPeriodInput & { id?: undefined }): ReturnType<
-    IdentityService["addPeriod"]
-  >;
-  (input: AutobiographicalUpsertPeriodInput & { id: AutobiographicalPeriodId }):
-    | ReturnType<IdentityService["addPeriod"]>
-    | ReturnType<IdentityService["updatePeriod"]>;
-  (input: AutobiographicalUpsertPeriodInput):
-    | ReturnType<IdentityService["addPeriod"]>
-    | ReturnType<IdentityService["updatePeriod"]>;
+  (
+    input: AutobiographicalUpsertPeriodInput & { id?: undefined },
+  ): ReturnType<IdentityService["addPeriod"]>;
+  (
+    input: AutobiographicalUpsertPeriodInput & { id: AutobiographicalPeriodId },
+  ): ReturnType<IdentityService["addPeriod"]> | ReturnType<IdentityService["updatePeriod"]>;
+  (
+    input: AutobiographicalUpsertPeriodInput,
+  ): ReturnType<IdentityService["addPeriod"]> | ReturnType<IdentityService["updatePeriod"]>;
 };
 
 export type BorgSelfFacade = {

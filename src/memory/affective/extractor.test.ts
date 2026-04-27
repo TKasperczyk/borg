@@ -207,7 +207,7 @@ describe("AffectiveExtractor", () => {
     });
     const writer = new StreamWriter({
       dataDir: harness.tempDir,
-      sessionId: "default",
+      sessionId: "default" as never,
       clock: harness.clock,
     });
     let firstId = "";

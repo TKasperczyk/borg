@@ -507,9 +507,7 @@ async function runPhase8(borg: Borg, state: DebugState): Promise<void> {
         } errors=${tick.result?.errors.length ?? 0}`,
       );
     } catch (error) {
-      warn(
-        `${cadence} cadence failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      warn(`${cadence} cadence failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -522,27 +520,29 @@ async function runPhase8(borg: Borg, state: DebugState): Promise<void> {
 async function runPhase9(borg: Borg): Promise<void> {
   header(9, "Retrieval confidence snapshot (Sprint 28)");
 
-  const deps = (borg as unknown as {
-    deps: {
-      retrievalPipeline: {
-        searchWithContext: (
-          query: string,
-          options?: Record<string, unknown>,
-        ) => Promise<{
-          episodes: unknown[];
-          contradiction_present: boolean;
-          confidence: {
-            overall: number;
-            evidenceStrength: number;
-            coverage: number;
-            sourceDiversity: number;
-            contradictionPresent: boolean;
-            sampleSize: number;
-          };
-        }>;
+  const deps = (
+    borg as unknown as {
+      deps: {
+        retrievalPipeline: {
+          searchWithContext: (
+            query: string,
+            options?: Record<string, unknown>,
+          ) => Promise<{
+            episodes: unknown[];
+            contradiction_present: boolean;
+            confidence: {
+              overall: number;
+              evidenceStrength: number;
+              coverage: number;
+              sourceDiversity: number;
+              contradictionPresent: boolean;
+              sampleSize: number;
+            };
+          }>;
+        };
       };
-    };
-  }).deps;
+    }
+  ).deps;
 
   const query = "recent deploy outcome";
   const result = await deps.retrievalPipeline.searchWithContext(query, { limit: 5 });
@@ -636,8 +636,7 @@ async function main(): Promise<void> {
       // phases explicitly drive extraction via borg.episodic.extract and
       // run in fake-LLM mode. With BORG_DEBUG_REAL=1 AND when the caller
       // wants this path covered, the check below flips it on.
-      liveExtraction:
-        selection.llmMode === "real" && process.env.BORG_DEBUG_LIVE_EXTRACT === "1",
+      liveExtraction: selection.llmMode === "real" && process.env.BORG_DEBUG_LIVE_EXTRACT === "1",
     });
 
     if (shouldRunPhase(selectedSections, 1)) {

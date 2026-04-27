@@ -64,9 +64,7 @@ export function toStoredProvenance(provenance: Provenance): StoredProvenance {
       provenance.kind === "episodes" ? provenance.episode_ids : [],
     ),
     provenance_process:
-      provenance.kind === "offline" || provenance.kind === "online"
-        ? provenance.process
-        : null,
+      provenance.kind === "offline" || provenance.kind === "online" ? provenance.process : null,
   };
 }
 
@@ -100,7 +98,7 @@ export function parseStoredProvenance(input: {
           episode_ids: parseStoredProvenanceEpisodeIds(input.provenance_episode_ids),
         }
       : {}),
-    ...((input.provenance_kind === "offline" || input.provenance_kind === "online")
+    ...(input.provenance_kind === "offline" || input.provenance_kind === "online"
       ? {
           process: input.provenance_process,
         }

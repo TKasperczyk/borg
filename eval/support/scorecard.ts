@@ -107,7 +107,9 @@ export function formatHumanScorecard(scorecard: EvalScorecard): string {
         .filter((part): part is string => part !== null)
         .join(" | ");
 
-      lines.push(`  - ${testCase.name}: ${testCase.passed ? "PASS" : "FAIL"}${details ? ` | ${details}` : ""}`);
+      lines.push(
+        `  - ${testCase.name}: ${testCase.passed ? "PASS" : "FAIL"}${details ? ` | ${details}` : ""}`,
+      );
     }
   }
 
