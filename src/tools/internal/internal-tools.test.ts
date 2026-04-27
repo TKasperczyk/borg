@@ -817,6 +817,9 @@ describe("internal tools", () => {
       );
 
       expect(result.skills.map((item) => item.id)).toContain(skill.id);
+      expect(result.skills.find((item) => item.id === skill.id)).not.toHaveProperty(
+        "source_episode_ids",
+      );
       expect(result.context_stats_by_skill_id?.[skill.id]).toEqual([
         expect.objectContaining({
           context_key: "code_debugging:typescript:self",

@@ -129,4 +129,20 @@ export const proceduralMigrations = [
       `);
     },
   },
+  {
+    id: 180,
+    name: "add-skill-split-failure-metadata",
+    up: (db) => {
+      if (!tableHasColumn(db, "skills", "split_failure_count")) {
+        db.exec("ALTER TABLE skills ADD COLUMN split_failure_count INTEGER NOT NULL DEFAULT 0");
+      }
+      if (!tableHasColumn(db, "skills", "last_split_error")) {
+        db.exec("ALTER TABLE skills ADD COLUMN last_split_error TEXT");
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_skills_split_failures
+          ON skills (status, split_failure_count, updated_at DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

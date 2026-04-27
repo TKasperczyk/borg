@@ -110,6 +110,7 @@ const configFileSchema = z
             minDivergenceForSplit: z.number().min(0).max(1).optional(),
             splitCooldownDays: z.number().positive().optional(),
             splitClaimStaleSec: z.number().int().positive().optional(),
+            maxSplitParseFailures: z.number().int().positive().optional(),
             skillSplitDryRun: z.boolean().optional(),
             budget: z.number().int().positive().optional(),
           })
@@ -369,6 +370,7 @@ export const configSchema = z.object({
       minDivergenceForSplit: z.number().min(0).max(1),
       splitCooldownDays: z.number().positive(),
       splitClaimStaleSec: z.number().int().positive(),
+      maxSplitParseFailures: z.number().int().positive(),
       skillSplitDryRun: z.boolean(),
       budget: z.number().int().positive(),
     }),
@@ -568,6 +570,7 @@ export const DEFAULT_CONFIG: Config = {
       minDivergenceForSplit: 0.3,
       splitCooldownDays: 7,
       splitClaimStaleSec: 1_800,
+      maxSplitParseFailures: 3,
       skillSplitDryRun: true,
       budget: 4_000,
     },
@@ -1029,6 +1032,13 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           ) ??
           fileConfig.offline?.proceduralSynthesizer?.splitClaimStaleSec ??
           DEFAULT_CONFIG.offline.proceduralSynthesizer.splitClaimStaleSec,
+        maxSplitParseFailures:
+          readOptionalEnvNumber(
+            env,
+            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MAX_SPLIT_PARSE_FAILURES",
+          ) ??
+          fileConfig.offline?.proceduralSynthesizer?.maxSplitParseFailures ??
+          DEFAULT_CONFIG.offline.proceduralSynthesizer.maxSplitParseFailures,
         skillSplitDryRun:
           readOptionalEnvBoolean(
             env,

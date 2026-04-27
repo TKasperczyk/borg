@@ -65,6 +65,7 @@ function detect(
     minDivergenceForSplit: 0.3,
     splitCooldownDays: 7,
     splitClaimStaleSec: 1_800,
+    maxSplitParseFailures: 3,
     ...overrides,
   });
 }
@@ -203,5 +204,27 @@ describe("detectDivergentSkillSplits", () => {
         }),
       ]),
     ).toHaveLength(1);
+  });
+
+  it("suppresses skills that exceeded split parse failures", () => {
+    const skill = makeSkill({
+      split_failure_count: 3,
+      last_split_error: "Malformed split tool output",
+    });
+
+    expect(
+      detect(skill, [
+        makeStats(skill.id, "code_debugging:typescript:self", {
+          alpha: 6,
+          beta: 1,
+          attempts: 5,
+        }),
+        makeStats(skill.id, "planning:roadmap:self", {
+          alpha: 1,
+          beta: 6,
+          attempts: 5,
+        }),
+      ]),
+    ).toEqual([]);
   });
 });

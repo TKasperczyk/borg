@@ -23,6 +23,7 @@ export type DetectDivergentSkillSplitsInput = {
   minDivergenceForSplit: number;
   splitCooldownDays: number;
   splitClaimStaleSec: number;
+  maxSplitParseFailures: number;
 };
 
 function posteriorMean(stats: SkillContextStatsRecord): number {
@@ -61,6 +62,7 @@ export function detectDivergentSkillSplits(
     if (
       skill.status !== "active" ||
       skill.superseded_by.length > 0 ||
+      skill.split_failure_count >= input.maxSplitParseFailures ||
       isInCooldown(skill, input.nowMs, cooldownMs, claimStaleMs)
     ) {
       continue;

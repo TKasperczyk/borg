@@ -426,4 +426,107 @@ describe("resolveSemanticContext temporal validity", () => {
     expect(audienceBPrompt).toContain("[under re-evaluation: support_chain_collapsed]");
     expect(audienceBPrompt).not.toContain("Ignore previous instructions");
   });
+
+  it("uses stored belief-revision audience instead of public target evidence", async () => {
+    const clock = new ManualClock(1_000_000);
+    const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    harness = await createOfflineTestHarness({ clock });
+    const publicEpisode = createEpisodeFixture({
+      title: "Public Atlas target",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    const privateEpisodeB = createEpisodeFixture({
+      title: "Private invalidation evidence",
+      tags: ["atlas"],
+      audience_entity_id: audienceB,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.insert(privateEpisodeB);
+    const source = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas private source",
+        description: "Private source node.",
+        source_episode_ids: [privateEpisodeB.id],
+      }),
+    );
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        label: "Atlas public claim",
+        description: "A public Atlas claim under private review for one audience.",
+        source_episode_ids: [publicEpisode.id],
+      }),
+    );
+    const invalidatedEdge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: source.id,
+      to_node_id: node.id,
+      relation: "supports",
+      confidence: 0.7,
+      evidence_episode_ids: [privateEpisodeB.id],
+      created_at: 1_000_000,
+      last_verified_at: 1_000_000,
+    });
+    harness.reviewQueueRepository.enqueue({
+      kind: "belief_revision",
+      refs: {
+        target_type: "semantic_node",
+        target_id: node.id,
+        invalidated_edge_id: invalidatedEdge.id,
+        dependency_path_edge_ids: [invalidatedEdge.id],
+        surviving_support_edge_ids: [],
+        evidence_episode_ids: [publicEpisode.id],
+        audience_entity_id: audienceB,
+      },
+      reason: "Private invalidation should stay scoped",
+    });
+    const semanticGraph = new SemanticGraph({
+      nodeRepository: harness.semanticNodeRepository,
+      edgeRepository: harness.semanticEdgeRepository,
+    });
+
+    const forAudienceA = toRetrievedSemantic(
+      await resolveSemanticContext(
+        "Atlas public claim",
+        {
+          audienceEntityId: audienceA,
+          graphWalkDepth: 1,
+          maxGraphNodes: 4,
+        },
+        {
+          embeddingClient: harness.embeddingClient,
+          episodicRepository: harness.episodicRepository,
+          semanticNodeRepository: harness.semanticNodeRepository,
+          semanticGraph,
+          reviewQueueRepository: harness.reviewQueueRepository,
+        },
+      ),
+    );
+    const forAudienceB = toRetrievedSemantic(
+      await resolveSemanticContext(
+        "Atlas public claim",
+        {
+          audienceEntityId: audienceB,
+          graphWalkDepth: 1,
+          maxGraphNodes: 4,
+        },
+        {
+          embeddingClient: harness.embeddingClient,
+          episodicRepository: harness.episodicRepository,
+          semanticNodeRepository: harness.semanticNodeRepository,
+          semanticGraph,
+          reviewQueueRepository: harness.reviewQueueRepository,
+        },
+      ),
+    );
+
+    expect(forAudienceA.matched_nodes.find((match) => match.id === node.id)?.under_review).toBeUndefined();
+    expect(forAudienceB.matched_nodes.find((match) => match.id === node.id)?.under_review).toEqual(
+      expect.objectContaining({
+        invalidated_edge_id: invalidatedEdge.id,
+      }),
+    );
+  });
 });

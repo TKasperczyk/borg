@@ -14,8 +14,12 @@ const skillsListInputSchema = z
   })
   .strict();
 
+const skillToolSchema = skillSchema.omit({
+  source_episode_ids: true,
+});
+
 const skillsListOutputSchema = z.object({
-  skills: z.array(skillSchema),
+  skills: z.array(skillToolSchema),
   context_stats_by_skill_id: z.record(z.string(), z.array(skillContextStatsSchema)).optional(),
 });
 
@@ -25,6 +29,12 @@ export type SkillsListToolOptions = {
 };
 
 const DEFAULT_LIMIT = 20;
+
+function toSkillToolOutput(skill: SkillRecord): z.infer<typeof skillToolSchema> {
+  const { source_episode_ids: _sourceEpisodeIds, ...safeSkill } = skill;
+
+  return skillToolSchema.parse(safeSkill);
+}
 
 export function createSkillsListTool(
   options: SkillsListToolOptions,
@@ -42,6 +52,7 @@ export function createSkillsListTool(
     outputSchema: skillsListOutputSchema,
     async invoke(input) {
       const skills = options.listSkills(input.limit ?? DEFAULT_LIMIT);
+      const safeSkills = skills.map((skill) => toSkillToolOutput(skill));
       const contextStatsBySkillId =
         options.listContextStatsForSkill === undefined
           ? undefined
@@ -55,7 +66,7 @@ export function createSkillsListTool(
             );
 
       return {
-        skills,
+        skills: safeSkills,
         ...(contextStatsBySkillId === undefined
           ? {}
           : { context_stats_by_skill_id: contextStatsBySkillId }),

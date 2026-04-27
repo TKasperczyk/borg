@@ -194,6 +194,7 @@ type PreparedVerdict = {
   verdict: BeliefRevisionVerdict;
   nodeSyncs: NodeVectorSync[];
 };
+type BeliefRevisionClaim = z.infer<typeof beliefRevisionClaimSchema>;
 type ApplyRegradeResult = {
   applied: boolean;
   resolution: ReviewResolution | "manual_review";
@@ -401,6 +402,29 @@ function buildRegradeChange(input: {
   };
 }
 
+async function appendClaimOwnershipMismatchEvent(
+  ctx: OfflineContext,
+  input: { reviewId: number; action: string },
+  errors: OfflineResult["errors"],
+): Promise<void> {
+  try {
+    await ctx.streamWriter.append({
+      kind: "internal_event",
+      content: {
+        hook: "claim_ownership_mismatch_dropped",
+        review_id: input.reviewId,
+        action: input.action,
+      },
+    });
+  } catch (error) {
+    errors.push({
+      process: "belief-reviser",
+      message: error instanceof Error ? error.message : String(error),
+      code: "belief_reviser_claim_mismatch_log_failed",
+    });
+  }
+}
+
 function listUnprocessedEvents(db: SqliteDatabase): InvalidationEvent[] {
   const rows = db
     .prepare(
@@ -448,6 +472,12 @@ function hasFreshBeliefRevisionClaim(item: ReviewQueueItem, staleBefore: number)
 
 function isEscalatedBeliefRevision(item: ReviewQueueItem): boolean {
   return typeof item.refs[ESCALATED_AT_REF_KEY] === "number";
+}
+
+function claimFromReviewItem(item: ReviewQueueItem): BeliefRevisionClaim | null {
+  const parsed = beliefRevisionClaimSchema.safeParse(item.refs[CLAIM_REF_KEY]);
+
+  return parsed.success ? parsed.data : null;
 }
 
 function listPendingRegradeItems(
@@ -913,13 +943,24 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
   private clearReviewClaim(
     ctx: OfflineContext,
     reviewId: number,
+    expectedClaim: BeliefRevisionClaim,
     options: { clearApplying?: boolean } = {},
-  ): void {
+  ): boolean {
     const transaction = this.options.db.transaction(() => {
       const current = ctx.reviewQueueRepository.get(reviewId);
 
       if (current === null || current.resolved_at !== null) {
-        return;
+        return false;
+      }
+
+      const claim = claimFromReviewItem(current);
+
+      if (
+        claim === null ||
+        claim.run_id !== expectedClaim.run_id ||
+        claim.claimed_at !== expectedClaim.claimed_at
+      ) {
+        return false;
       }
 
       const nextRefs = {
@@ -931,23 +972,50 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         delete nextRefs[APPLYING_REF_KEY];
       }
 
-      this.options.db
-        .prepare("UPDATE review_queue SET refs = ? WHERE id = ? AND resolved_at IS NULL")
-        .run(serializeJsonValue(nextRefs), reviewId);
+      const result = this.options.db
+        .prepare(
+          `
+            UPDATE review_queue
+            SET refs = ?
+            WHERE id = ?
+              AND resolved_at IS NULL
+              AND json_extract(refs, '$.${CLAIM_REF_KEY}.run_id') = ?
+              AND json_extract(refs, '$.${CLAIM_REF_KEY}.claimed_at') = ?
+          `,
+        )
+        .run(
+          serializeJsonValue(nextRefs),
+          reviewId,
+          expectedClaim.run_id,
+          expectedClaim.claimed_at,
+        );
+
+      return result.changes === 1;
     });
 
-    transaction();
+    return transaction();
   }
 
   private recordParseFailure(
     ctx: OfflineContext,
     reviewId: number,
+    expectedClaim: BeliefRevisionClaim,
     message: string,
   ): { failureCount: number; escalated: boolean } | null {
     const transaction = this.options.db.transaction(() => {
       const current = ctx.reviewQueueRepository.get(reviewId);
 
       if (current === null || current.resolved_at !== null || current.kind !== "belief_revision") {
+        return null;
+      }
+
+      const claim = claimFromReviewItem(current);
+
+      if (
+        claim === null ||
+        claim.run_id !== expectedClaim.run_id ||
+        claim.claimed_at !== expectedClaim.claimed_at
+      ) {
         return null;
       }
 
@@ -977,9 +1045,27 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         };
       }
 
-      this.options.db
-        .prepare("UPDATE review_queue SET refs = ? WHERE id = ? AND resolved_at IS NULL")
-        .run(serializeJsonValue(nextRefs), reviewId);
+      const result = this.options.db
+        .prepare(
+          `
+            UPDATE review_queue
+            SET refs = ?
+            WHERE id = ?
+              AND resolved_at IS NULL
+              AND json_extract(refs, '$.${CLAIM_REF_KEY}.run_id') = ?
+              AND json_extract(refs, '$.${CLAIM_REF_KEY}.claimed_at') = ?
+          `,
+        )
+        .run(
+          serializeJsonValue(nextRefs),
+          reviewId,
+          expectedClaim.run_id,
+          expectedClaim.claimed_at,
+        );
+
+      if (result.changes !== 1) {
+        return null;
+      }
 
       return {
         failureCount,
@@ -1087,6 +1173,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     ctx: OfflineContext,
     item: ReviewQueueItem,
     verdict: BeliefRevisionVerdict,
+    expectedClaim: BeliefRevisionClaim,
   ): PreparedVerdict {
     const transaction = this.options.db.transaction(() => {
       const current = ctx.reviewQueueRepository.get(item.id);
@@ -1100,7 +1187,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
 
       const claim = beliefRevisionClaimSchema.safeParse(current.refs[CLAIM_REF_KEY]);
 
-      if (!claim.success || claim.data.run_id !== String(ctx.runId)) {
+      if (
+        !claim.success ||
+        claim.data.run_id !== expectedClaim.run_id ||
+        claim.data.claimed_at !== expectedClaim.claimed_at
+      ) {
         return {
           verdict,
           nodeSyncs: [],
@@ -1140,15 +1231,33 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
           target_id: refs.target_id,
           confidence: parsedDrop.data.previous_confidence,
         } satisfies z.infer<typeof beliefRevisionApplyingSchema>;
-        this.options.db
-          .prepare("UPDATE review_queue SET refs = ? WHERE id = ? AND resolved_at IS NULL")
+        const result = this.options.db
+          .prepare(
+            `
+              UPDATE review_queue
+              SET refs = ?
+              WHERE id = ?
+                AND resolved_at IS NULL
+                AND json_extract(refs, '$.${CLAIM_REF_KEY}.run_id') = ?
+                AND json_extract(refs, '$.${CLAIM_REF_KEY}.claimed_at') = ?
+            `,
+          )
           .run(
             serializeJsonValue({
               ...current.refs,
               [APPLYING_REF_KEY]: applying,
             }),
             current.id,
+            expectedClaim.run_id,
+            expectedClaim.claimed_at,
           );
+
+        if (result.changes !== 1) {
+          return {
+            verdict,
+            nodeSyncs: [],
+          } satisfies PreparedVerdict;
+        }
 
         return {
           verdict,
@@ -1171,15 +1280,33 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
           target_id: refs.target_id,
           confidence: Math.max(this.confidenceFloor, currentConfidence + (verdict.confidence_delta ?? 0)),
         } satisfies z.infer<typeof beliefRevisionApplyingSchema>;
-        this.options.db
-          .prepare("UPDATE review_queue SET refs = ? WHERE id = ? AND resolved_at IS NULL")
+        const result = this.options.db
+          .prepare(
+            `
+              UPDATE review_queue
+              SET refs = ?
+              WHERE id = ?
+                AND resolved_at IS NULL
+                AND json_extract(refs, '$.${CLAIM_REF_KEY}.run_id') = ?
+                AND json_extract(refs, '$.${CLAIM_REF_KEY}.claimed_at') = ?
+            `,
+          )
           .run(
             serializeJsonValue({
               ...current.refs,
               [APPLYING_REF_KEY]: applying,
             }),
             current.id,
+            expectedClaim.run_id,
+            expectedClaim.claimed_at,
           );
+
+        if (result.changes !== 1) {
+          return {
+            verdict,
+            nodeSyncs: [],
+          } satisfies PreparedVerdict;
+        }
 
         return {
           verdict,
@@ -1193,15 +1320,33 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
           target_id: refs.target_id,
           archived: true,
         } satisfies z.infer<typeof beliefRevisionApplyingSchema>;
-        this.options.db
-          .prepare("UPDATE review_queue SET refs = ? WHERE id = ? AND resolved_at IS NULL")
+        const result = this.options.db
+          .prepare(
+            `
+              UPDATE review_queue
+              SET refs = ?
+              WHERE id = ?
+                AND resolved_at IS NULL
+                AND json_extract(refs, '$.${CLAIM_REF_KEY}.run_id') = ?
+                AND json_extract(refs, '$.${CLAIM_REF_KEY}.claimed_at') = ?
+            `,
+          )
           .run(
             serializeJsonValue({
               ...current.refs,
               [APPLYING_REF_KEY]: applying,
             }),
             current.id,
+            expectedClaim.run_id,
+            expectedClaim.claimed_at,
           );
+
+        if (result.changes !== 1) {
+          return {
+            verdict,
+            nodeSyncs: [],
+          } satisfies PreparedVerdict;
+        }
 
         return {
           verdict,
@@ -1223,6 +1368,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     refs: BeliefRevisionReview;
     verdict: BeliefRevisionVerdict;
     originalVerdict: BeliefRevisionVerdict["verdict"];
+    expectedClaim: BeliefRevisionClaim;
     now: number;
   }): ApplyRegradeResult {
     const nextRefs: Record<string, unknown> = {
@@ -1239,9 +1385,32 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     delete nextRefs[CLAIM_REF_KEY];
     delete nextRefs[APPLYING_REF_KEY];
 
-    this.options.db
-      .prepare("UPDATE review_queue SET refs = ? WHERE id = ? AND resolved_at IS NULL")
-      .run(serializeJsonValue(nextRefs), input.item.id);
+    const result = this.options.db
+      .prepare(
+        `
+          UPDATE review_queue
+          SET refs = ?
+          WHERE id = ?
+            AND resolved_at IS NULL
+            AND json_extract(refs, '$.${CLAIM_REF_KEY}.run_id') = ?
+            AND json_extract(refs, '$.${CLAIM_REF_KEY}.claimed_at') = ?
+        `,
+      )
+      .run(
+        serializeJsonValue(nextRefs),
+        input.item.id,
+        input.expectedClaim.run_id,
+        input.expectedClaim.claimed_at,
+      );
+
+    if (result.changes !== 1) {
+      return {
+        applied: false,
+        resolution: "manual_review",
+        nodeSyncs: [],
+        change: null,
+      };
+    }
 
     return {
       applied: true,
@@ -1260,6 +1429,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     ctx: OfflineContext,
     item: ReviewQueueItem,
     verdict: BeliefRevisionVerdict,
+    expectedClaim: BeliefRevisionClaim,
   ): ApplyRegradeResult {
     const transaction = this.options.db.transaction(() => {
       const current = ctx.reviewQueueRepository.get(item.id);
@@ -1276,7 +1446,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
 
       const claim = beliefRevisionClaimSchema.safeParse(current.refs[CLAIM_REF_KEY]);
 
-      if (!claim.success || claim.data.run_id !== String(ctx.runId)) {
+      if (
+        !claim.success ||
+        claim.data.run_id !== expectedClaim.run_id ||
+        claim.data.claimed_at !== expectedClaim.claimed_at
+      ) {
         return {
           applied: false,
           resolution: "manual_review",
@@ -1298,6 +1472,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
           refs,
           verdict,
           originalVerdict,
+          expectedClaim,
           now,
         });
       }
@@ -1341,11 +1516,34 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         });
       }
 
-      this.options.db
+      const result = this.options.db
         .prepare(
-          "UPDATE review_queue SET refs = ?, resolved_at = ?, resolution = ? WHERE id = ? AND resolved_at IS NULL",
+          `
+            UPDATE review_queue
+            SET refs = ?, resolved_at = ?, resolution = ?
+            WHERE id = ?
+              AND resolved_at IS NULL
+              AND json_extract(refs, '$.${CLAIM_REF_KEY}.run_id') = ?
+              AND json_extract(refs, '$.${CLAIM_REF_KEY}.claimed_at') = ?
+          `,
         )
-        .run(serializeJsonValue(nextRefs), now, verdict.verdict, current.id);
+        .run(
+          serializeJsonValue(nextRefs),
+          now,
+          verdict.verdict,
+          current.id,
+          expectedClaim.run_id,
+          expectedClaim.claimed_at,
+        );
+
+      if (result.changes !== 1) {
+        return {
+          applied: false,
+          resolution: "manual_review",
+          nodeSyncs,
+          change: null,
+        } satisfies ApplyRegradeResult;
+      }
 
       return {
         applied: true,
@@ -1612,6 +1810,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       if (claimed === null) {
         continue;
       }
+      const expectedClaim = claimFromReviewItem(claimed);
+
+      if (expectedClaim === null) {
+        continue;
+      }
       let nodeSyncCompleted = false;
 
       try {
@@ -1624,7 +1827,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
           timeoutMs: this.options.llmTimeoutMs,
         });
         tokensUsed += result.tokensUsed;
-        const prepared = this.prepareNodeVectorSync(ctx, claimed, result.verdict);
+        const prepared = this.prepareNodeVectorSync(ctx, claimed, result.verdict, expectedClaim);
 
         for (const sync of prepared.nodeSyncs) {
           try {
@@ -1639,22 +1842,45 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
             throw error;
           }
         }
-        const applied = this.applyVerdict(ctx, claimed, prepared.verdict);
+        const applied = this.applyVerdict(ctx, claimed, prepared.verdict, expectedClaim);
 
         if (applied.change !== null) {
           changes.push(applied.change);
+        }
+        if (!applied.applied) {
+          await appendClaimOwnershipMismatchEvent(
+            ctx,
+            {
+              reviewId: regradeItem.review_id,
+              action: "apply_verdict",
+            },
+            errors,
+          );
         }
         consecutiveParseFailures = 0;
       } catch (error) {
         const parseFailure =
           error instanceof BeliefRevisionParseError
-            ? this.recordParseFailure(ctx, regradeItem.review_id, error.message)
+            ? this.recordParseFailure(ctx, regradeItem.review_id, expectedClaim, error.message)
             : null;
 
         if (parseFailure === null) {
-          this.clearReviewClaim(ctx, regradeItem.review_id, {
+          const cleared = this.clearReviewClaim(ctx, regradeItem.review_id, expectedClaim, {
             clearApplying: !nodeSyncCompleted,
           });
+          if (!cleared) {
+            await appendClaimOwnershipMismatchEvent(
+              ctx,
+              {
+                reviewId: regradeItem.review_id,
+                action:
+                  error instanceof BeliefRevisionParseError
+                    ? "record_parse_failure"
+                    : "clear_claim",
+              },
+              errors,
+            );
+          }
           consecutiveParseFailures = 0;
         } else {
           consecutiveParseFailures += 1;

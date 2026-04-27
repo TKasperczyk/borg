@@ -24,7 +24,7 @@ import {
   traitIdSchema,
   valueIdSchema,
 } from "../self/index.js";
-import { CommitmentRepository, commitmentIdSchema } from "../commitments/index.js";
+import { CommitmentRepository, commitmentIdSchema, entityIdSchema } from "../commitments/index.js";
 import type { EntityId } from "../../util/ids.js";
 import type { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import {
@@ -203,6 +203,7 @@ const beliefRevisionRefsSchema = z.discriminatedUnion("target_type", [
       dependency_path_edge_ids: z.array(semanticEdgeIdSchema),
       surviving_support_edge_ids: z.array(semanticEdgeIdSchema),
       evidence_episode_ids: z.array(episodeIdSchema),
+      audience_entity_id: entityIdSchema.nullable().optional(),
     })
     .passthrough(),
   z
@@ -213,6 +214,7 @@ const beliefRevisionRefsSchema = z.discriminatedUnion("target_type", [
       dependency_path_edge_ids: z.array(semanticEdgeIdSchema),
       surviving_support_edge_ids: z.array(semanticEdgeIdSchema),
       evidence_episode_ids: z.array(episodeIdSchema),
+      audience_entity_id: entityIdSchema.nullable().optional(),
     })
     .passthrough(),
 ]);
@@ -575,10 +577,19 @@ export class ReviewQueueRepository {
   }
 
   private async isBeliefRevisionVisible(
+    refs: BeliefRevisionRefs,
     status: Pick<OpenBeliefRevisionStatus, "evidence_episode_ids">,
     options: BeliefRevisionVisibilityOptions,
   ): Promise<boolean> {
-    if (options.crossAudience === true || status.evidence_episode_ids.length === 0) {
+    if (options.crossAudience === true) {
+      return true;
+    }
+
+    if (refs.audience_entity_id !== undefined && refs.audience_entity_id !== null) {
+      return refs.audience_entity_id === (options.audienceEntityId ?? null);
+    }
+
+    if (status.evidence_episode_ids.length === 0) {
       return true;
     }
 
@@ -592,19 +603,13 @@ export class ReviewQueueRepository {
       (episode): episode is Episode => episode !== null,
     );
 
-    if (
-      episodes.some((episode) =>
-        isEpisodeVisibleToAudience(episode, options.audienceEntityId, {
-          crossAudience: options.crossAudience,
-        }),
-      )
-    ) {
-      return true;
-    }
-
     return (
       episodes.length === status.evidence_episode_ids.length &&
-      episodes.every((episode) => isEpisodeVisibleToAudience(episode, null))
+      episodes.every((episode) =>
+        isEpisodeVisibleToAudience(episode, options.audienceEntityId, {
+          crossAudience: false,
+        }),
+      )
     );
   }
 
@@ -667,7 +672,7 @@ export class ReviewQueueRepository {
         evidence_episode_ids: this.beliefRevisionEvidenceEpisodeIds(refs),
       };
 
-      if (await this.isBeliefRevisionVisible(status, options)) {
+      if (await this.isBeliefRevisionVisible(refs, status, options)) {
         results.set(key, status);
       }
     }

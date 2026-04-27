@@ -5,7 +5,7 @@ import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
 import { SemanticGraph, type ReviewQueueItem, type SemanticEdge } from "../../memory/semantic/index.js";
 import { resolveSemanticContext, toRetrievedSemantic } from "../../retrieval/semantic-retrieval.js";
 import { StreamReader } from "../../stream/index.js";
-import { FixedClock } from "../../util/clock.js";
+import { FixedClock, ManualClock } from "../../util/clock.js";
 import type { EntityId, EpisodeId } from "../../util/ids.js";
 import {
   createEpisodeFixture,
@@ -1126,6 +1126,80 @@ describe("belief reviser process", () => {
       expect(llmClient.requests).toHaveLength(1);
       expect(beliefRevisionItems(harness)[0]).toMatchObject({
         resolution: "keep",
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("drops stale-owner cleanup after another run reclaims and resolves the review", async () => {
+    let resolveFirstStarted!: () => void;
+    let releaseFirst!: () => void;
+    const firstResponseStarted = new Promise<void>((resolve) => {
+      resolveFirstStarted = resolve;
+    });
+    const releaseFirstResponse = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const llmClient = new FakeLLMClient({
+      responses: [
+        async () => {
+          resolveFirstStarted();
+          await releaseFirstResponse;
+          return beliefRevisionResponse({
+            verdict: "weaken",
+            rationale: "Malformed stale owner response.",
+          });
+        },
+        beliefRevisionResponse({
+          verdict: "keep",
+          rationale: "The reclaimed run keeps the belief.",
+        }),
+      ],
+    });
+    const clock = new ManualClock(1_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+      llmClient,
+    });
+
+    try {
+      const target = await insertNode(harness, "Claim owner target", [0, 1, 0, 0]);
+      enqueueNodeBeliefRevision(harness, target);
+
+      const process = new BeliefReviserProcess({
+        db: harness.db,
+        claimStaleSec: 1,
+      });
+      const firstRun = process.run(harness.createContext(), {});
+      await firstResponseStarted;
+
+      clock.advance(2_000);
+      await process.run(harness.createContext(), {});
+      releaseFirst();
+      await firstRun;
+
+      const [review] = beliefRevisionItems(harness);
+      const mismatchEvent = new StreamReader({
+        dataDir: harness.tempDir,
+      })
+        .tail(20)
+        .find(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            typeof entry.content === "object" &&
+            entry.content !== null &&
+            "hook" in entry.content &&
+            entry.content.hook === "claim_ownership_mismatch_dropped",
+        );
+
+      expect(review).toMatchObject({
+        resolution: "keep",
+      });
+      expect(review?.refs).not.toHaveProperty("belief_revision_failure_count");
+      expect(mismatchEvent?.content).toMatchObject({
+        hook: "claim_ownership_mismatch_dropped",
+        action: "record_parse_failure",
       });
     } finally {
       await harness.cleanup();

@@ -319,6 +319,14 @@ function parseSkillSplitProposal(result: LLMCompleteResult) {
   return skillSplitProposalSchema.parse(call.input);
 }
 
+function isSkillSplitParseFailure(error: unknown): boolean {
+  if (error instanceof z.ZodError) {
+    return true;
+  }
+
+  return error instanceof StorageError && error.code === "PROCEDURAL_SKILL_SPLIT_INVALID";
+}
+
 function parseContextKey(contextKey: string): {
   problemKind: string;
   domainTags: string[];
@@ -812,6 +820,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
       minDivergenceForSplit: synthesizerConfig.minDivergenceForSplit,
       splitCooldownDays: synthesizerConfig.splitCooldownDays,
       splitClaimStaleSec: synthesizerConfig.splitClaimStaleSec,
+      maxSplitParseFailures: synthesizerConfig.maxSplitParseFailures,
     }).slice(0, synthesizerConfig.maxSkillsPerRun);
     const items: ProceduralSynthesizerPlan["items"] = [];
     const splitItems: ProceduralSynthesizerPlan["split_items"] = [];
@@ -994,11 +1003,22 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
             }
 
             const message = error instanceof Error ? error.message : String(error);
-            ctx.skillRepository.recordSplitAttemptAndClearClaim({
-              skillId: candidate.skill.id,
-              attemptedAt: this.clock.now(),
-              claimedAt,
-            });
+            const failedSkill = isSkillSplitParseFailure(error)
+              ? ctx.skillRepository.recordSplitFailureAndClearClaim({
+                  skillId: candidate.skill.id,
+                  attemptedAt: this.clock.now(),
+                  claimedAt,
+                  error: message,
+                })
+              : null;
+
+            if (failedSkill === null) {
+              ctx.skillRepository.recordSplitAttemptAndClearClaim({
+                skillId: candidate.skill.id,
+                attemptedAt: this.clock.now(),
+                claimedAt,
+              });
+            }
             errors.push({
               process: this.name,
               message,
@@ -1010,6 +1030,10 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
                 hook: "skill_split_failed",
                 error: message,
                 skill_id: candidate.skill.id,
+                split_failure_count: failedSkill?.split_failure_count ?? null,
+                split_suppressed:
+                  (failedSkill?.split_failure_count ?? 0) >=
+                  synthesizerConfig.maxSplitParseFailures,
               },
               errors,
             );

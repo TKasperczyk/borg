@@ -9,6 +9,7 @@ import { SuppressionSet } from "../../cognition/attention/index.js";
 import { Reflector } from "../../cognition/reflection/index.js";
 import type { RetrievalConfidence } from "../../retrieval/index.js";
 import { StreamReader } from "../../stream/index.js";
+import { ManualClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
   createSkillId,
@@ -745,6 +746,88 @@ describe("ProceduralSynthesizerProcess", () => {
 
     expect(second.changes).toEqual([]);
     expect(llm.requests).toHaveLength(1);
+  });
+
+  it("suppresses a split candidate after repeated malformed split output", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_bad_split_1",
+              name: "EmitSkillSplit",
+              input: {
+                decision: "split",
+              },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_bad_split_2",
+              name: "EmitSkillSplit",
+              input: {
+                decision: "split",
+              },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 5,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_bad_split_3",
+              name: "EmitSkillSplit",
+              input: {
+                decision: "split",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const clock = new ManualClock(1_000_000);
+    harness = await createOfflineTestHarness({
+      clock,
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+        splitCooldownDays: 0.000001,
+        maxSplitParseFailures: 3,
+        skillSplitDryRun: false,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness);
+    const process = createProcess(harness);
+
+    await process.run(harness.createContext(), {});
+    clock.advance(1_000);
+    await process.run(harness.createContext(), {});
+    clock.advance(1_000);
+    await process.run(harness.createContext(), {});
+    clock.advance(1_000);
+    await process.run(harness.createContext(), {});
+
+    expect(llm.requests).toHaveLength(3);
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      status: "active",
+      split_failure_count: 3,
+      last_split_error: expect.any(String),
+      splitting_at: null,
+    });
   });
 
   it("rejects split proposals that do not cover every divergent bucket", async () => {

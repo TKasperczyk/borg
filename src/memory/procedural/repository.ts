@@ -51,6 +51,8 @@ type SkillSqlRow = {
   superseded_at: number | null;
   splitting_at: number | null;
   last_split_attempt_at: number | null;
+  split_failure_count: number;
+  last_split_error: string | null;
   source_episode_ids: string;
   last_used: number | null;
   last_successful: number | null;
@@ -84,6 +86,8 @@ function rowFromSkill(skill: SkillRecord): SkillSqlRow {
     superseded_at: skill.superseded_at,
     splitting_at: skill.splitting_at,
     last_split_attempt_at: skill.last_split_attempt_at ?? null,
+    split_failure_count: skill.split_failure_count,
+    last_split_error: skill.last_split_error,
     source_episode_ids: serializeJsonValue(skill.source_episode_ids),
     last_used: skill.last_used,
     last_successful: skill.last_successful,
@@ -125,6 +129,14 @@ function skillFromRow(row: Record<string, unknown>): SkillRecord {
       row.last_split_attempt_at === null || row.last_split_attempt_at === undefined
         ? null
         : Number(row.last_split_attempt_at),
+    split_failure_count:
+      row.split_failure_count === null || row.split_failure_count === undefined
+        ? 0
+        : Number(row.split_failure_count),
+    last_split_error:
+      row.last_split_error === null || row.last_split_error === undefined
+        ? null
+        : String(row.last_split_error),
     source_episode_ids: parseJsonArray<string>(
       String(row.source_episode_ids ?? "[]"),
       "source_episode_ids",
@@ -359,8 +371,9 @@ export class SkillRepository {
           INSERT INTO skills (
             id, applies_when, approach, status, alpha, beta, attempts, successes, failures,
             alternatives, superseded_by, superseded_at, splitting_at, last_split_attempt_at,
-            source_episode_ids, last_used, last_successful, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            split_failure_count, last_split_error, source_episode_ids, last_used,
+            last_successful, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             applies_when = excluded.applies_when,
             approach = excluded.approach,
@@ -375,6 +388,8 @@ export class SkillRepository {
             superseded_at = excluded.superseded_at,
             splitting_at = excluded.splitting_at,
             last_split_attempt_at = excluded.last_split_attempt_at,
+            split_failure_count = excluded.split_failure_count,
+            last_split_error = excluded.last_split_error,
             source_episode_ids = excluded.source_episode_ids,
             last_used = excluded.last_used,
             last_successful = excluded.last_successful,
@@ -396,6 +411,8 @@ export class SkillRepository {
         row.superseded_at,
         row.splitting_at,
         row.last_split_attempt_at,
+        row.split_failure_count,
+        row.last_split_error,
         row.source_episode_ids,
         row.last_used,
         row.last_successful,
@@ -628,6 +645,49 @@ export class SkillRepository {
         `,
       )
       .run(input.attemptedAt, input.claimedAt, input.attemptedAt, input.skillId);
+  }
+
+  recordSplitFailureAndClearClaim(input: {
+    skillId: SkillId;
+    attemptedAt: number;
+    error: string;
+    claimedAt?: number | null;
+  }): SkillRecord | null {
+    const boundedError = input.error.trim().slice(0, 2_000) || "skill split parse failure";
+
+    if (input.claimedAt === undefined || input.claimedAt === null) {
+      this.db
+        .prepare(
+          `
+            UPDATE skills
+            SET
+              split_failure_count = split_failure_count + 1,
+              last_split_error = ?,
+              last_split_attempt_at = max(COALESCE(last_split_attempt_at, 0), ?),
+              updated_at = ?
+            WHERE id = ?
+          `,
+        )
+        .run(boundedError, input.attemptedAt, input.attemptedAt, input.skillId);
+      return this.get(input.skillId);
+    }
+
+    this.db
+      .prepare(
+        `
+          UPDATE skills
+          SET
+            split_failure_count = split_failure_count + 1,
+            last_split_error = ?,
+            last_split_attempt_at = max(COALESCE(last_split_attempt_at, 0), ?),
+            splitting_at = CASE WHEN splitting_at = ? THEN NULL ELSE splitting_at END,
+            updated_at = ?
+          WHERE id = ?
+        `,
+      )
+      .run(boundedError, input.attemptedAt, input.claimedAt, input.attemptedAt, input.skillId);
+
+    return this.get(input.skillId);
   }
 
   clearSplitClaim(input: { skillId: SkillId; claimedAt: number; clearedAt: number }): void {
@@ -932,8 +992,9 @@ export class SkillRepository {
     }
 
     const embedding = await this.options.embeddingClient.embed(text);
+    const searchLimit = Math.max(limit * 5, 20);
     const rows = await this.table.search(embedding, {
-      limit,
+      limit: searchLimit,
       distanceType: "cosine",
     });
     const ids = rows
@@ -962,7 +1023,8 @@ export class SkillRepository {
           similarity: Math.max(0, Math.min(1, 1 - (distance ?? 1))),
         } satisfies SkillSearchCandidate;
       })
-      .filter((item): item is SkillSearchCandidate => item !== null);
+      .filter((item): item is SkillSearchCandidate => item !== null)
+      .slice(0, limit);
   }
 
   recordOutcome(

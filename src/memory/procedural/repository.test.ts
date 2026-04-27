@@ -393,6 +393,82 @@ describe("SkillRepository", () => {
     });
   });
 
+  it("does not return superseded skill vectors after split overfetch filtering", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    const skill = await harness.skillRepository.add({
+      applies_when: "Rust lifetime debugging",
+      approach: "Compare the borrow checker failure against a known-good ownership pattern.",
+      sourceEpisodes: [episode.id],
+    });
+    const rustContext = deriveProceduralContextKey({
+      problem_kind: "code_debugging",
+      domain_tags: ["rust"],
+      audience_scope: "self",
+    });
+    const planningContext = deriveProceduralContextKey({
+      problem_kind: "planning",
+      domain_tags: ["roadmap"],
+      audience_scope: "self",
+    });
+
+    harness.skillRepository.restoreContextStats([
+      {
+        skill_id: skill.id,
+        context_key: rustContext,
+        alpha: 8,
+        beta: 1,
+        attempts: 8,
+        successes: 8,
+        failures: 0,
+        last_used: 1_000,
+        last_successful: 1_000,
+        updated_at: 1_000,
+      },
+      {
+        skill_id: skill.id,
+        context_key: planningContext,
+        alpha: 1,
+        beta: 8,
+        attempts: 8,
+        successes: 0,
+        failures: 8,
+        last_used: 1_000,
+        last_successful: null,
+        updated_at: 1_000,
+      },
+    ]);
+    harness.skillRepository.claimSplit({
+      skillId: skill.id,
+      claimedAt: 2_000,
+      staleBefore: 1_000,
+    });
+
+    const split = await harness.skillRepository.supersedeWithSplits({
+      skillId: skill.id,
+      claimedAt: 2_000,
+      parts: [
+        {
+          applies_when: "Rust lifetime debugging",
+          approach: "Minimize borrow scope and compare against ownership examples.",
+          target_contexts: [rustContext],
+        },
+        {
+          applies_when: "Roadmap planning",
+          approach: "Compare the roadmap against current project goals.",
+          target_contexts: [planningContext],
+        },
+      ],
+    });
+
+    const results = await harness.skillRepository.searchByContext("Rust lifetime debugging", 1);
+
+    expect(split?.superseded.id).toBe(skill.id);
+    expect(results.map((candidate) => candidate.skill.id)).not.toContain(skill.id);
+    expect(split?.created.map((created) => created.id)).toContain(results[0]?.skill.id);
+  });
+
   it("samples global skill posteriors when context has no stats yet", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();
