@@ -8,3 +8,5 @@ coverage
 .borg-data
 .borg-test-*
 tmp
+.codex
+.mcp.json
