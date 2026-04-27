@@ -32,12 +32,12 @@ import {
 import { ReviewQueueRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
-import { EpisodicRepository } from "../memory/episodic/index.js";
+import { EpisodicRepository, isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import { SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
-import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, type EntityId, type EpisodeId, type SessionId } from "../util/ids.js";
 import { NOOP_TRACER, type TurnTracer } from "./tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
 import { SessionLock } from "./session-lock.js";
@@ -61,6 +61,47 @@ function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>)
   }
 
   return flattened;
+}
+
+type ProvenanceScopedSelfRecord = {
+  provenance?: {
+    kind: string;
+    episode_ids?: readonly EpisodeId[];
+  } | null;
+  evidence_episode_ids?: readonly EpisodeId[] | null;
+  key_episode_ids?: readonly EpisodeId[] | null;
+};
+
+function getSelfRecordEvidenceEpisodeIds(record: ProvenanceScopedSelfRecord): EpisodeId[] {
+  if (record.provenance?.kind !== "episodes") {
+    return [];
+  }
+
+  const hasExplicitEvidence =
+    record.evidence_episode_ids !== undefined || record.key_episode_ids !== undefined;
+  const explicitEpisodeIds = [
+    ...(record.evidence_episode_ids ?? []),
+    ...(record.key_episode_ids ?? []),
+  ];
+
+  if (hasExplicitEvidence && explicitEpisodeIds.length === 0) {
+    return [];
+  }
+
+  return [...new Set([...(record.provenance.episode_ids ?? []), ...explicitEpisodeIds])];
+}
+
+function isSelfRecordVisible(
+  record: ProvenanceScopedSelfRecord,
+  visibleEpisodeIds: ReadonlySet<EpisodeId>,
+): boolean {
+  const episodeIds = getSelfRecordEvidenceEpisodeIds(record);
+
+  if (episodeIds.length === 0) {
+    return true;
+  }
+
+  return episodeIds.some((episodeId) => visibleEpisodeIds.has(episodeId));
 }
 
 export type TurnInput = {
@@ -204,19 +245,37 @@ export class TurnOrchestrator {
     this.options.workingMemoryStore.clear(sessionId);
   }
 
-  private buildSelfSnapshot(): SelfSnapshot {
+  private async buildSelfSnapshot(audienceEntityId: EntityId | null): Promise<SelfSnapshot> {
     const values = this.options.valuesRepository.list();
     const goals = flattenGoals(this.options.goalsRepository.list({ status: "active" }));
     const traits = this.options.traitsRepository.list();
     const currentPeriod = this.options.autobiographicalRepository?.currentPeriod() ?? null;
     const recentGrowthMarkers = this.options.growthMarkersRepository?.list({ limit: 3 }) ?? [];
+    const scopedRecords: ProvenanceScopedSelfRecord[] = [
+      ...values,
+      ...goals,
+      ...traits,
+      ...(currentPeriod === null ? [] : [currentPeriod]),
+      ...recentGrowthMarkers,
+    ];
+    const evidenceEpisodeIds = [
+      ...new Set(scopedRecords.flatMap((record) => getSelfRecordEvidenceEpisodeIds(record))),
+    ];
+    const evidenceEpisodes = await this.options.episodicRepository.getMany(evidenceEpisodeIds);
+    const visibleEpisodeIds = new Set(
+      evidenceEpisodes
+        .filter((episode) => isEpisodeVisibleToAudience(episode, audienceEntityId))
+        .map((episode) => episode.id),
+    );
+    const filterVisible = <T extends ProvenanceScopedSelfRecord>(record: T): boolean =>
+      isSelfRecordVisible(record, visibleEpisodeIds);
 
     return {
-      values,
-      goals,
-      traits,
-      currentPeriod,
-      recentGrowthMarkers,
+      values: values.filter(filterVisible),
+      goals: goals.filter(filterVisible),
+      traits: traits.filter(filterVisible),
+      currentPeriod: currentPeriod === null || filterVisible(currentPeriod) ? currentPeriod : null,
+      recentGrowthMarkers: recentGrowthMarkers.filter(filterVisible),
     };
   }
 
@@ -273,7 +332,6 @@ export class TurnOrchestrator {
           onHookFailure: (hook, error) => this.appendHookFailureEvent(streamWriter, hook, error),
         });
         const llmClient = this.options.llmFactory();
-        const selfSnapshot = this.buildSelfSnapshot();
         const isUserTurn = input.origin !== "autonomous";
         const cognitionInput =
           input.autonomyTrigger === null || input.autonomyTrigger === undefined
@@ -289,6 +347,7 @@ export class TurnOrchestrator {
           audienceEntityId === null
             ? null
             : this.options.socialRepository.getProfile(audienceEntityId);
+        const selfSnapshot = await this.buildSelfSnapshot(audienceEntityId);
         const perceptionResult = await turnPerception.perceive({
           sessionId,
           isSelfAudience,
