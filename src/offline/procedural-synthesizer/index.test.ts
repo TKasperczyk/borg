@@ -570,8 +570,6 @@ describe("ProceduralSynthesizerProcess", () => {
             pending_intents: [],
             suppressed: [],
             mood: null,
-            last_selected_skill_id: null,
-            last_selected_skill_turn: null,
             pending_procedural_attempts: [
               {
                 problem_text: "Atlas deploy failed after rollback.",
@@ -618,8 +616,6 @@ describe("ProceduralSynthesizerProcess", () => {
               pending_intents: [],
               suppressed: [],
               mood: null,
-              last_selected_skill_id: null,
-              last_selected_skill_turn: null,
               pending_procedural_attempts: [
                 {
                   problem_text: "Atlas deploy failed after rollback.",

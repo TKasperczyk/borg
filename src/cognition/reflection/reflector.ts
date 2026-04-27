@@ -456,8 +456,6 @@ export class Reflector {
       nextWorkingMemory = {
         ...nextWorkingMemory,
         pending_procedural_attempts: survivingAttempts,
-        last_selected_skill_id: null,
-        last_selected_skill_turn: null,
       };
     }
 

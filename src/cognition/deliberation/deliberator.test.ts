@@ -1808,8 +1808,6 @@ describe("deliberator", () => {
         pending_intents: [],
         suppressed: [],
         mood: null,
-        last_selected_skill_id: null,
-        last_selected_skill_turn: null,
         mode: "reflective",
         updated_at: 0,
       },

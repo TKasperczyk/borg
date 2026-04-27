@@ -46,8 +46,6 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
         arousal: 0.9,
         dominant_emotion: null,
       },
-      last_selected_skill_id: null,
-      last_selected_skill_turn: null,
       mode: "problem_solving",
       updated_at: NOW_MS,
     },

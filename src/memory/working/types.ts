@@ -103,37 +103,41 @@ const workingMemoryObjectSchema = z.object({
   pending_trait_attribution: pendingTraitAttributionSchema.nullable().default(null),
   suppressed: z.array(suppressedEntrySchema).default([]),
   mood: affectiveSignalSchema.nullable().default(null),
-  last_selected_skill_id: workingSkillIdSchema.nullable().default(null),
-  last_selected_skill_turn: z.number().int().nonnegative().nullable().default(null),
   pending_procedural_attempts: z.array(pendingProceduralAttemptSchema).default([]),
   mode: cognitiveModeSchema.nullable(),
   updated_at: z.number().finite(),
 });
 
-// Backward-compat preprocess: legacy persisted files have a singular
-// `pending_procedural_attempt: T | null`; migrate to the array shape on read.
+// Backward-compat preprocess: legacy persisted files may have a singular
+// `pending_procedural_attempt: T | null` (Sprint 53 moved to a list) or
+// the now-removed `last_selected_skill_*` fields (Sprint 54 dropped them
+// as unused). Drop the dead fields and migrate the singular slot to the
+// array shape on read.
 export const workingMemorySchema = z.preprocess((input) => {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
     return input;
   }
 
   const record = input as Record<string, unknown>;
+  const {
+    pending_procedural_attempt: legacyAttempt,
+    last_selected_skill_id: _legacySkillId,
+    last_selected_skill_turn: _legacySkillTurn,
+    ...rest
+  } = record;
 
-  if ("pending_procedural_attempts" in record) {
-    return record;
+  if ("pending_procedural_attempts" in rest) {
+    return rest;
   }
 
-  if (!("pending_procedural_attempt" in record)) {
-    return record;
+  if (legacyAttempt === undefined) {
+    return rest;
   }
-
-  const legacy = record.pending_procedural_attempt;
-  const { pending_procedural_attempt: _legacy, ...rest } = record;
 
   return {
     ...rest,
     pending_procedural_attempts:
-      legacy === null || legacy === undefined ? [] : [legacy],
+      legacyAttempt === null ? [] : [legacyAttempt],
   };
 }, workingMemoryObjectSchema);
 
@@ -161,8 +165,6 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
     pending_trait_attribution: null,
     suppressed: [],
     mood: null,
-    last_selected_skill_id: null,
-    last_selected_skill_turn: null,
     pending_procedural_attempts: [],
     mode: null,
     updated_at: timestamp,
