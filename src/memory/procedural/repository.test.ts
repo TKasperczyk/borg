@@ -156,6 +156,71 @@ describe("SkillRepository", () => {
     ]);
   });
 
+  it("upgrades a grounded unclear evidence row when a later success/failure arrives", async () => {
+    // Sprint 55 regression test: with Sprint 53's multi-turn pending
+    // attempts, an early "unclear" outcome must not block a later
+    // grounded success/failure from being persisted for the synthesizer.
+    harness = await createOfflineTestHarness();
+    const pendingAttempt = {
+      problem_text: "Atlas deploy keeps flaking on the rollback step.",
+      approach_summary: "Compare against the last clean release state.",
+      selected_skill_id: null,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
+      turn_counter: 5,
+      audience_entity_id: null,
+    };
+
+    const initial = harness.proceduralEvidenceRepository.insert({
+      pendingAttemptSnapshot: pendingAttempt,
+      classification: "unclear",
+      evidenceText: "User replied without saying whether it worked.",
+    });
+    expect(initial.classification).toBe("unclear");
+
+    const upgraded = harness.proceduralEvidenceRepository.insert({
+      pendingAttemptSnapshot: pendingAttempt,
+      classification: "success",
+      evidenceText: "User confirmed the rollback comparison fixed it.",
+    });
+
+    expect(upgraded.id).toBe(initial.id);
+    expect(upgraded.classification).toBe("success");
+    expect(upgraded.evidence_text).toBe(
+      "User confirmed the rollback comparison fixed it.",
+    );
+    const rows = harness.proceduralEvidenceRepository.list();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.classification).toBe("success");
+  });
+
+  it("does not downgrade an actionable evidence row to unclear", async () => {
+    harness = await createOfflineTestHarness();
+    const pendingAttempt = {
+      problem_text: "Fix the flaky deploy.",
+      approach_summary: "Compare deploy logs.",
+      selected_skill_id: null,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"] as never,
+      turn_counter: 9,
+      audience_entity_id: null,
+    };
+
+    const success = harness.proceduralEvidenceRepository.insert({
+      pendingAttemptSnapshot: pendingAttempt,
+      classification: "success",
+      evidenceText: "User confirmed the fix.",
+    });
+
+    const dedup = harness.proceduralEvidenceRepository.insert({
+      pendingAttemptSnapshot: pendingAttempt,
+      classification: "unclear",
+      evidenceText: "Later turn re-graded as unclear.",
+    });
+
+    expect(dedup.id).toBe(success.id);
+    expect(dedup.classification).toBe("success");
+    expect(dedup.evidence_text).toBe("User confirmed the fix.");
+  });
+
   it("does not select a skill below the configured similarity threshold", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();

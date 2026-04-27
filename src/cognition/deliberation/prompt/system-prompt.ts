@@ -308,6 +308,19 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
     }
   }
 
+  const pendingAttempts = workingMemory.pending_procedural_attempts ?? [];
+  if (pendingAttempts.length > 0) {
+    lines.push(
+      "Pending procedural attempts (still awaiting outcome -- mention only if user signal warrants):",
+    );
+    for (const attempt of pendingAttempts) {
+      const skill = attempt.selected_skill_id ?? "no-skill";
+      lines.push(
+        `- turn ${attempt.turn_counter} | skill=${skill} | problem: ${attempt.problem_text.trim()} | approach: ${attempt.approach_summary.trim()}`,
+      );
+    }
+  }
+
   return lines.join("\n");
 }
 

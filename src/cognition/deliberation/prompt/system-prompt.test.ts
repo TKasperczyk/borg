@@ -162,6 +162,37 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("- Check the Atlas rollout after tests finish -> review deploy status");
   });
 
+  it("renders pending procedural attempts in working state so cognition can see them", () => {
+    // Sprint 55 regression test: Sprint 53 multi-slot mechanism was
+    // invisible to deliberation because the prompt summarizer ignored
+    // pending_procedural_attempts. Round 5 review caught it.
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          pending_procedural_attempts: [
+            {
+              problem_text: "Atlas deploy keeps failing on the rollback step",
+              approach_summary: "Compare against the last clean release state",
+              selected_skill_id: "skl_aaaaaaaaaaaaaaaa" as never,
+              source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"] as never,
+              turn_counter: 4,
+              audience_entity_id: null,
+            },
+          ],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_working_state");
+
+    expect(block).toContain("Pending procedural attempts");
+    expect(block).toContain("turn 4");
+    expect(block).toContain("skill=skl_aaaaaaaaaaaaaaaa");
+    expect(block).toContain("Atlas deploy keeps failing on the rollback step");
+    expect(block).toContain("Compare against the last clean release state");
+  });
+
   it("renders the selected skill first with up to two evaluated alternatives", () => {
     const tracePath = makeSkill(
       "skl_aaaaaaaaaaaaaaaa",

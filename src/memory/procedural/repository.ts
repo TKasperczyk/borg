@@ -564,7 +564,56 @@ export class ProceduralEvidenceRepository {
       .get(snapshotJson) as Record<string, unknown> | undefined;
 
     if (existing !== undefined) {
-      return proceduralEvidenceFromRow(existing);
+      // Sprint 55: a pending attempt may be graded as `unclear` first
+      // (Sprint 53 keeps it pending) and later get a grounded
+      // success/failure signal. Upgrade the existing row in place so the
+      // synthesizer sees the actionable classification. Anything else
+      // (same classification, downgrade, ungrounded retry) dedups.
+      const existingRecord = proceduralEvidenceFromRow(existing);
+      const incomingClassification = proceduralOutcomeClassificationSchema.parse(
+        input.classification,
+      );
+      const incomingGrounded = input.grounded ?? true;
+      const isUpgrade =
+        incomingGrounded &&
+        existingRecord.classification === "unclear" &&
+        (incomingClassification === "success" || incomingClassification === "failure");
+
+      if (!isUpgrade) {
+        return existingRecord;
+      }
+
+      const resolvedEpisodeIds = uniqueEpisodeIds([
+        ...(input.resolvedEpisodeIds ?? []),
+      ]);
+      this.db
+        .prepare(
+          `
+            UPDATE procedural_evidence
+            SET classification = ?,
+                evidence_text = ?,
+                grounded = 1,
+                resolved_episode_ids = ?,
+                audience_entity_id = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          incomingClassification,
+          input.evidenceText.trim(),
+          serializeJsonValue(resolvedEpisodeIds),
+          input.audienceEntityId ?? existingRecord.audience_entity_id,
+          existingRecord.id,
+        );
+
+      return {
+        ...existingRecord,
+        classification: incomingClassification,
+        evidence_text: input.evidenceText.trim(),
+        grounded: true,
+        resolved_episode_ids: resolvedEpisodeIds,
+        audience_entity_id: input.audienceEntityId ?? existingRecord.audience_entity_id,
+      };
     }
 
     const record = proceduralEvidenceSchema.parse({
