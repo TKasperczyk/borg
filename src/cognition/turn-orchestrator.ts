@@ -1,24 +1,23 @@
 import { randomUUID } from "node:crypto";
 
 import type { Config } from "../config/index.js";
-import { SuppressionSet, computeRetrievalLimit, computeWeights } from "./attention/index.js";
+import { SuppressionSet } from "./attention/index.js";
+import { AttributionLifecycleService } from "./attribution/lifecycle-service.js";
 import { performAction, type ToolLoopCallRecord } from "./action/index.js";
 import { formatAutonomyTriggerContext, type AutonomyTriggerContext } from "./autonomy-trigger.js";
+import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
 import { detectAffectiveSignal } from "./perception/affective-signal.js";
 import { Perceiver } from "./perception/index.js";
+import { PendingProceduralAttemptTracker } from "./procedural/pending-attempt-tracker.js";
 import { TurnContextCompiler, type RecencyWindow } from "./recency/index.js";
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import { Reflector } from "./reflection/index.js";
-import type { RetrievalPipeline, RetrievalSearchOptions } from "../retrieval/index.js";
+import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
+import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { createNeutralAffectiveSignal, MoodRepository } from "../memory/affective/index.js";
-import {
-  CommitmentChecker,
-  CommitmentRepository,
-  EntityRepository,
-  type CommitmentRecord,
-} from "../memory/commitments/index.js";
+import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import {
   ProceduralEvidenceRepository,
   SkillRepository,
@@ -33,30 +32,20 @@ import {
   TraitsRepository,
   ValuesRepository,
   type GoalRecord,
-  type ValueRecord,
 } from "../memory/self/index.js";
 import { ReviewQueueRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
-import {
-  PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS,
-  PENDING_PROCEDURAL_ATTEMPTS_LIMIT,
-  WorkingMemoryStore,
-  type WorkingMemory,
-} from "../memory/working/index.js";
+import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { type IdentityService } from "../memory/identity/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import { ConfigError, SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
-import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import { NOOP_TRACER, type TurnTracer } from "./tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
 import { SessionLock } from "./session-lock.js";
-
-const PENDING_SOCIAL_ATTRIBUTION_TTL_MS = 60 * 60 * 1_000;
-const PENDING_TRAIT_ATTRIBUTION_TTL_MS = PENDING_SOCIAL_ATTRIBUTION_TTL_MS;
-const TRAIT_ATTRIBUTION_POSITIVE_VALENCE_THRESHOLD = 0.2;
 
 function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>): GoalRecord[] {
   const flattened: GoalRecord[] = [];
@@ -77,29 +66,6 @@ function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>)
   }
 
   return flattened;
-}
-
-function selectActiveValues(values: readonly ValueRecord[], candidateLimit = 2): ValueRecord[] {
-  const established = values.filter((value) => value.state === "established");
-  const candidates = values
-    .filter((value) => value.state !== "established")
-    .sort((left, right) => right.priority - left.priority || left.created_at - right.created_at)
-    .slice(0, candidateLimit);
-
-  return [...established, ...candidates];
-}
-
-function compactTurnText(text: string, maxLength: number): string {
-  const compacted = text.replace(/\s+/g, " ").trim();
-
-  return compacted.length <= maxLength ? compacted : compacted.slice(0, maxLength).trimEnd();
-}
-
-function buildSkillSelectionQuery(userMessage: string, entities: readonly string[]): string {
-  return [userMessage, ...entities]
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0)
-    .join(" ");
 }
 
 export type TurnInput = {
@@ -182,6 +148,10 @@ export class TurnOrchestrator {
   private readonly createStreamReader: (sessionId: SessionId) => StreamReader;
   private readonly sessionLock: SessionLock;
   private readonly tracer: TurnTracer;
+  private readonly attributionLifecycleService: AttributionLifecycleService;
+  private readonly turnRetrievalCoordinator: TurnRetrievalCoordinator;
+  private readonly commitmentGuardRunner: CommitmentGuardRunner;
+  private readonly pendingProceduralAttemptTracker: PendingProceduralAttemptTracker;
 
   constructor(private readonly options: TurnOrchestratorOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -199,6 +169,27 @@ export class TurnOrchestrator {
           dataDir: options.config.dataDir,
           sessionId,
         }));
+    this.attributionLifecycleService = new AttributionLifecycleService({
+      socialRepository: options.socialRepository,
+      traitsRepository: options.traitsRepository,
+      episodicRepository: options.episodicRepository,
+      clock: this.clock,
+    });
+    this.turnRetrievalCoordinator = new TurnRetrievalCoordinator({
+      commitmentRepository: options.commitmentRepository,
+      reviewQueueRepository: options.reviewQueueRepository,
+      moodRepository: options.moodRepository,
+      retrievalPipeline: options.retrievalPipeline,
+      skillSelector: options.skillSelector,
+      clock: this.clock,
+    });
+    this.commitmentGuardRunner = new CommitmentGuardRunner({
+      detectionModel: options.config.anthropic.models.background,
+      rewriteModel: options.config.anthropic.models.cognition,
+      entityRepository: options.entityRepository,
+      tracer: this.tracer,
+    });
+    this.pendingProceduralAttemptTracker = new PendingProceduralAttemptTracker();
   }
 
   loadWorkingMemory(sessionId: SessionId): WorkingMemory {
@@ -237,57 +228,6 @@ export class TurnOrchestrator {
     }
   }
 
-  private collectApplicableCommitments(
-    audienceEntityId: ReturnType<EntityRepository["resolve"]> | null,
-    perceivedEntities: readonly string[],
-  ): CommitmentRecord[] {
-    const aboutEntityIds: Array<ReturnType<EntityRepository["resolve"]> | null> = [];
-    const seenEntities = new Set<string>();
-
-    for (const entity of perceivedEntities) {
-      const normalized = entity.trim();
-
-      if (normalized.length === 0) {
-        continue;
-      }
-
-      const key = normalized.toLowerCase();
-
-      if (seenEntities.has(key)) {
-        continue;
-      }
-
-      seenEntities.add(key);
-      const entityId = this.options.entityRepository.findByName(normalized);
-
-      if (entityId !== null) {
-        aboutEntityIds.push(entityId);
-      }
-    }
-
-    if (aboutEntityIds.length === 0) {
-      aboutEntityIds.push(null);
-    }
-
-    const byId = new Map<string, CommitmentRecord>();
-
-    for (const aboutEntityId of aboutEntityIds) {
-      const applicable = this.options.commitmentRepository.getApplicable({
-        audience: audienceEntityId,
-        aboutEntity: aboutEntityId,
-        nowMs: this.clock.now(),
-      });
-
-      for (const commitment of applicable) {
-        byId.set(commitment.id, commitment);
-      }
-    }
-
-    return [...byId.values()].sort(
-      (left, right) => right.priority - left.priority || left.created_at - right.created_at,
-    );
-  }
-
   private async appendFailureEvent(
     streamWriter: StreamWriter,
     error: unknown,
@@ -314,22 +254,6 @@ export class TurnOrchestrator {
     error: unknown,
   ): Promise<void> {
     await appendInternalFailureEvent(streamWriter, hook, error);
-  }
-
-  private async resolveTraitEvidenceEpisodes(
-    attribution: NonNullable<WorkingMemory["pending_trait_attribution"]>,
-  ): Promise<EpisodeId[]> {
-    if (attribution.source_stream_entry_ids.length > 0) {
-      const resolved = await this.options.episodicRepository.findBySourceStreamIdsContaining(
-        attribution.source_stream_entry_ids,
-      );
-
-      if (resolved !== null) {
-        return [resolved.id];
-      }
-    }
-
-    return [...attribution.source_episode_ids];
   }
 
   async run(input: TurnInput): Promise<TurnResult> {
@@ -431,101 +355,19 @@ export class TurnOrchestrator {
           workingMemory.suppressed,
           workingMemory.turn_counter,
         );
-        let pendingSocialAttribution = workingMemory.pending_social_attribution;
-        let pendingTraitAttribution = workingMemory.pending_trait_attribution;
-
-        if (isUserTurn && pendingSocialAttribution !== null) {
-          const nowMs = this.clock.now();
-          const expired =
-            nowMs - pendingSocialAttribution.turn_completed_ts > PENDING_SOCIAL_ATTRIBUTION_TTL_MS;
-          const audienceMatches =
-            audienceEntityId !== null && pendingSocialAttribution.entity_id === audienceEntityId;
-
-          if (expired || !audienceMatches) {
-            await streamWriter.append({
-              kind: "internal_event",
-              content: {
-                kind: "social_attribution_drop",
-                reason: expired ? "expired" : "audience_mismatch",
-                pending_entity_id: pendingSocialAttribution.entity_id,
-                current_audience_entity_id: audienceEntityId,
-                turn_completed_ts: pendingSocialAttribution.turn_completed_ts,
-                agent_response_summary: pendingSocialAttribution.agent_response_summary,
-              },
-            });
-            pendingSocialAttribution = null;
-          } else {
-            try {
-              this.options.socialRepository.attachSentiment(
-                pendingSocialAttribution.interaction_id,
-                {
-                  valence: perception.affectiveSignal.valence,
-                  now: nowMs,
-                },
-              );
-              audienceProfile = this.options.socialRepository.getProfile(audienceEntityId);
-              pendingSocialAttribution = null;
-            } catch (error) {
-              await this.appendHookFailureEvent(streamWriter, "social_update", error);
-            }
-          }
-        }
-
-        if (isUserTurn && pendingTraitAttribution !== null) {
-          const nowMs = this.clock.now();
-          const expired =
-            nowMs - pendingTraitAttribution.turn_completed_ts > PENDING_TRAIT_ATTRIBUTION_TTL_MS;
-          const audienceMatches = pendingTraitAttribution.audience_entity_id === audienceEntityId;
-
-          if (expired || !audienceMatches) {
-            await streamWriter.append({
-              kind: "internal_event",
-              content: {
-                kind: "trait_attribution_drop",
-                reason: expired ? "expired" : "audience_mismatch",
-                pending_trait_label: pendingTraitAttribution.trait_label,
-                pending_audience_entity_id: pendingTraitAttribution.audience_entity_id,
-                current_audience_entity_id: audienceEntityId,
-                turn_completed_ts: pendingTraitAttribution.turn_completed_ts,
-                source_episode_ids: pendingTraitAttribution.source_episode_ids,
-                source_stream_entry_ids: pendingTraitAttribution.source_stream_entry_ids,
-              },
-            });
-            pendingTraitAttribution = null;
-          } else if (
-            perception.affectiveSignal.valence > TRAIT_ATTRIBUTION_POSITIVE_VALENCE_THRESHOLD
-          ) {
-            // Sprint 56: resolve the demonstrating turn's stream entries
-            // to the extracted episode. If extraction hasn't completed
-            // yet, keep the attribution pending so a later turn can
-            // reinforce once an episode exists; TTL still expires it
-            // eventually. Legacy state may carry source_episode_ids
-            // directly. Resolution is wrapped so a repository failure
-            // can't take down the user turn.
-            try {
-              const evidenceEpisodeIds = await this.resolveTraitEvidenceEpisodes(
-                pendingTraitAttribution,
-              );
-
-              if (evidenceEpisodeIds.length > 0) {
-                this.options.traitsRepository.reinforce({
-                  label: pendingTraitAttribution.trait_label,
-                  delta: pendingTraitAttribution.strength_delta,
-                  provenance: {
-                    kind: "episodes",
-                    episode_ids: evidenceEpisodeIds,
-                  },
-                  timestamp: nowMs,
-                });
-                pendingTraitAttribution = null;
-              }
-            } catch (error) {
-              await this.appendHookFailureEvent(streamWriter, "trait_update", error);
-            }
-          } else {
-            pendingTraitAttribution = null;
-          }
-        }
+        const attributionResult = await this.attributionLifecycleService.settle({
+          isUserTurn,
+          audienceEntityId,
+          perception,
+          pendingSocialAttribution: workingMemory.pending_social_attribution,
+          pendingTraitAttribution: workingMemory.pending_trait_attribution,
+          audienceProfile,
+          streamWriter,
+          onHookFailure: (hook, error) => this.appendHookFailureEvent(streamWriter, hook, error),
+        });
+        const pendingSocialAttribution = attributionResult.pendingSocialAttribution;
+        const pendingTraitAttribution = attributionResult.pendingTraitAttribution;
+        audienceProfile = attributionResult.audienceProfile;
 
         const userEntry = {
           kind: "user_msg",
@@ -553,87 +395,29 @@ export class TurnOrchestrator {
           },
           ...(input.audience === undefined ? {} : { audience: input.audience }),
         });
-        const applicableCommitments = this.collectApplicableCommitments(
-          audienceEntityId,
-          perception.entities,
-        );
-        const pendingCorrections = this.options.reviewQueueRepository
-          .list({
-            kind: "correction",
-            openOnly: true,
-          })
-          .filter((item) => {
-            const correctionAudience =
-              typeof item.refs.audience_entity_id === "string"
-                ? item.refs.audience_entity_id
-                : null;
-
-            if (audienceEntityId === null) {
-              return correctionAudience === null;
-            }
-
-            return correctionAudience === null || correctionAudience === audienceEntityId;
-          });
-        const perceivedMood = workingMemory.mood ?? createNeutralAffectiveSignal();
-        const perceivedMoodActive =
-          Math.abs(perceivedMood.valence) + Math.abs(perceivedMood.arousal) > 0.3;
-        const retrievalMood = perceivedMoodActive
-          ? perceivedMood
-          : this.options.moodRepository.current(sessionId);
-        const affectiveTrajectory = this.options.moodRepository.history(sessionId, {
-          limit: 5,
-        });
-        const activeValues = selectActiveValues(selfSnapshot.values);
-
-        const attentionWeights = computeWeights(perception.mode, {
-          currentGoals: selfSnapshot.goals,
-          hasActiveValues: activeValues.length > 0,
-          hasTemporalCue: perception.temporalCue !== null,
-          moodActive: Math.abs(retrievalMood.valence) + Math.abs(retrievalMood.arousal) > 0.3,
-          audienceTrust: audienceProfile?.trust ?? null,
-        });
-        const retrievalOptions: RetrievalSearchOptions = {
-          limit: computeRetrievalLimit(perception.mode),
-          audienceEntityId,
-          attentionWeights,
-          goalDescriptions: selfSnapshot.goals.map((goal) => goal.description),
-          activeValues,
-          temporalCue: perception.temporalCue,
-          strictTimeRange: perception.temporalCue !== null,
-          moodState: retrievalMood,
-          audienceProfile,
-          audienceTerms: isSelfAudience
-            ? []
-            : audienceEntity === null
-              ? input.audience === undefined
-                ? []
-                : [input.audience]
-              : [
-                  audienceEntity.canonical_name,
-                  ...audienceEntity.aliases,
-                  ...(input.audience === undefined ? [] : [input.audience]),
-                ],
-          entityTerms: perception.entities,
-          suppressionSet,
-          includeOpenQuestions: perception.mode === "reflective",
-          traceTurnId: turnId,
-        };
-        const retrieval = await this.options.retrievalPipeline.searchWithContext(
+        const retrievalContext = await this.turnRetrievalCoordinator.coordinate({
+          sessionId,
+          turnId,
+          userMessage: input.userMessage,
           cognitionInput,
-          retrievalOptions,
-        );
-        const retrievedEpisodes = retrieval.episodes;
-        const retrievedSemantic = retrieval.semantic;
-        const skillSelectionQuery = buildSkillSelectionQuery(
-          input.userMessage,
-          perception.entities,
-        );
-        const selectedSkill =
-          perception.mode === "problem_solving"
-            ? await this.options.skillSelector.select(skillSelectionQuery, {
-                k: 5,
-              })
-            : null;
+          inputAudience: input.audience,
+          isSelfAudience,
+          audienceEntityId,
+          audienceEntity,
+          audienceProfile,
+          perception,
+          workingMemory,
+          selfSnapshot,
+          suppressionSet,
+          findEntityByName: (name) => this.options.entityRepository.findByName(name),
+        });
+        const applicableCommitments = retrievalContext.applicableCommitments;
+        const pendingCorrections = retrievalContext.pendingCorrections;
+        const affectiveTrajectory = retrievalContext.affectiveTrajectory;
+        const retrieval = retrievalContext.retrieval;
+        const retrievedEpisodes = retrievalContext.retrievedEpisodes;
+        const retrievedSemantic = retrievalContext.retrievedSemantic;
+        const selectedSkill = retrievalContext.selectedSkill;
         const deliberator = new Deliberator({
           llmClient,
           toolDispatcher: this.options.toolDispatcher,
@@ -669,11 +453,7 @@ export class TurnOrchestrator {
             options: {
               stakes: input.stakes,
             },
-            reRetrieve: (query, overrides = {}) =>
-              this.options.retrievalPipeline.search(query, {
-                ...retrievalOptions,
-                ...overrides,
-              }),
+            reRetrieve: retrievalContext.reRetrieve,
           },
           streamWriter,
         );
@@ -682,46 +462,18 @@ export class TurnOrchestrator {
           ...workingMemory,
           updated_at: this.clock.now(),
         };
-        const commitmentChecker = new CommitmentChecker({
+        const commitmentCheck = await this.commitmentGuardRunner.run({
           llmClient,
-          detectionModel: this.options.config.anthropic.models.background,
-          rewriteModel: this.options.config.anthropic.models.cognition,
-          entityRepository: this.options.entityRepository,
-        });
-        const commitmentCheckerUserMessage =
-          input.origin === "autonomous" ? input.userMessage : cognitionInput;
-        const commitmentCheck = await commitmentChecker.check({
+          turnId,
           response: deliberation.response,
-          userMessage: commitmentCheckerUserMessage,
-          untrustedContext:
-            input.origin === "autonomous" &&
-            input.autonomyTrigger !== null &&
-            input.autonomyTrigger !== undefined
-              ? cognitionInput
-              : null,
+          userMessage: input.userMessage,
+          cognitionInput,
+          origin: input.origin,
+          autonomyTrigger: input.autonomyTrigger,
           commitments: applicableCommitments,
           relevantEntities: perception.entities,
+          streamWriter,
         });
-        if (this.tracer.enabled) {
-          this.tracer.emit("commitment_check", {
-            turnId,
-            verdict: commitmentCheck.fallback_applied
-              ? "fallback_applied"
-              : commitmentCheck.revised
-                ? "rewritten"
-                : "passed",
-            rewriteTriggered: commitmentCheck.revised,
-            violationCount: commitmentCheck.violations.length,
-          });
-        }
-
-        if (commitmentCheck.fallback_applied) {
-          await streamWriter.append({
-            kind: "internal_event",
-            content:
-              "Commitment guard fell back to a softened response after revision still violated an active commitment.",
-          });
-        }
 
         const actionResult = await performAction({
           response: commitmentCheck.final_response,
@@ -826,37 +578,17 @@ export class TurnOrchestrator {
                 turn_completed_ts: persistedAgentEntry.timestamp,
               }
             : pendingSocialAttribution;
-        // Sprint 53: bounded list of pending procedural attempts.
-        // Reflection retires only grounded success/failure outcomes;
-        // unclear ones survive here until they age out (TTL) or get
-        // graded on a later turn.
-        const carriedAttempts = reflectedWorkingMemory.pending_procedural_attempts.filter(
-          (attempt) =>
-            reflectedWorkingMemory.turn_counter - attempt.turn_counter <
-            PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS,
-        );
-        const shouldAppendNewAttempt =
-          isUserTurn && perception.mode === "problem_solving";
-        const newAttempt = shouldAppendNewAttempt
-          ? {
-              problem_text: compactTurnText(input.userMessage, 1_000),
-              approach_summary:
-                selectedSkill?.skill.approach ??
-                (compactTurnText(actionResult.response, 1_000) || "No explicit approach stated."),
-              selected_skill_id: selectedSkill?.skill.id ?? null,
-              source_stream_ids: [persistedUserEntry.id, persistedAgentEntry.id],
-              turn_counter: reflectedWorkingMemory.turn_counter,
-              audience_entity_id: audienceEntityId,
-            }
-          : null;
-        const combinedAttempts = newAttempt === null
-          ? carriedAttempts
-          : [...carriedAttempts, newAttempt];
-        // Cap by dropping oldest if needed.
-        const nextPendingProceduralAttempts =
-          combinedAttempts.length > PENDING_PROCEDURAL_ATTEMPTS_LIMIT
-            ? combinedAttempts.slice(-PENDING_PROCEDURAL_ATTEMPTS_LIMIT)
-            : combinedAttempts;
+        const nextPendingProceduralAttempts = this.pendingProceduralAttemptTracker.update({
+          isUserTurn,
+          userMessage: input.userMessage,
+          perception,
+          actionResult,
+          selectedSkill,
+          reflectedWorkingMemory,
+          persistedUserEntryId: persistedUserEntry.id,
+          persistedAgentEntryId: persistedAgentEntry.id,
+          audienceEntityId,
+        });
 
         if (this.tracer.enabled) {
           this.tracer.emit("reflection_emitted", {
