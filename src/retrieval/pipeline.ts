@@ -75,6 +75,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   decayOptions?: Omit<DecayOptions, "nowMs">;
   attentionWeights?: AttentionWeights;
   goalDescriptions?: readonly string[];
+  primaryGoalDescription?: string;
   activeValues?: readonly ValueRecord[];
   temporalCue?: TemporalCue | null;
   strictTimeRange?: boolean;
@@ -371,6 +372,7 @@ function summarizeRetrievalOptions(options: RetrievalSearchOptions): JsonValue {
     temporalCue: summarizeTemporalCue(options.temporalCue ?? null),
     attentionWeights: options.attentionWeights ?? null,
     goalCount: options.goalDescriptions?.length ?? 0,
+    primaryGoalSelected: options.primaryGoalDescription !== undefined,
     activeValueCount: options.activeValues?.length ?? 0,
     audienceTermCount: options.audienceTerms?.length ?? 0,
     entityTerms: options.entityTerms === undefined ? [] : [...options.entityTerms],

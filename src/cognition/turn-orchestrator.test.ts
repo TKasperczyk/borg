@@ -549,4 +549,60 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       await borg.close();
     }
   });
+
+  it("selects an executive focus and renders it without dropping other active goals", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(3_000_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Apollo answer.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.self.goals.add({
+        description: "Background maintenance",
+        priority: 10,
+        provenance: {
+          kind: "system",
+        },
+      });
+      borg.self.goals.add({
+        description: "Apollo launch plan",
+        priority: 9,
+        provenance: {
+          kind: "system",
+        },
+      });
+
+      await borg.turn({
+        userMessage: "Let's work on the Apollo launch plan.",
+        stakes: "low",
+      });
+
+      const finalizerSystem = systemText(llm.requests[0]);
+      const blockStart = finalizerSystem.indexOf("<borg_executive_focus>");
+      const blockEnd = finalizerSystem.indexOf("</borg_executive_focus>");
+      const executiveBlock = finalizerSystem.slice(blockStart, blockEnd);
+
+      expect(blockStart).toBeGreaterThanOrEqual(0);
+      expect(blockEnd).toBeGreaterThan(blockStart);
+      expect(executiveBlock).toContain("Current driving goal: Apollo launch plan");
+      expect(executiveBlock).toContain("Use this only as a soft bias");
+      expect(executiveBlock).not.toContain("Background maintenance");
+      expect(finalizerSystem).toContain("goals Background maintenance");
+      expect(finalizerSystem).toContain("Apollo launch plan");
+    } finally {
+      await borg.close();
+    }
+  });
 });

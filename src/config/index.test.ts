@@ -43,6 +43,7 @@ describe("config", () => {
     expect(config.offline.curator.episodeHeatHalfLifeDays).toBe(7);
     expect(config.offline.curator.traitHalfLifeDays).toBe(30);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(90);
+    expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
   });
@@ -82,6 +83,9 @@ describe("config", () => {
           retrievalLogRetentionDays: 60,
         },
       },
+      executive: {
+        goalFocusThreshold: 0.4,
+      },
     });
 
     const config = loadConfig({
@@ -91,6 +95,7 @@ describe("config", () => {
         BORG_EMBEDDING_DIMS: "1024",
         BORG_PERCEPTION_USE_LLM_FALLBACK: "false",
         BORG_OFFLINE_CURATOR_RETRIEVAL_LOG_RETENTION_DAYS: "45",
+        BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
         ANTHROPIC_API_KEY: "secret",
       },
     });
@@ -101,6 +106,7 @@ describe("config", () => {
     expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBe("secret");
     expect(config.anthropic.models.cognition).toBe("file-cognition");
+    expect(config.executive.goalFocusThreshold).toBe(0.6);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
   });
 

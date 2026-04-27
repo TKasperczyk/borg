@@ -14,6 +14,7 @@ type EvalConfigOverrides = {
     models?: Partial<Config["anthropic"]["models"]>;
   };
   procedural?: Partial<Config["procedural"]>;
+  executive?: Partial<Config["executive"]>;
   offline?: Partial<
     Omit<
       Config["offline"],
@@ -91,6 +92,10 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
       ...DEFAULT_CONFIG.procedural,
       ...options.config?.procedural,
     },
+    executive: {
+      ...DEFAULT_CONFIG.executive,
+      ...options.config?.executive,
+    },
     offline: {
       ...DEFAULT_CONFIG.offline,
       ...options.config?.offline,
@@ -154,7 +159,8 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
     config,
     clock: options.clock ?? new FixedClock(1_000_000),
     embeddingDimensions,
-    embeddingClient: options.embeddingClient ?? new DeterministicEmbeddingClient(embeddingDimensions),
+    embeddingClient:
+      options.embeddingClient ?? new DeterministicEmbeddingClient(embeddingDimensions),
     llmClient: options.llm,
     liveExtraction: false,
   });

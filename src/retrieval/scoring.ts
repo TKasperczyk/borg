@@ -46,6 +46,7 @@ export type EpisodeScoringOptions = {
   decayOptions?: Omit<DecayOptions, "nowMs">;
   attentionWeights?: AttentionWeights;
   goalDescriptions?: readonly string[];
+  primaryGoalDescription?: string;
   activeValues?: readonly ValueRecord[];
   moodState?: RetrievalMoodState | null;
   audienceProfile?: SocialProfile | null;
@@ -201,10 +202,15 @@ export function scoreCandidate(
       : { ...searchOptions.decayOptions, nowMs },
   );
   const heat = computeEpisodeHeat(candidate.episode, candidate.stats, nowMs);
-  const goalRelevance = computeGoalRelevance(
+  const broadGoalRelevance = computeGoalRelevance(
     searchOptions.goalDescriptions ?? [],
     candidate.episode,
   );
+  const primaryGoalRelevance =
+    searchOptions.primaryGoalDescription === undefined
+      ? 0
+      : computeGoalRelevance([searchOptions.primaryGoalDescription], candidate.episode);
+  const goalRelevance = clamp(Math.max(broadGoalRelevance, primaryGoalRelevance * 1.25), 0, 1);
   const valueAlignment = computeValueAlignment(searchOptions.activeValues ?? [], candidate.episode);
   const timeRelevance = computeTimeRelevance(candidate.episode, scoringTimeRange);
   const moodBoost = computeMoodBoost(candidate.episode, searchOptions.moodState);

@@ -4,6 +4,7 @@ import type {
   CommitmentRepository,
   EntityRecord,
 } from "../../memory/commitments/index.js";
+import type { ExecutiveFocus } from "../../executive/index.js";
 import type { ReviewQueueItem, ReviewQueueRepository } from "../../memory/semantic/index.js";
 import type { SkillSelectionResult, SkillSelector } from "../../memory/procedural/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
@@ -37,6 +38,31 @@ function buildSkillSelectionQuery(userMessage: string, entities: readonly string
     .join(" ");
 }
 
+function selectGoalDescriptions(
+  goals: readonly SelfSnapshot["goals"][number][],
+  executiveFocus: ExecutiveFocus | null | undefined,
+): {
+  goalDescriptions: string[];
+  primaryGoalDescription: string | undefined;
+} {
+  const selectedGoal = executiveFocus?.selected_goal ?? null;
+
+  if (selectedGoal === null) {
+    return {
+      goalDescriptions: goals.map((goal) => goal.description),
+      primaryGoalDescription: undefined,
+    };
+  }
+
+  return {
+    goalDescriptions: [
+      selectedGoal.description,
+      ...goals.filter((goal) => goal.id !== selectedGoal.id).map((goal) => goal.description),
+    ],
+    primaryGoalDescription: selectedGoal.description,
+  };
+}
+
 export type TurnRetrievalCoordinatorOptions = {
   commitmentRepository: Pick<CommitmentRepository, "getApplicable">;
   reviewQueueRepository: Pick<ReviewQueueRepository, "list">;
@@ -59,6 +85,7 @@ export type TurnRetrievalCoordinatorInput = {
   perception: PerceptionResult;
   workingMemory: WorkingMemory;
   selfSnapshot: SelfSnapshot;
+  executiveFocus?: ExecutiveFocus | null;
   suppressionSet: SuppressionSet;
   findEntityByName: (name: string) => EntityId | null;
 };
@@ -161,6 +188,7 @@ export class TurnRetrievalCoordinator {
       limit: 5,
     });
     const activeValues = selectActiveValues(input.selfSnapshot.values);
+    const goalSelection = selectGoalDescriptions(input.selfSnapshot.goals, input.executiveFocus);
 
     const attentionWeights = computeWeights(input.perception.mode, {
       currentGoals: input.selfSnapshot.goals,
@@ -173,7 +201,8 @@ export class TurnRetrievalCoordinator {
       limit: computeRetrievalLimit(input.perception.mode),
       audienceEntityId: input.audienceEntityId,
       attentionWeights,
-      goalDescriptions: input.selfSnapshot.goals.map((goal) => goal.description),
+      goalDescriptions: goalSelection.goalDescriptions,
+      primaryGoalDescription: goalSelection.primaryGoalDescription,
       activeValues,
       temporalCue: input.perception.temporalCue,
       strictTimeRange: input.perception.temporalCue !== null,

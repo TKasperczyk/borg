@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
+import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
 
@@ -57,6 +58,12 @@ const configFileSchema = z
     procedural: z
       .object({
         skillSelectionMinSimilarity: z.number().min(0).max(1).optional(),
+      })
+      .partial()
+      .optional(),
+    executive: z
+      .object({
+        goalFocusThreshold: z.number().min(0).max(1).optional(),
       })
       .partial()
       .optional(),
@@ -289,6 +296,9 @@ export const configSchema = z.object({
   procedural: z.object({
     skillSelectionMinSimilarity: z.number().min(0).max(1),
   }),
+  executive: z.object({
+    goalFocusThreshold: z.number().min(0).max(1),
+  }),
   offline: z.object({
     consolidator: z.object({
       enabled: z.boolean(),
@@ -455,6 +465,9 @@ export const DEFAULT_CONFIG: Config = {
   },
   procedural: {
     skillSelectionMinSimilarity: 0.5,
+  },
+  executive: {
+    goalFocusThreshold: DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD,
   },
   offline: {
     consolidator: {
@@ -811,6 +824,12 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         fileConfig.procedural?.skillSelectionMinSimilarity ??
         DEFAULT_CONFIG.procedural.skillSelectionMinSimilarity,
     },
+    executive: {
+      goalFocusThreshold:
+        readOptionalEnvUnitInterval(env, "BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD") ??
+        fileConfig.executive?.goalFocusThreshold ??
+        DEFAULT_CONFIG.executive.goalFocusThreshold,
+    },
     offline: {
       consolidator: {
         enabled:
@@ -1154,6 +1173,9 @@ export function redactConfig(config: Config): Config {
     },
     procedural: {
       ...config.procedural,
+    },
+    executive: {
+      ...config.executive,
     },
     offline: {
       ...config.offline,

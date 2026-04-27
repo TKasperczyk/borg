@@ -12,6 +12,7 @@ import { PerceptionGateway } from "./perception/gateway.js";
 import { TurnOpeningPersistence } from "./persistence/turn-opening.js";
 import { PendingProceduralAttemptTracker } from "./procedural/pending-attempt-tracker.js";
 import { TurnContextCompiler } from "./recency/index.js";
+import { selectExecutiveFocus } from "../executive/index.js";
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import type { Reflector } from "./reflection/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
@@ -359,6 +360,16 @@ export class TurnOrchestrator {
         const recencyWindow = perceptionResult.recencyWindow;
         const workingMood = perceptionResult.workingMood;
         workingMemory = perceptionResult.workingMemory;
+        const executiveFocus = selectExecutiveFocus({
+          goals: selfSnapshot.goals,
+          cognitionInput,
+          perceptionEntities: perception.entities,
+          autonomyPayload: input.autonomyTrigger?.payload ?? null,
+          nowMs: this.clock.now(),
+          threshold: this.options.config.executive.goalFocusThreshold,
+          deadlineLookaheadMs: this.options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
+          staleMs: this.options.config.autonomy.triggers.goalFollowupDue.staleMs,
+        });
 
         const suppressionSet = SuppressionSet.fromEntries(
           workingMemory.suppressed,
@@ -404,6 +415,7 @@ export class TurnOrchestrator {
           perception,
           workingMemory,
           selfSnapshot,
+          executiveFocus,
           suppressionSet,
           findEntityByName: (name) => this.options.entityRepository.findByName(name),
         });
@@ -444,6 +456,7 @@ export class TurnOrchestrator {
             workingMemory,
             affectiveTrajectory,
             selfSnapshot,
+            executiveFocus,
             audienceProfile,
             recencyMessages: recencyWindow.messages,
             options: {

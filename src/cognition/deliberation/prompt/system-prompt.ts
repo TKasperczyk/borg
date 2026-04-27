@@ -1,6 +1,7 @@
 // Assembles the base deliberation system prompt from memory, state, and guidance sections.
 import { formatCommitmentsForPrompt } from "../../../memory/commitments/checker.js";
 import { summarizeProvenanceForPrompt, type Provenance } from "../../../memory/common/index.js";
+import type { ExecutiveFocus } from "../../../executive/index.js";
 import type {
   AutobiographicalPeriod,
   GrowthMarker,
@@ -52,6 +53,10 @@ export function buildBaseSystemPrompt(
     {
       tag: "borg_self_snapshot",
       content: summarizeIdentity(context.selfSnapshot, context.workingMemory.turn_counter),
+    },
+    {
+      tag: "borg_executive_focus",
+      content: summarizeExecutiveFocus(context.executiveFocus ?? null),
     },
     {
       tag: "borg_current_period",
@@ -180,6 +185,32 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): str
     .filter((part): part is string => part !== null)
     .join(" | ")
     .replace(/^/, "Self snapshot: ");
+}
+
+function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): string | null {
+  if (
+    focus === null ||
+    focus === undefined ||
+    focus.selected_goal === null ||
+    focus.selected_score === null
+  ) {
+    return null;
+  }
+
+  const components = focus.selected_score.components;
+
+  return [
+    `Current driving goal: ${focus.selected_goal.description}`,
+    `Selection score: ${focus.selected_score.score.toFixed(2)} (threshold ${focus.threshold.toFixed(2)})`,
+    [
+      "Components:",
+      `priority=${components.priority.toFixed(2)}`,
+      `deadline=${components.deadline_pressure.toFixed(2)}`,
+      `context=${components.context_fit.toFixed(2)}`,
+      `progress_debt=${components.progress_debt.toFixed(2)}`,
+    ].join(" "),
+    "Use this only as a soft bias. The current user request, applicable commitments, and evidence quality still take precedence.",
+  ].join("\n");
 }
 
 function summarizePreferenceEvidence(

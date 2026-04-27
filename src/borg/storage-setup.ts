@@ -65,6 +65,10 @@ export function resolveBorgConfig(options: {
       ...DEFAULT_CONFIG.procedural,
       ...(rawConfig as Partial<Config>).procedural,
     },
+    executive: {
+      ...DEFAULT_CONFIG.executive,
+      ...(rawConfig as Partial<Config>).executive,
+    },
     offline: {
       ...DEFAULT_CONFIG.offline,
       ...rawConfig.offline,

@@ -1,5 +1,6 @@
 // Shared deliberation data shapes used by the orchestrator and extracted helpers.
 import type { LLMClient } from "../../llm/index.js";
+import type { ExecutiveFocus } from "../../executive/index.js";
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type {
@@ -82,6 +83,12 @@ export type DeliberationContext = {
    */
   affectiveTrajectory?: readonly MoodHistoryEntry[];
   selfSnapshot: SelfSnapshot;
+  /**
+   * Derived executive focus for this turn. It is a soft bias over active
+   * goals, never a directive that overrides the current user request or
+   * active commitments.
+   */
+  executiveFocus?: ExecutiveFocus | null;
   /**
    * Social band: the profile of the person the being is talking to, when
    * audience is known. Phase F wires a thin summary (trust, interactions,

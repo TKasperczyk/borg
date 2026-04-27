@@ -511,7 +511,7 @@ while `pending_procedural_attempts` cap and TTL are enforced by
 
 ### 5.1 Cognitive loop
 
-Per-turn: **Perception → Attention → Deliberation → Action → Reflection**.
+Per-turn: **Perception → Executive Focus → Attention → Deliberation → Action → Reflection**.
 Implementation plumbing is split behind `TurnOrchestrator`:
 `PerceptionGateway`, `TurnOpeningPersistence`,
 `AttributionLifecycleService`, `TurnRetrievalCoordinator`,
@@ -534,6 +534,20 @@ band.
 - Heuristic paths remain as fallbacks when LLM clients are unavailable
   (for example missing config or fake/offline tests).
 
+**Executive Focus** (fast, deterministic)
+- After perception and audience-scoped self snapshot construction,
+  `selectExecutiveFocus()` ranks visible active goals using four
+  signals: normalized priority, deadline pressure, context fit, and
+  progress debt. Mood is intentionally not part of this v1 score because
+  goals do not carry affect tags.
+- If the top score is below `executive.goalFocusThreshold` (default
+  `0.45`), no goal is selected and no executive prompt block is rendered.
+  This keeps ambient goals as background identity rather than commands.
+- When a goal clears the threshold, deliberation receives a
+  `<borg_executive_focus>` block that names the current driving goal and
+  score components. It is a soft bias: the current user request,
+  commitments, and evidence quality still take precedence.
+
 **Attention** (fast)
 - Context-aware relevance function (9 weighted components):
   ```
@@ -547,11 +561,15 @@ band.
     + w_entity * entity_relevance(memory, state.hot_entities)
     + w_heat   * usage_heat(memory)
     − w_supp   * suppression_penalty(memory, state.suppressed_ids)
-  ```
+```
 - Weights tunable per mode (`computeWeights(mode)` in
   `src/cognition/attention/weights.ts`). `value_alignment` and
   `entity_relevance` were added in later sprints to reduce off-topic
   pulls when held values or salient entities should bias retrieval.
+- When executive focus selects a goal, retrieval receives that goal as
+  `primaryGoalDescription` and gives matching episodes a small capped
+  relevance boost. All active goals still remain in the self snapshot
+  and broad goal-description context.
 
 **Deliberation**
 - Path selection routes on an **epistemic** retrieval-confidence
@@ -712,7 +730,8 @@ parallel candidate generation (RetrievalPipeline.searchWithContext):
   └─ open-question match
  ↓
 score with mode-conditioned attention weights
-   (9 components: see Part 5.1 attention formula)
+   (9 components: see Part 5.1 attention formula;
+    selected executive goal may act as primary-goal bias)
  ↓
 MMR diversification  (configurable lambda)
  ↓
@@ -739,8 +758,20 @@ Notes vs. an earlier sketch of this pipeline:
   relevance, used for ranking). Epistemic confidence is aggregated
   separately as `RetrievalConfidence` (see `src/retrieval/confidence.ts`)
   and fed into S1/S2 path selection + the deliberation prompt.
+- If executive focus selected a goal, `primaryGoalDescription` boosts
+  that goal's retrieval relevance without removing the other active
+  goals from prompt context or self memory.
 - Token-budget truncation happens at the LLM-call boundary in the
   deliberator, not inside the retrieval pipeline.
+
+---
+
+### 5.4 Configuration overview
+
+Key runtime knobs live in `src/config/index.ts`. Executive focus adds
+`executive.goalFocusThreshold` (default `0.45`), the minimum score an
+active goal must clear before Borg renders `<borg_executive_focus>` or
+applies primary-goal retrieval bias.
 
 ---
 

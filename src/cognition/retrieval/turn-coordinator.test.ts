@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
+import type { ExecutiveFocus } from "../../executive/index.js";
 import type { CommitmentRecord, EntityRecord } from "../../memory/commitments/index.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
@@ -349,6 +350,97 @@ describe("TurnRetrievalCoordinator", () => {
       expect.objectContaining({
         audienceTerms: [],
         includeOpenQuestions: true,
+      }),
+    );
+  });
+
+  it("passes selected executive goal as the primary retrieval goal without dropping other goals", async () => {
+    const searchWithContext = vi.fn(async () => makeRetrievedContext());
+    const coordinator = new TurnRetrievalCoordinator({
+      commitmentRepository: {
+        getApplicable: vi.fn(() => []),
+      },
+      reviewQueueRepository: {
+        list: vi.fn(() => []),
+      },
+      moodRepository: {
+        current: vi.fn(() => ({
+          session_id: DEFAULT_SESSION_ID,
+          valence: 0,
+          arousal: 0,
+          updated_at: 2_000,
+          half_life_hours: 24,
+          recent_triggers: [],
+        })),
+        history: vi.fn(() => []),
+      },
+      retrievalPipeline: {
+        searchWithContext,
+        search: vi.fn(async () => []),
+      },
+      skillSelector: {
+        select: vi.fn(async () => null),
+      },
+      clock: new ManualClock(2_000),
+    });
+    const selfSnapshot = makeSelfSnapshot();
+    const selectedGoal = {
+      id: "goal_2" as GoalId,
+      description: "Resolve Atlas incident",
+      priority: 2,
+      parent_goal_id: null,
+      status: "active" as const,
+      progress_notes: null,
+      last_progress_ts: null,
+      created_at: 200,
+      target_at: null,
+      provenance: {
+        kind: "system" as const,
+      },
+    };
+    const executiveFocus: ExecutiveFocus = {
+      selected_goal: selectedGoal,
+      selected_score: {
+        goal_id: selectedGoal.id,
+        goal: selectedGoal,
+        score: 0.6,
+        components: {
+          priority: 0.8,
+          deadline_pressure: 0,
+          context_fit: 1,
+          progress_debt: 0,
+        },
+        reason: "test",
+      },
+      candidates: [],
+      threshold: 0.45,
+    };
+
+    await coordinator.coordinate({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-1",
+      userMessage: "Solve Atlas",
+      cognitionInput: "Solve Atlas",
+      isSelfAudience: true,
+      audienceEntityId: null,
+      audienceEntity: null,
+      audienceProfile: null,
+      perception: makePerception("reflective"),
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      selfSnapshot: {
+        ...selfSnapshot,
+        goals: [...selfSnapshot.goals, selectedGoal],
+      },
+      executiveFocus,
+      suppressionSet: SuppressionSet.fromEntries([], 1),
+      findEntityByName: () => null,
+    });
+
+    expect(searchWithContext).toHaveBeenCalledWith(
+      "Solve Atlas",
+      expect.objectContaining({
+        goalDescriptions: ["Resolve Atlas incident", "Ship the sprint"],
+        primaryGoalDescription: "Resolve Atlas incident",
       }),
     );
   });
