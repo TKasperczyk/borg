@@ -565,6 +565,7 @@ export class TurnOrchestrator {
             actionResult,
             retrievedEpisodes: deliberation.retrievedEpisodes,
             retrievalConfidence: retrieval.confidence,
+            executiveFocus: executiveFocusWithStep,
             selectedSkillId: selectedSkill?.skill.id ?? null,
             audienceEntityId,
             suppressionSet,

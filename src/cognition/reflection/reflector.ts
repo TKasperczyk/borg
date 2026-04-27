@@ -2,11 +2,14 @@ import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/inde
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
+import type { ExecutiveFocus, ExecutiveStepsRepository } from "../../executive/index.js";
 import {
-  GoalsRepository,
-  TraitsRepository,
-  type GoalRecord,
-} from "../../memory/self/index.js";
+  executiveStepGoalIdSchema,
+  executiveStepIdSchema,
+  executiveStepKindSchema,
+  executiveStepStatusSchema,
+} from "../../executive/types.js";
+import { GoalsRepository, TraitsRepository, type GoalRecord } from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import type { ReviewQueueRepository } from "../../memory/semantic/index.js";
 import { ProceduralEvidenceRepository, SkillRepository } from "../../memory/procedural/index.js";
@@ -33,6 +36,7 @@ export type ReflectionContext = {
   actionResult: ActionResult;
   retrievedEpisodes: RetrievedEpisode[];
   retrievalConfidence: RetrievalConfidence;
+  executiveFocus?: ExecutiveFocus | null;
   selectedSkillId?: SkillId | null;
   audienceEntityId?: EntityId | null;
   suppressionSet: SuppressionSet;
@@ -55,8 +59,23 @@ const traitDemonstrationSchema = z.object({
   evidence: z.string().min(1),
   strength_delta: z.number().min(0).max(0.2),
 });
+const executiveStepOutcomeStatusSchema = executiveStepStatusSchema.exclude(["queued"]);
 
-const reflectionOutputSchema = z.object({
+const executiveStepOutcomeSchema = z.object({
+  step_id: executiveStepIdSchema,
+  new_status: executiveStepOutcomeStatusSchema,
+  evidence: z.string(),
+});
+
+const proposedExecutiveStepSchema = z.object({
+  goal_id: executiveStepGoalIdSchema,
+  description: z.string().min(1),
+  kind: executiveStepKindSchema,
+  due_at: z.number().finite().nullable().optional(),
+  rationale: z.string().min(1),
+});
+
+const strictReflectionOutputSchema = z.object({
   advanced_goals: z
     .array(
       z.object({
@@ -113,16 +132,45 @@ const reflectionOutputSchema = z.object({
       "Prior pending_intents resolved by this completed turn. Include only exact prior intents with clear evidence, marked completed or abandoned.",
     )
     .default([]),
+  step_outcomes: z
+    .array(executiveStepOutcomeSchema)
+    .describe(
+      "Status outcomes for executive steps directly affected by the completed turn. Include evidence tied to the turn.",
+    )
+    .default([]),
+  proposed_steps: z
+    .array(proposedExecutiveStepSchema)
+    .describe(
+      "Small next-step proposals for the selected executive goal when it has no open step after this turn.",
+    )
+    .default([]),
 });
 
-type ReflectionOutput = z.infer<typeof reflectionOutputSchema>;
+const reflectionOutputParseSchema = strictReflectionOutputSchema.extend({
+  step_outcomes: z.array(z.unknown()).default([]),
+  proposed_steps: z.array(z.unknown()).default([]),
+});
+
+type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema>;
+type RawReflectionOutput = z.infer<typeof reflectionOutputParseSchema>;
 
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
   description:
-    "Emit structured post-turn reflection. Mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, and intent_updates only for prior pending intents resolved by the completed turn.",
-  inputSchema: toToolInputSchema(reflectionOutputSchema),
+    "Emit structured post-turn reflection. Mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for prior pending intents resolved by the completed turn, and executive step outcomes/proposals only when the turn directly supports them.",
+  inputSchema: toToolInputSchema(strictReflectionOutputSchema),
 };
+
+function emptyReflectionOutput(): ReflectionOutput {
+  return {
+    advanced_goals: [],
+    procedural_outcomes: [],
+    trait_demonstrations: [],
+    intent_updates: [],
+    step_outcomes: [],
+    proposed_steps: [],
+  };
+}
 
 function buildReflectionProvenance(retrievedEpisodes: readonly RetrievedEpisode[]) {
   const episodeIds = [...new Set(retrievedEpisodes.slice(0, 3).map((result) => result.episode.id))];
@@ -213,6 +261,44 @@ async function resolveAttemptEpisodeIds(
   return [...new Set([...retrievedMatches, ...repositoryMatchIds])];
 }
 
+function isAutonomousStepOutcomeAllowed(input: {
+  currentStatus: string;
+  nextStatus: string;
+}): boolean {
+  return (
+    (input.currentStatus === "queued" &&
+      (input.nextStatus === "doing" || input.nextStatus === "abandoned")) ||
+    (input.currentStatus === "doing" &&
+      (input.nextStatus === "blocked" || input.nextStatus === "abandoned"))
+  );
+}
+
+function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | undefined) {
+  if (focus?.selected_goal === null || focus?.selected_goal === undefined) {
+    return null;
+  }
+
+  const nextStep = focus.next_step ?? null;
+
+  return {
+    selected_goal: {
+      goal_id: focus.selected_goal.id,
+      description: focus.selected_goal.description,
+      progress_notes: focus.selected_goal.progress_notes,
+    },
+    next_step:
+      nextStep === null
+        ? null
+        : {
+            step_id: nextStep.id,
+            description: nextStep.description,
+            status: nextStep.status,
+            kind: nextStep.kind,
+            due_at: nextStep.due_at,
+          },
+  };
+}
+
 export type ReflectorOptions = {
   clock?: Clock;
   llmClient?: LLMClient;
@@ -225,6 +311,7 @@ export type ReflectorOptions = {
   reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
   skillRepository?: SkillRepository;
   proceduralEvidenceRepository?: ProceduralEvidenceRepository;
+  executiveStepsRepository?: ExecutiveStepsRepository;
 };
 
 export class Reflector {
@@ -242,12 +329,7 @@ export class Reflector {
 
   async reflect(context: ReflectionContext, streamWriter: StreamWriter): Promise<WorkingMemory> {
     const reflectionProvenance = buildReflectionProvenance(context.retrievedEpisodes);
-    let reflectionOutput: ReflectionOutput = {
-      advanced_goals: [],
-      procedural_outcomes: [],
-      trait_demonstrations: [],
-      intent_updates: [],
-    };
+    let reflectionOutput = emptyReflectionOutput();
 
     if (
       context.deliberationResult.thoughts.length > 0 &&
@@ -262,14 +344,20 @@ export class Reflector {
     }
 
     try {
-      reflectionOutput = await this.runReflectionJudgment(context);
+      reflectionOutput = await this.runReflectionJudgment(context, streamWriter);
     } catch (error) {
       await appendInternalFailureEvent(streamWriter, "reflection_judgment", error);
     }
 
     const activeGoalsById = new Map(context.selfSnapshot.goals.map((goal) => [goal.id, goal]));
+    const isAutonomousTurn = context.origin === "autonomous";
 
-    for (const advancedGoal of reflectionOutput.advanced_goals) {
+    await this.applyExecutiveStepOutcomes(context, reflectionOutput.step_outcomes, streamWriter);
+    await this.applyProposedExecutiveSteps(context, reflectionOutput.proposed_steps, streamWriter);
+
+    const advancedGoals = isAutonomousTurn ? [] : reflectionOutput.advanced_goals;
+
+    for (const advancedGoal of advancedGoals) {
       const goal = activeGoalsById.get(advancedGoal.goal_id as GoalRecord["id"]);
 
       if (goal === undefined) {
@@ -370,9 +458,19 @@ export class Reflector {
       ...context.actionResult.workingMemory,
       updated_at: this.clock.now(),
     };
+    const intentUpdates = isAutonomousTurn ? [] : reflectionOutput.intent_updates;
+
+    if (isAutonomousTurn && reflectionOutput.intent_updates.length > 0) {
+      await this.appendReflectorInternalEvent(streamWriter, {
+        hook: "reflector_intent_update_dropped",
+        reason: "autonomous_turn",
+        count: reflectionOutput.intent_updates.length,
+      });
+    }
+
     const resolvedIntentKeys = selectResolvedIntentKeys(
       context.workingMemory.pending_intents,
-      reflectionOutput.intent_updates,
+      intentUpdates,
     );
 
     if (resolvedIntentKeys.size > 0) {
@@ -419,8 +517,6 @@ export class Reflector {
     // autonomous wake's "user message" is internal and can't legitimately
     // grade what the prior user turn attempted; skipping here prevents
     // self-grading from retiring real attempts or biasing posteriors.
-    const isAutonomousTurn = context.origin === "autonomous";
-
     if (pendingProceduralAttempts.length > 0 && !isAutonomousTurn) {
       const retiredTurnCounters = new Set<number>();
       const outcomesByTurn = new Map(
@@ -459,8 +555,7 @@ export class Reflector {
 
             if (
               attempt.selected_skill_id !== null &&
-              (outcome.classification === "success" ||
-                outcome.classification === "failure") &&
+              (outcome.classification === "success" || outcome.classification === "failure") &&
               outcome.skill_actually_applied &&
               this.options.skillRepository !== undefined
             ) {
@@ -478,10 +573,7 @@ export class Reflector {
 
           // Only actionable signals retire the attempt; an "unclear" but
           // grounded outcome stays pending in case later turns clarify.
-          if (
-            outcome.classification === "success" ||
-            outcome.classification === "failure"
-          ) {
+          if (outcome.classification === "success" || outcome.classification === "failure") {
             retiredTurnCounters.add(attempt.turn_counter);
           }
         } catch (error) {
@@ -502,9 +594,325 @@ export class Reflector {
     return nextWorkingMemory;
   }
 
-  private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
-    const pendingProceduralAttempts =
-      context.workingMemory.pending_procedural_attempts ?? [];
+  private async applyExecutiveStepOutcomes(
+    context: ReflectionContext,
+    outcomes: readonly ReflectionOutput["step_outcomes"][number][],
+    streamWriter: StreamWriter,
+  ): Promise<void> {
+    if (outcomes.length === 0) {
+      return;
+    }
+
+    const repository = this.options.executiveStepsRepository;
+
+    if (repository === undefined) {
+      await this.appendReflectorInternalEvent(streamWriter, {
+        hook: "reflector_step_outcome_dropped",
+        reason: "executive_steps_repository_unavailable",
+        count: outcomes.length,
+      });
+      return;
+    }
+
+    const visibleGoalIds = new Set(context.selfSnapshot.goals.map((goal) => goal.id));
+    const selectedGoalId = context.executiveFocus?.selected_goal?.id ?? null;
+
+    for (const outcome of outcomes) {
+      const evidence = outcome.evidence.trim();
+
+      if (evidence.length === 0) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_outcome_dropped",
+          reason: "empty_evidence",
+          step_id: outcome.step_id,
+          new_status: outcome.new_status,
+        });
+        continue;
+      }
+
+      const current = repository.get(outcome.step_id);
+
+      if (current === null) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_outcome_dropped",
+          reason: "missing_step",
+          step_id: outcome.step_id,
+          new_status: outcome.new_status,
+        });
+        continue;
+      }
+
+      if (selectedGoalId === null) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_outcome_dropped",
+          reason: "no_selected_goal",
+          step_id: outcome.step_id,
+          new_status: outcome.new_status,
+        });
+        continue;
+      }
+
+      if (!visibleGoalIds.has(selectedGoalId)) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_outcome_dropped",
+          reason: "selected_goal_not_visible",
+          step_id: outcome.step_id,
+          goal_id: selectedGoalId,
+          new_status: outcome.new_status,
+        });
+        continue;
+      }
+
+      if (!visibleGoalIds.has(current.goal_id)) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_outcome_dropped",
+          reason: "step_goal_not_visible",
+          step_id: outcome.step_id,
+          goal_id: current.goal_id,
+          new_status: outcome.new_status,
+        });
+        continue;
+      }
+
+      if (current.goal_id !== selectedGoalId) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_outcome_dropped",
+          reason: "step_goal_mismatch",
+          step_id: outcome.step_id,
+          goal_id: current.goal_id,
+          selected_goal_id: selectedGoalId,
+          new_status: outcome.new_status,
+        });
+        continue;
+      }
+
+      if (
+        context.origin === "autonomous" &&
+        !isAutonomousStepOutcomeAllowed({
+          currentStatus: current.status,
+          nextStatus: outcome.new_status,
+        })
+      ) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_outcome_dropped",
+          reason: "autonomous_transition_forbidden",
+          step_id: outcome.step_id,
+          current_status: current.status,
+          new_status: outcome.new_status,
+        });
+        continue;
+      }
+
+      try {
+        repository.update(outcome.step_id, {
+          status: outcome.new_status,
+          last_attempt_ts: this.clock.now(),
+        });
+      } catch (error) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_outcome_dropped",
+          reason: "repository_update_failed",
+          step_id: outcome.step_id,
+          current_status: current.status,
+          new_status: outcome.new_status,
+          error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        });
+      }
+    }
+  }
+
+  private async applyProposedExecutiveSteps(
+    context: ReflectionContext,
+    proposals: readonly ReflectionOutput["proposed_steps"][number][],
+    streamWriter: StreamWriter,
+  ): Promise<void> {
+    if (proposals.length === 0) {
+      return;
+    }
+
+    const repository = this.options.executiveStepsRepository;
+
+    if (repository === undefined) {
+      await this.appendReflectorInternalEvent(streamWriter, {
+        hook: "reflector_step_proposal_dropped",
+        reason: "executive_steps_repository_unavailable",
+        count: proposals.length,
+      });
+      return;
+    }
+
+    const visibleGoalIds = new Set(context.selfSnapshot.goals.map((goal) => goal.id));
+    const selectedGoal = context.executiveFocus?.selected_goal ?? null;
+
+    if (selectedGoal === null) {
+      await this.appendReflectorInternalEvent(streamWriter, {
+        hook: "reflector_step_proposal_dropped",
+        reason: "no_selected_goal",
+        count: proposals.length,
+      });
+      return;
+    }
+
+    if (!visibleGoalIds.has(selectedGoal.id)) {
+      await this.appendReflectorInternalEvent(streamWriter, {
+        hook: "reflector_step_proposal_dropped",
+        reason: "selected_goal_not_visible",
+        goal_id: selectedGoal.id,
+        count: proposals.length,
+      });
+      return;
+    }
+
+    if (repository.listOpen(selectedGoal.id).length > 0) {
+      return;
+    }
+
+    const provenance = await this.buildStepReflectionProvenance(context);
+
+    for (const proposal of proposals) {
+      if (!visibleGoalIds.has(proposal.goal_id)) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_proposal_dropped",
+          reason: "goal_not_visible",
+          goal_id: proposal.goal_id,
+        });
+        continue;
+      }
+
+      if (proposal.goal_id !== selectedGoal.id) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_proposal_dropped",
+          reason: "non_selected_goal",
+          goal_id: proposal.goal_id,
+          selected_goal_id: selectedGoal.id,
+        });
+        continue;
+      }
+
+      if (repository.listOpen(selectedGoal.id).length >= 3) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_proposal_dropped",
+          reason: "open_step_cap",
+          goal_id: selectedGoal.id,
+          description: proposal.description,
+        });
+        continue;
+      }
+
+      try {
+        repository.add({
+          goalId: selectedGoal.id,
+          description: proposal.description,
+          kind: proposal.kind,
+          dueAt: proposal.due_at ?? null,
+          provenance,
+        });
+      } catch (error) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_proposal_dropped",
+          reason: "repository_add_failed",
+          goal_id: selectedGoal.id,
+          description: proposal.description,
+          error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        });
+      }
+    }
+  }
+
+  private async buildStepReflectionProvenance(
+    context: ReflectionContext,
+  ): Promise<ReturnType<typeof buildReflectionProvenance>> {
+    const sourceStreamIds = context.currentTurnStreamEntryIds ?? [];
+
+    if (sourceStreamIds.length > 0) {
+      const currentTurnEpisode =
+        await this.options.episodicRepository.findBySourceStreamIdsContaining(sourceStreamIds);
+
+      if (currentTurnEpisode !== null) {
+        return {
+          kind: "episodes",
+          episode_ids: [currentTurnEpisode.id],
+        };
+      }
+    }
+
+    const reflectionProvenance = buildReflectionProvenance(context.retrievedEpisodes);
+
+    if (reflectionProvenance.kind === "episodes") {
+      return reflectionProvenance;
+    }
+
+    return {
+      kind: "online",
+      process: "turn-reflection",
+    };
+  }
+
+  private async appendReflectorInternalEvent(
+    streamWriter: StreamWriter,
+    content: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await streamWriter.append({
+        kind: "internal_event",
+        content,
+      });
+    } catch {
+      // Best-effort logging only.
+    }
+  }
+
+  private async parseExecutiveReflectionItems(
+    raw: RawReflectionOutput,
+    streamWriter: StreamWriter,
+  ): Promise<ReflectionOutput> {
+    const stepOutcomes: ReflectionOutput["step_outcomes"] = [];
+    const proposedSteps: ReflectionOutput["proposed_steps"] = [];
+
+    for (const [index, item] of raw.step_outcomes.entries()) {
+      const parsed = executiveStepOutcomeSchema.safeParse(item);
+
+      if (!parsed.success) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_executive_item_dropped",
+          reason: "malformed_step_outcome",
+          index,
+          error: parsed.error.message,
+        });
+        continue;
+      }
+
+      stepOutcomes.push(parsed.data);
+    }
+
+    for (const [index, item] of raw.proposed_steps.entries()) {
+      const parsed = proposedExecutiveStepSchema.safeParse(item);
+
+      if (!parsed.success) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_executive_item_dropped",
+          reason: "malformed_proposed_step",
+          index,
+          error: parsed.error.message,
+        });
+        continue;
+      }
+
+      proposedSteps.push(parsed.data);
+    }
+
+    return {
+      ...raw,
+      step_outcomes: stepOutcomes,
+      proposed_steps: proposedSteps,
+    };
+  }
+
+  private async runReflectionJudgment(
+    context: ReflectionContext,
+    streamWriter: StreamWriter,
+  ): Promise<ReflectionOutput> {
+    const pendingProceduralAttempts = context.workingMemory.pending_procedural_attempts ?? [];
     const pendingIntents = context.workingMemory.pending_intents;
     const referencedEpisodeIds = selectReferencedRetrievedEpisodeIds(
       context.deliberationResult,
@@ -514,25 +922,25 @@ export class Reflector {
     const hasUserVisibleTurnPayload =
       !isAutonomousTurn &&
       (context.userMessage.trim().length > 0 || context.actionResult.response.trim().length > 0);
+    const executiveFocusForReflection = summarizeExecutiveFocusForReflection(
+      context.executiveFocus,
+    );
+    const hasExecutiveWork = executiveFocusForReflection !== null;
     const hasReflectionWork =
       context.selfSnapshot.goals.length > 0 ||
       pendingProceduralAttempts.length > 0 ||
       pendingIntents.length > 0 ||
       referencedEpisodeIds.length > 0 ||
+      hasExecutiveWork ||
       hasUserVisibleTurnPayload;
 
     if (
       this.llmClient === undefined ||
       this.model === undefined ||
-      isAutonomousTurn ||
+      (isAutonomousTurn && !hasExecutiveWork) ||
       !hasReflectionWork
     ) {
-      return {
-        advanced_goals: [],
-        procedural_outcomes: [],
-        trait_demonstrations: [],
-        intent_updates: [],
-      };
+      return emptyReflectionOutput();
     }
 
     const response = await this.llmClient.complete({
@@ -540,6 +948,9 @@ export class Reflector {
       system: [
         "You are Borg's post-turn reflector. Read the completed turn and active goals, then emit only the structured reflection tool.",
         "Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
+        "For step_outcomes, update only executive steps the completed turn directly started, blocked, abandoned, or externally confirmed as done, and include concrete evidence.",
+        "For autonomous turns, never mark an executive step done; autonomous turns may only start, block, or abandon a step.",
+        "If executive_focus has a selected goal and next_step is null, proposed_steps may include a small concrete next step only when the completed turn revealed one for that selected goal. Otherwise omit proposed_steps.",
         "If pending_procedural_attempts has any entries, emit a procedural_outcome per attempt the current turn provides evidence about. Identify each by its attempt_turn_counter and classify success, failure, or unclear.",
         "Omit attempts the current turn says nothing about -- they will stay pending and may be graded on a later turn.",
         "For every procedural_outcome, set grounded=false when the evidence is assistant self-narration rather than an actual user signal.",
@@ -560,6 +971,8 @@ export class Reflector {
               description: goal.description,
               progress_notes: goal.progress_notes,
             })),
+            executive_focus: executiveFocusForReflection,
+            origin: context.origin ?? "user",
             pending_procedural_attempts: pendingProceduralAttempts,
             pending_intents: pendingIntents,
             referenced_episodes: referencedEpisodeIds.map((episodeId) => {
@@ -584,21 +997,16 @@ export class Reflector {
     const toolCall = response.tool_calls.find((call) => call.name === REFLECTION_TOOL_NAME);
 
     if (toolCall === undefined) {
-      return {
-        advanced_goals: [],
-        procedural_outcomes: [],
-        trait_demonstrations: [],
-        intent_updates: [],
-      };
+      return emptyReflectionOutput();
     }
 
-    const parsed = reflectionOutputSchema.safeParse(toolCall.input);
+    const parsed = reflectionOutputParseSchema.safeParse(toolCall.input);
 
     if (!parsed.success) {
       throw parsed.error;
     }
 
-    return parsed.data;
+    return this.parseExecutiveReflectionItems(parsed.data, streamWriter);
   }
 }
 

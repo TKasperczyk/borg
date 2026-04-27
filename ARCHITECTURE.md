@@ -628,6 +628,11 @@ band.
 - Mark prior `pending_intents` completed or abandoned only when the
   structured reflection pass sees clear evidence in a later completed
   turn; unresolved intents persist and are rendered in working state.
+- Close the executive step loop: structured reflection may mark the
+  selected goal's durable step `doing` / `done` / `blocked` /
+  `abandoned`, or propose a small next step when that selected goal has
+  no open steps. User turns can confirm `done`; autonomous turns may
+  start, block, or abandon steps but cannot mark their own work done.
 - Optionally enqueue review-queue items (e.g., reflection-driven open
   questions, identity inconsistencies surfaced this turn).
 - Note: episodic extraction does NOT run synchronously in reflection.

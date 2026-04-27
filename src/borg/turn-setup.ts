@@ -88,6 +88,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
         episodicRepository: options.episodicRepository,
         goalsRepository: options.goalsRepository,
         traitsRepository: options.traitsRepository,
+        executiveStepsRepository: options.executiveStepsRepository,
         identityService: options.identityService,
         reviewQueueRepository: options.reviewQueueRepository,
         skillRepository: options.skillRepository,

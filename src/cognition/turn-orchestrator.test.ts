@@ -73,6 +73,42 @@ function createEmptyReflectionResponse() {
   };
 }
 
+function createStepReflectionResponse(input: {
+  stepOutcomes?: Array<{
+    step_id: string;
+    new_status: "doing" | "done" | "blocked" | "abandoned";
+    evidence: string;
+  }>;
+  proposedSteps?: Array<{
+    goal_id: string;
+    description: string;
+    kind: "think" | "ask_user" | "research" | "act" | "wait";
+    due_at?: number | null;
+    rationale: string;
+  }>;
+}) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_reflection",
+        name: "EmitTurnReflection",
+        input: {
+          advanced_goals: [],
+          procedural_outcomes: [],
+          trait_demonstrations: [],
+          intent_updates: [],
+          step_outcomes: input.stepOutcomes ?? [],
+          proposed_steps: input.proposedSteps ?? [],
+        },
+      },
+    ],
+  };
+}
+
 function makeEpisode(input: {
   id: EpisodeId;
   now: number;
@@ -676,6 +712,140 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           dueAt,
         ).toISOString()})`,
       );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("applies executive step outcomes from full-turn reflection", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_700_000_000_000);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          executiveStepsRepository: ExecutiveStepsRepository;
+        };
+      };
+      borg.self.goals.add({
+        description: "Background maintenance",
+        priority: 10,
+        provenance: {
+          kind: "system",
+        },
+      });
+      const selectedGoal = borg.self.goals.add({
+        description: "Apollo launch plan",
+        priority: 9,
+        provenance: {
+          kind: "system",
+        },
+      });
+      const step = internal.deps.executiveStepsRepository.add({
+        goalId: selectedGoal.id,
+        description: "Inspect the launch readiness notes",
+        kind: "research",
+        provenance: {
+          kind: "system",
+        },
+      });
+      llm.pushResponse({
+        text: "Apollo step started.",
+        input_tokens: 8,
+        output_tokens: 4,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse(
+        createStepReflectionResponse({
+          stepOutcomes: [
+            {
+              step_id: step.id,
+              new_status: "doing",
+              evidence: "The assistant started inspecting the launch readiness notes.",
+            },
+          ],
+        }),
+      );
+
+      await borg.turn({
+        userMessage: "Let's work on the Apollo launch plan.",
+        stakes: "low",
+      });
+
+      expect(internal.deps.executiveStepsRepository.get(step.id)?.status).toBe("doing");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("creates proposed executive steps from full-turn reflection when selected goal has none open", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_700_000_000_000);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          executiveStepsRepository: ExecutiveStepsRepository;
+        };
+      };
+      borg.self.goals.add({
+        description: "Background maintenance",
+        priority: 10,
+        provenance: {
+          kind: "system",
+        },
+      });
+      const selectedGoal = borg.self.goals.add({
+        description: "Apollo launch plan",
+        priority: 9,
+        provenance: {
+          kind: "system",
+        },
+      });
+      llm.pushResponse({
+        text: "Apollo next step identified.",
+        input_tokens: 8,
+        output_tokens: 4,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse(
+        createStepReflectionResponse({
+          proposedSteps: [
+            {
+              goal_id: selectedGoal.id,
+              description: "Draft the Apollo readiness question",
+              kind: "ask_user",
+              due_at: null,
+              rationale: "The selected goal has no open executive step.",
+            },
+          ],
+        }),
+      );
+
+      await borg.turn({
+        userMessage: "Let's work on the Apollo launch plan.",
+        stakes: "low",
+      });
+
+      expect(
+        internal.deps.executiveStepsRepository.listOpen(selectedGoal.id).map((step) => ({
+          description: step.description,
+          kind: step.kind,
+        })),
+      ).toEqual([
+        {
+          description: "Draft the Apollo readiness question",
+          kind: "ask_user",
+        },
+      ]);
     } finally {
       await borg.close();
     }

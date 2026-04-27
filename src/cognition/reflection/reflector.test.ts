@@ -12,6 +12,7 @@ import { openDatabase } from "../../storage/sqlite/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import { episodicMigrations } from "../../memory/episodic/migrations.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "../../memory/episodic/repository.js";
+import { executiveMigrations, ExecutiveStepsRepository } from "../../executive/index.js";
 import {
   GoalsRepository,
   OpenQuestionsRepository,
@@ -21,7 +22,7 @@ import {
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createExecutiveStepId, createStreamEntryId } from "../../util/ids.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
 
@@ -44,6 +45,18 @@ function createReflectionResponse(
     trait_label: string;
     evidence: string;
     strength_delta: number;
+  }> = [],
+  stepOutcomes: Array<{
+    step_id: string;
+    new_status: "doing" | "done" | "blocked" | "abandoned";
+    evidence: string;
+  }> = [],
+  proposedSteps: Array<{
+    goal_id: string;
+    description: string;
+    kind: "think" | "ask_user" | "research" | "act" | "wait";
+    due_at?: number | null;
+    rationale: string;
   }> = [],
 ) {
   return {
@@ -68,6 +81,8 @@ function createReflectionResponse(
           })),
           trait_demonstrations: traitDemonstrations,
           intent_updates: intentUpdates,
+          step_outcomes: stepOutcomes,
+          proposed_steps: proposedSteps,
         },
       },
     ],
@@ -200,6 +215,142 @@ function createPendingProceduralReflectionContext() {
   } satisfies Parameters<Reflector["reflect"]>[0];
 }
 
+async function createExecutiveReflectionHarness(clock = new FixedClock(1_000)) {
+  const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+  const store = new LanceDbStore({
+    uri: join(tempDir, "lancedb"),
+  });
+  const db = openDatabase(join(tempDir, "borg.db"), {
+    migrations: [
+      ...episodicMigrations,
+      ...selfMigrations,
+      ...executiveMigrations,
+      ...retrievalMigrations,
+    ],
+  });
+  const table = await store.openTable({
+    name: "episodes",
+    schema: createEpisodesTableSchema(4),
+  });
+  const episodicRepository = new EpisodicRepository({
+    table,
+    db,
+    clock,
+  });
+  const goalsRepository = new GoalsRepository({
+    db,
+    clock,
+  });
+  const traitsRepository = new TraitsRepository({
+    db,
+    clock,
+  });
+  const executiveStepsRepository = new ExecutiveStepsRepository({
+    db,
+    clock,
+  });
+  const writer = new StreamWriter({
+    dataDir: tempDir,
+    sessionId: DEFAULT_SESSION_ID,
+    clock,
+  });
+
+  return {
+    tempDir,
+    clock,
+    store,
+    db,
+    episodicRepository,
+    goalsRepository,
+    traitsRepository,
+    executiveStepsRepository,
+    writer,
+    cleanup: async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function createExecutiveReflectionContext(input: {
+  origin?: "user" | "autonomous";
+  goal: ReturnType<GoalsRepository["add"]>;
+  nextStep?: ReturnType<ExecutiveStepsRepository["add"]> | null;
+  pendingIntents?: Array<{ description: string; next_action: string | null }>;
+}) {
+  const pendingIntents = input.pendingIntents ?? [];
+  const workingMemory = {
+    session_id: DEFAULT_SESSION_ID,
+    turn_counter: 1,
+    current_focus: "Apollo",
+    hot_entities: ["Apollo"],
+    pending_intents: pendingIntents,
+    pending_social_attribution: null,
+    pending_trait_attribution: null,
+    suppressed: [],
+    mood: null,
+    pending_procedural_attempts: [],
+    mode: "problem_solving" as const,
+    updated_at: 0,
+  };
+
+  return {
+    origin: input.origin ?? "user",
+    userMessage: "Let's move the Apollo launch plan forward.",
+    perception: {
+      entities: ["Apollo"],
+      mode: "problem_solving" as const,
+      affectiveSignal: {
+        valence: 0,
+        arousal: 0,
+        dominant_emotion: null,
+      },
+      temporalCue: null,
+    },
+    workingMemory,
+    selfSnapshot: {
+      values: [],
+      goals: [input.goal],
+      traits: [],
+    },
+    deliberationResult: {
+      path: "system_1" as const,
+      response: "I worked on Apollo.",
+      thoughts: [],
+      tool_calls: [],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "end_turn" as const,
+      },
+      decision_reason: "confidence" as const,
+      retrievedEpisodes: [],
+      referencedEpisodeIds: null,
+      intents: [],
+      thoughtsPersisted: false,
+    },
+    actionResult: {
+      response: "I worked on Apollo.",
+      tool_calls: [],
+      intents: pendingIntents,
+      workingMemory,
+    },
+    retrievedEpisodes: [],
+    retrievalConfidence: createRetrievalConfidence(),
+    executiveFocus: {
+      selected_goal: input.goal,
+      selected_score: null,
+      next_step: input.nextStep ?? null,
+      candidates: [],
+      threshold: 0.45,
+    },
+    selectedSkillId: null,
+    suppressionSet: new SuppressionSet(1),
+  } satisfies Parameters<Reflector["reflect"]>[0];
+}
+
 describe("reflector", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -207,6 +358,436 @@ describe("reflector", () => {
     while (cleanup.length > 0) {
       await cleanup.pop()?.();
     }
+  });
+
+  it("applies valid executive step outcomes and drops invalid outcomes", async () => {
+    const harness = await createExecutiveReflectionHarness();
+    cleanup.push(harness.cleanup);
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const legal = harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Start launch readiness review",
+      kind: "act",
+      provenance: { kind: "manual" },
+    });
+    const illegal = harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Skip straight to done",
+      kind: "act",
+      provenance: { kind: "manual" },
+    });
+    const emptyEvidence = harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Needs actual evidence",
+      kind: "think",
+      provenance: { kind: "manual" },
+    });
+    const missingStepId = createExecutiveStepId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [],
+          [],
+          [
+            {
+              step_id: legal.id,
+              new_status: "doing",
+              evidence: "The assistant started the readiness review.",
+            },
+            {
+              step_id: illegal.id,
+              new_status: "done",
+              evidence: "Queued cannot jump directly to done.",
+            },
+            {
+              step_id: missingStepId,
+              new_status: "doing",
+              evidence: "The model referenced a stale step id.",
+            },
+            {
+              step_id: emptyEvidence.id,
+              new_status: "doing",
+              evidence: "   ",
+            },
+          ],
+        ),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    await reflector.reflect(
+      createExecutiveReflectionContext({
+        goal,
+        nextStep: legal,
+      }),
+      harness.writer,
+    );
+
+    expect(harness.executiveStepsRepository.get(legal.id)).toMatchObject({
+      status: "doing",
+      last_attempt_ts: harness.clock.now(),
+    });
+    expect(harness.executiveStepsRepository.get(illegal.id)?.status).toBe("queued");
+    expect(harness.executiveStepsRepository.get(emptyEvidence.id)?.status).toBe("queued");
+
+    const droppedReasons = new StreamReader({
+      dataDir: harness.tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    })
+      .tail(10)
+      .filter((entry) => entry.kind === "internal_event")
+      .map((entry) => (entry.content as { reason?: string }).reason);
+
+    expect(droppedReasons).toEqual(
+      expect.arrayContaining(["repository_update_failed", "missing_step", "empty_evidence"]),
+    );
+  });
+
+  it("drops executive step outcomes for goals outside the audience-scoped self snapshot", async () => {
+    const harness = await createExecutiveReflectionHarness();
+    cleanup.push(harness.cleanup);
+    const visibleGoal = harness.goalsRepository.add({
+      description: "Visible Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const hiddenGoal = harness.goalsRepository.add({
+      description: "Private background plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const hiddenStep = harness.executiveStepsRepository.add({
+      goalId: hiddenGoal.id,
+      description: "Mutate hidden step",
+      kind: "act",
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [],
+          [],
+          [
+            {
+              step_id: hiddenStep.id,
+              new_status: "doing",
+              evidence: "The reflected tool call reached across goal scope.",
+            },
+          ],
+        ),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    await reflector.reflect(
+      createExecutiveReflectionContext({
+        goal: visibleGoal,
+        nextStep: null,
+      }),
+      harness.writer,
+    );
+
+    expect(harness.executiveStepsRepository.get(hiddenStep.id)?.status).toBe("queued");
+    expect(
+      new StreamReader({
+        dataDir: harness.tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+      })
+        .tail(5)
+        .some(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            (entry.content as { reason?: string }).reason === "step_goal_not_visible",
+        ),
+    ).toBe(true);
+  });
+
+  it("drops autonomous done step outcomes but applies the same outcome on user turns", async () => {
+    const harness = await createExecutiveReflectionHarness();
+    cleanup.push(harness.cleanup);
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const step = harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Finish readiness review",
+      kind: "act",
+      status: "doing",
+      provenance: { kind: "manual" },
+    });
+    const stepDoneOutcome = [
+      {
+        step_id: step.id,
+        new_status: "done" as const,
+        evidence: "The turn claims the readiness review is complete.",
+      },
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse([], [], [], [], stepDoneOutcome),
+        createReflectionResponse([], [], [], [], stepDoneOutcome),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    await reflector.reflect(
+      createExecutiveReflectionContext({
+        origin: "autonomous",
+        goal,
+        nextStep: step,
+      }),
+      harness.writer,
+    );
+
+    expect(harness.executiveStepsRepository.get(step.id)?.status).toBe("doing");
+
+    await reflector.reflect(
+      createExecutiveReflectionContext({
+        origin: "user",
+        goal,
+        nextStep: step,
+      }),
+      harness.writer,
+    );
+
+    expect(harness.executiveStepsRepository.get(step.id)?.status).toBe("done");
+  });
+
+  it("does not apply intent updates from autonomous reflection", async () => {
+    const harness = await createExecutiveReflectionHarness();
+    cleanup.push(harness.cleanup);
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const pendingIntent = {
+      description: "Ask the user to review Apollo readiness",
+      next_action: "Ask for review",
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [
+            {
+              ...pendingIntent,
+              status: "completed",
+              evidence: "Autonomous self-talk claimed the intent was done.",
+            },
+          ],
+          [],
+          [
+            {
+              step_id: createExecutiveStepId(),
+              new_status: "doing",
+              evidence: "Keeps executive reflection work present.",
+            },
+          ],
+        ),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    const reflected = await reflector.reflect(
+      createExecutiveReflectionContext({
+        origin: "autonomous",
+        goal,
+        nextStep: null,
+        pendingIntents: [pendingIntent],
+      }),
+      harness.writer,
+    );
+
+    expect(reflected.pending_intents).toEqual([pendingIntent]);
+    expect(
+      new StreamReader({
+        dataDir: harness.tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+      })
+        .tail(10)
+        .some(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            (entry.content as { hook?: string }).hook === "reflector_intent_update_dropped",
+        ),
+    ).toBe(true);
+  });
+
+  it("keeps valid non-executive reflection when an executive item is malformed", async () => {
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_reflection",
+                name: "EmitTurnReflection",
+                input: {
+                  advanced_goals: [],
+                  procedural_outcomes: [
+                    {
+                      attempt_turn_counter: 1,
+                      classification: "success",
+                      evidence: "The user's follow-up confirmed the approach worked.",
+                      grounded: true,
+                      skill_actually_applied: true,
+                    },
+                  ],
+                  trait_demonstrations: [],
+                  intent_updates: [],
+                  step_outcomes: [
+                    {
+                      new_status: "doing",
+                      evidence: "Missing step_id should only drop this executive item.",
+                    },
+                  ],
+                  proposed_steps: [],
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+    });
+
+    const reflected = await reflector.reflect(
+      createPendingProceduralReflectionContext(),
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_procedural_attempts).toEqual([]);
+    expect(harness.proceduralEvidenceRepository.list()).toHaveLength(1);
+    expect(
+      new StreamReader({
+        dataDir: harness.tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+      })
+        .tail(10)
+        .some(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            (entry.content as { reason?: string }).reason === "malformed_step_outcome",
+        ),
+    ).toBe(true);
+  });
+
+  it("creates proposed executive steps and drops proposals over the open-step cap", async () => {
+    const harness = await createExecutiveReflectionHarness();
+    cleanup.push(harness.cleanup);
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const proposedSteps = [
+      "Review launch notes",
+      "Ask user for risk tolerance",
+      "Wait for date",
+      "Extra",
+    ].map((description, index) => ({
+      goal_id: goal.id,
+      description,
+      kind: index === 1 ? ("ask_user" as const) : ("think" as const),
+      due_at: index === 2 ? 2_000 : null,
+      rationale: "No open step exists for the selected goal.",
+    }));
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse([], [], [], [], [], proposedSteps)],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    await reflector.reflect(
+      createExecutiveReflectionContext({
+        goal,
+        nextStep: null,
+      }),
+      harness.writer,
+    );
+
+    const openStepDescriptions = harness.executiveStepsRepository
+      .listOpen(goal.id)
+      .map((step) => step.description);
+
+    expect(openStepDescriptions[0]).toBe("Wait for date");
+    expect(openStepDescriptions).toEqual(
+      expect.arrayContaining(["Review launch notes", "Ask user for risk tolerance"]),
+    );
+    expect(openStepDescriptions).toHaveLength(3);
+    expect(
+      new StreamReader({
+        dataDir: harness.tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+      })
+        .tail(10)
+        .some(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            (entry.content as { reason?: string }).reason === "open_step_cap",
+        ),
+    ).toBe(true);
   });
 
   it("bumps LLM-marked goal progress, skips unreferenced episode use, and ticks suppression", async () => {
@@ -1687,7 +2268,8 @@ describe("reflector", () => {
             [
               {
                 classification: "success",
-                evidence: "User confirmed the workaround helped, but the selected approach was not used.",
+                evidence:
+                  "User confirmed the workaround helped, but the selected approach was not used.",
                 skill_actually_applied: false,
               },
             ],
@@ -1697,10 +2279,7 @@ describe("reflector", () => {
     });
     cleanup.push(harness.cleanup);
 
-    const sourceStreamIds = [
-      "strm_aaaaaaaaaaaaaaaa",
-      "strm_bbbbbbbbbbbbbbbb",
-    ] as never;
+    const sourceStreamIds = ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never;
     const episode = await harness.episodicRepository.insert(
       createEpisodeFixture({
         title: "Rust lifetime workaround",
@@ -2050,13 +2629,18 @@ describe("reflector", () => {
   it("runs trait judgment on ordinary user turns with no goals, intents, attempts, or referenced episodes", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        createReflectionResponse([], [], [], [
-          {
-            trait_label: "careful",
-            evidence: "The response checked the user's constraint before answering.",
-            strength_delta: 0.05,
-          },
-        ]),
+        createReflectionResponse(
+          [],
+          [],
+          [],
+          [
+            {
+              trait_label: "careful",
+              evidence: "The response checked the user's constraint before answering.",
+              strength_delta: 0.05,
+            },
+          ],
+        ),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -2386,13 +2970,18 @@ describe("reflector", () => {
       clock: harness.clock,
       llmClient: new FakeLLMClient({
         responses: [
-          createReflectionResponse([], [], [], [
-            {
-              trait_label: "focused",
-              evidence: "The response narrowed the evidence to the retrieved episode.",
-              strength_delta: 0.04,
-            },
-          ]),
+          createReflectionResponse(
+            [],
+            [],
+            [],
+            [
+              {
+                trait_label: "focused",
+                evidence: "The response narrowed the evidence to the retrieved episode.",
+                strength_delta: 0.04,
+              },
+            ],
+          ),
         ],
       }),
       model: "haiku",
