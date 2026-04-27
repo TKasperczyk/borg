@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingClient } from "./embeddings/index.js";
-import { FakeLLMClient } from "./llm/index.js";
+import { Reflector, type ReflectorOptions } from "./cognition/index.js";
+import { FakeLLMClient, type LLMClient } from "./llm/index.js";
 import { EntityRepository, commitmentMigrations } from "./memory/commitments/index.js";
 import { episodicMigrations } from "./memory/episodic/index.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "./memory/episodic/repository.js";
-import { selfMigrations, type OpenQuestionsRepository } from "./memory/self/index.js";
+import { selfMigrations } from "./memory/self/index.js";
 import { retrievalMigrations } from "./retrieval/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, SqliteDatabase } from "./storage/sqlite/index.js";
@@ -2115,24 +2116,23 @@ describe("Borg", () => {
 
     try {
       const internal = borg as unknown as {
-        deps: {
+        deps: Pick<
+          ReflectorOptions,
+          | "episodicRepository"
+          | "goalsRepository"
+          | "traitsRepository"
+          | "reviewQueueRepository"
+          | "skillRepository"
+          | "proceduralEvidenceRepository"
+        > & {
           turnOrchestrator: {
             options: {
-              openQuestionsRepository: OpenQuestionsRepository;
-              identityService: {
-                addOpenQuestion(input: unknown): unknown;
-                updateGoal(...args: unknown[]): unknown;
-              };
+              createReflector: (llmClient: LLMClient) => Reflector;
             };
           };
         };
       };
-      internal.deps.turnOrchestrator.options.openQuestionsRepository = {
-        add() {
-          throw new Error("hook exploded");
-        },
-      } as unknown as OpenQuestionsRepository;
-      internal.deps.turnOrchestrator.options.identityService = {
+      const brokenIdentityService = {
         addOpenQuestion() {
           throw new Error("hook exploded");
         },
@@ -2140,6 +2140,19 @@ describe("Borg", () => {
           throw new Error("unexpected goal update");
         },
       };
+      internal.deps.turnOrchestrator.options.createReflector = (llmClient) =>
+        new Reflector({
+          clock,
+          llmClient,
+          model: "haiku",
+          episodicRepository: internal.deps.episodicRepository,
+          goalsRepository: internal.deps.goalsRepository,
+          traitsRepository: internal.deps.traitsRepository,
+          identityService: brokenIdentityService,
+          reviewQueueRepository: internal.deps.reviewQueueRepository,
+          skillRepository: internal.deps.skillRepository,
+          proceduralEvidenceRepository: internal.deps.proceduralEvidenceRepository,
+        });
 
       const result = await borg.turn({
         userMessage: "Why is Atlas still failing?",

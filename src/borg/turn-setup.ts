@@ -2,7 +2,7 @@
 
 import type { StreamIngestionCoordinator } from "../cognition/ingestion/index.js";
 import type { SessionLock } from "../cognition/index.js";
-import { TurnOrchestrator } from "../cognition/index.js";
+import { Reflector, TurnOrchestrator } from "../cognition/index.js";
 import { TurnContextCompiler } from "../cognition/recency/index.js";
 import type { Config } from "../config/index.js";
 import type { LLMClient } from "../llm/index.js";
@@ -19,7 +19,6 @@ import type {
   AutobiographicalRepository,
   GoalsRepository,
   GrowthMarkersRepository,
-  OpenQuestionsRepository,
   TraitsRepository,
   ValuesRepository,
 } from "../memory/self/index.js";
@@ -45,7 +44,6 @@ export type BuildTurnOrchestratorOptions = {
   traitsRepository: TraitsRepository;
   autobiographicalRepository: AutobiographicalRepository;
   growthMarkersRepository: GrowthMarkersRepository;
-  openQuestionsRepository: OpenQuestionsRepository;
   moodRepository: MoodRepository;
   socialRepository: SocialRepository;
   skillRepository: SkillRepository;
@@ -69,20 +67,29 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     entityRepository: options.entityRepository,
     commitmentRepository: options.commitmentRepository,
     reviewQueueRepository: options.reviewQueueRepository,
-    identityService: options.identityService,
     valuesRepository: options.valuesRepository,
     goalsRepository: options.goalsRepository,
     traitsRepository: options.traitsRepository,
     autobiographicalRepository: options.autobiographicalRepository,
     growthMarkersRepository: options.growthMarkersRepository,
-    openQuestionsRepository: options.openQuestionsRepository,
     moodRepository: options.moodRepository,
     socialRepository: options.socialRepository,
-    skillRepository: options.skillRepository,
-    proceduralEvidenceRepository: options.proceduralEvidenceRepository,
     skillSelector: options.skillSelector,
     workingMemoryStore: options.workingMemoryStore,
     llmFactory: options.llmFactory,
+    createReflector: (llmClient) =>
+      new Reflector({
+        clock: options.clock,
+        llmClient,
+        model: options.config.anthropic.models.background,
+        episodicRepository: options.episodicRepository,
+        goalsRepository: options.goalsRepository,
+        traitsRepository: options.traitsRepository,
+        identityService: options.identityService,
+        reviewQueueRepository: options.reviewQueueRepository,
+        skillRepository: options.skillRepository,
+        proceduralEvidenceRepository: options.proceduralEvidenceRepository,
+      }),
     toolDispatcher: options.toolDispatcher,
     sessionLock: options.sessionLock,
     clock: options.clock,

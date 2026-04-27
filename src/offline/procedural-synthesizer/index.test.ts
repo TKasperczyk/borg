@@ -568,6 +568,11 @@ describe("ProceduralSynthesizerProcess", () => {
       clock: harness.clock,
       llmClient: harness.llmClient,
       model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      skillRepository: harness.skillRepository,
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
 
     for (const sourceStreamIds of [firstSourceIds, secondSourceIds]) {
@@ -654,11 +659,6 @@ describe("ProceduralSynthesizerProcess", () => {
           },
           retrievedEpisodes: [],
           retrievalConfidence: createRetrievalConfidence(),
-          episodicRepository: harness.episodicRepository,
-          goalsRepository: harness.goalsRepository,
-          traitsRepository: harness.traitsRepository,
-          openQuestionsRepository: harness.openQuestionsRepository,
-          proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
           selectedSkillId: null,
           suppressionSet: new SuppressionSet(2),
         },

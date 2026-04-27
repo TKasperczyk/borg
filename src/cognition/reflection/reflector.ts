@@ -4,7 +4,6 @@ import { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import {
   GoalsRepository,
-  OpenQuestionsRepository,
   TraitsRepository,
   type GoalRecord,
 } from "../../memory/self/index.js";
@@ -34,14 +33,6 @@ export type ReflectionContext = {
   actionResult: ActionResult;
   retrievedEpisodes: RetrievedEpisode[];
   retrievalConfidence: RetrievalConfidence;
-  episodicRepository: EpisodicRepository;
-  goalsRepository: GoalsRepository;
-  traitsRepository: TraitsRepository;
-  openQuestionsRepository: OpenQuestionsRepository;
-  identityService?: Pick<IdentityService, "updateGoal" | "addOpenQuestion">;
-  reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
-  skillRepository?: SkillRepository;
-  proceduralEvidenceRepository?: ProceduralEvidenceRepository;
   selectedSkillId?: SkillId | null;
   audienceEntityId?: EntityId | null;
   suppressionSet: SuppressionSet;
@@ -207,6 +198,7 @@ function selectResolvedIntentKeys(
 
 async function resolveAttemptEpisodeIds(
   context: ReflectionContext,
+  episodicRepository: EpisodicRepository,
   sourceStreamIds: readonly StreamEntryId[],
 ): Promise<EpisodeId[]> {
   const retrievedMatches = context.retrievedEpisodes
@@ -215,8 +207,7 @@ async function resolveAttemptEpisodeIds(
     )
     .map((result) => result.episode.id);
 
-  const repositoryMatch =
-    await context.episodicRepository.findBySourceStreamIdsContaining(sourceStreamIds);
+  const repositoryMatch = await episodicRepository.findBySourceStreamIdsContaining(sourceStreamIds);
   const repositoryMatchIds = repositoryMatch === null ? [] : [repositoryMatch.id];
 
   return [...new Set([...retrievedMatches, ...repositoryMatchIds])];
@@ -227,6 +218,13 @@ export type ReflectorOptions = {
   llmClient?: LLMClient;
   model?: string;
   maxTokens?: number;
+  episodicRepository: EpisodicRepository;
+  goalsRepository: GoalsRepository;
+  traitsRepository: TraitsRepository;
+  identityService?: Pick<IdentityService, "updateGoal" | "addOpenQuestion">;
+  reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
+  skillRepository?: SkillRepository;
+  proceduralEvidenceRepository?: ProceduralEvidenceRepository;
 };
 
 export class Reflector {
@@ -235,7 +233,7 @@ export class Reflector {
   private readonly model?: string;
   private readonly maxTokens: number;
 
-  constructor(options: ReflectorOptions = {}) {
+  constructor(private readonly options: ReflectorOptions) {
     this.clock = options.clock ?? new SystemClock();
     this.llmClient = options.llmClient;
     this.model = options.model;
@@ -286,15 +284,18 @@ export class Reflector {
         last_progress_ts: this.clock.now(),
       };
 
-      if (context.identityService === undefined || context.reviewQueueRepository === undefined) {
-        context.goalsRepository.update(goal.id, patch, reflectionProvenance);
+      if (
+        this.options.identityService === undefined ||
+        this.options.reviewQueueRepository === undefined
+      ) {
+        this.options.goalsRepository.update(goal.id, patch, reflectionProvenance);
         continue;
       }
 
-      const result = context.identityService.updateGoal(goal.id, patch, reflectionProvenance);
+      const result = this.options.identityService.updateGoal(goal.id, patch, reflectionProvenance);
 
       if (result.status === "requires_review") {
-        context.reviewQueueRepository.enqueue({
+        this.options.reviewQueueRepository.enqueue({
           kind: "identity_inconsistency",
           refs: buildIdentityPatchReviewRefs(goal.id, patch, reflectionProvenance),
           reason: `reflector proposed updating goal ${goal.id}`,
@@ -312,10 +313,10 @@ export class Reflector {
       const used = referencedEpisodeIdSet.has(result.episode.id);
 
       if (used) {
-        const stats = context.episodicRepository.getStats(result.episode.id);
+        const stats = this.options.episodicRepository.getStats(result.episode.id);
 
         if (stats !== null) {
-          context.episodicRepository.updateStats(result.episode.id, {
+          this.options.episodicRepository.updateStats(result.episode.id, {
             use_count: stats.use_count + 1,
           });
         }
@@ -347,16 +348,16 @@ export class Reflector {
           related_episode_ids: relatedEpisodeIds,
           provenance: reflectionProvenance,
           source: "reflection",
-        } satisfies Parameters<OpenQuestionsRepository["add"]>[0];
+        } satisfies Parameters<IdentityService["addOpenQuestion"]>[0];
 
-        if (context.identityService === undefined) {
+        if (this.options.identityService === undefined) {
           await appendOpenQuestionHookFailureEvent(
             streamWriter,
             "reflection_open_question",
             new Error("identity_service_unavailable"),
           );
         } else {
-          context.identityService.addOpenQuestion(openQuestionInput);
+          this.options.identityService.addOpenQuestion(openQuestionInput);
         }
       } catch (error) {
         await appendOpenQuestionHookFailureEvent(streamWriter, "reflection_open_question", error);
@@ -439,13 +440,14 @@ export class Reflector {
         }
 
         try {
-          if (context.proceduralEvidenceRepository !== undefined) {
+          if (this.options.proceduralEvidenceRepository !== undefined) {
             const resolvedEpisodeIds = await resolveAttemptEpisodeIds(
               context,
+              this.options.episodicRepository,
               attempt.source_stream_ids,
             );
 
-            context.proceduralEvidenceRepository.insert({
+            this.options.proceduralEvidenceRepository.insert({
               pendingAttemptSnapshot: attempt,
               classification: outcome.classification,
               evidenceText: outcome.evidence,
@@ -460,13 +462,13 @@ export class Reflector {
               (outcome.classification === "success" ||
                 outcome.classification === "failure") &&
               outcome.skill_actually_applied &&
-              context.skillRepository !== undefined
+              this.options.skillRepository !== undefined
             ) {
               // Only credit/blame the posterior when the model actually
               // executed the suggested approach. If it ignored the skill,
               // the user's success or failure feedback isn't evidence
               // about the skill itself.
-              context.skillRepository.recordOutcome(
+              this.options.skillRepository.recordOutcome(
                 attempt.selected_skill_id,
                 outcome.classification === "success",
                 resolvedEpisodeIds,

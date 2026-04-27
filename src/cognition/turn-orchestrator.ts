@@ -13,22 +13,17 @@ import { TurnOpeningPersistence } from "./persistence/turn-opening.js";
 import { PendingProceduralAttemptTracker } from "./procedural/pending-attempt-tracker.js";
 import { TurnContextCompiler } from "./recency/index.js";
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
-import { Reflector } from "./reflection/index.js";
+import type { Reflector } from "./reflection/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
-import {
-  ProceduralEvidenceRepository,
-  SkillRepository,
-  SkillSelector,
-} from "../memory/procedural/index.js";
+import { SkillSelector } from "../memory/procedural/index.js";
 import {
   appendInternalFailureEvent,
   AutobiographicalRepository,
   GrowthMarkersRepository,
-  OpenQuestionsRepository,
   GoalsRepository,
   TraitsRepository,
   ValuesRepository,
@@ -38,7 +33,6 @@ import { ReviewQueueRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
-import { type IdentityService } from "../memory/identity/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import { SessionBusyError } from "../util/errors.js";
@@ -104,18 +98,15 @@ export type TurnOrchestratorOptions = {
   traitsRepository: TraitsRepository;
   autobiographicalRepository?: AutobiographicalRepository;
   growthMarkersRepository?: GrowthMarkersRepository;
-  openQuestionsRepository: OpenQuestionsRepository;
   moodRepository: MoodRepository;
   socialRepository: SocialRepository;
-  skillRepository: SkillRepository;
-  proceduralEvidenceRepository: ProceduralEvidenceRepository;
   skillSelector: SkillSelector;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   reviewQueueRepository: ReviewQueueRepository;
-  identityService: IdentityService;
   workingMemoryStore: WorkingMemoryStore;
   llmFactory: () => LLMClient;
+  createReflector: (llmClient: LLMClient) => Reflector;
   toolDispatcher: ToolDispatcher;
   clock?: Clock;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
@@ -476,11 +467,7 @@ export class TurnOrchestrator {
             await this.appendHookFailureEvent(streamWriter, "social_update", error);
           }
         }
-        const reflector = new Reflector({
-          clock: this.clock,
-          llmClient,
-          model: this.options.config.anthropic.models.background,
-        });
+        const reflector = this.options.createReflector(llmClient);
         const reflectedWorkingMemory = await reflector.reflect(
           {
             origin: input.origin ?? "user",
@@ -495,14 +482,6 @@ export class TurnOrchestrator {
             actionResult,
             retrievedEpisodes: deliberation.retrievedEpisodes,
             retrievalConfidence: retrieval.confidence,
-            episodicRepository: this.options.episodicRepository,
-            goalsRepository: this.options.goalsRepository,
-            traitsRepository: this.options.traitsRepository,
-            openQuestionsRepository: this.options.openQuestionsRepository,
-            identityService: this.options.identityService,
-            reviewQueueRepository: this.options.reviewQueueRepository,
-            skillRepository: this.options.skillRepository,
-            proceduralEvidenceRepository: this.options.proceduralEvidenceRepository,
             selectedSkillId: selectedSkill?.skill.id ?? null,
             audienceEntityId,
             suppressionSet,

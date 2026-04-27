@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SuppressionSet } from "../attention/index.js";
-import { Reflector } from "./reflector.js";
+import { Reflector, type ReflectorOptions } from "./reflector.js";
 import { FakeLLMClient } from "../../llm/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
@@ -115,9 +115,21 @@ function createRetrievalConfidence(
   };
 }
 
-function createPendingProceduralReflectionContext(
-  harness: Awaited<ReturnType<typeof createOfflineTestHarness>>,
-) {
+type ReflectionHarness = Awaited<ReturnType<typeof createOfflineTestHarness>>;
+
+function createHarnessReflector(
+  harness: ReflectionHarness,
+  overrides: Partial<ReflectorOptions> = {},
+): Reflector {
+  return new Reflector({
+    episodicRepository: harness.episodicRepository,
+    goalsRepository: harness.goalsRepository,
+    traitsRepository: harness.traitsRepository,
+    ...overrides,
+  });
+}
+
+function createPendingProceduralReflectionContext() {
   const pendingAttempt = {
     problem_text: "I hit a Rust lifetime issue again.",
     approach_summary: "Shrink borrow scopes and use intermediate bindings.",
@@ -183,11 +195,6 @@ function createPendingProceduralReflectionContext(
     },
     retrievedEpisodes: [],
     retrievalConfidence: createRetrievalConfidence(),
-    episodicRepository: harness.episodicRepository,
-    goalsRepository: harness.goalsRepository,
-    traitsRepository: harness.traitsRepository,
-    openQuestionsRepository: harness.openQuestionsRepository,
-    proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     selectedSkillId: null,
     suppressionSet: new SuppressionSet(2),
   } satisfies Parameters<Reflector["reflect"]>[0];
@@ -299,6 +306,9 @@ describe("reflector", () => {
       clock,
       llmClient: llm,
       model: "haiku",
+      episodicRepository,
+      goalsRepository,
+      traitsRepository,
     });
     const retrieved: RetrievedEpisode = {
       episode,
@@ -371,10 +381,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [retrieved],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository,
-        goalsRepository,
-        traitsRepository,
-        openQuestionsRepository,
         suppressionSet,
       },
       writer,
@@ -420,10 +426,12 @@ describe("reflector", () => {
         ]),
       ],
     });
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: llm,
       model: "haiku",
+      identityService: harness.identityService,
+      reviewQueueRepository: harness.reviewQueueRepository,
     });
 
     await reflector.reflect(
@@ -477,12 +485,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
-        identityService: harness.identityService,
-        reviewQueueRepository: harness.reviewQueueRepository,
         suppressionSet: new SuppressionSet(),
       },
       harness.streamWriter,
@@ -521,7 +523,7 @@ describe("reflector", () => {
     const llm = new FakeLLMClient({
       responses: [createReflectionResponse()],
     });
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: llm,
       model: "haiku",
@@ -578,10 +580,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(),
       },
       harness.streamWriter,
@@ -634,10 +632,11 @@ describe("reflector", () => {
       }),
     });
     cleanup.push(harness.cleanup);
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
       model: "haiku",
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
     const workingMemory = {
       session_id: DEFAULT_SESSION_ID,
@@ -686,10 +685,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(),
       },
       harness.streamWriter,
@@ -708,14 +703,15 @@ describe("reflector", () => {
       }),
     });
     cleanup.push(harness.cleanup);
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
       model: "haiku",
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
 
     const reflected = await reflector.reflect(
-      createPendingProceduralReflectionContext(harness),
+      createPendingProceduralReflectionContext(),
       harness.streamWriter,
     );
 
@@ -734,14 +730,15 @@ describe("reflector", () => {
       }),
     });
     cleanup.push(harness.cleanup);
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
       model: "haiku",
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
 
     const reflected = await reflector.reflect(
-      createPendingProceduralReflectionContext(harness),
+      createPendingProceduralReflectionContext(),
       harness.streamWriter,
     );
     const events = new StreamReader({
@@ -825,6 +822,9 @@ describe("reflector", () => {
     const suppressionSet = new SuppressionSet(1);
     const reflector = new Reflector({
       clock,
+      episodicRepository,
+      goalsRepository,
+      traitsRepository,
     });
     const retrieved: RetrievedEpisode = {
       episode,
@@ -896,10 +896,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [retrieved],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository,
-        goalsRepository,
-        traitsRepository,
-        openQuestionsRepository,
         suppressionSet,
       },
       writer,
@@ -982,6 +978,10 @@ describe("reflector", () => {
 
     const reflector = new Reflector({
       clock,
+      episodicRepository,
+      goalsRepository,
+      traitsRepository,
+      identityService,
     });
     const retrieved: RetrievedEpisode = {
       episode,
@@ -1058,11 +1058,6 @@ describe("reflector", () => {
           coverage: 0.2,
           sampleSize: 1,
         }),
-        episodicRepository,
-        goalsRepository,
-        traitsRepository,
-        openQuestionsRepository,
-        identityService,
         suppressionSet: new SuppressionSet(1),
       },
       writer,
@@ -1084,7 +1079,7 @@ describe("reflector", () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
     });
 
@@ -1144,10 +1139,6 @@ describe("reflector", () => {
           coverage: 0.2,
           sampleSize: 1,
         }),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
       },
       harness.streamWriter,
@@ -1173,8 +1164,9 @@ describe("reflector", () => {
     cleanup.push(harness.cleanup);
 
     const audienceEntityId = harness.entityRepository.resolve("Bob");
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
+      identityService: harness.identityService,
     });
 
     await reflector.reflect(
@@ -1233,11 +1225,6 @@ describe("reflector", () => {
           coverage: 0.2,
           sampleSize: 1,
         }),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
-        identityService: harness.identityService,
         audienceEntityId,
         suppressionSet: new SuppressionSet(1),
       },
@@ -1280,7 +1267,7 @@ describe("reflector", () => {
         tags: ["atlas"],
       }),
     );
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
     });
     const retrieved = createRetrievedEpisode(episode, 0.1);
@@ -1339,10 +1326,6 @@ describe("reflector", () => {
           overall: 0.82,
           evidenceStrength: 0.82,
         }),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
       },
       harness.streamWriter,
@@ -1414,9 +1397,6 @@ describe("reflector", () => {
       created_at: 0,
       updated_at: 0,
     });
-    const reflector = new Reflector({
-      clock,
-    });
     const retrieved: RetrievedEpisode = {
       episode,
       score: 0.2,
@@ -1443,6 +1423,13 @@ describe("reflector", () => {
         throw new Error("unexpected goal update");
       },
     };
+    const reflector = new Reflector({
+      clock,
+      episodicRepository,
+      goalsRepository,
+      traitsRepository,
+      identityService: brokenIdentityService,
+    });
 
     const reflected = await reflector.reflect(
       {
@@ -1500,11 +1487,6 @@ describe("reflector", () => {
           coverage: 0.2,
           sampleSize: 1,
         }),
-        episodicRepository,
-        goalsRepository,
-        traitsRepository,
-        openQuestionsRepository,
-        identityService: brokenIdentityService,
         suppressionSet: new SuppressionSet(1),
       },
       writer,
@@ -1560,10 +1542,12 @@ describe("reflector", () => {
         approach: "Shrink borrow scopes and use intermediate bindings.",
         sourceEpisodes: [episode.id],
       });
-      const reflector = new Reflector({
+      const reflector = createHarnessReflector(harness, {
         clock: harness.clock,
         llmClient: harness.llmClient,
         model: "haiku",
+        skillRepository: harness.skillRepository,
+        proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
       });
 
       const reflected = await reflector.reflect(
@@ -1654,12 +1638,6 @@ describe("reflector", () => {
           },
           retrievedEpisodes: [],
           retrievalConfidence: createRetrievalConfidence(),
-          episodicRepository: harness.episodicRepository,
-          goalsRepository: harness.goalsRepository,
-          traitsRepository: harness.traitsRepository,
-          openQuestionsRepository: harness.openQuestionsRepository,
-          skillRepository: harness.skillRepository,
-          proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
           selectedSkillId: null,
           suppressionSet: new SuppressionSet(2),
         },
@@ -1742,10 +1720,12 @@ describe("reflector", () => {
       turn_counter: 1,
       audience_entity_id: null,
     };
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
       model: "haiku",
+      skillRepository: harness.skillRepository,
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
 
     const reflected = await reflector.reflect(
@@ -1813,12 +1793,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
-        skillRepository: harness.skillRepository,
-        proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
         selectedSkillId: null,
         suppressionSet: new SuppressionSet(2),
       },
@@ -1840,8 +1814,9 @@ describe("reflector", () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
 
     await reflector.reflect(
@@ -1927,11 +1902,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
-        proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
         selectedSkillId: null,
         suppressionSet: new SuppressionSet(1),
       },
@@ -1972,10 +1942,12 @@ describe("reflector", () => {
       approach: "Shrink borrow scopes and use intermediate bindings.",
       sourceEpisodes: [episode.id],
     });
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
       model: "haiku",
+      skillRepository: harness.skillRepository,
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
 
     const reflected = await reflector.reflect(
@@ -2061,12 +2033,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
-        skillRepository: harness.skillRepository,
-        proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
         selectedSkillId: null,
         suppressionSet: new SuppressionSet(1),
       },
@@ -2098,7 +2064,7 @@ describe("reflector", () => {
     });
     cleanup.push(harness.cleanup);
 
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: llm,
       model: "haiku",
@@ -2169,10 +2135,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
         currentTurnStreamEntryIds: ["strm_aaaaaaaaaaaaaaaa" as never],
       },
@@ -2205,7 +2167,7 @@ describe("reflector", () => {
     );
     const retrievedA = createRetrievedEpisode(episodeA);
     const retrievedB = createRetrievedEpisode(episodeB);
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: new FakeLLMClient({
         responses: [
@@ -2291,10 +2253,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [retrievedA, retrievedB],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
         currentTurnStreamEntryIds: [
           "strm_aaaaaaaaaaaaaaaa" as never,
@@ -2320,7 +2278,7 @@ describe("reflector", () => {
 
     const episode = await harness.episodicRepository.insert(createEpisodeFixture());
     const retrieved = createRetrievedEpisode(episode);
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: new FakeLLMClient({
         responses: [
@@ -2406,10 +2364,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [retrieved],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
       },
       harness.streamWriter,
@@ -2428,7 +2382,7 @@ describe("reflector", () => {
       }),
     );
     const retrieved = createRetrievedEpisode(episode);
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: new FakeLLMClient({
         responses: [
@@ -2509,10 +2463,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [retrieved],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
         currentTurnStreamEntryIds: ["strm_aaaaaaaaaaaaaaaa" as never],
       },
@@ -2533,7 +2483,7 @@ describe("reflector", () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
     });
 
@@ -2602,10 +2552,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
       },
       harness.streamWriter,
@@ -2625,7 +2571,7 @@ describe("reflector", () => {
     });
     await harness.episodicRepository.insert(episode);
 
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: new FakeLLMClient({
         responses: [
@@ -2732,10 +2678,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [retrieved],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
         currentTurnStreamEntryIds: [
           "strm_aaaaaaaaaaaaaaaa" as never,
@@ -2781,7 +2723,7 @@ describe("reflector", () => {
         ),
       ],
     });
-    const reflector = new Reflector({
+    const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: llm,
       model: "haiku",
@@ -2875,10 +2817,6 @@ describe("reflector", () => {
         },
         retrievedEpisodes: [retrieved],
         retrievalConfidence: createRetrievalConfidence(),
-        episodicRepository: harness.episodicRepository,
-        goalsRepository: harness.goalsRepository,
-        traitsRepository: harness.traitsRepository,
-        openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
       },
       harness.streamWriter,
