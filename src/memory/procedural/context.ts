@@ -32,8 +32,8 @@ export type ProceduralContextProblemKind = z.infer<typeof proceduralContextProbl
 export type ProceduralContextAudienceScope = z.infer<typeof proceduralContextAudienceScopeSchema>;
 
 const GENERIC_DOMAIN_TAGS_BY_PROBLEM_KIND = {
-  code_debugging: new Set(["debug", "debugging"]),
-  code_design: new Set(["design"]),
+  code_debugging: new Set(["code", "debug", "debugging"]),
+  code_design: new Set(["code", "design"]),
   writing_editing: new Set(["edit", "editing", "writing"]),
   planning: new Set(["plan", "planning"]),
   research: new Set(["research"]),
@@ -43,21 +43,38 @@ const GENERIC_DOMAIN_TAGS_BY_PROBLEM_KIND = {
   other: new Set<string>(),
 } satisfies Record<ProceduralContextProblemKind, ReadonlySet<string>>;
 
+const GENERIC_DOMAIN_TAGS = new Set(["thing", "things"]);
+
 function canonicalizeDomainTags(
   problemKind: ProceduralContextProblemKind,
   domainTags: readonly string[],
 ): string[] {
   const genericTags = GENERIC_DOMAIN_TAGS_BY_PROBLEM_KIND[problemKind];
 
-  return [
-    ...new Set(
-      domainTags
-        .map(canonicalizeDomainTag)
-        .filter((tag) => tag.length > 0 && !genericTags.has(tag)),
-    ),
-  ]
-    .sort()
-    .slice(0, 3);
+  const selected: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of domainTags) {
+    const tag = canonicalizeDomainTag(value);
+
+    if (
+      tag.length === 0 ||
+      seen.has(tag) ||
+      genericTags.has(tag) ||
+      GENERIC_DOMAIN_TAGS.has(tag)
+    ) {
+      continue;
+    }
+
+    seen.add(tag);
+    selected.push(tag);
+
+    if (selected.length === 3) {
+      break;
+    }
+  }
+
+  return selected.sort();
 }
 
 export function deriveProceduralContextKey(input: {
@@ -73,7 +90,7 @@ export function deriveProceduralContextKey(input: {
 export const proceduralContextSchema = z
   .object({
     problem_kind: proceduralContextProblemKindSchema,
-    domain_tags: z.array(proceduralContextDomainTagSchema).max(3),
+    domain_tags: z.array(proceduralContextDomainTagSchema).max(32),
     audience_scope: proceduralContextAudienceScopeSchema,
     context_key: z.string().min(1),
   })

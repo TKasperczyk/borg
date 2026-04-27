@@ -287,6 +287,12 @@ intervals are derived on demand by `bayes.ts`.
 //   ci_95            = quantiles of Beta(α, β)
 //   thompson_sample  = sample ~ Beta(α, β)   // for selection
 
+// SP2: selection may receive a deterministic ProceduralContext
+// (problem_kind + domain_tags + audience_scope). When context stats
+// exist for a skill/context_key, SkillSelector samples a smoothed
+// context-conditioned posterior; otherwise it falls back to the global
+// Beta posterior above.
+
 // ProceduralEvidence (SQLite)
 {
   id,

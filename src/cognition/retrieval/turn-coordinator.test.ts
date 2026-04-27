@@ -263,8 +263,15 @@ describe("TurnRetrievalCoordinator", () => {
     expect(result.affectiveTrajectory).toBe(affectiveTrajectory);
     expect(result.retrieval).toBe(retrieval);
     expect(result.selectedSkill).toBe(selectedSkill);
+    expect(result.proceduralContext).toMatchObject({
+      problem_kind: "other",
+      domain_tags: ["atlas", "bob"],
+      audience_scope: "known_other",
+      context_key: "other:atlas,bob:known_other",
+    });
     expect(select).toHaveBeenCalledWith("Solve Atlas Atlas Bob", {
       k: 5,
+      proceduralContext: result.proceduralContext,
     });
     expect(searchWithContext).toHaveBeenCalledWith(
       "Solve Atlas",
@@ -344,6 +351,7 @@ describe("TurnRetrievalCoordinator", () => {
     });
 
     expect(result.selectedSkill).toBeNull();
+    expect(result.proceduralContext).toBeNull();
     expect(select).not.toHaveBeenCalled();
     expect(searchWithContext).toHaveBeenCalledWith(
       "Think about this",

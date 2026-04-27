@@ -6,7 +6,11 @@ import type {
 } from "../../memory/commitments/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
 import type { ReviewQueueItem, ReviewQueueRepository } from "../../memory/semantic/index.js";
-import type { SkillSelectionResult, SkillSelector } from "../../memory/procedural/index.js";
+import type {
+  ProceduralContext,
+  SkillSelectionResult,
+  SkillSelector,
+} from "../../memory/procedural/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
@@ -19,6 +23,7 @@ import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import { computeRetrievalLimit, computeWeights, type SuppressionSet } from "../attention/index.js";
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
+import { deriveProceduralContext } from "../procedural/context-derivation.js";
 import type { PerceptionResult } from "../types.js";
 
 function selectActiveValues(values: readonly SelfSnapshot["values"][number][], candidateLimit = 2) {
@@ -97,6 +102,7 @@ export type TurnRetrievalCoordinatorResult = {
   retrieval: RetrievedContext;
   retrievedEpisodes: RetrievedContext["episodes"];
   retrievedSemantic: RetrievedContext["semantic"];
+  proceduralContext: ProceduralContext | null;
   selectedSkill: SkillSelectionResult | null;
   retrievalOptions: RetrievalSearchOptions;
   reRetrieve: (query: string, overrides?: RetrievalSearchOptions) => Promise<RetrievedEpisode[]>;
@@ -234,10 +240,22 @@ export class TurnRetrievalCoordinator {
       input.userMessage,
       input.perception.entities,
     );
+    const proceduralContext =
+      input.perception.mode === "problem_solving"
+        ? deriveProceduralContext({
+            userMessage: input.userMessage,
+            perception: input.perception,
+            isSelfAudience: input.isSelfAudience,
+            audienceEntityId: input.audienceEntityId,
+            audienceProfile: input.audienceProfile,
+            inputAudience: input.inputAudience,
+          })
+        : null;
     const selectedSkill =
       input.perception.mode === "problem_solving"
         ? await this.options.skillSelector.select(skillSelectionQuery, {
             k: 5,
+            ...(proceduralContext === null ? {} : { proceduralContext }),
           })
         : null;
 
@@ -248,6 +266,7 @@ export class TurnRetrievalCoordinator {
       retrieval,
       retrievedEpisodes,
       retrievedSemantic,
+      proceduralContext,
       selectedSkill,
       retrievalOptions,
       reRetrieve: (query, overrides = {}) =>

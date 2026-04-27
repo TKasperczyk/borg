@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type {
+  SkillContextStatsRecord,
   SkillRecord,
   SkillSelectionCandidate,
   SkillSelectionResult,
@@ -83,6 +84,7 @@ function makeCandidate(
   mean: number,
   ci95: [number, number],
   similarity: number,
+  contextStats: SkillContextStatsRecord | null = null,
 ): SkillSelectionCandidate {
   return {
     skill,
@@ -92,6 +94,7 @@ function makeCandidate(
       mean,
       ci_95: ci95,
     },
+    contextStats,
   };
 }
 
@@ -228,17 +231,47 @@ describe("buildBaseSystemPrompt", () => {
       "Skill candidates considered (winner first; activation_sample is a Thompson draw, not confidence):",
     );
     expect(block).toContain(
-      "- winner: Write a focused regression test -- Start with failing coverage before changing behavior. (activation_sample=0.77 posterior_mean=0.55 ci95_width=0.50 similarity=0.83)",
+      "- winner: Write a focused regression test -- Start with failing coverage before changing behavior. (activation_sample=0.77 posterior_mean=0.55 global_n=5 ci95_width=0.50 similarity=0.83)",
     );
     expect(block).toContain(
-      "- alternative: Trace the failing path -- Walk the smallest repro through logs. (activation_sample=0.90 posterior_mean=0.50 ci95_width=0.60 similarity=0.91)",
+      "- alternative: Trace the failing path -- Walk the smallest repro through logs. (activation_sample=0.90 posterior_mean=0.50 global_n=5 ci95_width=0.60 similarity=0.91)",
     );
     expect(block).toContain(
-      "- alternative: Compare previous rollout -- Diff the last known-good deployment. (activation_sample=0.66 posterior_mean=0.70 ci95_width=0.40 similarity=0.76)",
+      "- alternative: Compare previous rollout -- Diff the last known-good deployment. (activation_sample=0.66 posterior_mean=0.70 global_n=5 ci95_width=0.40 similarity=0.76)",
     );
     expect(block).not.toContain("Broad refactor");
     expect(block).not.toContain("Success rate");
     expect(block.indexOf("- winner:")).toBeLessThan(block.indexOf("- alternative: Trace"));
+  });
+
+  it("renders contextual skill statistics when present", () => {
+    const selected = makeSkill(
+      "skl_aaaaaaaaaaaaaaaa",
+      "Trace TypeScript failure",
+      "Start from the narrow failing test.",
+    );
+    const selectedSkill = makeSelection(selected, [
+      makeCandidate(selected, 0.82, 0.67, [0.4, 0.9], 0.9, {
+        skill_id: selected.id,
+        context_key: "code_debugging:typescript:self",
+        alpha: 3,
+        beta: 4,
+        attempts: 5,
+        successes: 2,
+        failures: 3,
+        last_used: 100,
+        last_successful: 90,
+        updated_at: 100,
+      }),
+    ]);
+
+    const prompt = buildBaseSystemPrompt(makeContext({ selectedSkill }), PROMPT_OPTIONS);
+    const block = extractBlock(prompt, "borg_procedural_guidance");
+
+    expect(block).toContain("posterior_mean=0.67 global_n=5");
+    expect(block).toContain(
+      'context_mean=0.43 context_attempts=5 context="code_debugging:typescript:self"',
+    );
   });
 
   it("renders an empty procedural placeholder when no candidates were evaluated", () => {

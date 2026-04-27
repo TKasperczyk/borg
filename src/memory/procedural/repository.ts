@@ -705,6 +705,34 @@ export class ProceduralContextStatsRepository {
     return row === undefined ? null : skillContextStatsFromRow(row);
   }
 
+  batchGetContextStats(
+    contextKey: string,
+    skillIds: readonly SkillId[],
+  ): Map<SkillId, SkillContextStatsRecord> {
+    const contextKeyValue = assertContextKey(contextKey);
+
+    if (skillIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM skill_context_stats
+          WHERE context_key = ? AND skill_id IN (${skillIds.map(() => "?").join(", ")})
+        `,
+      )
+      .all(contextKeyValue, ...skillIds) as Record<string, unknown>[];
+
+    return new Map(
+      rows.map((row) => {
+        const stats = skillContextStatsFromRow(row);
+        return [stats.skill_id, stats] as const;
+      }),
+    );
+  }
+
   listForSkill(skillId: SkillId): SkillContextStatsRecord[] {
     const rows = this.db
       .prepare(

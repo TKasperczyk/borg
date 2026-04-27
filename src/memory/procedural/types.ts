@@ -58,12 +58,16 @@ export type SkillSearchCandidate = {
 export type SkillSelectionCandidate = SkillSearchCandidate & {
   sampledValue: number;
   stats: SkillStats;
+  contextStats?: SkillContextStatsRecord | null;
+  sampledAlpha?: number;
+  sampledBeta?: number;
 };
 
 export type SkillSelectionResult = {
   skill: SkillRecord;
   sampledValue: number;
   evaluatedCandidates: SkillSelectionCandidate[];
+  proceduralContext?: ProceduralContext | null;
 };
 
 export const proceduralOutcomeClassificationSchema = z.enum(["success", "failure", "unclear"]);

@@ -139,7 +139,12 @@ export {
   type IdentityUpdateResult,
 } from "./memory/identity/index.js";
 export {
+  deriveProceduralContextKey,
   type SkillRecord,
+  type ProceduralContext,
+  type ProceduralContextAudienceScope,
+  type ProceduralContextProblemKind,
+  type SkillContextStatsRecord,
   type SkillSearchCandidate,
   type SkillSelectionCandidate,
   type SkillSelectionResult,

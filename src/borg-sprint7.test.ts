@@ -247,6 +247,44 @@ describe("Borg Sprint 7", () => {
       expect(secondTurn.retrievedEpisodeIds[0]).toBe(positiveEpisode.id);
       expect(updatedSkill?.alpha).toBe(2);
       expect(updatedSkill?.successes).toBe(1);
+      const verificationDb = openDatabase(join(tempDir, "borg.db"), {
+        migrations: [
+          ...episodicMigrations,
+          ...selfMigrations,
+          ...affectiveMigrations,
+          ...retrievalMigrations,
+          ...semanticMigrations,
+          ...commitmentMigrations,
+          ...socialMigrations,
+          ...proceduralMigrations,
+          ...offlineMigrations,
+        ],
+      });
+
+      try {
+        expect(
+          verificationDb
+            .prepare(
+              `
+                SELECT context_key, alpha, beta, attempts, successes, failures
+                FROM skill_context_stats
+                WHERE skill_id = ?
+              `,
+            )
+            .all(skill.id),
+        ).toEqual([
+          expect.objectContaining({
+            context_key: "code_debugging:rust:unknown",
+            alpha: 2,
+            beta: 1,
+            attempts: 1,
+            successes: 1,
+            failures: 0,
+          }),
+        ]);
+      } finally {
+        verificationDb.close();
+      }
     } finally {
       await borg.close();
     }

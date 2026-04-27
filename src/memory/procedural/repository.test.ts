@@ -184,6 +184,19 @@ describe("SkillRepository", () => {
         .listGlobalUsage(contextKey)
         .map((stats) => stats.skill_id),
     ).toEqual([otherSkillId, skillId]);
+
+    const batch = harness.proceduralContextStatsRepository.batchGetContextStats(contextKey, [
+      skillId,
+      otherSkillId,
+      createSkillId(),
+    ]);
+
+    expect(batch.get(skillId)).toEqual(failure);
+    expect(batch.get(otherSkillId)).toMatchObject({
+      attempts: 1,
+      successes: 1,
+    });
+    expect(batch.size).toBe(2);
   });
 
   it("derives deterministic context keys from equivalent tag sets", () => {
@@ -282,6 +295,173 @@ describe("SkillRepository", () => {
       failures: 1,
       alpha: 1,
       beta: 2,
+    });
+  });
+
+  it("samples global skill posteriors when context has no stats yet", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    const skill = await harness.skillRepository.add({
+      applies_when: "Atlas deployment debugging",
+      approach: "Compare deploy logs.",
+      sourceEpisodes: [episode.id],
+      priorAlpha: 7,
+      priorBeta: 3,
+    });
+    const proceduralContext = proceduralContextSchema.parse({
+      problem_kind: "code_debugging",
+      domain_tags: ["Atlas"],
+      audience_scope: "self",
+      context_key: "ignored",
+    });
+    const samplerCalls: Array<[number, number]> = [];
+    const selector = new SkillSelector({
+      repository: harness.skillRepository,
+      contextStatsRepository: harness.proceduralContextStatsRepository,
+      sampler: (alpha, beta) => {
+        samplerCalls.push([alpha, beta]);
+        return alpha / (alpha + beta);
+      },
+    });
+
+    const selection = await selector.select("Atlas deployment debugging", {
+      k: 1,
+      proceduralContext,
+    });
+
+    expect(selection?.skill.id).toBe(skill.id);
+    expect(samplerCalls).toEqual([[7, 3]]);
+    expect(selection?.evaluatedCandidates[0]?.contextStats).toBeNull();
+  });
+
+  it("preserves no-context sampler order when a context stats repository is configured", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    await harness.skillRepository.add({
+      applies_when: "Rust lifetime debugging",
+      approach: "Reduce the borrow scope.",
+      sourceEpisodes: [episode.id],
+      priorAlpha: 5,
+      priorBeta: 2,
+    });
+    await harness.skillRepository.add({
+      applies_when: "Rust lifetime debugging",
+      approach: "Introduce intermediate bindings.",
+      sourceEpisodes: [episode.id],
+      priorAlpha: 3,
+      priorBeta: 4,
+    });
+    const makeRng = () => {
+      let seed = 246813579;
+
+      return () => {
+        seed = (1664525 * seed + 1013904223) % 0x1_0000_0000;
+        return seed / 0x1_0000_0000;
+      };
+    };
+    const valuesWithoutContextRepo: number[] = [];
+    const valuesWithContextRepo: number[] = [];
+    const selectorWithoutContextRepo = new SkillSelector({
+      repository: harness.skillRepository,
+      rng: makeRng(),
+      sampler: (_alpha, _beta, rng) => {
+        const value = rng();
+        valuesWithoutContextRepo.push(value);
+        return value;
+      },
+    });
+    const selectorWithContextRepo = new SkillSelector({
+      repository: harness.skillRepository,
+      contextStatsRepository: {
+        batchGetContextStats: () => {
+          throw new Error("context stats should not be read without context");
+        },
+      },
+      rng: makeRng(),
+      sampler: (_alpha, _beta, rng) => {
+        const value = rng();
+        valuesWithContextRepo.push(value);
+        return value;
+      },
+    });
+
+    const selectionWithoutContextRepo = await selectorWithoutContextRepo.select(
+      "Rust lifetime debugging",
+      { k: 5 },
+    );
+    const selectionWithContextRepo = await selectorWithContextRepo.select(
+      "Rust lifetime debugging",
+      { k: 5, proceduralContext: undefined },
+    );
+
+    expect(valuesWithContextRepo).toEqual(valuesWithoutContextRepo);
+    expect(
+      selectionWithContextRepo?.evaluatedCandidates.map((candidate) => candidate.sampledValue),
+    ).toEqual(
+      selectionWithoutContextRepo?.evaluatedCandidates.map((candidate) => candidate.sampledValue),
+    );
+  });
+
+  it("uses context-weighted posteriors when context stats exist", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    const globalStrong = await harness.skillRepository.add({
+      applies_when: "Atlas deployment debugging",
+      approach: "Use the globally common deployment fix.",
+      sourceEpisodes: [episode.id],
+    });
+    const contextStrong = await harness.skillRepository.add({
+      applies_when: "Atlas deployment debugging",
+      approach: "Use the context-specific deployment fix.",
+      sourceEpisodes: [episode.id],
+    });
+    const proceduralContext = proceduralContextSchema.parse({
+      problem_kind: "code_debugging",
+      domain_tags: ["Atlas"],
+      audience_scope: "self",
+      context_key: "ignored",
+    });
+
+    for (let index = 0; index < 20; index += 1) {
+      harness.skillRepository.recordOutcome(globalStrong.id, true);
+    }
+    for (let index = 0; index < 4; index += 1) {
+      harness.skillRepository.recordOutcome(globalStrong.id, false, undefined, proceduralContext);
+    }
+    for (let index = 0; index < 10; index += 1) {
+      harness.skillRepository.recordOutcome(contextStrong.id, false);
+    }
+    for (let index = 0; index < 5; index += 1) {
+      harness.skillRepository.recordOutcome(contextStrong.id, true, undefined, proceduralContext);
+    }
+
+    const selector = new SkillSelector({
+      repository: harness.skillRepository,
+      contextStatsRepository: harness.proceduralContextStatsRepository,
+      sampler: (alpha, beta) => alpha / (alpha + beta),
+    });
+
+    const selection = await selector.select("Atlas deployment debugging", {
+      k: 5,
+      proceduralContext,
+    });
+    const globalStrongCandidate = selection?.evaluatedCandidates.find(
+      (candidate) => candidate.skill.id === globalStrong.id,
+    );
+    const contextStrongCandidate = selection?.evaluatedCandidates.find(
+      (candidate) => candidate.skill.id === contextStrong.id,
+    );
+
+    expect(selection?.skill.id).toBe(contextStrong.id);
+    expect(globalStrongCandidate?.sampledValue).toBeCloseTo(6 / 11, 3);
+    expect(contextStrongCandidate?.sampledValue).toBeCloseTo(6 / 9.5, 3);
+    expect(contextStrongCandidate?.contextStats).toMatchObject({
+      attempts: 5,
+      successes: 5,
+      failures: 0,
     });
   });
 

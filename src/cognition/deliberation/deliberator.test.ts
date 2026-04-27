@@ -1208,7 +1208,7 @@ describe("deliberator", () => {
       "Skill candidates considered (winner first; activation_sample is a Thompson draw, not confidence):",
     );
     expect(llm.requests[0]?.system).toContain(
-      "- winner: Rust lifetime debugging -- Shrink borrow scopes. (activation_sample=0.82 posterior_mean=0.67 ci95_width=0.50 similarity=0.90)",
+      "- winner: Rust lifetime debugging -- Shrink borrow scopes. (activation_sample=0.82 posterior_mean=0.67 global_n=4 ci95_width=0.50 similarity=0.90)",
     );
     expect(llm.requests[0]?.system).toContain("</borg_procedural_guidance>");
   });

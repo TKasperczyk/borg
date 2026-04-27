@@ -482,6 +482,7 @@ export class TurnOrchestrator {
         const retrieval = retrievalContext.retrieval;
         const retrievedEpisodes = retrievalContext.retrievedEpisodes;
         const retrievedSemantic = retrievalContext.retrievedSemantic;
+        const proceduralContext = retrievalContext.proceduralContext;
         const selectedSkill = retrievalContext.selectedSkill;
         const deliberator = new Deliberator({
           llmClient,
@@ -639,6 +640,7 @@ export class TurnOrchestrator {
           perception,
           actionResult,
           selectedSkill,
+          proceduralContext,
           reflectedWorkingMemory,
           persistedUserEntryId: persistedUserEntry.id,
           persistedAgentEntryId: persistedAgentEntry.id,

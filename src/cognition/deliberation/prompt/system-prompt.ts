@@ -562,9 +562,23 @@ function summarizeSkillCandidate(
   const ciWidth = Math.max(0, candidate.stats.ci_95[1] - candidate.stats.ci_95[0]);
   const appliesWhen = compactPromptText(candidate.skill.applies_when, 80);
   const approach = compactPromptText(candidate.skill.approach, 120);
+  const contextStats = candidate.contextStats ?? null;
+  const contextMean =
+    contextStats === null ? null : contextStats.alpha / (contextStats.alpha + contextStats.beta);
+  const metrics = [
+    `activation_sample=${formatPromptNumber(candidate.sampledValue)}`,
+    `posterior_mean=${formatPromptNumber(candidate.stats.mean)}`,
+    `global_n=${candidate.skill.attempts}`,
+    ...(contextStats === null || contextMean === null
+      ? []
+      : [
+          `context_mean=${formatPromptNumber(contextMean)}`,
+          `context_attempts=${contextStats.attempts}`,
+          `context="${contextStats.context_key.replace(/"/g, '\\"')}"`,
+        ]),
+    `ci95_width=${formatPromptNumber(ciWidth)}`,
+    `similarity=${formatPromptNumber(candidate.similarity)}`,
+  ];
 
-  return [
-    `- ${label}: ${appliesWhen} -- ${approach}`,
-    `(activation_sample=${formatPromptNumber(candidate.sampledValue)} posterior_mean=${formatPromptNumber(candidate.stats.mean)} ci95_width=${formatPromptNumber(ciWidth)} similarity=${formatPromptNumber(candidate.similarity)})`,
-  ].join(" ");
+  return [`- ${label}: ${appliesWhen} -- ${approach}`, `(${metrics.join(" ")})`].join(" ");
 }

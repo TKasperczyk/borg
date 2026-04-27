@@ -277,6 +277,7 @@ export async function buildBorgRepositories(
   });
   const skillSelector = new SkillSelector({
     repository: skillRepository,
+    contextStatsRepository: proceduralContextStatsRepository,
     minSimilarity: config.procedural.skillSelectionMinSimilarity,
   });
   const retrievalPipeline = new RetrievalPipeline({

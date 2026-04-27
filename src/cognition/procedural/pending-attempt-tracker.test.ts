@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { ActionResult } from "../action/index.js";
 import type { PerceptionResult } from "../types.js";
-import type { SkillSelectionResult } from "../../memory/procedural/index.js";
+import {
+  proceduralContextSchema,
+  type SkillSelectionResult,
+} from "../../memory/procedural/index.js";
 import { createWorkingMemory, type PendingProceduralAttempt } from "../../memory/working/index.js";
 import {
   DEFAULT_SESSION_ID,
@@ -109,6 +112,29 @@ describe("PendingProceduralAttemptTracker", () => {
     });
 
     expect(result).toEqual([makeAttempt(1)]);
+  });
+
+  it("persists derived procedural context on new attempts", () => {
+    const proceduralContext = proceduralContextSchema.parse({
+      problem_kind: "code_debugging",
+      domain_tags: ["TypeScript"],
+      audience_scope: "self",
+      context_key: "ignored",
+    });
+    const result = new PendingProceduralAttemptTracker().update({
+      isUserTurn: true,
+      userMessage: "Fix TypeScript",
+      perception: makePerception("problem_solving"),
+      actionResult: makeActionResult("Use a focused test."),
+      selectedSkill: null,
+      proceduralContext,
+      reflectedWorkingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      persistedUserEntryId: userEntryId,
+      persistedAgentEntryId: agentEntryId,
+      audienceEntityId: null,
+    });
+
+    expect(result.at(-1)?.procedural_context).toEqual(proceduralContext);
   });
 
   it("caps pending attempts by dropping the oldest entries", () => {
