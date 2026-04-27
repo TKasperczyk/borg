@@ -52,7 +52,7 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 ## Part 2: Design Principles
 
 1. **Every memory must be citable.** Provenance is non-negotiable.
-2. **Stream is an append-only audit log.** Turns, perceptions, identity events, and extraction sources are recorded chronologically. It is NOT the canonical source of all state -- authoritative state lives in the typed repositories (SQLite rows + LanceDB vectors). The stream exists so extraction has replayable input and so identity-relevant mutations leave a chronological trail. Event-sourced identity rebuild is explicitly not a goal (see Part 7).
+2. **Stream is an append-only audit log.** Turns, perceptions, tool traces, internal events, dream reports, and extraction sources are recorded chronologically. It is NOT the canonical source of all state -- authoritative state lives in the typed repositories (SQLite rows + LanceDB vectors). Identity-relevant mutations leave a chronological trail in the SQLite `identity_events` table, not as JSONL stream entries. Event-sourced identity rebuild is explicitly not a goal (see Part 7).
 3. **Cold paths do real work.** Dreams/consolidation are not cosmetic -- they must produce summaries, insights, new edges, new skills.
 4. **Retrieval must be context-aware, not just semantic.** Current goal, current mood, current commitments, current audience all shift what's relevant.
 5. **Self is a first-class entity, not a prompt file.** Identity, values, skills, current goals, open questions, uncertainties live in the memory itself and evolve with it.
@@ -138,17 +138,18 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 
 This section describes the persisted shape of each band as defined in
 `src/**/types.ts`. Field-level details (provenance, confidence,
-state-machine columns) reflect the post-Sprint-24 schemas. Where the
+state-machine columns) reflect the current HEAD schemas. Where the
 authoritative type lives outside `types.ts` (autobiographical periods,
 growth markers, open questions), the file is named explicitly.
 
 ### 1. Stream (raw log)
 
-Append-only JSONL. Records turns, perceptions, identity events, tool
-invocations, internal events, and offline run reports. Everything that
-gets persisted into the typed repositories is derived from these
-entries (or from manual API writes), but the repositories remain the
-canonical source of state.
+Append-only JSONL. Records turns, perceptions, tool invocations,
+internal events, and offline run reports. Identity audit events are
+stored separately in SQLite (`identity_events`); `identity_event` is
+not a stream kind. Stream entries provide replayable input for
+extractors, but typed repositories remain the canonical source of
+state.
 
 ```typescript
 {
@@ -170,9 +171,9 @@ mutable stats live in SQLite, kept consistent via the Sprint-16
 cross-store reconciliation pass.
 
 ```typescript
-// Episode (LanceDB row + SQLite mirror)
+// Episode (LanceDB row; hot-path index + stats in SQLite)
 {
-  id, kind: "episode",
+  id,
   title,                          // "Tom and I debugged the pgvector issue"
   narrative,                      // 2-5 sentence prose summary
   participants: EntityId[],
@@ -188,12 +189,9 @@ cross-store reconciliation pass.
   embedding,
   lineage: { derived_from: string[], supersedes: string[] },
   confidence: number,
-  domain: string?,                // canonicalized topic anchor (Sprint 16/24)
   audience_entity_id: EntityId?,  // private-to-X scoping (Sprint 1/2)
   shared: boolean?,               // shared-with-others marker
   created_at, updated_at,
-  archived: boolean,              // soft-delete flag
-  superseded_by: EpisodeId?,      // consolidator merge target
 }
 
 // EpisodeStats (SQLite-only, paired with episode by id)
@@ -201,12 +199,13 @@ cross-store reconciliation pass.
   episode_id,
   retrieval_count, use_count, last_retrieved,
   win_rate,                       // outcome-weighted usefulness
-  tier: 1 | 2 | 3 | 4,            // T1 short-term ... T4 core
+  tier: "T1" | "T2" | "T3" | "T4", // short-term ... core
   promoted_at, promoted_from,
   gist, gist_generated_at,        // optional summary blurb
   last_decayed_at,
+  heat_multiplier,
   valence_mean,
-  archived,
+  archived,                       // soft-delete flag
 }
 ```
 
@@ -231,14 +230,25 @@ Concepts, entities, propositions, and typed edges between them.
   relation: "is_a" | "part_of" | "causes" | "prevents" | "supports"
           | "contradicts" | "related_to" | "instance_of",
   confidence, evidence_episode_ids[],
-  created_at, last_verified_at }
+  created_at, last_verified_at,
+  valid_from, valid_to?,
+  invalidated_at?,
+  invalidated_by_edge_id?,
+  invalidated_by_review_id?,
+  invalidated_by_process?: "extractor" | "overseer" | "manual"
+      | "review" | "maintenance",
+  invalidated_reason? }
 ```
 
 Edge types matter. `contradicts` powers contradiction detection;
 `causes`/`prevents` powers causal reasoning; `supports` powers
-evidence chains. Domain canonicalization (`canonicalizeDomain`) maps
-synonyms (`technology` → `tech`) so the homonym-anchor still merges
-intended-same-concept extractions.
+evidence chains. `supports` is directional: `from_node_id --supports-->
+to_node_id` means "from is evidence supporting to." Reflector-created
+insights therefore use `evidence anchor --supports--> insight`, and
+retrieval walks `supports` OUT from the matched anchor. Domain
+canonicalization (`canonicalizeDomain`) maps synonyms (`technology` →
+`tech`) so the homonym-anchor still merges intended-same-concept
+extractions.
 
 ### 4. Procedural (how I do things)
 
@@ -247,9 +257,9 @@ the Beta posterior parameters directly; success rate and confidence
 intervals are derived on demand by `bayes.ts`.
 
 ```typescript
-// Skill (LanceDB row for applies_when embedding + SQLite stats)
+// SkillRecord (SQLite; LanceDB side stores id/applies_when embedding)
 {
-  id, kind: "skill",
+  id,
   applies_when: string,         // "pgvector similarity scores look wrong"
   approach: string,             // "check embedding model dim matches index config"
   alpha: number,                // Beta posterior α (>0)
@@ -265,6 +275,25 @@ intervals are derived on demand by `bayes.ts`.
 //   success_rate     = α / (α + β)
 //   ci_95            = quantiles of Beta(α, β)
 //   thompson_sample  = sample ~ Beta(α, β)   // for selection
+
+// ProceduralEvidence (SQLite)
+{
+  id,
+  pending_attempt_snapshot: {
+    problem_text, approach_summary,
+    selected_skill_id?,
+    source_stream_ids: StreamEntryId[],
+    turn_counter,
+    audience_entity_id?,
+  },
+  classification: "success" | "failure" | "unclear",
+  evidence_text,
+  grounded: boolean,
+  skill_actually_applied: boolean,
+  resolved_episode_ids: EpisodeId[],
+  audience_entity_id?,
+  consumed_at?, created_at,
+}
 ```
 
 ### 5. Affective (how I felt / feel)
@@ -344,15 +373,18 @@ AutobiographicalPeriod {
   narrative, themes: string[],
   key_episode_ids,
   provenance,
+  created_at, last_updated,
 }
 
 // Growth markers (src/memory/self/growth-markers.ts)
 GrowthMarker {
   id, ts,
   what_changed, before_description, after_description,
-  category, confidence,
+  category: "skill" | "value" | "habit" | "relationship" | "understanding",
+  confidence,
   evidence_episode_ids, source_process,
   provenance,
+  created_at,
 }
 
 // Open questions (src/memory/self/open-questions.ts)
@@ -360,10 +392,14 @@ OpenQuestion {
   id, question,
   status: "open" | "resolved" | "abandoned",
   urgency,
+  audience_entity_id?,
   related_episode_ids, related_semantic_node_ids,
-  source: "user" | "reflection" | "autonomy" | "deliberator",
-  resolution_note?, resolved_at?, resolved_by?,
-  provenance?, created_at,
+  provenance?,
+  source: "user" | "reflection" | "contradiction" | "ruminator"
+      | "overseer" | "autonomy" | "deliberator",
+  created_at, last_touched,
+  resolution_episode_id?, resolution_note?, resolved_at?,
+  abandoned_reason?, abandoned_at?,
 }
 ```
 
@@ -413,8 +449,8 @@ SocialEvent {
   id, entity_id, ts,
   kind: "interaction" | "trust_adjustment" | "baseline",
   provenance,
-  trust_delta?, attachment_delta?,
-  interaction_delta?, valence?,
+  trust_delta, attachment_delta,
+  interaction_delta, valence?,
 }
 ```
 
@@ -427,24 +463,32 @@ cannot flatter itself into a warm relationship by speaking warmly.
 
 ```typescript
 {
-  current_focus: string,
+  session_id,
+  turn_counter,
+  current_focus: string?,
   hot_entities: string[],       // capped at 32, normalized at save time
+  pending_intents: [{ description, next_action }],   // capped at 16
   pending_social_attribution: {
     entity_id, interaction_id,
     agent_response_summary: string?,
     turn_completed_ts,
   }?,
   pending_trait_attribution: {
-    trait_label, strength_delta, source_episode_ids,
+    trait_label, strength_delta,
+    source_stream_entry_ids: StreamEntryId[],
+    source_episode_ids: EpisodeId[],
     turn_completed_ts, audience_entity_id,
   }?,
+  pending_procedural_attempts: [{
+    problem_text, approach_summary,
+    selected_skill_id?,
+    source_stream_ids: StreamEntryId[],
+    turn_counter,
+    audience_entity_id?,
+  }],                         // capped at 5; TTL 8 turns
   suppressed: [{ id, reason, until_turn }],
   mood: { valence, arousal, dominant_emotion }?,
-  last_selected_skill_id: string?,
-  last_selected_skill_turn: number?,
   mode: "problem_solving" | "relational" | "reflective" | "idle" | null,
-  pending_intents: [{ description, next_action }],   // capped at 16
-  turn_counter,
   updated_at,
 }
 ```
@@ -454,8 +498,12 @@ Phase E; persistent thinking lives in the stream as `thought` entries.
 The `pending_*_attribution` fields implement Sprint 15/24 lagged
 attribution -- a turn's effect on social trust or trait reinforcement
 is determined by the user's reaction on the NEXT user turn, not by
-the agent's own output. Working memory is persisted (per-session
-file) but normalized + bounded on every save to stay live-turn-ish.
+the agent's own output. Procedural attempts are also lagged: a
+problem-solving turn records an attempted approach, then later user
+feedback grades it. Working memory is persisted per session:
+`hot_entities` and `pending_intents` are normalized and capped on save,
+while `pending_procedural_attempts` cap and TTL are enforced by
+`PendingProceduralAttemptTracker` between turns.
 
 ---
 
@@ -464,6 +512,14 @@ file) but normalized + bounded on every save to stay live-turn-ish.
 ### 5.1 Cognitive loop
 
 Per-turn: **Perception → Attention → Deliberation → Action → Reflection**.
+Implementation plumbing is split behind `TurnOrchestrator`:
+`PerceptionGateway`, `TurnOpeningPersistence`,
+`AttributionLifecycleService`, `TurnRetrievalCoordinator`,
+`CommitmentGuardRunner`, and `PendingProceduralAttemptTracker` own the
+per-turn substeps. `Reflector` receives its repositories through the
+`createReflector` factory / constructor wiring instead of per-call
+`ReflectionContext`. The split is operational, not a new architectural
+band.
 
 **Perception** (LLM-aided classification)
 - Run background-model tool calls in parallel for mode, entities,
@@ -528,10 +584,11 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
 **Action**
 - Run the response call as an Anthropic tool-use loop
   (`executeToolLoop`): the model can read internal tools
-  (`episodic.search`, `semantic.walk`, `commitments.list`,
-  `identityEvents.list`) or write via `openQuestions.create` mid-turn,
-  with `tool_call`/`tool_result` entries appended to the stream in
-  order. Caps: 5 iterations, 3 tool calls per iteration.
+  (`tool.episodic.search`, `tool.semantic.walk`,
+  `tool.commitments.list`, `tool.identityEvents.list`,
+  `tool.skills.list`) or write via `tool.openQuestions.create`
+  mid-turn, with `tool_call`/`tool_result` entries appended to the
+  stream in order. Caps: 5 iterations, 3 tool calls per iteration.
 - Append the agent's text response as `agent_msg`.
 - Carry structured `intent` records from the S2 `EmitTurnPlan` output
   into `working.pending_intents`. S1 turns produce no intents; Action
@@ -541,11 +598,15 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
   This is detection-then-rewrite, not in-flight blocking.
 
 **Reflection** (post-action, before next input)
-- Update procedural skill posteriors (Beta update via
-  `recordOutcome` if an approach was tried).
+- Grade prior `pending_procedural_attempts` only from grounded later
+  user feedback. `recordOutcome` updates the selected skill posterior
+  only for success/failure when `skill_actually_applied` is true; unclear
+  outcomes stay pending until later feedback or TTL expiry. Autonomous
+  turns skip procedural grading.
 - Stash `pending_social_attribution` and `pending_trait_attribution`
   in working memory so the NEXT user turn's affective signal becomes
-  the evidence (Sprint 15/24).
+  the evidence (Sprint 15/24). Trait evidence is anchored to the
+  demonstrating turn's stream entry IDs and resolved to episodes later.
 - Mark prior `pending_intents` completed or abandoned only when the
   structured reflection pass sees clear evidence in a later completed
   turn; unresolved intents persist and are rendered in working state.
@@ -555,8 +616,9 @@ Per-turn: **Perception → Attention → Deliberation → Action → Reflection*
   After the response is delivered, `StreamIngestionCoordinator` runs
   asynchronously (fire-and-forget), reads new stream entries past its
   watermark, and produces episode candidates via the extractor.
-  Mood updates also happen in the perception phase of the next turn,
-  not in this reflection.
+  Mood signal comes from perception of the current user input; the mood
+  repository is updated after the agent message and before reflection.
+  Autonomous turns preserve the existing mood.
 
 ### 5.2 Offline processes
 
@@ -584,12 +646,13 @@ so all maintenance is dry-runnable and reversible.
   the question is stale + low-urgency, abandon it; otherwise bump
   urgency. No "next-step" suggestions today.
 - **Procedural-synthesizer** -- consume online procedural evidence
-  from grounded successful attempts in global/self-visible audience
-  scope, cluster problem/approach evidence offline, and ask the LLM
-  for reusable skill candidates per cluster. `plan()` gathers clusters
-  and candidates, `preview()` exposes the reversible synthesis changes,
-  and `apply()` creates or deduplicates skills, records Bayesian
-  outcomes, marks evidence consumed, and writes audit-log reversals.
+  from grounded successful attempts that actually applied the approach,
+  in global/self-visible audience scope; cluster problem/approach
+  evidence offline; and ask the LLM for reusable skill candidates per
+  cluster. `plan()` gathers clusters and candidates, `preview()` exposes
+  the reversible synthesis changes, and `apply()` creates or deduplicates
+  skills, records Bayesian outcomes, marks evidence consumed, and writes
+  audit-log reversals.
 - **Overseer** -- QA pass over recent episodes and semantic nodes;
   LLM-flag `misattribution`, `temporal_drift`, or
   `identity_inconsistency` items above a confidence threshold and
@@ -644,8 +707,8 @@ parallel candidate generation (RetrievalPipeline.searchWithContext):
   │     entity-mention match
   │     recent / heat
   ├─ semantic match: label/alias exact → vector fallback → graph walk
-  │     (relations: supports, contradicts; default depth 2; archived
-  │      nodes excluded)
+  │     (supports OUT; causes/prevents OUT; contradicts BOTH;
+  │      is_a OUT; default depth 2; archived nodes excluded)
   └─ open-question match
  ↓
 score with mode-conditioned attention weights
@@ -662,8 +725,9 @@ RetrievedContext { episodes, semantic, open_questions,
 ```
 
 Critical innovation: **graph walk during retrieval**. If a query hits
-concept C, also surface `supports(C)` and `contradicts(C)` so the
-agent sees the whole evidential picture.
+concept C, also surface supporting insights, causal neighbors,
+contradictions, and categories so the agent sees the whole evidential
+picture.
 
 Notes vs. an earlier sketch of this pipeline:
 - Procedural skill selection lives outside this pipeline
@@ -688,7 +752,8 @@ status annotated.
 ### High value, moderate implementation risk
 
 1. **Typed knowledge graph with `contradicts` + `supports` edges.**
-   Implemented; retrieval walks both relations up to depth 2.
+   Implemented; retrieval walks `supports`, `causes`/`prevents`,
+   `contradicts`, and `is_a` up to depth 2.
 2. **Bayesian procedural memory.** Skills as Beta(α, β) posteriors,
    Thompson sampling for selection. Implemented in
    `src/memory/procedural/bayes.ts` + `selector.ts`.
@@ -801,9 +866,10 @@ replay from the stream. We considered and chose NOT to implement:
    harder debugging (trace event history vs. read row). The benefit
    for this project is mostly theoretical purity.
 
-The stream still logs identity events for audit and chronological
-trail. The authoritative state is in the repositories. That is the
-actual architecture, and the docs now say so.
+The `IdentityEventRepository` still records identity events for audit
+and chronological trail, but it does so in SQLite (`identity_events`),
+not as JSONL stream entries. The authoritative state is in the
+repositories. That is the actual architecture, and the docs now say so.
 
 ---
 
