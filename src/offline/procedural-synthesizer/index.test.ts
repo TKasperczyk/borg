@@ -105,6 +105,7 @@ async function addSuccessEvidence(
     approachSummary?: string;
     evidenceText?: string;
     grounded?: boolean;
+    skillActuallyApplied?: boolean;
     audienceEntityId?: EntityId | null;
     selectedSkillId?: SkillId | null;
   } = {},
@@ -137,6 +138,7 @@ async function addSuccessEvidence(
     classification: "success",
     evidenceText: input.evidenceText ?? "User confirmed the deploy worked.",
     grounded: input.grounded ?? true,
+    skillActuallyApplied: input.skillActuallyApplied ?? true,
     resolvedEpisodeIds: [episode.id],
     audienceEntityId: input.audienceEntityId ?? null,
   });
@@ -196,6 +198,25 @@ describe("ProceduralSynthesizerProcess", () => {
     const plan = await process.plan(harness.createContext());
 
     expect(plan.items).toEqual([]);
+  });
+
+  it("does not cluster evidence for a selected skill that was not applied", async () => {
+    const llm = new FakeLLMClient();
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({ minSupport: 2 }),
+      llmClient: llm,
+    });
+    await addSuccessEvidence(harness);
+    await addSuccessEvidence(harness, {
+      problemText: "Atlas deploy failed after a second rollback.",
+      skillActuallyApplied: false,
+    });
+
+    const process = createProcess(harness);
+    const plan = await process.plan(harness.createContext());
+
+    expect(plan.items).toEqual([]);
+    expect(llm.requests).toHaveLength(0);
   });
 
   it("plans the LLM-generated skill text and applies without another LLM call", async () => {

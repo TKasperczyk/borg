@@ -118,6 +118,28 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       .filter(([, enabled]) => enabled)
       .map(([name]) => name as OfflineProcessName);
 
+  const upsertAutobiographicalPeriod = ((
+    input: Parameters<typeof deps.identityService.addPeriod>[0],
+  ) => {
+    if (input.id === undefined || deps.autobiographicalRepository.getPeriod(input.id) === null) {
+      return deps.identityService.addPeriod(input);
+    }
+
+    return deps.identityService.updatePeriod(
+      input.id,
+      {
+        label: input.label,
+        start_ts: input.start_ts,
+        end_ts: input.end_ts ?? null,
+        narrative: input.narrative,
+        key_episode_ids: [...(input.key_episode_ids ?? [])],
+        themes: [...(input.themes ?? [])],
+        provenance: input.provenance,
+      },
+      input.provenance,
+    );
+  }) as BorgFacades["self"]["autobiographical"]["upsertPeriod"];
+
   const runDream = async (
     processNames: readonly OfflineProcessName[],
     options: BorgDreamOptions = {},
@@ -231,7 +253,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       autobiographical: {
         currentPeriod: () => deps.autobiographicalRepository.currentPeriod(),
         listPeriods: (...args) => deps.autobiographicalRepository.listPeriods(...args),
-        upsertPeriod: (...args) => deps.identityService.addPeriod(...args),
+        upsertPeriod: upsertAutobiographicalPeriod,
         closePeriod: (...args) => deps.identityService.closePeriod(...args),
         getPeriod: (...args) => deps.autobiographicalRepository.getPeriod(...args),
         getByLabel: (...args) => deps.autobiographicalRepository.getByLabel(...args),

@@ -320,7 +320,7 @@ export class TurnOrchestrator {
     attribution: NonNullable<WorkingMemory["pending_trait_attribution"]>,
   ): Promise<EpisodeId[]> {
     if (attribution.source_stream_entry_ids.length > 0) {
-      const resolved = await this.options.episodicRepository.findBySourceStreamIds(
+      const resolved = await this.options.episodicRepository.findBySourceStreamIdsContaining(
         attribution.source_stream_entry_ids,
       );
 

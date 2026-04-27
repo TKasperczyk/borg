@@ -445,6 +445,25 @@ describe("episodic repository", () => {
     expect(matched?.id).toBe("ep_legacysourceord1");
   });
 
+  it("finds an episode whose source stream ids contain the requested ids", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const userStreamId = "strm_aaaaaaaaaaaaaaaa" as Episode["source_stream_ids"][number];
+    const agentStreamId = "strm_bbbbbbbbbbbbbbbb" as Episode["source_stream_ids"][number];
+    const toolCallStreamId = "strm_cccccccccccccccc" as Episode["source_stream_ids"][number];
+    const episode = createEpisode(createEpisodeId(), harness.clock.now(), {
+      source_stream_ids: [userStreamId, agentStreamId, toolCallStreamId],
+    });
+    await harness.repo.insert(episode);
+
+    const matched = await harness.repo.findBySourceStreamIdsContaining([
+      userStreamId,
+      agentStreamId,
+    ]);
+
+    expect(matched?.id).toBe(episode.id);
+  });
+
   it("preserves emotional_arc when a patch omits it", async () => {
     const harness = await createHarness();
     closers.push(harness.close);

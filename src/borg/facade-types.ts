@@ -34,7 +34,13 @@ import type { WorkingMemory } from "../memory/working/index.js";
 import type { OfflineProcessName } from "../offline/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "../retrieval/index.js";
 import type { StreamCursor, StreamEntry, StreamEntryInput, StreamReader } from "../stream/index.js";
-import type { AuditId, EpisodeId, MaintenanceRunId, SessionId } from "../util/ids.js";
+import type {
+  AuditId,
+  AutobiographicalPeriodId,
+  EpisodeId,
+  MaintenanceRunId,
+  SessionId,
+} from "../util/ids.js";
 import type {
   BorgDependencies,
   BorgDreamRunner,
@@ -58,6 +64,20 @@ export type BorgEpisodicFacade = {
     session?: SessionId;
   }) => Promise<ExtractFromStreamResult>;
   list: (...args: Parameters<EpisodicRepository["list"]>) => ReturnType<EpisodicRepository["list"]>;
+};
+
+type AutobiographicalUpsertPeriodInput = Parameters<IdentityService["addPeriod"]>[0];
+
+type BorgAutobiographicalUpsertPeriod = {
+  (input: AutobiographicalUpsertPeriodInput & { id?: undefined }): ReturnType<
+    IdentityService["addPeriod"]
+  >;
+  (input: AutobiographicalUpsertPeriodInput & { id: AutobiographicalPeriodId }):
+    | ReturnType<IdentityService["addPeriod"]>
+    | ReturnType<IdentityService["updatePeriod"]>;
+  (input: AutobiographicalUpsertPeriodInput):
+    | ReturnType<IdentityService["addPeriod"]>
+    | ReturnType<IdentityService["updatePeriod"]>;
 };
 
 export type BorgSelfFacade = {
@@ -120,9 +140,7 @@ export type BorgSelfFacade = {
     listPeriods: (
       ...args: Parameters<AutobiographicalRepository["listPeriods"]>
     ) => ReturnType<AutobiographicalRepository["listPeriods"]>;
-    upsertPeriod: (
-      ...args: Parameters<IdentityService["addPeriod"]>
-    ) => ReturnType<IdentityService["addPeriod"]>;
+    upsertPeriod: BorgAutobiographicalUpsertPeriod;
     closePeriod: (
       ...args: Parameters<IdentityService["closePeriod"]>
     ) => ReturnType<IdentityService["closePeriod"]>;

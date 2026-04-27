@@ -1494,6 +1494,142 @@ describe("reflector", () => {
     },
   );
 
+  it("stores non-applied skill evidence without crediting the skill posterior", async () => {
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [
+              {
+                classification: "success",
+                evidence: "User confirmed the workaround helped, but the selected approach was not used.",
+                skill_actually_applied: false,
+              },
+            ],
+          ),
+        ],
+      }),
+    });
+    cleanup.push(harness.cleanup);
+
+    const sourceStreamIds = [
+      "strm_aaaaaaaaaaaaaaaa",
+      "strm_bbbbbbbbbbbbbbbb",
+    ] as never;
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        title: "Rust lifetime workaround",
+        source_stream_ids: sourceStreamIds,
+      }),
+    );
+    const skill = await harness.skillRepository.add({
+      applies_when: "Rust lifetime debugging",
+      approach: "Shrink borrow scopes and use intermediate bindings.",
+      sourceEpisodes: [episode.id],
+    });
+    const pendingAttempt = {
+      problem_text: "I hit a Rust lifetime issue again.",
+      approach_summary: "Shrink borrow scopes and use intermediate bindings.",
+      selected_skill_id: skill.id,
+      source_stream_ids: sourceStreamIds,
+      turn_counter: 1,
+      audience_entity_id: null,
+    };
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+    });
+
+    const reflected = await reflector.reflect(
+      {
+        userMessage: "That worked after I changed the whole shape of the code.",
+        perception: {
+          entities: ["Rust"],
+          mode: "problem_solving",
+          affectiveSignal: {
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          },
+          temporalCue: null,
+        },
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 2,
+          current_focus: "Rust",
+          hot_entities: ["Rust"],
+          pending_intents: [],
+          suppressed: [],
+          mood: null,
+          pending_procedural_attempts: [pendingAttempt],
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Next response.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Next response.",
+          tool_calls: [],
+          intents: [],
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 2,
+            current_focus: "Rust",
+            hot_entities: ["Rust"],
+            pending_intents: [],
+            suppressed: [],
+            mood: null,
+            pending_procedural_attempts: [pendingAttempt],
+            mode: "problem_solving",
+            updated_at: 0,
+          },
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        skillRepository: harness.skillRepository,
+        proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+        selectedSkillId: null,
+        suppressionSet: new SuppressionSet(2),
+      },
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_procedural_attempts).toEqual([]);
+    expect(harness.proceduralEvidenceRepository.list()).toEqual([
+      expect.objectContaining({
+        classification: "success",
+        skill_actually_applied: false,
+        resolved_episode_ids: [episode.id],
+      }),
+    ]);
+    expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
+  });
+
   it("does not infer procedural success from assistant wording alone", async () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);

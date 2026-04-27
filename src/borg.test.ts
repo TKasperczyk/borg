@@ -308,6 +308,64 @@ describe("Borg", () => {
     }
   });
 
+  it("lets facade upsertPeriod update an existing autobiographical period", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const episodeId = createEpisodeId();
+      const period = borg.self.autobiographical.upsertPeriod({
+        label: "2026-Q2",
+        start_ts: 1_100,
+        narrative: "Initial period narrative.",
+        key_episode_ids: [episodeId],
+        themes: ["identity"],
+        provenance: {
+          kind: "episodes",
+          episode_ids: [episodeId],
+        },
+      });
+      const result = borg.self.autobiographical.upsertPeriod({
+        id: period.id,
+        label: "2026-Q2 revised",
+        start_ts: 1_100,
+        end_ts: 1_900,
+        narrative: "Updated period narrative.",
+        key_episode_ids: [episodeId],
+        themes: ["identity", "revision"],
+        provenance: {
+          kind: "episodes",
+          episode_ids: [episodeId],
+        },
+      });
+
+      expect(result).toEqual({
+        status: "applied",
+        record: expect.objectContaining({
+          id: period.id,
+          label: "2026-Q2 revised",
+          end_ts: 1_900,
+          narrative: "Updated period narrative.",
+          themes: ["identity", "revision"],
+        }),
+      });
+      expect(borg.self.autobiographical.getPeriod(period.id)).toMatchObject({
+        label: "2026-Q2 revised",
+        end_ts: 1_900,
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("defaults episodic public APIs to public-only visibility unless audience access is explicit", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

@@ -80,6 +80,7 @@ export const proceduralEvidenceSchema = z.object({
   classification: proceduralOutcomeClassificationSchema,
   evidence_text: z.string().min(1),
   grounded: z.boolean().default(true),
+  skill_actually_applied: z.boolean().default(true),
   resolved_episode_ids: z.array(episodeIdSchema),
   audience_entity_id: workingEntityIdSchema.nullable(),
   consumed_at: z.number().finite().nullable(),

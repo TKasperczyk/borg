@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
-import { createSkillId } from "../../util/ids.js";
+import { createEpisodeId, createSkillId } from "../../util/ids.js";
 
 import { SkillSelector } from "./selector.js";
 
@@ -152,8 +152,33 @@ describe("SkillRepository", () => {
     expect(harness.proceduralEvidenceRepository.list()).toEqual([
       expect.objectContaining({
         grounded: true,
+        skill_actually_applied: true,
       }),
     ]);
+  });
+
+  it("stores whether the selected skill was actually applied", async () => {
+    harness = await createOfflineTestHarness();
+    const pendingAttempt = {
+      problem_text: "Fix the flaky Atlas deploy.",
+      approach_summary: "Compare the failing deploy log against the last clean release.",
+      selected_skill_id: null,
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"] as never,
+      turn_counter: 7,
+      audience_entity_id: null,
+    };
+
+    const evidence = harness.proceduralEvidenceRepository.insert({
+      pendingAttemptSnapshot: pendingAttempt,
+      classification: "success",
+      evidenceText: "User confirmed a different workaround helped.",
+      skillActuallyApplied: false,
+    });
+
+    expect(evidence.skill_actually_applied).toBe(false);
+    expect(harness.proceduralEvidenceRepository.get(evidence.id)?.skill_actually_applied).toBe(
+      false,
+    );
   });
 
   it("upgrades a grounded unclear evidence row when a later success/failure arrives", async () => {
@@ -169,11 +194,14 @@ describe("SkillRepository", () => {
       turn_counter: 5,
       audience_entity_id: null,
     };
+    const firstEpisodeId = createEpisodeId();
+    const secondEpisodeId = createEpisodeId();
 
     const initial = harness.proceduralEvidenceRepository.insert({
       pendingAttemptSnapshot: pendingAttempt,
       classification: "unclear",
       evidenceText: "User replied without saying whether it worked.",
+      resolvedEpisodeIds: [firstEpisodeId],
     });
     expect(initial.classification).toBe("unclear");
 
@@ -181,6 +209,7 @@ describe("SkillRepository", () => {
       pendingAttemptSnapshot: pendingAttempt,
       classification: "success",
       evidenceText: "User confirmed the rollback comparison fixed it.",
+      resolvedEpisodeIds: [secondEpisodeId],
     });
 
     expect(upgraded.id).toBe(initial.id);
@@ -191,6 +220,7 @@ describe("SkillRepository", () => {
     const rows = harness.proceduralEvidenceRepository.list();
     expect(rows).toHaveLength(1);
     expect(rows[0]?.classification).toBe("success");
+    expect(rows[0]?.resolved_episode_ids).toEqual([firstEpisodeId, secondEpisodeId]);
   });
 
   it("does not downgrade an actionable evidence row to unclear", async () => {

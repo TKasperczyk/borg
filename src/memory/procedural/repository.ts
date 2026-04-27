@@ -146,6 +146,10 @@ function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvid
     evidence_text: row.evidence_text,
     grounded:
       row.grounded === null || row.grounded === undefined ? true : Number(row.grounded) !== 0,
+    skill_actually_applied:
+      row.skill_actually_applied === null || row.skill_actually_applied === undefined
+        ? true
+        : Number(row.skill_actually_applied) !== 0,
     resolved_episode_ids: parseJsonArray<string>(
       String(row.resolved_episode_ids ?? "[]"),
       "resolved_episode_ids",
@@ -543,6 +547,7 @@ export class ProceduralEvidenceRepository {
     classification: ProceduralOutcomeClassification;
     evidenceText: string;
     grounded?: boolean;
+    skillActuallyApplied?: boolean;
     resolvedEpisodeIds?: readonly EpisodeId[];
     audienceEntityId?: EntityId | null;
     createdAt?: number;
@@ -584,8 +589,10 @@ export class ProceduralEvidenceRepository {
       }
 
       const resolvedEpisodeIds = uniqueEpisodeIds([
+        ...existingRecord.resolved_episode_ids,
         ...(input.resolvedEpisodeIds ?? []),
       ]);
+      const skillActuallyApplied = input.skillActuallyApplied ?? true;
       this.db
         .prepare(
           `
@@ -593,6 +600,7 @@ export class ProceduralEvidenceRepository {
             SET classification = ?,
                 evidence_text = ?,
                 grounded = 1,
+                skill_actually_applied = ?,
                 resolved_episode_ids = ?,
                 audience_entity_id = ?
             WHERE id = ?
@@ -601,6 +609,7 @@ export class ProceduralEvidenceRepository {
         .run(
           incomingClassification,
           input.evidenceText.trim(),
+          skillActuallyApplied ? 1 : 0,
           serializeJsonValue(resolvedEpisodeIds),
           input.audienceEntityId ?? existingRecord.audience_entity_id,
           existingRecord.id,
@@ -611,6 +620,7 @@ export class ProceduralEvidenceRepository {
         classification: incomingClassification,
         evidence_text: input.evidenceText.trim(),
         grounded: true,
+        skill_actually_applied: skillActuallyApplied,
         resolved_episode_ids: resolvedEpisodeIds,
         audience_entity_id: input.audienceEntityId ?? existingRecord.audience_entity_id,
       };
@@ -622,6 +632,7 @@ export class ProceduralEvidenceRepository {
       classification: proceduralOutcomeClassificationSchema.parse(input.classification),
       evidence_text: input.evidenceText.trim(),
       grounded: input.grounded ?? true,
+      skill_actually_applied: input.skillActuallyApplied ?? true,
       resolved_episode_ids: uniqueEpisodeIds([...(input.resolvedEpisodeIds ?? [])]),
       audience_entity_id: input.audienceEntityId ?? snapshot.audience_entity_id,
       consumed_at: null,
@@ -633,8 +644,9 @@ export class ProceduralEvidenceRepository {
         `
           INSERT INTO procedural_evidence (
             id, pending_attempt_snapshot, classification, evidence_text, grounded,
-            resolved_episode_ids, audience_entity_id, consumed_at, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            skill_actually_applied, resolved_episode_ids, audience_entity_id, consumed_at,
+            created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -643,6 +655,7 @@ export class ProceduralEvidenceRepository {
         record.classification,
         record.evidence_text,
         record.grounded ? 1 : 0,
+        record.skill_actually_applied ? 1 : 0,
         serializeJsonValue(record.resolved_episode_ids),
         record.audience_entity_id,
         record.consumed_at,

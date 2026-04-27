@@ -373,6 +373,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
         (evidence) =>
           evidence.classification === "success" &&
           evidence.grounded &&
+          evidence.skill_actually_applied &&
           isEpisodeInGlobalIdentityScope(
             { audience_entity_id: evidence.audience_entity_id },
             selfAudienceEntityId,

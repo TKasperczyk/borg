@@ -215,10 +215,11 @@ async function resolveAttemptEpisodeIds(
     )
     .map((result) => result.episode.id);
 
-  const exact = await context.episodicRepository.findBySourceStreamIds(sourceStreamIds);
-  const exactIds = exact === null ? [] : [exact.id];
+  const repositoryMatch =
+    await context.episodicRepository.findBySourceStreamIdsContaining(sourceStreamIds);
+  const repositoryMatchIds = repositoryMatch === null ? [] : [repositoryMatch.id];
 
-  return [...new Set([...retrievedMatches, ...exactIds])];
+  return [...new Set([...retrievedMatches, ...repositoryMatchIds])];
 }
 
 export type ReflectorOptions = {
@@ -438,6 +439,7 @@ export class Reflector {
               classification: outcome.classification,
               evidenceText: outcome.evidence,
               grounded: true,
+              skillActuallyApplied: outcome.skill_actually_applied,
               resolvedEpisodeIds,
               audienceEntityId: attempt.audience_entity_id,
             });

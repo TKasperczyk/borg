@@ -1663,4 +1663,32 @@ export class EpisodicRepository {
 
     return null;
   }
+
+  async findBySourceStreamIdsContaining(
+    sourceStreamIds: ReadonlyArray<Episode["source_stream_ids"][number]>,
+  ): Promise<Episode | null> {
+    const requiredSourceIds = [...new Set(sourceStreamIds)];
+
+    if (requiredSourceIds.length === 0) {
+      return null;
+    }
+
+    const exact = await this.findBySourceStreamIds(requiredSourceIds);
+
+    if (exact !== null) {
+      return exact;
+    }
+
+    const rows = await this.table.list();
+
+    for (const row of rows) {
+      const episode = fromEpisodeRow(row);
+
+      if (requiredSourceIds.every((streamId) => episode.source_stream_ids.includes(streamId))) {
+        return episode;
+      }
+    }
+
+    return null;
+  }
 }
