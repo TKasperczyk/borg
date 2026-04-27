@@ -50,6 +50,7 @@ describe("executive focus due trigger", () => {
       threshold: 0.45,
       stalenessMs: 86_400_000,
       dueLeadMs: 0,
+      wakeCooldownMs: 3_600_000,
       deadlineLookaheadMs: 604_800_000,
       goalFollowupDue: {
         enabled: false,
@@ -178,6 +179,7 @@ describe("executive focus due trigger", () => {
     expect(events[0]?.payload).toMatchObject({
       reason: "step_due",
       selected_goal_id: goal.id,
+      force_executive_focus_goal_id: goal.id,
       top_open_step: {
         id: step.id,
         description: "Act on the overdue step",
@@ -291,6 +293,46 @@ describe("executive focus due trigger", () => {
     expect(result.budgetSkipped).toBe(1);
     expect(result.events[0]?.status).toBe("budget_skipped");
     expect(turnOrchestrator.run).not.toHaveBeenCalled();
+  });
+
+  it("applies a per-goal cooldown after an executive wake and clears it on user progress", async () => {
+    const harness = await createHarness(5_000_000);
+    const goal = harness.goalsRepository.add({
+      description: "Ship executive focus",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Act on the overdue step",
+      kind: "act",
+      dueAt: harness.clock.now(),
+      provenance: { kind: "manual" },
+    });
+    const trigger = createTrigger(harness, {
+      wakeCooldownMs: 3_600_000,
+    });
+    const { scheduler } = createScheduler({
+      harness,
+      trigger,
+    });
+
+    expect((await scheduler.tick()).firedEvents).toBe(1);
+
+    harness.clock.advance(3_599_999);
+    expect(await trigger.scan()).toEqual([]);
+
+    harness.clock.advance(1);
+    expect(await trigger.scan()).toHaveLength(1);
+
+    expect((await scheduler.tick()).firedEvents).toBe(1);
+    expect(await trigger.scan()).toEqual([]);
+
+    harness.goalsRepository.updateProgress(goal.id, "User made progress.", {
+      kind: "manual",
+    });
+
+    expect(await trigger.scan()).toHaveLength(1);
   });
 
   it("keeps stale-goal executive focus subordinate to goal followup across ticks", async () => {

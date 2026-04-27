@@ -387,6 +387,9 @@ describe("autonomy integration", () => {
             extraction: "test-extraction",
           },
         },
+        executive: {
+          goalFocusThreshold: 0.99,
+        },
         autonomy: {
           enabled: true,
           intervalMs: 60_000,
@@ -446,9 +449,16 @@ describe("autonomy integration", () => {
           executiveStepsRepository: ExecutiveStepsRepository;
         };
       };
+      borg.self.goals.add({
+        description: "High priority background maintenance",
+        priority: 10,
+        provenance: {
+          kind: "manual",
+        },
+      });
       const goal = borg.self.goals.add({
         description: "Apollo launch plan",
-        priority: 10,
+        priority: 1,
         provenance: {
           kind: "manual",
         },
@@ -474,6 +484,8 @@ describe("autonomy integration", () => {
       const finalizerSystem = systemText(llm.requests[0]);
       expect(finalizerSystem).toContain("<borg_executive_focus>");
       expect(finalizerSystem).toContain("Current driving goal: Apollo launch plan");
+      expect(finalizerSystem).toContain("threshold 0.99");
+      expect(finalizerSystem).toContain("Components: priority=");
       expect(finalizerSystem).toContain(
         "Next step: Inspect the Apollo launch readiness notes (kind: research",
       );

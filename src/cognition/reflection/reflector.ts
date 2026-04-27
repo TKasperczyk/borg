@@ -19,7 +19,7 @@ import {
 } from "../../memory/self/review-open-question-hook.js";
 import { EpisodicRepository } from "../../memory/episodic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
-import type { EntityId, EpisodeId, SkillId, StreamEntryId } from "../../util/ids.js";
+import type { EntityId, EpisodeId, GoalId, SkillId, StreamEntryId } from "../../util/ids.js";
 import { z } from "zod";
 
 import type { ActionResult } from "../action/index.js";
@@ -273,6 +273,12 @@ function isAutonomousStepOutcomeAllowed(input: {
   );
 }
 
+function isClosingExecutiveStepStatus(
+  status: ReflectionOutput["step_outcomes"][number]["new_status"],
+) {
+  return status === "done" || status === "blocked" || status === "abandoned";
+}
+
 function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | undefined) {
   if (focus?.selected_goal === null || focus?.selected_goal === undefined) {
     return null;
@@ -352,8 +358,18 @@ export class Reflector {
     const activeGoalsById = new Map(context.selfSnapshot.goals.map((goal) => [goal.id, goal]));
     const isAutonomousTurn = context.origin === "autonomous";
 
-    await this.applyExecutiveStepOutcomes(context, reflectionOutput.step_outcomes, streamWriter);
-    await this.applyProposedExecutiveSteps(context, reflectionOutput.proposed_steps, streamWriter);
+    const autonomouslyClosedStepGoalIds = await this.applyExecutiveStepOutcomes(
+      context,
+      reflectionOutput.step_outcomes,
+      streamWriter,
+    );
+    const proposedSteps = await this.dropAutonomousCloseAndReplaceProposals(
+      context,
+      reflectionOutput.proposed_steps,
+      autonomouslyClosedStepGoalIds,
+      streamWriter,
+    );
+    await this.applyProposedExecutiveSteps(context, proposedSteps, streamWriter);
 
     const advancedGoals = isAutonomousTurn ? [] : reflectionOutput.advanced_goals;
 
@@ -598,9 +614,11 @@ export class Reflector {
     context: ReflectionContext,
     outcomes: readonly ReflectionOutput["step_outcomes"][number][],
     streamWriter: StreamWriter,
-  ): Promise<void> {
+  ): Promise<Set<GoalId>> {
+    const autonomouslyClosedStepGoalIds = new Set<GoalId>();
+
     if (outcomes.length === 0) {
-      return;
+      return autonomouslyClosedStepGoalIds;
     }
 
     const repository = this.options.executiveStepsRepository;
@@ -611,7 +629,7 @@ export class Reflector {
         reason: "executive_steps_repository_unavailable",
         count: outcomes.length,
       });
-      return;
+      return autonomouslyClosedStepGoalIds;
     }
 
     const visibleGoalIds = new Set(context.selfSnapshot.goals.map((goal) => goal.id));
@@ -708,6 +726,10 @@ export class Reflector {
           status: outcome.new_status,
           last_attempt_ts: this.clock.now(),
         });
+
+        if (context.origin === "autonomous" && isClosingExecutiveStepStatus(outcome.new_status)) {
+          autonomouslyClosedStepGoalIds.add(current.goal_id);
+        }
       } catch (error) {
         await this.appendReflectorInternalEvent(streamWriter, {
           hook: "reflector_step_outcome_dropped",
@@ -719,6 +741,40 @@ export class Reflector {
         });
       }
     }
+
+    return autonomouslyClosedStepGoalIds;
+  }
+
+  private async dropAutonomousCloseAndReplaceProposals(
+    context: ReflectionContext,
+    proposals: readonly ReflectionOutput["proposed_steps"][number][],
+    autonomouslyClosedStepGoalIds: ReadonlySet<GoalId>,
+    streamWriter: StreamWriter,
+  ): Promise<ReflectionOutput["proposed_steps"]> {
+    if (
+      context.origin !== "autonomous" ||
+      proposals.length === 0 ||
+      autonomouslyClosedStepGoalIds.size === 0
+    ) {
+      return [...proposals];
+    }
+
+    const kept: ReflectionOutput["proposed_steps"] = [];
+
+    for (const proposal of proposals) {
+      if (!autonomouslyClosedStepGoalIds.has(proposal.goal_id)) {
+        kept.push(proposal);
+        continue;
+      }
+
+      await this.appendReflectorInternalEvent(streamWriter, {
+        hook: "reflector_proposal_dropped_close_and_replace",
+        goal_id: proposal.goal_id,
+        description: proposal.description,
+      });
+    }
+
+    return kept;
   }
 
   private async applyProposedExecutiveSteps(
@@ -785,6 +841,16 @@ export class Reflector {
           reason: "non_selected_goal",
           goal_id: proposal.goal_id,
           selected_goal_id: selectedGoal.id,
+        });
+        continue;
+      }
+
+      if (proposal.kind === "wait" && (proposal.due_at === null || proposal.due_at === undefined)) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_step_proposal_dropped",
+          reason: "wait_without_due_at",
+          goal_id: selectedGoal.id,
+          description: proposal.description,
         });
         continue;
       }

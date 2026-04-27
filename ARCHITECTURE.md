@@ -81,7 +81,8 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 │  ┌─────────────────────────────────────────────────────────────────┐    │
 │  │                    COGNITIVE LOOP                               │    │
 │  │                                                                 │    │
-│  │  Perception → Attention → Deliberation → Action → Reflection    │    │
+│  │  Perception → Exec Focus → Attention → Deliberation             │    │
+│  │       → Action → Reflection                                     │    │
 │  │       ▲                                              │          │    │
 │  │       └──────────────── feedback ────────────────────┘          │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
@@ -547,6 +548,13 @@ band.
   `<borg_executive_focus>` block that names the current driving goal and
   score components. It is a soft bias: the current user request,
   commitments, and evidence quality still take precedence.
+- Autonomous due-step wakes may force focus onto the goal that owns the
+  due step even when its score is below threshold. This bypass is limited
+  to the due-step branch so the wake can render the step it was created
+  to handle; score components are still shown.
+- Durable executive steps are lifecycle-bound to their parent goal: when
+  an active goal closes, its open steps are abandoned in the same SQLite
+  write so stale `topOpen` records do not linger.
 
 **Attention** (fast)
 - Context-aware relevance function (9 weighted components):
@@ -633,6 +641,8 @@ band.
   `abandoned`, or propose a small next step when that selected goal has
   no open steps. User turns can confirm `done`; autonomous turns may
   start, block, or abandon steps but cannot mark their own work done.
+  Autonomous reflection also cannot close a step and propose a
+  replacement step for the same goal in one pass.
 - Optionally enqueue review-queue items (e.g., reflection-driven open
   questions, identity inconsistencies surfaced this turn).
 - Note: episodic extraction does NOT run synchronously in reflection.
@@ -722,10 +732,12 @@ rolling wake budget, and calls the normal turn orchestrator with
 `origin: "autonomous"` and `audience: "self"`; it does not have a
 separate executive agent. `executive_focus_due` is an opt-in trigger
 (`autonomy.executiveFocus.enabled`) that wakes when a selected goal is
-stale or a durable executive step is due. This closes the minimum
-executive loop: focus is selected, the top step is rendered into the
-turn prompt, reflection updates or proposes steps, and autonomy wakes
-again only when the focused work becomes due or stale.
+stale or a durable executive step is due. It has a per-goal wake
+cooldown so autonomous self-talk cannot burn the wake budget on the
+same concern; user-turn goal progress clears that cooldown. This closes
+the minimum executive loop: focus is selected, the top step is rendered
+into the turn prompt, reflection updates or proposes steps, and autonomy
+wakes again only when the focused work becomes due or stale.
 
 ### 5.3 Retrieval pipeline
 
@@ -790,7 +802,8 @@ active goal must clear before Borg renders `<borg_executive_focus>` or
 applies primary-goal retrieval bias. Autonomous executive wakes are
 controlled by `autonomy.executiveFocus.enabled` (default `false`),
 `autonomy.executiveFocus.stalenessSec` (default `86400`), and
-`autonomy.executiveFocus.dueLeadSec` (default `0`).
+`autonomy.executiveFocus.dueLeadSec` (default `0`). The per-goal wake
+cooldown is `autonomy.executiveFocus.wakeCooldownSec` (default `3600`).
 
 ---
 

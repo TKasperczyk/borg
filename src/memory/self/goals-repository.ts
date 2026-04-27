@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { ExecutiveStepsRepository } from "../../executive/index.js";
 import { type SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
@@ -7,7 +8,7 @@ import { createGoalId, type GoalId } from "../../util/ids.js";
 import { toStoredProvenance, type Provenance } from "../common/provenance.js";
 import { type IdentityEventRepository } from "../identity/repository.js";
 
-import { recordIdentityEvent, runIdentityWrite } from "./shared/identity-events.js";
+import { recordIdentityEvent } from "./shared/identity-events.js";
 import { requireProvenance } from "./shared/provenance.js";
 import { mapGoalRow } from "./shared/sql-mapping.js";
 import {
@@ -23,6 +24,7 @@ export type GoalsRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
   identityEventRepository?: IdentityEventRepository;
+  executiveStepsRepository?: Pick<ExecutiveStepsRepository, "abandonOpenStepsForGoal">;
 };
 
 export class GoalsRepository {
@@ -38,6 +40,36 @@ export class GoalsRepository {
 
   private get identityEventRepository(): IdentityEventRepository | undefined {
     return this.options.identityEventRepository;
+  }
+
+  private runGoalWrite<T>(callback: () => T): T {
+    if (this.db.raw.inTransaction) {
+      return callback();
+    }
+
+    this.db.exec("BEGIN IMMEDIATE");
+
+    try {
+      const result = callback();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the original failure.
+      }
+
+      throw error;
+    }
+  }
+
+  private abandonOpenStepsWhenClosingGoal(current: GoalRecord, nextStatus: GoalStatus): void {
+    if (current.status !== "active" || nextStatus === "active") {
+      return;
+    }
+
+    this.options.executiveStepsRepository?.abandonOpenStepsForGoal(current.id, "goal_closed");
   }
 
   get(goalId: GoalId): GoalRecord | null {
@@ -98,7 +130,7 @@ export class GoalsRepository {
     });
     const storedProvenance = toStoredProvenance(goal.provenance);
 
-    return runIdentityWrite(this.identityEventRepository, () => {
+    return this.runGoalWrite(() => {
       this.db
         .prepare(
           `
@@ -200,7 +232,7 @@ export class GoalsRepository {
     const parsedProvenance = requireProvenance(provenance, "Goal status update");
     const storedProvenance = toStoredProvenance(parsedProvenance);
 
-    runIdentityWrite(this.identityEventRepository, () => {
+    this.runGoalWrite(() => {
       const result = this.db
         .prepare(
           `
@@ -222,6 +254,8 @@ export class GoalsRepository {
           code: "GOAL_NOT_FOUND",
         });
       }
+
+      this.abandonOpenStepsWhenClosingGoal(current, parsedStatus);
 
       recordIdentityEvent(this.identityEventRepository, {
         record_type: "goal",
@@ -251,7 +285,7 @@ export class GoalsRepository {
     const storedProvenance = toStoredProvenance(parsedProvenance);
     const nowMs = this.clock.now();
 
-    runIdentityWrite(this.identityEventRepository, () => {
+    this.runGoalWrite(() => {
       const result = this.db
         .prepare(
           `
@@ -331,7 +365,7 @@ export class GoalsRepository {
     });
     const storedProvenance = toStoredProvenance(next.provenance);
 
-    runIdentityWrite(this.identityEventRepository, () => {
+    this.runGoalWrite(() => {
       this.db
         .prepare(
           `
@@ -355,6 +389,8 @@ export class GoalsRepository {
           storedProvenance.provenance_process,
           goalId,
         );
+
+      this.abandonOpenStepsWhenClosingGoal(current, next.status);
 
       recordIdentityEvent(this.identityEventRepository, {
         record_type: "goal",

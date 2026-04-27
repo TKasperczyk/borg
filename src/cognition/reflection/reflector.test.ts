@@ -790,6 +790,144 @@ describe("reflector", () => {
     ).toBe(true);
   });
 
+  it("drops autonomous close-and-replace proposals for the same goal", async () => {
+    const harness = await createExecutiveReflectionHarness();
+    cleanup.push(harness.cleanup);
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const step = harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Investigate the launch blocker",
+      kind: "act",
+      status: "doing",
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [],
+          [],
+          [
+            {
+              step_id: step.id,
+              new_status: "blocked",
+              evidence: "The autonomous turn hit a missing dependency.",
+            },
+          ],
+          [
+            {
+              goal_id: goal.id,
+              description: "Try a replacement step immediately",
+              kind: "act",
+              due_at: harness.clock.now(),
+              rationale: "The previous step was blocked.",
+            },
+          ],
+        ),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    await reflector.reflect(
+      createExecutiveReflectionContext({
+        origin: "autonomous",
+        goal,
+        nextStep: step,
+      }),
+      harness.writer,
+    );
+
+    expect(harness.executiveStepsRepository.get(step.id)?.status).toBe("blocked");
+    expect(harness.executiveStepsRepository.listOpen(goal.id)).toEqual([]);
+    expect(
+      new StreamReader({
+        dataDir: harness.tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+      })
+        .tail(10)
+        .some(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            (entry.content as { hook?: string }).hook ===
+              "reflector_proposal_dropped_close_and_replace",
+        ),
+    ).toBe(true);
+  });
+
+  it("drops proposed wait steps without due_at before repository write", async () => {
+    const harness = await createExecutiveReflectionHarness();
+    cleanup.push(harness.cleanup);
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [],
+          [],
+          [],
+          [
+            {
+              goal_id: goal.id,
+              description: "Wait without a concrete time",
+              kind: "wait",
+              due_at: null,
+              rationale: "The model proposed a wait but no deadline.",
+            },
+          ],
+        ),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    await reflector.reflect(
+      createExecutiveReflectionContext({
+        goal,
+        nextStep: null,
+      }),
+      harness.writer,
+    );
+
+    expect(harness.executiveStepsRepository.listOpen(goal.id)).toEqual([]);
+    expect(
+      new StreamReader({
+        dataDir: harness.tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+      })
+        .tail(10)
+        .some(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            (entry.content as { reason?: string }).reason === "wait_without_due_at",
+        ),
+    ).toBe(true);
+  });
+
   it("bumps LLM-marked goal progress, skips unreferenced episode use, and ticks suppression", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new FixedClock(1_000);

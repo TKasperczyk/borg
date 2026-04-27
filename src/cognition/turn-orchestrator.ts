@@ -13,7 +13,7 @@ import { TurnOpeningPersistence } from "./persistence/turn-opening.js";
 import { PendingProceduralAttemptTracker } from "./procedural/pending-attempt-tracker.js";
 import { TurnContextCompiler } from "./recency/index.js";
 import { selectExecutiveFocus } from "../executive/index.js";
-import type { ExecutiveStepsRepository } from "../executive/index.js";
+import type { ExecutiveFocus, ExecutiveStepsRepository } from "../executive/index.js";
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import type { Reflector } from "./reflection/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
@@ -39,7 +39,14 @@ import { StreamReader, StreamWriter } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import { SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
-import { DEFAULT_SESSION_ID, type EntityId, type EpisodeId, type SessionId } from "../util/ids.js";
+import {
+  DEFAULT_SESSION_ID,
+  goalIdHelpers,
+  type EntityId,
+  type EpisodeId,
+  type GoalId,
+  type SessionId,
+} from "../util/ids.js";
 import { NOOP_TRACER, type TurnTracer } from "./tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
 import { SessionLock } from "./session-lock.js";
@@ -63,6 +70,42 @@ function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>)
   }
 
   return flattened;
+}
+
+function getForcedExecutiveFocusGoalId(
+  autonomyTrigger: AutonomyTriggerContext | null | undefined,
+): GoalId | null {
+  if (
+    autonomyTrigger?.source_name !== "executive_focus_due" ||
+    autonomyTrigger.payload.reason !== "step_due"
+  ) {
+    return null;
+  }
+
+  const candidate = autonomyTrigger.payload.force_executive_focus_goal_id;
+
+  return typeof candidate === "string" && goalIdHelpers.is(candidate) ? candidate : null;
+}
+
+function applyForcedExecutiveFocus(
+  focus: ExecutiveFocus,
+  forcedGoalId: GoalId | null,
+): ExecutiveFocus {
+  if (forcedGoalId === null) {
+    return focus;
+  }
+
+  const forcedScore = focus.candidates.find((candidate) => candidate.goal_id === forcedGoalId);
+
+  if (forcedScore === undefined) {
+    return focus;
+  }
+
+  return {
+    ...focus,
+    selected_goal: forcedScore.goal,
+    selected_score: forcedScore,
+  };
 }
 
 type ProvenanceScopedSelfRecord = {
@@ -362,16 +405,19 @@ export class TurnOrchestrator {
         const recencyWindow = perceptionResult.recencyWindow;
         const workingMood = perceptionResult.workingMood;
         workingMemory = perceptionResult.workingMemory;
-        const executiveFocus = selectExecutiveFocus({
-          goals: selfSnapshot.goals,
-          cognitionInput,
-          perceptionEntities: perception.entities,
-          autonomyPayload: input.autonomyTrigger?.payload ?? null,
-          nowMs: this.clock.now(),
-          threshold: this.options.config.executive.goalFocusThreshold,
-          deadlineLookaheadMs: this.options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
-          staleMs: this.options.config.autonomy.triggers.goalFollowupDue.staleMs,
-        });
+        const executiveFocus = applyForcedExecutiveFocus(
+          selectExecutiveFocus({
+            goals: selfSnapshot.goals,
+            cognitionInput,
+            perceptionEntities: perception.entities,
+            autonomyPayload: input.autonomyTrigger?.payload ?? null,
+            nowMs: this.clock.now(),
+            threshold: this.options.config.executive.goalFocusThreshold,
+            deadlineLookaheadMs: this.options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
+            staleMs: this.options.config.autonomy.triggers.goalFollowupDue.staleMs,
+          }),
+          getForcedExecutiveFocusGoalId(input.autonomyTrigger),
+        );
         const executiveFocusWithStep =
           executiveFocus.selected_goal === null
             ? executiveFocus

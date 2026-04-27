@@ -193,6 +193,7 @@ const configFileSchema = z
             enabled: z.boolean().optional(),
             stalenessSec: z.number().int().positive().optional(),
             dueLeadSec: z.number().int().nonnegative().optional(),
+            wakeCooldownSec: z.number().int().nonnegative().optional(),
           })
           .partial()
           .optional(),
@@ -400,6 +401,7 @@ export const configSchema = z.object({
       enabled: z.boolean(),
       stalenessSec: z.number().int().positive(),
       dueLeadSec: z.number().int().nonnegative(),
+      wakeCooldownSec: z.number().int().nonnegative(),
     }),
     triggers: z.object({
       commitmentExpiring: z.object({
@@ -563,6 +565,7 @@ export const DEFAULT_CONFIG: Config = {
       enabled: false,
       stalenessSec: 86_400,
       dueLeadSec: 0,
+      wakeCooldownSec: 3_600,
     },
     triggers: {
       commitmentExpiring: {
@@ -1076,6 +1079,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_DUE_LEAD_SEC") ??
           fileConfig.autonomy?.executiveFocus?.dueLeadSec ??
           DEFAULT_CONFIG.autonomy.executiveFocus.dueLeadSec,
+        wakeCooldownSec:
+          readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_WAKE_COOLDOWN_SEC") ??
+          fileConfig.autonomy?.executiveFocus?.wakeCooldownSec ??
+          DEFAULT_CONFIG.autonomy.executiveFocus.wakeCooldownSec,
       },
       triggers: {
         commitmentExpiring: {

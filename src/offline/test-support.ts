@@ -341,14 +341,15 @@ export async function createOfflineTestHarness(
     clock,
     identityEventRepository,
   });
+  const executiveStepsRepository = new ExecutiveStepsRepository({
+    db,
+    clock,
+  });
   const goalsRepository = new GoalsRepository({
     db,
     clock,
     identityEventRepository,
-  });
-  const executiveStepsRepository = new ExecutiveStepsRepository({
-    db,
-    clock,
+    executiveStepsRepository,
   });
   const traitsRepository = new TraitsRepository({
     db,

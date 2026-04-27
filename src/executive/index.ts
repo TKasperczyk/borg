@@ -6,6 +6,7 @@ export {
 export { executiveMigrations } from "./migrations.js";
 export {
   ExecutiveStepsRepository,
+  type ExecutiveStepAbandonReason,
   type ExecutiveStepAddInput,
   type ExecutiveStepsRepositoryOptions,
 } from "./steps-repository.js";

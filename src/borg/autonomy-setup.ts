@@ -74,6 +74,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             threshold: options.config.executive.goalFocusThreshold,
             stalenessMs: options.config.autonomy.executiveFocus.stalenessSec * 1_000,
             dueLeadMs: options.config.autonomy.executiveFocus.dueLeadSec * 1_000,
+            wakeCooldownMs: options.config.autonomy.executiveFocus.wakeCooldownSec * 1_000,
             deadlineLookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
             goalFollowupDue: {
               enabled: options.config.autonomy.triggers.goalFollowupDue.enabled,

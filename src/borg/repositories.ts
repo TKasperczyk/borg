@@ -183,6 +183,7 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
     identityEventRepository,
+    executiveStepsRepository,
   });
   const traitsRepository = new TraitsRepository({
     db: sqlite,

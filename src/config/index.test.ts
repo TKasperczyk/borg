@@ -46,6 +46,7 @@ describe("config", () => {
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
+    expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
   });
 
   it("names the autonomy wake cap for the configured rolling window", () => {

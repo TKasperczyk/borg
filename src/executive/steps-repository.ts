@@ -37,6 +37,8 @@ export type ExecutiveStepAddInput = {
   createdAt?: number;
 };
 
+export type ExecutiveStepAbandonReason = "goal_closed";
+
 const OPEN_STATUSES = new Set<ExecutiveStepStatus>(["queued", "doing"]);
 const MAX_OPEN_STEPS_PER_GOAL = 3;
 
@@ -96,6 +98,16 @@ function assertTransition(current: ExecutiveStepStatus, next: ExecutiveStepStatu
   });
 }
 
+function assertWaitStepHasDueAt(kind: ExecutiveStepKind, dueAt: number | null): void {
+  if (kind !== "wait" || dueAt !== null) {
+    return;
+  }
+
+  throw new StorageError("Executive wait steps require due_at", {
+    code: "EXECUTIVE_STEP_WAIT_REQUIRES_DUE_AT",
+  });
+}
+
 export class ExecutiveStepsRepository {
   private readonly clock: Clock;
 
@@ -126,6 +138,9 @@ export class ExecutiveStepsRepository {
       updated_at: createdAt,
       provenance,
     });
+
+    assertWaitStepHasDueAt(step.kind, step.due_at);
+
     const storedProvenance = toStoredProvenance(step.provenance);
 
     this.runImmediateTransaction(() => {
@@ -256,6 +271,9 @@ export class ExecutiveStepsRepository {
         ...parsedPatch,
         updated_at: this.clock.now(),
       });
+
+      assertWaitStepHasDueAt(next.kind, next.due_at);
+
       const storedProvenance = toStoredProvenance(next.provenance);
 
       this.db
@@ -291,6 +309,47 @@ export class ExecutiveStepsRepository {
     return result.changes > 0;
   }
 
+  abandonOpenStepsForGoal(goalId: GoalId, reason: ExecutiveStepAbandonReason): ExecutiveStep[] {
+    return this.runImmediateTransaction(() => {
+      const openSteps = this.listOpen(goalId);
+
+      if (openSteps.length === 0) {
+        return [];
+      }
+
+      const updatedAt = this.clock.now();
+      const provenance = {
+        kind: "offline" as const,
+        process: reason,
+      };
+      const storedProvenance = toStoredProvenance(provenance);
+
+      this.db
+        .prepare(
+          `
+            UPDATE executive_steps
+            SET status = 'abandoned', updated_at = ?, provenance_kind = ?,
+                provenance_episode_ids = ?, provenance_process = ?
+            WHERE goal_id = ? AND status IN ('queued', 'doing')
+          `,
+        )
+        .run(
+          updatedAt,
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          goalId,
+        );
+
+      return openSteps.map((step) => ({
+        ...step,
+        status: "abandoned",
+        updated_at: updatedAt,
+        provenance,
+      }));
+    });
+  }
+
   private countOpen(goalId: GoalId): number {
     const row = this.db
       .prepare(
@@ -319,6 +378,10 @@ export class ExecutiveStepsRepository {
   }
 
   private runImmediateTransaction<T>(callback: () => T): T {
+    if (this.db.raw.inTransaction) {
+      return callback();
+    }
+
     this.db.exec("BEGIN IMMEDIATE");
 
     try {

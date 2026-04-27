@@ -27,6 +27,7 @@ type ExecutiveFocusDueStepPayload = Pick<
 export type ExecutiveFocusDuePayload = {
   reason: ExecutiveFocusDueReason;
   selected_goal_id: GoalRecord["id"];
+  force_executive_focus_goal_id?: GoalRecord["id"];
   selected_goal: {
     goal_id: GoalRecord["id"];
     description: string;
@@ -58,6 +59,7 @@ export type ExecutiveFocusDueTriggerOptions = {
   threshold?: number;
   stalenessMs: number;
   dueLeadMs: number;
+  wakeCooldownMs: number;
   deadlineLookaheadMs: number;
   goalFollowupDue?: {
     enabled: boolean;
@@ -173,6 +175,7 @@ function buildScorePayload(input: {
   return {
     reason: input.reason,
     selected_goal_id: input.goal.id,
+    ...(input.reason === "step_due" ? { force_executive_focus_goal_id: input.goal.id } : {}),
     selected_goal: {
       goal_id: input.goal.id,
       description: input.goal.description,
@@ -211,6 +214,24 @@ export function createExecutiveFocusDueTrigger(
   const clock = options.clock ?? new SystemClock();
   const sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
   const threshold = options.threshold ?? DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD;
+
+  function getGoalCooldownProcessName(goal: GoalRecord): string {
+    return `${WATERMARK_PREFIX}:cooldown:${goal.id}`;
+  }
+
+  function isGoalCoolingDown(goal: GoalRecord, nowMs: number): boolean {
+    const cooldown = options.watermarkRepository.get(getGoalCooldownProcessName(goal), sessionId);
+
+    if (cooldown === null) {
+      return false;
+    }
+
+    if (goal.last_progress_ts !== null && goal.last_progress_ts >= cooldown.updatedAt) {
+      return false;
+    }
+
+    return nowMs - cooldown.updatedAt < options.wakeCooldownMs;
+  }
 
   function shouldDeferToGoalFollowup(goal: GoalRecord, nowMs: number): boolean {
     if (options.goalFollowupDue?.enabled !== true) {
@@ -259,6 +280,10 @@ export function createExecutiveFocusDueTrigger(
       const eventGoalIds = new Set<GoalRecord["id"]>();
 
       for (const goal of goals) {
+        if (isGoalCoolingDown(goal, nowMs)) {
+          continue;
+        }
+
         const dueStep = options.executiveStepsRepository
           .listOpen(goal.id)
           .filter((step) => step.due_at !== null && step.due_at <= nowMs + options.dueLeadMs)
@@ -295,17 +320,12 @@ export function createExecutiveFocusDueTrigger(
 
         const dueAt = dueStep.due_at ?? nowMs;
         const attemptKey = dueStep.last_attempt_ts ?? dueStep.created_at;
-        const watermarkProcessName = `${WATERMARK_PREFIX}:step:${dueStep.id}:${dueAt}:${dueStep.status}:${attemptKey}`;
-
-        if (options.watermarkRepository.get(watermarkProcessName, sessionId) !== null) {
-          continue;
-        }
 
         events.push({
           id: `step:${dueStep.id}:${dueAt}:${dueStep.status}:${attemptKey}`,
           sourceName: TRIGGER_NAME,
           sourceType: "trigger",
-          watermarkProcessName,
+          watermarkProcessName: getGoalCooldownProcessName(goal),
           sortTs: dueAt,
           payload: buildScorePayload({
             goal,
@@ -335,18 +355,18 @@ export function createExecutiveFocusDueTrigger(
         selectedGoal !== null &&
         selectedScore !== null &&
         !eventGoalIds.has(selectedGoal.id) &&
+        !isGoalCoolingDown(selectedGoal, nowMs) &&
         !shouldDeferToGoalFollowup(selectedGoal, nowMs)
       ) {
         const progressAnchor = selectedGoal.last_progress_ts ?? selectedGoal.created_at;
         const staleDue = progressAnchor + options.stalenessMs <= nowMs;
-        const watermarkProcessName = `${WATERMARK_PREFIX}:goal:${selectedGoal.id}:${progressAnchor}`;
 
-        if (staleDue && options.watermarkRepository.get(watermarkProcessName, sessionId) === null) {
+        if (staleDue) {
           events.push({
             id: `goal:${selectedGoal.id}:${progressAnchor}`,
             sourceName: TRIGGER_NAME,
             sourceType: "trigger",
-            watermarkProcessName,
+            watermarkProcessName: getGoalCooldownProcessName(selectedGoal),
             sortTs: progressAnchor + options.stalenessMs,
             payload: buildScorePayload({
               goal: selectedGoal,

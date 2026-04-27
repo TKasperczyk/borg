@@ -15,13 +15,14 @@ function createHarness(start = 1_000) {
     migrations: [...selfMigrations, ...executiveMigrations],
   });
   const clock = new ManualClock(start);
-  const goals = new GoalsRepository({
-    db,
-    clock,
-  });
   const steps = new ExecutiveStepsRepository({
     db,
     clock,
+  });
+  const goals = new GoalsRepository({
+    db,
+    clock,
+    executiveStepsRepository: steps,
   });
   const goal = goals.add({
     description: "Ship durable goal steps",
@@ -220,14 +221,14 @@ describe("ExecutiveStepsRepository", () => {
       const noDeadlineOlder = harness.steps.add({
         goalId: harness.goal.id,
         description: "No deadline older",
-        kind: "wait",
+        kind: "think",
         provenance: manualProvenance,
       });
       harness.clock.advance(10);
       const noDeadlineNewer = harness.steps.add({
         goalId: harness.goal.id,
         description: "No deadline newer",
-        kind: "wait",
+        kind: "think",
         provenance: manualProvenance,
       });
 
@@ -248,14 +249,14 @@ describe("ExecutiveStepsRepository", () => {
       const noDeadlineOlder = harness.steps.add({
         goalId: harness.goal.id,
         description: "No deadline older",
-        kind: "wait",
+        kind: "think",
         provenance: manualProvenance,
       });
       harness.clock.advance(10);
       const datedNewer = harness.steps.add({
         goalId: harness.goal.id,
         description: "Dated newer",
-        kind: "wait",
+        kind: "think",
         dueAt: 2_000,
         provenance: manualProvenance,
       });
@@ -285,6 +286,120 @@ describe("ExecutiveStepsRepository", () => {
       expect(harness.steps.topOpen(harness.goal.id)).toBeNull();
       expect(harness.steps.listOpen(harness.goal.id)).toEqual([]);
       expect(harness.steps.list(harness.goal.id)).toEqual([step]);
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("requires wait steps to have due_at", () => {
+    const harness = createHarness();
+
+    try {
+      expect(() =>
+        harness.steps.add({
+          goalId: harness.goal.id,
+          description: "Wait without a date",
+          kind: "wait",
+          provenance: manualProvenance,
+        }),
+      ).toThrow(/wait steps require due_at/);
+
+      const step = harness.steps.add({
+        goalId: harness.goal.id,
+        description: "Maybe wait later",
+        kind: "think",
+        provenance: manualProvenance,
+      });
+
+      expect(() => harness.steps.update(step.id, { kind: "wait" })).toThrow(
+        /wait steps require due_at/,
+      );
+      expect(
+        harness.steps.update(step.id, {
+          kind: "wait",
+          due_at: 2_000,
+        }),
+      ).toMatchObject({
+        kind: "wait",
+        due_at: 2_000,
+      });
+      expect(() => harness.steps.update(step.id, { due_at: null })).toThrow(
+        /wait steps require due_at/,
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("abandons open steps when an active goal closes", () => {
+    const harness = createHarness();
+
+    try {
+      const queued = harness.steps.add({
+        goalId: harness.goal.id,
+        description: "Queued work",
+        kind: "think",
+        provenance: manualProvenance,
+      });
+      const doing = harness.steps.add({
+        goalId: harness.goal.id,
+        description: "Doing work",
+        kind: "act",
+        status: "doing",
+        provenance: manualProvenance,
+      });
+      const done = harness.steps.add({
+        goalId: harness.goal.id,
+        description: "Already done",
+        kind: "think",
+        status: "done",
+        provenance: manualProvenance,
+      });
+      const blocked = harness.steps.add({
+        goalId: harness.goal.id,
+        description: "Already blocked",
+        kind: "think",
+        status: "blocked",
+        provenance: manualProvenance,
+      });
+      const otherGoal = new GoalsRepository({
+        db: harness.db,
+        clock: harness.clock,
+        executiveStepsRepository: harness.steps,
+      }).add({
+        description: "Other goal",
+        priority: 5,
+        provenance: manualProvenance,
+      });
+      const otherStep = harness.steps.add({
+        goalId: otherGoal.id,
+        description: "Other goal work",
+        kind: "think",
+        provenance: manualProvenance,
+      });
+
+      harness.clock.advance(50);
+      new GoalsRepository({
+        db: harness.db,
+        clock: harness.clock,
+        executiveStepsRepository: harness.steps,
+      }).updateStatus(harness.goal.id, "done", manualProvenance);
+
+      expect(harness.steps.get(queued.id)).toMatchObject({
+        status: "abandoned",
+        updated_at: 1_050,
+        provenance: {
+          kind: "offline",
+          process: "goal_closed",
+        },
+      });
+      expect(harness.steps.get(doing.id)).toMatchObject({
+        status: "abandoned",
+      });
+      expect(harness.steps.get(done.id)?.status).toBe("done");
+      expect(harness.steps.get(blocked.id)?.status).toBe("blocked");
+      expect(harness.steps.get(otherStep.id)?.status).toBe("queued");
+      expect(harness.steps.listOpen(harness.goal.id)).toEqual([]);
     } finally {
       harness.db.close();
     }
