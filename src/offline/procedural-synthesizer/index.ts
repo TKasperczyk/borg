@@ -1009,6 +1009,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
                   attemptedAt: this.clock.now(),
                   claimedAt,
                   error: message,
+                  manualReviewThreshold: synthesizerConfig.maxSplitParseFailures,
                 })
               : null;
 

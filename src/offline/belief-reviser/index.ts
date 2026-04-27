@@ -109,6 +109,8 @@ const beliefRevisionClaimSchema = z
 
 const beliefRevisionApplyingSchema = z
   .object({
+    run_id: z.string().min(1),
+    claimed_at: z.number().finite(),
     verdict: z.enum(["keep", "weaken", "archive_node"]),
     target_id: semanticNodeIdSchema,
     confidence: z.number().min(0).max(1).optional(),
@@ -175,6 +177,7 @@ type ConfidenceDrop = {
   previousConfidence: number;
   nextConfidence: number;
 };
+type BeliefRevisionClaim = z.infer<typeof beliefRevisionClaimSchema>;
 type ApplyEventResult = {
   enqueued: BeliefRevisionReview[];
   confidenceDrops: ConfidenceDrop[];
@@ -183,18 +186,21 @@ type ApplyEventResult = {
 type NodeVectorSync =
   | {
       kind: "confidence";
+      reviewId: ReviewQueueItem["id"];
+      expectedClaim: BeliefRevisionClaim;
       targetId: SemanticNode["id"];
       confidence: number;
     }
   | {
       kind: "archive";
+      reviewId: ReviewQueueItem["id"];
+      expectedClaim: BeliefRevisionClaim;
       targetId: SemanticNode["id"];
     };
 type PreparedVerdict = {
   verdict: BeliefRevisionVerdict;
   nodeSyncs: NodeVectorSync[];
 };
-type BeliefRevisionClaim = z.infer<typeof beliefRevisionClaimSchema>;
 type ApplyRegradeResult = {
   applied: boolean;
   resolution: ReviewResolution | "manual_review";
@@ -883,31 +889,81 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     });
   }
 
-  private async syncNodeToVectorStore(ctx: OfflineContext, sync: NodeVectorSync): Promise<void> {
+  private ownsPreparedNodeSync(ctx: OfflineContext, sync: NodeVectorSync): boolean {
+    const current = ctx.reviewQueueRepository.get(sync.reviewId);
+
+    if (current === null || current.resolved_at !== null || current.kind !== "belief_revision") {
+      return false;
+    }
+
+    const claim = beliefRevisionClaimSchema.safeParse(current.refs[CLAIM_REF_KEY]);
+    const applying = beliefRevisionApplyingSchema.safeParse(current.refs[APPLYING_REF_KEY]);
+
+    return (
+      claim.success &&
+      applying.success &&
+      claim.data.run_id === sync.expectedClaim.run_id &&
+      claim.data.claimed_at === sync.expectedClaim.claimed_at &&
+      applying.data.run_id === sync.expectedClaim.run_id &&
+      applying.data.claimed_at === sync.expectedClaim.claimed_at &&
+      applying.data.target_id === sync.targetId
+    );
+  }
+
+  private async syncNodeToVectorStore(
+    ctx: OfflineContext,
+    sync: NodeVectorSync,
+    errors: OfflineResult["errors"] = [],
+  ): Promise<boolean> {
+    if (!this.ownsPreparedNodeSync(ctx, sync)) {
+      await appendClaimOwnershipMismatchEvent(
+        ctx,
+        {
+          reviewId: sync.reviewId,
+          action: "sync_node",
+        },
+        errors,
+      );
+      return false;
+    }
+
     const current = await ctx.semanticNodeRepository.get(sync.targetId);
 
     if (current === null) {
-      return;
+      return true;
+    }
+
+    if (!this.ownsPreparedNodeSync(ctx, sync)) {
+      await appendClaimOwnershipMismatchEvent(
+        ctx,
+        {
+          reviewId: sync.reviewId,
+          action: "sync_node",
+        },
+        errors,
+      );
+      return false;
     }
 
     if (sync.kind === "confidence") {
       if (current.confidence === sync.confidence) {
-        return;
+        return true;
       }
 
       await ctx.semanticNodeRepository.update(sync.targetId, {
         confidence: sync.confidence,
       });
-      return;
+      return true;
     }
 
     if (current.archived) {
-      return;
+      return true;
     }
 
     await ctx.semanticNodeRepository.update(sync.targetId, {
       archived: true,
     });
+    return true;
   }
 
   private claimReview(ctx: OfflineContext, reviewId: number): ReviewQueueItem | null {
@@ -1150,10 +1206,16 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     return row === undefined ? null : Number(row.confidence);
   }
 
-  private nodeSyncFromApplyingState(state: z.infer<typeof beliefRevisionApplyingSchema>): NodeVectorSync {
+  private nodeSyncFromApplyingState(
+    reviewId: ReviewQueueItem["id"],
+    expectedClaim: BeliefRevisionClaim,
+    state: z.infer<typeof beliefRevisionApplyingSchema>,
+  ): NodeVectorSync {
     if (state.archived === true) {
       return {
         kind: "archive",
+        reviewId,
+        expectedClaim,
         targetId: state.target_id,
       };
     }
@@ -1161,6 +1223,8 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     if (state.confidence !== undefined) {
       return {
         kind: "confidence",
+        reviewId,
+        expectedClaim,
         targetId: state.target_id,
         confidence: state.confidence,
       };
@@ -1201,10 +1265,15 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       const existing = beliefRevisionApplyingSchema.safeParse(current.refs[APPLYING_REF_KEY]);
 
       if (existing.success) {
-        return {
-          verdict,
-          nodeSyncs: [this.nodeSyncFromApplyingState(existing.data)],
-        } satisfies PreparedVerdict;
+        if (
+          existing.data.run_id === expectedClaim.run_id &&
+          existing.data.claimed_at === expectedClaim.claimed_at
+        ) {
+          return {
+            verdict,
+            nodeSyncs: [this.nodeSyncFromApplyingState(current.id, expectedClaim, existing.data)],
+          } satisfies PreparedVerdict;
+        }
       }
 
       const refs = beliefRevisionReviewSchema.parse(current.refs);
@@ -1227,6 +1296,8 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         }
 
         const applying = {
+          run_id: expectedClaim.run_id,
+          claimed_at: expectedClaim.claimed_at,
           verdict: "keep",
           target_id: refs.target_id,
           confidence: parsedDrop.data.previous_confidence,
@@ -1261,7 +1332,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
 
         return {
           verdict,
-          nodeSyncs: [this.nodeSyncFromApplyingState(applying)],
+          nodeSyncs: [this.nodeSyncFromApplyingState(current.id, expectedClaim, applying)],
         } satisfies PreparedVerdict;
       }
 
@@ -1276,6 +1347,8 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         }
 
         const applying = {
+          run_id: expectedClaim.run_id,
+          claimed_at: expectedClaim.claimed_at,
           verdict: "weaken",
           target_id: refs.target_id,
           confidence: Math.max(this.confidenceFloor, currentConfidence + (verdict.confidence_delta ?? 0)),
@@ -1310,12 +1383,14 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
 
         return {
           verdict,
-          nodeSyncs: [this.nodeSyncFromApplyingState(applying)],
+          nodeSyncs: [this.nodeSyncFromApplyingState(current.id, expectedClaim, applying)],
         } satisfies PreparedVerdict;
       }
 
       if (verdict.verdict === "archive_node") {
         const applying = {
+          run_id: expectedClaim.run_id,
+          claimed_at: expectedClaim.claimed_at,
           verdict: "archive_node",
           target_id: refs.target_id,
           archived: true,
@@ -1350,7 +1425,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
 
         return {
           verdict,
-          nodeSyncs: [this.nodeSyncFromApplyingState(applying)],
+          nodeSyncs: [this.nodeSyncFromApplyingState(current.id, expectedClaim, applying)],
         } satisfies PreparedVerdict;
       }
 
@@ -1816,6 +1891,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         continue;
       }
       let nodeSyncCompleted = false;
+      let ownershipLostDuringSync = false;
 
       try {
         const input = await this.buildLlmInput(ctx, claimed);
@@ -1831,7 +1907,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
 
         for (const sync of prepared.nodeSyncs) {
           try {
-            await this.syncNodeToVectorStore(ctx, sync);
+            const synced = await this.syncNodeToVectorStore(ctx, sync, errors);
+            if (!synced) {
+              ownershipLostDuringSync = true;
+              break;
+            }
             nodeSyncCompleted = true;
           } catch (error) {
             errors.push({
@@ -1842,6 +1922,12 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
             throw error;
           }
         }
+
+        if (ownershipLostDuringSync) {
+          consecutiveParseFailures = 0;
+          continue;
+        }
+
         const applied = this.applyVerdict(ctx, claimed, prepared.verdict, expectedClaim);
 
         if (applied.change !== null) {

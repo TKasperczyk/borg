@@ -38,6 +38,7 @@ export const skillSchema = z.object({
   last_split_attempt_at: z.number().finite().nullable().optional(),
   split_failure_count: z.number().int().nonnegative().default(0),
   last_split_error: z.string().min(1).nullable().default(null),
+  requires_manual_review: z.boolean().default(false),
   source_episode_ids: z.array(episodeIdSchema).min(1),
   last_used: z.number().finite().nullable(),
   last_successful: z.number().finite().nullable(),

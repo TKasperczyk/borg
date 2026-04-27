@@ -145,4 +145,17 @@ export const proceduralMigrations = [
       `);
     },
   },
+  {
+    id: 181,
+    name: "add-skill-manual-review-flag",
+    up: (db) => {
+      if (!tableHasColumn(db, "skills", "requires_manual_review")) {
+        db.exec("ALTER TABLE skills ADD COLUMN requires_manual_review INTEGER NOT NULL DEFAULT 0");
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_skills_manual_review
+          ON skills (requires_manual_review, updated_at DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

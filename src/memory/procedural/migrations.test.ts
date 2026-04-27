@@ -54,6 +54,9 @@ describe("procedural migrations", () => {
           "superseded_at",
           "splitting_at",
           "last_split_attempt_at",
+          "split_failure_count",
+          "last_split_error",
+          "requires_manual_review",
         ]),
       );
       expect(statsColumns.map((column) => column.name)).toEqual([

@@ -129,6 +129,33 @@ function beliefRevisionItems(harness: OfflineTestHarness) {
   });
 }
 
+type BeliefReviserInternals = {
+  claimReview(
+    ctx: ReturnType<OfflineTestHarness["createContext"]>,
+    reviewId: ReviewQueueItem["id"],
+  ): ReviewQueueItem | null;
+  prepareNodeVectorSync(
+    ctx: ReturnType<OfflineTestHarness["createContext"]>,
+    item: ReviewQueueItem,
+    verdict: Record<string, unknown>,
+    expectedClaim: { run_id: string; claimed_at: number },
+  ): { verdict: Record<string, unknown>; nodeSyncs: unknown[] };
+  syncNodeToVectorStore(
+    ctx: ReturnType<OfflineTestHarness["createContext"]>,
+    sync: unknown,
+  ): Promise<boolean>;
+  applyVerdict(
+    ctx: ReturnType<OfflineTestHarness["createContext"]>,
+    item: ReviewQueueItem,
+    verdict: Record<string, unknown>,
+    expectedClaim: { run_id: string; claimed_at: number },
+  ): { applied: boolean };
+};
+
+function claimRef(item: ReviewQueueItem): { run_id: string; claimed_at: number } {
+  return item.refs.__borg_belief_revision_claim as { run_id: string; claimed_at: number };
+}
+
 function invalidationEvents(harness: OfflineTestHarness) {
   return harness.db
     .prepare(
@@ -1201,6 +1228,98 @@ describe("belief reviser process", () => {
         hook: "claim_ownership_mismatch_dropped",
         action: "record_parse_failure",
       });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("drops stale-owner node sync after another run reclaims and resolves the review", async () => {
+    const clock = new ManualClock(1_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+
+    try {
+      const target = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "Deferred sync target",
+            confidence: 0.8,
+          },
+          [0, 1, 0, 0],
+        ),
+      );
+      const review = enqueueNodeBeliefRevision(harness, target);
+      const process = new BeliefReviserProcess({
+        db: harness.db,
+        claimStaleSec: 1,
+      });
+      const internals = process as unknown as BeliefReviserInternals;
+
+      const ctxA = harness.createContext();
+      const claimedA = internals.claimReview(ctxA, review.id);
+      expect(claimedA).not.toBeNull();
+      const expectedA = claimRef(claimedA!);
+      const preparedA = internals.prepareNodeVectorSync(
+        ctxA,
+        claimedA!,
+        {
+          verdict: "weaken",
+          rationale: "The stale worker weakens the claim.",
+          confidence_delta: -0.2,
+        },
+        expectedA,
+      );
+      expect(preparedA.nodeSyncs).toHaveLength(1);
+
+      clock.advance(2_000);
+      const ctxB = harness.createContext();
+      const claimedB = internals.claimReview(ctxB, review.id);
+      expect(claimedB).not.toBeNull();
+      const expectedB = claimRef(claimedB!);
+      const preparedB = internals.prepareNodeVectorSync(
+        ctxB,
+        claimedB!,
+        {
+          verdict: "archive_node",
+          rationale: "The reclaimed worker archives the claim.",
+        },
+        expectedB,
+      );
+      expect(preparedB.nodeSyncs).toHaveLength(1);
+      await internals.syncNodeToVectorStore(ctxB, preparedB.nodeSyncs[0]);
+      expect(internals.applyVerdict(ctxB, claimedB!, preparedB.verdict, expectedB).applied).toBe(
+        true,
+      );
+
+      await expect(internals.syncNodeToVectorStore(ctxA, preparedA.nodeSyncs[0])).resolves.toBe(
+        false,
+      );
+
+      const updated = await harness.semanticNodeRepository.get(target.id);
+      const mismatchEvent = new StreamReader({
+        dataDir: harness.tempDir,
+      })
+        .tail(20)
+        .find(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            typeof entry.content === "object" &&
+            entry.content !== null &&
+            "hook" in entry.content &&
+            entry.content.hook === "claim_ownership_mismatch_dropped" &&
+            "action" in entry.content &&
+            entry.content.action === "sync_node",
+        );
+
+      expect(updated).toMatchObject({
+        archived: true,
+        confidence: 0.8,
+      });
+      expect(beliefRevisionItems(harness)[0]).toMatchObject({
+        resolution: "archive_node",
+      });
+      expect(mismatchEvent).toBeDefined();
     } finally {
       await harness.cleanup();
     }

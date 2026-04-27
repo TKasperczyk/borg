@@ -53,6 +53,7 @@ type SkillSqlRow = {
   last_split_attempt_at: number | null;
   split_failure_count: number;
   last_split_error: string | null;
+  requires_manual_review: number;
   source_episode_ids: string;
   last_used: number | null;
   last_successful: number | null;
@@ -88,6 +89,7 @@ function rowFromSkill(skill: SkillRecord): SkillSqlRow {
     last_split_attempt_at: skill.last_split_attempt_at ?? null,
     split_failure_count: skill.split_failure_count,
     last_split_error: skill.last_split_error,
+    requires_manual_review: skill.requires_manual_review ? 1 : 0,
     source_episode_ids: serializeJsonValue(skill.source_episode_ids),
     last_used: skill.last_used,
     last_successful: skill.last_successful,
@@ -137,6 +139,10 @@ function skillFromRow(row: Record<string, unknown>): SkillRecord {
       row.last_split_error === null || row.last_split_error === undefined
         ? null
         : String(row.last_split_error),
+    requires_manual_review:
+      row.requires_manual_review === null || row.requires_manual_review === undefined
+        ? false
+        : Number(row.requires_manual_review) !== 0,
     source_episode_ids: parseJsonArray<string>(
       String(row.source_episode_ids ?? "[]"),
       "source_episode_ids",
@@ -371,9 +377,9 @@ export class SkillRepository {
           INSERT INTO skills (
             id, applies_when, approach, status, alpha, beta, attempts, successes, failures,
             alternatives, superseded_by, superseded_at, splitting_at, last_split_attempt_at,
-            split_failure_count, last_split_error, source_episode_ids, last_used,
-            last_successful, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            split_failure_count, last_split_error, requires_manual_review, source_episode_ids,
+            last_used, last_successful, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             applies_when = excluded.applies_when,
             approach = excluded.approach,
@@ -390,6 +396,7 @@ export class SkillRepository {
             last_split_attempt_at = excluded.last_split_attempt_at,
             split_failure_count = excluded.split_failure_count,
             last_split_error = excluded.last_split_error,
+            requires_manual_review = excluded.requires_manual_review,
             source_episode_ids = excluded.source_episode_ids,
             last_used = excluded.last_used,
             last_successful = excluded.last_successful,
@@ -413,6 +420,7 @@ export class SkillRepository {
         row.last_split_attempt_at,
         row.split_failure_count,
         row.last_split_error,
+        row.requires_manual_review,
         row.source_episode_ids,
         row.last_used,
         row.last_successful,
@@ -652,8 +660,10 @@ export class SkillRepository {
     attemptedAt: number;
     error: string;
     claimedAt?: number | null;
+    manualReviewThreshold?: number;
   }): SkillRecord | null {
     const boundedError = input.error.trim().slice(0, 2_000) || "skill split parse failure";
+    const manualReviewThreshold = Math.max(1, input.manualReviewThreshold ?? Number.MAX_SAFE_INTEGER);
 
     if (input.claimedAt === undefined || input.claimedAt === null) {
       this.db
@@ -663,12 +673,22 @@ export class SkillRepository {
             SET
               split_failure_count = split_failure_count + 1,
               last_split_error = ?,
+              requires_manual_review = CASE
+                WHEN split_failure_count + 1 >= ? THEN 1
+                ELSE requires_manual_review
+              END,
               last_split_attempt_at = max(COALESCE(last_split_attempt_at, 0), ?),
               updated_at = ?
             WHERE id = ?
           `,
         )
-        .run(boundedError, input.attemptedAt, input.attemptedAt, input.skillId);
+        .run(
+          boundedError,
+          manualReviewThreshold,
+          input.attemptedAt,
+          input.attemptedAt,
+          input.skillId,
+        );
       return this.get(input.skillId);
     }
 
@@ -679,13 +699,24 @@ export class SkillRepository {
           SET
             split_failure_count = split_failure_count + 1,
             last_split_error = ?,
+            requires_manual_review = CASE
+              WHEN split_failure_count + 1 >= ? THEN 1
+              ELSE requires_manual_review
+            END,
             last_split_attempt_at = max(COALESCE(last_split_attempt_at, 0), ?),
             splitting_at = CASE WHEN splitting_at = ? THEN NULL ELSE splitting_at END,
             updated_at = ?
           WHERE id = ?
         `,
       )
-      .run(boundedError, input.attemptedAt, input.claimedAt, input.attemptedAt, input.skillId);
+      .run(
+        boundedError,
+        manualReviewThreshold,
+        input.attemptedAt,
+        input.claimedAt,
+        input.attemptedAt,
+        input.skillId,
+      );
 
     return this.get(input.skillId);
   }
@@ -942,6 +973,8 @@ export class SkillRepository {
 
         throw error;
       }
+
+      await this.table.remove(`id = ${quoteSqlString(input.skillId)}`);
 
       const supersededOriginal = this.get(input.skillId);
 

@@ -469,6 +469,68 @@ describe("SkillRepository", () => {
     expect(split?.created.map((created) => created.id)).toContain(results[0]?.skill.id);
   });
 
+  it("removes superseded skill vectors so split-heavy corpora return active children", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    const rustContext = deriveProceduralContextKey({
+      problem_kind: "code_debugging",
+      domain_tags: ["rust"],
+      audience_scope: "self",
+    });
+
+    for (let index = 0; index < 30; index += 1) {
+      const skill = await harness.skillRepository.add({
+        applies_when: `Rust lifetime debugging superseded ${index}`,
+        approach: "Compare the borrow checker failure against a known-good ownership pattern.",
+        sourceEpisodes: [episode.id],
+      });
+      harness.skillRepository.restoreContextStats([
+        {
+          skill_id: skill.id,
+          context_key: rustContext,
+          alpha: 8,
+          beta: 1,
+          attempts: 8,
+          successes: 8,
+          failures: 0,
+          last_used: 1_000 + index,
+          last_successful: 1_000 + index,
+          updated_at: 1_000 + index,
+        },
+      ]);
+
+      const split = await harness.skillRepository.supersedeWithSplits({
+        skillId: skill.id,
+        parts: [
+          {
+            applies_when: `Roadmap planning replacement ${index}`,
+            approach: "Compare the roadmap against current project goals.",
+            target_contexts: [rustContext],
+          },
+        ],
+      });
+
+      expect(split?.superseded.status).toBe("superseded");
+    }
+
+    const activeSkills = await Promise.all(
+      Array.from({ length: 3 }, (_, index) =>
+        harness!.skillRepository.add({
+          applies_when: `Rust lifetime debugging active child ${index}`,
+          approach: "Minimize borrow scope and compare against ownership examples.",
+          sourceEpisodes: [episode.id],
+        }),
+      ),
+    );
+
+    const results = await harness.skillRepository.searchByContext("Rust lifetime debugging", 5);
+    const resultIds = results.map((candidate) => candidate.skill.id);
+
+    expect(resultIds).toEqual(expect.arrayContaining(activeSkills.map((skill) => skill.id)));
+    expect(results.some((candidate) => candidate.skill.status === "superseded")).toBe(false);
+  });
+
   it("samples global skill posteriors when context has no stats yet", async () => {
     harness = await createOfflineTestHarness();
     const episode = createEpisodeFixture();

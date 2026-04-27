@@ -9,6 +9,7 @@ import { SuppressionSet } from "../../cognition/attention/index.js";
 import { Reflector } from "../../cognition/reflection/index.js";
 import type { RetrievalConfidence } from "../../retrieval/index.js";
 import { StreamReader } from "../../stream/index.js";
+import { createSkillsListTool } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
@@ -826,7 +827,24 @@ describe("ProceduralSynthesizerProcess", () => {
       status: "active",
       split_failure_count: 3,
       last_split_error: expect.any(String),
+      requires_manual_review: true,
       splitting_at: null,
+    });
+    const tool = createSkillsListTool({
+      listSkills: (limit) => harness!.skillRepository.list(limit),
+    });
+    const toolOutput = await tool.invoke(
+      {
+        limit: 5,
+      },
+      {
+        sessionId: DEFAULT_SESSION_ID,
+        origin: "deliberator",
+      },
+    );
+
+    expect(toolOutput.skills.find((item) => item.id === skill.id)).toMatchObject({
+      requires_manual_review: true,
     });
   });
 

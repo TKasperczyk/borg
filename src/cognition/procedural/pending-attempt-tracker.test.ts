@@ -72,6 +72,7 @@ describe("PendingProceduralAttemptTracker", () => {
         splitting_at: null,
         split_failure_count: 0,
         last_split_error: null,
+        requires_manual_review: false,
         source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
         last_used: null,
         last_successful: null,
