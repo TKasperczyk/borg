@@ -7,7 +7,7 @@ import { createGoalId, type GoalId } from "../../util/ids.js";
 import { toStoredProvenance, type Provenance } from "../common/provenance.js";
 import { type IdentityEventRepository } from "../identity/repository.js";
 
-import { recordIdentityEvent } from "./shared/identity-events.js";
+import { recordIdentityEvent, runIdentityWrite } from "./shared/identity-events.js";
 import { requireProvenance } from "./shared/provenance.js";
 import { mapGoalRow } from "./shared/sql-mapping.js";
 import {
@@ -98,38 +98,40 @@ export class GoalsRepository {
     });
     const storedProvenance = toStoredProvenance(goal.provenance);
 
-    this.db
-      .prepare(
-        `
-          INSERT INTO goals (
-            id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
-            created_at, target_at, provenance_kind, provenance_episode_ids, provenance_process
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-      )
-      .run(
-        goal.id,
-        goal.description,
-        goal.priority,
-        goal.parent_goal_id,
-        goal.status,
-        goal.progress_notes,
-        goal.last_progress_ts,
-        goal.created_at,
-        goal.target_at,
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-      );
-    recordIdentityEvent(this.identityEventRepository, {
-      record_type: "goal",
-      record_id: goal.id,
-      action: "create",
-      old_value: null,
-      new_value: goal,
-      provenance: goal.provenance,
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.db
+        .prepare(
+          `
+            INSERT INTO goals (
+              id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
+              created_at, target_at, provenance_kind, provenance_episode_ids, provenance_process
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          goal.id,
+          goal.description,
+          goal.priority,
+          goal.parent_goal_id,
+          goal.status,
+          goal.progress_notes,
+          goal.last_progress_ts,
+          goal.created_at,
+          goal.target_at,
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+        );
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "goal",
+        record_id: goal.id,
+        action: "create",
+        old_value: null,
+        new_value: goal,
+        provenance: goal.provenance,
+      });
+      return goal;
     });
-    return goal;
   }
 
   list(options: { status?: GoalStatus } = {}): GoalTreeNode[] {
@@ -197,39 +199,42 @@ export class GoalsRepository {
     const parsedStatus = goalStatusSchema.parse(status);
     const parsedProvenance = requireProvenance(provenance, "Goal status update");
     const storedProvenance = toStoredProvenance(parsedProvenance);
-    const result = this.db
-      .prepare(
-        `
-          UPDATE goals
-          SET status = ?, provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?
-          WHERE id = ?
-        `,
-      )
-      .run(
-        parsedStatus,
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        goalId,
-      );
 
-    if (result.changes === 0) {
-      throw new StorageError(`Unknown goal id: ${goalId}`, {
-        code: "GOAL_NOT_FOUND",
-      });
-    }
+    runIdentityWrite(this.identityEventRepository, () => {
+      const result = this.db
+        .prepare(
+          `
+            UPDATE goals
+            SET status = ?, provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          parsedStatus,
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          goalId,
+        );
 
-    recordIdentityEvent(this.identityEventRepository, {
-      record_type: "goal",
-      record_id: goalId,
-      action: "update",
-      old_value: current,
-      new_value: {
-        ...current,
-        status: parsedStatus,
+      if (result.changes === 0) {
+        throw new StorageError(`Unknown goal id: ${goalId}`, {
+          code: "GOAL_NOT_FOUND",
+        });
+      }
+
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "goal",
+        record_id: goalId,
+        action: "update",
+        old_value: current,
+        new_value: {
+          ...current,
+          status: parsedStatus,
+          provenance: parsedProvenance,
+        },
         provenance: parsedProvenance,
-      },
-      provenance: parsedProvenance,
+      });
     });
   }
 
@@ -245,42 +250,45 @@ export class GoalsRepository {
     const parsedProvenance = requireProvenance(provenance, "Goal progress update");
     const storedProvenance = toStoredProvenance(parsedProvenance);
     const nowMs = this.clock.now();
-    const result = this.db
-      .prepare(
-        `
-          UPDATE goals
-          SET progress_notes = ?, last_progress_ts = ?, provenance_kind = ?, provenance_episode_ids = ?,
-              provenance_process = ?
-          WHERE id = ?
-        `,
-      )
-      .run(
-        progressNotes,
-        nowMs,
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        goalId,
-      );
 
-    if (result.changes === 0) {
-      throw new StorageError(`Unknown goal id: ${goalId}`, {
-        code: "GOAL_NOT_FOUND",
-      });
-    }
+    runIdentityWrite(this.identityEventRepository, () => {
+      const result = this.db
+        .prepare(
+          `
+            UPDATE goals
+            SET progress_notes = ?, last_progress_ts = ?, provenance_kind = ?, provenance_episode_ids = ?,
+                provenance_process = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          progressNotes,
+          nowMs,
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          goalId,
+        );
 
-    recordIdentityEvent(this.identityEventRepository, {
-      record_type: "goal",
-      record_id: goalId,
-      action: "update_progress",
-      old_value: current,
-      new_value: {
-        ...current,
-        progress_notes: progressNotes,
-        last_progress_ts: nowMs,
+      if (result.changes === 0) {
+        throw new StorageError(`Unknown goal id: ${goalId}`, {
+          code: "GOAL_NOT_FOUND",
+        });
+      }
+
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "goal",
+        record_id: goalId,
+        action: "update_progress",
+        old_value: current,
+        new_value: {
+          ...current,
+          progress_notes: progressNotes,
+          last_progress_ts: nowMs,
+          provenance: parsedProvenance,
+        },
         provenance: parsedProvenance,
-      },
-      provenance: parsedProvenance,
+      });
     });
   }
 
@@ -323,43 +331,45 @@ export class GoalsRepository {
     });
     const storedProvenance = toStoredProvenance(next.provenance);
 
-    this.db
-      .prepare(
-        `
-          UPDATE goals
-          SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
-              last_progress_ts = ?, target_at = ?, provenance_kind = ?, provenance_episode_ids = ?,
-              provenance_process = ?
-          WHERE id = ?
-        `,
-      )
-      .run(
-        next.description,
-        next.priority,
-        next.parent_goal_id,
-        next.status,
-        next.progress_notes,
-        next.last_progress_ts,
-        next.target_at,
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        goalId,
-      );
+    runIdentityWrite(this.identityEventRepository, () => {
+      this.db
+        .prepare(
+          `
+            UPDATE goals
+            SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
+                last_progress_ts = ?, target_at = ?, provenance_kind = ?, provenance_episode_ids = ?,
+                provenance_process = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          next.description,
+          next.priority,
+          next.parent_goal_id,
+          next.status,
+          next.progress_notes,
+          next.last_progress_ts,
+          next.target_at,
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          goalId,
+        );
 
-    recordIdentityEvent(this.identityEventRepository, {
-      record_type: "goal",
-      record_id: goalId,
-      action:
-        options.reviewItemId === null || options.reviewItemId === undefined
-          ? "update"
-          : "correction_apply",
-      old_value: current,
-      new_value: next,
-      reason: options.reason ?? null,
-      provenance: parsedProvenance,
-      review_item_id: options.reviewItemId ?? null,
-      overwrite_without_review: options.overwriteWithoutReview === true,
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "goal",
+        record_id: goalId,
+        action:
+          options.reviewItemId === null || options.reviewItemId === undefined
+            ? "update"
+            : "correction_apply",
+        old_value: current,
+        new_value: next,
+        reason: options.reason ?? null,
+        provenance: parsedProvenance,
+        review_item_id: options.reviewItemId ?? null,
+        overwrite_without_review: options.overwriteWithoutReview === true,
+      });
     });
 
     return next;

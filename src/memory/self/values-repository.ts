@@ -18,7 +18,7 @@ import {
   EVIDENCE_EPISODE_LIMIT,
   summarizeEvidence,
 } from "./shared/evidence.js";
-import { recordIdentityEvent } from "./shared/identity-events.js";
+import { recordIdentityEvent, runIdentityWrite } from "./shared/identity-events.js";
 import {
   getPromotionMetadataFromEvents,
   resolveValueInitialState,
@@ -189,61 +189,63 @@ export class ValuesRepository {
     });
     const storedProvenance = toStoredProvenance(value.provenance);
 
-    this.db
-      .prepare(
-        `
-          INSERT INTO "values" (
-            id, label, description, priority, created_at, last_affirmed, provenance_kind,
-            provenance_episode_ids, provenance_process, state, established_at, confidence,
-            last_tested_at, last_contradicted_at, support_count, contradiction_count, evidence_episode_ids
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-      )
-      .run(
-        value.id,
-        value.label,
-        value.description,
-        value.priority,
-        value.created_at,
-        value.last_affirmed,
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        value.state,
-        value.established_at,
-        value.confidence,
-        value.last_tested_at,
-        value.last_contradicted_at,
-        value.support_count,
-        value.contradiction_count,
-        JSON.stringify(value.evidence_episode_ids),
-      );
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.db
+        .prepare(
+          `
+            INSERT INTO "values" (
+              id, label, description, priority, created_at, last_affirmed, provenance_kind,
+              provenance_episode_ids, provenance_process, state, established_at, confidence,
+              last_tested_at, last_contradicted_at, support_count, contradiction_count, evidence_episode_ids
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          value.id,
+          value.label,
+          value.description,
+          value.priority,
+          value.created_at,
+          value.last_affirmed,
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          value.state,
+          value.established_at,
+          value.confidence,
+          value.last_tested_at,
+          value.last_contradicted_at,
+          value.support_count,
+          value.contradiction_count,
+          JSON.stringify(value.evidence_episode_ids),
+        );
 
-    if (isEpisodeProvenance(provenance)) {
-      this.insertReinforcementEvent(value.id, provenance, createdAt);
+      if (isEpisodeProvenance(provenance)) {
+        this.insertReinforcementEvent(value.id, provenance, createdAt);
 
-      for (const episodeId of new Set(provenance.episode_ids)) {
-        this.db
-          .prepare(
-            `
-              INSERT OR IGNORE INTO value_sources (value_id, episode_id)
-              VALUES (?, ?)
-            `,
-          )
-          .run(value.id, episodeId);
+        for (const episodeId of new Set(provenance.episode_ids)) {
+          this.db
+            .prepare(
+              `
+                INSERT OR IGNORE INTO value_sources (value_id, episode_id)
+                VALUES (?, ?)
+              `,
+            )
+            .run(value.id, episodeId);
+        }
       }
-    }
 
-    recordIdentityEvent(this.identityEventRepository, {
-      record_type: "value",
-      record_id: value.id,
-      action: "create",
-      old_value: null,
-      new_value: value,
-      provenance: value.provenance,
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "value",
+        record_id: value.id,
+        action: "create",
+        old_value: null,
+        new_value: value,
+        provenance: value.provenance,
+      });
+
+      return value;
     });
-
-    return value;
   }
 
   list(): ValueRecord[] {
@@ -290,93 +292,96 @@ export class ValuesRepository {
     }
 
     const parsedProvenance = requireProvenance(provenance, "Value reinforcement");
-    this.insertReinforcementEvent(valueId, parsedProvenance, timestamp);
 
-    if (isEpisodeProvenance(parsedProvenance)) {
-      for (const episodeId of new Set(parsedProvenance.episode_ids)) {
-        this.db
-          .prepare(
-            `
-              INSERT OR IGNORE INTO value_sources (value_id, episode_id)
-              VALUES (?, ?)
-            `,
-          )
-          .run(valueId, episodeId);
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.insertReinforcementEvent(valueId, parsedProvenance, timestamp);
+
+      if (isEpisodeProvenance(parsedProvenance)) {
+        for (const episodeId of new Set(parsedProvenance.episode_ids)) {
+          this.db
+            .prepare(
+              `
+                INSERT OR IGNORE INTO value_sources (value_id, episode_id)
+                VALUES (?, ?)
+              `,
+            )
+            .run(valueId, episodeId);
+        }
       }
-    }
 
-    const promotion = this.getPromotionMetadata(valueId);
-    const evidence = summarizeEvidence(
-      this.listReinforcementEvents(valueId),
-      this.listContradictionEvents(valueId),
-    );
-    const isPromoted = current.state !== "established" && promotion.state === "established";
-    const nextState = current.state === "established" ? current.state : promotion.state;
-    const nextProvenance: Provenance =
-      isPromoted && promotion.promotionProvenance !== null
-        ? promotion.promotionProvenance
-        : current.provenance.kind === "episodes" && isEpisodeProvenance(parsedProvenance)
-          ? {
-              kind: "episodes",
-              episode_ids: [
-                ...new Set([...current.provenance.episode_ids, ...parsedProvenance.episode_ids]),
-              ],
-            }
-          : isEpisodeProvenance(parsedProvenance)
-            ? parsedProvenance
-            : current.provenance;
-    const next = valueSchema.parse({
-      ...current,
-      provenance: nextProvenance,
-      state: nextState,
-      established_at:
-        current.state === "established" ? current.established_at : promotion.established_at,
-      confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
-      last_tested_at: evidence.lastTestedAt,
-      last_contradicted_at: evidence.lastContradictedAt,
-      support_count: evidence.supportCount,
-      contradiction_count: evidence.contradictionCount,
-      evidence_episode_ids: evidence.evidenceEpisodeIds,
-    });
-    const storedProvenance = toStoredProvenance(next.provenance);
-
-    this.db
-      .prepare(
-        `
-          UPDATE "values"
-          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, state = ?, established_at = ?,
-              confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
-              contradiction_count = ?, evidence_episode_ids = ?
-          WHERE id = ?
-        `,
-      )
-      .run(
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        next.state,
-        next.established_at,
-        next.confidence,
-        next.last_tested_at,
-        next.last_contradicted_at,
-        next.support_count,
-        next.contradiction_count,
-        JSON.stringify(next.evidence_episode_ids),
-        valueId,
+      const promotion = this.getPromotionMetadata(valueId);
+      const evidence = summarizeEvidence(
+        this.listReinforcementEvents(valueId),
+        this.listContradictionEvents(valueId),
       );
-
-    if (current.state !== "established" && next.state === "established") {
-      recordIdentityEvent(this.identityEventRepository, {
-        record_type: "value",
-        record_id: valueId,
-        action: "promote",
-        old_value: current,
-        new_value: next,
-        provenance: parsedProvenance,
+      const isPromoted = current.state !== "established" && promotion.state === "established";
+      const nextState = current.state === "established" ? current.state : promotion.state;
+      const nextProvenance: Provenance =
+        isPromoted && promotion.promotionProvenance !== null
+          ? promotion.promotionProvenance
+          : current.provenance.kind === "episodes" && isEpisodeProvenance(parsedProvenance)
+            ? {
+                kind: "episodes",
+                episode_ids: [
+                  ...new Set([...current.provenance.episode_ids, ...parsedProvenance.episode_ids]),
+                ],
+              }
+            : isEpisodeProvenance(parsedProvenance)
+              ? parsedProvenance
+              : current.provenance;
+      const next = valueSchema.parse({
+        ...current,
+        provenance: nextProvenance,
+        state: nextState,
+        established_at:
+          current.state === "established" ? current.established_at : promotion.established_at,
+        confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
+        last_tested_at: evidence.lastTestedAt,
+        last_contradicted_at: evidence.lastContradictedAt,
+        support_count: evidence.supportCount,
+        contradiction_count: evidence.contradictionCount,
+        evidence_episode_ids: evidence.evidenceEpisodeIds,
       });
-    }
+      const storedProvenance = toStoredProvenance(next.provenance);
 
-    return next;
+      this.db
+        .prepare(
+          `
+            UPDATE "values"
+            SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, state = ?, established_at = ?,
+                confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+                contradiction_count = ?, evidence_episode_ids = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          next.state,
+          next.established_at,
+          next.confidence,
+          next.last_tested_at,
+          next.last_contradicted_at,
+          next.support_count,
+          next.contradiction_count,
+          JSON.stringify(next.evidence_episode_ids),
+          valueId,
+        );
+
+      if (current.state !== "established" && next.state === "established") {
+        recordIdentityEvent(this.identityEventRepository, {
+          record_type: "value",
+          record_id: valueId,
+          action: "promote",
+          old_value: current,
+          new_value: next,
+          provenance: parsedProvenance,
+        });
+      }
+
+      return next;
+    });
   }
 
   recordContradiction(input: {
@@ -397,52 +402,54 @@ export class ValuesRepository {
     const provenance = requireProvenance(input.provenance, "Value contradiction");
     const weight = Number.isFinite(input.weight) && input.weight !== undefined ? input.weight : 1;
     const normalizedWeight = clamp(weight, 0, Number.POSITIVE_INFINITY);
-    this.insertContradictionEvent(input.valueId, provenance, normalizedWeight, timestamp);
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.insertContradictionEvent(input.valueId, provenance, normalizedWeight, timestamp);
 
-    const evidence = summarizeEvidence(
-      this.listReinforcementEvents(input.valueId),
-      this.listContradictionEvents(input.valueId),
-    );
-    const next = valueSchema.parse({
-      ...current,
-      confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
-      last_tested_at: evidence.lastTestedAt,
-      last_contradicted_at: evidence.lastContradictedAt,
-      support_count: evidence.supportCount,
-      contradiction_count: evidence.contradictionCount,
-      evidence_episode_ids: evidence.evidenceEpisodeIds,
-    });
-
-    this.db
-      .prepare(
-        `
-          UPDATE "values"
-          SET confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
-              contradiction_count = ?, evidence_episode_ids = ?
-          WHERE id = ?
-        `,
-      )
-      .run(
-        next.confidence,
-        next.last_tested_at,
-        next.last_contradicted_at,
-        next.support_count,
-        next.contradiction_count,
-        JSON.stringify(next.evidence_episode_ids),
-        input.valueId,
+      const evidence = summarizeEvidence(
+        this.listReinforcementEvents(input.valueId),
+        this.listContradictionEvents(input.valueId),
       );
+      const next = valueSchema.parse({
+        ...current,
+        confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
+        last_tested_at: evidence.lastTestedAt,
+        last_contradicted_at: evidence.lastContradictedAt,
+        support_count: evidence.supportCount,
+        contradiction_count: evidence.contradictionCount,
+        evidence_episode_ids: evidence.evidenceEpisodeIds,
+      });
 
-    recordIdentityEvent(this.identityEventRepository, {
-      record_type: "value",
-      record_id: input.valueId,
-      action: "contradict",
-      old_value: current,
-      new_value: next,
-      provenance,
-      ts: timestamp,
+      this.db
+        .prepare(
+          `
+            UPDATE "values"
+            SET confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+                contradiction_count = ?, evidence_episode_ids = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          next.confidence,
+          next.last_tested_at,
+          next.last_contradicted_at,
+          next.support_count,
+          next.contradiction_count,
+          JSON.stringify(next.evidence_episode_ids),
+          input.valueId,
+        );
+
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "value",
+        record_id: input.valueId,
+        action: "contradict",
+        old_value: current,
+        new_value: next,
+        provenance,
+        ts: timestamp,
+      });
+
+      return next;
     });
-
-    return next;
   }
 
   bindToEpisode(valueId: ValueId, episodeId: EpisodeId): void {
@@ -483,52 +490,54 @@ export class ValuesRepository {
     });
     const storedProvenance = toStoredProvenance(next.provenance);
 
-    this.db
-      .prepare(
-        `
-          UPDATE "values"
-          SET label = ?, description = ?, priority = ?, last_affirmed = ?, state = ?, established_at = ?,
-              confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
-              contradiction_count = ?, evidence_episode_ids = ?, provenance_kind = ?,
-              provenance_episode_ids = ?, provenance_process = ?
-          WHERE id = ?
-        `,
-      )
-      .run(
-        next.label,
-        next.description,
-        next.priority,
-        next.last_affirmed,
-        next.state,
-        next.established_at,
-        next.confidence,
-        next.last_tested_at,
-        next.last_contradicted_at,
-        next.support_count,
-        next.contradiction_count,
-        JSON.stringify(next.evidence_episode_ids),
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        valueId,
-      );
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.db
+        .prepare(
+          `
+            UPDATE "values"
+            SET label = ?, description = ?, priority = ?, last_affirmed = ?, state = ?, established_at = ?,
+                confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+                contradiction_count = ?, evidence_episode_ids = ?, provenance_kind = ?,
+                provenance_episode_ids = ?, provenance_process = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          next.label,
+          next.description,
+          next.priority,
+          next.last_affirmed,
+          next.state,
+          next.established_at,
+          next.confidence,
+          next.last_tested_at,
+          next.last_contradicted_at,
+          next.support_count,
+          next.contradiction_count,
+          JSON.stringify(next.evidence_episode_ids),
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          valueId,
+        );
 
-    recordIdentityEvent(this.identityEventRepository, {
-      record_type: "value",
-      record_id: valueId,
-      action:
-        options.reviewItemId === null || options.reviewItemId === undefined
-          ? "update"
-          : "correction_apply",
-      old_value: current,
-      new_value: next,
-      reason: options.reason ?? null,
-      provenance: parsedProvenance,
-      review_item_id: options.reviewItemId ?? null,
-      overwrite_without_review: options.overwriteWithoutReview === true,
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "value",
+        record_id: valueId,
+        action:
+          options.reviewItemId === null || options.reviewItemId === undefined
+            ? "update"
+            : "correction_apply",
+        old_value: current,
+        new_value: next,
+        reason: options.reason ?? null,
+        provenance: parsedProvenance,
+        review_item_id: options.reviewItemId ?? null,
+        overwrite_without_review: options.overwriteWithoutReview === true,
+      });
+
+      return next;
     });
-
-    return next;
   }
 
   listReinforcementEvents(valueId: ValueId): ValueReinforcementEvent[] {

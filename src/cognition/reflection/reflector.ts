@@ -45,6 +45,10 @@ export type ReflectionContext = {
   selectedSkillId?: SkillId | null;
   audienceEntityId?: EntityId | null;
   suppressionSet: SuppressionSet;
+  // Sprint 56: stream entries persisted by the just-completed turn
+  // (user_msg + agent_msg). Used as evidence for trait demonstrations
+  // since the episode hasn't been extracted yet at reflection time.
+  currentTurnStreamEntryIds?: readonly StreamEntryId[];
 };
 
 const SURFACED_TTL_TURNS = 4;
@@ -89,6 +93,11 @@ const reflectionOutputSchema = z.object({
           .boolean()
           .describe(
             "True only when evidence is grounded in an actual user signal about the pending attempt, not assistant self-narration.",
+          ),
+        skill_actually_applied: z
+          .boolean()
+          .describe(
+            "True only if the prior assistant turn's response actually executed the attempt's approach_summary. False if the model ignored or substituted a different approach. Drives whether the skill posterior is credited or blamed.",
           ),
       }),
     )
@@ -362,7 +371,12 @@ export class Reflector {
       };
     }
 
-    const traitEvidenceEpisodeIds = referencedEpisodeIds;
+    // Sprint 56: trait evidence is the assistant turn that demonstrated
+    // the trait, not arbitrary memories the planner referenced. The
+    // episode hasn't been extracted yet, so capture the current turn's
+    // stream entries; the orchestrator resolves them to the extracted
+    // episode at consumption time.
+    const traitEvidenceStreamIds = context.currentTurnStreamEntryIds ?? [];
     const traitDemonstration = selectTraitDemonstration(reflectionOutput.trait_demonstrations);
 
     if (
@@ -372,14 +386,15 @@ export class Reflector {
       context.origin !== "autonomous" &&
       nextWorkingMemory.pending_trait_attribution === null &&
       traitDemonstration !== null &&
-      traitEvidenceEpisodeIds.length > 0
+      traitEvidenceStreamIds.length > 0
     ) {
       nextWorkingMemory = {
         ...nextWorkingMemory,
         pending_trait_attribution: {
           trait_label: traitDemonstration.trait_label,
           strength_delta: traitDemonstration.strength_delta,
-          source_episode_ids: traitEvidenceEpisodeIds,
+          source_stream_entry_ids: [...traitEvidenceStreamIds],
+          source_episode_ids: [],
           turn_completed_ts: this.clock.now(),
           audience_entity_id: context.audienceEntityId ?? null,
         },
@@ -387,8 +402,13 @@ export class Reflector {
     }
 
     const pendingProceduralAttempts = context.workingMemory.pending_procedural_attempts ?? [];
+    // Sprint 56: only user turns produce procedural feedback. An
+    // autonomous wake's "user message" is internal and can't legitimately
+    // grade what the prior user turn attempted; skipping here prevents
+    // self-grading from retiring real attempts or biasing posteriors.
+    const isAutonomousTurn = context.origin === "autonomous";
 
-    if (pendingProceduralAttempts.length > 0) {
+    if (pendingProceduralAttempts.length > 0 && !isAutonomousTurn) {
       const retiredTurnCounters = new Set<number>();
       const outcomesByTurn = new Map(
         reflectionOutput.procedural_outcomes.map((outcome) => [
@@ -426,8 +446,13 @@ export class Reflector {
               attempt.selected_skill_id !== null &&
               (outcome.classification === "success" ||
                 outcome.classification === "failure") &&
+              outcome.skill_actually_applied &&
               context.skillRepository !== undefined
             ) {
+              // Only credit/blame the posterior when the model actually
+              // executed the suggested approach. If it ignored the skill,
+              // the user's success or failure feedback isn't evidence
+              // about the skill itself.
               context.skillRepository.recordOutcome(
                 attempt.selected_skill_id,
                 outcome.classification === "success",
@@ -492,6 +517,7 @@ export class Reflector {
         "If pending_procedural_attempts has any entries, emit a procedural_outcome per attempt the current turn provides evidence about. Identify each by its attempt_turn_counter and classify success, failure, or unclear.",
         "Omit attempts the current turn says nothing about -- they will stay pending and may be graded on a later turn.",
         "For every procedural_outcome, set grounded=false when the evidence is assistant self-narration rather than an actual user signal.",
+        "For every procedural_outcome, set skill_actually_applied=true only if the prior assistant response visibly executed the attempt's approach_summary. If the response ignored or substituted a different approach, set it false so the skill posterior is not credited or blamed for an outcome it didn't earn.",
         "Do not infer procedural success or failure from the assistant response, confidence, phrasing, or intentions.",
         "Emit trait_demonstrations only for traits actually shown by the completed assistant turn. Do not map from cognitive mode labels.",
         "Use strength_delta 0.01-0.1 for grounded trait demonstrations, and omit weak or generic traits.",

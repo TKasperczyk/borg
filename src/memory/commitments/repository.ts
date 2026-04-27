@@ -20,6 +20,7 @@ import {
   toStoredProvenance,
 } from "../common/provenance.js";
 import { IdentityEventRepository } from "../identity/repository.js";
+import { runIdentityWrite } from "../self/shared/identity-events.js";
 import {
   commitmentPatchSchema,
   commitmentSchema,
@@ -287,24 +288,26 @@ export class CommitmentRepository {
 
     const update = this.db.prepare("UPDATE commitments SET expired_at = ? WHERE id = ?");
 
-    for (const row of rows) {
-      const current = mapCommitmentRow(row);
-      const expiredAt = current.expires_at ?? nowMs;
-      update.run(expiredAt, current.id);
-      const next: CommitmentRecord = {
-        ...current,
-        expired_at: expiredAt,
-      };
-      this.identityEventRepository?.record({
-        record_type: "commitment",
-        record_id: current.id,
-        action: "expire",
-        old_value: current,
-        new_value: next,
-        provenance: current.provenance,
-        ts: expiredAt,
-      });
-    }
+    runIdentityWrite(this.identityEventRepository, () => {
+      for (const row of rows) {
+        const current = mapCommitmentRow(row);
+        const expiredAt = current.expires_at ?? nowMs;
+        update.run(expiredAt, current.id);
+        const next: CommitmentRecord = {
+          ...current,
+          expired_at: expiredAt,
+        };
+        this.identityEventRepository?.record({
+          record_type: "commitment",
+          record_id: current.id,
+          action: "expire",
+          old_value: current,
+          new_value: next,
+          provenance: current.provenance,
+          ts: expiredAt,
+        });
+      }
+    });
   }
 
   add(input: {
@@ -347,54 +350,56 @@ export class CommitmentRepository {
     });
     const storedProvenance = toStoredProvenance(record.provenance);
 
-    this.db
-      .prepare(
-        `
-          INSERT INTO commitments (
-            id, type, directive, priority, made_to_entity, restricted_audience, about_entity,
-            source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
-            created_at, expires_at, expired_at, revoked_at, revoked_reason,
-            revoke_provenance_kind, revoke_provenance_episode_ids, revoke_provenance_process,
-            superseded_by
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-      )
-      .run(
-        record.id,
-        record.type,
-        record.directive,
-        record.priority,
-        record.made_to_entity,
-        record.restricted_audience,
-        record.about_entity,
-        serializeJsonValue(
-          record.provenance.kind === "episodes" ? record.provenance.episode_ids : [],
-        ),
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        record.created_at,
-        record.expires_at,
-        record.expired_at,
-        record.revoked_at,
-        record.revoked_reason,
-        null,
-        null,
-        null,
-        record.superseded_by,
-      );
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.db
+        .prepare(
+          `
+            INSERT INTO commitments (
+              id, type, directive, priority, made_to_entity, restricted_audience, about_entity,
+              source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
+              created_at, expires_at, expired_at, revoked_at, revoked_reason,
+              revoke_provenance_kind, revoke_provenance_episode_ids, revoke_provenance_process,
+              superseded_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          record.id,
+          record.type,
+          record.directive,
+          record.priority,
+          record.made_to_entity,
+          record.restricted_audience,
+          record.about_entity,
+          serializeJsonValue(
+            record.provenance.kind === "episodes" ? record.provenance.episode_ids : [],
+          ),
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          record.created_at,
+          record.expires_at,
+          record.expired_at,
+          record.revoked_at,
+          record.revoked_reason,
+          null,
+          null,
+          null,
+          record.superseded_by,
+        );
 
-    this.identityEventRepository?.record({
-      record_type: "commitment",
-      record_id: record.id,
-      action: "create",
-      old_value: null,
-      new_value: record,
-      provenance: record.provenance,
-      ts: record.created_at,
+      this.identityEventRepository?.record({
+        record_type: "commitment",
+        record_id: record.id,
+        action: "create",
+        old_value: null,
+        new_value: record,
+        provenance: record.provenance,
+        ts: record.created_at,
+      });
+
+      return record;
     });
-
-    return record;
   }
 
   get(id: CommitmentId): CommitmentRecord | null {
@@ -466,40 +471,43 @@ export class CommitmentRepository {
     const parsedReason = reason.trim();
     const parsedProvenance = provenanceSchema.parse(provenance);
     const storedProvenance = toStoredProvenance(parsedProvenance);
-    this.db
-      .prepare(
-        `
-          UPDATE commitments
-          SET revoked_at = ?, revoked_reason = ?, revoke_provenance_kind = ?,
-              revoke_provenance_episode_ids = ?, revoke_provenance_process = ?
-          WHERE id = ?
-        `,
-      )
-      .run(
-        timestamp,
-        parsedReason,
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        id,
-      );
-    const next = {
-      ...current,
-      revoked_at: timestamp,
-      revoked_reason: parsedReason,
-      revoke_provenance: parsedProvenance,
-    };
-    this.identityEventRepository?.record({
-      record_type: "commitment",
-      record_id: id,
-      action: "revoke",
-      old_value: current,
-      new_value: next,
-      reason: parsedReason,
-      provenance: parsedProvenance,
-      ts: timestamp,
+
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.db
+        .prepare(
+          `
+            UPDATE commitments
+            SET revoked_at = ?, revoked_reason = ?, revoke_provenance_kind = ?,
+                revoke_provenance_episode_ids = ?, revoke_provenance_process = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          timestamp,
+          parsedReason,
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          id,
+        );
+      const next = {
+        ...current,
+        revoked_at: timestamp,
+        revoked_reason: parsedReason,
+        revoke_provenance: parsedProvenance,
+      };
+      this.identityEventRepository?.record({
+        record_type: "commitment",
+        record_id: id,
+        action: "revoke",
+        old_value: current,
+        new_value: next,
+        reason: parsedReason,
+        provenance: parsedProvenance,
+        ts: timestamp,
+      });
+      return next;
     });
-    return next;
   }
 
   supersede(id: CommitmentId, nextId: CommitmentId): CommitmentRecord | null {
@@ -509,20 +517,22 @@ export class CommitmentRepository {
       return null;
     }
 
-    this.db.prepare("UPDATE commitments SET superseded_by = ? WHERE id = ?").run(nextId, id);
-    const next = {
-      ...current,
-      superseded_by: nextId,
-    };
-    this.identityEventRepository?.record({
-      record_type: "commitment",
-      record_id: id,
-      action: "update",
-      old_value: current,
-      new_value: next,
-      provenance: current.provenance,
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.db.prepare("UPDATE commitments SET superseded_by = ? WHERE id = ?").run(nextId, id);
+      const next = {
+        ...current,
+        superseded_by: nextId,
+      };
+      this.identityEventRepository?.record({
+        record_type: "commitment",
+        record_id: id,
+        action: "update",
+        old_value: current,
+        new_value: next,
+        provenance: current.provenance,
+      });
+      return next;
     });
-    return next;
   }
 
   /**
@@ -557,56 +567,60 @@ export class CommitmentRepository {
     const storedRevokeProvenance =
       next.revoke_provenance === null ? null : toStoredProvenance(next.revoke_provenance);
 
-    this.db
-      .prepare(
-        `
-          UPDATE commitments
-          SET type = ?, directive = ?, priority = ?, made_to_entity = ?, restricted_audience = ?,
-              about_entity = ?, source_episode_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
-              provenance_process = ?, expires_at = ?, expired_at = ?, revoked_at = ?, revoked_reason = ?,
-              revoke_provenance_kind = ?, revoke_provenance_episode_ids = ?, revoke_provenance_process = ?,
-              superseded_by = ?
-          WHERE id = ?
-        `,
-      )
-      .run(
-        next.type,
-        next.directive,
-        next.priority,
-        next.made_to_entity,
-        next.restricted_audience,
-        next.about_entity,
-        serializeJsonValue(isEpisodeProvenance(next.provenance) ? next.provenance.episode_ids : []),
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        next.expires_at,
-        next.expired_at,
-        next.revoked_at,
-        next.revoked_reason,
-        storedRevokeProvenance?.provenance_kind ?? null,
-        storedRevokeProvenance?.provenance_episode_ids ?? null,
-        storedRevokeProvenance?.provenance_process ?? null,
-        next.superseded_by,
-        id,
-      );
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.db
+        .prepare(
+          `
+            UPDATE commitments
+            SET type = ?, directive = ?, priority = ?, made_to_entity = ?, restricted_audience = ?,
+                about_entity = ?, source_episode_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
+                provenance_process = ?, expires_at = ?, expired_at = ?, revoked_at = ?, revoked_reason = ?,
+                revoke_provenance_kind = ?, revoke_provenance_episode_ids = ?, revoke_provenance_process = ?,
+                superseded_by = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          next.type,
+          next.directive,
+          next.priority,
+          next.made_to_entity,
+          next.restricted_audience,
+          next.about_entity,
+          serializeJsonValue(
+            isEpisodeProvenance(next.provenance) ? next.provenance.episode_ids : [],
+          ),
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          next.expires_at,
+          next.expired_at,
+          next.revoked_at,
+          next.revoked_reason,
+          storedRevokeProvenance?.provenance_kind ?? null,
+          storedRevokeProvenance?.provenance_episode_ids ?? null,
+          storedRevokeProvenance?.provenance_process ?? null,
+          next.superseded_by,
+          id,
+        );
 
-    this.identityEventRepository?.record({
-      record_type: "commitment",
-      record_id: id,
-      action:
-        options.reviewItemId === null || options.reviewItemId === undefined
-          ? "update"
-          : "correction_apply",
-      old_value: current,
-      new_value: next,
-      reason: options.reason ?? null,
-      provenance: parsedProvenance,
-      review_item_id: options.reviewItemId ?? null,
-      overwrite_without_review: options.overwriteWithoutReview === true,
+      this.identityEventRepository?.record({
+        record_type: "commitment",
+        record_id: id,
+        action:
+          options.reviewItemId === null || options.reviewItemId === undefined
+            ? "update"
+            : "correction_apply",
+        old_value: current,
+        new_value: next,
+        reason: options.reason ?? null,
+        provenance: parsedProvenance,
+        review_item_id: options.reviewItemId ?? null,
+        overwrite_without_review: options.overwriteWithoutReview === true,
+      });
+
+      return next;
     });
-
-    return next;
   }
 
   getApplicable(options: CommitmentApplicableOptions = {}): CommitmentRecord[] {

@@ -32,6 +32,7 @@ function createReflectionResponse(
     evidence: string;
     grounded?: boolean;
     attempt_turn_counter?: number;
+    skill_actually_applied?: boolean;
   }> = [],
   intentUpdates: Array<{
     description: string;
@@ -60,6 +61,9 @@ function createReflectionResponse(
             grounded: true,
             // Default to grading the turn-1 attempt unless the test specifies.
             attempt_turn_counter: 1,
+            // Sprint 56: default to crediting the selected skill when the
+            // test does not explicitly stub otherwise.
+            skill_actually_applied: true,
             ...outcome,
           })),
           trait_demonstrations: traitDemonstrations,
@@ -1735,7 +1739,7 @@ describe("reflector", () => {
     expect(harness.skillRepository.get(skill.id)?.attempts).toBe(0);
   });
 
-  it("uses planner-referenced retrieved episodes for S2 trait evidence", async () => {
+  it("anchors S2 trait demonstrations to the current turn's stream entries", async () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
@@ -1844,18 +1848,25 @@ describe("reflector", () => {
         traitsRepository: harness.traitsRepository,
         openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
+        currentTurnStreamEntryIds: [
+          "strm_aaaaaaaaaaaaaaaa" as never,
+          "strm_bbbbbbbbbbbbbbbb" as never,
+        ],
       },
       harness.streamWriter,
     );
 
+    // Sprint 56: trait demonstration evidence is the current turn that
+    // displayed the trait, not arbitrary memories the planner referenced.
     expect(reflected.pending_trait_attribution).toMatchObject({
       trait_label: "engaged",
       strength_delta: 0.07,
-      source_episode_ids: [episodeA.id, episodeB.id],
+      source_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"],
+      source_episode_ids: [],
     });
   });
 
-  it("does not attach S2 trait evidence when the planner referenced no episodes", async () => {
+  it("does not attach S2 trait evidence when no current-turn stream entries are provided", async () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
@@ -1959,7 +1970,7 @@ describe("reflector", () => {
     expect(reflected.pending_trait_attribution).toBeNull();
   });
 
-  it("filters S2 planner-referenced trait evidence to episodes retrieved this turn", async () => {
+  it("anchors S2 trait evidence to current-turn stream entries even when planner referenced episodes", async () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
@@ -2055,18 +2066,22 @@ describe("reflector", () => {
         traitsRepository: harness.traitsRepository,
         openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
+        currentTurnStreamEntryIds: ["strm_aaaaaaaaaaaaaaaa" as never],
       },
       harness.streamWriter,
     );
 
+    // Sprint 56: planner-referenced episodes are no longer the source of
+    // trait evidence; the current turn that demonstrated the trait is.
     expect(reflected.pending_trait_attribution).toMatchObject({
       trait_label: "focused",
       strength_delta: 0.04,
-      source_episode_ids: [episode.id],
+      source_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa"],
+      source_episode_ids: [],
     });
   });
 
-  it("does not reinforce traits when no episodes were retrieved", async () => {
+  it("does not reinforce traits when no current-turn stream entries are available", async () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);
 
@@ -2274,6 +2289,10 @@ describe("reflector", () => {
         traitsRepository: harness.traitsRepository,
         openQuestionsRepository: harness.openQuestionsRepository,
         suppressionSet: new SuppressionSet(1),
+        currentTurnStreamEntryIds: [
+          "strm_aaaaaaaaaaaaaaaa" as never,
+          "strm_bbbbbbbbbbbbbbbb" as never,
+        ],
       },
       harness.streamWriter,
     );
@@ -2282,7 +2301,8 @@ describe("reflector", () => {
     expect(reflected.pending_trait_attribution).toMatchObject({
       trait_label: "patient",
       strength_delta: 0.06,
-      source_episode_ids: [episode.id],
+      source_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"],
+      source_episode_ids: [],
       audience_entity_id: null,
     });
   });

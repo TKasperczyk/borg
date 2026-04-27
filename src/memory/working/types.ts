@@ -72,7 +72,13 @@ export const pendingSocialAttributionSchema = z.object({
 export const pendingTraitAttributionSchema = z.object({
   trait_label: z.string().min(1),
   strength_delta: z.number().min(0).max(0.2).default(0.05),
-  source_episode_ids: z.array(workingEpisodeIdSchema).min(1),
+  // Sprint 56: trait demonstration is evidenced by the assistant turn
+  // that actually displayed it -- captured here as the user_msg/agent_msg
+  // stream entries from the demonstrating turn. The orchestrator resolves
+  // these to the extracted episode at consumption time. The legacy
+  // source_episode_ids field stays nullable for older persisted state.
+  source_stream_entry_ids: z.array(workingStreamEntryIdSchema).default([]),
+  source_episode_ids: z.array(workingEpisodeIdSchema).default([]),
   turn_completed_ts: z.number().finite(),
   audience_entity_id: workingEntityIdSchema.nullable(),
 });

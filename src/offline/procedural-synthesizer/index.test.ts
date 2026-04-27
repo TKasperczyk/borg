@@ -80,6 +80,7 @@ function createReflectionResponse(evidence: string) {
               classification: "success",
               evidence,
               grounded: true,
+              skill_actually_applied: true,
             },
           ],
         },

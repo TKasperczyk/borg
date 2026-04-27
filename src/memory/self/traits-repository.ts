@@ -12,7 +12,7 @@ import {
 import { type IdentityEventRepository } from "../identity/repository.js";
 
 import { clamp, computeConfidence, summarizeEvidence } from "./shared/evidence.js";
-import { recordIdentityEvent } from "./shared/identity-events.js";
+import { recordIdentityEvent, runIdentityWrite } from "./shared/identity-events.js";
 import {
   getPromotionMetadataFromEvents,
   TRAIT_PROMOTION_THRESHOLD,
@@ -194,96 +194,99 @@ export class TraitsRepository {
         WHERE id = ?
       `,
     );
-    const apply = this.db.transaction(() => {
-      insertOrUpdate.run(
-        traitId,
-        input.label,
-        nextStrength,
-        timestamp,
-        existing?.last_decayed ?? null,
-        storedAggregateProvenance.provenance_kind,
-        storedAggregateProvenance.provenance_episode_ids,
-        storedAggregateProvenance.provenance_process,
-        currentState.state,
-        currentState.established_at,
-        current === null ? computeConfidence(0, 0) : current.confidence,
-        current?.last_tested_at ?? null,
-        current?.last_contradicted_at ?? null,
-        current?.support_count ?? 0,
-        current?.contradiction_count ?? 0,
-        JSON.stringify(currentEvidenceEpisodeIds),
-      );
-      insertEvent.run(
-        traitId,
-        input.delta,
-        timestamp,
-        storedEventProvenance.provenance_kind,
-        storedEventProvenance.provenance_episode_ids,
-        storedEventProvenance.provenance_process,
-      );
-      const promotion = this.getPromotionMetadata(traitId);
-      const evidence = summarizeEvidence(
-        this.listReinforcementEvents(traitId),
-        this.listContradictionEvents(traitId),
-      );
-      const nextState = currentState.state === "established" ? currentState.state : promotion.state;
-      const finalProvenance =
-        currentState.state !== "established" && promotion.state === "established"
-          ? (promotion.promotionProvenance ?? aggregateProvenance)
-          : aggregateProvenance;
-      const storedFinalProvenance = toStoredProvenance(finalProvenance);
-      updatePromotion.run(
-        nextState,
-        currentState.state === "established"
-          ? currentState.established_at
-          : promotion.established_at,
-        storedFinalProvenance.provenance_kind,
-        storedFinalProvenance.provenance_episode_ids,
-        storedFinalProvenance.provenance_process,
-        computeConfidence(evidence.supportCount, evidence.contradictionCount),
-        evidence.lastTestedAt,
-        evidence.lastContradictedAt,
-        evidence.supportCount,
-        evidence.contradictionCount,
-        JSON.stringify(evidence.evidenceEpisodeIds),
-        traitId,
-      );
+    return runIdentityWrite(this.identityEventRepository, () => {
+      const apply = this.db.transaction(() => {
+        insertOrUpdate.run(
+          traitId,
+          input.label,
+          nextStrength,
+          timestamp,
+          existing?.last_decayed ?? null,
+          storedAggregateProvenance.provenance_kind,
+          storedAggregateProvenance.provenance_episode_ids,
+          storedAggregateProvenance.provenance_process,
+          currentState.state,
+          currentState.established_at,
+          current === null ? computeConfidence(0, 0) : current.confidence,
+          current?.last_tested_at ?? null,
+          current?.last_contradicted_at ?? null,
+          current?.support_count ?? 0,
+          current?.contradiction_count ?? 0,
+          JSON.stringify(currentEvidenceEpisodeIds),
+        );
+        insertEvent.run(
+          traitId,
+          input.delta,
+          timestamp,
+          storedEventProvenance.provenance_kind,
+          storedEventProvenance.provenance_episode_ids,
+          storedEventProvenance.provenance_process,
+        );
+        const promotion = this.getPromotionMetadata(traitId);
+        const evidence = summarizeEvidence(
+          this.listReinforcementEvents(traitId),
+          this.listContradictionEvents(traitId),
+        );
+        const nextState =
+          currentState.state === "established" ? currentState.state : promotion.state;
+        const finalProvenance =
+          currentState.state !== "established" && promotion.state === "established"
+            ? (promotion.promotionProvenance ?? aggregateProvenance)
+            : aggregateProvenance;
+        const storedFinalProvenance = toStoredProvenance(finalProvenance);
+        updatePromotion.run(
+          nextState,
+          currentState.state === "established"
+            ? currentState.established_at
+            : promotion.established_at,
+          storedFinalProvenance.provenance_kind,
+          storedFinalProvenance.provenance_episode_ids,
+          storedFinalProvenance.provenance_process,
+          computeConfidence(evidence.supportCount, evidence.contradictionCount),
+          evidence.lastTestedAt,
+          evidence.lastContradictedAt,
+          evidence.supportCount,
+          evidence.contradictionCount,
+          JSON.stringify(evidence.evidenceEpisodeIds),
+          traitId,
+        );
+      });
+      apply();
+
+      const next = this.get(traitId);
+
+      if (next === null) {
+        throw new StorageError(`Failed to reload trait after reinforcement: ${traitId}`, {
+          code: "TRAIT_NOT_FOUND",
+        });
+      }
+
+      if (current === null) {
+        recordIdentityEvent(this.identityEventRepository, {
+          record_type: "trait",
+          record_id: traitId,
+          action: "create",
+          old_value: null,
+          new_value: next,
+          provenance,
+          ts: timestamp,
+        });
+      }
+
+      if (current !== null && current.state !== "established" && next.state === "established") {
+        recordIdentityEvent(this.identityEventRepository, {
+          record_type: "trait",
+          record_id: traitId,
+          action: "promote",
+          old_value: current,
+          new_value: next,
+          provenance,
+          ts: timestamp,
+        });
+      }
+
+      return next;
     });
-    apply();
-
-    const next = this.get(traitId);
-
-    if (next === null) {
-      throw new StorageError(`Failed to reload trait after reinforcement: ${traitId}`, {
-        code: "TRAIT_NOT_FOUND",
-      });
-    }
-
-    if (current === null) {
-      recordIdentityEvent(this.identityEventRepository, {
-        record_type: "trait",
-        record_id: traitId,
-        action: "create",
-        old_value: null,
-        new_value: next,
-        provenance,
-        ts: timestamp,
-      });
-    }
-
-    if (current !== null && current.state !== "established" && next.state === "established") {
-      recordIdentityEvent(this.identityEventRepository, {
-        record_type: "trait",
-        record_id: traitId,
-        action: "promote",
-        old_value: current,
-        new_value: next,
-        provenance,
-        ts: timestamp,
-      });
-    }
-
-    return next;
   }
 
   recordContradiction(input: {
@@ -304,57 +307,60 @@ export class TraitsRepository {
     const timestamp = input.timestamp ?? this.clock.now();
     const provenance = requireProvenance(input.provenance, "Trait contradiction");
     const weight = Number.isFinite(input.weight) && input.weight !== undefined ? input.weight : 1;
-    this.insertContradictionEvent(
-      current.id,
-      provenance,
-      clamp(weight, 0, Number.POSITIVE_INFINITY),
-      timestamp,
-    );
 
-    const evidence = summarizeEvidence(
-      this.listReinforcementEvents(current.id),
-      this.listContradictionEvents(current.id),
-    );
-    const next = traitSchema.parse({
-      ...current,
-      confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
-      last_tested_at: evidence.lastTestedAt,
-      last_contradicted_at: evidence.lastContradictedAt,
-      support_count: evidence.supportCount,
-      contradiction_count: evidence.contradictionCount,
-      evidence_episode_ids: evidence.evidenceEpisodeIds,
-    });
-
-    this.db
-      .prepare(
-        `
-          UPDATE traits
-          SET confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
-              contradiction_count = ?, evidence_episode_ids = ?
-          WHERE id = ?
-        `,
-      )
-      .run(
-        next.confidence,
-        next.last_tested_at,
-        next.last_contradicted_at,
-        next.support_count,
-        next.contradiction_count,
-        JSON.stringify(next.evidence_episode_ids),
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.insertContradictionEvent(
         current.id,
+        provenance,
+        clamp(weight, 0, Number.POSITIVE_INFINITY),
+        timestamp,
       );
 
-    recordIdentityEvent(this.identityEventRepository, {
-      record_type: "trait",
-      record_id: current.id,
-      action: "contradict",
-      old_value: current,
-      new_value: next,
-      provenance,
-      ts: timestamp,
-    });
+      const evidence = summarizeEvidence(
+        this.listReinforcementEvents(current.id),
+        this.listContradictionEvents(current.id),
+      );
+      const next = traitSchema.parse({
+        ...current,
+        confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
+        last_tested_at: evidence.lastTestedAt,
+        last_contradicted_at: evidence.lastContradictedAt,
+        support_count: evidence.supportCount,
+        contradiction_count: evidence.contradictionCount,
+        evidence_episode_ids: evidence.evidenceEpisodeIds,
+      });
 
-    return next;
+      this.db
+        .prepare(
+          `
+            UPDATE traits
+            SET confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+                contradiction_count = ?, evidence_episode_ids = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          next.confidence,
+          next.last_tested_at,
+          next.last_contradicted_at,
+          next.support_count,
+          next.contradiction_count,
+          JSON.stringify(next.evidence_episode_ids),
+          current.id,
+        );
+
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "trait",
+        record_id: current.id,
+        action: "contradict",
+        old_value: current,
+        new_value: next,
+        provenance,
+        ts: timestamp,
+      });
+
+      return next;
+    });
   }
 
   decay(
@@ -462,52 +468,54 @@ export class TraitsRepository {
     });
     const storedProvenance = toStoredProvenance(next.provenance);
 
-    this.db
-      .prepare(
-        `
-          UPDATE traits
-          SET label = ?, strength = ?, last_reinforced = ?, last_decayed = ?, state = ?, established_at = ?,
-              confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
-              contradiction_count = ?, evidence_episode_ids = ?, provenance_kind = ?,
-              provenance_episode_ids = ?, provenance_process = ?
-          WHERE id = ?
-        `,
-      )
-      .run(
-        next.label,
-        next.strength,
-        next.last_reinforced,
-        next.last_decayed,
-        next.state,
-        next.established_at,
-        next.confidence,
-        next.last_tested_at,
-        next.last_contradicted_at,
-        next.support_count,
-        next.contradiction_count,
-        JSON.stringify(next.evidence_episode_ids),
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        traitId,
-      );
+    return runIdentityWrite(this.identityEventRepository, () => {
+      this.db
+        .prepare(
+          `
+            UPDATE traits
+            SET label = ?, strength = ?, last_reinforced = ?, last_decayed = ?, state = ?, established_at = ?,
+                confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
+                contradiction_count = ?, evidence_episode_ids = ?, provenance_kind = ?,
+                provenance_episode_ids = ?, provenance_process = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          next.label,
+          next.strength,
+          next.last_reinforced,
+          next.last_decayed,
+          next.state,
+          next.established_at,
+          next.confidence,
+          next.last_tested_at,
+          next.last_contradicted_at,
+          next.support_count,
+          next.contradiction_count,
+          JSON.stringify(next.evidence_episode_ids),
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          traitId,
+        );
 
-    recordIdentityEvent(this.identityEventRepository, {
-      record_type: "trait",
-      record_id: traitId,
-      action:
-        options.reviewItemId === null || options.reviewItemId === undefined
-          ? "update"
-          : "correction_apply",
-      old_value: current,
-      new_value: next,
-      reason: options.reason ?? null,
-      provenance: parsedProvenance,
-      review_item_id: options.reviewItemId ?? null,
-      overwrite_without_review: options.overwriteWithoutReview === true,
+      recordIdentityEvent(this.identityEventRepository, {
+        record_type: "trait",
+        record_id: traitId,
+        action:
+          options.reviewItemId === null || options.reviewItemId === undefined
+            ? "update"
+            : "correction_apply",
+        old_value: current,
+        new_value: next,
+        reason: options.reason ?? null,
+        provenance: parsedProvenance,
+        review_item_id: options.reviewItemId ?? null,
+        overwrite_without_review: options.overwriteWithoutReview === true,
+      });
+
+      return next;
     });
-
-    return next;
   }
 
   remove(traitId: TraitId): boolean {

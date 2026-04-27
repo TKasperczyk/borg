@@ -49,7 +49,7 @@ import { StreamReader, StreamWriter } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import { ConfigError, SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
-import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "../util/ids.js";
 import { NOOP_TRACER, type TurnTracer } from "./tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
 import { SessionLock } from "./session-lock.js";
@@ -316,6 +316,22 @@ export class TurnOrchestrator {
     await appendInternalFailureEvent(streamWriter, hook, error);
   }
 
+  private async resolveTraitEvidenceEpisodes(
+    attribution: NonNullable<WorkingMemory["pending_trait_attribution"]>,
+  ): Promise<EpisodeId[]> {
+    if (attribution.source_stream_entry_ids.length > 0) {
+      const resolved = await this.options.episodicRepository.findBySourceStreamIds(
+        attribution.source_stream_entry_ids,
+      );
+
+      if (resolved !== null) {
+        return [resolved.id];
+      }
+    }
+
+    return [...attribution.source_episode_ids];
+  }
+
   async run(input: TurnInput): Promise<TurnResult> {
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
     const isSelfAudience = input.audience === "self";
@@ -472,23 +488,37 @@ export class TurnOrchestrator {
                 current_audience_entity_id: audienceEntityId,
                 turn_completed_ts: pendingTraitAttribution.turn_completed_ts,
                 source_episode_ids: pendingTraitAttribution.source_episode_ids,
+                source_stream_entry_ids: pendingTraitAttribution.source_stream_entry_ids,
               },
             });
             pendingTraitAttribution = null;
           } else if (
             perception.affectiveSignal.valence > TRAIT_ATTRIBUTION_POSITIVE_VALENCE_THRESHOLD
           ) {
+            // Sprint 56: resolve the demonstrating turn's stream entries
+            // to the extracted episode. If extraction hasn't completed
+            // yet, keep the attribution pending so a later turn can
+            // reinforce once an episode exists; TTL still expires it
+            // eventually. Legacy state may carry source_episode_ids
+            // directly. Resolution is wrapped so a repository failure
+            // can't take down the user turn.
             try {
-              this.options.traitsRepository.reinforce({
-                label: pendingTraitAttribution.trait_label,
-                delta: pendingTraitAttribution.strength_delta,
-                provenance: {
-                  kind: "episodes",
-                  episode_ids: pendingTraitAttribution.source_episode_ids,
-                },
-                timestamp: nowMs,
-              });
-              pendingTraitAttribution = null;
+              const evidenceEpisodeIds = await this.resolveTraitEvidenceEpisodes(
+                pendingTraitAttribution,
+              );
+
+              if (evidenceEpisodeIds.length > 0) {
+                this.options.traitsRepository.reinforce({
+                  label: pendingTraitAttribution.trait_label,
+                  delta: pendingTraitAttribution.strength_delta,
+                  provenance: {
+                    kind: "episodes",
+                    episode_ids: evidenceEpisodeIds,
+                  },
+                  timestamp: nowMs,
+                });
+                pendingTraitAttribution = null;
+              }
             } catch (error) {
               await this.appendHookFailureEvent(streamWriter, "trait_update", error);
             }
@@ -778,6 +808,7 @@ export class TurnOrchestrator {
             selectedSkillId: selectedSkill?.skill.id ?? null,
             audienceEntityId,
             suppressionSet,
+            currentTurnStreamEntryIds: [persistedUserEntry.id, persistedAgentEntry.id],
           },
           streamWriter,
         );
