@@ -8,15 +8,16 @@ import { formatAutonomyTriggerContext, type AutonomyTriggerContext } from "./aut
 import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
 import { detectAffectiveSignal } from "./perception/affective-signal.js";
-import { Perceiver } from "./perception/index.js";
+import { PerceptionGateway } from "./perception/gateway.js";
+import { TurnOpeningPersistence } from "./persistence/turn-opening.js";
 import { PendingProceduralAttemptTracker } from "./procedural/pending-attempt-tracker.js";
-import { TurnContextCompiler, type RecencyWindow } from "./recency/index.js";
+import { TurnContextCompiler } from "./recency/index.js";
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import { Reflector } from "./reflection/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { LLMClient } from "../llm/index.js";
-import { createNeutralAffectiveSignal, MoodRepository } from "../memory/affective/index.js";
+import { MoodRepository } from "../memory/affective/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import {
   ProceduralEvidenceRepository,
@@ -40,7 +41,7 @@ import { EpisodicRepository } from "../memory/episodic/index.js";
 import { type IdentityService } from "../memory/identity/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
-import { ConfigError, SessionBusyError } from "../util/errors.js";
+import { SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import { NOOP_TRACER, type TurnTracer } from "./tracing/tracer.js";
@@ -144,10 +145,10 @@ export type TurnOrchestratorOptions = {
 
 export class TurnOrchestrator {
   private readonly clock: Clock;
-  private readonly turnContextCompiler: TurnContextCompiler;
-  private readonly createStreamReader: (sessionId: SessionId) => StreamReader;
   private readonly sessionLock: SessionLock;
   private readonly tracer: TurnTracer;
+  private readonly perceptionGateway: PerceptionGateway;
+  private readonly turnOpeningPersistence: TurnOpeningPersistence;
   private readonly attributionLifecycleService: AttributionLifecycleService;
   private readonly turnRetrievalCoordinator: TurnRetrievalCoordinator;
   private readonly commitmentGuardRunner: CommitmentGuardRunner;
@@ -156,19 +157,31 @@ export class TurnOrchestrator {
   constructor(private readonly options: TurnOrchestratorOptions) {
     this.clock = options.clock ?? new SystemClock();
     this.tracer = options.tracer ?? NOOP_TRACER;
-    this.turnContextCompiler = options.turnContextCompiler ?? new TurnContextCompiler();
+    const turnContextCompiler = options.turnContextCompiler ?? new TurnContextCompiler();
     this.sessionLock =
       options.sessionLock ??
       new SessionLock({
         dataDir: options.config.dataDir,
       });
-    this.createStreamReader =
+    const createStreamReader =
       options.createStreamReader ??
       ((sessionId) =>
         new StreamReader({
           dataDir: options.config.dataDir,
           sessionId,
         }));
+    this.perceptionGateway = new PerceptionGateway({
+      config: options.config,
+      llmFactory: options.llmFactory,
+      clock: this.clock,
+      tracer: this.tracer,
+      getAffectiveSignalDetector: () => options.affectiveSignalDetector,
+      turnContextCompiler,
+      createStreamReader,
+    });
+    this.turnOpeningPersistence = new TurnOpeningPersistence({
+      workingMemoryStore: options.workingMemoryStore,
+    });
     this.attributionLifecycleService = new AttributionLifecycleService({
       socialRepository: options.socialRepository,
       traitsRepository: options.traitsRepository,
@@ -214,18 +227,6 @@ export class TurnOrchestrator {
       currentPeriod,
       recentGrowthMarkers,
     };
-  }
-
-  private getOptionalLlmClient(): LLMClient | undefined {
-    try {
-      return this.options.llmFactory();
-    } catch (error) {
-      if (error instanceof ConfigError) {
-        return undefined;
-      }
-
-      throw error;
-    }
   }
 
   private async appendFailureEvent(
@@ -276,26 +277,9 @@ export class TurnOrchestrator {
     try {
       try {
         let workingMemory = this.options.workingMemoryStore.load(sessionId);
-        const optionalPerceptionLlm =
-          this.options.config.perception.useLlmFallback === true
-            ? this.getOptionalLlmClient()
-            : undefined;
-        const perceiver = new Perceiver({
-          llmClient: optionalPerceptionLlm,
-          model: this.options.config.anthropic.models.background,
-          useLlmFallback: this.options.config.perception.useLlmFallback,
-          modeWhenLlmAbsent: this.options.config.perception.modeWhenLlmAbsent,
-          affectiveUseLlmFallback: this.options.config.affective.useLlmFallback,
-          // Temporal cue uses the same LLM gate as mode detection: both rely
-          // on the perception-bound LLM client. Turning off perception LLM
-          // fallback turns off temporal extraction too (degrades to null).
-          temporalCueUseLlmFallback: this.options.config.perception.useLlmFallback,
-          detectAffectiveSignal: this.options.affectiveSignalDetector,
-          onAffectiveError: (error) =>
-            this.appendHookFailureEvent(streamWriter, "affective_extraction", error),
-          clock: this.clock,
-          tracer: this.tracer,
+        const turnPerception = this.perceptionGateway.beginTurn({
           turnId,
+          onHookFailure: (hook, error) => this.appendHookFailureEvent(streamWriter, hook, error),
         });
         const llmClient = this.options.llmFactory();
         const selfSnapshot = this.buildSelfSnapshot();
@@ -314,42 +298,17 @@ export class TurnOrchestrator {
           audienceEntityId === null
             ? null
             : this.options.socialRepository.getProfile(audienceEntityId);
-        // Compile recent dialogue BEFORE appending the current user message,
-        // so the window contains prior turns only. The compiler guarantees
-        // the window starts with a user role and ends with an assistant
-        // role, making it safe to concatenate with a trailing
-        // {role:"user", content: currentUserMessage}.
-        const recencyWindow: RecencyWindow = this.turnContextCompiler.compile(
-          this.createStreamReader(sessionId),
-          {
-            includeSelfTurns: isSelfAudience,
-          },
-        );
-        if (this.tracer.enabled) {
-          this.tracer.emit("recency_compiled", {
-            turnId,
-            messageCount: recencyWindow.messages.length,
-            sourceEntryIds: recencyWindow.messages.map((message) => message.stream_entry_id),
-          });
-        }
-        const recentHistoryStrings = recencyWindow.messages.map(
-          (message) => `${message.role}: ${message.content}`,
-        );
-        const perception = await perceiver.perceive(cognitionInput, recentHistoryStrings);
-        const workingMood =
-          input.origin === "autonomous"
-            ? (workingMemory.mood ?? createNeutralAffectiveSignal())
-            : perception.affectiveSignal;
-
-        workingMemory = {
-          ...workingMemory,
-          turn_counter: workingMemory.turn_counter + 1,
-          current_focus: perception.entities[0] ?? (cognitionInput.slice(0, 80) || null),
-          hot_entities: perception.entities,
-          mood: workingMood,
-          mode: perception.mode,
-          updated_at: this.clock.now(),
-        };
+        const perceptionResult = await turnPerception.perceive({
+          sessionId,
+          isSelfAudience,
+          origin: input.origin,
+          cognitionInput,
+          workingMemory,
+        });
+        const perception = perceptionResult.perception;
+        const recencyWindow = perceptionResult.recencyWindow;
+        const workingMood = perceptionResult.workingMood;
+        workingMemory = perceptionResult.workingMemory;
 
         const suppressionSet = SuppressionSet.fromEntries(
           workingMemory.suppressed,
@@ -369,32 +328,19 @@ export class TurnOrchestrator {
         const pendingTraitAttribution = attributionResult.pendingTraitAttribution;
         audienceProfile = attributionResult.audienceProfile;
 
-        const userEntry = {
-          kind: "user_msg",
-          content: input.userMessage,
-          ...(input.audience === undefined ? {} : { audience: input.audience }),
-        } satisfies Parameters<StreamWriter["append"]>[0];
-
-        const persistedUserEntry = await streamWriter.append(userEntry);
-
-        workingMemory = this.options.workingMemoryStore.save({
-          ...workingMemory,
-          pending_social_attribution: pendingSocialAttribution,
-          pending_trait_attribution: pendingTraitAttribution,
-          suppressed: suppressionSet.snapshot(),
-          updated_at: this.clock.now(),
+        const openingPersistence = await this.turnOpeningPersistence.persist({
+          streamWriter,
+          userMessage: input.userMessage,
+          audience: input.audience,
+          workingMemory,
+          pendingSocialAttribution,
+          pendingTraitAttribution,
+          suppressionSet,
+          perception,
+          now: () => this.clock.now(),
         });
-
-        await streamWriter.append({
-          kind: "perception",
-          content: {
-            mode: perception.mode,
-            entities: perception.entities,
-            temporalCue: perception.temporalCue,
-            affectiveSignal: perception.affectiveSignal,
-          },
-          ...(input.audience === undefined ? {} : { audience: input.audience }),
-        });
+        const persistedUserEntry = openingPersistence.persistedUserEntry;
+        workingMemory = openingPersistence.workingMemory;
         const retrievalContext = await this.turnRetrievalCoordinator.coordinate({
           sessionId,
           turnId,
