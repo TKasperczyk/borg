@@ -7,9 +7,42 @@ import {
   type AffectiveSignal,
 } from "../../memory/affective/index.js";
 import { detectAffectiveSignal } from "./affective-signal.js";
-import { EntityExtractor } from "./entity-extractor.js";
+import { EntityExtractor, extractEntitiesHeuristically } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
 import { detectTemporalCue } from "./temporal-cue.js";
+
+export type PerceptionClassifierName = "entity_extractor" | "mode_detector";
+
+export type PerceptionClassifierFailure = {
+  classifier: PerceptionClassifierName;
+  error: unknown;
+};
+
+export type PerceptionClassifierFailureObserver = (
+  failure: PerceptionClassifierFailure,
+) => Promise<void> | void;
+
+export async function runPerceptionClassifierSafely<T>(input: {
+  classifier: PerceptionClassifierName;
+  run: () => Promise<T> | T;
+  fallback: () => Promise<T> | T;
+  onFailure?: PerceptionClassifierFailureObserver;
+}): Promise<T> {
+  try {
+    return await input.run();
+  } catch (error) {
+    try {
+      await input.onFailure?.({
+        classifier: input.classifier,
+        error,
+      });
+    } catch {
+      // Best-effort degraded-mode logging only.
+    }
+
+    return input.fallback();
+  }
+}
 
 export type PerceiverOptions = {
   llmClient?: LLMClient;
@@ -27,6 +60,7 @@ export type PerceiverOptions = {
   clock?: Clock;
   detectAffectiveSignal?: typeof detectAffectiveSignal;
   onAffectiveError?: (error: unknown) => Promise<void> | void;
+  onClassifierFailure?: PerceptionClassifierFailureObserver;
   tracer?: TurnTracer;
   turnId?: string;
   /**
@@ -48,8 +82,10 @@ export class Perceiver {
   private readonly temporalCueUseLlmFallback: boolean;
   private readonly detectAffectiveSignal: typeof detectAffectiveSignal;
   private readonly onAffectiveError?: (error: unknown) => Promise<void> | void;
+  private readonly onClassifierFailure?: PerceptionClassifierFailureObserver;
   private readonly tracer: TurnTracer;
   private readonly turnId?: string;
+  private readonly modeWhenLlmAbsent: CognitiveMode;
 
   constructor(options: PerceiverOptions = {}) {
     this.clock = options.clock ?? new SystemClock();
@@ -59,8 +95,10 @@ export class Perceiver {
     this.temporalCueUseLlmFallback = options.temporalCueUseLlmFallback ?? true;
     this.detectAffectiveSignal = options.detectAffectiveSignal ?? detectAffectiveSignal;
     this.onAffectiveError = options.onAffectiveError;
+    this.onClassifierFailure = options.onClassifierFailure;
     this.tracer = options.tracer ?? NOOP_TRACER;
     this.turnId = options.turnId;
+    this.modeWhenLlmAbsent = options.modeWhenLlmAbsent ?? "idle";
     this.entityExtractor = new EntityExtractor({
       llmClient: options.llmClient,
       model: options.model,
@@ -70,7 +108,7 @@ export class Perceiver {
       llmClient: options.llmClient,
       model: options.model,
       useLlmFallback: options.useLlmFallback,
-      defaultMode: options.modeWhenLlmAbsent,
+      defaultMode: this.modeWhenLlmAbsent,
     });
   }
 
@@ -105,8 +143,18 @@ export class Perceiver {
 
     const nowMs = this.clock.now();
     const [entities, mode, affectiveSignal, temporalCue] = await Promise.all([
-      this.entityExtractor.extractEntities(text),
-      this.modeDetector.detectMode(text, recentHistory),
+      runPerceptionClassifierSafely({
+        classifier: "entity_extractor",
+        run: () => this.entityExtractor.extractEntities(text),
+        fallback: () => extractEntitiesHeuristically(text),
+        onFailure: this.onClassifierFailure,
+      }),
+      runPerceptionClassifierSafely({
+        classifier: "mode_detector",
+        run: () => this.modeDetector.detectMode(text, recentHistory),
+        fallback: () => this.modeWhenLlmAbsent,
+        onFailure: this.onClassifierFailure,
+      }),
       this.detectAffectiveSignalSafely(text, recentHistory),
       // Temporal cue extraction is now LLM-backed; degrades to null when
       // no LLM client is configured. Runs in parallel with the rest of

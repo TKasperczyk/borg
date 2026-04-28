@@ -1,16 +1,114 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { EntityExtractor, extractEntitiesHeuristically } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
-import { Perceiver } from "./perceive.js";
+import { Perceiver, runPerceptionClassifierSafely } from "./perceive.js";
 import { detectTemporalCue } from "./temporal-cue.js";
 
 const ENTITY_TOOL_NAME = "EmitEntityExtraction";
 const MODE_TOOL_NAME = "EmitModeDetection";
 
+function invalidEntityResponse() {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_entity",
+        name: ENTITY_TOOL_NAME,
+        input: { entities: [1] },
+      },
+    ],
+  };
+}
+
+function invalidModeResponse() {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_mode",
+        name: MODE_TOOL_NAME,
+        input: { mode: "unknown" },
+      },
+    ],
+  };
+}
+
+function entityResponse(entities: readonly string[]) {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_entity",
+        name: ENTITY_TOOL_NAME,
+        input: { entities },
+      },
+    ],
+  };
+}
+
+function modeResponse(mode: string) {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_mode",
+        name: MODE_TOOL_NAME,
+        input: { mode },
+      },
+    ],
+  };
+}
+
 describe("perception", () => {
+  it("returns classifier results without notifying on the safe-wrapper success path", async () => {
+    const onFailure = vi.fn();
+
+    const result = await runPerceptionClassifierSafely({
+      classifier: "mode_detector",
+      run: async () => "reflective",
+      fallback: () => "idle",
+      onFailure,
+    });
+
+    expect(result).toBe("reflective");
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it("returns the fallback and notifies on the safe-wrapper failure path", async () => {
+    const error = new Error("classifier exploded");
+    const onFailure = vi.fn();
+
+    const result = await runPerceptionClassifierSafely({
+      classifier: "entity_extractor",
+      run: async () => {
+        throw error;
+      },
+      fallback: () => ["Atlas"],
+      onFailure,
+    });
+
+    expect(result).toEqual(["Atlas"]);
+    expect(onFailure).toHaveBeenCalledWith({
+      classifier: "entity_extractor",
+      error,
+    });
+  });
+
   it("extracts entities with heuristics", () => {
     expect(
       extractEntitiesHeuristically(
@@ -143,6 +241,119 @@ describe("perception", () => {
       "bicycles",
     ]);
     expect(llm.requests).toHaveLength(1);
+  });
+
+  it("falls back to the configured neutral mode when mode detection throws", async () => {
+    const onClassifierFailure = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [entityResponse(["Atlas"]), invalidModeResponse()],
+    });
+    const perceiver = new Perceiver({
+      llmClient: llm,
+      model: "haiku",
+      affectiveUseLlmFallback: false,
+      temporalCueUseLlmFallback: false,
+      modeWhenLlmAbsent: "relational",
+      onClassifierFailure,
+    });
+
+    const perceived = await perceiver.perceive("plain lower text");
+
+    expect(perceived.mode).toBe("relational");
+    expect(perceived.entities).toEqual(["Atlas"]);
+    expect(onClassifierFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        classifier: "mode_detector",
+        error: expect.any(Error),
+      }),
+    );
+  });
+
+  it("falls back to heuristic entities when entity extraction throws", async () => {
+    const onClassifierFailure = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [invalidEntityResponse(), modeResponse("problem_solving")],
+    });
+    const perceiver = new Perceiver({
+      llmClient: llm,
+      model: "haiku",
+      affectiveUseLlmFallback: false,
+      temporalCueUseLlmFallback: false,
+      onClassifierFailure,
+    });
+
+    const perceived = await perceiver.perceive(
+      'Talk to @alice about "Project Atlas" with Jane Doe.',
+    );
+
+    expect(perceived.entities).toEqual(["@alice", "Project Atlas", "Jane Doe"]);
+    expect(perceived.mode).toBe("problem_solving");
+    expect(onClassifierFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        classifier: "entity_extractor",
+        error: expect.any(Error),
+      }),
+    );
+  });
+
+  it("degrades mode and entities independently when both classifiers throw", async () => {
+    const onClassifierFailure = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [invalidEntityResponse(), invalidModeResponse()],
+    });
+    const perceiver = new Perceiver({
+      llmClient: llm,
+      model: "haiku",
+      affectiveUseLlmFallback: false,
+      temporalCueUseLlmFallback: false,
+      modeWhenLlmAbsent: "idle",
+      onClassifierFailure,
+    });
+
+    const perceived = await perceiver.perceive('Meet @alice about "Project Atlas".');
+
+    expect(perceived.entities).toEqual(["@alice", "Project Atlas"]);
+    expect(perceived.mode).toBe("idle");
+    expect(onClassifierFailure).toHaveBeenCalledTimes(2);
+    expect(onClassifierFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        classifier: "entity_extractor",
+        error: expect.any(Error),
+      }),
+    );
+    expect(onClassifierFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        classifier: "mode_detector",
+        error: expect.any(Error),
+      }),
+    );
+  });
+
+  it("keeps degraded perception structurally identical to successful perception", async () => {
+    const successful = await new Perceiver({
+      llmClient: new FakeLLMClient({
+        responses: [entityResponse(["Atlas"]), modeResponse("reflective")],
+      }),
+      model: "haiku",
+      affectiveUseLlmFallback: false,
+      temporalCueUseLlmFallback: false,
+    }).perceive("plain lower text");
+    const degraded = await new Perceiver({
+      llmClient: new FakeLLMClient({
+        responses: [invalidEntityResponse(), invalidModeResponse()],
+      }),
+      model: "haiku",
+      affectiveUseLlmFallback: false,
+      temporalCueUseLlmFallback: false,
+      modeWhenLlmAbsent: "idle",
+    }).perceive("plain lower text");
+
+    expect(Object.keys(degraded).sort()).toEqual(Object.keys(successful).sort());
+    expect({
+      ...degraded,
+      entities: successful.entities,
+      mode: successful.mode,
+    }).toEqual(successful);
   });
 
   it("produces a perception result with null temporal cue when no LLM is configured", async () => {

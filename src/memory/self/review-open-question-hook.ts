@@ -100,11 +100,13 @@ export async function appendInternalFailureEvent(
   streamWriter: StreamWriter,
   hook: string,
   error: unknown,
+  details?: Record<string, unknown>,
 ): Promise<void> {
   try {
     await streamWriter.append({
       kind: "internal_event",
       content: {
+        ...details,
         hook,
         error: formatHookError(error),
       },

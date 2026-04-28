@@ -22,6 +22,9 @@ import { resolveBorgConfig } from "./borg/storage-setup.js";
 import { Borg } from "./borg.js";
 
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
+const ENTITY_TOOL_NAME = "EmitEntityExtraction";
+const MODE_TOOL_NAME = "EmitModeDetection";
+const TEMPORAL_TOOL_NAME = "EmitTemporalCue";
 
 function createTurnPlanResponse(referencedEpisodeIds: string[] = []) {
   return {
@@ -94,6 +97,54 @@ function createEmptyReflectionResponse() {
           trait_demonstrations: [],
           intent_updates: [],
         },
+      },
+    ],
+  };
+}
+
+function createInvalidEntityClassifierResponse() {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_entity",
+        name: ENTITY_TOOL_NAME,
+        input: { entities: [1] },
+      },
+    ],
+  };
+}
+
+function createInvalidModeClassifierResponse() {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_mode",
+        name: MODE_TOOL_NAME,
+        input: { mode: "unknown" },
+      },
+    ],
+  };
+}
+
+function createNoTemporalCueResponse() {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_temporal",
+        name: TEMPORAL_TOOL_NAME,
+        input: { has_cue: false },
       },
     ],
   };
@@ -3900,6 +3951,94 @@ describe("Borg", () => {
             kind: "internal_event",
             content: expect.objectContaining({
               hook: "affective_extraction",
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("logs internal events when perception classifiers degrade", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: true,
+          modeWhenLlmAbsent: "idle",
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      }),
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createInvalidEntityClassifierResponse(),
+          createInvalidModeClassifierResponse(),
+          createNoTemporalCueResponse(),
+          {
+            text: "The turn still completed.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          createEmptyReflectionResponse(),
+        ],
+      }),
+    });
+
+    try {
+      const result = await borg.turn({
+        userMessage: 'Talk to @alice about "Project Atlas".',
+      });
+
+      expect(result.response).toContain("still completed");
+      expect(borg.workmem.load()).toMatchObject({
+        mode: "idle",
+        hot_entities: ["@alice", "Project Atlas"],
+      });
+      expect(borg.stream.tail(10)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "internal_event",
+            content: expect.objectContaining({
+              hook: "perception_classifier",
+              classifier: "entity_extractor",
+              error: expect.stringContaining("Entity fallback returned invalid payload"),
+            }),
+          }),
+          expect.objectContaining({
+            kind: "internal_event",
+            content: expect.objectContaining({
+              hook: "perception_classifier",
+              classifier: "mode_detector",
+              error: expect.stringContaining("Mode fallback returned invalid payload"),
             }),
           }),
         ]),

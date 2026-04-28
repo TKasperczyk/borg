@@ -35,7 +35,11 @@ export type PerceptionGatewayInput = {
 
 export type PerceptionGatewayBeginInput = {
   turnId: string;
-  onHookFailure: (hook: string, error: unknown) => Promise<void>;
+  onHookFailure: (
+    hook: string,
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => Promise<void>;
 };
 
 export type PerceptionGatewayResult = {
@@ -81,6 +85,8 @@ export class PerceptionGateway {
       temporalCueUseLlmFallback: this.options.config.perception.useLlmFallback,
       detectAffectiveSignal: this.options.getAffectiveSignalDetector?.(),
       onAffectiveError: (error) => input.onHookFailure("affective_extraction", error),
+      onClassifierFailure: ({ classifier, error }) =>
+        input.onHookFailure("perception_classifier", error, { classifier }),
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.turnId,

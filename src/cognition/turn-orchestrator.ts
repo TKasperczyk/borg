@@ -349,8 +349,9 @@ export class TurnOrchestrator {
     streamWriter: StreamWriter,
     hook: string,
     error: unknown,
+    details?: Record<string, unknown>,
   ): Promise<void> {
-    await appendInternalFailureEvent(streamWriter, hook, error);
+    await appendInternalFailureEvent(streamWriter, hook, error, details);
   }
 
   async run(input: TurnInput): Promise<TurnResult> {
@@ -375,7 +376,8 @@ export class TurnOrchestrator {
         let workingMemory = this.options.workingMemoryStore.load(sessionId);
         const turnPerception = this.perceptionGateway.beginTurn({
           turnId,
-          onHookFailure: (hook, error) => this.appendHookFailureEvent(streamWriter, hook, error),
+          onHookFailure: (hook, error, details) =>
+            this.appendHookFailureEvent(streamWriter, hook, error, details),
         });
         const llmClient = this.options.llmFactory();
         const isUserTurn = input.origin !== "autonomous";
