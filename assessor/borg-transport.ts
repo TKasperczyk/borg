@@ -656,8 +656,20 @@ export class BorgTransport {
       (entry) => entry.kind === "agent_msg" && entry.audience === "self",
     );
     const sourceNames = tick.events.map((event) => event.sourceName).join(",");
+    const eventStatuses = tick.events
+      .map((event) => `${event.sourceName}:${event.status}${event.error === undefined ? "" : `(${event.error})`}`)
+      .join("|");
 
-    return `autonomy tick firedEvents=${tick.firedEvents}; sources=${sourceNames}; self agent message=${selfAgentMessage === undefined ? "missing" : "present"}`;
+    return [
+      `autonomy tick dueEvents=${tick.dueEvents}`,
+      `firedEvents=${tick.firedEvents}`,
+      `busySkipped=${tick.busySkipped}`,
+      `budgetSkipped=${tick.budgetSkipped}`,
+      `errorCount=${tick.errorCount}`,
+      `sources=${sourceNames}`,
+      `eventStatuses=${eventStatuses}`,
+      `self agent message=${selfAgentMessage === undefined ? "missing" : "present"}`,
+    ].join("; ");
   }
 
   async close(): Promise<void> {
