@@ -219,6 +219,14 @@ function buildIdentityPatchReviewRefs(
   };
 }
 
+function isProgressOnlyGoalPatch(patch: Record<string, unknown>): boolean {
+  const keys = Object.keys(patch).filter((key) => patch[key] !== undefined);
+
+  return (
+    keys.length === 2 && keys.every((key) => key === "progress_notes" || key === "last_progress_ts")
+  );
+}
+
 function intentKey(intent: IntentRecord): string {
   return JSON.stringify([
     intent.description.trim().toLowerCase(),
@@ -313,7 +321,10 @@ export type ReflectorOptions = {
   episodicRepository: EpisodicRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
-  identityService?: Pick<IdentityService, "updateGoal" | "addOpenQuestion">;
+  identityService?: Pick<
+    IdentityService,
+    "updateGoal" | "updateGoalProgressFromReflection" | "addOpenQuestion"
+  >;
   reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
   skillRepository?: SkillRepository;
   proceduralEvidenceRepository?: ProceduralEvidenceRepository;
@@ -356,7 +367,8 @@ export class Reflector {
     }
 
     const activeGoalsById = new Map(context.selfSnapshot.goals.map((goal) => [goal.id, goal]));
-    const isAutonomousTurn = context.origin === "autonomous";
+    const reflectionOrigin = context.origin ?? "user";
+    const isAutonomousTurn = reflectionOrigin === "autonomous";
 
     const autonomouslyClosedStepGoalIds = await this.applyExecutiveStepOutcomes(
       context,
@@ -396,7 +408,15 @@ export class Reflector {
         continue;
       }
 
-      const result = this.options.identityService.updateGoal(goal.id, patch, reflectionProvenance);
+      const result =
+        reflectionOrigin === "user" && isProgressOnlyGoalPatch(patch)
+          ? this.options.identityService.updateGoalProgressFromReflection(
+              goal.id,
+              patch,
+              reflectionProvenance,
+              { origin: reflectionOrigin },
+            )
+          : this.options.identityService.updateGoal(goal.id, patch, reflectionProvenance);
 
       if (result.status === "requires_review") {
         this.options.reviewQueueRepository.enqueue({
@@ -1024,6 +1044,7 @@ export class Reflector {
       system: [
         "You are Borg's post-turn reflector. Read the completed turn and active goals, then emit only the structured reflection tool.",
         "Mark advanced_goals only if the turn took a concrete step toward the goal, not just discussed it.",
+        "Apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of an active goal, mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
         "For step_outcomes, update only executive steps the completed turn directly started, blocked, abandoned, or externally confirmed as done, and include concrete evidence.",
         "For autonomous turns, never mark an executive step done; autonomous turns may only start, block, or abandon a step.",
         "If executive_focus has a selected goal and next_step is null, proposed_steps may include a small concrete next step only when the completed turn revealed one for that selected goal. Otherwise omit proposed_steps.",

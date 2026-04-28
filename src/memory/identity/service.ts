@@ -29,6 +29,7 @@ import {
 import {
   goalPatchSchema,
   type GoalRecord,
+  type GoalPatch,
   type GoalStatus,
   traitPatchSchema,
   valuePatchSchema,
@@ -43,6 +44,10 @@ export type IdentityUpdateOptions = {
   throughReview?: boolean;
   reason?: string | null;
   reviewItemId?: number | null;
+};
+
+export type ReflectionGoalProgressOptions = IdentityUpdateOptions & {
+  origin: "user" | "autonomous";
 };
 
 export type IdentityUpdateResult<T> =
@@ -71,6 +76,20 @@ function goalGuardState(current: GoalRecord): IdentityGuardState {
   return {
     state: current.status === "active" ? "established" : "candidate",
   };
+}
+
+function isOnlineReflectorProvenance(provenance: Provenance): boolean {
+  return provenance.kind === "online" && provenance.process === "reflector";
+}
+
+function isProgressOnlyGoalPatch(patch: GoalPatch): boolean {
+  const keys = (Object.keys(patch) as Array<keyof GoalPatch>).filter(
+    (key) => patch[key] !== undefined,
+  );
+
+  return (
+    keys.length === 2 && keys.every((key) => key === "progress_notes" || key === "last_progress_ts")
+  );
 }
 
 function autobiographicalPeriodGuardState(current: AutobiographicalPeriod): IdentityGuardState {
@@ -566,6 +585,54 @@ export class IdentityService {
         status: "requires_review",
         current,
       };
+    }
+
+    return {
+      status: "applied",
+      record: this.options.goalsRepository.update(
+        goalId,
+        {
+          ...parsedPatch,
+          provenance,
+        },
+        provenance,
+        {
+          reason: options.reason,
+          reviewItemId: options.reviewItemId,
+        },
+      ),
+    };
+  }
+
+  updateGoalProgressFromReflection(
+    goalId: GoalRecord["id"],
+    patch: unknown,
+    provenance: Provenance,
+    options: ReflectionGoalProgressOptions,
+  ): IdentityUpdateResult<GoalRecord> {
+    const current = this.options.goalsRepository.get(goalId);
+
+    if (current === null) {
+      throw new StorageError(`Unknown goal id: ${goalId}`, {
+        code: "GOAL_NOT_FOUND",
+      });
+    }
+
+    const parsedPatch = goalPatchSchema.parse(patch);
+
+    if (Object.keys(parsedPatch).length === 0) {
+      return {
+        status: "applied",
+        record: current,
+      };
+    }
+
+    if (
+      options.origin !== "user" ||
+      !isOnlineReflectorProvenance(provenance) ||
+      !isProgressOnlyGoalPatch(parsedPatch)
+    ) {
+      return this.updateGoal(goalId, parsedPatch, provenance, options);
     }
 
     return {

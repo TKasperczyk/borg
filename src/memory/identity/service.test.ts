@@ -364,6 +364,159 @@ describe("identity service", () => {
     }
   });
 
+  it("applies user-origin online reflector progress-only goal updates directly", () => {
+    const harness = createHarness(new FixedClock(2_250));
+
+    try {
+      const goal = harness.goalsRepository.add({
+        description: "Stabilize the release train",
+        priority: 5,
+        provenance: {
+          kind: "episodes",
+          episode_ids: ["ep_goalgoalgoalgoal" as never],
+        },
+      });
+
+      const result = harness.identity.updateGoalProgressFromReflection(
+        goal.id,
+        {
+          progress_notes: "Updated the deployment checklist.",
+          last_progress_ts: 2_250,
+        },
+        {
+          kind: "online",
+          process: "reflector",
+        },
+        {
+          origin: "user",
+        },
+      );
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "applied",
+        }),
+      );
+      expect(harness.goalsRepository.get(goal.id)).toEqual(
+        expect.objectContaining({
+          progress_notes: "Updated the deployment checklist.",
+          last_progress_ts: 2_250,
+        }),
+      );
+      expect(harness.identityEvents.list({ recordType: "goal", recordId: goal.id })[0]).toEqual(
+        expect.objectContaining({
+          action: "update",
+          provenance: {
+            kind: "online",
+            process: "reflector",
+          },
+        }),
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("does not bypass review for reflector goal updates that also change status", () => {
+    const harness = createHarness(new FixedClock(2_500));
+
+    try {
+      const goal = harness.goalsRepository.add({
+        description: "Stabilize the release train",
+        priority: 5,
+        provenance: {
+          kind: "episodes",
+          episode_ids: ["ep_goalgoalgoalgoal" as never],
+        },
+      });
+
+      const result = harness.identity.updateGoalProgressFromReflection(
+        goal.id,
+        {
+          progress_notes: "Updated the deployment checklist.",
+          last_progress_ts: 2_500,
+          status: "done",
+        },
+        {
+          kind: "online",
+          process: "reflector",
+        },
+        {
+          origin: "user",
+        },
+      );
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "requires_review",
+        }),
+      );
+      expect(harness.goalsRepository.get(goal.id)).toEqual(
+        expect.objectContaining({
+          status: "active",
+          progress_notes: null,
+          last_progress_ts: null,
+        }),
+      );
+      expect(harness.identityEvents.list({ recordType: "goal", recordId: goal.id })).toEqual([
+        expect.objectContaining({
+          action: "create",
+        }),
+      ]);
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("does not bypass review for autonomous-origin reflector progress updates", () => {
+    const harness = createHarness(new FixedClock(2_750));
+
+    try {
+      const goal = harness.goalsRepository.add({
+        description: "Stabilize the release train",
+        priority: 5,
+        provenance: {
+          kind: "episodes",
+          episode_ids: ["ep_goalgoalgoalgoal" as never],
+        },
+      });
+
+      const result = harness.identity.updateGoalProgressFromReflection(
+        goal.id,
+        {
+          progress_notes: "Updated the deployment checklist.",
+          last_progress_ts: 2_750,
+        },
+        {
+          kind: "online",
+          process: "reflector",
+        },
+        {
+          origin: "autonomous",
+        },
+      );
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "requires_review",
+        }),
+      );
+      expect(harness.goalsRepository.get(goal.id)).toEqual(
+        expect.objectContaining({
+          progress_notes: null,
+          last_progress_ts: null,
+        }),
+      );
+      expect(harness.identityEvents.list({ recordType: "goal", recordId: goal.id })).toEqual([
+        expect.objectContaining({
+          action: "create",
+        }),
+      ]);
+    } finally {
+      harness.db.close();
+    }
+  });
+
   it("guards episode-backed autobiographical periods, open questions, and growth markers", () => {
     const harness = createHarness(new FixedClock(3_000));
 

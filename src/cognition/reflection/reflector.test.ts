@@ -1116,7 +1116,7 @@ describe("reflector", () => {
     expect(reflected.current_focus).toBe("Atlas");
   });
 
-  it("queues review instead of silently overwriting episode-backed active goals from offline reflection", async () => {
+  it("applies user-turn reflector progress updates without review", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(4_000),
     });
@@ -1212,23 +1212,89 @@ describe("reflector", () => {
       harness.streamWriter,
     );
 
-    expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
-    expect(harness.reviewQueueRepository.getOpen()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "identity_inconsistency",
-          refs: expect.objectContaining({
-            target_type: "goal",
-            target_id: goal.id,
-            repair_op: "patch",
-            proposed_provenance: {
-              kind: "online",
-              process: "reflector",
-            },
-          }),
+    const updatedGoal = harness.goalsRepository.get(goal.id);
+    expect(updatedGoal?.progress_notes).toContain("Updated the deployment checklist.");
+    expect(updatedGoal?.last_progress_ts).toBe(4_000);
+    expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+    expect(
+      harness.identityEventRepository.list({ recordType: "goal", recordId: goal.id })[0],
+    ).toEqual(
+      expect.objectContaining({
+        action: "update",
+        provenance: {
+          kind: "online",
+          process: "reflector",
+        },
+        new_value: expect.objectContaining({
+          progress_notes: expect.stringContaining("Updated the deployment checklist."),
+          last_progress_ts: 4_000,
         }),
-      ]),
+        review_item_id: null,
+        overwrite_without_review: false,
+      }),
     );
+    expect(llm.requests[0]?.system).toContain(
+      "Apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of an active goal, mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
+    );
+  });
+
+  it("ignores autonomous-turn advanced goal output", async () => {
+    const harness = await createExecutiveReflectionHarness(new FixedClock(4_500));
+    cleanup.push(harness.cleanup);
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const step = harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Start launch readiness review",
+      kind: "act",
+      provenance: { kind: "manual" },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [
+            {
+              goal_id: goal.id,
+              evidence: "The autonomous turn claimed launch readiness moved forward.",
+            },
+          ],
+          [],
+          [],
+          [],
+          [
+            {
+              step_id: step.id,
+              new_status: "doing",
+              evidence: "Keeps executive reflection work present.",
+            },
+          ],
+        ),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    await reflector.reflect(
+      createExecutiveReflectionContext({
+        origin: "autonomous",
+        goal,
+        nextStep: step,
+      }),
+      harness.writer,
+    );
+
+    expect(llm.requests).toHaveLength(1);
+    expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
   });
 
   it("does not update goal progress when reflection output is empty even if text overlaps", async () => {
@@ -1672,6 +1738,9 @@ describe("reflector", () => {
       },
       updateGoal() {
         throw new Error("unexpected goal update");
+      },
+      updateGoalProgressFromReflection() {
+        throw new Error("unexpected goal progress update");
       },
     };
     const writer = new StreamWriter({
@@ -2177,6 +2246,9 @@ describe("reflector", () => {
       },
       updateGoal() {
         throw new Error("unexpected goal update");
+      },
+      updateGoalProgressFromReflection() {
+        throw new Error("unexpected goal progress update");
       },
     };
     const reflector = new Reflector({
