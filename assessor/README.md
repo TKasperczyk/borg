@@ -17,10 +17,14 @@ pnpm assess --mock
 ```
 
 `--mock` uses a deterministic fake assessor and fake Borg LLM, so it is suitable for CI smoke
-checks. Real runs use `claude-sonnet-4-6` for the assessor and leave Borg under test on its
+checks. Real runs use `claude-opus-4-7` for the assessor and leave Borg under test on its
 configured model slots. Real mode is selected automatically when `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, or Claude OAuth credentials are present; otherwise the CLI falls back to
 mock mode. Use `--real` or `--mock` to force a mode.
+
+The assessor omits `temperature` when running on an Opus model -- Opus 4.7 via OAuth rejects
+`temperature: 0` with a 400 error. Verdicts are structured (the `submit_verdict` tool emits a
+status enum), so determinism does not depend on temperature.
 
 Useful limits:
 
