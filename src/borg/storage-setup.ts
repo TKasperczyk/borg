@@ -10,7 +10,7 @@ import { commitmentMigrations } from "../memory/commitments/index.js";
 import { createEpisodesTableSchema, episodicMigrations } from "../memory/episodic/index.js";
 import { identityMigrations } from "../memory/identity/index.js";
 import { createSkillsTableSchema, proceduralMigrations } from "../memory/procedural/index.js";
-import { selfMigrations } from "../memory/self/index.js";
+import { createOpenQuestionsTableSchema, selfMigrations } from "../memory/self/index.js";
 import { createSemanticNodesTableSchema, semanticMigrations } from "../memory/semantic/index.js";
 import { socialMigrations } from "../memory/social/index.js";
 import { offlineMigrations } from "../offline/index.js";
@@ -27,6 +27,7 @@ export type BorgStorage = {
 export type BorgLanceTables = {
   episodesTable: LanceDbTable;
   semanticNodesTable: LanceDbTable;
+  openQuestionsTable: LanceDbTable;
   skillsTable: LanceDbTable;
 };
 
@@ -183,6 +184,10 @@ export async function openBorgLanceTables(options: {
     name: "semantic_nodes",
     schema: createSemanticNodesTableSchema(options.embeddingDimensions),
   });
+  const openQuestionsTable = await options.lance.openTable({
+    name: "open_questions",
+    schema: createOpenQuestionsTableSchema(options.embeddingDimensions),
+  });
   const skillsTable = await options.lance.openTable({
     name: "skills",
     schema: createSkillsTableSchema(options.embeddingDimensions),
@@ -191,6 +196,7 @@ export async function openBorgLanceTables(options: {
   return {
     episodesTable,
     semanticNodesTable,
+    openQuestionsTable,
     skillsTable,
   };
 }

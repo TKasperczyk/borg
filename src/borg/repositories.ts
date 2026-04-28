@@ -90,6 +90,7 @@ export type BuildBorgRepositoriesOptions = {
   sqlite: SqliteDatabase;
   episodesTable: LanceDbTable;
   semanticNodesTable: LanceDbTable;
+  openQuestionsTable: LanceDbTable;
   skillsTable: LanceDbTable;
   embeddingClient: EmbeddingClient;
   llmClient: LLMClient;
@@ -133,7 +134,26 @@ export async function buildBorgRepositories(
   let applyCorrectionReview: ((item: ReviewQueueItem) => Promise<void>) | undefined;
   const openQuestionsRepository = new OpenQuestionsRepository({
     db: sqlite,
+    table: options.openQuestionsTable,
+    embeddingClient,
     clock,
+    onEmbeddingFailure: (error, details) => {
+      const writer = createDefaultStreamWriter();
+      void appendInternalFailureEvent(writer, "open_question_embedding", error, {
+        operation: details.operation,
+        questionId: details.questionId,
+      }).finally(() => {
+        writer.close();
+      });
+    },
+  });
+  void openQuestionsRepository.backfillMissingEmbeddings().catch((error) => {
+    const writer = createDefaultStreamWriter();
+    void appendInternalFailureEvent(writer, "open_question_embedding_backfill", error).finally(
+      () => {
+        writer.close();
+      },
+    );
   });
   const executiveStepsRepository = new ExecutiveStepsRepository({
     db: sqlite,

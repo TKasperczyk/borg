@@ -1,15 +1,80 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { afterEach, describe, expect, it } from "vitest";
+
+import type { EmbeddingClient } from "../../embeddings/index.js";
+import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
 import { createEntityId, createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
 
 import { selfMigrations } from "./migrations.js";
-import { OpenQuestionsRepository } from "./open-questions.js";
+import { OpenQuestionsRepository, createOpenQuestionsTableSchema } from "./open-questions.js";
+
+class MapEmbeddingClient implements EmbeddingClient {
+  readonly calls: string[] = [];
+
+  constructor(private readonly vectors: ReadonlyMap<string, readonly number[]>) {}
+
+  async embed(text: string): Promise<Float32Array> {
+    this.calls.push(text);
+    const vector = this.vectors.get(text);
+
+    if (vector === undefined) {
+      throw new Error(`No scripted embedding for ${text}`);
+    }
+
+    return Float32Array.from(vector);
+  }
+
+  async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+    return Promise.all(texts.map((text) => this.embed(text)));
+  }
+}
 
 describe("OpenQuestionsRepository", () => {
   const manualProvenance = { kind: "manual" } as const;
+  const cleanup: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) {
+      await cleanup.pop()?.();
+    }
+  });
+
+  async function openVectorFixture(embeddingClient: EmbeddingClient) {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-open-questions-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const table = await store.openTable({
+      name: "open_questions",
+      schema: createOpenQuestionsTableSchema(4),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      table,
+      embeddingClient,
+      clock: new FixedClock(10_000),
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    return {
+      repository,
+      table,
+    };
+  }
 
   it("dedupes by normalized question and related ids", () => {
     const clock = new FixedClock(10_000);
@@ -51,6 +116,87 @@ describe("OpenQuestionsRepository", () => {
     expect(bumped.urgency).toBeLessThanOrEqual(1);
 
     db.close();
+  });
+
+  it("embeds inserted questions into the vector table", async () => {
+    const questionText = "Which Atlas deployment failure still needs an answer?";
+    const embeddingClient = new MapEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]]));
+    const { repository, table } = await openVectorFixture(embeddingClient);
+
+    const question = repository.add({
+      question: questionText,
+      urgency: 0.4,
+      source: "reflection",
+      provenance: manualProvenance,
+    });
+    await repository.waitForPendingEmbeddings();
+
+    const rows = await table.list({ limit: 10 });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: question.id,
+      question: questionText,
+      status: "open",
+    });
+    expect(Array.from(rows[0]?.embedding as ArrayLike<number>)).toEqual([1, 0, 0, 0]);
+  });
+
+  it("backfills missing embeddings idempotently", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-open-questions-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const table = await store.openTable({
+      name: "open_questions",
+      schema: createOpenQuestionsTableSchema(4),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: selfMigrations,
+    });
+    const questionText = "Which backfill question needs a vector?";
+    const embeddingClient = new MapEmbeddingClient(new Map([[questionText, [0, 1, 0, 0]]]));
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const sqliteOnlyRepository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    sqliteOnlyRepository.add({
+      question: questionText,
+      urgency: 0.3,
+      source: "reflection",
+      provenance: manualProvenance,
+    });
+
+    const vectorRepository = new OpenQuestionsRepository({
+      db,
+      table,
+      embeddingClient,
+      clock: new FixedClock(10_000),
+    });
+    const first = await vectorRepository.backfillMissingEmbeddings();
+    const second = await vectorRepository.backfillMissingEmbeddings();
+
+    expect(first).toEqual({
+      scanned: 1,
+      embedded: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    expect(second).toEqual({
+      scanned: 1,
+      embedded: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(embeddingClient.calls).toEqual([questionText]);
+    expect(await table.list({ limit: 10 })).toHaveLength(1);
   });
 
   it("validates duplicate adds before dedupe short-circuiting", () => {

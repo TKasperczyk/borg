@@ -52,6 +52,7 @@ export async function openBorgDependencies(
       sqlite,
       episodesTable: tables.episodesTable,
       semanticNodesTable: tables.semanticNodesTable,
+      openQuestionsTable: tables.openQuestionsTable,
       skillsTable: tables.skillsTable,
       embeddingClient,
       llmClient: lazyLlmClient,

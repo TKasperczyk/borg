@@ -2,6 +2,19 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import type { EmbeddingClient } from "../../embeddings/index.js";
+import {
+  LanceDbTable,
+  float64Field,
+  schema,
+  utf8Field,
+  vectorField,
+} from "../../storage/lancedb/index.js";
+import {
+  quoteSqlString,
+  toFloat32Array,
+  type Float32ArrayCodecOptions,
+} from "../../storage/codecs.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { ProvenanceError, StorageError } from "../../util/errors.js";
@@ -9,6 +22,7 @@ import {
   createOpenQuestionId,
   entityIdHelpers,
   openQuestionIdHelpers,
+  parseOpenQuestionId,
   type EntityId,
   type OpenQuestionId,
 } from "../../util/ids.js";
@@ -102,10 +116,67 @@ export type OpenQuestionPatch = z.infer<typeof openQuestionPatchSchema>;
 export type OpenQuestionStatus = z.infer<typeof openQuestionStatusSchema>;
 export type OpenQuestionSource = z.infer<typeof openQuestionSourceSchema>;
 
+export type OpenQuestionSearchCandidate = {
+  question: OpenQuestion;
+  similarity: number;
+};
+
+export type OpenQuestionEmbeddingBackfillReport = {
+  scanned: number;
+  embedded: number;
+  skipped: number;
+  failed: number;
+};
+
+export type OpenQuestionEmbeddingFailureDetails = {
+  operation: "insert" | "update" | "metadata_sync" | "backfill";
+  questionId: OpenQuestionId;
+  question: string;
+};
+
+type OpenQuestionVectorRow = {
+  id: string;
+  question: string;
+  status: string;
+  audience_entity_id: string | null;
+  related_semantic_node_ids: string;
+  urgency: number;
+  created_at: number;
+  last_touched: number;
+  embedding: number[];
+  _distance?: number;
+};
+
 export type OpenQuestionsRepositoryOptions = {
   db: SqliteDatabase;
+  table?: LanceDbTable;
+  embeddingClient?: EmbeddingClient;
   clock?: Clock;
+  onEmbeddingFailure?: (
+    error: unknown,
+    details: OpenQuestionEmbeddingFailureDetails,
+  ) => void | Promise<void>;
 };
+
+const OPEN_QUESTION_VECTOR_CODEC = {
+  arrayLikeErrorMessage: "Open question embedding must be array-like",
+  nonFiniteErrorMessage: "Open question embedding contains a non-finite value",
+  errorCode: "OPEN_QUESTION_INVALID",
+} satisfies Float32ArrayCodecOptions;
+
+export function createOpenQuestionsTableSchema(dimensions: number) {
+  return schema([
+    utf8Field("id"),
+    utf8Field("question"),
+    utf8Field("status"),
+    utf8Field("audience_entity_id", true),
+    utf8Field("related_semantic_node_ids"),
+    float64Field("urgency"),
+    float64Field("created_at"),
+    float64Field("last_touched"),
+    vectorField("embedding", dimensions),
+  ]);
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -138,6 +209,61 @@ function parseIdArray<T>(value: string, schema: z.ZodType<T>, label: string): T[
 function normalizeQuestion(text: string): string {
   const tokens = [...tokenizeText(text)];
   return tokens.length === 0 ? text.trim().toLowerCase().replace(/\s+/g, " ") : tokens.join(" ");
+}
+
+function toSimilarity(distance: number | undefined): number {
+  if (distance === undefined) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(1, 1 - distance));
+}
+
+function getDistance(row: Record<string, unknown>): number | undefined {
+  const value = row._distance;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isVisibleToAudience(
+  question: OpenQuestion,
+  audienceEntityId: EntityId | null | undefined,
+): boolean {
+  if (audienceEntityId === null || audienceEntityId === undefined) {
+    return question.audience_entity_id === null;
+  }
+
+  return question.audience_entity_id === null || question.audience_entity_id === audienceEntityId;
+}
+
+function buildVectorVisibilityWhereClause(
+  audienceEntityId: EntityId | null | undefined,
+): string | undefined {
+  if (audienceEntityId === undefined) {
+    return undefined;
+  }
+
+  if (audienceEntityId === null) {
+    return "audience_entity_id IS NULL";
+  }
+
+  return `(audience_entity_id IS NULL OR audience_entity_id = ${quoteSqlString(audienceEntityId)})`;
+}
+
+function vectorRowFromQuestion(
+  question: OpenQuestion,
+  embedding: Float32Array,
+): OpenQuestionVectorRow {
+  return {
+    id: question.id,
+    question: question.question,
+    status: question.status,
+    audience_entity_id: question.audience_entity_id,
+    related_semantic_node_ids: serializeJsonValue(question.related_semantic_node_ids),
+    urgency: question.urgency,
+    created_at: question.created_at,
+    last_touched: question.last_touched,
+    embedding: Array.from(embedding),
+  };
 }
 
 export function buildOpenQuestionDedupeKey(input: {
@@ -220,6 +346,7 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
 
 export class OpenQuestionsRepository {
   private readonly clock: Clock;
+  private readonly pendingEmbeddingTasks = new Set<Promise<void>>();
 
   constructor(private readonly options: OpenQuestionsRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -227,6 +354,268 @@ export class OpenQuestionsRepository {
 
   private get db(): SqliteDatabase {
     return this.options.db;
+  }
+
+  private get table(): LanceDbTable | undefined {
+    return this.options.table;
+  }
+
+  private get embeddingClient(): EmbeddingClient | undefined {
+    return this.options.embeddingClient;
+  }
+
+  private hasVectorStorage(): boolean {
+    return this.table !== undefined && this.embeddingClient !== undefined;
+  }
+
+  private enqueueEmbeddingTask(task: Promise<void>): void {
+    this.pendingEmbeddingTasks.add(task);
+    void task.finally(() => {
+      this.pendingEmbeddingTasks.delete(task);
+    });
+  }
+
+  private reportEmbeddingFailure(
+    error: unknown,
+    details: OpenQuestionEmbeddingFailureDetails,
+  ): void {
+    try {
+      void Promise.resolve(this.options.onEmbeddingFailure?.(error, details)).catch(() => {
+        // Best-effort failure reporting only.
+      });
+    } catch {
+      // Best-effort failure reporting only.
+    }
+  }
+
+  private async readStoredEmbedding(id: OpenQuestionId): Promise<Float32Array | null> {
+    const table = this.table;
+
+    if (table === undefined) {
+      return null;
+    }
+
+    const [row] = await table.list({
+      where: `id = ${quoteSqlString(id)}`,
+      limit: 1,
+      columns: ["embedding"],
+    });
+
+    if (row === undefined) {
+      return null;
+    }
+
+    return toFloat32Array(row.embedding, OPEN_QUESTION_VECTOR_CODEC);
+  }
+
+  private async upsertQuestionVector(
+    question: OpenQuestion,
+    operation: OpenQuestionEmbeddingFailureDetails["operation"],
+    options: { forceEmbed?: boolean; skipIfMissing?: boolean } = {},
+  ): Promise<void> {
+    const table = this.table;
+    const embeddingClient = this.embeddingClient;
+
+    if (table === undefined || embeddingClient === undefined) {
+      return;
+    }
+
+    try {
+      const storedEmbedding =
+        options.forceEmbed === true ? null : await this.readStoredEmbedding(question.id);
+
+      if (options.skipIfMissing === true && storedEmbedding === null) {
+        return;
+      }
+
+      const embedding = storedEmbedding ?? (await embeddingClient.embed(question.question));
+
+      await table.upsert([vectorRowFromQuestion(question, embedding)], {
+        on: "id",
+      });
+    } catch (error) {
+      this.reportEmbeddingFailure(error, {
+        operation,
+        questionId: question.id,
+        question: question.question,
+      });
+    }
+  }
+
+  private scheduleQuestionVectorUpsert(
+    question: OpenQuestion,
+    operation: OpenQuestionEmbeddingFailureDetails["operation"],
+    options: { forceEmbed?: boolean; skipIfMissing?: boolean } = {},
+  ): void {
+    if (!this.hasVectorStorage()) {
+      return;
+    }
+
+    this.enqueueEmbeddingTask(this.upsertQuestionVector(question, operation, options));
+  }
+
+  async waitForPendingEmbeddings(): Promise<void> {
+    await Promise.allSettled([...this.pendingEmbeddingTasks]);
+  }
+
+  async getEmbeddedQuestionIds(ids: readonly OpenQuestionId[]): Promise<Set<OpenQuestionId>> {
+    const table = this.table;
+    const uniqueIds = [...new Set(ids)];
+
+    if (table === undefined || uniqueIds.length === 0) {
+      return new Set();
+    }
+
+    const rows = await table.list({
+      where: `id IN (${uniqueIds.map((id) => quoteSqlString(id)).join(", ")})`,
+      columns: ["id"],
+    });
+
+    return new Set(
+      rows
+        .map((row) => String(row.id))
+        .filter((id) => openQuestionIdHelpers.is(id))
+        .map((id) => parseOpenQuestionId(id)),
+    );
+  }
+
+  async searchByVector(
+    vector: Float32Array,
+    options: {
+      status?: OpenQuestionStatus;
+      visibleToAudienceEntityId?: EntityId | null;
+      limit?: number;
+      minSimilarity?: number;
+    } = {},
+  ): Promise<OpenQuestionSearchCandidate[]> {
+    const table = this.table;
+
+    if (table === undefined) {
+      return [];
+    }
+
+    const limit = Math.max(1, options.limit ?? 10);
+    const clauses: string[] = [];
+
+    if (options.status !== undefined) {
+      clauses.push(`status = ${quoteSqlString(openQuestionStatusSchema.parse(options.status))}`);
+    }
+
+    const visibilityWhere = buildVectorVisibilityWhereClause(options.visibleToAudienceEntityId);
+
+    if (visibilityWhere !== undefined) {
+      clauses.push(visibilityWhere);
+    }
+
+    const rows = await table.search(Array.from(vector), {
+      limit: Math.max(limit * 5, 20),
+      vectorColumn: "embedding",
+      distanceType: "cosine",
+      where: clauses.length === 0 ? undefined : clauses.join(" AND "),
+    });
+    const results: OpenQuestionSearchCandidate[] = [];
+
+    for (const row of rows) {
+      const id = String(row.id);
+
+      if (!openQuestionIdHelpers.is(id)) {
+        continue;
+      }
+
+      const question = this.get(parseOpenQuestionId(id));
+
+      if (question === null) {
+        continue;
+      }
+
+      if (options.status !== undefined && question.status !== options.status) {
+        continue;
+      }
+
+      if (
+        options.visibleToAudienceEntityId !== undefined &&
+        !isVisibleToAudience(question, options.visibleToAudienceEntityId)
+      ) {
+        continue;
+      }
+
+      const similarity = toSimilarity(getDistance(row));
+
+      if (options.minSimilarity !== undefined && similarity < options.minSimilarity) {
+        continue;
+      }
+
+      results.push({
+        question,
+        similarity,
+      });
+
+      if (results.length >= limit) {
+        break;
+      }
+    }
+
+    return results;
+  }
+
+  async backfillMissingEmbeddings(
+    options: { limit?: number } = {},
+  ): Promise<OpenQuestionEmbeddingBackfillReport> {
+    const table = this.table;
+    const embeddingClient = this.embeddingClient;
+    const report: OpenQuestionEmbeddingBackfillReport = {
+      scanned: 0,
+      embedded: 0,
+      skipped: 0,
+      failed: 0,
+    };
+
+    if (table === undefined || embeddingClient === undefined) {
+      return report;
+    }
+
+    const limitClause = options.limit === undefined ? "" : "LIMIT ?";
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM open_questions
+          ORDER BY created_at ASC, id ASC
+          ${limitClause}
+        `,
+      )
+      .all(...(options.limit === undefined ? [] : [Math.max(1, options.limit)])) as Record<
+      string,
+      unknown
+    >[];
+    const questions = rows.map((row) => mapOpenQuestionRow(row));
+    const existingIds = await this.getEmbeddedQuestionIds(questions.map((question) => question.id));
+
+    for (const question of questions) {
+      report.scanned += 1;
+
+      if (existingIds.has(question.id)) {
+        report.skipped += 1;
+        continue;
+      }
+
+      try {
+        const embedding = await embeddingClient.embed(question.question);
+        await table.upsert([vectorRowFromQuestion(question, embedding)], {
+          on: "id",
+        });
+        report.embedded += 1;
+      } catch (error) {
+        report.failed += 1;
+        this.reportEmbeddingFailure(error, {
+          operation: "backfill",
+          questionId: question.id,
+          question: question.question,
+        });
+      }
+    }
+
+    return report;
   }
 
   getByDedupeKey(key: string): OpenQuestion | null {
@@ -325,6 +714,10 @@ export class OpenQuestionsRepository {
         question.abandoned_reason,
         question.abandoned_at,
       );
+
+    this.scheduleQuestionVectorUpsert(question, "insert", {
+      forceEmbed: true,
+    });
 
     return question;
   }
@@ -441,6 +834,11 @@ export class OpenQuestionsRepository {
         id,
       );
 
+    this.scheduleQuestionVectorUpsert(next, next.status === "open" ? "update" : "metadata_sync", {
+      forceEmbed: parsedPatch.question !== undefined,
+      skipIfMissing: next.status !== "open",
+    });
+
     return next;
   }
 
@@ -459,11 +857,17 @@ export class OpenQuestionsRepository {
       .prepare("UPDATE open_questions SET urgency = ?, last_touched = ? WHERE id = ?")
       .run(nextUrgency, now, id);
 
-    return {
+    const touched = {
       ...existing,
       urgency: nextUrgency,
       last_touched: now,
     };
+
+    this.scheduleQuestionVectorUpsert(touched, "metadata_sync", {
+      skipIfMissing: true,
+    });
+
+    return touched;
   }
 
   resolve(
@@ -499,7 +903,7 @@ export class OpenQuestionsRepository {
       )
       .run(input.resolution_episode_id, input.resolution_note ?? null, resolvedAt, resolvedAt, id);
 
-    return {
+    const resolved: OpenQuestion = {
       ...existing,
       status: "resolved",
       resolution_episode_id: input.resolution_episode_id,
@@ -509,6 +913,12 @@ export class OpenQuestionsRepository {
       abandoned_at: null,
       last_touched: resolvedAt,
     };
+
+    this.scheduleQuestionVectorUpsert(resolved, "metadata_sync", {
+      skipIfMissing: true,
+    });
+
+    return resolved;
   }
 
   abandon(id: OpenQuestionId, reason: string): OpenQuestion {
@@ -539,7 +949,7 @@ export class OpenQuestionsRepository {
       )
       .run(reason, abandonedAt, abandonedAt, id);
 
-    return {
+    const abandoned: OpenQuestion = {
       ...existing,
       status: "abandoned",
       resolution_episode_id: null,
@@ -549,6 +959,12 @@ export class OpenQuestionsRepository {
       abandoned_at: abandonedAt,
       last_touched: abandonedAt,
     };
+
+    this.scheduleQuestionVectorUpsert(abandoned, "metadata_sync", {
+      skipIfMissing: true,
+    });
+
+    return abandoned;
   }
 
   bumpUrgency(id: OpenQuestionId, delta: number): OpenQuestion {
@@ -561,15 +977,22 @@ export class OpenQuestionsRepository {
     }
 
     const nextUrgency = clamp(existing.urgency + delta, 0, 1);
+    const nowMs = this.clock.now();
     this.db
       .prepare("UPDATE open_questions SET urgency = ?, last_touched = ? WHERE id = ?")
-      .run(nextUrgency, this.clock.now(), id);
+      .run(nextUrgency, nowMs, id);
 
-    return {
+    const bumped = {
       ...existing,
       urgency: nextUrgency,
-      last_touched: this.clock.now(),
+      last_touched: nowMs,
     };
+
+    this.scheduleQuestionVectorUpsert(bumped, "metadata_sync", {
+      skipIfMissing: true,
+    });
+
+    return bumped;
   }
 
   setUrgency(id: OpenQuestionId, urgency: number): OpenQuestion {
@@ -587,11 +1010,17 @@ export class OpenQuestionsRepository {
       .prepare("UPDATE open_questions SET urgency = ?, last_touched = ? WHERE id = ?")
       .run(nextUrgency, nowMs, id);
 
-    return {
+    const updated = {
       ...existing,
       urgency: nextUrgency,
       last_touched: nowMs,
     };
+
+    this.scheduleQuestionVectorUpsert(updated, "metadata_sync", {
+      skipIfMissing: true,
+    });
+
+    return updated;
   }
 
   reopenForReversal(id: OpenQuestionId, urgency?: number): OpenQuestion {
@@ -616,7 +1045,7 @@ export class OpenQuestionsRepository {
       )
       .run(nextUrgency, nowMs, id);
 
-    return {
+    const reopened: OpenQuestion = {
       ...existing,
       status: "open",
       urgency: nextUrgency,
@@ -627,6 +1056,10 @@ export class OpenQuestionsRepository {
       abandoned_reason: null,
       abandoned_at: null,
     };
+
+    this.scheduleQuestionVectorUpsert(reopened, "update");
+
+    return reopened;
   }
 }
 

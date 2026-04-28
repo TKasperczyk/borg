@@ -124,10 +124,12 @@ export class RetrievalPipeline {
       relatedSemanticNodeIds?: readonly SemanticNode["id"][];
       audienceEntityId?: EntityId | null;
       limit?: number;
+      queryVector?: Float32Array;
     } = {},
-  ): OpenQuestion[] {
+  ): Promise<OpenQuestion[]> {
     return retrieveOpenQuestionsForQueryFromRepository(
       this.options.openQuestionsRepository,
+      this.options.embeddingClient,
       query,
       options,
     );
@@ -214,10 +216,11 @@ export class RetrievalPipeline {
     );
     const openQuestions =
       options.includeOpenQuestions === true
-        ? this.retrieveOpenQuestionsForQuery(query, {
+        ? await this.retrieveOpenQuestionsForQuery(query, {
             relatedSemanticNodeIds: semantic.matchedNodeIds,
             audienceEntityId: options.audienceEntityId ?? null,
             limit: options.openQuestionsLimit,
+            queryVector,
           })
         : [];
     const results: RetrievedEpisode[] = [];
@@ -361,7 +364,6 @@ export class RetrievalPipeline {
 
     return new CitationResolver(options);
   }
-
 }
 
 function summarizeRetrievalOptions(options: RetrievalSearchOptions): JsonValue {

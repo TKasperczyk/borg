@@ -18,7 +18,7 @@ import { LanceDbStore } from "../storage/lancedb/index.js";
 import { openDatabase } from "../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../util/clock.js";
 import { createEntityId } from "../util/ids.js";
-import { OpenQuestionsRepository } from "../memory/self/index.js";
+import { OpenQuestionsRepository, createOpenQuestionsTableSchema } from "../memory/self/index.js";
 import { selfMigrations } from "../memory/self/migrations.js";
 import { semanticMigrations } from "../memory/semantic/migrations.js";
 import { SemanticGraph } from "../memory/semantic/graph.js";
@@ -43,7 +43,7 @@ class ScriptedEmbeddingClient implements EmbeddingClient {
   }
 
   private embedVector(text: string): Float32Array {
-    if (text.includes("planning")) {
+    if (text.includes("planning") || text.includes("Atlas deployment")) {
       return Float32Array.from([1, 0, 0, 0]);
     }
 
@@ -1183,13 +1183,20 @@ describe("retrieval pipeline", () => {
       name: "episodes",
       schema: createEpisodesTableSchema(4),
     });
+    const openQuestionsTable = await store.openTable({
+      name: "open_questions",
+      schema: createOpenQuestionsTableSchema(4),
+    });
     const repo = new EpisodicRepository({
       table,
       db,
       clock: new FixedClock(5_000),
     });
+    const embeddingClient = new ScriptedEmbeddingClient();
     const openQuestionsRepository = new OpenQuestionsRepository({
       db,
+      table: openQuestionsTable,
+      embeddingClient,
       clock: new FixedClock(5_000),
     });
     const alice = createEntityId();
@@ -1224,9 +1231,10 @@ describe("retrieval pipeline", () => {
       source: "reflection",
       provenance: { kind: "manual" },
     });
+    await openQuestionsRepository.waitForPendingEmbeddings();
 
     const pipeline = new RetrievalPipeline({
-      embeddingClient: new ScriptedEmbeddingClient(),
+      embeddingClient,
       episodicRepository: repo,
       openQuestionsRepository,
       dataDir: tempDir,
