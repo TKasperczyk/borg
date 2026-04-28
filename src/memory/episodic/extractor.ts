@@ -69,6 +69,7 @@ export type ExtractFromStreamOptions = {
   sinceTs?: number;
   sinceCursor?: StreamCursor;
   untilTs?: number;
+  untilCursor?: StreamCursor;
 };
 
 export type ExtractFromStreamResult = {
@@ -423,6 +424,7 @@ export class EpisodicExtractor {
       sinceTs: extractOptions.sinceTs,
       sinceCursor: extractOptions.sinceCursor,
       untilTs: extractOptions.untilTs,
+      untilCursor: extractOptions.untilCursor,
     })) {
       contextEntries.push(entry);
 

@@ -30,8 +30,8 @@ export function buildStreamIngestionCoordinator(
   }
 
   // Live extraction shares the same embedding + LLM wiring as the offline
-  // consolidator process. It runs after each turn inside the ingestion
-  // coordinator so the next turn's retrieval sees this turn's material.
+  // consolidator process. It runs after each turn on a best-effort path;
+  // pre-turn catch-up retries missed stream backlog before retrieval.
   return new StreamIngestionCoordinator({
     extractor: new EpisodicExtractor({
       dataDir: options.config.dataDir,

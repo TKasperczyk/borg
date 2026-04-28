@@ -676,7 +676,12 @@ band.
 - Note: episodic extraction does NOT run synchronously in reflection.
   After the response is delivered, `StreamIngestionCoordinator` runs
   asynchronously (fire-and-forget), reads new stream entries past its
-  watermark, and produces episode candidates via the extractor.
+  watermark, and produces episode candidates via the extractor. This is
+  best-effort next-turn freshness, not a hard guarantee: if extraction
+  fails, the stream plus watermark remain the durable retry queue, and the
+  next turn runs bounded pre-turn catch-up before retrieval up to
+  `streamIngestion.preTurnCatchup.maxEntries`. Persistent extraction
+  failure degrades to eventual consistency rather than blocking cognition.
   Mood signal comes from perception of the current user input; the mood
   repository is updated after the agent message and before reflection.
   Autonomous turns preserve the existing mood.

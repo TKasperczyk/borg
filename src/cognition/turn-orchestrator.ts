@@ -210,10 +210,10 @@ export type TurnOrchestratorOptions = {
    */
   turnContextCompiler?: TurnContextCompiler;
   /**
-   * If provided, fires live episodic extraction after each turn so the next
-   * turn's retrieval has access to material from just-finished turns. If
-   * omitted, the orchestrator skips live extraction entirely and relies on
-   * explicit `borg.episodic.extract()` / `borg.dream.consolidate()` calls.
+   * If provided, fires best-effort live episodic extraction after each turn
+   * and bounded catch-up before the next turn's retrieval. If omitted, the
+   * orchestrator skips live extraction entirely and relies on explicit
+   * `borg.episodic.extract()` / `borg.dream.consolidate()` calls.
    */
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   affectiveSignalDetector?: typeof detectAffectiveSignal;
@@ -354,6 +354,40 @@ export class TurnOrchestrator {
     await appendInternalFailureEvent(streamWriter, hook, error, details);
   }
 
+  private async catchUpStreamIngestion(
+    sessionId: SessionId,
+    streamWriter: StreamWriter,
+  ): Promise<void> {
+    const coordinator = this.options.streamIngestionCoordinator;
+
+    if (coordinator === undefined) {
+      return;
+    }
+
+    try {
+      const result = await coordinator.catchUp(sessionId, {
+        maxEntries: this.options.config.streamIngestion.preTurnCatchup.maxEntries,
+      });
+
+      if (result.error !== undefined) {
+        await this.appendHookFailureEvent(
+          streamWriter,
+          "stream_ingestion_pre_turn_catchup",
+          result.error,
+          {
+            processedEntries: result.processedEntries,
+          },
+        );
+      }
+    } catch (error) {
+      await this.appendHookFailureEvent(
+        streamWriter,
+        "stream_ingestion_pre_turn_catchup",
+        error,
+      );
+    }
+  }
+
   async run(input: TurnInput): Promise<TurnResult> {
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
     const isSelfAudience = input.audience === "self";
@@ -373,6 +407,7 @@ export class TurnOrchestrator {
 
     try {
       try {
+        await this.catchUpStreamIngestion(sessionId, streamWriter);
         let workingMemory = this.options.workingMemoryStore.load(sessionId);
         const turnPerception = this.perceptionGateway.beginTurn({
           turnId,
@@ -670,11 +705,10 @@ export class TurnOrchestrator {
           updated_at: this.clock.now(),
         });
 
-        // Live-extract just-finished stream entries so the next turn's
-        // retrieval sees episodes from this turn. Fire-and-forget: the
-        // coordinator dedups concurrent calls per session, watermark keeps
-        // it idempotent, and its own onError hook logs failures via its
-        // own stream writer (the turn's writer is about to close below).
+        // Live-extract just-finished stream entries on a best-effort basis
+        // for next-turn freshness. If extraction fails, the stream +
+        // watermark remain the durable retry queue; the next turn runs a
+        // bounded pre-turn catch-up before retrieval.
         if (this.options.streamIngestionCoordinator !== undefined) {
           void this.options.streamIngestionCoordinator.ingest(sessionId).catch((error) => {
             console.error("Live stream ingestion failed", error);

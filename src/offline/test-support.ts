@@ -173,6 +173,14 @@ export function createTestConfig(
         ...overrides.retrieval?.semantic,
       },
     },
+    streamIngestion: {
+      ...DEFAULT_CONFIG.streamIngestion,
+      ...overrides.streamIngestion,
+      preTurnCatchup: {
+        ...DEFAULT_CONFIG.streamIngestion.preTurnCatchup,
+        ...overrides.streamIngestion?.preTurnCatchup,
+      },
+    },
     executive: {
       ...DEFAULT_CONFIG.executive,
       ...overrides.executive,

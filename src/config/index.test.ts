@@ -47,6 +47,7 @@ describe("config", () => {
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
+    expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(100);
   });
 
   it("names the autonomy wake cap for the configured rolling window", () => {
@@ -91,6 +92,11 @@ describe("config", () => {
       executive: {
         goalFocusThreshold: 0.4,
       },
+      streamIngestion: {
+        preTurnCatchup: {
+          maxEntries: 12,
+        },
+      },
     });
 
     const config = loadConfig({
@@ -103,6 +109,7 @@ describe("config", () => {
         BORG_OFFLINE_BELIEF_REVISER_ENABLED: "true",
         BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
+        BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES: "8",
         ANTHROPIC_API_KEY: "secret",
       },
     });
@@ -114,6 +121,7 @@ describe("config", () => {
     expect(config.anthropic.apiKey).toBe("secret");
     expect(config.anthropic.models.cognition).toBe("file-cognition");
     expect(config.executive.goalFocusThreshold).toBe(0.6);
+    expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(8);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
     expect(config.offline.beliefReviser.enabled).toBe(true);
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);

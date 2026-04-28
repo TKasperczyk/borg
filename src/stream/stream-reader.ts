@@ -122,6 +122,35 @@ export class StreamReader {
       options.sinceCursor === undefined ? options : { ...options, sinceTs: undefined };
     const cursor = options.sinceCursor;
     const cursorTs = cursor?.ts;
+    const untilCursor = options.untilCursor;
+    let reachedUntilCursor = false;
+
+    const isPastUntilBound = (entry: StreamEntry): boolean => {
+      if (untilCursor === undefined) {
+        return false;
+      }
+
+      if (reachedUntilCursor) {
+        return true;
+      }
+
+      return entry.timestamp > untilCursor.ts;
+    };
+
+    const markUntilBound = (entry: StreamEntry): void => {
+      if (
+        untilCursor !== undefined &&
+        entry.timestamp === untilCursor.ts &&
+        entry.id === untilCursor.entryId
+      ) {
+        reachedUntilCursor = true;
+      }
+    };
+
+    const isUntilBound = (entry: StreamEntry): boolean =>
+      untilCursor !== undefined &&
+      entry.timestamp === untilCursor.ts &&
+      entry.id === untilCursor.entryId;
 
     const input = createReadStream(this.streamPath, { encoding: "utf8" });
     const lines = createInterface({ input, crlfDelay: Infinity });
@@ -151,18 +180,34 @@ export class StreamReader {
 
           passedCursor = true;
           for (const bufferedEntry of this.resolveCursorBuffer(cursorBuffer, cursor.entryId)) {
+            if (isPastUntilBound(bufferedEntry)) {
+              break outer;
+            }
+
+            const isUntilEntry = isUntilBound(bufferedEntry);
+
             if (!this.matchesCursorLowerBound(bufferedEntry, cursorTs)) {
+              if (isUntilEntry) {
+                break outer;
+              }
               continue;
             }
 
             if (!this.matchesFilters(bufferedEntry, filterOptions, allowedKinds)) {
+              if (isUntilEntry) {
+                break outer;
+              }
               continue;
             }
 
             yield bufferedEntry;
+            markUntilBound(bufferedEntry);
             emitted += 1;
 
-            if (options.limit !== undefined && emitted >= options.limit) {
+            if (
+              reachedUntilCursor ||
+              (options.limit !== undefined && emitted >= options.limit)
+            ) {
               break outer;
             }
           }
@@ -175,32 +220,60 @@ export class StreamReader {
           continue;
         }
 
+        if (isPastUntilBound(entry)) {
+          break;
+        }
+
+        const isUntilEntry = isUntilBound(entry);
+
         if (!this.matchesFilters(entry, filterOptions, allowedKinds)) {
+          if (isUntilEntry) {
+            break;
+          }
           continue;
         }
 
         yield entry;
+        markUntilBound(entry);
         emitted += 1;
 
-        if (options.limit !== undefined && emitted >= options.limit) {
+        if (reachedUntilCursor || (options.limit !== undefined && emitted >= options.limit)) {
           break;
         }
       }
 
-      if (!passedCursor && cursor !== undefined && (bufferingCursorTs || cursorBuffer.length > 0)) {
+      if (
+        !reachedUntilCursor &&
+        !passedCursor &&
+        cursor !== undefined &&
+        (bufferingCursorTs || cursorBuffer.length > 0)
+      ) {
         for (const bufferedEntry of this.resolveCursorBuffer(cursorBuffer, cursor.entryId)) {
+          if (isPastUntilBound(bufferedEntry)) {
+            break;
+          }
+
+          const isUntilEntry = isUntilBound(bufferedEntry);
+
           if (!this.matchesCursorLowerBound(bufferedEntry, cursorTs)) {
+            if (isUntilEntry) {
+              break;
+            }
             continue;
           }
 
           if (!this.matchesFilters(bufferedEntry, filterOptions, allowedKinds)) {
+            if (isUntilEntry) {
+              break;
+            }
             continue;
           }
 
           yield bufferedEntry;
+          markUntilBound(bufferedEntry);
           emitted += 1;
 
-          if (options.limit !== undefined && emitted >= options.limit) {
+          if (reachedUntilCursor || (options.limit !== undefined && emitted >= options.limit)) {
             break;
           }
         }

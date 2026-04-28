@@ -72,6 +72,17 @@ const configFileSchema = z
       })
       .partial()
       .optional(),
+    streamIngestion: z
+      .object({
+        preTurnCatchup: z
+          .object({
+            maxEntries: z.number().int().positive().optional(),
+          })
+          .partial()
+          .optional(),
+      })
+      .partial()
+      .optional(),
     executive: z
       .object({
         goalFocusThreshold: z.number().min(0).max(1).optional(),
@@ -344,6 +355,11 @@ export const configSchema = z.object({
       underReviewMultiplier: z.number().min(0).max(1),
     }),
   }),
+  streamIngestion: z.object({
+    preTurnCatchup: z.object({
+      maxEntries: z.number().int().positive(),
+    }),
+  }),
   executive: z.object({
     goalFocusThreshold: z.number().min(0).max(1),
   }),
@@ -543,6 +559,11 @@ export const DEFAULT_CONFIG: Config = {
   retrieval: {
     semantic: {
       underReviewMultiplier: 0.5,
+    },
+  },
+  streamIngestion: {
+    preTurnCatchup: {
+      maxEntries: 100,
     },
   },
   executive: {
@@ -935,6 +956,14 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvUnitInterval(env, "BORG_RETRIEVAL_SEMANTIC_UNDER_REVIEW_MULTIPLIER") ??
           fileConfig.retrieval?.semantic?.underReviewMultiplier ??
           DEFAULT_CONFIG.retrieval.semantic.underReviewMultiplier,
+      },
+    },
+    streamIngestion: {
+      preTurnCatchup: {
+        maxEntries:
+          readOptionalEnvNumber(env, "BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES") ??
+          fileConfig.streamIngestion?.preTurnCatchup?.maxEntries ??
+          DEFAULT_CONFIG.streamIngestion.preTurnCatchup.maxEntries,
       },
     },
     executive: {
@@ -1389,6 +1418,11 @@ export function redactConfig(config: Config): Config {
     retrieval: {
       semantic: {
         ...config.retrieval.semantic,
+      },
+    },
+    streamIngestion: {
+      preTurnCatchup: {
+        ...config.streamIngestion.preTurnCatchup,
       },
     },
     executive: {

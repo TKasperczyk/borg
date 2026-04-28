@@ -66,6 +66,14 @@ export function resolveBorgConfig(options: {
       ...DEFAULT_CONFIG.procedural,
       ...(rawConfig as Partial<Config>).procedural,
     },
+    streamIngestion: {
+      ...DEFAULT_CONFIG.streamIngestion,
+      ...(rawConfig as Partial<Config>).streamIngestion,
+      preTurnCatchup: {
+        ...DEFAULT_CONFIG.streamIngestion.preTurnCatchup,
+        ...(rawConfig as Partial<Config>).streamIngestion?.preTurnCatchup,
+      },
+    },
     executive: {
       ...DEFAULT_CONFIG.executive,
       ...(rawConfig as Partial<Config>).executive,

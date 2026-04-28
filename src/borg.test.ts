@@ -1246,6 +1246,98 @@ describe("Borg", () => {
     }
   });
 
+  it("continues the turn and logs an internal event when pre-turn catch-up throws", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      }),
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "The turn still completes.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          createEmptyReflectionResponse(),
+        ],
+      }),
+      liveExtraction: true,
+    });
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          streamIngestionCoordinator?: {
+            catchUp(): Promise<never>;
+            ingest(): Promise<{
+              ran: boolean;
+              processedEntries: number;
+            }>;
+          };
+        };
+      };
+      const coordinator = internal.deps.streamIngestionCoordinator;
+      expect(coordinator).toBeDefined();
+      coordinator!.catchUp = async (): Promise<never> => {
+        throw new Error("catch-up exploded");
+      };
+      coordinator!.ingest = async () => ({
+        ran: false,
+        processedEntries: 0,
+      });
+
+      const result = await borg.turn({
+        userMessage: "Please continue despite ingestion trouble.",
+      });
+
+      expect(result.response).toBe("The turn still completes.");
+      expect(
+        borg.stream.tail(10).some((entry) => {
+          if (entry.kind !== "internal_event" || typeof entry.content !== "object") {
+            return false;
+          }
+
+          return (
+            entry.content !== null &&
+            "hook" in entry.content &&
+            entry.content.hook === "stream_ingestion_pre_turn_catchup" &&
+            "error" in entry.content &&
+            String(entry.content.error).includes("catch-up exploded")
+          );
+        }),
+      ).toBe(true);
+    } finally {
+      await borg.close().catch(() => undefined);
+    }
+  });
+
   it("runs the full cognitive turn loop", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -2047,6 +2139,7 @@ describe("Borg", () => {
           createEmptyReflectionResponse(),
         ],
       }),
+      liveExtraction: false,
     });
 
     try {
@@ -2105,6 +2198,7 @@ describe("Borg", () => {
           },
         ],
       }),
+      liveExtraction: false,
     });
 
     try {

@@ -113,11 +113,11 @@ export type BorgOpenOptions = {
   clock?: Clock;
   tracerPath?: string;
   /**
-   * When true, every completed turn triggers watermark-based episodic
-   * extraction so the next turn's retrieval sees material from the turn
-   * that just ran. Defaults to true. Tests and scripted harnesses that use
-   * fake LLM response queues should opt out explicitly so extraction does
-   * not consume responses out of band.
+   * When true, completed turns trigger best-effort watermark-based episodic
+   * extraction. The next turn retries any backlog before retrieval up to the
+   * configured pre-turn catch-up bound. Tests and scripted harnesses that
+   * use fake LLM response queues should opt out explicitly so extraction
+   * does not consume responses out of band.
    */
   liveExtraction?: boolean;
 };

@@ -71,6 +71,7 @@ export type StreamIterateOptions = {
   sinceTs?: number;
   sinceCursor?: StreamCursor;
   untilTs?: number;
+  untilCursor?: StreamCursor;
   kinds?: readonly StreamEntryKind[];
   limit?: number;
 };

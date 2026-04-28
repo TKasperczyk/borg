@@ -73,6 +73,16 @@ export type IngestOptions = {
    * ingested.
    */
   minEntriesThreshold?: number;
+  /**
+   * Process at most this many pending stream entries in this pass. The
+   * watermark advances to the last entry in the processed prefix only after
+   * extraction succeeds.
+   */
+  maxEntries?: number;
+};
+
+export type PreTurnCatchUpOptions = {
+  maxEntries: number;
 };
 
 type ResumeOptions = {
@@ -81,9 +91,15 @@ type ResumeOptions = {
   usedLegacyFallback: boolean;
 };
 
+type ResolvedIngestOptions = {
+  minEntriesThreshold: number;
+  maxEntries?: number;
+};
+
 type InFlightIngestion = {
   promise: Promise<IngestionResult>;
   minEntriesThreshold: number;
+  maxEntries?: number;
 };
 
 type PendingIngestionWaiter = {
@@ -93,8 +109,29 @@ type PendingIngestionWaiter = {
 
 type PendingIngestion = {
   minEntriesThreshold: number;
+  maxEntries?: number;
   waiters: PendingIngestionWaiter[];
 };
+
+function mergeMaxEntries(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined || right === undefined) {
+    return undefined;
+  }
+
+  return Math.max(left, right);
+}
+
+function mergeIngestOptions(
+  left: ResolvedIngestOptions,
+  right: ResolvedIngestOptions,
+): ResolvedIngestOptions {
+  const maxEntries = mergeMaxEntries(left.maxEntries, right.maxEntries);
+
+  return {
+    minEntriesThreshold: Math.min(left.minEntriesThreshold, right.minEntriesThreshold),
+    ...(maxEntries === undefined ? {} : { maxEntries }),
+  };
+}
 
 /**
  * Fires episodic extraction after a turn completes, gated by a stream
@@ -104,7 +141,8 @@ type PendingIngestion = {
  *
  * Callers should NOT await this in the critical path -- extraction calls
  * the LLM and adds latency. Instead: `void coordinator.ingest(sessionId)`
- * after the turn's response is sent.
+ * after the turn's response is sent. The turn orchestrator uses `catchUp`
+ * for a bounded pre-turn retry before retrieval.
  */
 export class StreamIngestionCoordinator {
   private readonly clock: Clock;
@@ -130,7 +168,10 @@ export class StreamIngestionCoordinator {
    * pass wait on a queued follow-up pass.
    */
   ingest(sessionId: SessionId, ingestOptions: IngestOptions = {}): Promise<IngestionResult> {
-    const minEntriesThreshold = ingestOptions.minEntriesThreshold ?? this.minEntriesThreshold;
+    const resolvedOptions = {
+      minEntriesThreshold: ingestOptions.minEntriesThreshold ?? this.minEntriesThreshold,
+      ...(ingestOptions.maxEntries === undefined ? {} : { maxEntries: ingestOptions.maxEntries }),
+    };
     const existing = this.inFlight.get(sessionId);
 
     if (this.closePromise !== null && existing === undefined) {
@@ -143,39 +184,84 @@ export class StreamIngestionCoordinator {
     this.trackedSessions.add(sessionId);
 
     if (existing !== undefined) {
-      return this.enqueueFollowUp(
-        sessionId,
-        Math.min(existing.minEntriesThreshold, minEntriesThreshold),
-      );
+      return this.enqueueFollowUp(sessionId, mergeIngestOptions(existing, resolvedOptions));
     }
 
-    return this.startPass(sessionId, minEntriesThreshold);
+    return this.startPass(sessionId, resolvedOptions);
+  }
+
+  async hasBacklog(sessionId: SessionId): Promise<boolean> {
+    const resumeOptions = this.resolveResumeOptions(sessionId);
+    const entries = await this.readEntriesPastWatermark(sessionId, resumeOptions, 1);
+
+    return entries.length > 0;
+  }
+
+  async catchUp(
+    sessionId: SessionId,
+    options: PreTurnCatchUpOptions,
+  ): Promise<IngestionResult> {
+    if (this.closePromise !== null) {
+      return this.closePromise.then(() => ({
+        ran: false,
+        processedEntries: 0,
+      }));
+    }
+
+    if (this.inFlight.has(sessionId)) {
+      return {
+        ran: false,
+        processedEntries: 0,
+      };
+    }
+
+    if (!(await this.hasBacklog(sessionId))) {
+      return {
+        ran: false,
+        processedEntries: 0,
+      };
+    }
+
+    this.trackedSessions.add(sessionId);
+    return this.startPass(sessionId, {
+      minEntriesThreshold: 1,
+      maxEntries: options.maxEntries,
+    });
   }
 
   private enqueueFollowUp(
     sessionId: SessionId,
-    minEntriesThreshold: number,
+    ingestOptions: ResolvedIngestOptions,
   ): Promise<IngestionResult> {
     return new Promise<IngestionResult>((resolve, reject) => {
       const pending = this.pending.get(sessionId);
 
       if (pending === undefined) {
         this.pending.set(sessionId, {
-          minEntriesThreshold,
+          ...ingestOptions,
           waiters: [{ resolve, reject }],
         });
         return;
       }
 
-      pending.minEntriesThreshold = Math.min(pending.minEntriesThreshold, minEntriesThreshold);
+      const merged = mergeIngestOptions(pending, ingestOptions);
+      pending.minEntriesThreshold = merged.minEntriesThreshold;
+      if (merged.maxEntries === undefined) {
+        delete pending.maxEntries;
+      } else {
+        pending.maxEntries = merged.maxEntries;
+      }
       pending.waiters.push({ resolve, reject });
     });
   }
 
-  private startPass(sessionId: SessionId, minEntriesThreshold: number): Promise<IngestionResult> {
+  private startPass(
+    sessionId: SessionId,
+    ingestOptions: ResolvedIngestOptions,
+  ): Promise<IngestionResult> {
     let settledResult: IngestionResult | undefined;
     let settledError: unknown;
-    const promise = this.runPass(sessionId, minEntriesThreshold)
+    const promise = this.runPass(sessionId, ingestOptions)
       .then((result) => {
         settledResult = result;
         return result;
@@ -219,21 +305,22 @@ export class StreamIngestionCoordinator {
 
     this.inFlight.set(sessionId, {
       promise,
-      minEntriesThreshold,
+      ...ingestOptions,
     });
     return promise;
   }
 
   private async runPass(
     sessionId: SessionId,
-    minEntriesThreshold: number,
+    ingestOptions: ResolvedIngestOptions,
   ): Promise<IngestionResult> {
     let result: IngestionResult | undefined;
     let failure: unknown;
 
     try {
       result = await this.ingestInternal(sessionId, {
-        minEntriesThreshold,
+        minEntriesThreshold: ingestOptions.minEntriesThreshold,
+        ...(ingestOptions.maxEntries === undefined ? {} : { maxEntries: ingestOptions.maxEntries }),
       });
     } catch (error) {
       failure = error;
@@ -243,7 +330,10 @@ export class StreamIngestionCoordinator {
 
     if (pending !== undefined) {
       this.pending.delete(sessionId);
-      const followUp = this.startPass(sessionId, pending.minEntriesThreshold);
+      const followUp = this.startPass(sessionId, {
+        minEntriesThreshold: pending.minEntriesThreshold,
+        ...(pending.maxEntries === undefined ? {} : { maxEntries: pending.maxEntries }),
+      });
 
       void followUp.then(
         (followUpResult) => {
@@ -309,37 +399,50 @@ export class StreamIngestionCoordinator {
     await reporter(notice);
   }
 
-  private async ingestInternal(
+  private async readEntriesPastWatermark(
     sessionId: SessionId,
-    ingestOptions: IngestOptions,
-  ): Promise<IngestionResult> {
-    const threshold = ingestOptions.minEntriesThreshold ?? this.minEntriesThreshold;
-    const resumeOptions = this.resolveResumeOptions(sessionId);
-
+    resumeOptions: ResumeOptions,
+    limit?: number,
+  ): Promise<StreamEntry[]> {
     const reader = new StreamReader({
       dataDir: this.options.dataDir,
       sessionId,
     });
-
-    const newEntries: StreamEntry[] = [];
+    const entries: StreamEntry[] = [];
 
     try {
       for await (const entry of reader.iterate({
         sinceTs: resumeOptions.sinceTs,
         sinceCursor: resumeOptions.sinceCursor,
+        ...(limit === undefined ? {} : { limit }),
       })) {
-        newEntries.push(entry);
+        entries.push(entry);
       }
     } catch (error) {
       // Tests may tear down the data dir between the turn's stream write and
       // this fire-and-forget ingestion running. A vanished stream file is
       // effectively "nothing to ingest"; production real runs won't see this.
       if (isFileMissingError(error)) {
-        return { ran: false, processedEntries: 0 };
+        return [];
       }
 
       throw error;
     }
+
+    return entries;
+  }
+
+  private async ingestInternal(
+    sessionId: SessionId,
+    ingestOptions: IngestOptions,
+  ): Promise<IngestionResult> {
+    const threshold = ingestOptions.minEntriesThreshold ?? this.minEntriesThreshold;
+    const resumeOptions = this.resolveResumeOptions(sessionId);
+    const newEntries = await this.readEntriesPastWatermark(
+      sessionId,
+      resumeOptions,
+      ingestOptions.maxEntries,
+    );
 
     if (newEntries.length < threshold) {
       return { ran: false, processedEntries: newEntries.length };
@@ -354,12 +457,20 @@ export class StreamIngestionCoordinator {
         }
       }
 
+      const lastProcessedEntry = newEntries.at(-1);
       const extractionResult = await this.options.extractor.extractFromStream({
         session: sessionId,
         sinceTs: resumeOptions.sinceTs,
         sinceCursor: resumeOptions.sinceCursor,
+        ...(lastProcessedEntry === undefined
+          ? {}
+          : {
+              untilCursor: {
+                ts: lastProcessedEntry.timestamp,
+                entryId: lastProcessedEntry.id,
+              },
+            }),
       });
-      const lastProcessedEntry = newEntries[newEntries.length - 1];
 
       this.options.watermarkRepository.set(EPISODIC_PROCESS_NAME, sessionId, {
         lastTs: lastProcessedEntry?.timestamp ?? 0,
@@ -417,7 +528,12 @@ export class StreamIngestionCoordinator {
         await Promise.all(
           [...sessionIds].map((sessionId) => {
             const active = this.inFlight.get(sessionId);
-            return active?.promise ?? this.startPass(sessionId, 1);
+            return (
+              active?.promise ??
+              this.startPass(sessionId, {
+                minEntriesThreshold: 1,
+              })
+            );
           }),
         );
 

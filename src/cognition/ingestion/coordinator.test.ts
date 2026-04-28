@@ -34,6 +34,10 @@ type ExtractCall = {
     entryId: StreamEntryId;
   };
   untilTs?: number;
+  untilCursor?: {
+    ts: number;
+    entryId: StreamEntryId;
+  };
 };
 
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
@@ -310,6 +314,7 @@ describe("StreamIngestionCoordinator", () => {
             sinceTs: options.sinceTs,
             sinceCursor: options.sinceCursor,
             untilTs: options.untilTs,
+            untilCursor: options.untilCursor,
           })) {
             batchContents.push(String(entry.content));
             batchKinds.push(entry.kind);
@@ -425,6 +430,165 @@ describe("StreamIngestionCoordinator", () => {
       expect(result.error).toBeInstanceOf(Error);
       expect(errors).toHaveLength(1);
       expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)).toBeNull();
+    } finally {
+      close();
+    }
+  });
+
+  it("pre-turn catch-up retries backlog left by failed fire-and-forget ingestion", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "failed first", ts: 100 },
+      { kind: "agent_msg", content: "retry me", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    let shouldFail = true;
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: {
+        async extractFromStream(options: ExtractCall): Promise<{
+          inserted: number;
+          updated: number;
+          skipped: number;
+        }> {
+          calls.push(options);
+
+          if (shouldFail) {
+            throw new Error("transient extractor failure");
+          }
+
+          return {
+            inserted: 1,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+      } as unknown as never,
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+    });
+
+    try {
+      const failed = await coordinator.ingest(DEFAULT_SESSION_ID);
+      expect(failed.ran).toBe(false);
+      expect(failed.error).toBeInstanceOf(Error);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)).toBeNull();
+
+      shouldFail = false;
+      const caughtUp = await coordinator.catchUp(DEFAULT_SESSION_ID, { maxEntries: 10 });
+
+      expect(caughtUp.ran).toBe(true);
+      expect(caughtUp.processedEntries).toBe(2);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.sinceCursor).toBeUndefined();
+      expect(calls[1]?.untilCursor).toEqual({
+        ts: 110,
+        entryId: expect.any(String),
+      });
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(110);
+      expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastEntryId).not.toBeNull();
+    } finally {
+      close();
+    }
+  });
+
+  it("bounds pre-turn catch-up by max entries and leaves the remainder for later passes", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "one", ts: 100 },
+      { kind: "agent_msg", content: "two", ts: 110 },
+      { kind: "user_msg", content: "three", ts: 120 },
+      { kind: "agent_msg", content: "four", ts: 130 },
+      { kind: "user_msg", content: "five", ts: 140 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const extractedContents: string[][] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: {
+        async extractFromStream(options: ExtractCall): Promise<{
+          inserted: number;
+          updated: number;
+          skipped: number;
+        }> {
+          const reader = new StreamReader({
+            dataDir,
+            sessionId: DEFAULT_SESSION_ID,
+          });
+          const batchContents: string[] = [];
+
+          for await (const entry of reader.iterate({
+            sinceTs: options.sinceTs,
+            sinceCursor: options.sinceCursor,
+            untilTs: options.untilTs,
+            untilCursor: options.untilCursor,
+          })) {
+            batchContents.push(String(entry.content));
+          }
+
+          extractedContents.push(batchContents);
+
+          return {
+            inserted: batchContents.length,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+      } as unknown as never,
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+    });
+
+    try {
+      const first = await coordinator.catchUp(DEFAULT_SESSION_ID, { maxEntries: 2 });
+      const second = await coordinator.catchUp(DEFAULT_SESSION_ID, { maxEntries: 2 });
+      const third = await coordinator.catchUp(DEFAULT_SESSION_ID, { maxEntries: 2 });
+
+      expect(first.processedEntries).toBe(2);
+      expect(second.processedEntries).toBe(2);
+      expect(third.processedEntries).toBe(1);
+      expect(extractedContents).toEqual([
+        ["one", "two"],
+        ["three", "four"],
+        ["five"],
+      ]);
+
+      const watermark = repo.get("episodic-extractor", DEFAULT_SESSION_ID);
+      expect(watermark?.lastTs).toBe(140);
+      expect(watermark?.lastEntryId).not.toBeNull();
+    } finally {
+      close();
+    }
+  });
+
+  it("does not call the extractor during pre-turn catch-up when there is no backlog", async () => {
+    const dataDir = createTempDir();
+    await seedStream(dataDir, [
+      { kind: "user_msg", content: "already", ts: 100 },
+      { kind: "agent_msg", content: "processed", ts: 110 },
+    ]);
+
+    const { repo, close } = openRepo();
+    const calls: ExtractCall[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository: repo,
+      dataDir,
+      minEntriesThreshold: 2,
+    });
+
+    try {
+      await coordinator.ingest(DEFAULT_SESSION_ID);
+      expect(calls).toHaveLength(1);
+
+      const caughtUp = await coordinator.catchUp(DEFAULT_SESSION_ID, { maxEntries: 10 });
+
+      expect(caughtUp.ran).toBe(false);
+      expect(caughtUp.processedEntries).toBe(0);
+      expect(calls).toHaveLength(1);
     } finally {
       close();
     }
