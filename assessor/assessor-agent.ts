@@ -64,14 +64,20 @@ const readTraceInputSchema = z.object({
 
 type AssessorClient = {
   messages: {
-    create(params: {
+    // Streaming mode: required by the Anthropic SDK when max_tokens is high
+    // enough that the request might exceed the 10-minute non-streaming
+    // budget. We accumulate via finalMessage() so the rest of the loop
+    // logic (reading response.content, response.usage) is unchanged.
+    stream(params: {
       model: string;
       system?: string | TextBlockParam[];
       messages: MessageParam[];
       tools: Tool[];
       max_tokens: number;
       temperature?: number;
-    }): Promise<Message>;
+    }): {
+      finalMessage(): Promise<Message>;
+    };
   };
 };
 
@@ -325,17 +331,20 @@ export class AssessorAgent {
     };
 
     while (usage.llmCalls < this.maxLlmCalls) {
-      const response = await client.messages.create({
-        model: this.model,
-        system: systemParam(prefix, this.scenario),
-        messages,
-        tools: ASSESSOR_TOOLS,
-        // Set to the standard Opus 4.7 max output. The Anthropic API requires
-        // max_tokens; this value is high enough to be a non-constraint for
-        // the assessor's verdict reasoning + tool calls.
-        max_tokens: 32_000,
-        ...(isOpusModel(this.model) ? {} : { temperature: 0 }),
-      });
+      const response = await client.messages
+        .stream({
+          model: this.model,
+          system: systemParam(prefix, this.scenario),
+          messages,
+          tools: ASSESSOR_TOOLS,
+          // Set to the standard Opus 4.7 max output. The Anthropic API
+          // requires max_tokens, and at this value it forces streaming
+          // mode (see the messages.stream call above). Verdict reasoning
+          // + tool calls fit well under this in practice.
+          max_tokens: 32_000,
+          ...(isOpusModel(this.model) ? {} : { temperature: 0 }),
+        })
+        .finalMessage();
       usage = mergeUsage(usage, response);
       messages.push({
         role: "assistant",

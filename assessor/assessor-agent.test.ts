@@ -60,7 +60,7 @@ describe("AssessorAgent", () => {
     const calls: unknown[] = [];
     const client = {
       messages: {
-        create: async (params: unknown) => {
+        stream: (params: unknown) => {
           calls.push(params);
           const next = responses.shift();
 
@@ -68,7 +68,9 @@ describe("AssessorAgent", () => {
             throw new Error("No scripted assessor response");
           }
 
-          return next;
+          return {
+            finalMessage: async () => next,
+          };
         },
       },
     };
