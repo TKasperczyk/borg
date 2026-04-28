@@ -1,3 +1,10 @@
+// Self-band data: the repositories for "who I am" records (values, goals,
+// traits, autobiographical periods, growth markers, open questions).
+// Governance over identity-bearing mutations (audit trail, guard, review-
+// gated overwrites) does NOT live here -- it lives in memory/identity,
+// which composes these repositories with memory/commitments and routes
+// writes through IdentityService + IdentityGuard.
+
 export {
   AutobiographicalRepository,
   autobiographicalPeriodIdSchema,

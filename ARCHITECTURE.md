@@ -363,6 +363,17 @@ markers, and open questions each have their own `*.ts` module under
 `src/memory/self/` because their lifecycle (especially closure /
 periods) is non-trivial.
 
+`src/memory/self/` and `src/memory/identity/` are deliberately
+separate. `memory/self` holds the **data** -- the repositories for
+values, goals, traits, autobiographical periods, growth markers, and
+open questions. `memory/identity` holds the **governance** over
+identity-bearing mutations: `IdentityService` composes the self
+repositories together with `memory/commitments` (because commitments
+are also identity-bearing) and routes writes through `IdentityGuard`
+and `IdentityEventRepository` so an "I changed my mind" pass cannot
+silently overwrite established state. They are not two memory bands;
+they are data and the audit/guard layer over that data.
+
 ```typescript
 // Values + Traits share a state machine: candidate → established
 // (gated by Sprint 14 identity guard; only episode-backed evidence
