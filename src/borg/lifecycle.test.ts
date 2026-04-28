@@ -33,4 +33,31 @@ describe("borg lifecycle", () => {
     await expect(closeBorgDependencies(deps)).rejects.toThrow(AggregateError);
     expect(lanceClose).toHaveBeenCalledTimes(1);
   });
+
+  it("attempts both scheduler stops when one stop throws", async () => {
+    const autonomyError = new Error("autonomy stop failed");
+    const maintenanceStop = vi.fn().mockResolvedValue(undefined);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const deps = {
+      autonomyScheduler: {
+        stop: vi.fn(() => {
+          throw autonomyError;
+        }),
+      },
+      maintenanceScheduler: {
+        stop: maintenanceStop,
+      },
+      sqlite: {
+        close: vi.fn(),
+      },
+      lance: {
+        close: vi.fn().mockResolvedValue(undefined),
+      },
+    } as unknown as BorgDependencies;
+
+    await expect(closeBorgDependencies(deps)).rejects.toThrow(AggregateError);
+    expect(maintenanceStop).toHaveBeenCalledWith({ graceful: true });
+    expect(consoleError).toHaveBeenCalledWith("Failed to close autonomy scheduler", autonomyError);
+  });
 });

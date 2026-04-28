@@ -1,6 +1,69 @@
-import { Borg, type TickResult } from "../src/index.ts";
+import { pathToFileURL } from "node:url";
+
+import {
+  Borg,
+  type MaintenanceCadence,
+  type MaintenanceTickResult,
+  type TickResult,
+} from "../src/index.ts";
 
 const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10_000;
+const DAEMON_SIGNALS = ["SIGINT", "SIGTERM"] as const;
+
+type DaemonSignal = (typeof DAEMON_SIGNALS)[number];
+
+type SchedulerStopOptions = {
+  graceful?: boolean;
+};
+
+type AutonomySchedulerLike = {
+  isEnabled(): boolean;
+  start(): void;
+  stop(options?: SchedulerStopOptions): Promise<void>;
+  setObserver(
+    observer: {
+      onTick?(result: TickResult): void | Promise<void>;
+      onError?(error: unknown): void | Promise<void>;
+    } | null,
+  ): void;
+};
+
+type MaintenanceSchedulerLike = {
+  isEnabled(): boolean;
+  start(): void;
+  stop(options?: SchedulerStopOptions): Promise<void>;
+  setObserver(
+    observer: {
+      onTick?(result: MaintenanceTickResult): void | Promise<void>;
+      onError?(error: unknown, cadence: MaintenanceCadence): void | Promise<void>;
+    } | null,
+  ): void;
+};
+
+export type DaemonBorg = {
+  autonomy: {
+    scheduler: AutonomySchedulerLike;
+  };
+  maintenance: {
+    scheduler: MaintenanceSchedulerLike;
+  };
+  close(): Promise<void>;
+};
+
+export type DaemonRunResult = {
+  status: "started" | "disabled";
+  shutdown(reason: string): Promise<void>;
+};
+
+export type RunDaemonOptions = {
+  openBorg?: () => Promise<DaemonBorg>;
+  writeStderr?: (line: string) => void;
+  signalTarget?: {
+    on(signal: DaemonSignal, listener: () => void): unknown;
+  };
+  exit?: (code?: number) => void;
+  shutdownTimeoutMs?: number;
+};
 
 function writeStderr(line: string): void {
   process.stderr.write(`${line}\n`);
@@ -8,6 +71,18 @@ function writeStderr(line: string): void {
 
 function formatTickResult(result: TickResult): string {
   return JSON.stringify(result);
+}
+
+function formatMaintenanceTickResult(result: MaintenanceTickResult): string {
+  return JSON.stringify(result);
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+
+  return String(error);
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | symbol> {
@@ -30,9 +105,63 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   }
 }
 
-async function main(): Promise<void> {
-  const borg = await Borg.open();
-  const scheduler = borg.autonomy.scheduler;
+async function stopSchedulers(
+  autonomyScheduler: AutonomySchedulerLike,
+  maintenanceScheduler: MaintenanceSchedulerLike,
+  timeoutMs: number,
+  write: (line: string) => void,
+): Promise<unknown[]> {
+  const stopTasks = [
+    {
+      name: "autonomy",
+      stop: () => autonomyScheduler.stop({ graceful: true }),
+    },
+    {
+      name: "maintenance",
+      stop: () => maintenanceScheduler.stop({ graceful: true }),
+    },
+  ] as const;
+
+  const stopResult = await withTimeout(
+    Promise.allSettled(stopTasks.map((task) => Promise.resolve().then(() => task.stop()))),
+    timeoutMs,
+  );
+
+  if (typeof stopResult === "symbol") {
+    write(`[daemon] scheduler stop timed out after ${timeoutMs}ms; closing anyway`);
+    return [];
+  }
+
+  const errors: unknown[] = [];
+
+  stopResult.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      return;
+    }
+
+    const task = stopTasks[index];
+
+    if (task === undefined) {
+      errors.push(result.reason);
+      write(`[daemon] scheduler stop failed ${formatError(result.reason)}`);
+      return;
+    }
+
+    errors.push(result.reason);
+    write(`[daemon] ${task.name} scheduler stop failed ${formatError(result.reason)}`);
+  });
+
+  return errors;
+}
+
+export async function runDaemon(options: RunDaemonOptions = {}): Promise<DaemonRunResult> {
+  const borg = await (options.openBorg?.() ?? Borg.open());
+  const autonomyScheduler = borg.autonomy.scheduler;
+  const maintenanceScheduler = borg.maintenance.scheduler;
+  const write = options.writeStderr ?? writeStderr;
+  const signalTarget = options.signalTarget ?? process;
+  const exit = options.exit ?? ((code?: number) => process.exit(code));
+  const shutdownTimeoutMs = options.shutdownTimeoutMs ?? GRACEFUL_SHUTDOWN_TIMEOUT_MS;
   let shuttingDown = false;
 
   const shutdown = async (reason: string) => {
@@ -41,60 +170,96 @@ async function main(): Promise<void> {
     }
 
     shuttingDown = true;
-    writeStderr(`[daemon] stopping: ${reason}`);
+    write(`[daemon] stopping: ${reason}`);
 
-    const stopResult = await withTimeout(
-      scheduler.stop({ graceful: true }),
-      GRACEFUL_SHUTDOWN_TIMEOUT_MS,
+    const errors = await stopSchedulers(
+      autonomyScheduler,
+      maintenanceScheduler,
+      shutdownTimeoutMs,
+      write,
     );
 
-    if (typeof stopResult === "symbol") {
-      writeStderr(
-        `[daemon] scheduler stop timed out after ${GRACEFUL_SHUTDOWN_TIMEOUT_MS}ms; closing anyway`,
-      );
+    try {
+      await borg.close();
+    } catch (error) {
+      errors.push(error);
+      write(`[daemon] close failed ${formatError(error)}`);
     }
 
-    await borg.close();
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "Daemon shutdown completed with errors");
+    }
   };
 
-  scheduler.setObserver({
+  autonomyScheduler.setObserver({
     onTick: (result) => {
-      writeStderr(`[daemon] tick ${formatTickResult(result)}`);
+      write(`[daemon] autonomy tick ${formatTickResult(result)}`);
     },
     onError: (error) => {
-      writeStderr(
-        `[daemon] tick-error ${
-          error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-        }`,
-      );
+      write(`[daemon] autonomy tick-error ${formatError(error)}`);
     },
   });
 
-  process.on("SIGINT", () => {
-    void shutdown("SIGINT").finally(() => {
-      process.exit(0);
-    });
+  maintenanceScheduler.setObserver({
+    onTick: (result) => {
+      write(`[daemon] maintenance tick ${formatMaintenanceTickResult(result)}`);
+    },
+    onError: (error, cadence) => {
+      write(`[daemon] maintenance tick-error cadence=${cadence} ${formatError(error)}`);
+    },
   });
 
-  process.on("SIGTERM", () => {
-    void shutdown("SIGTERM").finally(() => {
-      process.exit(0);
+  for (const signal of DAEMON_SIGNALS) {
+    signalTarget.on(signal, () => {
+      void shutdown(signal).then(
+        () => {
+          exit(0);
+        },
+        (error) => {
+          write(`[daemon] shutdown-error ${formatError(error)}`);
+          exit(1);
+        },
+      );
     });
-  });
-
-  if (!scheduler.isEnabled()) {
-    writeStderr("[daemon] autonomy disabled; exiting");
-    await borg.close();
-    return;
   }
 
-  scheduler.start();
-  writeStderr("[daemon] started");
+  const autonomyEnabled = autonomyScheduler.isEnabled();
+  const maintenanceEnabled = maintenanceScheduler.isEnabled();
+
+  if (!autonomyEnabled && !maintenanceEnabled) {
+    write("[daemon] autonomy and maintenance disabled; exiting");
+    await borg.close();
+    return {
+      status: "disabled",
+      shutdown,
+    };
+  }
+
+  if (autonomyEnabled) {
+    autonomyScheduler.start();
+    write("[daemon] autonomy scheduler started");
+  } else {
+    write("[daemon] autonomy scheduler disabled");
+  }
+
+  if (maintenanceEnabled) {
+    maintenanceScheduler.start();
+    write("[daemon] maintenance scheduler started");
+  } else {
+    write("[daemon] maintenance scheduler disabled");
+  }
+
+  write("[daemon] started");
+
+  return {
+    status: "started",
+    shutdown,
+  };
 }
 
-main().catch((error) => {
-  writeStderr(
-    `[daemon] fatal ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`,
-  );
-  process.exitCode = 1;
-});
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runDaemon().catch((error) => {
+    writeStderr(`[daemon] fatal ${formatError(error)}`);
+    process.exitCode = 1;
+  });
+}

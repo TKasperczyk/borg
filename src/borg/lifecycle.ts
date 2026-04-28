@@ -27,28 +27,59 @@ export async function closeBestEffort(
 
 export async function closeBorgDependencies(deps: BorgDependencies): Promise<void> {
   const errors: unknown[] = [];
+  const collectCloseError = (label: string, error: unknown): void => {
+    errors.push(error);
+    console.error(`Failed to close ${label}`, error);
+  };
+
+  const schedulerStops = [
+    {
+      label: "autonomy scheduler",
+      close: () =>
+        deps.autonomyScheduler.stop({
+          graceful: true,
+        }),
+    },
+    {
+      label: "maintenance scheduler",
+      close: () =>
+        deps.maintenanceScheduler.stop({
+          graceful: true,
+        }),
+    },
+  ] as const;
+
+  const schedulerStopResults = await Promise.allSettled(
+    schedulerStops.map((stop) => Promise.resolve().then(() => stop.close())),
+  );
+
+  schedulerStopResults.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      return;
+    }
+
+    const schedulerStop = schedulerStops[index];
+
+    if (schedulerStop !== undefined) {
+      collectCloseError(schedulerStop.label, result.reason);
+    }
+  });
 
   try {
-    await deps.autonomyScheduler.stop({
-      graceful: true,
-    });
-    await deps.maintenanceScheduler.stop({
-      graceful: true,
-    });
     await deps.streamIngestionCoordinator?.close();
+  } catch (error) {
+    collectCloseError("stream ingestion coordinator", error);
   } finally {
     try {
       deps.sqlite.close();
     } catch (error) {
-      errors.push(error);
-      console.error("Failed to close SQLite database", error);
+      collectCloseError("SQLite database", error);
     }
 
     try {
       await deps.lance.close();
     } catch (error) {
-      errors.push(error);
-      console.error("Failed to close LanceDB store", error);
+      collectCloseError("LanceDB store", error);
     }
   }
 
