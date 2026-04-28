@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient, type LLMCompleteOptions } from "../../llm/index.js";
 import { createOfflineTestHarness } from "../../offline/test-support.js";
 import { StreamWriter } from "../../stream/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
@@ -252,7 +252,7 @@ describe("episodic extractor", () => {
       },
     });
     clock.advance(10);
-    await writer.append({
+    const perception = await writer.append({
       kind: "perception",
       content: {
         mode: "problem_solving",
@@ -261,7 +261,7 @@ describe("episodic extractor", () => {
         affectiveSignal: {
           valence: -0.3,
           arousal: 0.4,
-          dominant_emotion: "frustration",
+          dominant_emotion: "anger",
         },
       },
     });
@@ -319,10 +319,231 @@ describe("episodic extractor", () => {
       skipped: 0,
     });
     expect(prompt).not.toContain("internal plan");
-    expect(prompt).not.toContain('"perception"');
+    expect(prompt).toContain("<perception_context>");
+    expect(prompt).toContain('"mode":"problem_solving"');
+    expect(prompt).toContain('"entities":["Atlas"]');
+    expect(prompt).toContain('"affectiveSignal"');
     expect(prompt).not.toContain('"tool_call"');
     expect(prompt).not.toContain("non-conversational scaffolding");
     expect(listed[0]?.source_stream_ids).toEqual([user.id, agent.id]);
+    expect(listed[0]?.source_stream_ids).not.toContain(perception.id);
+  });
+
+  it("passes perception-only entities and mode through LLM-emitted episode fields", async () => {
+    const llm = new FakeLLMClient();
+    const clock = new ManualClock(1_000);
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: "default" as never,
+      clock,
+    });
+
+    cleanup.push(harness.cleanup);
+    cleanup.push(async () => {
+      writer.close();
+    });
+
+    const user = await writer.append({
+      kind: "user_msg",
+      content: "Can we make sense of the recent planning thread?",
+    });
+    clock.advance(10);
+    await writer.append({
+      kind: "perception",
+      content: {
+        mode: "reflective",
+        entities: ["LatentRook"],
+        temporalCue: {
+          label: "recent planning thread",
+        },
+        affectiveSignal: {
+          valence: 0.15,
+          arousal: 0.3,
+          dominant_emotion: "curiosity",
+        },
+      },
+    });
+    clock.advance(10);
+    const agent = await writer.append({
+      kind: "agent_msg",
+      content: "I mapped the thread into the current decision points.",
+    });
+
+    llm.pushResponse((options: LLMCompleteOptions) => {
+      const prompt = String(options.messages[0]?.content ?? "");
+
+      expect(prompt).toContain("<perception_context>");
+      expect(prompt).toContain("LatentRook");
+      expect(prompt).toContain('"mode":"reflective"');
+
+      return createEpisodeToolResponse([
+        {
+          title: "Planning thread reflection",
+          narrative: "The turn was framed as a reflective planning-thread review.",
+          source_stream_ids: [user.id, agent.id],
+          participants: ["LatentRook"],
+          tags: ["LatentRook", "reflective"],
+          confidence: 0.8,
+          significance: 0.7,
+        },
+      ]);
+    });
+
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.episodicRepository,
+      embeddingClient: harness.embeddingClient,
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      clock,
+    });
+
+    await extractor.extractFromStream();
+    const [episode] = await harness.episodicRepository.listAll();
+
+    expect(episode?.source_stream_ids).toEqual([user.id, agent.id]);
+    expect(episode?.participants).toContain("LatentRook");
+    expect(episode?.tags).toEqual(expect.arrayContaining(["LatentRook", "reflective"]));
+  });
+
+  it("omits perception context when the chunk has no perception entries", async () => {
+    const llm = new FakeLLMClient();
+    const clock = new ManualClock(1_000);
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: "default" as never,
+      clock,
+    });
+
+    cleanup.push(harness.cleanup);
+    cleanup.push(async () => {
+      writer.close();
+    });
+
+    const user = await writer.append({
+      kind: "user_msg",
+      content: "Let's summarize the release checklist.",
+    });
+    clock.advance(10);
+    const agent = await writer.append({
+      kind: "agent_msg",
+      content: "I grouped the checklist by risk and owner.",
+    });
+
+    llm.pushResponse(
+      createEpisodeToolResponse([
+        {
+          title: "Release checklist summary",
+          narrative: "The release checklist was summarized by risk and owner.",
+          source_stream_ids: [user.id, agent.id],
+          participants: ["team"],
+          tags: ["release"],
+          confidence: 0.8,
+          significance: 0.7,
+        },
+      ]),
+    );
+
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.episodicRepository,
+      embeddingClient: harness.embeddingClient,
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      clock,
+    });
+
+    await extractor.extractFromStream();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(prompt).not.toContain("<perception_context>");
+    expect(prompt).not.toContain("</perception_context>");
+  });
+
+  it("omits perception context when no perception entries match the chunk audience", async () => {
+    const llm = new FakeLLMClient();
+    const clock = new ManualClock(1_000);
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: "default" as never,
+      clock,
+    });
+
+    cleanup.push(harness.cleanup);
+    cleanup.push(async () => {
+      writer.close();
+    });
+
+    const user = await writer.append({
+      kind: "user_msg",
+      content: "Can you help Sam with the private deployment note?",
+      audience: "Sam",
+    });
+    clock.advance(10);
+    await writer.append({
+      kind: "perception",
+      content: {
+        mode: "relational",
+        entities: ["AlexOnlySignal"],
+        temporalCue: null,
+        affectiveSignal: {
+          valence: -0.2,
+          arousal: 0.35,
+          dominant_emotion: "fear",
+        },
+      },
+      audience: "Alex",
+    });
+    clock.advance(10);
+    const agent = await writer.append({
+      kind: "agent_msg",
+      content: "I drafted a scoped response for Sam.",
+      audience: "Sam",
+    });
+
+    llm.pushResponse(
+      createEpisodeToolResponse([
+        {
+          title: "Scoped deployment note",
+          narrative: "The private deployment note for Sam was handled in a scoped turn.",
+          source_stream_ids: [user.id, agent.id],
+          participants: ["Sam"],
+          tags: ["deployment"],
+          confidence: 0.8,
+          significance: 0.7,
+        },
+      ]),
+    );
+
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.episodicRepository,
+      embeddingClient: harness.embeddingClient,
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      clock,
+    });
+
+    await extractor.extractFromStream();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(prompt).not.toContain("<perception_context>");
+    expect(prompt).not.toContain("AlexOnlySignal");
   });
 
   it("stores LLM-emitted emotional arcs without agent affect contamination", async () => {

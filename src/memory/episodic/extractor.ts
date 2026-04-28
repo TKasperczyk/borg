@@ -46,6 +46,12 @@ const EPISODIC_CONTEXT_STREAM_KINDS = ["user_msg", "agent_msg", "perception"] as
 const perceptionAffectiveContentSchema = z.object({
   affectiveSignal: affectiveSignalSchema,
 });
+const perceptionContextContentSchema = z.object({
+  mode: z.string().min(1),
+  entities: z.array(z.string().min(1)),
+  temporalCue: z.unknown().nullable().default(null),
+  affectiveSignal: affectiveSignalSchema,
+});
 export const EXTRACT_EPISODES_TOOL = {
   name: EXTRACT_EPISODES_TOOL_NAME,
   description: "Emit grounded episodic memory candidates for the provided stream chunk.",
@@ -197,6 +203,58 @@ function perceptionSignalForUserEntry(
   return null;
 }
 
+function perceptionContextLine(entry: StreamEntry): string | null {
+  if (entry.kind !== "perception") {
+    return null;
+  }
+
+  const parsed = perceptionContextContentSchema.safeParse(entry.content);
+
+  if (!parsed.success) {
+    return null;
+  }
+
+  return JSON.stringify({
+    timestamp: entry.timestamp,
+    mode: parsed.data.mode,
+    entities: parsed.data.entities,
+    temporalCue: parsed.data.temporalCue,
+    affectiveSignal: parsed.data.affectiveSignal,
+    audience: entry.audience,
+  });
+}
+
+function perceptionContextEntriesForChunk(
+  chunk: readonly StreamEntry[],
+  contextEntries: readonly StreamEntry[],
+): StreamEntry[] {
+  if (chunk.length === 0) {
+    return [];
+  }
+
+  const chunkIds = new Set(chunk.map((entry) => entry.id));
+  const chunkIndexes = contextEntries.flatMap((entry, index) =>
+    chunkIds.has(entry.id) ? [index] : [],
+  );
+
+  if (chunkIndexes.length === 0) {
+    return [];
+  }
+
+  const sourceAudiences = new Set(chunk.map((entry) => entry.audience ?? null));
+  const startIndex = Math.min(...chunkIndexes);
+  const endIndex = Math.max(...chunkIndexes);
+
+  return contextEntries
+    .slice(startIndex, endIndex + 1)
+    .filter(
+      (entry) =>
+        entry.kind === "perception" &&
+        sourceAudiences.has(entry.audience ?? null) &&
+        perceptionContextLine(entry) !== null,
+    );
+}
+
 function buildEmotionalArc(
   sourceEntries: readonly StreamEntry[],
   contextEntries: readonly StreamEntry[],
@@ -238,7 +296,10 @@ function buildEmotionalArc(
   };
 }
 
-function buildExtractorPrompt(chunk: readonly StreamEntry[]): string {
+function buildExtractorPrompt(
+  chunk: readonly StreamEntry[],
+  perceptionContextEntries: readonly StreamEntry[],
+): string {
   const lines = chunk.map((entry) =>
     JSON.stringify({
       id: entry.id,
@@ -248,16 +309,28 @@ function buildExtractorPrompt(chunk: readonly StreamEntry[]): string {
       audience: entry.audience,
     }),
   );
+  const perceptionLines = perceptionContextEntries.flatMap((entry) => {
+    const line = perceptionContextLine(entry);
 
-  return [
+    return line === null ? [] : [line];
+  });
+
+  const promptLines = [
     "You extract episodic memories from a stream chunk.",
     `Emit your result by calling the ${EXTRACT_EPISODES_TOOL_NAME} tool exactly once.`,
     "source_stream_ids MUST only reference ids present in the chunk.",
+    "Perception context is advisory only; NEVER include perception context entries in source_stream_ids.",
     "Narrative should be 2-5 concise sentences.",
     "For each episode, emit emotional_arc directly from the episode text and user signals. Use null only when there is no meaningful affective signal.",
     "Chunk:",
     ...lines,
-  ].join("\n");
+  ];
+
+  if (perceptionLines.length > 0) {
+    promptLines.push("<perception_context>", ...perceptionLines, "</perception_context>");
+  }
+
+  return promptLines.join("\n");
 }
 
 function parseLlmResponse(result: LLMCompleteResult): ExtractorCandidate[] {
@@ -448,13 +521,14 @@ export class EpisodicExtractor {
 
     for (const chunk of chunks) {
       const chunkById = new Map(chunk.map((entry) => [entry.id, entry]));
+      const perceptionContextEntries = perceptionContextEntriesForChunk(chunk, contextEntries);
       const result = await this.options.llmClient.complete({
         model: this.options.model,
         system: "Extract episodic memories grounded only in the provided stream chunk.",
         messages: [
           {
             role: "user",
-            content: buildExtractorPrompt(chunk),
+            content: buildExtractorPrompt(chunk, perceptionContextEntries),
           },
         ],
         tools: [EXTRACT_EPISODES_TOOL],
