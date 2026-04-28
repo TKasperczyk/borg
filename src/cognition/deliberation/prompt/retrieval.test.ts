@@ -1,9 +1,26 @@
 import { describe, expect, it } from "vitest";
 
 import type { SemanticEdge, SemanticNode } from "../../../memory/semantic/index.js";
-import type { RetrievedSemantic } from "../../../retrieval/index.js";
+import type { RetrievalConfidence, RetrievedSemantic } from "../../../retrieval/index.js";
 import { ManualClock } from "../../../util/clock.js";
-import { summarizeSemanticContext } from "./retrieval.js";
+import {
+  summarizeRetrievalConfidence,
+  summarizeRetrievedEpisodes,
+  summarizeSemanticContext,
+} from "./retrieval.js";
+
+function makeRetrievalConfidence(
+  overrides: Partial<RetrievalConfidence> = {},
+): RetrievalConfidence {
+  return {
+    overall: overrides.overall ?? 0,
+    evidenceStrength: overrides.evidenceStrength ?? 0,
+    coverage: overrides.coverage ?? 0,
+    sourceDiversity: overrides.sourceDiversity ?? 0,
+    contradictionPresent: overrides.contradictionPresent ?? false,
+    sampleSize: overrides.sampleSize ?? 0,
+  };
+}
 
 function makeNode(overrides: Partial<SemanticNode> = {}): SemanticNode {
   return {
@@ -48,6 +65,39 @@ function makeClosedEdge(overrides: Partial<SemanticEdge> = {}): SemanticEdge {
     invalidated_reason: overrides.invalidated_reason ?? "superseded",
   };
 }
+
+describe("retrieval confidence prompt rendering", () => {
+  it("renders an explicit no-evidence policy when confidence has zero samples", () => {
+    const summary = summarizeRetrievalConfidence(makeRetrievalConfidence());
+
+    expect(summary).not.toBeNull();
+    expect(summary).toContain("overall=0.00");
+    expect(summary).toContain("samples=0");
+    expect(summary).toContain("No relevant memory was retrieved for this turn.");
+    expect(summary).toContain("tool.openQuestions.create");
+    expect(summary).toContain("Do not fabricate specifics");
+  });
+
+  it("adds grounding policy only when non-empty confidence is low", () => {
+    const low = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({ overall: 0.2, evidenceStrength: 0.2, sampleSize: 1 }),
+    );
+    const healthy = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({ overall: 0.8, evidenceStrength: 0.8, sampleSize: 3 }),
+    );
+
+    expect(low).toContain("must not over-claim");
+    expect(low).toContain("tool.openQuestions.create");
+    expect(healthy).not.toContain("tool.openQuestions.create");
+    expect(healthy).not.toContain("Policy:");
+  });
+
+  it("renders an empty retrieved-episodes placeholder", () => {
+    const summary = summarizeRetrievedEpisodes("Retrieved context", []);
+
+    expect(summary).toBe("No episodes retrieved for this turn.");
+  });
+});
 
 describe("semantic retrieval prompt rendering", () => {
   it("tags closed path edges for historical as-of context", () => {

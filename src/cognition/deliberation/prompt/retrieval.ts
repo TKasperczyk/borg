@@ -9,10 +9,12 @@ import type {
 } from "../../../retrieval/index.js";
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
 
+const LOW_RETRIEVAL_CONFIDENCE_THRESHOLD = 0.45;
+
 export function summarizeRetrievalConfidence(
   confidence: RetrievalConfidence | null | undefined,
 ): string | null {
-  if (confidence === null || confidence === undefined || confidence.sampleSize === 0) {
+  if (confidence === null || confidence === undefined) {
     return null;
   }
 
@@ -28,13 +30,26 @@ export function summarizeRetrievalConfidence(
     fragments.push("contradictions=present");
   }
 
+  const lines = [
+    "Retrieval confidence (internal, for calibrating certainty in your response):",
+    fragments.join(" "),
+  ];
+
+  if (confidence.sampleSize === 0) {
+    lines.push(
+      "No relevant memory was retrieved for this turn.",
+      "Policy: If asked for specific facts, figures, citations, attributions, or claims that cannot be grounded in retrieved memory, say plainly that you do not know or call tool.openQuestions.create to record the question. Do not fabricate specifics or attribute claims to people you have not retrieved.",
+    );
+  } else if (confidence.overall < LOW_RETRIEVAL_CONFIDENCE_THRESHOLD) {
+    lines.push(
+      "Policy: Low retrieval confidence means you must not over-claim. Ground specific facts, figures, citations, attributions, and claims in retrieved memory; otherwise say plainly that you do not know or call tool.openQuestions.create.",
+    );
+  }
+
   // Internal hint: the being should speak more cautiously when overall is low.
   // Not user-facing -- the LLM phrases uncertainty naturally rather than
   // emitting the percentage. This is the signal, not the phrasing.
-  return [
-    "Retrieval confidence (internal, for calibrating certainty in your response):",
-    fragments.join(" "),
-  ].join("\n");
+  return lines.join("\n");
 }
 
 function estimatePromptTokens(text: string): number {
@@ -62,7 +77,7 @@ export function summarizeRetrievedEpisodes(
   maxTokens = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
 ): string | null {
   if (retrievedEpisodes.length === 0) {
-    return null;
+    return "No episodes retrieved for this turn.";
   }
 
   const lines = [`${label}:`];
