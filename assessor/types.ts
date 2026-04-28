@@ -110,6 +110,7 @@ export type Scenario = {
   systemPrompt: string;
   traceAssertions?: TraceAssertion[];
   maxTurns: number;
+  maxLlmCalls?: number;
   tracePrompts?: boolean;
   mockConversation?: string[];
   sessionForTurn?: (turnNumber: number) => string | undefined;

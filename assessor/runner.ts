@@ -409,7 +409,7 @@ export class ScenarioRunner {
       const assessor = new AssessorAgent({
         scenario: this.options.scenario,
         maxTurns: this.options.maxTurns ?? this.options.scenario.maxTurns,
-        maxLlmCalls: this.options.maxLlmCalls,
+        maxLlmCalls: this.options.maxLlmCalls ?? this.options.scenario.maxLlmCalls,
         env: this.options.env,
         tools: {
           chatWithBorg: async (message) => {
