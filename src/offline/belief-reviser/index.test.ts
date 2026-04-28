@@ -72,7 +72,7 @@ async function runBeliefReviser(
     maxReviewsPerRun?: number;
     claimStaleSec?: number;
     maxParseFailures?: number;
-    budget?: number;
+    maxLlmCalls?: number;
     consecutiveParseFailureLimit?: number;
   } = {},
 ) {
@@ -720,6 +720,79 @@ describe("belief reviser process", () => {
       });
       expect((await harness.semanticNodeRepository.get(target.id))?.confidence).toBeCloseTo(0.5);
       expect(llmClient.requests).toHaveLength(1);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("threads run options into regrade planning", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const first = await insertNode(harness, "First planned regrade", [0, 1, 0, 0]);
+      const second = await insertNode(harness, "Second planned regrade", [0, 1, 0, 0]);
+      enqueueNodeBeliefRevision(harness, first);
+      enqueueNodeBeliefRevision(harness, second);
+
+      const process = new BeliefReviserProcess({
+        db: harness.db,
+        regradeBatchSize: 2,
+      });
+      const plan = await process.plan(harness.createContext(), {
+        dryRun: true,
+        budget: 123,
+        params: {
+          maxLlmCalls: 1,
+        },
+      });
+
+      expect(plan.regrade_items).toHaveLength(1);
+      expect(plan.max_llm_calls).toBe(1);
+      expect(plan.token_budget).toBe(123);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("uses run token budget for regrade LLM calls", async () => {
+    const llmClient = new FakeLLMClient({
+      responses: [
+        beliefRevisionResponse({
+          verdict: "keep",
+          rationale: "The surviving target-local evidence still supports the claim.",
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+      llmClient,
+    });
+
+    try {
+      const target = await insertNode(harness, "Token budget target", [0, 1, 0, 0]);
+      enqueueNodeBeliefRevision(harness, target);
+
+      const process = new BeliefReviserProcess({
+        db: harness.db,
+        regradeBatchSize: 1,
+      });
+      const result = await process.run(harness.createContext(), {
+        budget: 7,
+      });
+      const [review] = openBeliefRevisionItems(harness);
+
+      expect(result.budget_exhausted).toBe(true);
+      expect(result.tokens_used).toBe(8);
+      expect(result.changes).toHaveLength(0);
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          code: "OFFLINE_BUDGET_EXCEEDED",
+        }),
+      ]);
+      expect(llmClient.requests).toHaveLength(1);
+      expect(review?.refs).not.toHaveProperty("__borg_belief_revision_claim");
     } finally {
       await harness.cleanup();
     }

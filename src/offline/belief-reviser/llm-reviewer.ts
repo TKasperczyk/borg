@@ -6,6 +6,7 @@ import {
   type Episode,
 } from "../../memory/episodic/index.js";
 import { type LLMClient, type LLMCompleteResult, toToolInputSchema } from "../../llm/index.js";
+import { BudgetExceededError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";
 
 const EMIT_BELIEF_REVISION_TOOL_NAME = "EmitBeliefRevision";
@@ -207,6 +208,10 @@ async function completeWithRetry(
         timeoutMs,
       );
     } catch (error) {
+      if (error instanceof BudgetExceededError) {
+        throw error;
+      }
+
       lastError = error;
     }
   }

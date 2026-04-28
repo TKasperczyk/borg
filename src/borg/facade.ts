@@ -114,7 +114,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       ruminator: deps.config.offline.ruminator.enabled,
       "self-narrator": deps.config.offline.selfNarrator.enabled,
       "procedural-synthesizer": deps.config.offline.proceduralSynthesizer.enabled,
-      "belief-reviser": true,
+      "belief-reviser": deps.config.offline.beliefReviser.enabled,
     })
       .filter(([, enabled]) => enabled)
       .map(([name]) => name as OfflineProcessName);

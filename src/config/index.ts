@@ -164,6 +164,7 @@ const configFileSchema = z
           .optional(),
         beliefReviser: z
           .object({
+            enabled: z.boolean().optional(),
             confidenceDropMultiplier: z.number().min(0).max(1).optional(),
             confidenceFloor: z.number().min(0).max(1).optional(),
             regradeBatchSize: z.number().int().positive().optional(),
@@ -171,7 +172,7 @@ const configFileSchema = z
             maxReviewsPerRun: z.number().int().positive().optional(),
             claimStaleSec: z.number().positive().optional(),
             maxParseFailures: z.number().int().positive().optional(),
-            budget: z.number().int().positive().optional(),
+            maxLlmCalls: z.number().int().positive().optional(),
             consecutiveParseFailureLimit: z.number().int().positive().optional(),
           })
           .partial()
@@ -409,6 +410,7 @@ export const configSchema = z.object({
       cadenceHintDays: z.number().positive(),
     }),
     beliefReviser: z.object({
+      enabled: z.boolean(),
       confidenceDropMultiplier: z.number().min(0).max(1),
       confidenceFloor: z.number().min(0).max(1),
       regradeBatchSize: z.number().int().positive(),
@@ -416,7 +418,7 @@ export const configSchema = z.object({
       maxReviewsPerRun: z.number().int().positive(),
       claimStaleSec: z.number().positive(),
       maxParseFailures: z.number().int().positive(),
-      budget: z.number().int().positive(),
+      maxLlmCalls: z.number().int().positive(),
       consecutiveParseFailureLimit: z.number().int().positive(),
     }),
   }),
@@ -611,6 +613,7 @@ export const DEFAULT_CONFIG: Config = {
       cadenceHintDays: 7,
     },
     beliefReviser: {
+      enabled: true,
       confidenceDropMultiplier: 0.5,
       confidenceFloor: 0.05,
       regradeBatchSize: 10,
@@ -618,7 +621,8 @@ export const DEFAULT_CONFIG: Config = {
       maxReviewsPerRun: 128,
       claimStaleSec: 600,
       maxParseFailures: 3,
-      budget: 20,
+      // Call-count cap for regrade LLM work; run `budget` remains token-based.
+      maxLlmCalls: 20,
       consecutiveParseFailureLimit: 5,
     },
   },
@@ -1152,6 +1156,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           DEFAULT_CONFIG.offline.selfNarrator.cadenceHintDays,
       },
       beliefReviser: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_OFFLINE_BELIEF_REVISER_ENABLED") ??
+          fileConfig.offline?.beliefReviser?.enabled ??
+          DEFAULT_CONFIG.offline.beliefReviser.enabled,
         confidenceDropMultiplier:
           readOptionalEnvUnitInterval(
             env,
@@ -1183,10 +1191,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_PARSE_FAILURES") ??
           fileConfig.offline?.beliefReviser?.maxParseFailures ??
           DEFAULT_CONFIG.offline.beliefReviser.maxParseFailures,
-        budget:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_BUDGET") ??
-          fileConfig.offline?.beliefReviser?.budget ??
-          DEFAULT_CONFIG.offline.beliefReviser.budget,
+        maxLlmCalls:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS") ??
+          fileConfig.offline?.beliefReviser?.maxLlmCalls ??
+          DEFAULT_CONFIG.offline.beliefReviser.maxLlmCalls,
         consecutiveParseFailureLimit:
           readOptionalEnvNumber(
             env,

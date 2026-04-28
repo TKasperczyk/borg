@@ -9,7 +9,6 @@ import identityConsistencyMetric from "./metrics/identity-consistency.js";
 import preferenceFormationMetric from "./metrics/preference-formation.js";
 import retrievalPrecisionRecallMetric from "./metrics/retrieval-precision-recall.js";
 import semanticTemporalRecallMetric from "./metrics/semantic-temporal-recall.js";
-import swapTestMetric from "./metrics/swap-test.js";
 import {
   buildScorecard,
   formatHumanScorecard,
@@ -27,7 +26,6 @@ const REGISTRY: readonly EvalMetricModule[] = [
   falseMemoryRateMetric,
   goalProgressAttributionMetric,
   preferenceFormationMetric,
-  swapTestMetric,
   identityConsistencyMetric,
 ] as const;
 

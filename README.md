@@ -80,6 +80,11 @@ pnpm dev          # tsx watch on src/cli/index.ts
 pnpm format       # prettier
 ```
 
+### Scripts
+
+`pnpm chat` runs `scripts/chat.ts`, a developer-only interactive helper for
+local sessions. It is not part of the shipped `borg` CLI surface.
+
 ## CLI surface
 
 ```

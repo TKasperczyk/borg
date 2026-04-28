@@ -83,6 +83,10 @@ describe("config", () => {
         curator: {
           retrievalLogRetentionDays: 60,
         },
+        beliefReviser: {
+          enabled: false,
+          maxLlmCalls: 4,
+        },
       },
       executive: {
         goalFocusThreshold: 0.4,
@@ -96,6 +100,8 @@ describe("config", () => {
         BORG_EMBEDDING_DIMS: "1024",
         BORG_PERCEPTION_USE_LLM_FALLBACK: "false",
         BORG_OFFLINE_CURATOR_RETRIEVAL_LOG_RETENTION_DAYS: "45",
+        BORG_OFFLINE_BELIEF_REVISER_ENABLED: "true",
+        BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
         ANTHROPIC_API_KEY: "secret",
       },
@@ -109,6 +115,8 @@ describe("config", () => {
     expect(config.anthropic.models.cognition).toBe("file-cognition");
     expect(config.executive.goalFocusThreshold).toBe(0.6);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
+    expect(config.offline.beliefReviser.enabled).toBe(true);
+    expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);
   });
 
   it("defaults all anthropic model slots to opus 4.7", () => {

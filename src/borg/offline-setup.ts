@@ -135,7 +135,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       maxReviewsPerRun: options.config.offline.beliefReviser.maxReviewsPerRun,
       claimStaleSec: options.config.offline.beliefReviser.claimStaleSec,
       maxParseFailures: options.config.offline.beliefReviser.maxParseFailures,
-      budget: options.config.offline.beliefReviser.budget,
+      maxLlmCalls: options.config.offline.beliefReviser.maxLlmCalls,
       consecutiveParseFailureLimit:
         options.config.offline.beliefReviser.consecutiveParseFailureLimit,
     }),

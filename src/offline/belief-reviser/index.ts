@@ -12,9 +12,11 @@ import {
   type SemanticNode,
 } from "../../memory/semantic/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
+import { BudgetExceededError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 
+import { getBudgetErrorTokens, withBudget } from "../budget.js";
 import type {
   OfflineChange,
   OfflineContext,
@@ -39,7 +41,7 @@ const DEFAULT_MAX_EVENTS_PER_RUN = 32;
 const DEFAULT_MAX_REVIEWS_PER_RUN = 128;
 const DEFAULT_CLAIM_STALE_SEC = 600;
 const DEFAULT_MAX_PARSE_FAILURES = 3;
-const DEFAULT_BUDGET = 20;
+const DEFAULT_MAX_LLM_CALLS = 20;
 const DEFAULT_CONSECUTIVE_PARSE_FAILURE_LIMIT = 5;
 const MAX_SUPPORT_DESCENDANT_HOPS = 2;
 const BELIEF_REVISION_REASON =
@@ -126,6 +128,8 @@ export const beliefReviserPlanSchema = z.object({
   event_cap: z.number().int().positive().default(DEFAULT_MAX_EVENTS_PER_RUN),
   review_run_cap: z.number().int().positive().default(DEFAULT_MAX_REVIEWS_PER_RUN),
   pending_event_count: z.number().int().nonnegative().default(0),
+  max_llm_calls: z.number().int().positive().default(DEFAULT_MAX_LLM_CALLS),
+  token_budget: z.number().int().positive().optional(),
   errors: z
     .array(
       z.object({
@@ -150,7 +154,7 @@ export type BeliefReviserProcessOptions = {
   maxReviewsPerRun?: number;
   claimStaleSec?: number;
   maxParseFailures?: number;
-  budget?: number;
+  maxLlmCalls?: number;
   consecutiveParseFailureLimit?: number;
   llmTimeoutMs?: number;
 };
@@ -308,6 +312,33 @@ function normalizePositiveIntegerOption(
   }
 
   return value;
+}
+
+function normalizeOptionalPositiveIntegerOption(
+  value: number | undefined,
+  label: string,
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+    throw new TypeError(`${label} must be a positive integer`);
+  }
+
+  return value;
+}
+
+function readPositiveIntegerParam(
+  params: Record<string, unknown> | undefined,
+  key: string,
+  fallback: number,
+): number {
+  const value = params?.[key];
+
+  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0
+    ? value
+    : fallback;
 }
 
 function normalizePositiveNumberOption(
@@ -777,7 +808,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
   private readonly maxReviewsPerRun: number;
   private readonly claimStaleSec: number;
   private readonly maxParseFailures: number;
-  private readonly budget: number;
+  private readonly maxLlmCalls: number;
   private readonly consecutiveParseFailureLimit: number;
 
   constructor(private readonly options: BeliefReviserProcessOptions) {
@@ -803,7 +834,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       DEFAULT_MAX_PARSE_FAILURES,
       "maxParseFailures",
     );
-    this.budget = normalizePositiveIntegerOption(options.budget, DEFAULT_BUDGET, "budget");
+    this.maxLlmCalls = normalizePositiveIntegerOption(
+      options.maxLlmCalls,
+      DEFAULT_MAX_LLM_CALLS,
+      "maxLlmCalls",
+    );
     this.consecutiveParseFailureLimit = normalizePositiveIntegerOption(
       options.consecutiveParseFailureLimit,
       DEFAULT_CONSECUTIVE_PARSE_FAILURE_LIMIT,
@@ -1645,19 +1680,36 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     return transaction();
   }
 
-  async plan(ctx: OfflineContext): Promise<BeliefReviserPlan> {
+  async plan(ctx: OfflineContext, opts: OfflineProcessRunOptions = {}): Promise<BeliefReviserPlan> {
     const items: BeliefReviserPlan["items"] = [];
+    const maxEventsPerRun = readPositiveIntegerParam(
+      opts.params,
+      "maxEventsPerRun",
+      this.maxEventsPerRun,
+    );
+    const maxReviewsPerRun = readPositiveIntegerParam(
+      opts.params,
+      "maxReviewsPerRun",
+      this.maxReviewsPerRun,
+    );
+    const regradeBatchSize = readPositiveIntegerParam(
+      opts.params,
+      "regradeBatchSize",
+      this.regradeBatchSize,
+    );
+    const maxLlmCalls = readPositiveIntegerParam(opts.params, "maxLlmCalls", this.maxLlmCalls);
+    const tokenBudget = normalizeOptionalPositiveIntegerOption(opts.budget, "budget");
     const events = listUnprocessedEvents(this.options.db);
     let plannedReviews = 0;
     let runCapped = false;
 
     for (const event of events) {
-      if (items.length >= this.maxEventsPerRun || plannedReviews >= this.maxReviewsPerRun) {
+      if (items.length >= maxEventsPerRun || plannedReviews >= maxReviewsPerRun) {
         runCapped = true;
         break;
       }
 
-      const remainingReviewSlots = this.maxReviewsPerRun - plannedReviews;
+      const remainingReviewSlots = maxReviewsPerRun - plannedReviews;
       const eventReviewCap = Math.min(this.maxReviewsPerEvent, remainingReviewSlots);
       const result = await buildReviewsForEvent(ctx, event, eventReviewCap);
       items.push({
@@ -1669,7 +1721,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       });
       plannedReviews += result.reviews.length;
 
-      if (plannedReviews >= this.maxReviewsPerRun) {
+      if (plannedReviews >= maxReviewsPerRun) {
         runCapped = true;
 
         if (events.length > items.length) {
@@ -1681,11 +1733,17 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     return beliefReviserPlanSchema.parse({
       process: this.name,
       items,
-      regrade_items: listPendingRegradeItems(ctx, this.regradeBatchSize, this.claimStaleSec),
+      regrade_items: listPendingRegradeItems(
+        ctx,
+        Math.min(regradeBatchSize, maxLlmCalls),
+        this.claimStaleSec,
+      ),
       run_capped: runCapped || events.length > items.length,
-      event_cap: this.maxEventsPerRun,
-      review_run_cap: this.maxReviewsPerRun,
+      event_cap: maxEventsPerRun,
+      review_run_cap: maxReviewsPerRun,
       pending_event_count: Math.max(0, events.length - items.length),
+      max_llm_calls: maxLlmCalls,
+      token_budget: tokenBudget,
       errors: [],
       tokens_used: 0,
       budget_exhausted: false,
@@ -1871,138 +1929,181 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       }
     }
 
-    let llmCalls = 0;
-    let consecutiveParseFailures = 0;
     let budgetExhausted = plan.budget_exhausted;
-    for (const regradeItem of plan.regrade_items) {
-      if (llmCalls >= this.budget) {
-        budgetExhausted = true;
-        break;
-      }
+    const runRegrades = async (
+      llm: OfflineContext["llm"]["background"],
+      recordTokens: (tokens: number) => void,
+    ) => {
+      let llmCalls = 0;
+      let consecutiveParseFailures = 0;
 
-      if (consecutiveParseFailures >= this.consecutiveParseFailureLimit) {
-        errors.push({
-          process: this.name,
-          message: "belief revision parse-failure circuit breaker opened",
-          code: "belief_reviser_parse_failure_circuit_breaker",
-        });
-        break;
-      }
-
-      const claimed = this.claimReview(ctx, regradeItem.review_id);
-
-      if (claimed === null) {
-        continue;
-      }
-      const expectedClaim = claimFromReviewItem(claimed);
-
-      if (expectedClaim === null) {
-        continue;
-      }
-      let nodeSyncCompleted = false;
-      let ownershipLostDuringSync = false;
-
-      try {
-        const input = await this.buildLlmInput(ctx, claimed);
-        llmCalls += 1;
-        const result = await evaluateBeliefRevision({
-          llm: ctx.llm.background,
-          model: ctx.config.anthropic.models.background,
-          input,
-          timeoutMs: this.options.llmTimeoutMs,
-        });
-        tokensUsed += result.tokensUsed;
-        const prepared = this.prepareNodeVectorSync(ctx, claimed, result.verdict, expectedClaim);
-
-        for (const sync of prepared.nodeSyncs) {
-          try {
-            const synced = await this.syncNodeToVectorStore(ctx, sync, errors);
-            if (!synced) {
-              ownershipLostDuringSync = true;
-              break;
-            }
-            nodeSyncCompleted = true;
-          } catch (error) {
-            errors.push({
-              process: this.name,
-              message: error instanceof Error ? error.message : String(error),
-              code: "belief_reviser_regrade_vector_sync_failed",
-            });
-            throw error;
-          }
+      for (const regradeItem of plan.regrade_items) {
+        if (llmCalls >= plan.max_llm_calls) {
+          break;
         }
 
-        if (ownershipLostDuringSync) {
-          consecutiveParseFailures = 0;
+        if (consecutiveParseFailures >= this.consecutiveParseFailureLimit) {
+          errors.push({
+            process: this.name,
+            message: "belief revision parse-failure circuit breaker opened",
+            code: "belief_reviser_parse_failure_circuit_breaker",
+          });
+          break;
+        }
+
+        const claimed = this.claimReview(ctx, regradeItem.review_id);
+
+        if (claimed === null) {
           continue;
         }
+        const expectedClaim = claimFromReviewItem(claimed);
 
-        const applied = this.applyVerdict(ctx, claimed, prepared.verdict, expectedClaim);
-
-        if (applied.change !== null) {
-          changes.push(applied.change);
+        if (expectedClaim === null) {
+          continue;
         }
-        if (!applied.applied) {
-          await appendClaimOwnershipMismatchEvent(
-            ctx,
-            {
-              reviewId: regradeItem.review_id,
-              action: "apply_verdict",
-            },
-            errors,
-          );
-        }
-        consecutiveParseFailures = 0;
-      } catch (error) {
-        const parseFailure =
-          error instanceof BeliefRevisionParseError
-            ? this.recordParseFailure(ctx, regradeItem.review_id, expectedClaim, error.message)
-            : null;
+        let nodeSyncCompleted = false;
+        let ownershipLostDuringSync = false;
 
-        if (parseFailure === null) {
-          const cleared = this.clearReviewClaim(ctx, regradeItem.review_id, expectedClaim, {
-            clearApplying: !nodeSyncCompleted,
+        try {
+          const input = await this.buildLlmInput(ctx, claimed);
+          llmCalls += 1;
+          const result = await evaluateBeliefRevision({
+            llm,
+            model: ctx.config.anthropic.models.background,
+            input,
+            timeoutMs: this.options.llmTimeoutMs,
           });
-          if (!cleared) {
+          recordTokens(result.tokensUsed);
+          const prepared = this.prepareNodeVectorSync(ctx, claimed, result.verdict, expectedClaim);
+
+          for (const sync of prepared.nodeSyncs) {
+            try {
+              const synced = await this.syncNodeToVectorStore(ctx, sync, errors);
+              if (!synced) {
+                ownershipLostDuringSync = true;
+                break;
+              }
+              nodeSyncCompleted = true;
+            } catch (error) {
+              errors.push({
+                process: this.name,
+                message: error instanceof Error ? error.message : String(error),
+                code: "belief_reviser_regrade_vector_sync_failed",
+              });
+              throw error;
+            }
+          }
+
+          if (ownershipLostDuringSync) {
+            consecutiveParseFailures = 0;
+            continue;
+          }
+
+          const applied = this.applyVerdict(ctx, claimed, prepared.verdict, expectedClaim);
+
+          if (applied.change !== null) {
+            changes.push(applied.change);
+          }
+          if (!applied.applied) {
             await appendClaimOwnershipMismatchEvent(
               ctx,
               {
                 reviewId: regradeItem.review_id,
-                action:
-                  error instanceof BeliefRevisionParseError
-                    ? "record_parse_failure"
-                    : "clear_claim",
+                action: "apply_verdict",
               },
               errors,
             );
           }
           consecutiveParseFailures = 0;
-        } else {
-          consecutiveParseFailures += 1;
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push({
-          process: this.name,
-          message,
-          code: "belief_reviser_regrade_failed",
-        });
+        } catch (error) {
+          if (error instanceof BudgetExceededError) {
+            const cleared = this.clearReviewClaim(ctx, regradeItem.review_id, expectedClaim, {
+              clearApplying: !nodeSyncCompleted,
+            });
+            if (!cleared) {
+              await appendClaimOwnershipMismatchEvent(
+                ctx,
+                {
+                  reviewId: regradeItem.review_id,
+                  action: "clear_claim",
+                },
+                errors,
+              );
+            }
+            throw error;
+          }
 
-        try {
-          await ctx.streamWriter.append({
-            kind: "internal_event",
-            content: {
-              hook: "belief_reviser_regrade_failed",
-              review_id: regradeItem.review_id,
-              error: message,
-            },
-          });
-        } catch (logError) {
+          const parseFailure =
+            error instanceof BeliefRevisionParseError
+              ? this.recordParseFailure(ctx, regradeItem.review_id, expectedClaim, error.message)
+              : null;
+
+          if (parseFailure === null) {
+            const cleared = this.clearReviewClaim(ctx, regradeItem.review_id, expectedClaim, {
+              clearApplying: !nodeSyncCompleted,
+            });
+            if (!cleared) {
+              await appendClaimOwnershipMismatchEvent(
+                ctx,
+                {
+                  reviewId: regradeItem.review_id,
+                  action:
+                    error instanceof BeliefRevisionParseError
+                      ? "record_parse_failure"
+                      : "clear_claim",
+                },
+                errors,
+              );
+            }
+            consecutiveParseFailures = 0;
+          } else {
+            consecutiveParseFailures += 1;
+          }
+          const message = error instanceof Error ? error.message : String(error);
           errors.push({
             process: this.name,
-            message: logError instanceof Error ? logError.message : String(logError),
-            code: "belief_reviser_regrade_failure_log_failed",
+            message,
+            code: "belief_reviser_regrade_failed",
           });
+
+          try {
+            await ctx.streamWriter.append({
+              kind: "internal_event",
+              content: {
+                hook: "belief_reviser_regrade_failed",
+                review_id: regradeItem.review_id,
+                error: message,
+              },
+            });
+          } catch (logError) {
+            errors.push({
+              process: this.name,
+              message: logError instanceof Error ? logError.message : String(logError),
+              code: "belief_reviser_regrade_failure_log_failed",
+            });
+          }
         }
+      }
+    };
+
+    if (plan.token_budget === undefined) {
+      await runRegrades(ctx.llm.background, (used) => {
+        tokensUsed += used;
+      });
+    } else {
+      try {
+        const budgeted = await withBudget(this.name, plan.token_budget, async ({ wrapClient }) => {
+          await runRegrades(wrapClient(ctx.llm.background), () => {});
+        });
+        tokensUsed += budgeted.tokens_used;
+      } catch (error) {
+        tokensUsed += getBudgetErrorTokens(error);
+        budgetExhausted = budgetExhausted || error instanceof BudgetExceededError;
+        errors.push({
+          process: this.name,
+          message: error instanceof Error ? error.message : String(error),
+          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
+        });
       }
     }
 
@@ -2017,7 +2118,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
   }
 
   async run(ctx: OfflineContext, opts: OfflineProcessRunOptions = {}): Promise<OfflineResult> {
-    const plan = await this.plan(ctx);
+    const plan = await this.plan(ctx, opts);
     return opts.dryRun === true ? this.preview(plan) : this.apply(ctx, plan);
   }
 }

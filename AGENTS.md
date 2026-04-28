@@ -109,10 +109,12 @@ Tests co-located with source as `*.test.ts`.
 - Prefer small, focused libraries
 - Document non-obvious choices in the module README or a code comment
 
-### No MCP, no interactive TUI
+### No MCP, no shipped interactive TUI
 
 Borg is a library. The CLI is a thin operational shell. There is no MCP server
-and no interactive TUI -- keep the code free of those concerns.
+and no shipped interactive TUI -- keep the library and CLI free of those
+concerns. `scripts/chat.ts` is a developer-only helper for local interactive
+sessions, not part of the distributed CLI surface.
 
 ## Common operations
 

@@ -124,6 +124,7 @@ export class MaintenanceOrchestrator {
         const override = input.opts?.processOverrides?.[process.name];
         const context = this.createContext(runId, streamWriter);
         const plan = await process.plan(context, {
+          dryRun: override?.dryRun ?? input.opts?.dryRun,
           budget: override?.budget ?? input.opts?.budget,
           params: override?.params,
         });
