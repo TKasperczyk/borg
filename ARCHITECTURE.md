@@ -58,7 +58,7 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 5. **Self is a first-class entity, not a prompt file.** Identity, values, skills, current goals, open questions, uncertainties live in the memory itself and evolve with it.
 6. **Forgetting is a feature.** Decay + win-rate modulation + affect-weighted decay. Unbounded growth kills performance and coherence.
 7. **Honest uncertainty beats false confidence.** Every claim carries confidence + source-type; every retrieval exposes its evidence chain.
-8. **Maintenance is auditable and reversible.** Dry-run, review queue, rollback.
+8. **Maintenance is auditable and reversible by default.** Dry-run, review queue, rollback. The narrow exceptions (transient observability prunes such as `prune_retrieval_log`) are still audited via `no_reverser` rows.
 9. **LLM-by-default for classification.** Cognitive classifiers (mode,
    entities, affect, temporal cues, contradiction, goal progress,
    procedural outcomes, trait evidence, identity-relevant judgments) run
@@ -124,6 +124,8 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 │  │  (merge/      (extract    (prune,   (QA /      (revisit          │    │
 │  │   contradict) insights)   promote)  drift)     unresolved)       │    │
 │  │  Self-narrator (growth markers / autobiographical summaries)    │    │
+│  │  Procedural-synthesizer (evidence → reusable Bayesian skills)   │    │
+│  │  Belief-reviser (re-grade beliefs after support invalidation)   │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -681,10 +683,14 @@ band.
 
 ### 5.2 Offline processes
 
-Seven cooperative processes that share an orchestrator
+Eight cooperative processes that share an orchestrator
 (`MaintenanceOrchestrator`), a per-process budget, and an append-only
 audit log. Each emits its plan through `plan()`/`preview()`/`apply()`
-so all maintenance is dry-runnable and reversible.
+so all maintenance is dry-runnable, and reversible whenever a reverser is
+registered. A small number of destructive actions over transient
+observability data (e.g. `prune_retrieval_log` in the curator) are
+intentionally one-way; those audit rows record `reversal: { no_reverser:
+true, … }` so the operator still has a trail.
 
 - **Consolidator** -- cluster overlapping episodes by embedding +
   tag-family + access-scope; merge each cluster into a new episode
@@ -724,6 +730,13 @@ so all maintenance is dry-runnable and reversible.
   growth markers when evidence supports them, and manage
   autobiographical period rollover (close current + open next when
   themes diverge).
+- **Belief-reviser** -- consume `semantic_edge_invalidated` events,
+  walk supporting-edge descendants up to `MAX_SUPPORT_DESCENDANT_HOPS`,
+  apply an automatic `confidenceDropMultiplier` (floored at
+  `confidenceFloor`) to dependent nodes/edges, and enqueue
+  `belief_revision` review-queue items for the LLM reviewer when the
+  remaining support is ambiguous. Claims on events are stale-aware
+  (`claimStaleSec`) so a crashed run does not strand work.
 
 Every `apply()` run emits a `dream_report` stream entry summarizing
 runs / changes / tokens / errors.
@@ -735,7 +748,8 @@ independent of the autonomy scheduler (cognition wakes ≠ housekeeping):
 - **Light** (default 4h): consolidator + curator -- low-risk,
   frequent.
 - **Heavy** (default 24h): reflector + overseer + ruminator +
-  self-narrator + procedural-synthesizer -- higher-risk, conservative.
+  self-narrator + procedural-synthesizer + belief-reviser --
+  higher-risk, conservative.
 
 Sprint 43 note: procedural skill synthesis uses a hybrid design. Online
 reflection records evidence about attempted approaches and outcomes;
@@ -886,7 +900,10 @@ status annotated.
 10. **Budget accounting per process.** Implemented: `BudgetTracker`
     in `src/offline/budget.ts`; throws on cap exceeded.
 11. **Reversible maintenance.** Implemented: audit log with reversal
-    payloads + dry-run mode on every offline process.
+    payloads + dry-run mode on every offline process. A small set of
+    destructive prunes over transient observability data (e.g.
+    `prune_retrieval_log`) record `reversal: { no_reverser: true, … }`
+    rather than a reversible payload; everything else is replayable.
 
 ### Speculative / not implemented
 

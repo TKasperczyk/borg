@@ -35,15 +35,18 @@ public API may still shift as the library gets exercised.
 - **Commitment awareness, not filter.** Rules injected into the prompt so
   the agent knows them before speaking. Post-hoc check with Sonnet revision,
   refusal-aware (compliant refusals don't falsely trigger).
-- **Offline dream cycle.** Six processes (consolidator, reflector, curator,
-  overseer, ruminator, self-narrator) with plan/apply parity, budget caps,
-  append-only audit log, and reversible maintenance.
+- **Offline dream cycle.** Eight processes (consolidator, reflector, curator,
+  overseer, ruminator, self-narrator, procedural-synthesizer, belief-reviser)
+  with plan/apply parity, budget caps, append-only audit log, and reversible
+  maintenance where a reverser is registered (a few destructive prunes of
+  transient observability data, e.g. retrieval-log trim, are recorded as
+  `no_reverser` audit rows).
 - **Bayesian procedural memory.** Skills are Beta(α, β) posteriors; Thompson
   sampling selects an approach; outcomes update the posterior atomically.
 
-Currently 405 tests, typecheck clean. The being targets Opus 4.7; the
-substrate is not designed to be portable across arbitrary LLMs (see
-ARCHITECTURE.md Part 7 for why).
+Currently 778 tests across 120 files, typecheck clean. The being targets
+Opus 4.7; the substrate is not designed to be portable across arbitrary
+LLMs (see ARCHITECTURE.md Part 7 for why).
 
 ## Install
 
@@ -56,9 +59,15 @@ Requires:
 - Node >= 22
 - An OpenAI-compatible embeddings endpoint (defaults to LM Studio on
   `localhost:1234` with `text-embedding-qwen3-embedding-8b`, 4096 dims)
-- Anthropic API key for cognition
+- Anthropic credentials for cognition. `anthropic.auth` defaults to `auto`,
+  which prefers a Claude Code OAuth token (see `borg auth status`) and
+  falls back to `ANTHROPIC_API_KEY` if no OAuth token is available. Set
+  `BORG_ANTHROPIC_AUTH=api-key` (and provide `ANTHROPIC_API_KEY`) or
+  `BORG_ANTHROPIC_AUTH=oauth` to pin the mode.
 
-Copy `.env.example` and fill in `ANTHROPIC_API_KEY` (at minimum).
+Copy `.env.example` if you want to run with an API key; OAuth users can
+skip it and rely on the shared Claude credentials file (run `claude
+/login` once, then `borg auth status` to confirm).
 
 ## Development
 
@@ -76,6 +85,7 @@ pnpm format       # prettier
 ```
 borg version
 borg config show
+borg auth status|refresh
 
 borg stream tail [--n 20] [--session <id>]
 borg stream append --kind <kind> --content <text>

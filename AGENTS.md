@@ -48,7 +48,8 @@ src/
     social/
     working/
   cognition/      perception, attention, deliberation, action, reflection
-  offline/        consolidator, reflector, curator, overseer, ruminator, self-narrator
+  offline/        consolidator, reflector, curator, overseer, ruminator,
+                  self-narrator, procedural-synthesizer, belief-reviser
   retrieval/      unified context-aware retrieval pipeline
   storage/        lancedb + sqlite abstractions
   embeddings/     embedding client
