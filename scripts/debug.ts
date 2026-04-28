@@ -488,9 +488,8 @@ async function runPhase8(borg: Borg, state: DebugState): Promise<void> {
 
   if (!scheduler.isEnabled()) {
     note(
-      "scheduler is off by default (maintenance.enabled=false); set BORG_MAINTENANCE_ENABLED=true to activate scheduled ticks.",
+      "scheduler is disabled (maintenance.enabled=false); manual tick() still works regardless -- exercising below.",
     );
-    note("manual tick() still works regardless -- exercising below.");
   }
 
   // Tick both cadences back to back. Independent of the autonomy scheduler;

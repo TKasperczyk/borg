@@ -71,8 +71,9 @@ describe("Sprint 28 integration", () => {
 
     try {
       expect(borg.maintenance.scheduler).toBeDefined();
-      // Default config has maintenance.enabled = false, so even start() is a no-op.
-      expect(borg.maintenance.scheduler.isEnabled()).toBe(false);
+      // Default config has maintenance.enabled = true; the scheduler exists in
+      // an enabled-but-unstarted state until a runtime (daemon) calls start().
+      expect(borg.maintenance.scheduler.isEnabled()).toBe(true);
     } finally {
       await borg.close();
     }

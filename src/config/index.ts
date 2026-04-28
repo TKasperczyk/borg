@@ -648,7 +648,11 @@ export const DEFAULT_CONFIG: Config = {
     },
   },
   maintenance: {
-    enabled: false,
+    // Maintenance is core to the architecture (cold paths do real work --
+    // semantic insight extraction, contradiction sweeps, decay/promotion,
+    // belief revision). Default on so a fresh deployment actually runs the
+    // dream cycle once a runtime (daemon, etc.) calls scheduler.start().
+    enabled: true,
     lightIntervalMs: 14_400_000,
     heavyIntervalMs: 86_400_000,
     lightProcesses: ["consolidator", "curator"],

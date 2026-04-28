@@ -793,9 +793,13 @@ tick and vice versa. Same-cadence concurrent ticks coalesce. An optional
 stale-aware) skips a cadence when a user turn is likely in flight, so
 the dream cycle doesn't compete with live cognition. `MaintenanceOrchestrator`
 remains the callable surface for manual invocation (CLI `borg dream …`
-and the new `borg maintenance tick --cadence light|heavy`). The
-scheduler is opt-in: `start()` must be called explicitly (same pattern
-as the autonomy scheduler).
+and the new `borg maintenance tick --cadence light|heavy`).
+`maintenance.enabled` defaults to `true` -- the dream cycle is part of
+normal operation, not an opt-in -- but the scheduler still does not
+auto-start; a runtime (the daemon, or a library caller) must invoke
+`scheduler.start()` to begin firing cadences. Setting
+`maintenance.enabled = false` keeps the scheduler available for manual
+ticks while suppressing scheduled runs.
 
 **Autonomy wakes.** The autonomy scheduler is the only runtime loop for
 self-initiated cognition. It scans enabled wake sources, enforces the
