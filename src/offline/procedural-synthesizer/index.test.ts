@@ -25,6 +25,7 @@ import {
 } from "../test-support.js";
 
 import { ProceduralSynthesizerProcess } from "./index.js";
+import { createSkillSplitReviewHandler } from "./skill-split-review.js";
 
 function proceduralConfig(overrides: Partial<typeof DEFAULT_CONFIG.offline.proceduralSynthesizer>) {
   return {
@@ -249,6 +250,12 @@ async function addSkillWithContextStats(
     skill: updated,
     contextRows,
   };
+}
+
+function getOpenSkillSplitReview(harness: OfflineTestHarness, skillId: SkillId) {
+  return harness.reviewQueueRepository
+    .list({ kind: "skill_split", openOnly: true })
+    .find((item) => item.refs.original_skill_id === skillId);
 }
 
 function createRetrievalConfidence(): RetrievalConfidence {
@@ -570,7 +577,7 @@ describe("ProceduralSynthesizerProcess", () => {
     expect(plan.items).toEqual([]);
   });
 
-  it("applies an LLM skill split and migrates context stats to the new skills", async () => {
+  it("queues and accepts an LLM skill split, then migrates context stats to the new skills", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createSkillSplitResponse({
@@ -594,7 +601,6 @@ describe("ProceduralSynthesizerProcess", () => {
       configOverrides: proceduralConfig({
         minContextAttemptsForSplit: 3,
         minDivergenceForSplit: 0.01,
-        skillSplitDryRun: false,
       }),
       llmClient: llm,
     });
@@ -602,6 +608,43 @@ describe("ProceduralSynthesizerProcess", () => {
 
     const process = createProcess(harness);
     const result = await process.run(harness.createContext(), {});
+    const review = getOpenSkillSplitReview(harness, skill.id);
+
+    expect(review).toMatchObject({
+      kind: "skill_split",
+      refs: expect.objectContaining({
+        original_skill_id: skill.id,
+        proposed_children: [
+          expect.objectContaining({
+            label: "TypeScript debugging comparison",
+            problem: "TypeScript debugging comparison",
+            approach: "Compare the compiler failure with the last passing TypeScript state.",
+            context_stats: [
+              expect.objectContaining({
+                context_key: "code_debugging:typescript:self",
+              }),
+            ],
+          }),
+          expect.objectContaining({
+            label: "Roadmap planning comparison",
+            context_stats: [
+              expect.objectContaining({
+                context_key: "planning:roadmap:self",
+              }),
+            ],
+          }),
+        ],
+        rationale: "Context buckets have divergent outcomes.",
+        evidence_summary: expect.objectContaining({
+          divergence: expect.any(Number),
+        }),
+        cooldown: expect.objectContaining({
+          claimed_at: expect.any(Number),
+          split_cooldown_days: 7,
+        }),
+      }),
+    });
+    await harness.reviewQueueRepository.resolve(review!.id, "accept");
     const original = harness.skillRepository.get(skill.id);
     const newSkills = (original?.superseded_by ?? []).map((skillId) =>
       harness!.skillRepository.get(skillId),
@@ -609,6 +652,14 @@ describe("ProceduralSynthesizerProcess", () => {
 
     expect(result.errors).toEqual([]);
     expect(llm.requests).toHaveLength(1);
+    expect(result.changes).toEqual([
+      expect.objectContaining({
+        action: "skill_split_proposal",
+        targets: expect.objectContaining({
+          review_item_id: review!.id,
+        }),
+      }),
+    ]);
     expect(original).toMatchObject({
       status: "superseded",
     });
@@ -641,6 +692,9 @@ describe("ProceduralSynthesizerProcess", () => {
         beta: 1,
       }),
     ]);
+    expect(
+      harness.auditLog.list({ process: "procedural-synthesizer" }).map((item) => item.action),
+    ).toContain("skill_split");
   });
 
   it("logs no_split decisions without mutating skills", async () => {
@@ -929,7 +983,7 @@ describe("ProceduralSynthesizerProcess", () => {
     );
   });
 
-  it("keeps split proposals dry-run by default", async () => {
+  it("queues split proposals by default without writing dry-run internal events", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createSkillSplitResponse({
@@ -961,28 +1015,58 @@ describe("ProceduralSynthesizerProcess", () => {
     const process = createProcess(harness);
     const result = await process.run(harness.createContext(), {});
     const entries = new StreamReader({ dataDir: harness.tempDir }).tail(5);
+    const review = getOpenSkillSplitReview(harness, skill.id);
 
     expect(result.errors).toEqual([]);
     expect(result.changes).toEqual([
       expect.objectContaining({
         action: "skill_split_proposal",
+        targets: expect.objectContaining({
+          review_item_id: review!.id,
+        }),
       }),
     ]);
+    expect(review).toMatchObject({
+      kind: "skill_split",
+      refs: expect.objectContaining({
+        original_skill_id: skill.id,
+      }),
+    });
     expect(harness.skillRepository.get(skill.id)).toMatchObject({
       status: "active",
       superseded_by: [],
     });
     expect(harness.skillRepository.list()).toHaveLength(1);
-    expect(entries).toContainEqual(
-      expect.objectContaining({
-        kind: "internal_event",
-        content: expect.objectContaining({
-          hook: "skill_split_proposal",
-          dry_run: true,
-          skill_id: skill.id,
+    expect(
+      entries.some(
+        (entry) =>
+          entry.kind === "internal_event" &&
+          typeof entry.content === "object" &&
+          entry.content !== null &&
+          "hook" in entry.content &&
+          "skill_id" in entry.content &&
+          entry.content.hook === "skill_split_proposal" &&
+          entry.content.skill_id === skill.id,
+      ),
+    ).toBe(false);
+
+    await harness.reviewQueueRepository.resolve(review!.id, {
+      decision: "reject",
+      reason: "Operator wants to keep the general skill.",
+    });
+    expect(harness.reviewQueueRepository.get(review!.id)).toMatchObject({
+      resolved_at: expect.any(Number),
+      resolution: "reject",
+      refs: expect.objectContaining({
+        review_resolution: expect.objectContaining({
+          reason: "Operator wants to keep the general skill.",
         }),
       }),
-    );
+    });
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      last_split_attempt_at: expect.any(Number),
+      splitting_at: null,
+    });
 
     const second = await process.run(harness.createContext(), {});
 
@@ -992,6 +1076,72 @@ describe("ProceduralSynthesizerProcess", () => {
       last_split_attempt_at: expect.any(Number),
       splitting_at: null,
     });
+  });
+
+  it("resolves a stale accepted split as rejected without applying it", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "TypeScript debugging comparison",
+              approach: "Compare the compiler failure with the last passing TypeScript state.",
+              target_contexts: ["code_debugging:typescript:self"],
+            },
+            {
+              applies_when: "Roadmap planning comparison",
+              approach: "Compare the roadmap against the current goal list.",
+              target_contexts: ["planning:roadmap:self"],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness);
+
+    const process = createProcess(harness);
+    await process.run(harness.createContext(), {});
+    const review = getOpenSkillSplitReview(harness, skill.id);
+
+    await harness.skillRepository.supersedeWithSplits({
+      skillId: skill.id,
+      parts: [
+        {
+          applies_when: "Manual TypeScript split",
+          approach: "Manual debug approach.",
+          target_contexts: ["code_debugging:typescript:self"],
+        },
+        {
+          applies_when: "Manual roadmap split",
+          approach: "Manual roadmap approach.",
+          target_contexts: ["planning:roadmap:self"],
+        },
+      ],
+      supersededAt: harness.clock.now(),
+    });
+
+    const resolved = await harness.reviewQueueRepository.resolve(review!.id, "accept");
+
+    expect(resolved).toMatchObject({
+      resolution: "reject",
+      refs: expect.objectContaining({
+        review_resolution: expect.objectContaining({
+          requested_decision: "accept",
+          reason: `Skill already superseded: ${skill.id}`,
+        }),
+      }),
+    });
+    expect(harness.reviewQueueRepository.getOpen()).not.toContainEqual(
+      expect.objectContaining({ id: review!.id }),
+    );
   });
 
   it("does not call the split LLM when another run already holds the claim", async () => {
@@ -1187,15 +1337,20 @@ describe("ProceduralSynthesizerProcess", () => {
         },
       ],
     });
+    harness.reviewQueueRepository.setSkillSplitReviewHandler(
+      createSkillSplitReviewHandler({
+        skillRepository: harness.skillRepository,
+        auditLog: harness.auditLog,
+        clock: harness.clock,
+        workingMemoryStore,
+      }),
+    );
 
     const process = createProcess(harness);
-    const result = await process.run(
-      {
-        ...harness.createContext(),
-        workingMemoryStore,
-      },
-      {},
-    );
+    const result = await process.run(harness.createContext(), {});
+    const review = getOpenSkillSplitReview(harness, skill.id);
+
+    await harness.reviewQueueRepository.resolve(review!.id, "accept");
 
     expect(result.errors).toEqual([]);
     expect(workingMemoryStore.load(DEFAULT_SESSION_ID).pending_procedural_attempts).toEqual([
@@ -1256,6 +1411,9 @@ describe("ProceduralSynthesizerProcess", () => {
 
     const process = createProcess(harness);
     const result = await process.run(harness.createContext(), {});
+    const review = getOpenSkillSplitReview(harness, skill.id);
+
+    await harness.reviewQueueRepository.resolve(review!.id, "accept");
     const original = harness.skillRepository.get(skill.id);
     const newSkills = (original?.superseded_by ?? []).map((skillId) =>
       harness!.skillRepository.get(skillId),
@@ -1275,7 +1433,7 @@ describe("ProceduralSynthesizerProcess", () => {
     ]);
   });
 
-  it("does not double-split the same planned skill on repeated apply", async () => {
+  it("does not duplicate the same planned split review on repeated apply", async () => {
     const llm = new FakeLLMClient({
       responses: [
         createSkillSplitResponse({
@@ -1303,20 +1461,31 @@ describe("ProceduralSynthesizerProcess", () => {
       }),
       llmClient: llm,
     });
-    await addSkillWithContextStats(harness);
+    const { skill } = await addSkillWithContextStats(harness);
 
     const process = createProcess(harness);
     const plan = await process.plan(harness.createContext());
     const first = await process.apply(harness.createContext(), plan);
     const second = await process.apply(harness.createContext(), plan);
+    const reviews = harness.reviewQueueRepository.list({ kind: "skill_split", openOnly: true });
 
     expect(first.errors).toEqual([]);
     expect(first.changes).toHaveLength(1);
     expect(second.errors).toEqual([]);
     expect(second.changes).toEqual([]);
+    expect(reviews).toHaveLength(1);
     expect(llm.requests).toHaveLength(1);
     expect(
-      harness.skillRepository.list(10).filter((skill) => skill.status === "active"),
+      harness.skillRepository.list(10).filter((record) => record.status === "active"),
+    ).toHaveLength(1);
+
+    await harness.reviewQueueRepository.resolve(reviews[0]!.id, "accept");
+
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      status: "superseded",
+    });
+    expect(
+      harness.skillRepository.list(10).filter((record) => record.status === "active"),
     ).toHaveLength(2);
   });
 

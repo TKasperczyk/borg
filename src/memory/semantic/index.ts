@@ -14,6 +14,7 @@ export {
   reviewQueueItemSchema,
   reviewResolutionSchema,
   reviewResolutionInputSchema,
+  skillSplitReviewPayloadSchema,
   type ReviewKind,
   type BeliefRevisionTarget,
   type BeliefRevisionReasonCode,
@@ -23,6 +24,9 @@ export {
   type ReviewQueueItem,
   type ReviewResolution,
   type ReviewResolutionInput,
+  type SkillSplitReviewApplyResult,
+  type SkillSplitReviewHandler,
+  type SkillSplitReviewPayload,
 } from "./review-queue.js";
 export { SemanticReviewService, type SemanticReviewServiceOptions } from "./review-service.js";
 export {

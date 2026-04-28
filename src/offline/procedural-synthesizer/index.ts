@@ -22,9 +22,10 @@ import {
   type ProceduralEvidenceRecord,
   type SkillRecord,
 } from "../../memory/procedural/index.js";
+import type { ReviewQueueItem, SkillSplitReviewPayload } from "../../memory/semantic/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
-import { DEFAULT_SESSION_ID, type EntityId, type EpisodeId } from "../../util/ids.js";
+import { type EntityId, type EpisodeId } from "../../util/ids.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -510,6 +511,20 @@ function buildSplitPlanChange(
   };
 }
 
+function buildQueuedSplitChange(input: {
+  item: ProceduralSynthesizerPlan["split_items"][number];
+  reviewItem: ReviewQueueItem;
+}): OfflineChange {
+  return {
+    ...buildSplitPlanChange(input.item),
+    targets: {
+      skill_id: input.item.skill.id,
+      review_item_id: input.reviewItem.id,
+      context_keys: input.item.buckets.map((bucket) => bucket.stats.context_key),
+    },
+  };
+}
+
 function buildAppliedChange(input: {
   item: ProceduralSynthesizerPlan["items"][number];
   skill: SkillRecord;
@@ -531,29 +546,69 @@ function buildAppliedChange(input: {
   };
 }
 
-function buildAppliedSplitChange(input: {
+function buildSkillSplitReviewPayload(input: {
   item: ProceduralSynthesizerPlan["split_items"][number];
-  created: readonly SkillRecord[];
-}): OfflineChange {
+  parts: Array<{ applies_when: string; approach: string; target_contexts: string[] }>;
+  proposedAt: number;
+  splitCooldownDays: number;
+  splitClaimStaleSec: number;
+}): SkillSplitReviewPayload {
+  const bucketByContext = new Map(
+    input.item.buckets.map((bucket) => [bucket.stats.context_key, bucket]),
+  );
+  const childSpecs = input.parts.map((part) => ({
+    label: part.applies_when,
+    problem: part.applies_when,
+    approach: part.approach,
+    context_stats: part.target_contexts.map((contextKey) => bucketByContext.get(contextKey)!.stats),
+  }));
+
   return {
-    process: "procedural-synthesizer",
-    action: "skill_split",
-    targets: {
-      original_skill_id: input.item.skill.id,
-      new_skill_ids: input.created.map((skill) => skill.id),
-    },
-    preview: {
-      original_applies_when: input.item.skill.applies_when,
+    target_type: "skill",
+    target_id: input.item.skill.id,
+    original_skill_id: input.item.skill.id,
+    proposed_children: childSpecs,
+    rationale: input.item.proposal.rationale,
+    evidence_summary: {
+      source_episode_ids: input.item.skill.source_episode_ids,
       divergence: input.item.divergence,
-      parts: input.created.map((skill) => ({
-        skill_id: skill.id,
-        applies_when: skill.applies_when,
-        alpha: skill.alpha,
-        beta: skill.beta,
-        attempts: skill.attempts,
+      min_posterior_mean: input.item.min_posterior_mean,
+      max_posterior_mean: input.item.max_posterior_mean,
+      buckets: input.item.buckets.map((bucket) => ({
+        context_key: bucket.stats.context_key,
+        posterior_mean: bucket.posterior_mean,
+        alpha: bucket.stats.alpha,
+        beta: bucket.stats.beta,
+        attempts: bucket.stats.attempts,
+        successes: bucket.stats.successes,
+        failures: bucket.stats.failures,
+        last_used: bucket.stats.last_used,
+        last_successful: bucket.stats.last_successful,
       })),
     },
+    cooldown: {
+      proposed_at: input.proposedAt,
+      claimed_at: input.item.split_claimed_at ?? null,
+      claim_expires_at:
+        input.item.split_claimed_at === undefined || input.item.split_claimed_at === null
+          ? null
+          : input.item.split_claimed_at + input.splitClaimStaleSec * 1_000,
+      split_cooldown_days: input.splitCooldownDays,
+      split_claim_stale_sec: input.splitClaimStaleSec,
+      last_split_attempt_at: input.item.skill.last_split_attempt_at ?? null,
+      split_failure_count: input.item.skill.split_failure_count,
+      last_split_error: input.item.skill.last_split_error,
+    },
   };
+}
+
+function hasOpenSkillSplitReview(
+  reviewItems: readonly ReviewQueueItem[],
+  skillId: SkillRecord["id"],
+): boolean {
+  return reviewItems.some(
+    (item) => item.kind === "skill_split" && item.refs.original_skill_id === skillId,
+  );
 }
 
 function shouldSkipSynthesizedOutcome(
@@ -686,48 +741,6 @@ async function appendSkillSplitInternalEvent(
       process: "procedural-synthesizer",
       message: error instanceof Error ? error.message : String(error),
       code: "procedural_skill_split_log_failed",
-    });
-  }
-}
-
-function clearPendingSkillReferences(
-  ctx: OfflineContext,
-  skillId: SkillRecord["id"],
-  errors: OfflineProcessError[],
-): void {
-  if (ctx.workingMemoryStore === undefined) {
-    return;
-  }
-
-  try {
-    const workingMemory = ctx.workingMemoryStore.load(DEFAULT_SESSION_ID);
-    let changed = false;
-    const pendingProceduralAttempts = workingMemory.pending_procedural_attempts.map((attempt) => {
-      if (attempt.selected_skill_id !== skillId) {
-        return attempt;
-      }
-
-      changed = true;
-      return {
-        ...attempt,
-        selected_skill_id: null,
-      };
-    });
-
-    if (!changed) {
-      return;
-    }
-
-    ctx.workingMemoryStore.save({
-      ...workingMemory,
-      pending_procedural_attempts: pendingProceduralAttempts,
-      updated_at: ctx.clock.now(),
-    });
-  } catch (error) {
-    errors.push({
-      process: "procedural-synthesizer",
-      message: error instanceof Error ? error.message : String(error),
-      code: "procedural_skill_split_pending_reference_clear_failed",
     });
   }
 }
@@ -964,11 +977,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
               }
             }
 
-            if (
-              proposal.decision !== "split" ||
-              opts.dryRun === true ||
-              synthesizerConfig.skillSplitDryRun
-            ) {
+            if (proposal.decision !== "split" || opts.dryRun === true) {
               ctx.skillRepository.recordSplitAttemptAndClearClaim({
                 skillId: candidate.skill.id,
                 attemptedAt: this.clock.now(),
@@ -1165,85 +1174,40 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
         }
 
         const parts = validateSplitParts(item);
+        const existingOpenSplitReviews = ctx.reviewQueueRepository.list({
+          kind: "skill_split",
+          openOnly: true,
+        });
 
-        if (ctx.config.offline.proceduralSynthesizer.skillSplitDryRun) {
-          await appendSkillSplitInternalEvent(
-            ctx,
-            {
-              hook: "skill_split_proposal",
-              dry_run: true,
-              skill_id: item.skill.id,
-              decision: item.proposal.decision,
-              rationale: item.proposal.rationale,
-              divergence: item.divergence,
-              parts,
-            },
-            errors,
-          );
+        if (hasOpenSkillSplitReview(existingOpenSplitReviews, item.skill.id)) {
           ctx.skillRepository.recordSplitAttemptAndClearClaim({
             skillId: item.skill.id,
             attemptedAt: this.clock.now(),
             claimedAt: item.split_claimed_at ?? null,
           });
-          changes.push(buildSplitPlanChange(item));
           continue;
         }
 
-        const targetContexts = new Set(parts.flatMap((part) => part.target_contexts));
-        const movedContextStats = item.buckets
-          .map((bucket) => bucket.stats)
-          .filter((stats) => targetContexts.has(stats.context_key));
-        const split = await ctx.skillRepository.supersedeWithSplits({
+        const proposedAt = this.clock.now();
+        const reviewItem = ctx.reviewQueueRepository.enqueue({
+          kind: "skill_split",
+          refs: buildSkillSplitReviewPayload({
+            item,
+            parts,
+            proposedAt,
+            splitCooldownDays:
+              ctx.config.offline.proceduralSynthesizer.splitCooldownDays,
+            splitClaimStaleSec:
+              ctx.config.offline.proceduralSynthesizer.splitClaimStaleSec,
+          }),
+          reason: `Skill split proposed for divergent context outcomes on ${item.skill.applies_when}`,
+        });
+        ctx.skillRepository.recordSplitAttemptAndClearClaim({
           skillId: item.skill.id,
-          parts,
-          supersededAt: this.clock.now(),
+          attemptedAt: proposedAt,
           claimedAt: item.split_claimed_at ?? null,
         });
-
-        if (split === null) {
-          ctx.skillRepository.recordSplitAttemptAndClearClaim({
-            skillId: item.skill.id,
-            attemptedAt: this.clock.now(),
-            claimedAt: item.split_claimed_at ?? null,
-          });
-          await appendSkillSplitInternalEvent(
-            ctx,
-            {
-              hook: "skill_split_skipped",
-              reason: "already_superseded",
-              skill_id: item.skill.id,
-            },
-            errors,
-          );
-          continue;
-        }
-
-        clearPendingSkillReferences(ctx, item.skill.id, errors);
-        ctx.auditLog.record({
-          run_id: ctx.runId,
-          process: this.name,
-          action: "skill_split",
-          targets: {
-            originalSkillId: item.skill.id,
-            newSkillIds: split.created.map((skill) => skill.id),
-          },
-          reversal: {
-            originalSkill: split.previous,
-            createdSkills: split.created,
-            movedContextStats,
-          },
-        });
-        changes.push(buildAppliedSplitChange({ item, created: split.created }));
-        await appendSkillSplitInternalEvent(
-          ctx,
-          {
-            hook: "skill_split_applied",
-            original_skill_id: item.skill.id,
-            new_skill_ids: split.created.map((skill) => skill.id),
-            divergence: item.divergence,
-          },
-          errors,
-        );
+        changes.push(buildQueuedSplitChange({ item, reviewItem }));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         ctx.skillRepository.recordSplitAttemptAndClearClaim({

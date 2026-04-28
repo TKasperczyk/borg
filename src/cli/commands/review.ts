@@ -7,6 +7,33 @@ import { writeLine } from "../helpers/formatters.js";
 import { resolveSemanticNodeId } from "../helpers/id-resolvers.js";
 import { parseRequiredText, parseReviewKind, parseReviewResolution } from "../helpers/parsers.js";
 import type { CliCommandDeps, CommandOptions } from "../types.js";
+import type { ReviewQueueItem } from "../../memory/semantic/index.js";
+
+function renderReviewItem(
+  item: ReviewQueueItem,
+): ReviewQueueItem | (ReviewQueueItem & { summary: Record<string, unknown> }) {
+  if (item.kind !== "skill_split") {
+    return item;
+  }
+
+  const proposedChildren = Array.isArray(item.refs.proposed_children)
+    ? item.refs.proposed_children
+    : [];
+
+  return {
+    ...item,
+    summary: {
+      original_skill_id: item.refs.original_skill_id,
+      children: proposedChildren.map((child) =>
+        child !== null && typeof child === "object" && "label" in child
+          ? (child as { label: unknown }).label
+          : null,
+      ),
+      rationale: item.refs.rationale,
+      resolution: item.refs.review_resolution,
+    },
+  };
+}
 
 export function registerReviewCommands(cli: CAC, deps: CliCommandDeps): void {
   const { stdout, options } = deps;
@@ -17,6 +44,7 @@ export function registerReviewCommands(cli: CAC, deps: CliCommandDeps): void {
     .option("--winner-node-id <id>", "Winner node id for duplicate/contradiction resolution")
     .option("--accept", "Accept a correction review item")
     .option("--reject", "Reject a correction review item")
+    .option("--reason <reason>", "Resolution reason for review rejection")
     .action(
       async (
         action: string,
@@ -34,7 +62,7 @@ export function registerReviewCommands(cli: CAC, deps: CliCommandDeps): void {
               openOnly: true,
             }),
           );
-          writeLine(stdout, JSON.stringify(items, null, 2));
+          writeLine(stdout, JSON.stringify(items.map((item) => renderReviewItem(item)), null, 2));
           return;
         }
 
@@ -55,19 +83,27 @@ export function registerReviewCommands(cli: CAC, deps: CliCommandDeps): void {
               : commandOptions.reject === true
                 ? "reject"
                 : parseReviewResolution(arg2);
+          const reason =
+            typeof commandOptions.reason === "string" ? commandOptions.reason.trim() : undefined;
 
           const resolved = await withBorg(options, async (borg) =>
             borg.review.resolve(
               itemId,
-              typeof commandOptions.winnerNodeId === "string"
+              typeof commandOptions.winnerNodeId === "string" || reason !== undefined
                 ? {
                     decision,
-                    winner_node_id: resolveSemanticNodeId(commandOptions.winnerNodeId),
+                    ...(typeof commandOptions.winnerNodeId === "string"
+                      ? { winner_node_id: resolveSemanticNodeId(commandOptions.winnerNodeId) }
+                      : {}),
+                    ...(reason === undefined ? {} : { reason }),
                   }
                 : decision,
             ),
           );
-          writeLine(stdout, JSON.stringify(resolved, null, 2));
+          writeLine(
+            stdout,
+            JSON.stringify(resolved === null ? null : renderReviewItem(resolved), null, 2),
+          );
           return;
         }
 

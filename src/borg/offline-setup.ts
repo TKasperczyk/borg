@@ -36,6 +36,7 @@ import {
   ReverserRegistry,
   RuminatorProcess,
   SelfNarratorProcess,
+  createSkillSplitReviewHandler,
   type OfflineProcess,
   type OfflineProcessName,
 } from "../offline/index.js";
@@ -140,6 +141,14 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
         options.config.offline.beliefReviser.consecutiveParseFailureLimit,
     }),
   } satisfies Record<OfflineProcessName, OfflineProcess>;
+  options.reviewQueueRepository.setSkillSplitReviewHandler(
+    createSkillSplitReviewHandler({
+      skillRepository: options.skillRepository,
+      auditLog,
+      clock: options.clock,
+      workingMemoryStore: options.workingMemoryStore,
+    }),
+  );
   const maintenanceOrchestrator = new MaintenanceOrchestrator({
     baseContext: {
       config: options.config,

@@ -25,7 +25,7 @@ import {
   valueIdSchema,
 } from "../self/index.js";
 import { CommitmentRepository, commitmentIdSchema, entityIdSchema } from "../commitments/index.js";
-import type { EntityId } from "../../util/ids.js";
+import { skillIdHelpers, type EntityId, type SkillId } from "../../util/ids.js";
 import type { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import {
   semanticEdgeIdSchema,
@@ -45,6 +45,7 @@ export const REVIEW_KINDS = [
   "identity_inconsistency",
   "correction",
   "belief_revision",
+  "skill_split",
 ] as const;
 export const REVIEW_RESOLUTIONS = [
   "keep_both",
@@ -67,6 +68,7 @@ export const reviewResolutionInputSchema = z.union([
     .object({
       decision: reviewResolutionSchema,
       winner_node_id: semanticNodeIdSchema.optional(),
+      reason: z.string().min(1).optional(),
     })
     .strict(),
 ]);
@@ -88,6 +90,7 @@ export type ReviewResolutionInput = z.infer<typeof reviewResolutionInputSchema>;
 type ResolvedReviewDecision = {
   decision: ReviewResolution;
   winner_node_id?: z.infer<typeof semanticNodeIdSchema>;
+  reason?: string;
 };
 
 export type ReviewQueueInsertInput = {
@@ -110,6 +113,7 @@ export type ReviewQueueRepositoryOptions = {
   identityService?: IdentityService;
   identityEventRepository?: IdentityEventRepository;
   applyCorrection?: (item: ReviewQueueItem) => Promise<void> | void;
+  skillSplitReviewHandler?: SkillSplitReviewHandler;
   onEnqueue?: (item: ReviewQueueItem, input: ReviewQueueInsertInput) => void;
   onEnqueueError?: (error: unknown, item: ReviewQueueItem, input: ReviewQueueInsertInput) => void;
 };
@@ -127,6 +131,7 @@ const NEW_INSIGHT_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
 ]);
 const LIFECYCLE_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject", "dismiss"]);
 const CORRECTION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject"]);
+const SKILL_SPLIT_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject"]);
 const BELIEF_REVISION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
   "keep",
   "weaken",
@@ -218,6 +223,104 @@ const beliefRevisionRefsSchema = z.discriminatedUnion("target_type", [
     })
     .passthrough(),
 ]);
+
+const reviewSkillIdSchema = z
+  .string()
+  .refine((value) => skillIdHelpers.is(value), {
+    message: "Invalid skill id",
+  })
+  .transform((value) => value as SkillId);
+
+const skillSplitContextStatsSchema = z
+  .object({
+    skill_id: reviewSkillIdSchema,
+    context_key: z.string().min(1),
+    alpha: z.number().positive(),
+    beta: z.number().positive(),
+    attempts: z.number().int().nonnegative(),
+    successes: z.number().int().nonnegative(),
+    failures: z.number().int().nonnegative(),
+    last_used: z.number().finite().nullable(),
+    last_successful: z.number().finite().nullable(),
+    updated_at: z.number().finite(),
+  })
+  .strict();
+
+const skillSplitChildSpecSchema = z
+  .object({
+    label: z.string().min(1),
+    problem: z.string().min(1),
+    approach: z.string().min(1),
+    context_stats: z.array(skillSplitContextStatsSchema).min(1),
+  })
+  .strict();
+
+const skillSplitEvidenceBucketSchema = z
+  .object({
+    context_key: z.string().min(1),
+    posterior_mean: z.number().min(0).max(1),
+    alpha: z.number().positive(),
+    beta: z.number().positive(),
+    attempts: z.number().int().nonnegative(),
+    successes: z.number().int().nonnegative(),
+    failures: z.number().int().nonnegative(),
+    last_used: z.number().finite().nullable(),
+    last_successful: z.number().finite().nullable(),
+  })
+  .strict();
+
+export const skillSplitReviewPayloadSchema = z
+  .object({
+    target_type: z.literal("skill"),
+    target_id: reviewSkillIdSchema,
+    original_skill_id: reviewSkillIdSchema,
+    proposed_children: z.array(skillSplitChildSpecSchema).min(2),
+    rationale: z.string().min(1),
+    evidence_summary: z
+      .object({
+        source_episode_ids: z.array(episodeIdSchema).min(1),
+        divergence: z.number().min(0).max(1),
+        min_posterior_mean: z.number().min(0).max(1),
+        max_posterior_mean: z.number().min(0).max(1),
+        buckets: z.array(skillSplitEvidenceBucketSchema).min(2),
+      })
+      .strict(),
+    cooldown: z
+      .object({
+        proposed_at: z.number().finite(),
+        claimed_at: z.number().finite().nullable(),
+        claim_expires_at: z.number().finite().nullable(),
+        split_cooldown_days: z.number().positive(),
+        split_claim_stale_sec: z.number().int().positive(),
+        last_split_attempt_at: z.number().finite().nullable(),
+        split_failure_count: z.number().int().nonnegative(),
+        last_split_error: z.string().min(1).nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export type SkillSplitReviewPayload = z.infer<typeof skillSplitReviewPayloadSchema>;
+export type SkillSplitReviewApplyResult =
+  | {
+      status: "applied";
+      newSkillIds: SkillId[];
+    }
+  | {
+      status: "rejected";
+      reason: string;
+    };
+export type SkillSplitReviewHandler = {
+  accept: (
+    item: ReviewQueueItem,
+    payload: SkillSplitReviewPayload,
+  ) => Promise<SkillSplitReviewApplyResult> | SkillSplitReviewApplyResult;
+  reject: (
+    item: ReviewQueueItem,
+    payload: SkillSplitReviewPayload,
+    reason: string,
+  ) => Promise<void> | void;
+};
 
 const semanticEdgeReviewClosureRefsSchema = z
   .object({
@@ -410,6 +513,8 @@ function isResolutionCompatible(kind: ReviewKind, resolution: ReviewResolution):
       return LIFECYCLE_REVIEW_RESOLUTIONS.has(resolution);
     case "belief_revision":
       return BELIEF_REVISION_REVIEW_RESOLUTIONS.has(resolution);
+    case "skill_split":
+      return SKILL_SPLIT_REVIEW_RESOLUTIONS.has(resolution);
   }
 }
 
@@ -475,13 +580,19 @@ function mapReviewRow(row: Record<string, unknown>): ReviewQueueItem {
 
 export class ReviewQueueRepository {
   private readonly clock: Clock;
+  private skillSplitReviewHandler?: SkillSplitReviewHandler;
 
   constructor(private readonly options: ReviewQueueRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
+    this.skillSplitReviewHandler = options.skillSplitReviewHandler;
   }
 
   private get db(): SqliteDatabase {
     return this.options.db;
+  }
+
+  setSkillSplitReviewHandler(handler: SkillSplitReviewHandler): void {
+    this.skillSplitReviewHandler = handler;
   }
 
   enqueue(input: ReviewQueueInsertInput): ReviewQueueItem {
@@ -1023,6 +1134,82 @@ export class ReviewQueueRepository {
     };
   }
 
+  private async resolveSkillSplitReview(
+    item: ReviewQueueItem,
+    resolution: ResolvedReviewDecision,
+  ): Promise<ReviewQueueItem> {
+    if (!isResolutionCompatible(item.kind, resolution.decision)) {
+      throw new SemanticError(
+        `Resolution "${resolution.decision}" is incompatible with review kind "${item.kind}"`,
+        {
+          code: "REVIEW_QUEUE_RESOLUTION_INVALID",
+        },
+      );
+    }
+
+    const payload = skillSplitReviewPayloadSchema.parse(item.refs);
+    const handler = this.skillSplitReviewHandler;
+
+    if (handler === undefined) {
+      throw new SemanticError("No skill split applier configured for review queue", {
+        code: "REVIEW_QUEUE_SKILL_SPLIT_UNSUPPORTED",
+      });
+    }
+
+    const resolvedAt = this.clock.now();
+    let finalResolution: ResolvedReviewDecision = resolution;
+    let refs: Record<string, unknown>;
+
+    if (resolution.decision === "accept") {
+      const result = await handler.accept(item, payload);
+
+      if (result.status === "applied") {
+        refs = {
+          ...item.refs,
+          review_resolution: {
+            decision: "accept",
+            applied_at: resolvedAt,
+            new_skill_ids: result.newSkillIds,
+          },
+        };
+      } else {
+        finalResolution = {
+          decision: "reject",
+          reason: result.reason,
+        };
+        refs = {
+          ...item.refs,
+          review_resolution: {
+            decision: "reject",
+            rejected_at: resolvedAt,
+            reason: result.reason,
+            requested_decision: "accept",
+          },
+        };
+      }
+    } else {
+      const reason = resolution.reason ?? "operator rejected skill split";
+      await handler.reject(item, payload, reason);
+      refs = {
+        ...item.refs,
+        review_resolution: {
+          decision: "reject",
+          rejected_at: resolvedAt,
+          reason,
+        },
+      };
+    }
+
+    this.markResolved(item.id, finalResolution, resolvedAt, refs);
+
+    return {
+      ...item,
+      refs: this.refsWithoutApplyingState(refs),
+      resolved_at: resolvedAt,
+      resolution: finalResolution.decision,
+    };
+  }
+
   async resolve(itemId: number, decision: ReviewResolutionInput): Promise<ReviewQueueItem | null> {
     const parsedResolution = reviewResolutionInputSchema.parse(decision);
     const resolution: ResolvedReviewDecision =
@@ -1039,6 +1226,10 @@ export class ReviewQueueRepository {
 
     if (item.resolved_at !== null) {
       return item;
+    }
+
+    if (item.kind === "skill_split") {
+      return this.resolveSkillSplitReview(item, resolution);
     }
 
     if (!isResolutionCompatible(item.kind, resolution.decision)) {
@@ -1094,6 +1285,7 @@ export class ReviewQueueRepository {
         await this.applyIdentityInconsistencyResolution(item, decision);
         return;
       case "belief_revision":
+      case "skill_split":
         return;
     }
   }

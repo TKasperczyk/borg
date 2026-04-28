@@ -12,6 +12,7 @@ import {
   createAutobiographicalPeriodId,
   createSemanticNodeId,
   type EpisodeId,
+  type SkillId,
 } from "../../util/ids.js";
 import { OpenQuestionsRepository, selfMigrations } from "../self/index.js";
 import { enqueueOpenQuestionForReview } from "../self/review-open-question-hook.js";
@@ -1091,6 +1092,13 @@ describe("review queue", () => {
     const reviewQueue = new ReviewQueueRepository({
       db,
       clock: new FixedClock(1_000),
+      skillSplitReviewHandler: {
+        accept: () => ({
+          status: "applied",
+          newSkillIds: ["skl_bbbbbbbbbbbbbbbb" as SkillId],
+        }),
+        reject: () => undefined,
+      },
     });
 
     try {
@@ -1125,6 +1133,96 @@ describe("review queue", () => {
         },
         reason: "needs refresh",
       });
+      const skillSplit = reviewQueue.enqueue({
+        kind: "skill_split",
+        refs: {
+          target_type: "skill",
+          target_id: "skl_aaaaaaaaaaaaaaaa",
+          original_skill_id: "skl_aaaaaaaaaaaaaaaa",
+          proposed_children: [
+            {
+              label: "Debug comparison",
+              problem: "Debug comparison",
+              approach: "Compare the failing state.",
+              context_stats: [
+                {
+                  skill_id: "skl_aaaaaaaaaaaaaaaa",
+                  context_key: "code_debugging:typescript:self",
+                  alpha: 2,
+                  beta: 1,
+                  attempts: 1,
+                  successes: 1,
+                  failures: 0,
+                  last_used: 1_000,
+                  last_successful: 1_000,
+                  updated_at: 1_000,
+                },
+              ],
+            },
+            {
+              label: "Planning comparison",
+              problem: "Planning comparison",
+              approach: "Compare the roadmap state.",
+              context_stats: [
+                {
+                  skill_id: "skl_aaaaaaaaaaaaaaaa",
+                  context_key: "planning:roadmap:self",
+                  alpha: 1,
+                  beta: 2,
+                  attempts: 1,
+                  successes: 0,
+                  failures: 1,
+                  last_used: 1_000,
+                  last_successful: null,
+                  updated_at: 1_000,
+                },
+              ],
+            },
+          ],
+          rationale: "The contexts diverge.",
+          evidence_summary: {
+            source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+            divergence: 0.5,
+            min_posterior_mean: 0.25,
+            max_posterior_mean: 0.75,
+            buckets: [
+              {
+                context_key: "code_debugging:typescript:self",
+                posterior_mean: 0.75,
+                alpha: 2,
+                beta: 1,
+                attempts: 1,
+                successes: 1,
+                failures: 0,
+                last_used: 1_000,
+                last_successful: 1_000,
+              },
+              {
+                context_key: "planning:roadmap:self",
+                posterior_mean: 0.25,
+                alpha: 1,
+                beta: 2,
+                attempts: 1,
+                successes: 0,
+                failures: 1,
+                last_used: 1_000,
+                last_successful: null,
+              },
+            ],
+          },
+          cooldown: {
+            proposed_at: 1_000,
+            claimed_at: 900,
+            claim_expires_at: 1_800_900,
+            split_cooldown_days: 7,
+            split_claim_stale_sec: 1_800,
+            last_split_attempt_at: null,
+            split_failure_count: 0,
+            last_split_error: null,
+          },
+        },
+        reason: "split proposed",
+      });
 
       await expect(reviewQueue.resolve(correction.id, "keep_both")).rejects.toMatchObject({
         name: "SemanticError",
@@ -1138,16 +1236,32 @@ describe("review queue", () => {
         name: "SemanticError",
         code: "REVIEW_QUEUE_RESOLUTION_INVALID",
       });
+      await expect(reviewQueue.resolve(skillSplit.id, "dismiss")).rejects.toMatchObject({
+        name: "SemanticError",
+        code: "REVIEW_QUEUE_RESOLUTION_INVALID",
+      });
 
       const rejectedCorrection = await reviewQueue.resolve(correction.id, "reject");
       const dismissedContradiction = await reviewQueue.resolve(contradiction.id, "dismiss");
       const acceptedInsight = await reviewQueue.resolve(newInsight.id, "accept");
       const acceptedStale = await reviewQueue.resolve(stale.id, "accept");
+      const rejectedSkillSplit = await reviewQueue.resolve(skillSplit.id, {
+        decision: "reject",
+        reason: "operator rejected",
+      });
 
       expect(rejectedCorrection?.resolution).toBe("reject");
       expect(dismissedContradiction?.resolution).toBe("dismiss");
       expect(acceptedInsight?.resolution).toBe("accept");
       expect(acceptedStale?.resolution).toBe("accept");
+      expect(rejectedSkillSplit).toMatchObject({
+        resolution: "reject",
+        refs: expect.objectContaining({
+          review_resolution: expect.objectContaining({
+            reason: "operator rejected",
+          }),
+        }),
+      });
     } finally {
       db.close();
     }

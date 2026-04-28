@@ -594,6 +594,7 @@ export const DEFAULT_CONFIG: Config = {
       splitCooldownDays: 7,
       splitClaimStaleSec: 1_800,
       maxSplitParseFailures: 3,
+      // Legacy/deprecated: split proposals now always go through the review queue.
       skillSplitDryRun: true,
       budget: 4_000,
     },

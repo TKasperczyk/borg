@@ -41,6 +41,10 @@ export {
   type ProceduralSynthesizerProcessOptions,
 } from "./procedural-synthesizer/index.js";
 export {
+  createSkillSplitReviewHandler,
+  type SkillSplitReviewHandlerOptions,
+} from "./procedural-synthesizer/skill-split-review.js";
+export {
   MaintenanceScheduler,
   type MaintenanceCadence,
   type MaintenanceSchedulerObserver,

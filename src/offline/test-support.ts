@@ -88,7 +88,13 @@ import {
 } from "../util/ids.js";
 import type { WorkingMemory } from "../memory/working/index.js";
 
-import { AuditLog, ReverserRegistry, offlineMigrations, type OfflineContext } from "./index.js";
+import {
+  AuditLog,
+  ReverserRegistry,
+  createSkillSplitReviewHandler,
+  offlineMigrations,
+  type OfflineContext,
+} from "./index.js";
 
 export class TestEmbeddingClient implements EmbeddingClient {
   async embed(text: string): Promise<Float32Array> {
@@ -509,6 +515,13 @@ export async function createOfflineTestHarness(
     clock,
     registry,
   });
+  reviewQueueRepository.setSkillSplitReviewHandler(
+    createSkillSplitReviewHandler({
+      skillRepository,
+      auditLog,
+      clock,
+    }),
+  );
   const retrievalPipeline = new RetrievalPipeline({
     embeddingClient,
     episodicRepository,
