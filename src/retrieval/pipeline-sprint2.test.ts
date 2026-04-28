@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { EpisodeSearchCandidate } from "../memory/episodic/types.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
   type OfflineTestHarness,
 } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
+
+import { mergeCandidates } from "./episodic-candidates.js";
 
 const QUERY = "architecture";
 const NOW_MS = 10_000_000_000;
@@ -314,21 +315,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     expect(vectorCandidate).toBeDefined();
     expect(temporalCandidate).toBeDefined();
 
-    const merged = (
-      harness.retrievalPipeline as unknown as {
-        mergeCandidates(
-          candidateSets: ReadonlyArray<
-            Array<{
-              candidate: EpisodeSearchCandidate;
-              sources: Set<"vector" | "temporal">;
-            }>
-          >,
-        ): Array<{
-          candidate: EpisodeSearchCandidate;
-          sources: Set<"vector" | "temporal">;
-        }>;
-      }
-    ).mergeCandidates([
+    const merged = mergeCandidates([
       [
         {
           candidate: vectorCandidate!,

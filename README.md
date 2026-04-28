@@ -137,14 +137,19 @@ const borg = await Borg.open();
 const result = await borg.turn({ userMessage: "...", audience: "alice" });
 
 // memory access
-await borg.episodic.search({ query: "...", limit: 5 });
-await borg.self.goals.add({ description: "..." });
+await borg.episodic.search("...", { limit: 5 });
+await borg.self.goals.add({
+  description: "...",
+  priority: 0.5,
+  provenance: { kind: "user" },
+});
 await borg.skills.select("debugging pgvector similarity");
 await borg.mood.current(sessionId);
-await borg.social.getProfile(entityId);
+await borg.social.getProfile("alice");
 
-// offline
-await borg.dream.run({ processes: ["consolidator", "reflector"] });
+// offline (the dream runner is itself callable; .plan/.apply/per-process
+// helpers hang off it)
+await borg.dream({ processes: ["consolidator", "reflector"] });
 
 await borg.close();
 ```

@@ -23,13 +23,7 @@ import type { JsonValue } from "../util/json-value.js";
 
 import { CitationResolver, type CitationResolverOptions } from "./citations.js";
 import { assembleRetrievedContext, type RetrievedContext } from "./context-assembly.js";
-import {
-  generateEpisodicCandidates,
-  mergeCandidates as mergeEpisodeCandidates,
-  tagCandidates as tagEpisodeCandidates,
-  type EpisodeCandidateSource,
-  type MergedEpisodeCandidate,
-} from "./episodic-candidates.js";
+import { generateEpisodicCandidates } from "./episodic-candidates.js";
 import { applyMmr } from "./mmr.js";
 import { retrieveOpenQuestionsForQuery as retrieveOpenQuestionsForQueryFromRepository } from "./open-questions.js";
 import {
@@ -368,18 +362,6 @@ export class RetrievalPipeline {
     return new CitationResolver(options);
   }
 
-  private tagCandidates(
-    source: EpisodeCandidateSource,
-    candidates: readonly EpisodeSearchCandidate[],
-  ): MergedEpisodeCandidate[] {
-    return tagEpisodeCandidates(source, candidates);
-  }
-
-  private mergeCandidates(
-    candidateSets: readonly MergedEpisodeCandidate[][],
-  ): MergedEpisodeCandidate[] {
-    return mergeEpisodeCandidates(candidateSets);
-  }
 }
 
 function summarizeRetrievalOptions(options: RetrievalSearchOptions): JsonValue {

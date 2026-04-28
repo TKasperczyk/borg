@@ -43,23 +43,32 @@ src/
     semantic/
     procedural/
     affective/
-    self/
+    self/         Self-band data (values, goals, traits, autobiographical, ...)
+    identity/     governance over identity-bearing mutations
     commitments/
     social/
     working/
+    common/       shared memory primitives (provenance, identity-events, ...)
   cognition/      perception, attention, deliberation, action, reflection
   offline/        consolidator, reflector, curator, overseer, ruminator,
                   self-narrator, procedural-synthesizer, belief-reviser
   retrieval/      unified context-aware retrieval pipeline
+  correction/     `borg.correction.forget` / why / invalidate-edge service
+  executive/      executive focus selection (goal stickiness, step rendering)
+  autonomy/       autonomy scheduler + wake-source triggers
+  auth/           Claude Code OAuth credential helpers
+  tools/          internal tool dispatcher (episodic.search, semantic.walk, ...)
   storage/        lancedb + sqlite abstractions
   embeddings/     embedding client
   llm/            Anthropic client wrapper
   config/         config loader
-  types/          shared types (kept thin; most types live near their module)
   util/           cross-cutting helpers (atomic file ops, ids, clocks, ...)
+  borg/           composition root (open.ts), facade, lifecycle, repositories
   cli/            `borg` CLI entry
-  daemon/         headless daemon
   index.ts        library entry
+scripts/
+  daemon.ts       headless daemon helper (not part of the shipped CLI surface)
+  chat.ts         developer-only interactive REPL
 ```
 
 Tests co-located with source as `*.test.ts`.
