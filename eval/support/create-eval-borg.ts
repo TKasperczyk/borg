@@ -43,11 +43,20 @@ type EvalConfigOverrides = {
     selfNarrator?: Partial<Config["offline"]["selfNarrator"]>;
     beliefReviser?: Partial<Config["offline"]["beliefReviser"]>;
   };
+  maintenance?: Partial<Config["maintenance"]>;
   autonomy?: Partial<Omit<Config["autonomy"], "triggers">> & {
     triggers?: Partial<Config["autonomy"]["triggers"]> & {
       commitmentExpiring?: Partial<Config["autonomy"]["triggers"]["commitmentExpiring"]>;
       openQuestionDormant?: Partial<Config["autonomy"]["triggers"]["openQuestionDormant"]>;
       scheduledReflection?: Partial<Config["autonomy"]["triggers"]["scheduledReflection"]>;
+      goalFollowupDue?: Partial<Config["autonomy"]["triggers"]["goalFollowupDue"]>;
+    };
+    conditions?: Partial<Config["autonomy"]["conditions"]> & {
+      commitmentRevoked?: Partial<Config["autonomy"]["conditions"]["commitmentRevoked"]>;
+      moodValenceDrop?: Partial<Config["autonomy"]["conditions"]["moodValenceDrop"]>;
+      openQuestionUrgencyBump?: Partial<
+        Config["autonomy"]["conditions"]["openQuestionUrgencyBump"]
+      >;
     };
   };
 };
@@ -59,6 +68,8 @@ export type CreateEvalBorgOptions = {
   embeddingClient?: EmbeddingClient;
   embeddingDimensions?: number;
   config?: EvalConfigOverrides;
+  tracerPath?: string;
+  env?: NodeJS.ProcessEnv;
 };
 
 export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Borg> {
@@ -158,8 +169,15 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
     },
     maintenance: {
       ...DEFAULT_CONFIG.maintenance,
-      lightProcesses: [...DEFAULT_CONFIG.maintenance.lightProcesses],
-      heavyProcesses: [...DEFAULT_CONFIG.maintenance.heavyProcesses],
+      ...options.config?.maintenance,
+      lightProcesses: [
+        ...(options.config?.maintenance?.lightProcesses ??
+          DEFAULT_CONFIG.maintenance.lightProcesses),
+      ],
+      heavyProcesses: [
+        ...(options.config?.maintenance?.heavyProcesses ??
+          DEFAULT_CONFIG.maintenance.heavyProcesses),
+      ],
     },
     autonomy: {
       ...DEFAULT_CONFIG.autonomy,
@@ -179,6 +197,26 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
           ...DEFAULT_CONFIG.autonomy.triggers.scheduledReflection,
           ...options.config?.autonomy?.triggers?.scheduledReflection,
         },
+        goalFollowupDue: {
+          ...DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue,
+          ...options.config?.autonomy?.triggers?.goalFollowupDue,
+        },
+      },
+      conditions: {
+        ...DEFAULT_CONFIG.autonomy.conditions,
+        ...options.config?.autonomy?.conditions,
+        commitmentRevoked: {
+          ...DEFAULT_CONFIG.autonomy.conditions.commitmentRevoked,
+          ...options.config?.autonomy?.conditions?.commitmentRevoked,
+        },
+        moodValenceDrop: {
+          ...DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop,
+          ...options.config?.autonomy?.conditions?.moodValenceDrop,
+        },
+        openQuestionUrgencyBump: {
+          ...DEFAULT_CONFIG.autonomy.conditions.openQuestionUrgencyBump,
+          ...options.config?.autonomy?.conditions?.openQuestionUrgencyBump,
+        },
       },
     },
   };
@@ -190,6 +228,8 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
     embeddingClient:
       options.embeddingClient ?? new DeterministicEmbeddingClient(embeddingDimensions),
     llmClient: options.llm,
+    tracerPath: options.tracerPath,
+    env: options.env,
     liveExtraction: false,
   });
 }

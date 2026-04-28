@@ -4,7 +4,12 @@ export default defineConfig({
   test: {
     globals: false,
     environment: "node",
-    include: ["src/**/*.test.ts", "tests/**/*.test.ts", "scripts/**/*.test.ts"],
+    include: [
+      "src/**/*.test.ts",
+      "tests/**/*.test.ts",
+      "scripts/**/*.test.ts",
+      "assessor/**/*.test.ts",
+    ],
     testTimeout: 15_000,
     hookTimeout: 15_000,
     coverage: {
