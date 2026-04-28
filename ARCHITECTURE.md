@@ -803,16 +803,23 @@ ticks while suppressing scheduled runs.
 
 **Autonomy wakes.** The autonomy scheduler is the only runtime loop for
 self-initiated cognition. It scans enabled wake sources, enforces the
-rolling wake budget, and calls the normal turn orchestrator with
-`origin: "autonomous"` and `audience: "self"`; it does not have a
-separate executive agent. `executive_focus_due` is an opt-in trigger
-(`autonomy.executiveFocus.enabled`) that wakes when a selected goal is
-stale or a durable executive step is due. It has a per-goal wake
-cooldown so autonomous self-talk cannot burn the wake budget on the
-same concern; user-turn goal progress clears that cooldown. This closes
-the minimum executive loop: focus is selected, the top step is rendered
-into the turn prompt, reflection updates or proposes steps, and autonomy
-wakes again only when the focused work becomes due or stale.
+rolling wake budget (default `maxWakesPerWindow = 6` over a 24h window
+-- a conservative cap that should be tuned during real-world soak),
+and calls the normal turn orchestrator with `origin: "autonomous"` and
+`audience: "self"`; it does not have a separate executive agent.
+`autonomy.enabled` and `autonomy.executiveFocus.enabled` both default to
+`true` -- self-initiated cognition is part of the architecture, not an
+opt-in. The scheduler still does not auto-start; a runtime (the daemon,
+or a library caller) must invoke `scheduler.start()` to begin firing.
+Setting either flag to `false` keeps the scheduler available for
+`tick()` calls while suppressing scheduled runs. `executive_focus_due`
+wakes when a selected goal is stale or a durable executive step is due,
+with a per-goal wake cooldown so autonomous self-talk cannot burn the
+wake budget on the same concern; user-turn goal progress clears that
+cooldown. This closes the minimum executive loop: focus is selected,
+the top step is rendered into the turn prompt, reflection updates or
+proposes steps, and autonomy wakes again only when the focused work
+becomes due or stale.
 
 ### 5.3 Retrieval pipeline
 

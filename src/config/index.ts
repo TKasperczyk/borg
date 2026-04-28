@@ -667,12 +667,21 @@ export const DEFAULT_CONFIG: Config = {
     ],
   },
   autonomy: {
-    enabled: false,
+    // Self-initiated cognition is part of the architecture's "autonomous
+    // being" framing. Default on so a fresh deployment exercises the
+    // wake-source triggers (commitment expiring, open-question dormant,
+    // goal follow-up due, executive-focus due) once a runtime (daemon, ...)
+    // calls scheduler.start(). Library callers stay in control because
+    // start() is still explicit. maxWakesPerWindow caps the cost.
+    enabled: true,
     intervalMs: 60_000,
     maxWakesPerWindow: 6,
     budgetWindowMs: 86_400_000,
     executiveFocus: {
-      enabled: false,
+      // Default on alongside autonomy so a stale selected goal or due
+      // executive step actually causes a self-initiated turn instead of
+      // sitting silently until the next user message.
+      enabled: true,
       stalenessSec: 86_400,
       dueLeadSec: 0,
       wakeCooldownSec: 3_600,
