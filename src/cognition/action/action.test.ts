@@ -20,16 +20,6 @@ describe("performAction", () => {
       response: "Next step: refactor the storage layer. I will run the tests.",
       toolCalls: [],
       intents: [],
-      perception: {
-        entities: [],
-        mode: "problem_solving",
-        affectiveSignal: {
-          valence: 0,
-          arousal: 0,
-          dominant_emotion: "neutral",
-        },
-        temporalCue: null,
-      },
       workingMemory,
     });
 
@@ -54,16 +44,6 @@ describe("performAction", () => {
           next_action: "check the rollout after tests finish",
         },
       ],
-      perception: {
-        entities: ["Atlas"],
-        mode: "problem_solving",
-        affectiveSignal: {
-          valence: 0,
-          arousal: 0,
-          dominant_emotion: "neutral",
-        },
-        temporalCue: null,
-      },
       workingMemory,
     });
 

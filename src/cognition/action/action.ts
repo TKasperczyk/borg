@@ -1,13 +1,17 @@
 import type { WorkingMemory } from "../../memory/working/index.js";
-import type { IntentRecord, PerceptionResult } from "../types.js";
+import type { IntentRecord } from "../types.js";
 import type { ToolLoopCallRecord } from "./tool-loop.js";
 
+// Commits the action outcome -- the commitment-checked response, the tool
+// calls that produced it, and the planner's structured intents -- into the
+// working-memory shape that reflection consumes. The tool-use loop itself
+// runs earlier inside the deliberation finalizer; the agent_msg stream
+// append happens later in the orchestrator. Intents flow from the S2
+// planner only -- this stage never infers them from response prose.
 export type ActionContext = {
   response: string;
   toolCalls: ToolLoopCallRecord[];
   intents: readonly IntentRecord[];
-  audience?: string;
-  perception: PerceptionResult;
   workingMemory: WorkingMemory;
 };
 

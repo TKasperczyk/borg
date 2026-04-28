@@ -583,8 +583,6 @@ export class TurnOrchestrator {
           response: commitmentCheck.final_response,
           toolCalls: deliberation.tool_calls,
           intents: deliberation.intents,
-          audience: input.audience,
-          perception,
           workingMemory,
         });
         const agentEntry = {

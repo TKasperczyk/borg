@@ -618,7 +618,7 @@ band.
   lifted over the S1/S2 threshold by high coverage or diversity.
   See `src/retrieval/confidence.ts`.
 - Direct path (System 1): high retrieval confidence + low stakes →
-  go straight to the response call (with the tool loop -- see Action).
+  go straight to the finalizer (the tool-use loop described below).
 - Planned path (System 2): low confidence OR high stakes OR
   contradiction detected → run an `EmitTurnPlan` planner pass first
   (structured tool-use that returns verification_steps, tensions,
@@ -626,30 +626,42 @@ band.
   follow-up intents). If `verification_steps` are present, S2 runs a
   bounded secondary retrieval (typically `limit: 3`) scoped to that
   verification query so planner-identified uncertainties can pull in
-  targeted evidence. The response call then receives the plan in a
-  tagged `<borg_s2_plan>` block plus any additional retrieval in a
-  separate tagged block. The plan is persisted as a `thought` stream
-  entry after the finalizer returns, so persistence remains audit
-  state rather than a dependency of the final response call.
+  targeted evidence. The finalizer then receives the plan in a tagged
+  `<borg_s2_plan>` block plus any additional retrieval in a separate
+  tagged block. The plan is persisted as a `thought` stream entry
+  after the finalizer returns, so persistence remains audit state
+  rather than a dependency of the final response call.
 - The prompt receives the confidence summary in a
   `<borg_retrieval_confidence>` block so the being can calibrate how
   certain it speaks (internal signal -- not a user-facing percentage).
-
-**Action**
-- Run the response call as an Anthropic tool-use loop
-  (`executeToolLoop`): the model can read internal tools
-  (`tool.episodic.search`, `tool.semantic.walk`,
+- **Finalizer (the tool-use loop).** The response call runs as an
+  Anthropic tool-use loop (`executeToolLoop`, wrapped by `runFinalizer`
+  in `src/cognition/deliberation/finalizer.ts`): the model can read
+  internal tools (`tool.episodic.search`, `tool.semantic.walk`,
   `tool.commitments.list`, `tool.identityEvents.list`,
   `tool.skills.list`) or write via `tool.openQuestions.create`
   mid-turn, with `tool_call`/`tool_result` entries appended to the
-  stream in order. Caps: 5 iterations, 3 tool calls per iteration.
-- Append the agent's text response as `agent_msg`.
-- Carry structured `intent` records from the S2 `EmitTurnPlan` output
-  into `working.pending_intents`. S1 turns produce no intents; Action
-  does not infer state from response prose.
-- A separate `CommitmentChecker` runs as a post-hoc judge: if it
-  detects a violation, an LLM rewrite pass produces a corrected text.
-  This is detection-then-rewrite, not in-flight blocking.
+  stream in order. Caps: 5 iterations, 3 tool calls per iteration. The
+  loop's source files live under `src/cognition/action/` for legacy
+  reasons; orchestration of the call sits in deliberation.
+
+**Commitment check** (between Deliberation and Action)
+- A `CommitmentChecker` runs as a post-hoc judge over the finalizer's
+  draft response: if it detects a violation, an LLM rewrite pass
+  produces a corrected text. This is detection-then-rewrite, not
+  in-flight blocking. The corrected text is what flows into Action.
+
+**Action**
+- A small bookkeeping stage (`performAction` in
+  `src/cognition/action/action.ts`). Takes the commitment-checked
+  response, the finalizer's tool-call records, and the structured
+  `intent` records from the S2 `EmitTurnPlan` output, and commits them
+  into the `ActionResult` shape that Reflection consumes. Carries the
+  intents into `working.pending_intents`. S1 turns produce no intents;
+  Action never infers them from response prose -- that invariant is
+  test-pinned.
+- The orchestrator -- not the Action stage -- is what appends the
+  resulting response to the stream as an `agent_msg` entry.
 
 **Reflection** (post-action, before next input)
 - Grade prior `pending_procedural_attempts` only from grounded later
