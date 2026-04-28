@@ -9,12 +9,15 @@ import type { Episode, EpisodeSearchCandidate } from "../memory/episodic/types.j
 import type { ValueRecord } from "../memory/self/index.js";
 import type { SocialProfile } from "../memory/social/index.js";
 import type { StreamEntry } from "../stream/index.js";
+import type { EntityId } from "../util/ids.js";
 
 import { computeTimeRelevance, type ResolvedTimeRange } from "./time-signals.js";
 
 export type SuppressionLookup = {
   isSuppressed(id: string): boolean;
 };
+
+export type ParticipantEntityResolutionLookup = ReadonlyMap<string, EntityId | null>;
 
 export type ScoreWeights = {
   similarity: number;
@@ -49,8 +52,10 @@ export type EpisodeScoringOptions = {
   primaryGoalDescription?: string;
   activeValues?: readonly ValueRecord[];
   moodState?: RetrievalMoodState | null;
+  audienceEntityId?: EntityId | null;
   audienceProfile?: SocialProfile | null;
   audienceTerms?: readonly string[];
+  participantEntityIds?: ParticipantEntityResolutionLookup;
   entityTerms?: readonly string[];
   suppressionSet?: SuppressionLookup;
 };
@@ -109,6 +114,10 @@ function normalizeTerm(value: string): string {
   return value.trim().toLowerCase();
 }
 
+export function participantEntityResolutionKey(value: string): string {
+  return normalizeTerm(value);
+}
+
 function computeMoodBoost(
   episode: Episode,
   moodState: RetrievalMoodState | null | undefined,
@@ -143,13 +152,46 @@ function computeSocialRelevance(
   episode: Episode,
   audienceTerms: readonly string[] | undefined,
   audienceProfile: SocialProfile | null | undefined,
+  audienceEntityId: EntityId | null | undefined,
+  participantEntityIds: ParticipantEntityResolutionLookup | undefined,
 ): number {
-  if (audienceTerms === undefined || audienceTerms.length === 0) {
+  const fallbackParticipants: string[] = [];
+
+  if (
+    audienceEntityId !== null &&
+    audienceEntityId !== undefined &&
+    participantEntityIds !== undefined
+  ) {
+    for (const participant of episode.participants) {
+      const resolvedParticipantEntityId = participantEntityIds.get(
+        participantEntityResolutionKey(participant),
+      );
+
+      if (resolvedParticipantEntityId === audienceEntityId) {
+        return audienceProfile !== null &&
+          audienceProfile !== undefined &&
+          audienceProfile.trust > 0.7
+          ? 0.25
+          : 0.2;
+      }
+
+      if (resolvedParticipantEntityId === null || resolvedParticipantEntityId === undefined) {
+        fallbackParticipants.push(participant);
+      }
+    }
+  } else {
+    fallbackParticipants.push(...episode.participants);
+  }
+
+  const normalizedTerms = new Set(
+    (audienceTerms ?? []).map((term) => normalizeTerm(term)).filter((term) => term.length > 0),
+  );
+
+  if (normalizedTerms.size === 0) {
     return 0;
   }
 
-  const normalizedTerms = new Set(audienceTerms.map((term) => normalizeTerm(term)));
-  const includesAudience = episode.participants.some((participant) =>
+  const includesAudience = fallbackParticipants.some((participant) =>
     normalizedTerms.has(normalizeTerm(participant)),
   );
 
@@ -218,6 +260,8 @@ export function scoreCandidate(
     candidate.episode,
     searchOptions.audienceTerms,
     searchOptions.audienceProfile,
+    searchOptions.audienceEntityId,
+    searchOptions.participantEntityIds,
   );
   const entityRelevance = computeEntityRelevance(candidate.episode, searchOptions.entityTerms);
   const suppressionPenalty =

@@ -307,6 +307,7 @@ export async function buildBorgRepositories(
     semanticGraph,
     reviewQueueRepository: createdReviewQueueRepository,
     openQuestionsRepository,
+    entityRepository,
     dataDir: config.dataDir,
     entryIndex,
     clock,

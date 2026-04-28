@@ -529,6 +529,7 @@ export async function createOfflineTestHarness(
     semanticGraph,
     reviewQueueRepository,
     openQuestionsRepository,
+    entityRepository,
     dataDir: tempDir,
     entryIndex,
     clock,

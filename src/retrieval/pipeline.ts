@@ -1,5 +1,6 @@
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
+import type { EntityRepository } from "../memory/commitments/index.js";
 import { isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
 import type {
@@ -29,8 +30,10 @@ import { retrieveOpenQuestionsForQuery as retrieveOpenQuestionsForQueryFromRepos
 import {
   buildRetrievedEpisode,
   clamp,
+  participantEntityResolutionKey,
   scoreCandidate,
   type EpisodeScoreDefaults,
+  type ParticipantEntityResolutionLookup,
   type RetrievalMoodState,
   type RetrievedEpisode,
   type ScoreWeights,
@@ -62,6 +65,7 @@ export type RetrievalPipelineOptions = {
   semanticGraph?: SemanticGraph;
   reviewQueueRepository?: Pick<ReviewQueueRepository, "listOpenBeliefRevisionsByTarget">;
   openQuestionsRepository?: OpenQuestionsRepository;
+  entityRepository?: Pick<EntityRepository, "findByName">;
   clock?: Clock;
   tracer?: TurnTracer;
   scoreWeights?: ScoreWeights;
@@ -159,11 +163,18 @@ export class RetrievalPipeline {
       limit,
       timeSignals,
     });
+    const participantEntityIds = this.resolveParticipantEntityIds(
+      candidates,
+      options.audienceEntityId,
+    );
     const scored = candidates.map((entry) => {
       const candidate = entry.candidate;
       const score = scoreCandidate(
         candidate,
-        options,
+        {
+          ...options,
+          ...(participantEntityIds === undefined ? {} : { participantEntityIds }),
+        },
         nowMs,
         timeSignals.scoringRange,
         this.scoringDefaults(),
@@ -363,6 +374,35 @@ export class RetrievalPipeline {
     }
 
     return new CitationResolver(options);
+  }
+
+  private resolveParticipantEntityIds(
+    candidates: readonly { candidate: EpisodeSearchCandidate }[],
+    audienceEntityId: EntityId | null | undefined,
+  ): ParticipantEntityResolutionLookup | undefined {
+    if (
+      audienceEntityId === null ||
+      audienceEntityId === undefined ||
+      this.options.entityRepository === undefined
+    ) {
+      return undefined;
+    }
+
+    const participantEntityIds = new Map<string, EntityId | null>();
+
+    for (const entry of candidates) {
+      for (const participant of entry.candidate.episode.participants) {
+        const key = participantEntityResolutionKey(participant);
+
+        if (key.length === 0 || participantEntityIds.has(key)) {
+          continue;
+        }
+
+        participantEntityIds.set(key, this.options.entityRepository.findByName(participant));
+      }
+    }
+
+    return participantEntityIds;
   }
 }
 

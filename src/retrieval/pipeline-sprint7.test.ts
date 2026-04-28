@@ -1,10 +1,24 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
   createSemanticNodeFixture,
 } from "../offline/test-support.js";
+
+function socialAttentionWeights() {
+  return {
+    semantic: 0.7,
+    goal_relevance: 0,
+    value_alignment: 0,
+    mood: 0,
+    time: 0,
+    social: 0.2,
+    entity: 0,
+    heat: 0.1,
+    suppression_penalty: 0.5,
+  };
+}
 
 describe("RetrievalPipeline Sprint 7 scoring", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;
@@ -87,23 +101,192 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
 
     const results = await harness.retrievalPipeline.search("architecture", {
       limit: 2,
-      attentionWeights: {
-        semantic: 0.7,
-        goal_relevance: 0,
-        value_alignment: 0,
-        mood: 0,
-        time: 0,
-        social: 0.2,
-        entity: 0,
-        heat: 0.1,
-        suppression_penalty: 0.5,
-      },
+      attentionWeights: socialAttentionWeights(),
       audienceProfile: harness.socialRepository.getProfile(audienceId),
       audienceTerms: ["Sam"],
     });
 
     expect(results[0]?.episode.id).toBe(withAudience.id);
     expect(results[0]?.scoreBreakdown.socialRelevance ?? 0).toBeGreaterThan(0);
+  });
+
+  it("matches audience aliases through participant entity resolution", async () => {
+    harness = await createOfflineTestHarness();
+    const audienceId = harness.entityRepository.resolve("Tomasz");
+    harness.entityRepository.addAlias(audienceId, "Tom");
+    const withAudience = createEpisodeFixture(
+      {
+        title: "Tom architecture discussion",
+        participants: ["Tom"],
+        tags: ["architecture"],
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(withAudience);
+
+    const results = await harness.retrievalPipeline.search("architecture", {
+      limit: 1,
+      attentionWeights: socialAttentionWeights(),
+      audienceEntityId: audienceId,
+      audienceTerms: ["Tomasz"],
+    });
+
+    expect(results[0]?.episode.id).toBe(withAudience.id);
+    expect(results[0]?.scoreBreakdown.socialRelevance).toBe(0.2);
+  });
+
+  it("keeps string fallback for unresolved participant entities", async () => {
+    harness = await createOfflineTestHarness();
+    const audienceId = harness.entityRepository.resolve("Tomasz");
+    const withFreeFormAudience = createEpisodeFixture(
+      {
+        title: "Visitor architecture discussion",
+        participants: ["Visitor"],
+        tags: ["architecture"],
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(withFreeFormAudience);
+
+    const results = await harness.retrievalPipeline.search("architecture", {
+      limit: 1,
+      attentionWeights: socialAttentionWeights(),
+      audienceEntityId: audienceId,
+      audienceTerms: ["Visitor"],
+    });
+
+    expect(results[0]?.episode.id).toBe(withFreeFormAudience.id);
+    expect(results[0]?.scoreBreakdown.socialRelevance).toBe(0.2);
+  });
+
+  it("does not match unknown participants without a string fallback hit", async () => {
+    harness = await createOfflineTestHarness();
+    const audienceId = harness.entityRepository.resolve("Tomasz");
+    const unrelated = createEpisodeFixture(
+      {
+        title: "Visitor architecture discussion",
+        participants: ["Visitor"],
+        tags: ["architecture"],
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(unrelated);
+
+    const results = await harness.retrievalPipeline.search("architecture", {
+      limit: 1,
+      attentionWeights: socialAttentionWeights(),
+      audienceEntityId: audienceId,
+      audienceTerms: ["Tomasz"],
+    });
+
+    expect(results[0]?.episode.id).toBe(unrelated.id);
+    expect(results[0]?.scoreBreakdown.socialRelevance).toBe(0);
+  });
+
+  it("does not fall back to string matching for a participant resolved to another entity", async () => {
+    harness = await createOfflineTestHarness();
+    const project = harness.entityRepository.resolve("Alice Codename");
+    harness.entityRepository.addAlias(project, "Alice");
+    const audienceId = harness.entityRepository.resolve("Alice Person");
+    const withOtherEntity = createEpisodeFixture(
+      {
+        title: "Alice codename architecture discussion",
+        participants: ["Alice"],
+        tags: ["architecture"],
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(withOtherEntity);
+
+    const results = await harness.retrievalPipeline.search("architecture", {
+      limit: 1,
+      attentionWeights: socialAttentionWeights(),
+      audienceEntityId: audienceId,
+      audienceTerms: ["Alice"],
+    });
+
+    expect(results[0]?.episode.id).toBe(withOtherEntity.id);
+    expect(results[0]?.scoreBreakdown.socialRelevance).toBe(0);
+  });
+
+  it("keeps trust gating after entity-based social matches", async () => {
+    harness = await createOfflineTestHarness();
+    const audienceId = harness.entityRepository.resolve("Tomasz");
+    harness.entityRepository.addAlias(audienceId, "Tom");
+    const episode = createEpisodeFixture(
+      {
+        title: "Tom trusted architecture discussion",
+        participants: ["Tom"],
+        tags: ["architecture"],
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(episode);
+
+    const lowTrust = await harness.retrievalPipeline.search("architecture", {
+      limit: 1,
+      attentionWeights: socialAttentionWeights(),
+      audienceEntityId: audienceId,
+      audienceProfile: harness.socialRepository.upsertProfile(audienceId),
+      audienceTerms: ["Tomasz"],
+    });
+    const highTrustProfile = harness.socialRepository.adjustTrust(audienceId, 0.3, {
+      kind: "manual",
+    });
+    const highTrust = await harness.retrievalPipeline.search("architecture", {
+      limit: 1,
+      attentionWeights: socialAttentionWeights(),
+      audienceEntityId: audienceId,
+      audienceProfile: highTrustProfile,
+      audienceTerms: ["Tomasz"],
+    });
+
+    expect(lowTrust[0]?.scoreBreakdown.socialRelevance).toBe(0.2);
+    expect(highTrust[0]?.scoreBreakdown.socialRelevance).toBe(0.25);
+  });
+
+  it("caches participant entity resolution per retrieval call", async () => {
+    harness = await createOfflineTestHarness();
+    const audienceId = harness.entityRepository.resolve("Tomasz");
+    harness.entityRepository.addAlias(audienceId, "Tom");
+    const first = createEpisodeFixture(
+      {
+        title: "First Tom architecture discussion",
+        participants: ["Tom"],
+        tags: ["architecture"],
+      },
+      [1, 0, 0, 0],
+    );
+    const second = createEpisodeFixture(
+      {
+        title: "Second Tom architecture discussion",
+        participants: ["Tom"],
+        tags: ["architecture"],
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(first);
+    await harness.episodicRepository.insert(second);
+    const findSpy = vi.spyOn(harness.entityRepository, "findByName");
+
+    await harness.retrievalPipeline.search("architecture", {
+      limit: 2,
+      attentionWeights: socialAttentionWeights(),
+      audienceEntityId: audienceId,
+      audienceTerms: ["Tomasz"],
+    });
+
+    expect(findSpy.mock.calls.filter(([name]) => name === "Tom")).toHaveLength(1);
+
+    findSpy.mockClear();
+
+    await harness.retrievalPipeline.search("architecture", {
+      limit: 2,
+      attentionWeights: socialAttentionWeights(),
+      audienceTerms: ["Tom"],
+    });
+
+    expect(findSpy).not.toHaveBeenCalled();
   });
 
   it("hard-excludes audience-scoped episodes from other audiences", async () => {
