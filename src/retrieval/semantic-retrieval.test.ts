@@ -33,7 +33,7 @@ describe("resolveSemanticContext temporal validity", () => {
         label: "Atlas",
         description: "Atlas deployment service",
         source_episode_ids: [episode.id],
-      }),
+      }, [1, 0, 0, 0]),
     );
     const contradiction = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture({
@@ -41,7 +41,7 @@ describe("resolveSemanticContext temporal validity", () => {
         label: "Atlas needs no deploy work",
         description: "A stale claim that Atlas deployment needs no action.",
         source_episode_ids: [episode.id],
-      }),
+      }, [0, 1, 0, 0]),
     );
     const edge = harness.semanticEdgeRepository.addEdge({
       from_node_id: atlas.id,
@@ -67,6 +67,7 @@ describe("resolveSemanticContext temporal validity", () => {
       {
         graphWalkDepth: 1,
         maxGraphNodes: 4,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
       },
       {
         embeddingClient: harness.embeddingClient,
@@ -81,6 +82,7 @@ describe("resolveSemanticContext temporal validity", () => {
         graphWalkDepth: 1,
         maxGraphNodes: 4,
         asOf: 1_000_250,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
       },
       {
         embeddingClient: harness.embeddingClient,
@@ -112,7 +114,7 @@ describe("resolveSemanticContext temporal validity", () => {
         label: "Atlas requires pnpm install",
         description: "Atlas deployment currently requires rerunning pnpm install.",
         source_episode_ids: [episode.id],
-      }),
+      }, [1, 0, 0, 0]),
     );
     const support = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture({
@@ -120,7 +122,7 @@ describe("resolveSemanticContext temporal validity", () => {
         label: "pnpm install fixed Atlas",
         description: "Rerunning pnpm install fixed a previous Atlas deployment failure.",
         source_episode_ids: [episode.id],
-      }),
+      }, [0, 1, 0, 0]),
     );
     const edge = harness.semanticEdgeRepository.addEdge({
       from_node_id: support.id,
@@ -146,6 +148,7 @@ describe("resolveSemanticContext temporal validity", () => {
       {
         graphWalkDepth: 1,
         maxGraphNodes: 4,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
       },
       {
         embeddingClient: harness.embeddingClient,
@@ -160,6 +163,7 @@ describe("resolveSemanticContext temporal validity", () => {
         graphWalkDepth: 1,
         maxGraphNodes: 4,
         asOf: 1_000_250,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
       },
       {
         embeddingClient: harness.embeddingClient,
@@ -194,7 +198,7 @@ describe("resolveSemanticContext temporal validity", () => {
         label: "Atlas failed deploys",
         description: "Atlas failed deploys create extra rollback pressure.",
         source_episode_ids: [episode.id],
-      }),
+      }, [1, 0, 0, 0]),
     );
     const effect = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture({
@@ -202,7 +206,7 @@ describe("resolveSemanticContext temporal validity", () => {
         label: "Rollback pressure rises",
         description: "Rollback pressure rises when Atlas deploys fail.",
         source_episode_ids: [episode.id],
-      }),
+      }, [0, 1, 0, 0]),
     );
     const edge = harness.semanticEdgeRepository.addEdge({
       from_node_id: cause.id,
@@ -239,6 +243,7 @@ describe("resolveSemanticContext temporal validity", () => {
         {
           graphWalkDepth: 1,
           maxGraphNodes: 4,
+          queryVector: Float32Array.from([0, 1, 0, 0]),
         },
         {
           embeddingClient: harness.embeddingClient,
@@ -273,7 +278,7 @@ describe("resolveSemanticContext temporal validity", () => {
         description: "Atlas release information that remains normally supported.",
         source_episode_ids: [episode.id],
         updated_at: 1_000_000,
-      }),
+      }, [1, 0, 0, 0]),
     );
     const underReview = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture({
@@ -281,7 +286,7 @@ describe("resolveSemanticContext temporal validity", () => {
         description: "Atlas release information whose support is being re-evaluated.",
         source_episode_ids: [episode.id],
         updated_at: 1_000_100,
-      }),
+      }, [1, 0, 0, 0]),
     );
     harness.reviewQueueRepository.enqueue({
       kind: "belief_revision",
@@ -306,6 +311,7 @@ describe("resolveSemanticContext temporal validity", () => {
         graphWalkDepth: 1,
         maxGraphNodes: 4,
         underReviewMultiplier: 0.5,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
       },
       {
         embeddingClient: harness.embeddingClient,
@@ -353,7 +359,7 @@ describe("resolveSemanticContext temporal validity", () => {
         label: "Atlas shared claim",
         description: "A shared Atlas claim with a private review for one audience.",
         source_episode_ids: [sharedEpisode.id],
-      }),
+      }, [1, 0, 0, 0]),
     );
     harness.reviewQueueRepository.enqueue({
       kind: "belief_revision",
@@ -380,6 +386,7 @@ describe("resolveSemanticContext temporal validity", () => {
           graphWalkDepth: 1,
           maxGraphNodes: 4,
           underReviewMultiplier: 0.5,
+          queryVector: Float32Array.from([1, 0, 0, 0]),
         },
         {
           embeddingClient: harness.embeddingClient,
@@ -398,6 +405,7 @@ describe("resolveSemanticContext temporal validity", () => {
           graphWalkDepth: 1,
           maxGraphNodes: 4,
           underReviewMultiplier: 0.5,
+          queryVector: Float32Array.from([1, 0, 0, 0]),
         },
         {
           embeddingClient: harness.embeddingClient,
@@ -451,14 +459,14 @@ describe("resolveSemanticContext temporal validity", () => {
         label: "Atlas private source",
         description: "Private source node.",
         source_episode_ids: [privateEpisodeB.id],
-      }),
+      }, [0, 1, 0, 0]),
     );
     const node = await harness.semanticNodeRepository.insert(
       createSemanticNodeFixture({
         label: "Atlas public claim",
         description: "A public Atlas claim under private review for one audience.",
         source_episode_ids: [publicEpisode.id],
-      }),
+      }, [1, 0, 0, 0]),
     );
     const invalidatedEdge = harness.semanticEdgeRepository.addEdge({
       from_node_id: source.id,
@@ -491,10 +499,11 @@ describe("resolveSemanticContext temporal validity", () => {
       await resolveSemanticContext(
         "Atlas public claim",
         {
-          audienceEntityId: audienceA,
-          graphWalkDepth: 1,
-          maxGraphNodes: 4,
-        },
+        audienceEntityId: audienceA,
+        graphWalkDepth: 1,
+        maxGraphNodes: 4,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
+      },
         {
           embeddingClient: harness.embeddingClient,
           episodicRepository: harness.episodicRepository,
@@ -508,10 +517,11 @@ describe("resolveSemanticContext temporal validity", () => {
       await resolveSemanticContext(
         "Atlas public claim",
         {
-          audienceEntityId: audienceB,
-          graphWalkDepth: 1,
-          maxGraphNodes: 4,
-        },
+        audienceEntityId: audienceB,
+        graphWalkDepth: 1,
+        maxGraphNodes: 4,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
+      },
         {
           embeddingClient: harness.embeddingClient,
           episodicRepository: harness.episodicRepository,

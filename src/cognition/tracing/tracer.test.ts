@@ -116,6 +116,31 @@ describe("TurnTracer", () => {
     ]);
   });
 
+  it("supports degraded-mode observability events", () => {
+    const tempDir = createTempDir();
+    const tracePath = join(tempDir, "degraded.jsonl");
+    const tracer = new JsonlTracer({
+      path: tracePath,
+      clock: new FixedClock(321),
+    });
+
+    tracer.emit("perception_classifier_degraded", {
+      turnId: "turn_degraded",
+      classifier: "affective_signal",
+      reason: "llm_unavailable",
+    });
+    tracer.emit("retrieval_degraded", {
+      turnId: "turn_degraded",
+      subsystem: "open_questions",
+      reason: "embedding_unavailable",
+    });
+
+    expect(readTraceEvents(tracePath).map((event) => event.event)).toEqual([
+      "perception_classifier_degraded",
+      "retrieval_degraded",
+    ]);
+  });
+
   it("keeps NoopTracer inert", () => {
     const tempDir = createTempDir();
     const tracePath = join(tempDir, "noop.jsonl");
@@ -275,6 +300,7 @@ describe("TurnTracer", () => {
     expect(events.map((event) => event.event)).toEqual([
       "recency_compiled",
       "perception_started",
+      "perception_classifier_degraded",
       "perception_completed",
       "retrieval_started",
       "retrieval_completed",

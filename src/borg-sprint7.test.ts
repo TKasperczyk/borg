@@ -160,6 +160,23 @@ describe("Borg Sprint 7", () => {
     const llm = new FakeLLMClient({
       responses: [
         {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_context_1",
+              name: "EmitProceduralContext",
+              input: {
+                problem_kind: "code_debugging",
+                domain_tags: ["rust"],
+                confidence: 0.9,
+              },
+            },
+          ],
+        },
+        {
           text: "Try shrinking the borrow scope and introducing an intermediate binding.",
           input_tokens: 20,
           output_tokens: 20,
@@ -167,6 +184,23 @@ describe("Borg Sprint 7", () => {
           tool_calls: [],
         },
         createEmptyReflectionResponse(),
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_context_2",
+              name: "EmitProceduralContext",
+              input: {
+                problem_kind: "code_debugging",
+                domain_tags: ["rust"],
+                confidence: 0.9,
+              },
+            },
+          ],
+        },
         {
           text: "Reuse the scoped-binding approach; it still fits the Rust lifetime issue.",
           input_tokens: 20,
@@ -225,6 +259,28 @@ describe("Borg Sprint 7", () => {
     });
 
     try {
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              affectiveSignalDetector?: (text: string) => Promise<unknown>;
+            };
+          };
+        };
+      };
+      internal.deps.turnOrchestrator.options.affectiveSignalDetector = async (text) =>
+        text.includes("frustrated")
+          ? {
+              valence: -0.8,
+              arousal: 0.7,
+              dominant_emotion: "anger",
+            }
+          : {
+              valence: 0.7,
+              arousal: 0.3,
+              dominant_emotion: "joy",
+            };
+
       const skill = await borg.skills.add({
         applies_when: "Rust lifetime debugging",
         approach: "Shrink borrow scopes and use intermediate bindings.",
@@ -274,7 +330,7 @@ describe("Borg Sprint 7", () => {
             .all(skill.id),
         ).toEqual([
           expect.objectContaining({
-            context_key: "code_debugging:rust:unknown",
+            context_key: expect.stringMatching(/^v2:/),
             alpha: 2,
             beta: 1,
             attempts: 1,

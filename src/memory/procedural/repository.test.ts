@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createEpisodeFixture, createOfflineTestHarness } from "../../offline/test-support.js";
+import {
+  createEpisodeFixture,
+  createOfflineTestHarness,
+  TestEmbeddingClient,
+} from "../../offline/test-support.js";
 import { createEpisodeId, createProceduralEvidenceId, createSkillId } from "../../util/ids.js";
 
-import { deriveProceduralContextKey, proceduralContextSchema } from "./context.js";
+import {
+  deriveLegacyProceduralContextKey,
+  deriveProceduralContextKey,
+  proceduralContextSchema,
+} from "./context.js";
 import { SkillSelector } from "./selector.js";
 
 describe("SkillRepository", () => {
@@ -209,23 +217,17 @@ describe("SkillRepository", () => {
     ]);
   });
 
-  it("derives deterministic context keys from equivalent tag sets", () => {
+  it("derives v2 context keys from stable structured context", () => {
     const contexts = [
       proceduralContextSchema.parse({
         problem_kind: "code_debugging",
-        domain_tags: ["typescript", "debugging"],
+        domain_tags: ["typescript", "deployment"],
         audience_scope: "self",
         context_key: "ignored",
       }),
       proceduralContextSchema.parse({
         problem_kind: "code_debugging",
-        domain_tags: ["debugging", "typescript"],
-        audience_scope: "self",
-        context_key: "ignored",
-      }),
-      proceduralContextSchema.parse({
-        problem_kind: "code_debugging",
-        domain_tags: ["TypeScript"],
+        domain_tags: ["TypeScript", "deployment", "typescript"],
         audience_scope: "self",
         context_key: "ignored",
       }),
@@ -238,11 +240,47 @@ describe("SkillRepository", () => {
     ];
 
     expect(contexts.map((context) => context.context_key)).toEqual([
-      "code_debugging:typescript:self",
-      "code_debugging:typescript:self",
-      "code_debugging:typescript:self",
-      "code_debugging:typescript:self",
+      contexts[0]?.context_key,
+      contexts[0]?.context_key,
+      expect.stringMatching(/^v2:/),
     ]);
+    expect(contexts[0]?.domain_tags).toEqual(["typescript", "deployment"]);
+    expect(contexts[2]?.domain_tags).toEqual(["typescript"]);
+  });
+
+  it("reads legacy context stats aliases during the v2 transition", async () => {
+    harness = await createOfflineTestHarness();
+    const episode = createEpisodeFixture();
+    await harness.episodicRepository.insert(episode);
+    const skill = await harness.skillRepository.add({
+      applies_when: "TypeScript deployment debugging",
+      approach: "Inspect deployment logs and tsc output.",
+      sourceEpisodes: [episode.id],
+    });
+    const context = proceduralContextSchema.parse({
+      problem_kind: "code_debugging",
+      domain_tags: ["typescript", "deployment"],
+      audience_scope: "self",
+      context_key: "ignored",
+    });
+    const legacyContextKey = deriveLegacyProceduralContextKey(context);
+
+    harness.proceduralContextStatsRepository.recordContextOutcome({
+      skillId: skill.id,
+      contextKey: legacyContextKey,
+      success: true,
+      ts: 1_000,
+    });
+
+    const selection = await new SkillSelector({
+      repository: harness.skillRepository,
+      contextStatsRepository: harness.proceduralContextStatsRepository,
+      sampler: () => 0.5,
+    }).select("TypeScript deployment debugging", {
+      proceduralContext: context,
+    });
+
+    expect(selection?.evaluatedCandidates[0]?.contextStats?.context_key).toBe(legacyContextKey);
   });
 
   it("records global-only outcomes when no procedural context is present", async () => {
@@ -467,7 +505,23 @@ describe("SkillRepository", () => {
   });
 
   it("removes superseded skill vectors so split-heavy corpora return active children", async () => {
-    harness = await createOfflineTestHarness();
+    const vectors = new Map<string, readonly number[]>([
+      ["Rust lifetime debugging", [1, 0, 0, 0]],
+      ["planning roadmap review", [0, 1, 0, 0]],
+    ]);
+
+    for (let index = 0; index < 30; index += 1) {
+      vectors.set(`Roadmap planning replacement ${index}`, [0, 1, 0, 0]);
+      vectors.set(`Rust lifetime debugging superseded ${index}`, [1, 0, 0, 0]);
+    }
+
+    for (let index = 0; index < 3; index += 1) {
+      vectors.set(`Rust lifetime debugging active child ${index}`, [1, 0, 0, 0]);
+    }
+
+    harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(vectors),
+    });
     const episode = createEpisodeFixture();
     await harness.episodicRepository.insert(episode);
     const rustContext = deriveProceduralContextKey({
@@ -953,7 +1007,14 @@ describe("SkillRepository", () => {
   });
 
   it("does not select a skill below the configured similarity threshold", async () => {
-    harness = await createOfflineTestHarness();
+    harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["Atlas deployment rollback", [1, 0, 0, 0]],
+          ["planning roadmap review", [0, 1, 0, 0]],
+        ]),
+      ),
+    });
     const episode = createEpisodeFixture();
     await harness.episodicRepository.insert(episode);
     await harness.skillRepository.add({

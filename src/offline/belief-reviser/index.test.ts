@@ -658,6 +658,7 @@ describe("belief reviser process", () => {
             graphWalkDepth: 1,
             maxGraphNodes: 4,
             underReviewMultiplier: 0.5,
+            queryVector: Float32Array.from([0, 1, 0, 0]),
           },
           {
             embeddingClient: harness.embeddingClient,
@@ -900,7 +901,8 @@ describe("belief reviser process", () => {
       await runBeliefReviser(harness, { regradeBatchSize: 1 });
 
       const updated = await harness.semanticNodeRepository.get(target.id);
-      const matches = await harness.semanticNodeRepository.findByLabelOrAlias("Archived target");
+      const matches =
+        await harness.semanticNodeRepository.findByExactLabelOrAlias("Archived target");
 
       expect(beliefRevisionItems(harness)[0]).toMatchObject({
         resolution: "archive_node",

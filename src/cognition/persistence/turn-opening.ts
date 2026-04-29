@@ -56,6 +56,7 @@ export class TurnOpeningPersistence {
         entities: input.perception.entities,
         temporalCue: input.perception.temporalCue,
         affectiveSignal: input.perception.affectiveSignal,
+        affectiveSignalDegraded: input.perception.affectiveSignalDegraded === true,
       },
       ...(input.audience === undefined ? {} : { audience: input.audience }),
     });

@@ -27,7 +27,6 @@ import {
   type OpenQuestionId,
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
-import { tokenizeText } from "../../util/text/tokenize.js";
 import { episodeIdSchema } from "../episodic/types.js";
 import { semanticNodeIdSchema } from "../semantic/types.js";
 import {
@@ -206,9 +205,8 @@ function parseIdArray<T>(value: string, schema: z.ZodType<T>, label: string): T[
   return result.data;
 }
 
-function normalizeQuestion(text: string): string {
-  const tokens = [...tokenizeText(text)];
-  return tokens.length === 0 ? text.trim().toLowerCase().replace(/\s+/g, " ") : tokens.join(" ");
+function normalizeQuestionForDedupe(text: string): string {
+  return text.normalize("NFKC").trim().toLowerCase().replace(/\s+/gu, " ");
 }
 
 function toSimilarity(distance: number | undefined): number {
@@ -282,7 +280,12 @@ export function buildOpenQuestionDedupeKey(input: {
         }),
   });
 
-  return `${normalizeQuestion(input.question)}|${createHash("sha1").update(relatedIdsPayload).digest("hex")}`;
+  const questionHash = createHash("sha1")
+    .update(normalizeQuestionForDedupe(input.question))
+    .digest("hex");
+  const relatedHash = createHash("sha1").update(relatedIdsPayload).digest("hex");
+
+  return `v2:${questionHash}|${relatedHash}`;
 }
 
 function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {

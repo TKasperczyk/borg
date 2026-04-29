@@ -21,6 +21,8 @@ import type {
 } from "../../retrieval/index.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
+import type { LLMClient } from "../../llm/index.js";
+import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
 import { computeRetrievalLimit, computeWeights, type SuppressionSet } from "../attention/index.js";
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
 import { deriveProceduralContext } from "../procedural/context-derivation.js";
@@ -75,6 +77,7 @@ export type TurnRetrievalCoordinatorOptions = {
   retrievalPipeline: Pick<RetrievalPipeline, "searchWithContext" | "search">;
   skillSelector: Pick<SkillSelector, "select">;
   clock: Clock;
+  tracer?: TurnTracer;
 };
 
 export type TurnRetrievalCoordinatorInput = {
@@ -93,6 +96,8 @@ export type TurnRetrievalCoordinatorInput = {
   executiveFocus?: ExecutiveFocus | null;
   suppressionSet: SuppressionSet;
   findEntityByName: (name: string) => EntityId | null;
+  llmClient?: LLMClient;
+  proceduralContextModel?: string;
 };
 
 export type TurnRetrievalCoordinatorResult = {
@@ -109,7 +114,11 @@ export type TurnRetrievalCoordinatorResult = {
 };
 
 export class TurnRetrievalCoordinator {
-  constructor(private readonly options: TurnRetrievalCoordinatorOptions) {}
+  private readonly tracer: TurnTracer;
+
+  constructor(private readonly options: TurnRetrievalCoordinatorOptions) {
+    this.tracer = options.tracer ?? NOOP_TRACER;
+  }
 
   private collectApplicableCommitments(
     audienceEntityId: EntityId | null,
@@ -242,14 +251,29 @@ export class TurnRetrievalCoordinator {
     );
     const proceduralContext =
       input.perception.mode === "problem_solving"
-        ? deriveProceduralContext({
-            userMessage: input.userMessage,
-            perception: input.perception,
-            isSelfAudience: input.isSelfAudience,
-            audienceEntityId: input.audienceEntityId,
-            audienceProfile: input.audienceProfile,
-            inputAudience: input.inputAudience,
-          })
+        ? await deriveProceduralContext(
+            {
+              userMessage: input.userMessage,
+              perception: input.perception,
+              isSelfAudience: input.isSelfAudience,
+              audienceEntityId: input.audienceEntityId,
+              audienceProfile: input.audienceProfile,
+              inputAudience: input.inputAudience,
+            },
+            {
+              llmClient: input.llmClient,
+              model: input.proceduralContextModel,
+              onDegraded: (reason) => {
+                if (this.tracer.enabled) {
+                  this.tracer.emit("perception_classifier_degraded", {
+                    turnId: input.turnId,
+                    classifier: "procedural_context",
+                    reason,
+                  });
+                }
+              },
+            },
+          )
         : null;
     const selectedSkill =
       input.perception.mode === "problem_solving"

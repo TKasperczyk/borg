@@ -43,7 +43,7 @@ class ScriptedEmbeddingClient implements EmbeddingClient {
   }
 
   private embedVector(text: string): Float32Array {
-    if (text.includes("planning") || text.includes("Atlas deployment")) {
+    if (text.includes("planning") || text.includes("Atlas")) {
       return Float32Array.from([1, 0, 0, 0]);
     }
 
@@ -814,7 +814,7 @@ describe("retrieval pipeline", () => {
       created_at: 1,
       updated_at: 1,
       last_verified_at: 1,
-      embedding: Float32Array.from([1, 0, 0, 0]),
+      embedding: Float32Array.from([0, 1, 0, 0]),
       archived: false,
       superseded_by: null,
     });
@@ -829,7 +829,7 @@ describe("retrieval pipeline", () => {
       created_at: 1,
       updated_at: 1,
       last_verified_at: 1,
-      embedding: Float32Array.from([1, 0, 0, 0]),
+      embedding: Float32Array.from([0, 0, 1, 0]),
       archived: false,
       superseded_by: null,
     });
@@ -844,7 +844,7 @@ describe("retrieval pipeline", () => {
       created_at: 1,
       updated_at: 1,
       last_verified_at: 1,
-      embedding: Float32Array.from([1, 0, 0, 0]),
+      embedding: Float32Array.from([0, 0, 0, 1]),
       archived: false,
       superseded_by: null,
     });
@@ -987,7 +987,7 @@ describe("retrieval pipeline", () => {
       created_at: 10_000,
       updated_at: 10_000,
       last_verified_at: 10_000,
-      embedding: Float32Array.from([0, 0, 1, 0]),
+      embedding: Float32Array.from([1, 0, 0, 0]),
       archived: false,
       superseded_by: null,
     });
@@ -1002,7 +1002,7 @@ describe("retrieval pipeline", () => {
       created_at: 10_000,
       updated_at: 10_000,
       last_verified_at: 10_000,
-      embedding: Float32Array.from([0, 0, 1, 0]),
+      embedding: Float32Array.from([0, 1, 0, 0]),
       archived: false,
       superseded_by: null,
     });
@@ -1095,7 +1095,7 @@ describe("retrieval pipeline", () => {
       content: "Atlas deploy note",
     });
 
-    await repo.insert(createEpisode("ep_aaaaaaaaaaaaaaaa", entry.id, [0, 0, 1, 0]));
+    await repo.insert(createEpisode("ep_aaaaaaaaaaaaaaaa", entry.id, [1, 0, 0, 0]));
     const atlas = await semanticNodeRepository.insert({
       id: "semn_aaaaaaaaaaaaaaaa" as never,
       kind: "entity",
@@ -1107,7 +1107,7 @@ describe("retrieval pipeline", () => {
       created_at: 1_000_000,
       updated_at: 1_000_000,
       last_verified_at: 1_000_000,
-      embedding: Float32Array.from([0, 0, 1, 0]),
+      embedding: Float32Array.from([1, 0, 0, 0]),
       archived: false,
       superseded_by: null,
     });
@@ -1122,7 +1122,7 @@ describe("retrieval pipeline", () => {
       created_at: 1_000_000,
       updated_at: 1_000_000,
       last_verified_at: 1_000_000,
-      embedding: Float32Array.from([0, 0, 1, 0]),
+      embedding: Float32Array.from([0, 1, 0, 0]),
       archived: false,
       superseded_by: null,
     });

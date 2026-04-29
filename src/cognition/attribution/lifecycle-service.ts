@@ -85,6 +85,9 @@ export class AttributionLifecycleService {
           },
         });
         pendingSocialAttribution = null;
+      } else if (input.perception.affectiveSignalDegraded === true) {
+        // Keep the pending attribution alive. Neutral affect in degraded
+        // mode is a contract placeholder, not observed evidence.
       } else {
         try {
           this.options.socialRepository.attachSentiment(pendingSocialAttribution.interaction_id, {
@@ -120,6 +123,8 @@ export class AttributionLifecycleService {
           },
         });
         pendingTraitAttribution = null;
+      } else if (input.perception.affectiveSignalDegraded === true) {
+        // Do not clear or reinforce trait attribution from degraded affect.
       } else if (
         input.perception.affectiveSignal.valence > TRAIT_ATTRIBUTION_POSITIVE_VALENCE_THRESHOLD
       ) {

@@ -1,5 +1,6 @@
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { LLMClient } from "../../llm/index.js";
+import type { AffectiveExtractorDegradedReason } from "../../memory/affective/index.js";
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
 import { perceptionResultSchema, type CognitiveMode, type PerceptionResult } from "../types.js";
 import {
@@ -11,7 +12,7 @@ import { EntityExtractor } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
 import { detectTemporalCue } from "./temporal-cue.js";
 
-export type PerceptionClassifierName = "entity_extractor" | "mode_detector";
+export type PerceptionClassifierName = "entity_extractor" | "mode_detector" | "affective_signal";
 
 export type PerceptionClassifierFailure = {
   classifier: PerceptionClassifierName;
@@ -114,20 +115,44 @@ export class Perceiver {
   private async detectAffectiveSignalSafely(
     text: string,
     recentHistory: readonly string[],
-  ): Promise<AffectiveSignal> {
+  ): Promise<{ signal: AffectiveSignal; degraded: boolean }> {
+    let degraded = false;
+    const markDegraded = async (
+      reason: AffectiveExtractorDegradedReason | "classifier_error",
+      error?: unknown,
+    ): Promise<void> => {
+      degraded = true;
+
+      if (this.tracer.enabled && this.turnId !== undefined) {
+        this.tracer.emit("perception_classifier_degraded", {
+          turnId: this.turnId,
+          classifier: "affective_signal",
+          reason,
+        });
+      }
+
+      if (error !== undefined) {
+        try {
+          await this.onAffectiveError?.(error);
+        } catch {
+          // Best-effort hook logging only.
+        }
+      }
+    };
+
     try {
-      return await this.detectAffectiveSignal(text, recentHistory, {
+      const signal = await this.detectAffectiveSignal(text, recentHistory, {
         llmClient: this.llmClient,
         model: this.model,
         useLlmFallback: this.affectiveUseLlmFallback,
+        onDegraded: markDegraded,
       });
+
+      return { signal, degraded };
     } catch (error) {
-      try {
-        await this.onAffectiveError?.(error);
-      } catch {
-        // Best-effort hook logging only.
-      }
-      return createNeutralAffectiveSignal();
+      await markDegraded("classifier_error", error);
+
+      return { signal: createNeutralAffectiveSignal(), degraded: true };
     }
   }
 
@@ -141,7 +166,7 @@ export class Perceiver {
     }
 
     const nowMs = this.clock.now();
-    const [entities, mode, affectiveSignal, temporalCue] = await Promise.all([
+    const [entities, mode, affective, temporalCue] = await Promise.all([
       runPerceptionClassifierSafely({
         classifier: "entity_extractor",
         run: () => this.entityExtractor.extractEntities(text),
@@ -172,7 +197,8 @@ export class Perceiver {
     const perception = perceptionResultSchema.parse({
       entities,
       mode,
-      affectiveSignal,
+      affectiveSignal: affective.signal,
+      affectiveSignalDegraded: affective.degraded,
       temporalCue,
     });
 

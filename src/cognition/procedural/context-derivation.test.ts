@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { FakeLLMClient } from "../../llm/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import type { EntityId } from "../../util/ids.js";
 import type { PerceptionResult } from "../types.js";
 import { deriveProceduralContext } from "./context-derivation.js";
+
+const PROCEDURAL_CONTEXT_TOOL_NAME = "EmitProceduralContext";
 
 function makePerception(
   mode: PerceptionResult["mode"],
@@ -32,110 +35,192 @@ function makeAudienceProfile(entityId: EntityId): SocialProfile {
   };
 }
 
+function proceduralContextResponse(input: {
+  problem_kind: string;
+  domain_tags: string[];
+  confidence?: number;
+}) {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_context",
+        name: PROCEDURAL_CONTEXT_TOOL_NAME,
+        input: {
+          confidence: input.confidence ?? 0.8,
+          problem_kind: input.problem_kind,
+          domain_tags: input.domain_tags,
+        },
+      },
+    ],
+  };
+}
+
 describe("deriveProceduralContext", () => {
-  it("derives problem kind and tags from problem-solving text and entities", () => {
-    const context = deriveProceduralContext({
-      userMessage: "Fix this TypeScript compiler error in the deploy path.",
-      perception: makePerception("problem_solving", ["TypeScript", "Deploy"]),
-      isSelfAudience: true,
-      audienceEntityId: null,
+  it("derives problem kind and canonical slug tags from the LLM tool output", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        proceduralContextResponse({
+          problem_kind: "code_debugging",
+          domain_tags: ["typescript", "deployment", "typescript"],
+        }),
+      ],
     });
+
+    const context = await deriveProceduralContext(
+      {
+        userMessage: "修复 TypeScript 部署错误。",
+        perception: makePerception("problem_solving", ["TypeScript", "Deploy"]),
+        isSelfAudience: true,
+        audienceEntityId: null,
+      },
+      {
+        llmClient: llm,
+        model: "haiku",
+      },
+    );
 
     expect(context).toMatchObject({
       problem_kind: "code_debugging",
-      domain_tags: ["deploy", "typescript"],
+      domain_tags: ["typescript", "deployment"],
       audience_scope: "self",
-      context_key: "code_debugging:deploy,typescript:self",
+    });
+    expect(context?.context_key).toMatch(/^v2:/);
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: PROCEDURAL_CONTEXT_TOOL_NAME,
     });
   });
 
-  it("derives audience scope from self, known, and unknown audiences", () => {
+  it("derives audience scope from self, known, and unknown audiences", async () => {
     const knownEntityId = "ent_aaaaaaaaaaaaaaaa" as EntityId;
     const firstContactEntityId = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    const llm = new FakeLLMClient({
+      responses: [
+        proceduralContextResponse({ problem_kind: "planning", domain_tags: ["atlas"] }),
+        proceduralContextResponse({ problem_kind: "planning", domain_tags: ["atlas"] }),
+        proceduralContextResponse({ problem_kind: "planning", domain_tags: ["atlas"] }),
+      ],
+    });
 
-    expect(
-      deriveProceduralContext({
-        userMessage: "Plan the Atlas roadmap.",
-        perception: makePerception("problem_solving", ["Atlas"]),
-        isSelfAudience: true,
-        audienceEntityId: null,
-      })?.audience_scope,
-    ).toBe("self");
-    expect(
-      deriveProceduralContext({
-        userMessage: "Plan the Atlas roadmap.",
-        perception: makePerception("problem_solving", ["Atlas"]),
-        isSelfAudience: false,
-        audienceEntityId: knownEntityId,
-        audienceProfile: makeAudienceProfile(knownEntityId),
-      })?.audience_scope,
-    ).toBe("known_other");
-    expect(
-      deriveProceduralContext({
-        userMessage: "Plan the Atlas roadmap.",
-        perception: makePerception("problem_solving", ["Atlas"]),
-        isSelfAudience: false,
-        audienceEntityId: firstContactEntityId,
-        audienceProfile: null,
-      })?.audience_scope,
-    ).toBe("unknown");
+    await expect(
+      deriveProceduralContext(
+        {
+          userMessage: "Plan the Atlas roadmap.",
+          perception: makePerception("problem_solving", ["Atlas"]),
+          isSelfAudience: true,
+          audienceEntityId: null,
+        },
+        { llmClient: llm, model: "haiku" },
+      ),
+    ).resolves.toMatchObject({ audience_scope: "self" });
+    await expect(
+      deriveProceduralContext(
+        {
+          userMessage: "Plan the Atlas roadmap.",
+          perception: makePerception("problem_solving", ["Atlas"]),
+          isSelfAudience: false,
+          audienceEntityId: knownEntityId,
+          audienceProfile: makeAudienceProfile(knownEntityId),
+        },
+        { llmClient: llm, model: "haiku" },
+      ),
+    ).resolves.toMatchObject({ audience_scope: "known_other" });
+    await expect(
+      deriveProceduralContext(
+        {
+          userMessage: "Plan the Atlas roadmap.",
+          perception: makePerception("problem_solving", ["Atlas"]),
+          isSelfAudience: false,
+          audienceEntityId: firstContactEntityId,
+          audienceProfile: null,
+        },
+        { llmClient: llm, model: "haiku" },
+      ),
+    ).resolves.toMatchObject({ audience_scope: "unknown" });
   });
 
-  it("returns null for empty unknown context", () => {
-    expect(
-      deriveProceduralContext({
-        userMessage: "",
-        perception: makePerception("idle"),
-        isSelfAudience: false,
-        audienceEntityId: null,
-      }),
-    ).toBeNull();
+  it("returns null and reports degraded mode when no LLM is available", async () => {
+    const onDegraded = vi.fn();
+
+    await expect(
+      deriveProceduralContext(
+        {
+          userMessage: "Fix this.",
+          perception: makePerception("problem_solving"),
+          isSelfAudience: false,
+          audienceEntityId: null,
+        },
+        { onDegraded },
+      ),
+    ).resolves.toBeNull();
+    expect(onDegraded).toHaveBeenCalledWith("llm_unavailable", undefined);
   });
 
-  it("returns null for no-audience problem-solving with no useful context", () => {
-    expect(
-      deriveProceduralContext({
-        userMessage: "",
+  it("returns null for low-confidence or empty unknown context", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        proceduralContextResponse({
+          problem_kind: "code_debugging",
+          domain_tags: ["typescript"],
+          confidence: 0.1,
+        }),
+        proceduralContextResponse({
+          problem_kind: "other",
+          domain_tags: [],
+          confidence: 0.8,
+        }),
+      ],
+    });
+
+    await expect(
+      deriveProceduralContext(
+        {
+          userMessage: "maybe this",
+          perception: makePerception("problem_solving"),
+          isSelfAudience: true,
+          audienceEntityId: null,
+        },
+        { llmClient: llm, model: "haiku" },
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      deriveProceduralContext(
+        {
+          userMessage: "",
+          perception: makePerception("problem_solving"),
+          isSelfAudience: false,
+          audienceEntityId: null,
+          audienceProfile: null,
+        },
+        { llmClient: llm, model: "haiku" },
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("caps domain tags after canonicalization and dedupe without generic filtering", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        proceduralContextResponse({
+          problem_kind: "code_debugging",
+          domain_tags: ["TypeScript", "typescript", "code", "debugging", "lancedb", "sqlite"],
+        }),
+      ],
+    });
+
+    const context = await deriveProceduralContext(
+      {
+        userMessage: "Fix this TypeScript LanceDB SQLite issue.",
         perception: makePerception("problem_solving"),
-        isSelfAudience: false,
-        audienceEntityId: null,
-        audienceProfile: null,
-      }),
-    ).toBeNull();
-  });
-
-  it("classifies problem-solving with only a code entity as code design", () => {
-    expect(
-      deriveProceduralContext({
-        userMessage: "",
-        perception: makePerception("problem_solving", ["Code"]),
         isSelfAudience: true,
         audienceEntityId: null,
-      }),
-    ).toMatchObject({
-      problem_kind: "code_design",
-      domain_tags: [],
-      audience_scope: "self",
-      context_key: "code_design::self",
-    });
-  });
+      },
+      { llmClient: llm, model: "haiku" },
+    );
 
-  it("caps domain tags after canonicalization, dedupe, and generic filtering", () => {
-    const context = deriveProceduralContext({
-      userMessage: "",
-      perception: makePerception("problem_solving", [
-        "TypeScript",
-        "typescript",
-        "Code",
-        "code",
-        "lifetime",
-        "borrow",
-      ]),
-      isSelfAudience: true,
-      audienceEntityId: null,
-    });
-
-    expect(context?.domain_tags).toHaveLength(3);
-    expect(new Set(context?.domain_tags)).toEqual(new Set(["typescript", "lifetime", "borrow"]));
+    expect(context?.domain_tags).toEqual(["typescript", "code", "debugging"]);
   });
 });

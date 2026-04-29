@@ -1,6 +1,11 @@
 import type { Migration } from "../../storage/sqlite/index.js";
 import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
-import { createTraitId, parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
+import {
+  createTraitId,
+  parseEntityId,
+  parseEpisodeId,
+  parseSemanticNodeId,
+} from "../../util/ids.js";
 
 import { buildOpenQuestionDedupeKey } from "./open-questions.js";
 
@@ -1176,6 +1181,63 @@ export const selfMigrations = [
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_open_questions_audience_status_urgency
           ON open_questions (audience_entity_id, status, urgency DESC, last_touched DESC);
+      `);
+    },
+  },
+  {
+    id: 267,
+    name: "backfill-open-question-dedupe-v2",
+    up: (db) => {
+      if (!tableExists(db, "open_questions") || !tableHasColumn(db, "open_questions", "dedupe_key")) {
+        return;
+      }
+
+      const hasAudienceColumn = tableHasColumn(db, "open_questions", "audience_entity_id");
+      const rows = db
+        .prepare(
+          `
+            SELECT id, question, related_episode_ids, related_semantic_node_ids${
+              hasAudienceColumn ? ", audience_entity_id" : ""
+            }, created_at
+            FROM open_questions
+            ORDER BY created_at ASC, id ASC
+          `,
+        )
+        .all() as Array<Record<string, unknown>>;
+      const seenKeys = new Set<string>();
+      const updates: Array<{ id: unknown; dedupeKey: string }> = [];
+
+      for (const row of rows) {
+        const baseKey = buildOpenQuestionDedupeKey({
+          question: String(row.question ?? ""),
+          relatedEpisodeIds: parseStoredIdArray(row.related_episode_ids).map((id) =>
+            parseEpisodeId(id),
+          ),
+          relatedSemanticNodeIds: parseStoredIdArray(row.related_semantic_node_ids).map((id) =>
+            parseSemanticNodeId(id),
+          ),
+          audienceEntityId:
+            typeof row.audience_entity_id === "string" ? parseEntityId(row.audience_entity_id) : null,
+        });
+        const dedupeKey = seenKeys.has(baseKey) ? `${baseKey}|collision:${String(row.id)}` : baseKey;
+        seenKeys.add(dedupeKey);
+        updates.push({
+          id: row.id,
+          dedupeKey,
+        });
+      }
+
+      db.exec("DROP INDEX IF EXISTS idx_open_questions_dedupe_key");
+      const updateStatement = db.prepare("UPDATE open_questions SET dedupe_key = ? WHERE id = ?");
+
+      for (const update of updates) {
+        updateStatement.run(update.dedupeKey, update.id);
+      }
+
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_open_questions_dedupe_key
+          ON open_questions (dedupe_key)
+          WHERE dedupe_key IS NOT NULL
       `);
     },
   },

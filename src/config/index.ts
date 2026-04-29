@@ -105,6 +105,7 @@ const configFileSchema = z
           .object({
             enabled: z.boolean().optional(),
             minSupport: z.number().int().positive().optional(),
+            goalSimilarityThreshold: z.number().min(0).max(1).optional(),
             ceilingConfidence: z.number().positive().max(0.5).optional(),
             maxInsightsPerRun: z.number().int().positive().optional(),
             budget: z.number().int().positive().optional(),
@@ -374,6 +375,7 @@ export const configSchema = z.object({
     reflector: z.object({
       enabled: z.boolean(),
       minSupport: z.number().int().positive(),
+      goalSimilarityThreshold: z.number().min(0).max(1),
       ceilingConfidence: z.number().positive().max(0.5),
       maxInsightsPerRun: z.number().int().positive(),
       budget: z.number().int().positive(),
@@ -580,6 +582,7 @@ export const DEFAULT_CONFIG: Config = {
     reflector: {
       enabled: true,
       minSupport: 3,
+      goalSimilarityThreshold: 0.82,
       ceilingConfidence: 0.5,
       maxInsightsPerRun: 2,
       budget: 60_000,
@@ -1018,6 +1021,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MIN_SUPPORT") ??
           fileConfig.offline?.reflector?.minSupport ??
           DEFAULT_CONFIG.offline.reflector.minSupport,
+        goalSimilarityThreshold:
+          readOptionalEnvFloat(env, "BORG_OFFLINE_REFLECTOR_GOAL_SIMILARITY_THRESHOLD") ??
+          fileConfig.offline?.reflector?.goalSimilarityThreshold ??
+          DEFAULT_CONFIG.offline.reflector.goalSimilarityThreshold,
         ceilingConfidence:
           readOptionalEnvFloat(env, "BORG_OFFLINE_REFLECTOR_CEILING_CONFIDENCE") ??
           fileConfig.offline?.reflector?.ceilingConfidence ??

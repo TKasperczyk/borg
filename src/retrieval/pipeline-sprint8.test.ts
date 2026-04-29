@@ -4,6 +4,7 @@ import { FixedClock } from "../util/clock.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
+  TestEmbeddingClient,
   type OfflineTestHarness,
 } from "../offline/test-support.js";
 
@@ -26,6 +27,12 @@ function preferenceWeights() {
 async function createHarness(): Promise<OfflineTestHarness> {
   return createOfflineTestHarness({
     clock: new FixedClock(NOW_MS),
+    embeddingClient: new TestEmbeddingClient(
+      new Map([
+        ["architecture", [1, 0, 0, 0]],
+        ["clarity\nPrefer explicit state and careful handoffs.", [0, 0, 0, 1]],
+      ]),
+    ),
   });
 }
 

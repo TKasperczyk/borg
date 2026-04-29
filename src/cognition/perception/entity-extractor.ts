@@ -35,75 +35,17 @@ const ENTITY_LLM_SYSTEM_PROMPT = [
   "If the text contains no specific named entities, return an empty list. An empty list is the correct output for most casual text. Do not invent entities to fill the list.",
 ].join("\n");
 
-// Output sanitization: even with a tightened prompt, occasional bad
-// extractions slip through. Filter at the boundary as defense in
-// depth. Same belt-and-suspenders pattern as proceduralContextSchema's
-// domain_tags caps and dialogue.ts's empty-content placeholder.
+// Output sanitization: keep only language-neutral structural checks.
+// Natural-language validity belongs to the LLM extraction contract.
 const MAX_ENTITY_LENGTH = 64;
-const MIN_ENTITY_LENGTH = 2;
 const FORBIDDEN_ENTITY_PATTERNS: readonly RegExp[] = [
-  /^(human|assistant|user|ai|system):/i,
-  /^\[.*\]$/,
   /^[\p{P}\p{S}]+$/u,
 ];
-const ENTITY_STOPWORDS: ReadonlySet<string> = new Set([
-  "a",
-  "an",
-  "the",
-  "and",
-  "or",
-  "but",
-  "if",
-  "of",
-  "to",
-  "in",
-  "on",
-  "for",
-  "at",
-  "by",
-  "with",
-  "as",
-  "is",
-  "it",
-  "this",
-  "that",
-  "these",
-  "those",
-  "you",
-  "me",
-  "we",
-  "us",
-  "they",
-  "them",
-  "good",
-  "bad",
-  "yes",
-  "no",
-  "ok",
-  "okay",
-  "right",
-  "left",
-  "up",
-  "down",
-  "out",
-  "in",
-  "fine",
-  "sure",
-  "maybe",
-  "yeah",
-  "yep",
-  "nope",
-  "thanks",
-]);
 
 function isAcceptableEntity(value: string): boolean {
   const trimmed = value.trim();
 
-  if (trimmed.length < MIN_ENTITY_LENGTH || trimmed.length > MAX_ENTITY_LENGTH) {
-    return false;
-  }
-
-  if (ENTITY_STOPWORDS.has(trimmed.toLowerCase())) {
+  if (trimmed.length === 0 || trimmed.length > MAX_ENTITY_LENGTH) {
     return false;
   }
 
@@ -159,38 +101,6 @@ function sanitizeEntities(values: readonly string[]): string[] {
   }
 
   return items;
-}
-
-// Query-side label hint extraction for semantic-retrieval graph
-// lookups. NOT used for perception's entity extraction (that's
-// LLM-only -- see EntityExtractor). The retrieval path needs a
-// synchronous, cheap way to surface label candidates from a query
-// string for graph node matching, and an LLM call there would add
-// per-turn latency for each retrieval round. Limited to the
-// strongest signals: @-handles and quoted phrases. Title-case and
-// stand-alone capitalized words were removed because they
-// produced massive false-positive rates ('Good', 'If', 'The'
-// matched as entities).
-export function extractQueryLabelHints(text: string): string[] {
-  const hints: string[] = [];
-
-  for (const match of text.matchAll(/@[a-zA-Z0-9_]+/g)) {
-    hints.push(match[0]);
-  }
-
-  for (const match of text.matchAll(/"([^"\n]{1,64})"/g)) {
-    if (match[1] !== undefined) {
-      hints.push(match[1]);
-    }
-  }
-
-  for (const match of text.matchAll(/'([^'\n]{3,64})'/g)) {
-    if (match[1] !== undefined) {
-      hints.push(match[1]);
-    }
-  }
-
-  return sanitizeEntities(hints);
 }
 
 export type EntityExtractorOptions = {

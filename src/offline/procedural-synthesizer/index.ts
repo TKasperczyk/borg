@@ -23,6 +23,7 @@ import {
   type SkillRecord,
 } from "../../memory/procedural/index.js";
 import type { ReviewQueueItem, SkillSplitReviewPayload } from "../../memory/semantic/index.js";
+import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import { type EntityId, type EpisodeId } from "../../util/ids.js";
@@ -147,26 +148,6 @@ type EvidenceCluster = {
   sourceEpisodeIds: EpisodeId[];
 };
 
-function cosineSimilarity(left: Float32Array, right: Float32Array): number {
-  let dot = 0;
-  let leftNorm = 0;
-  let rightNorm = 0;
-
-  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
-    const leftValue = left[index] ?? 0;
-    const rightValue = right[index] ?? 0;
-    dot += leftValue * rightValue;
-    leftNorm += leftValue * leftValue;
-    rightNorm += rightValue * rightValue;
-  }
-
-  if (leftNorm === 0 || rightNorm === 0) {
-    return 0;
-  }
-
-  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
-}
-
 function evidenceEmbeddingText(evidence: ProceduralEvidenceRecord): string {
   return [
     evidence.pending_attempt_snapshot.problem_text,
@@ -208,8 +189,8 @@ async function collectEvidenceClusters(
   ctx: OfflineContext,
   evidenceRows: readonly ProceduralEvidenceRecord[],
 ): Promise<EvidenceCluster[]> {
-  const embeddings = await Promise.all(
-    evidenceRows.map((evidence) => ctx.embeddingClient.embed(evidenceEmbeddingText(evidence))),
+  const embeddings = await ctx.embeddingClient.embedBatch(
+    evidenceRows.map((evidence) => evidenceEmbeddingText(evidence)),
   );
   const remaining = new Set(evidenceRows.map((_, index) => index));
   const clusters: EvidenceCluster[] = [];

@@ -1,5 +1,32 @@
 import type { Migration } from "../../storage/sqlite/index.js";
 import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
+import { deriveProceduralContextKey, parseLegacyProceduralContextKey } from "./context.js";
+
+function nextAvailableContextKey(
+  db: { prepare: (sql: string) => { get: (...args: unknown[]) => unknown } },
+  skillId: string,
+  baseKey: string,
+): string {
+  let candidate = baseKey;
+  let suffix = 1;
+
+  while (
+    db
+      .prepare(
+        `
+          SELECT 1
+          FROM skill_context_stats
+          WHERE skill_id = ? AND context_key = ?
+        `,
+      )
+      .get(skillId, candidate) !== undefined
+  ) {
+    candidate = `${baseKey}:legacy-${suffix}`;
+    suffix += 1;
+  }
+
+  return candidate;
+}
 
 export const proceduralMigrations = [
   {
@@ -156,6 +183,55 @@ export const proceduralMigrations = [
         CREATE INDEX IF NOT EXISTS idx_skills_manual_review
           ON skills (requires_manual_review, updated_at DESC);
       `);
+    },
+  },
+  {
+    id: 182,
+    name: "backfill-procedural-context-keys-v2",
+    up: (db) => {
+      const rows = db
+        .prepare(
+          `
+            SELECT skill_id, context_key
+            FROM skill_context_stats
+            WHERE context_key NOT LIKE 'v2:%'
+          `,
+        )
+        .all() as Array<{ skill_id: string; context_key: string }>;
+      const update = db.prepare(
+        `
+          UPDATE skill_context_stats
+          SET context_key = ?
+          WHERE skill_id = ? AND context_key = ?
+        `,
+      );
+
+      db.transaction(() => {
+        for (const row of rows) {
+          const parsed = parseLegacyProceduralContextKey(row.context_key);
+
+          if (parsed === null) {
+            continue;
+          }
+
+          const baseKey = deriveProceduralContextKey(parsed);
+          const existing = db
+            .prepare(
+              `
+                SELECT 1
+                FROM skill_context_stats
+                WHERE skill_id = ? AND context_key = ?
+              `,
+            )
+            .get(row.skill_id, baseKey);
+          const nextKey =
+            existing === undefined
+              ? baseKey
+              : nextAvailableContextKey(db, row.skill_id, baseKey);
+
+          update.run(nextKey, row.skill_id, row.context_key);
+        }
+      })();
     },
   },
 ] as const satisfies readonly Migration[];

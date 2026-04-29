@@ -1,5 +1,4 @@
 /* Semantic-band retrieval for label/vector lookup and graph walks. */
-import { extractQueryLabelHints } from "../cognition/perception/entity-extractor.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
@@ -15,6 +14,7 @@ import type { SemanticContext, SemanticNode, SemanticWalkStep } from "../memory/
 import type { EntityId } from "../util/ids.js";
 
 const DEFAULT_UNDER_REVIEW_MULTIPLIER = 0.5;
+const DEFAULT_SEMANTIC_NODE_MIN_SIMILARITY = 0.01;
 
 export type RetrievedSemanticUnderReview = {
   review_id: number;
@@ -53,6 +53,7 @@ export type SemanticRetrievalOptions = {
   maxGraphNodes?: number;
   asOf?: number;
   underReviewMultiplier?: number;
+  queryVector?: Float32Array;
 };
 
 export type SemanticRetrievalDependencies = {
@@ -193,20 +194,6 @@ function semanticNodeTargetKey(nodeId: SemanticNode["id"]): string {
   return JSON.stringify(["semantic_node", nodeId]);
 }
 
-function labelMatchScore(node: SemanticNode, label: string, rank: number): number {
-  const normalized = label.trim().toLowerCase();
-  const nodeLabel = node.label.toLowerCase();
-  const aliases = node.aliases.map((alias) => alias.toLowerCase());
-  const base =
-    nodeLabel === normalized || aliases.includes(normalized)
-      ? 1
-      : nodeLabel.includes(normalized) || aliases.some((alias) => alias.includes(normalized))
-        ? 0.9
-        : 0.8;
-
-  return Math.max(0.01, base - rank * 0.01);
-}
-
 function recordMatchedNode(
   candidatesById: Map<SemanticNode["id"], MatchedNodeCandidate>,
   node: SemanticNode,
@@ -343,27 +330,17 @@ export async function resolveSemanticContext(
   }
 
   const underReviewMultiplier = normalizeUnderReviewMultiplier(options.underReviewMultiplier);
-  const labels = [...extractQueryLabelHints(query), ...query.split(/[,\n]+/)]
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
   const matchedNodeCandidatesById = new Map<SemanticNode["id"], MatchedNodeCandidate>();
 
-  for (const label of labels) {
-    const matches = await semanticNodeRepository.findByLabelOrAlias(label, 3);
-    for (const [rank, node] of matches.entries()) {
-      recordMatchedNode(matchedNodeCandidatesById, node, labelMatchScore(node, label, rank));
-    }
-  }
+  const queryVector = options.queryVector ?? (await embeddingClient.embed(query));
+  const byVector = await semanticNodeRepository.searchByVector(queryVector, {
+    limit: 3,
+    minSimilarity: DEFAULT_SEMANTIC_NODE_MIN_SIMILARITY,
+    includeArchived: false,
+  });
 
-  if (matchedNodeCandidatesById.size === 0) {
-    const queryVector = await embeddingClient.embed(query);
-    const byVector = await semanticNodeRepository.searchByVector(queryVector, {
-      limit: 3,
-      includeArchived: false,
-    });
-    for (const item of byVector) {
-      recordMatchedNode(matchedNodeCandidatesById, item.node, item.similarity);
-    }
+  for (const item of byVector) {
+    recordMatchedNode(matchedNodeCandidatesById, item.node, item.similarity);
   }
 
   const matchedNodeCandidates = [...matchedNodeCandidatesById.values()];

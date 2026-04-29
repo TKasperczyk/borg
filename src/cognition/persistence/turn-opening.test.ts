@@ -126,6 +126,7 @@ describe("TurnOpeningPersistence", () => {
             arousal: 0.5,
             dominant_emotion: "fear",
           },
+          affectiveSignalDegraded: false,
         },
         audience: "alice",
       },

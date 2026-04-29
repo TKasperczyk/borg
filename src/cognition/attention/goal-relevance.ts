@@ -1,36 +1,11 @@
-import type { Episode } from "../../memory/episodic/types.js";
-import { tokenizeText } from "../../util/text/tokenize.js";
+import { computeGoalRelevanceFromEmbeddings } from "./embedding-relevance.js";
 
 export function computeGoalRelevance(
-  goalDescriptions: readonly string[],
-  episode: Pick<Episode, "title" | "narrative" | "tags">,
+  input: {
+    episodeEmbedding: Float32Array;
+    goalVectors: readonly Float32Array[];
+    primaryGoalVector?: Float32Array;
+  },
 ): number {
-  if (goalDescriptions.length === 0) {
-    return 0;
-  }
-
-  const episodeTokens = tokenizeText(
-    `${episode.title} ${episode.narrative} ${episode.tags.join(" ")}`,
-  );
-  let bestOverlap = 0;
-
-  for (const description of goalDescriptions) {
-    const goalTokens = tokenizeText(description);
-
-    if (goalTokens.size === 0) {
-      continue;
-    }
-
-    let overlap = 0;
-
-    for (const token of goalTokens) {
-      if (episodeTokens.has(token)) {
-        overlap += 1;
-      }
-    }
-
-    bestOverlap = Math.max(bestOverlap, overlap / goalTokens.size);
-  }
-
-  return bestOverlap;
+  return computeGoalRelevanceFromEmbeddings(input);
 }

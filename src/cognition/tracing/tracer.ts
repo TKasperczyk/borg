@@ -8,7 +8,9 @@ import { serializeJsonValue, type JsonValue } from "../../util/json-value.js";
 export type TurnTraceEventName =
   | "perception_started"
   | "perception_completed"
+  | "perception_classifier_degraded"
   | "recency_compiled"
+  | "retrieval_degraded"
   | "retrieval_started"
   | "retrieval_completed"
   | "path_selected"

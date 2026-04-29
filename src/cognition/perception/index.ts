@@ -1,9 +1,5 @@
-export { detectAffectiveSignal, detectAffectiveSignalHeuristically } from "./affective-signal.js";
-export {
-  EntityExtractor,
-  extractQueryLabelHints,
-  type EntityExtractorOptions,
-} from "./entity-extractor.js";
+export { detectAffectiveSignal } from "./affective-signal.js";
+export { EntityExtractor, type EntityExtractorOptions } from "./entity-extractor.js";
 export { ModeDetector, type ModeDetectorOptions } from "./mode-detector.js";
 export {
   Perceiver,

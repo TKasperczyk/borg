@@ -313,7 +313,7 @@ describe("consolidator process", () => {
           created_at: 60_000,
           updated_at: 60_000,
         },
-        [0.99, 0, 0, 0],
+        [0, 1, 0, 0],
       ),
     ];
 
@@ -335,7 +335,7 @@ describe("consolidator process", () => {
 
     expect(dryRun.changes).toHaveLength(1);
     expect(dryRun.changes[0]?.targets.source_ids).toEqual(
-      publicEpisodes.map((episode) => episode.id),
+      [...publicEpisodes, mixedScopeEpisodes[0]!].map((episode) => episode.id),
     );
     expect(llm.requests).toHaveLength(1);
   });

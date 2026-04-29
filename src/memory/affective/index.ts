@@ -1,6 +1,6 @@
 export {
   AffectiveExtractor,
-  analyzeAffectiveSignalHeuristically,
+  type AffectiveExtractorDegradedReason,
   type AffectiveExtractorOptions,
 } from "./extractor.js";
 export { affectiveMigrations } from "./migrations.js";

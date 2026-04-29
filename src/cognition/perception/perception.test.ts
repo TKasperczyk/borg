@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { EntityExtractor, extractQueryLabelHints } from "./entity-extractor.js";
+import { EntityExtractor } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
 import { Perceiver, runPerceptionClassifierSafely } from "./perceive.js";
 import { detectTemporalCue } from "./temporal-cue.js";
@@ -119,14 +119,32 @@ describe("perception", () => {
     expect(await extractor.extractEntities("Jane Doe said yesterday was rough")).toEqual([]);
   });
 
-  it("extracts query label hints for semantic-retrieval graph lookups", () => {
-    // Query label hints are a separate, narrow heuristic used only by
-    // semantic-retrieval to surface label candidates from a synthesized
-    // query string. Limited to @-handles and quoted phrases -- the noisy
-    // title-case + capitalized-word patterns were removed.
-    expect(
-      extractQueryLabelHints('Talk to @alice about "Project Atlas" tomorrow.'),
-    ).toEqual(["@alice", "Project Atlas"]);
+  it("keeps language-neutral entity sanitizer checks only", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_entity",
+              name: ENTITY_TOOL_NAME,
+              input: {
+                entities: ["李", "the", "Human:", "[end]", "!!!"],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const extractor = new EntityExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    expect(await extractor.extractEntities("irrelevant")).toEqual(["李", "the", "Human:", "[end]"]);
   });
 
   it("defaults to idle when no LLM client is configured", async () => {
@@ -222,7 +240,7 @@ describe("perception", () => {
     expect(String(llm.requests[0]?.messages[0]?.content ?? "").length).toBeLessThanOrEqual(2_000);
   });
 
-  it("combines heuristic entity hits with LLM fallback entities", async () => {
+  it("returns the LLM entity payload after output sanitization", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -386,6 +404,12 @@ describe("perception", () => {
     expect(perceived.entities).toEqual([]);
     expect(perceived.temporalCue).toBeNull();
     expect(perceived.mode).toBe("idle");
+    expect(perceived.affectiveSignal).toEqual({
+      valence: 0,
+      arousal: 0,
+      dominant_emotion: null,
+    });
+    expect(perceived.affectiveSignalDegraded).toBe(true);
   });
 
   it("extracts a temporal cue via the LLM when one is configured", async () => {

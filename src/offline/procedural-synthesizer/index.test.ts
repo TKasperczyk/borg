@@ -21,6 +21,7 @@ import {
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
+  TestEmbeddingClient,
   type OfflineTestHarness,
 } from "../test-support.js";
 
@@ -132,6 +133,10 @@ function createProcess(harness: OfflineTestHarness) {
     registry: harness.registry,
     clock: harness.clock,
   });
+}
+
+function evidenceEmbeddingText(problemText: string, approachSummary: string): string {
+  return [problemText, approachSummary].join("\n");
 }
 
 async function addSuccessEvidence(
@@ -347,9 +352,7 @@ describe("ProceduralSynthesizerProcess", () => {
       llmClient: llm,
     });
     await addSuccessEvidence(harness);
-    await addSuccessEvidence(harness, {
-      problemText: "Atlas deploy failed after a second rollback.",
-    });
+    await addSuccessEvidence(harness);
 
     const process = createProcess(harness);
     const plan = await process.plan(harness.createContext());
@@ -395,12 +398,8 @@ describe("ProceduralSynthesizerProcess", () => {
       }),
     });
     await addSuccessEvidence(harness);
-    await addSuccessEvidence(harness, {
-      problemText: "Atlas deploy failed after a second rollback.",
-    });
-    await addSuccessEvidence(harness, {
-      problemText: "Atlas deploy failed after a third rollback.",
-    });
+    await addSuccessEvidence(harness);
+    await addSuccessEvidence(harness);
 
     const process = createProcess(harness);
     const result = await process.run(harness.createContext(), {});
@@ -473,32 +472,45 @@ describe("ProceduralSynthesizerProcess", () => {
         }),
       ],
     });
+    const deployProblem = "Atlas deploy failed after rollback.";
+    const deployApproach = "Compare the failing deploy state to the last clean release.";
+    const roadmapProblem = "Sprint roadmap plan stalled.";
+    const roadmapApproach = "Compare the plan against the goal list.";
+    const reflectProblem = "Reflective habit insight was hard to apply.";
+    const reflectApproach = "Compare the reflection pattern against prior insight notes.";
     harness = await createOfflineTestHarness({
       llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [evidenceEmbeddingText(deployProblem, deployApproach), [1, 0, 0, 0]],
+          [evidenceEmbeddingText(roadmapProblem, roadmapApproach), [0, 1, 0, 0]],
+          [evidenceEmbeddingText(reflectProblem, reflectApproach), [0, 0, 1, 0]],
+        ]),
+      ),
     });
     await addSuccessEvidence(harness, {
-      problemText: "Atlas deploy failed after rollback.",
-      approachSummary: "Compare the failing deploy state to the last clean release.",
+      problemText: deployProblem,
+      approachSummary: deployApproach,
     });
     await addSuccessEvidence(harness, {
-      problemText: "Atlas deploy failed after another rollback.",
-      approachSummary: "Compare the failing deploy state to the last clean release.",
+      problemText: deployProblem,
+      approachSummary: deployApproach,
     });
     await addSuccessEvidence(harness, {
-      problemText: "Sprint roadmap plan stalled.",
-      approachSummary: "Compare the plan against the goal list.",
+      problemText: roadmapProblem,
+      approachSummary: roadmapApproach,
     });
     await addSuccessEvidence(harness, {
-      problemText: "Sprint planning roadmap stalled again.",
-      approachSummary: "Compare the plan against the goal list.",
+      problemText: roadmapProblem,
+      approachSummary: roadmapApproach,
     });
     await addSuccessEvidence(harness, {
-      problemText: "Reflective habit insight was hard to apply.",
-      approachSummary: "Compare the reflection pattern against prior insight notes.",
+      problemText: reflectProblem,
+      approachSummary: reflectApproach,
     });
     await addSuccessEvidence(harness, {
-      problemText: "Reflective pattern insight stalled again.",
-      approachSummary: "Compare the reflection pattern against prior insight notes.",
+      problemText: reflectProblem,
+      approachSummary: reflectApproach,
     });
 
     const process = createProcess(harness);
@@ -1679,6 +1691,19 @@ describe("ProceduralSynthesizerProcess", () => {
 
   it("synthesizes evidence emitted by reflector and surfaces the skill on selection", async () => {
     harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [
+            evidenceEmbeddingText(
+              "Atlas deploy failed after rollback.",
+              "Compare the failing deploy state to the last clean release.",
+            ),
+            [1, 0, 0, 0],
+          ],
+          ["deployment rollback comparison", [1, 0, 0, 0]],
+          ["deployment rollback is failing", [1, 0, 0, 0]],
+        ]),
+      ),
       llmClient: new FakeLLMClient({
         responses: [
           createReflectionResponse("User confirmed the rollback comparison worked."),

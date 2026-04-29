@@ -436,7 +436,7 @@ describe("semantic extractor", () => {
                 relation: "related_to",
                 confidence: 0.7,
                 evidence_episode_ids: [episode.id],
-                valid_from_relative: "since 2026-03-01",
+                valid_from_ts: Date.UTC(2026, 2, 1),
               },
             ],
           }),
@@ -899,7 +899,7 @@ describe("semantic extractor", () => {
     expect(result.insertedEdges).toBe(1);
   });
 
-  it("keeps homonyms in separate nodes when domains differ", async () => {
+  it("keeps homonyms separate by access scope, not by domain", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -985,7 +985,7 @@ describe("semantic extractor", () => {
     await extractor.extractFromEpisodes([episodeA]);
     await extractor.extractFromEpisodes([episodeB]);
 
-    const matches = await nodeRepository.findByLabelOrAlias("Tomasz", 5, {
+    const matches = await nodeRepository.findByExactLabelOrAlias("Tomasz", 5, {
       includeArchived: true,
     });
 
@@ -996,7 +996,7 @@ describe("semantic extractor", () => {
     );
   });
 
-  it("merges null-domain nodes but keeps domain-specific nodes separate", async () => {
+  it("merges same-scope nodes even when one candidate has a specific domain", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -1090,7 +1090,7 @@ describe("semantic extractor", () => {
 
     await extractor.extractFromEpisodes([episode]);
 
-    const afterNullCandidate = await nodeRepository.findByLabelOrAlias("Time", 5, {
+    const afterNullCandidate = await nodeRepository.findByExactLabelOrAlias("Time", 5, {
       includeArchived: true,
     });
 
@@ -1103,14 +1103,16 @@ describe("semantic extractor", () => {
 
     await extractor.extractFromEpisodes([episode]);
 
-    const afterSpecificCandidate = await nodeRepository.findByLabelOrAlias("Time", 5, {
+    const afterSpecificCandidate = await nodeRepository.findByExactLabelOrAlias("Time", 5, {
       includeArchived: true,
     });
 
-    expect(afterSpecificCandidate).toHaveLength(2);
-    expect(afterSpecificCandidate.map((node) => node.domain)).toEqual(
-      expect.arrayContaining([null, "science"]),
-    );
+    expect(afterSpecificCandidate).toHaveLength(1);
+    expect(afterSpecificCandidate[0]).toMatchObject({
+      label: "Time",
+      domain: "science",
+      description: "A scientific time concept.",
+    });
   });
 
   it("stores unknown domains as trimmed lowercase free-form strings", async () => {

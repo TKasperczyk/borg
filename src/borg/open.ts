@@ -119,6 +119,7 @@ export async function openBorgDependencies(
     const turnOrchestrator = buildTurnOrchestrator({
       config,
       retrievalPipeline: repositories.retrievalPipeline,
+      embeddingClient,
       episodicRepository: repositories.episodicRepository,
       entityRepository: repositories.entityRepository,
       commitmentRepository: repositories.commitmentRepository,

@@ -126,7 +126,7 @@ export class PerceptionGateway {
     );
     const perception = await perceiver.perceive(input.cognitionInput, recentHistoryStrings);
     const workingMood =
-      input.origin === "autonomous"
+      input.origin === "autonomous" || perception.affectiveSignalDegraded === true
         ? (input.workingMemory.mood ?? createNeutralAffectiveSignal())
         : perception.affectiveSignal;
     const workingMemory = {

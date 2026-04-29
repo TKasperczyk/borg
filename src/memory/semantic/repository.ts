@@ -410,7 +410,7 @@ export class SemanticNodeRepository {
     });
   }
 
-  async findByLabelOrAlias(
+  async findByExactLabelOrAlias(
     query: string,
     limit = 10,
     options: { includeArchived?: boolean } = {},
@@ -447,12 +447,7 @@ export class SemanticNodeRepository {
         SEMANTIC_JSON_ARRAY_CODEC,
       ).map((value) => value.toLowerCase());
 
-      if (
-        label === normalized ||
-        label.includes(normalized) ||
-        aliases.includes(normalized) ||
-        aliases.some((alias) => alias.includes(normalized))
-      ) {
+      if (label === normalized || aliases.includes(normalized)) {
         matchedIds.push(parseSemanticNodeId(String(row.id)));
       }
 

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { z } from "zod";
 
 export const proceduralContextProblemKindSchema = z.enum([
@@ -15,12 +17,7 @@ export const proceduralContextProblemKindSchema = z.enum([
 export const proceduralContextAudienceScopeSchema = z.enum(["self", "known_other", "unknown"]);
 
 function canonicalizeDomainTag(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[:,\s]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
+  return value.normalize("NFKC").trim().toLowerCase();
 }
 
 const proceduralContextDomainTagSchema = z
@@ -31,45 +28,45 @@ const proceduralContextDomainTagSchema = z
 export type ProceduralContextProblemKind = z.infer<typeof proceduralContextProblemKindSchema>;
 export type ProceduralContextAudienceScope = z.infer<typeof proceduralContextAudienceScopeSchema>;
 
-const GENERIC_DOMAIN_TAGS_BY_PROBLEM_KIND = {
-  code_debugging: new Set(["code", "debug", "debugging"]),
-  code_design: new Set(["code", "design"]),
-  writing_editing: new Set(["edit", "editing", "writing"]),
-  planning: new Set(["plan", "planning"]),
-  research: new Set(["research"]),
-  interpersonal: new Set(["interpersonal"]),
-  self_reflection: new Set(["reflection", "self-reflection"]),
-  operations: new Set(["operations", "ops"]),
-  other: new Set<string>(),
-} satisfies Record<ProceduralContextProblemKind, ReadonlySet<string>>;
-
-const GENERIC_DOMAIN_TAGS = new Set(["thing", "things"]);
-
-function canonicalizeDomainTags(
-  problemKind: ProceduralContextProblemKind,
-  domainTags: readonly string[],
-): string[] {
-  const genericTags = GENERIC_DOMAIN_TAGS_BY_PROBLEM_KIND[problemKind];
-
+export function canonicalizeDomainTags(domainTags: readonly string[], maxTags = 3): string[] {
   const selected: string[] = [];
   const seen = new Set<string>();
 
   for (const value of domainTags) {
     const tag = canonicalizeDomainTag(value);
 
-    if (tag.length === 0 || seen.has(tag) || genericTags.has(tag) || GENERIC_DOMAIN_TAGS.has(tag)) {
+    if (tag.length === 0 || seen.has(tag)) {
       continue;
     }
 
     seen.add(tag);
     selected.push(tag);
 
-    if (selected.length === 3) {
+    if (selected.length === maxTags) {
       break;
     }
   }
 
-  return selected.sort();
+  return selected;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(",")}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+function sha1(value: string): string {
+  return createHash("sha1").update(value).digest("hex");
 }
 
 export function deriveProceduralContextKey(input: {
@@ -77,9 +74,62 @@ export function deriveProceduralContextKey(input: {
   domain_tags: readonly string[];
   audience_scope: ProceduralContextAudienceScope;
 }): string {
-  const domainTags = canonicalizeDomainTags(input.problem_kind, input.domain_tags);
+  const domainTags = canonicalizeDomainTags(input.domain_tags);
+
+  return `v2:${sha1(
+    stableJson({
+      problem_kind: input.problem_kind,
+      domain_tags: domainTags,
+      audience_scope: input.audience_scope,
+    }),
+  )}`;
+}
+
+export function deriveLegacyProceduralContextKey(input: {
+  problem_kind: ProceduralContextProblemKind;
+  domain_tags: readonly string[];
+  audience_scope: ProceduralContextAudienceScope;
+}): string {
+  const domainTags = canonicalizeDomainTags(input.domain_tags);
 
   return `${input.problem_kind}:${domainTags.join(",")}:${input.audience_scope}`;
+}
+
+export function parseLegacyProceduralContextKey(
+  key: string,
+): {
+  problem_kind: ProceduralContextProblemKind;
+  domain_tags: string[];
+  audience_scope: ProceduralContextAudienceScope;
+} | null {
+  const parts = key.split(":");
+
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  const problemKind = proceduralContextProblemKindSchema.safeParse(parts[0]);
+  const audienceScope = proceduralContextAudienceScopeSchema.safeParse(parts[2]);
+
+  if (!problemKind.success || !audienceScope.success) {
+    return null;
+  }
+
+  return {
+    problem_kind: problemKind.data,
+    domain_tags: parts[1] === "" ? [] : canonicalizeDomainTags(parts[1]?.split(",") ?? []),
+    audience_scope: audienceScope.data,
+  };
+}
+
+export function deriveProceduralContextKeyAliases(context: ProceduralContext): string[] {
+  return [
+    deriveLegacyProceduralContextKey({
+      problem_kind: context.problem_kind,
+      domain_tags: context.domain_tags,
+      audience_scope: context.audience_scope,
+    }),
+  ];
 }
 
 export const proceduralContextSchema = z
@@ -90,7 +140,7 @@ export const proceduralContextSchema = z
     context_key: z.string().min(1),
   })
   .transform((context) => {
-    const domainTags = canonicalizeDomainTags(context.problem_kind, context.domain_tags);
+    const domainTags = canonicalizeDomainTags(context.domain_tags);
 
     return {
       ...context,

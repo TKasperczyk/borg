@@ -97,6 +97,11 @@ import {
 } from "./index.js";
 
 export class TestEmbeddingClient implements EmbeddingClient {
+  constructor(
+    private readonly vectorsByText: ReadonlyMap<string, readonly number[]> = new Map(),
+    private readonly dims = 4,
+  ) {}
+
   async embed(text: string): Promise<Float32Array> {
     return this.vector(text);
   }
@@ -106,19 +111,28 @@ export class TestEmbeddingClient implements EmbeddingClient {
   }
 
   private vector(text: string): Float32Array {
-    if (/atlas|deploy|release|rollback|architecture/i.test(text)) {
-      return Float32Array.from([1, 0, 0, 0]);
+    const scripted = this.vectorsByText.get(text);
+
+    if (scripted !== undefined) {
+      return Float32Array.from(scripted);
     }
 
-    if (/plan|planning|sprint|goal|roadmap/i.test(text)) {
-      return Float32Array.from([0, 1, 0, 0]);
+    const vector = new Float32Array(this.dims);
+    let seed = 2_166_136_261;
+
+    for (let index = 0; index < text.length; index += 1) {
+      seed ^= text.charCodeAt(index);
+      seed = Math.imul(seed, 16_777_619);
     }
 
-    if (/reflect|pattern|habit|insight/i.test(text)) {
-      return Float32Array.from([0, 0, 1, 0]);
+    for (let index = 0; index < vector.length; index += 1) {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      vector[index] = ((seed >>> 0) / 0xffffffff) * 2 - 1;
     }
 
-    return Float32Array.from([0, 0, 0, 1]);
+    return vector;
   }
 }
 

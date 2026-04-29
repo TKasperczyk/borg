@@ -1,5 +1,4 @@
 import type { EmbeddingClient } from "../../src/embeddings/index.js";
-import { tokenizeText } from "../../src/util/text/tokenize.js";
 
 const DEFAULT_DIMS = 64;
 
@@ -42,6 +41,17 @@ function normalizeVector(vector: Float32Array): Float32Array {
   return vector;
 }
 
+function tokenizeEvalText(text: string): Set<string> {
+  return new Set(
+    text
+      .normalize("NFKC")
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}_-]+/u)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2),
+  );
+}
+
 /**
  * Deterministic token-hash embeddings for eval fixtures. This is only for
  * stable substrate benchmarks and should not be used in production.
@@ -66,7 +76,7 @@ export class DeterministicEmbeddingClient implements EmbeddingClient {
   }
 
   private vectorize(text: string): Float32Array {
-    const unigramTokens = [...tokenizeText(text, { minLength: 2 })].sort();
+    const unigramTokens = [...tokenizeEvalText(text)].sort();
     const bigramTokens: string[] = [];
 
     for (let index = 0; index < unigramTokens.length - 1; index += 1) {

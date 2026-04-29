@@ -7,6 +7,7 @@ import {
   createEpisodeFixture,
   createOfflineTestHarness,
   createSemanticNodeFixture,
+  TestEmbeddingClient,
 } from "../test-support.js";
 import { ReflectorProcess } from "./index.js";
 
@@ -43,6 +44,9 @@ describe("reflector process", () => {
   });
 
   it("gates low-confidence insights behind review acceptance and supports reversal", async () => {
+    const insightLabel = "Deploys stabilize when rollback plans are documented";
+    const insightDescription =
+      "Across the supporting episodes, explicit rollback plans correlate with steadier deploys.";
     const episodes = [
       createEpisodeFixture(
         {
@@ -78,9 +82,8 @@ describe("reflector process", () => {
     const llm = new FakeLLMClient({
       responses: [
         createReflectorResponse({
-          label: "Deploys stabilize when rollback plans are documented",
-          description:
-            "Across the supporting episodes, explicit rollback plans correlate with steadier deploys.",
+          label: insightLabel,
+          description: insightDescription,
           confidence: 0.8,
           source_episode_ids: episodes.map((episode) => episode.id),
         }),
@@ -88,6 +91,13 @@ describe("reflector process", () => {
     });
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [insightLabel, [1, 0, 0, 0]],
+          [`${insightLabel}\n${insightDescription}`, [1, 0, 0, 0]],
+          ["Rollback plan", [1, 0, 0, 0]],
+        ]),
+      ),
       configOverrides: {
         offline: {
           ...DEFAULT_CONFIG.offline,
@@ -113,7 +123,7 @@ describe("reflector process", () => {
           source_episode_ids: [episodes[0]!.id],
           confidence: 0.8,
         },
-        [0, 1, 0, 0],
+        [1, 0, 0, 0],
       ),
     );
     const process = new ReflectorProcess({
@@ -140,8 +150,8 @@ describe("reflector process", () => {
       limit: 10,
     });
     expect(
-      nodesBeforeReview.some((node) =>
-        node.label.includes("Deploys stabilize when rollback plans are documented"),
+      nodesBeforeReview.some(
+        (node) => node.label === "Deploys stabilize when rollback plans are documented",
       ),
     ).toBe(false);
     expect(harness.semanticEdgeRepository.listEdges({ relation: "supports" })).toEqual([]);
@@ -151,8 +161,8 @@ describe("reflector process", () => {
       { limit: 1 },
     );
     expect(
-      beforeRetrieval.semantic.matched_nodes.some((node) =>
-        node.label.includes("Deploys stabilize when rollback plans are documented"),
+      beforeRetrieval.semantic.matched_nodes.some(
+        (node) => node.label === "Deploys stabilize when rollback plans are documented",
       ),
     ).toBe(false);
 
@@ -185,8 +195,8 @@ describe("reflector process", () => {
       includeArchived: true,
       limit: 10,
     });
-    const insightNode = nodes.find((node) =>
-      node.label.includes("Deploys stabilize when rollback plans are documented"),
+    const insightNode = nodes.find(
+      (node) => node.label === "Deploys stabilize when rollback plans are documented",
     );
 
     expect(insightNode?.confidence).toBe(0.5);
@@ -216,11 +226,13 @@ describe("reflector process", () => {
       "Deploys stabilize when rollback plans are documented",
       { limit: 1 },
     );
-    expect(afterRetrieval.semantic.matched_nodes).toEqual([
-      expect.objectContaining({
-        id: insightNode?.id,
-      }),
-    ]);
+    expect(afterRetrieval.semantic.matched_nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: insightNode?.id,
+        }),
+      ]),
+    );
 
     // Sprint 52 regression: querying by the evidence anchor concept must
     // surface the insight via the supports-out walk. Pre-fix the supports

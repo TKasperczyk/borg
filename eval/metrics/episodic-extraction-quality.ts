@@ -6,7 +6,6 @@ import { z } from "zod";
 
 import { FakeLLMClient, ManualClock } from "../../src/index.js";
 import type { LLMCompleteResult, StreamEntry } from "../../src/index.js";
-import { tokenizeText } from "../../src/util/text/tokenize.js";
 
 import { createEvalBorg } from "../support/create-eval-borg.js";
 import { loadMetricFixtures } from "../support/fixtures.js";
@@ -86,8 +85,19 @@ function overlapsParticipants(expected: readonly string[], actual: readonly stri
   return expected.some((value) => actualSet.has(value.toLowerCase()));
 }
 
+function tokenizeEvalText(text: string): Set<string> {
+  return new Set(
+    text
+      .normalize("NFKC")
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}_-]+/u)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2),
+  );
+}
+
 function containsKeywords(text: string, keywords: readonly string[]): boolean {
-  const tokens = tokenizeText(text, { minLength: 2 });
+  const tokens = tokenizeEvalText(text);
   return keywords.every((keyword) => tokens.has(keyword.toLowerCase()));
 }
 

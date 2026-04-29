@@ -27,6 +27,7 @@ import type { ReviewQueueRepository } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
+import type { EmbeddingClient } from "../embeddings/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import type { Clock } from "../util/clock.js";
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
@@ -35,6 +36,7 @@ import type { BorgStreamWriterFactory } from "./types.js";
 export type BuildTurnOrchestratorOptions = {
   config: Config;
   retrievalPipeline: RetrievalPipeline;
+  embeddingClient: EmbeddingClient;
   episodicRepository: EpisodicRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
@@ -65,6 +67,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
   return new TurnOrchestrator({
     config: options.config,
     retrievalPipeline: options.retrievalPipeline,
+    embeddingClient: options.embeddingClient,
     episodicRepository: options.episodicRepository,
     entityRepository: options.entityRepository,
     commitmentRepository: options.commitmentRepository,

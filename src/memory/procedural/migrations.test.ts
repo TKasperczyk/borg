@@ -80,4 +80,56 @@ describe("procedural migrations", () => {
     });
     reopenedDb.close();
   });
+
+  it("backfills parseable legacy procedural context keys to v2 with collision suffixes", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const dbPath = join(tempDir, "procedural.db");
+    tempDirs.push(tempDir);
+
+    const legacyDb = openDatabase(dbPath, {
+      migrations: proceduralMigrations.filter((migration) => migration.id < 182),
+    });
+
+    try {
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO skill_context_stats (
+              skill_id, context_key, alpha, beta, attempts, successes, failures,
+              last_used, last_successful, updated_at
+            ) VALUES (?, ?, 2, 1, 1, 1, 0, 100, 100, 100)
+          `,
+        )
+        .run("skill_a", "code_debugging:typescript:self");
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO skill_context_stats (
+              skill_id, context_key, alpha, beta, attempts, successes, failures,
+              last_used, last_successful, updated_at
+            ) VALUES (?, ?, 1, 2, 1, 0, 1, 200, NULL, 200)
+          `,
+        )
+        .run("skill_a", "not:parseable:legacy:key");
+    } finally {
+      legacyDb.close();
+    }
+
+    const upgradedDb = openDatabase(dbPath, {
+      migrations: proceduralMigrations,
+    });
+
+    try {
+      const rows = upgradedDb
+        .prepare("SELECT context_key FROM skill_context_stats ORDER BY context_key ASC")
+        .all() as Array<{ context_key: string }>;
+
+      expect(rows.map((row) => row.context_key)).toEqual([
+        "not:parseable:legacy:key",
+        expect.stringMatching(/^v2:/),
+      ]);
+    } finally {
+      upgradedDb.close();
+    }
+  });
 });

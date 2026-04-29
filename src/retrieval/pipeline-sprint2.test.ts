@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
+  TestEmbeddingClient,
   type OfflineTestHarness,
 } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
@@ -38,6 +39,7 @@ function searchWeights(
 async function createHarness(): Promise<OfflineTestHarness> {
   return createOfflineTestHarness({
     clock: new FixedClock(NOW_MS),
+    embeddingClient: new TestEmbeddingClient(new Map([[QUERY, [1, 0, 0, 0]]])),
   });
 }
 

@@ -3,6 +3,7 @@ export {
   selectExecutiveFocus,
   type SelectExecutiveFocusInput,
 } from "./goal-competition.js";
+export { computeExecutiveContextFits, type ExecutiveContextFitByGoalId } from "./context-fit.js";
 export { executiveMigrations } from "./migrations.js";
 export {
   ExecutiveStepsRepository,

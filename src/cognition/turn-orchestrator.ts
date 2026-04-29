@@ -12,13 +12,14 @@ import { PerceptionGateway } from "./perception/gateway.js";
 import { TurnOpeningPersistence } from "./persistence/turn-opening.js";
 import { PendingProceduralAttemptTracker } from "./procedural/pending-attempt-tracker.js";
 import { TurnContextCompiler } from "./recency/index.js";
-import { selectExecutiveFocus } from "../executive/index.js";
+import { computeExecutiveContextFits, selectExecutiveFocus } from "../executive/index.js";
 import type { ExecutiveFocus, ExecutiveStepsRepository } from "../executive/index.js";
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import type { Reflector } from "./reflection/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
 import type { LLMClient } from "../llm/index.js";
+import type { EmbeddingClient } from "../embeddings/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import { SkillSelector } from "../memory/procedural/index.js";
@@ -178,6 +179,7 @@ export type TurnResult = {
 export type TurnOrchestratorOptions = {
   config: Config;
   retrievalPipeline: RetrievalPipeline;
+  embeddingClient: EmbeddingClient;
   episodicRepository: EpisodicRepository;
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
@@ -273,6 +275,7 @@ export class TurnOrchestrator {
       retrievalPipeline: options.retrievalPipeline,
       skillSelector: options.skillSelector,
       clock: this.clock,
+      tracer: this.tracer,
     });
     this.commitmentGuardRunner = new CommitmentGuardRunner({
       detectionModel: options.config.anthropic.models.background,
@@ -442,6 +445,34 @@ export class TurnOrchestrator {
         const recencyWindow = perceptionResult.recencyWindow;
         const workingMood = perceptionResult.workingMood;
         workingMemory = perceptionResult.workingMemory;
+        const executiveContextText = [
+          cognitionInput,
+          ...perception.entities,
+          input.autonomyTrigger === null || input.autonomyTrigger === undefined
+            ? ""
+            : JSON.stringify(input.autonomyTrigger.payload),
+        ]
+          .join(" ")
+          .trim();
+        let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> =
+          new Map();
+
+        try {
+          contextFitByGoalId = await computeExecutiveContextFits({
+            embeddingClient: this.options.embeddingClient,
+            goals: selfSnapshot.goals,
+            contextText: executiveContextText,
+          });
+        } catch (error) {
+          if (this.tracer.enabled) {
+            this.tracer.emit("retrieval_degraded", {
+              turnId,
+              subsystem: "executive_context_fit",
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
         const executiveFocus = applyForcedExecutiveFocus(
           selectExecutiveFocus({
             goals: selfSnapshot.goals,
@@ -452,6 +483,7 @@ export class TurnOrchestrator {
             threshold: this.options.config.executive.goalFocusThreshold,
             deadlineLookaheadMs: this.options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
             staleMs: this.options.config.autonomy.triggers.goalFollowupDue.staleMs,
+            contextFitByGoalId,
           }),
           getForcedExecutiveFocusGoalId(input.autonomyTrigger),
         );
@@ -512,6 +544,8 @@ export class TurnOrchestrator {
           executiveFocus: executiveFocusWithStep,
           suppressionSet,
           findEntityByName: (name) => this.options.entityRepository.findByName(name),
+          llmClient,
+          proceduralContextModel: this.options.config.anthropic.models.background,
         });
         const applicableCommitments = retrievalContext.applicableCommitments;
         const pendingCorrections = retrievalContext.pendingCorrections;
@@ -595,7 +629,7 @@ export class TurnOrchestrator {
         const persistedAgentEntry = await streamWriter.append(agentEntry);
         let moodSnapshot = workingMood;
 
-        if (input.origin !== "autonomous") {
+        if (input.origin !== "autonomous" && perception.affectiveSignalDegraded !== true) {
           try {
             const nextMood = this.options.moodRepository.update(sessionId, {
               valence: perception.affectiveSignal.valence,

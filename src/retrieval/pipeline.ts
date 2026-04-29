@@ -40,6 +40,10 @@ import {
   type SuppressionLookup,
 } from "./scoring.js";
 import {
+  buildRetrievalScoringFeatures,
+  type RetrievalScoringFeatures,
+} from "./scoring-features.js";
+import {
   resolveSemanticContext,
   toRetrievedSemantic,
   type RetrievedSemantic,
@@ -83,6 +87,7 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   goalDescriptions?: readonly string[];
   primaryGoalDescription?: string;
   activeValues?: readonly ValueRecord[];
+  scoringFeatures?: RetrievalScoringFeatures;
   temporalCue?: TemporalCue | null;
   strictTimeRange?: boolean;
   suppressionSet?: SuppressionLookup;
@@ -129,13 +134,26 @@ export class RetrievalPipeline {
       audienceEntityId?: EntityId | null;
       limit?: number;
       queryVector?: Float32Array;
+      traceTurnId?: string;
     } = {},
   ): Promise<OpenQuestion[]> {
     return retrieveOpenQuestionsForQueryFromRepository(
       this.options.openQuestionsRepository,
       this.options.embeddingClient,
       query,
-      options,
+      {
+        ...options,
+        onDegraded:
+          this.tracer.enabled && options.traceTurnId !== undefined
+            ? (reason, error) => {
+                this.tracer.emit("retrieval_degraded", {
+                  turnId: options.traceTurnId!,
+                  subsystem: "open_questions",
+                  reason: error instanceof Error ? `${reason}: ${error.message}` : reason,
+                });
+              }
+            : undefined,
+      },
     );
   }
 
@@ -154,6 +172,32 @@ export class RetrievalPipeline {
     const nowMs = this.clock.now();
     const limit = Math.max(1, options.limit ?? 5);
     const queryVector = await this.options.embeddingClient.embed(query);
+    let scoringFeatures = options.scoringFeatures;
+
+    if (scoringFeatures === undefined) {
+      try {
+        scoringFeatures = await buildRetrievalScoringFeatures({
+          embeddingClient: this.options.embeddingClient,
+          goalDescriptions: options.goalDescriptions ?? [],
+          primaryGoalDescription: options.primaryGoalDescription,
+          activeValues: options.activeValues ?? [],
+        });
+      } catch (error) {
+        if (this.tracer.enabled && options.traceTurnId !== undefined) {
+          this.tracer.emit("retrieval_degraded", {
+            turnId: options.traceTurnId,
+            subsystem: "scoring_features",
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        scoringFeatures = {
+          goalVectors: [],
+          valueVectors: [],
+        };
+      }
+    }
+
     const timeSignals = resolveTimeSignals(options);
     const candidates = await generateEpisodicCandidates({
       repository: this.options.episodicRepository,
@@ -173,6 +217,7 @@ export class RetrievalPipeline {
         candidate,
         {
           ...options,
+          scoringFeatures,
           ...(participantEntityIds === undefined ? {} : { participantEntityIds }),
         },
         nowMs,
@@ -214,6 +259,7 @@ export class RetrievalPipeline {
       query,
       {
         ...options,
+        queryVector,
         underReviewMultiplier:
           options.underReviewMultiplier ?? this.options.semanticUnderReviewMultiplier,
       },
@@ -232,6 +278,7 @@ export class RetrievalPipeline {
             audienceEntityId: options.audienceEntityId ?? null,
             limit: options.openQuestionsLimit,
             queryVector,
+            traceTurnId: options.traceTurnId,
           })
         : [];
     const results: RetrievedEpisode[] = [];

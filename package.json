@@ -32,6 +32,7 @@
     "eval": "tsx eval/runner.ts",
     "simulate": "tsx simulator/cli.ts",
     "test": "vitest run",
+    "heuristics:guard": "tsx scripts/heuristics-guard.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.eval.json && tsc --noEmit -p tsconfig.assessor.json && tsc --noEmit -p tsconfig.simulator.json && tsc --noEmit -p tsconfig.test.json",
     "format": "prettier --write .",

@@ -1069,6 +1069,48 @@ function toCompleteCompatibleRequest(options: LLMConverseOptions): LLMCompleteOp
   };
 }
 
+function isProceduralContextFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "procedural-context";
+}
+
+function isProceduralContextResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "EmitProceduralContext");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "EmitProceduralContext",
+    );
+  }
+
+  return false;
+}
+
+function defaultProceduralContextResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_procedural_context",
+        name: "EmitProceduralContext",
+        input: {
+          problem_kind: "other",
+          domain_tags: [],
+          confidence: 0,
+        },
+      },
+    ],
+  };
+}
+
 export class FakeLLMClient implements LLMClient {
   private readonly usageSink?: TokenUsageSink;
   readonly requests: LLMCompleteOptions[] = [];
@@ -1086,7 +1128,13 @@ export class FakeLLMClient implements LLMClient {
 
   async complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
     this.requests.push(options);
-    const response = this.responses.shift();
+    const response = this.responses[0];
+
+    if (isProceduralContextFallbackRequest(options) && !isProceduralContextResponse(response)) {
+      return defaultProceduralContextResponse();
+    }
+
+    this.responses.shift();
 
     if (response === undefined) {
       throw new LLMError("FakeLLMClient has no scripted response available");

@@ -46,6 +46,8 @@ const selfNarratorObservationItemSchema = z.object({
 
 const selfNarratorObservationSchema = z.object({
   observations: z.array(selfNarratorObservationItemSchema),
+  period_decision: z.enum(["continue_current", "open_new"]).default("continue_current"),
+  period_decision_confidence: z.number().min(0).max(1).default(0),
 });
 const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
 export const SELF_NARRATOR_TOOL = {
@@ -126,14 +128,28 @@ function buildObservationPrompt(
   episodes: readonly Episode[],
   minSupportEpisodes: number,
   maxObservationsPerRun: number,
+  currentPeriod: AutobiographicalPeriod | null,
 ): string {
   return [
     "Identify thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
     `Emit your result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
     "Return an empty observations array if there is no grounded growth signal.",
+    "Set period_decision to continue_current or open_new based on whether these observations belong in the current autobiographical period. The configured cadence remains authoritative; your open_new decision is ignored when cadence has not elapsed.",
     "Only cite evidence_episode_ids from the provided episodes.",
     `Each observation must cite at least ${minSupportEpisodes} episodes.`,
     `Emit at most ${maxObservationsPerRun} observations.`,
+    "Current period:",
+    JSON.stringify(
+      currentPeriod === null
+        ? null
+        : {
+            label: currentPeriod.label,
+            start_ts: currentPeriod.start_ts,
+            narrative: currentPeriod.narrative,
+            themes: currentPeriod.themes,
+            key_episode_ids: currentPeriod.key_episode_ids,
+          },
+    ),
     "Episodes:",
     ...episodes.map((episode) =>
       JSON.stringify({
@@ -158,9 +174,8 @@ function parseObservationResponse(result: LLMCompleteResult) {
   return selfNarratorObservationSchema.parse(call.input);
 }
 
-function shouldStartNewPeriod(
+function cadenceAllowsNewPeriod(
   currentPeriod: AutobiographicalPeriod | null,
-  themes: readonly string[],
   nowMs: number,
   cadenceHintDays: number,
 ): boolean {
@@ -170,12 +185,7 @@ function shouldStartNewPeriod(
 
   const ageMs = Math.max(0, nowMs - currentPeriod.start_ts);
 
-  if (ageMs < cadenceHintDays * DAY_MS || themes.length === 0) {
-    return false;
-  }
-
-  const currentThemes = new Set(currentPeriod.themes.map((theme) => theme.toLowerCase()));
-  return themes.some((theme) => !currentThemes.has(theme.toLowerCase()));
+  return ageMs >= cadenceHintDays * DAY_MS;
 }
 
 function buildNarrative(existingNarrative: string | null, observations: readonly string[]): string {
@@ -310,6 +320,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const maxObservationsPerRun = ctx.config.offline.selfNarrator.maxObservationsPerRun;
     const markerCandidates: Array<z.infer<typeof serializableGrowthMarkerSchema>> = [];
     const markerThemes: string[] = [];
+    const periodDecisions: Array<"continue_current" | "open_new"> = [];
     let tokensUsed = 0;
     let budgetExhausted = false;
 
@@ -331,6 +342,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                       sourceEpisodes,
                       minSupportEpisodes,
                       maxObservationsPerRun,
+                      currentPeriod,
                     ),
                   },
                 ],
@@ -340,6 +352,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                 budget: "offline-self-narrator",
               }),
             );
+            periodDecisions.push(response.period_decision);
             const allowedIds = new Set<string>(sourceEpisodes.map((episode) => episode.id));
 
             for (const observation of response.observations.slice(0, maxObservationsPerRun)) {
@@ -412,16 +425,19 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       ...markerCandidates.map((marker) => marker.category),
       ...markerThemes,
     ]).slice(0, 6);
+    const periodDecision = periodDecisions.includes("open_new") ? "open_new" : "continue_current";
     const nextLabel =
       configuredLabel.length > 0
         ? configuredLabel
         : (currentPeriod?.label ?? defaultQuarterLabel(nowMs));
-    const openNewPeriod = shouldStartNewPeriod(
-      currentPeriod,
-      themes,
-      nowMs,
-      ctx.config.offline.selfNarrator.cadenceHintDays,
-    );
+    const openNewPeriod =
+      periodDecision === "open_new" &&
+      themes.length > 0 &&
+      cadenceAllowsNewPeriod(
+        currentPeriod,
+        nowMs,
+        ctx.config.offline.selfNarrator.cadenceHintDays,
+      );
     let targetPeriod = currentPeriod;
 
     if (currentPeriod === null || openNewPeriod) {

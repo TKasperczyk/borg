@@ -17,7 +17,7 @@ const otherEntityId = "entity_bob" as EntityId;
 const streamEntryId = "stream_entry_1" as StreamEntryId;
 const episodeId = "episode_1" as EpisodeId;
 
-function makePerception(valence: number): PerceptionResult {
+function makePerception(valence: number, degraded = false): PerceptionResult {
   return {
     mode: "relational",
     entities: ["Alice"],
@@ -27,6 +27,7 @@ function makePerception(valence: number): PerceptionResult {
       arousal: 0.2,
       dominant_emotion: "joy",
     },
+    affectiveSignalDegraded: degraded,
   };
 }
 
@@ -111,6 +112,44 @@ describe("AttributionLifecycleService", () => {
     expect(result.pendingSocialAttribution).toBeNull();
     expect(result.audienceProfile).toBe(refreshedProfile);
     expect(appended).toEqual([]);
+  });
+
+  it("keeps social attribution pending when affective signal is degraded", async () => {
+    const attachSentiment = vi.fn();
+    const service = new AttributionLifecycleService({
+      socialRepository: {
+        attachSentiment,
+        getProfile: vi.fn(),
+      },
+      traitsRepository: {
+        reinforce: vi.fn(),
+      },
+      episodicRepository: {
+        findBySourceStreamIdsContaining: vi.fn(),
+      },
+      clock: new ManualClock(2_000),
+    });
+    const pending: PendingSocialAttribution = {
+      entity_id: entityId,
+      interaction_id: 42,
+      agent_response_summary: "summary",
+      turn_completed_ts: 1_500,
+    };
+    const { streamWriter } = makeStreamWriter();
+
+    const result = await service.settle({
+      isUserTurn: true,
+      audienceEntityId: entityId,
+      perception: makePerception(0, true),
+      pendingSocialAttribution: pending,
+      pendingTraitAttribution: null,
+      audienceProfile: null,
+      streamWriter,
+      onHookFailure: vi.fn(),
+    });
+
+    expect(attachSentiment).not.toHaveBeenCalled();
+    expect(result.pendingSocialAttribution).toBe(pending);
   });
 
   it("drops mismatched trait attribution with the original internal event payload", async () => {
@@ -204,6 +243,48 @@ describe("AttributionLifecycleService", () => {
     });
 
     expect(findBySourceStreamIdsContaining).toHaveBeenCalledWith([streamEntryId]);
+    expect(reinforce).not.toHaveBeenCalled();
+    expect(result.pendingTraitAttribution).toBe(pending);
+  });
+
+  it("keeps trait attribution pending when affective signal is degraded", async () => {
+    const reinforce = vi.fn();
+    const findBySourceStreamIdsContaining = vi.fn();
+    const service = new AttributionLifecycleService({
+      socialRepository: {
+        attachSentiment: vi.fn(),
+        getProfile: vi.fn(),
+      },
+      traitsRepository: {
+        reinforce,
+      },
+      episodicRepository: {
+        findBySourceStreamIdsContaining,
+      },
+      clock: new ManualClock(2_000),
+    });
+    const pending: PendingTraitAttribution = {
+      trait_label: "patient",
+      strength_delta: 0.05,
+      source_stream_entry_ids: [streamEntryId],
+      source_episode_ids: [],
+      turn_completed_ts: 1_500,
+      audience_entity_id: entityId,
+    };
+    const { streamWriter } = makeStreamWriter();
+
+    const result = await service.settle({
+      isUserTurn: true,
+      audienceEntityId: entityId,
+      perception: makePerception(0, true),
+      pendingSocialAttribution: null,
+      pendingTraitAttribution: pending,
+      audienceProfile: null,
+      streamWriter,
+      onHookFailure: vi.fn(),
+    });
+
+    expect(findBySourceStreamIdsContaining).not.toHaveBeenCalled();
     expect(reinforce).not.toHaveBeenCalled();
     expect(result.pendingTraitAttribution).toBe(pending);
   });

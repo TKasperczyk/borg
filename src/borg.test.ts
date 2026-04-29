@@ -2019,16 +2019,18 @@ describe("Borg", () => {
 
       expect(result.response).toBe("I can't share Atlas details with Sam.");
       expect(llm.requests.map((request) => request.model)).toEqual([
+        "haiku",
         "sonnet",
         "haiku",
         "sonnet",
         "haiku",
         "haiku",
       ]);
-      expect(llm.requests[1]?.budget).toBe("commitment-judge");
-      expect(llm.requests[2]?.budget).toBe("commitment-revision");
-      expect(llm.requests[3]?.budget).toBe("commitment-judge");
-      expect(llm.requests[4]?.budget).toBe("reflection");
+      expect(llm.requests[0]?.budget).toBe("procedural-context");
+      expect(llm.requests[2]?.budget).toBe("commitment-judge");
+      expect(llm.requests[3]?.budget).toBe("commitment-revision");
+      expect(llm.requests[4]?.budget).toBe("commitment-judge");
+      expect(llm.requests[5]?.budget).toBe("reflection");
     } finally {
       await borg.close();
     }
@@ -2481,6 +2483,15 @@ describe("Borg", () => {
           throw new Error("mood exploded");
         },
       );
+      (
+        internal.deps.turnOrchestrator.options as {
+          affectiveSignalDetector?: () => Promise<unknown>;
+        }
+      ).affectiveSignalDetector = async () => ({
+        valence: -0.7,
+        arousal: 0.4,
+        dominant_emotion: "fear",
+      });
 
       const result = await borg.turn({
         userMessage: "Atlas deploy failed again.",
@@ -2768,6 +2779,28 @@ describe("Borg", () => {
     });
 
     try {
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              affectiveSignalDetector?: (text: string) => Promise<unknown>;
+            };
+          };
+        };
+      };
+      internal.deps.turnOrchestrator.options.affectiveSignalDetector = async (text) =>
+        text.includes("frustrated")
+          ? {
+              valence: -1,
+              arousal: 0.6,
+              dominant_emotion: "anger",
+            }
+          : {
+              valence: 0,
+              arousal: 0,
+              dominant_emotion: null,
+            };
+
       await borg.turn({
         userMessage: "Can you phrase this carefully for Sam?",
         audience: "Sam",
@@ -2935,6 +2968,28 @@ describe("Borg", () => {
     });
 
     try {
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              affectiveSignalDetector?: (text: string) => Promise<unknown>;
+            };
+          };
+        };
+      };
+      internal.deps.turnOrchestrator.options.affectiveSignalDetector = async (text) =>
+        text.includes("frustrated")
+          ? {
+              valence: -1,
+              arousal: 0.6,
+              dominant_emotion: "anger",
+            }
+          : {
+              valence: 0,
+              arousal: 0,
+              dominant_emotion: null,
+            };
+
       await borg.turn({
         userMessage: "Can you phrase this carefully for Sam?",
         audience: "Sam",
@@ -3957,7 +4012,7 @@ describe("Borg", () => {
       });
 
       expect(borg.mood.current("default" as never).valence).toBe(0);
-      expect(borg.mood.history("default" as never)[0]?.valence).toBe(0);
+      expect(borg.mood.history("default" as never)).toEqual([]);
     } finally {
       await borg.close();
     }

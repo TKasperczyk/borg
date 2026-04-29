@@ -1242,12 +1242,14 @@ export class ProceduralContextStatsRepository {
   }
 
   batchGetContextStats(
-    contextKey: string,
+    contextKey: string | readonly string[],
     skillIds: readonly SkillId[],
   ): Map<SkillId, SkillContextStatsRecord> {
-    const contextKeyValue = assertContextKey(contextKey);
+    const contextKeys = (Array.isArray(contextKey) ? contextKey : [contextKey])
+      .map((value) => assertContextKey(value))
+      .filter((value, index, values) => values.indexOf(value) === index);
 
-    if (skillIds.length === 0) {
+    if (skillIds.length === 0 || contextKeys.length === 0) {
       return new Map();
     }
 
@@ -1256,17 +1258,23 @@ export class ProceduralContextStatsRepository {
         `
           SELECT *
           FROM skill_context_stats
-          WHERE context_key = ? AND skill_id IN (${skillIds.map(() => "?").join(", ")})
+          WHERE context_key IN (${contextKeys.map(() => "?").join(", ")})
+            AND skill_id IN (${skillIds.map(() => "?").join(", ")})
+          ORDER BY updated_at DESC
         `,
       )
-      .all(contextKeyValue, ...skillIds) as Record<string, unknown>[];
+      .all(...contextKeys, ...skillIds) as Record<string, unknown>[];
+    const result = new Map<SkillId, SkillContextStatsRecord>();
 
-    return new Map(
-      rows.map((row) => {
-        const stats = skillContextStatsFromRow(row);
-        return [stats.skill_id, stats] as const;
-      }),
-    );
+    for (const row of rows) {
+      const stats = skillContextStatsFromRow(row);
+
+      if (!result.has(stats.skill_id)) {
+        result.set(stats.skill_id, stats);
+      }
+    }
+
+    return result;
   }
 
   listForSkill(skillId: SkillId): SkillContextStatsRecord[] {

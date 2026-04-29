@@ -5,7 +5,7 @@ import { FakeLLMClient } from "../../llm/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
 
-import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
+import { createEpisodeFixture, createOfflineTestHarness, TestEmbeddingClient } from "../test-support.js";
 import { RuminatorProcess } from "./index.js";
 
 const RUMINATOR_TOOL_NAME = "EmitRuminatorDecisions";
@@ -154,6 +154,9 @@ describe("RuminatorProcess", () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([["Why does Atlas deploy fail?", [1, 0, 0, 0]]]),
+      ),
     });
     const process = new RuminatorProcess({
       openQuestionsRepository: harness.openQuestionsRepository,

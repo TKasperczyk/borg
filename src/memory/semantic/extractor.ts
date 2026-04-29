@@ -38,8 +38,8 @@ const extractorEdgeSchema = z.object({
   relation: semanticRelationSchema,
   confidence: z.number().min(0).max(1),
   evidence_episode_ids: z.array(z.string().min(1)).min(1),
-  valid_from_relative: z.string().min(1).nullable().optional(),
-  valid_to_relative: z.string().min(1).nullable().optional(),
+  valid_from_ts: z.number().finite().nullable().default(null),
+  valid_to_ts: z.number().finite().nullable().default(null),
 });
 
 const extractorResponseSchema = z.object({
@@ -90,8 +90,8 @@ function buildPrompt(episodes: readonly Episode[]): string {
     "Each edge must use from_label and to_label values that match node labels exactly.",
     "Only use relation values allowed by the tool schema.",
     "Edges may only reference nodes that already exist or are extracted in this batch.",
-    'Emit a free-form domain string for each node when it helps disambiguate homonyms. Prefer stable canonical buckets when they fit (examples: "tech", "people", "places", "food", "process"). Use null for broadly general nodes.',
-    'Temporal validity for edges: leave valid_from_relative and valid_to_relative empty unless the episode wording explicitly says when the relation became true or stopped being true. Use short source phrases such as "since 2026-03-01", "as of 2026-03-01T12:00:00Z", or "until 2026-06-30". If the wording says the relation became true during the episode itself, use "episode_start" for valid_from_relative. Do not infer validity dates from the episode timestamp alone.',
+    'Emit a compact canonical domain string for each node when it helps metadata display or later filtering (examples: "tech", "people", "places", "food", "process"). Use null for broadly general nodes. Domain never decides semantic compatibility; vector meaning and exact labels do.',
+    "Temporal validity for edges: set valid_from_ts and valid_to_ts to numeric Unix epoch milliseconds only when the episode wording explicitly says when the relation became true or stopped being true. Resolve relative dates against the episode start time yourself. Use null when unknown. Do not infer validity dates from the episode timestamp alone.",
     "Keep confidence modest for fresh extractions.",
     "Episodes:",
     ...episodes.map((episode) =>
@@ -199,65 +199,12 @@ function buildNodeEmbeddingText(input: {
   return `${input.label}\n${input.description}\n${input.aliases.join(" ")}`;
 }
 
-function hasCompatibleDomain(
-  left: string | null | undefined,
-  right: string | null | undefined,
-): boolean {
-  const normalizedLeft = canonicalizeDomain(left);
-  const normalizedRight = canonicalizeDomain(right);
-
-  return normalizedLeft === normalizedRight;
-}
-
 function resolveEpisodeScopeKeys(episodes: readonly Episode[]): Set<string> {
   return new Set(episodes.map((episode) => episodeAccessScopeKey(episode)));
 }
 
 function haveSameScopeKeys(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left.size === right.size && [...left].every((value) => right.has(value));
-}
-
-function parseIsoLikeTimestamp(value: string): number | null {
-  const match = value.match(
-    /\b(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?)(Z|[+-]\d{2}:?\d{2})?)?\b/,
-  );
-
-  if (match === null) {
-    return null;
-  }
-
-  const date = match[1]!;
-  const time = match[2];
-  const zone = match[3];
-  const iso =
-    time === undefined
-      ? `${date}T00:00:00.000Z`
-      : `${date}T${time}${zone === undefined ? "Z" : zone}`;
-  const timestamp = Date.parse(iso);
-
-  return Number.isFinite(timestamp) ? timestamp : null;
-}
-
-function resolveEdgeValidityHint(
-  value: string | null | undefined,
-  episodeStartTime: number | undefined,
-): number | undefined {
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-
-  const normalized = value.trim().toLowerCase();
-
-  if (
-    normalized === "episode_start" ||
-    normalized === "conversation_start" ||
-    normalized === "at conversation time" ||
-    normalized === "during this episode"
-  ) {
-    return episodeStartTime;
-  }
-
-  return parseIsoLikeTimestamp(value) ?? undefined;
 }
 
 export class SemanticExtractor {
@@ -316,10 +263,6 @@ export class SemanticExtractor {
           return false;
         }
 
-        if (!hasCompatibleDomain(node.domain, candidate.domain)) {
-          return false;
-        }
-
         const nodeSourceEpisodes = await this.options.episodicRepository.getMany(
           node.source_episode_ids,
         );
@@ -330,7 +273,7 @@ export class SemanticExtractor {
           haveSameScopeKeys(nodeScopeKeys, candidateScopeKeys)
         );
       };
-      const byLabelMatches = await this.options.nodeRepository.findByLabelOrAlias(
+      const byLabelMatches = await this.options.nodeRepository.findByExactLabelOrAlias(
         candidate.label,
         5,
         {
@@ -471,7 +414,7 @@ export class SemanticExtractor {
       return localNode;
     }
 
-    const matches = await this.options.nodeRepository.findByLabelOrAlias(label, 10, {
+    const matches = await this.options.nodeRepository.findByExactLabelOrAlias(label, 10, {
       includeArchived: false,
     });
 
@@ -482,7 +425,7 @@ export class SemanticExtractor {
 
       this.cacheEdgeNode(existingNodes, matchedNode);
 
-      // findByLabelOrAlias already returns updated_at DESC, so the first
+      // findByExactLabelOrAlias already returns updated_at DESC, so the first
       // scope-compatible match is the most recently updated node.
       return matchedNode;
     }
@@ -548,7 +491,7 @@ export class SemanticExtractor {
     }
 
     for (const candidate of parsed.nodes) {
-      const matches = await this.options.nodeRepository.findByLabelOrAlias(candidate.label, 3, {
+      const matches = await this.options.nodeRepository.findByExactLabelOrAlias(candidate.label, 3, {
         includeArchived: true,
       });
 
@@ -601,13 +544,6 @@ export class SemanticExtractor {
         continue;
       }
 
-      const edgeTimeAnchor =
-        evidenceEpisodes.length === 0
-          ? undefined
-          : Math.min(...evidenceEpisodes.map((episode) => episode.start_time));
-      const validFrom = resolveEdgeValidityHint(candidate.valid_from_relative, edgeTimeAnchor);
-      const validTo = resolveEdgeValidityHint(candidate.valid_to_relative, edgeTimeAnchor);
-
       try {
         this.options.edgeRepository.addEdge({
           from_node_id: fromNode.id,
@@ -617,8 +553,8 @@ export class SemanticExtractor {
           evidence_episode_ids: evidenceEpisodeIds,
           created_at: this.clock.now(),
           last_verified_at: this.clock.now(),
-          ...(validFrom === undefined ? {} : { valid_from: validFrom }),
-          ...(validTo === undefined ? {} : { valid_to: validTo }),
+          ...(candidate.valid_from_ts === null ? {} : { valid_from: candidate.valid_from_ts }),
+          ...(candidate.valid_to_ts === null ? {} : { valid_to: candidate.valid_to_ts }),
         });
         insertedEdges += 1;
       } catch (error) {

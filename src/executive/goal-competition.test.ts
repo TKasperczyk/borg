@@ -135,7 +135,7 @@ describe("selectExecutiveFocus", () => {
         }),
       ],
       {
-        cognitionInput: "Work on the Apollo launch plan now.",
+        contextFitByGoalId: new Map([["goal_aaaaaaaaaaaaaaaa" as GoalId, 1]]),
       },
     );
 

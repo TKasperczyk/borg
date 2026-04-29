@@ -1368,7 +1368,7 @@ describe("cli", () => {
     expect(JSON.parse(showNodeOut.read())).toMatchObject({
       id: atlasNode.id,
       label: "Atlas",
-      domain: "tech",
+      domain: "technology",
     });
 
     const searchNodeOut = createOutputBuffer();

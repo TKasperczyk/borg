@@ -76,7 +76,7 @@ describe("OpenQuestionsRepository", () => {
     };
   }
 
-  it("dedupes by normalized question and related ids", () => {
+  it("dedupes by normalized full question text and related ids", () => {
     const clock = new FixedClock(10_000);
     const db = openDatabase(":memory:", {
       migrations: selfMigrations,
@@ -95,14 +95,27 @@ describe("OpenQuestionsRepository", () => {
       source: "user",
     });
     const duplicate = repository.add({
-      question: "What is   atlas doing",
+      question: "What is   atlas doing?",
       urgency: 0.9,
+      related_episode_ids: [episodeId],
+      related_semantic_node_ids: [semanticNodeId],
+      source: "user",
+    });
+    const differentPunctuation = repository.add({
+      question: "What is atlas doing",
+      urgency: 0.8,
       related_episode_ids: [episodeId],
       related_semantic_node_ids: [semanticNodeId],
       source: "user",
     });
 
     expect(duplicate.id).toBe(first.id);
+    expect(differentPunctuation.id).not.toBe(first.id);
+    expect(
+      repository
+        .list({ limit: 10 })
+        .every((question) => question.id === first.id || question.id === differentPunctuation.id),
+    ).toBe(true);
 
     const touched = repository.touch(first.id, 12_000);
     const resolved = repository.resolve(first.id, {
@@ -313,6 +326,35 @@ describe("OpenQuestionsRepository", () => {
     db.close();
   });
 
+  it("preserves non-ASCII question content in v2 dedupe normalization", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+    });
+
+    try {
+      const first = repository.add({
+        question: "Ａｔｌａｓ 的部署为什么失败？",
+        urgency: 0.4,
+        source: "user",
+        provenance: manualProvenance,
+      });
+      const duplicate = repository.add({
+        question: "atlas 的部署为什么失败？",
+        urgency: 0.9,
+        source: "user",
+        provenance: manualProvenance,
+      });
+
+      expect(duplicate.id).toBe(first.id);
+      expect(repository.list({ limit: 10 })).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("stores audience scope and dedupes private questions separately", () => {
     const db = openDatabase(":memory:", {
       migrations: selfMigrations,
@@ -332,7 +374,7 @@ describe("OpenQuestionsRepository", () => {
         provenance: manualProvenance,
       });
       const aliceDuplicate = repository.add({
-        question: "What should I remember about atlas",
+        question: "What should I remember about atlas?",
         urgency: 0.9,
         audience_entity_id: alice,
         source: "reflection",

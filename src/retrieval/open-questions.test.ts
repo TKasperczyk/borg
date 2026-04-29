@@ -256,9 +256,10 @@ describe("retrieveOpenQuestionsForQuery", () => {
     expect(results.map((question) => question.question)).toEqual([highUrgency, lowUrgency]);
   });
 
-  it("falls back to token overlap for questions whose insert embedding failed", async () => {
+  it("ignores unembedded questions unless relation evidence gives them a score", async () => {
     const query = "atlas fail";
     const questionText = "Why does Atlas fail?";
+    const semanticNodeId = createSemanticNodeId();
     const onEmbeddingFailure = vi.fn();
     const repository = await openFixture({
       embeddingClient: new FailingEmbeddingClient(),
@@ -269,11 +270,16 @@ describe("retrieveOpenQuestionsForQuery", () => {
       question: questionText,
       urgency: 0.2,
       source: "reflection",
+      related_semantic_node_ids: [semanticNodeId],
       provenance: manualProvenance,
     });
     await repository.waitForPendingEmbeddings();
 
-    const results = await retrieveOpenQuestionsForQuery(repository, queryEmbeddingClient, query, {
+    const unrelatedResults = await retrieveOpenQuestionsForQuery(repository, queryEmbeddingClient, query, {
+      limit: 1,
+    });
+    const relatedResults = await retrieveOpenQuestionsForQuery(repository, queryEmbeddingClient, query, {
+      relatedSemanticNodeIds: [semanticNodeId],
       limit: 1,
     });
 
@@ -284,6 +290,7 @@ describe("retrieveOpenQuestionsForQuery", () => {
         questionId: question.id,
       }),
     );
-    expect(results[0]?.id).toBe(question.id);
+    expect(unrelatedResults).toEqual([]);
+    expect(relatedResults[0]?.id).toBe(question.id);
   });
 });

@@ -3,7 +3,7 @@ export {
   type ExtractSemanticResult,
   type SemanticExtractorOptions,
 } from "./extractor.js";
-export { canonicalizeDomain, DOMAIN_SYNONYMS } from "./domain.js";
+export { canonicalizeDomain } from "./domain.js";
 export { SemanticGraph, type SemanticGraphOptions } from "./graph.js";
 export { semanticMigrations } from "./migrations.js";
 export {

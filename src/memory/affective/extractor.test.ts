@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createOfflineTestHarness } from "../../offline/test-support.js";
 import { FakeLLMClient } from "../../llm/index.js";
@@ -18,30 +18,60 @@ describe("AffectiveExtractor", () => {
     harness = undefined;
   });
 
-  it("captures joy, sadness, and arousal cues heuristically", async () => {
-    const extractor = new AffectiveExtractor();
-
-    await expect(extractor.analyze("I am thrilled this works!")).resolves.toMatchObject({
-      dominant_emotion: "joy",
-    });
-    await expect(extractor.analyze("I feel sad and stuck...")).resolves.toMatchObject({
-      dominant_emotion: "sadness",
+  it("returns neutral affect and reports degraded mode when no LLM is configured", async () => {
+    const onDegraded = vi.fn();
+    const extractor = new AffectiveExtractor({
+      onDegraded,
     });
 
-    const calm = await extractor.analyze("okay");
-    const intense = await extractor.analyze("THIS IS BROKEN!!!");
-
-    expect(calm.arousal).toBeLessThan(intense.arousal);
-    expect(intense.valence).toBeLessThan(0);
+    await expect(extractor.analyze("I am thrilled this works!")).resolves.toEqual({
+      valence: 0,
+      arousal: 0,
+      dominant_emotion: null,
+    });
+    expect(onDegraded).toHaveBeenCalledWith("llm_unavailable", undefined);
   });
 
-  it("treats short gratitude follow-ups as positive enough for lagged attribution", async () => {
-    const extractor = new AffectiveExtractor();
+  it("returns neutral affect when LLM fallback is disabled", async () => {
+    const onDegraded = vi.fn();
+    const extractor = new AffectiveExtractor({
+      useLlmFallback: false,
+      onDegraded,
+    });
 
-    expect((await extractor.analyze("thanks")).valence).toBeGreaterThan(0.2);
-    expect((await extractor.analyze("thanks!")).valence).toBeGreaterThan(0.2);
-    expect((await extractor.analyze("okay, thanks")).valence).toBeGreaterThan(0.2);
-    expect((await extractor.analyze("okay")).valence).toBeLessThan(0.2);
+    expect(await extractor.analyze("thanks!")).toEqual({
+      valence: 0,
+      arousal: 0,
+      dominant_emotion: null,
+    });
+    expect(onDegraded).toHaveBeenCalledWith("llm_disabled", undefined);
+  });
+
+  it("returns neutral affect and reports degraded mode when the LLM response is invalid", async () => {
+    const onDegraded = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [],
+        },
+      ],
+    });
+    const extractor = new AffectiveExtractor({
+      llmClient: llm,
+      model: "haiku",
+      onDegraded,
+    });
+
+    expect(await extractor.analyze("This is rough.")).toEqual({
+      valence: 0,
+      arousal: 0,
+      dominant_emotion: null,
+    });
+    expect(onDegraded).toHaveBeenCalledWith("llm_failed", expect.any(Error));
   });
 
   it("uses the llm as the primary affect classifier when configured", async () => {
@@ -83,6 +113,7 @@ describe("AffectiveExtractor", () => {
   });
 
   it("caps llm affective calls for one extractor instance", async () => {
+    const onDegraded = vi.fn();
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -107,6 +138,7 @@ describe("AffectiveExtractor", () => {
     const extractor = new AffectiveExtractor({
       llmClient: llm,
       model: "haiku",
+      onDegraded,
     });
 
     await extractor.analyze("Yeah great, exactly what I wanted");
@@ -115,8 +147,9 @@ describe("AffectiveExtractor", () => {
     expect(llm.requests).toHaveLength(1);
     expect(capped).toMatchObject({
       valence: 0,
-      dominant_emotion: "neutral",
+      dominant_emotion: null,
     });
+    expect(onDegraded).toHaveBeenCalledWith("llm_exhausted", undefined);
   });
 
   it("does not let coding-error lexicon words override the llm signal", async () => {

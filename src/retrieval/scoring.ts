@@ -12,6 +12,7 @@ import type { StreamEntry } from "../stream/index.js";
 import type { EntityId } from "../util/ids.js";
 
 import { computeTimeRelevance, type ResolvedTimeRange } from "./time-signals.js";
+import type { RetrievalScoringFeatures } from "./scoring-features.js";
 
 export type SuppressionLookup = {
   isSuppressed(id: string): boolean;
@@ -51,6 +52,7 @@ export type EpisodeScoringOptions = {
   goalDescriptions?: readonly string[];
   primaryGoalDescription?: string;
   activeValues?: readonly ValueRecord[];
+  scoringFeatures?: RetrievalScoringFeatures;
   moodState?: RetrievalMoodState | null;
   audienceEntityId?: EntityId | null;
   audienceProfile?: SocialProfile | null;
@@ -244,16 +246,21 @@ export function scoreCandidate(
       : { ...searchOptions.decayOptions, nowMs },
   );
   const heat = computeEpisodeHeat(candidate.episode, candidate.stats, nowMs);
-  const broadGoalRelevance = computeGoalRelevance(
-    searchOptions.goalDescriptions ?? [],
-    candidate.episode,
-  );
-  const primaryGoalRelevance =
-    searchOptions.primaryGoalDescription === undefined
+  const goalRelevance =
+    searchOptions.scoringFeatures === undefined
       ? 0
-      : computeGoalRelevance([searchOptions.primaryGoalDescription], candidate.episode);
-  const goalRelevance = clamp(Math.max(broadGoalRelevance, primaryGoalRelevance * 1.25), 0, 1);
-  const valueAlignment = computeValueAlignment(searchOptions.activeValues ?? [], candidate.episode);
+      : computeGoalRelevance({
+          episodeEmbedding: candidate.episode.embedding,
+          goalVectors: searchOptions.scoringFeatures.goalVectors,
+          primaryGoalVector: searchOptions.scoringFeatures.primaryGoalVector,
+        });
+  const valueAlignment =
+    searchOptions.scoringFeatures === undefined
+      ? 0
+      : computeValueAlignment({
+          episodeEmbedding: candidate.episode.embedding,
+          valueVectors: searchOptions.scoringFeatures.valueVectors,
+        });
   const timeRelevance = computeTimeRelevance(candidate.episode, scoringTimeRange);
   const moodBoost = computeMoodBoost(candidate.episode, searchOptions.moodState);
   const socialRelevance = computeSocialRelevance(

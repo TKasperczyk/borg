@@ -1,7 +1,7 @@
 import type { GoalRecord } from "../memory/self/index.js";
-import { tokenizeText } from "../util/text/tokenize.js";
 
 import type { ExecutiveFocus, ExecutiveGoalScore, ExecutiveGoalScoreComponents } from "./types.js";
+import type { ExecutiveContextFitByGoalId } from "./context-fit.js";
 
 export const DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD = 0.45;
 
@@ -19,6 +19,7 @@ export type SelectExecutiveFocusInput = {
   threshold?: number;
   deadlineLookaheadMs: number;
   staleMs: number;
+  contextFitByGoalId?: ExecutiveContextFitByGoalId;
 };
 
 function clamp01(value: number): number {
@@ -65,36 +66,6 @@ function computeProgressDebt(goal: GoalRecord, nowMs: number, staleMs: number): 
   return clamp01((nowMs - progressAnchor) / staleMs);
 }
 
-function buildContextText(input: SelectExecutiveFocusInput): string {
-  const autonomyPayload =
-    input.autonomyPayload === null || input.autonomyPayload === undefined
-      ? ""
-      : JSON.stringify(input.autonomyPayload);
-
-  return [input.cognitionInput, ...(input.perceptionEntities ?? []), autonomyPayload]
-    .join(" ")
-    .trim();
-}
-
-function computeContextFit(goal: GoalRecord, contextText: string): number {
-  const goalTokens = tokenizeText(`${goal.description} ${goal.progress_notes ?? ""}`);
-  const contextTokens = tokenizeText(contextText);
-
-  if (goalTokens.size === 0 || contextTokens.size === 0) {
-    return 0;
-  }
-
-  let overlap = 0;
-
-  for (const token of goalTokens) {
-    if (contextTokens.has(token)) {
-      overlap += 1;
-    }
-  }
-
-  return clamp01(overlap / goalTokens.size);
-}
-
 function computeScore(components: ExecutiveGoalScoreComponents): number {
   return clamp01(
     PRIORITY_WEIGHT * components.priority +
@@ -138,13 +109,12 @@ export function selectExecutiveFocus(input: SelectExecutiveFocusInput): Executiv
   }
 
   const maxPriority = Math.max(1, ...activeGoals.map((goal) => Math.max(0, goal.priority)));
-  const contextText = buildContextText(input);
   const candidates = activeGoals
     .map((goal): ExecutiveGoalScore => {
       const components = {
         priority: normalizePriority(goal, maxPriority),
         deadline_pressure: computeDeadlinePressure(goal, input.nowMs, input.deadlineLookaheadMs),
-        context_fit: computeContextFit(goal, contextText),
+        context_fit: input.contextFitByGoalId?.get(goal.id) ?? 0,
         progress_debt: computeProgressDebt(goal, input.nowMs, input.staleMs),
       };
       const score = computeScore(components);

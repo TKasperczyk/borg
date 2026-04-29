@@ -19,6 +19,7 @@ import {
   type EpisodeTier,
 } from "../../memory/episodic/index.js";
 import { episodeAudienceEntityIdSchema, streamEntryIdSchema } from "../../memory/episodic/types.js";
+import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { createEpisodeId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
@@ -89,6 +90,8 @@ export const consolidatorPlanSchema = z.object({
 export type ConsolidatorPlan = z.infer<typeof consolidatorPlanSchema>;
 
 const HOUR_MS = 60 * 60 * 1_000;
+const CONSOLIDATION_TEMPORAL_PROXIMITY_MS = 30 * 24 * HOUR_MS;
+const CONSOLIDATION_HIGH_SIMILARITY_BYPASS = 0.97;
 const TIER_ORDER: Record<EpisodeTier, number> = {
   T1: 1,
   T2: 2,
@@ -106,38 +109,28 @@ type ConsolidationReversal = {
   sourceStats: EpisodeStats[];
 };
 
-function cosineSimilarity(left: Float32Array, right: Float32Array): number {
-  let dot = 0;
-  let leftNorm = 0;
-  let rightNorm = 0;
-  const size = Math.min(left.length, right.length);
+function compareTier(left: EpisodeTier, right: EpisodeTier): number {
+  return TIER_ORDER[left] - TIER_ORDER[right];
+}
 
-  for (let index = 0; index < size; index += 1) {
-    const leftValue = left[index] ?? 0;
-    const rightValue = right[index] ?? 0;
-    dot += leftValue * rightValue;
-    leftNorm += leftValue * leftValue;
-    rightNorm += rightValue * rightValue;
-  }
+function temporalGapMs(left: Episode, right: Episode): number {
+  const leftStart = Math.min(left.start_time, left.end_time);
+  const leftEnd = Math.max(left.start_time, left.end_time);
+  const rightStart = Math.min(right.start_time, right.end_time);
+  const rightEnd = Math.max(right.start_time, right.end_time);
 
-  if (leftNorm === 0 || rightNorm === 0) {
+  if (leftStart <= rightEnd && rightStart <= leftEnd) {
     return 0;
   }
 
-  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+  return Math.min(Math.abs(leftStart - rightEnd), Math.abs(rightStart - leftEnd));
 }
 
-function shareTagFamily(left: Episode, right: Episode): boolean {
-  if (left.tags.length === 0 || right.tags.length === 0) {
-    return false;
-  }
-
-  const rightTags = new Set(right.tags.map((tag) => tag.toLowerCase()));
-  return left.tags.some((tag) => rightTags.has(tag.toLowerCase()));
-}
-
-function compareTier(left: EpisodeTier, right: EpisodeTier): number {
-  return TIER_ORDER[left] - TIER_ORDER[right];
+function passesTemporalSoftGuard(left: Episode, right: Episode, similarity: number): boolean {
+  return (
+    temporalGapMs(left, right) <= CONSOLIDATION_TEMPORAL_PROXIMITY_MS ||
+    similarity >= CONSOLIDATION_HIGH_SIMILARITY_BYPASS
+  );
 }
 
 function maxTier(stats: readonly EpisodeStats[]): EpisodeTier {
@@ -212,17 +205,16 @@ function buildClusters(
         continue;
       }
 
-      if (!shareTagFamily(left, right)) {
-        continue;
-      }
-
       if (!hasSameEpisodeAccessScope(left, right)) {
         continue;
       }
 
       const similarity = cosineSimilarity(left.embedding, right.embedding);
 
-      if (similarity < similarityThreshold) {
+      if (
+        similarity < similarityThreshold ||
+        !passesTemporalSoftGuard(left, right, similarity)
+      ) {
         continue;
       }
 

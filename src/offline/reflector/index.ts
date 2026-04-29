@@ -17,10 +17,10 @@ import {
   semanticNodeSchema,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
+import { bestVectorSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { createSemanticEdgeId, createSemanticNodeId } from "../../util/ids.js";
 import { BudgetExceededError, SemanticError } from "../../util/errors.js";
-import { tokenizeText } from "../../util/text/tokenize.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -126,6 +126,11 @@ type ReflectionCluster = {
   episodes: Episode[];
 };
 
+type ReflectionGoalVector = {
+  key: string;
+  vector: Float32Array;
+};
+
 const reflectorReversalSchema = z.object({
   nodeId: semanticNodeIdSchema,
   nodeCreated: z.boolean(),
@@ -195,9 +200,10 @@ function parseInsight(result: LLMCompleteResult) {
 
 function collectReflectionClusters(
   episodes: readonly Episode[],
-  goalDescriptions: readonly string[],
+  goalVectors: readonly ReflectionGoalVector[],
   minSupport: number,
   maxInsightsPerRun: number,
+  goalSimilarityThreshold: number,
 ): ReflectionCluster[] {
   const byKey = new Map<string, Episode[]>();
 
@@ -207,18 +213,14 @@ function collectReflectionClusters(
       byKey.set(key, [...(byKey.get(key) ?? []), episode]);
     }
 
-    const episodeTokens = tokenizeText(
-      `${episode.title} ${episode.narrative} ${episode.tags.join(" ")}`,
-    );
+    for (const goal of goalVectors) {
+      const similarity = bestVectorSimilarity(episode.embedding, [goal.vector]);
 
-    for (const description of goalDescriptions) {
-      const goalTokens = tokenizeText(description);
-
-      if (![...goalTokens].some((token) => episodeTokens.has(token))) {
+      if (similarity < goalSimilarityThreshold) {
         continue;
       }
 
-      const key = `${episodeAccessScopeKey(episode)}|goal:${description.toLowerCase()}`;
+      const key = `${episodeAccessScopeKey(episode)}|goal:${goal.key}`;
       byKey.set(key, [...(byKey.get(key) ?? []), episode]);
     }
   }
@@ -427,14 +429,43 @@ export class ReflectorProcess implements OfflineProcess {
     const episodes = (await ctx.episodicRepository.listAll()).filter(
       (episode) => !(ctx.episodicRepository.getStats(episode.id)?.archived ?? false),
     );
-    const goalDescriptions = ctx.goalsRepository
-      .list({ status: "active" })
-      .map((goal) => goal.description);
+    const activeGoals = ctx.goalsRepository.list({ status: "active" });
+    const goalDescriptions = activeGoals.map((goal) => goal.description);
+    let goalVectors: ReflectionGoalVector[] = [];
+
+    if (activeGoals.length > 0) {
+      try {
+        const embeddings = await ctx.embeddingClient.embedBatch(
+          activeGoals.map((goal) => goal.description),
+        );
+        goalVectors = activeGoals.flatMap((goal, index) => {
+          const vector = embeddings[index];
+
+          if (vector === undefined) {
+            return [];
+          }
+
+          return [
+            {
+              key: goal.id,
+              vector,
+            },
+          ];
+        });
+      } catch (error) {
+        errors.push({
+          process: this.name,
+          message: error instanceof Error ? error.message : String(error),
+          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
+        });
+      }
+    }
     const clusters = collectReflectionClusters(
       episodes,
-      goalDescriptions,
+      goalVectors,
       ctx.config.offline.reflector.minSupport,
       ctx.config.offline.reflector.maxInsightsPerRun,
+      ctx.config.offline.reflector.goalSimilarityThreshold,
     );
     let tokensUsed = 0;
     let budgetExhausted = false;
@@ -446,7 +477,7 @@ export class ReflectorProcess implements OfflineProcess {
         for (const cluster of clusters) {
           try {
             const candidate = await buildInsightCandidate(ctx, llmClient, cluster);
-            const byLabel = await ctx.semanticNodeRepository.findByLabelOrAlias(
+            const byLabel = await ctx.semanticNodeRepository.findByExactLabelOrAlias(
               candidate.label,
               3,
               {

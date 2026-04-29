@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DOMAIN_SYNONYMS, canonicalizeDomain } from "./domain.js";
+import { canonicalizeDomain } from "./domain.js";
 
 describe("semantic domain canonicalization", () => {
   it("normalizes case and whitespace", () => {
@@ -10,14 +10,10 @@ describe("semantic domain canonicalization", () => {
     expect(canonicalizeDomain(null)).toBeNull();
   });
 
-  it("maps configured synonyms to canonical buckets", () => {
-    expect(DOMAIN_SYNONYMS.technology).toBe("tech");
-    expect(DOMAIN_SYNONYMS.persons).toBe("people");
-    expect(DOMAIN_SYNONYMS.location).toBe("places");
-    expect(DOMAIN_SYNONYMS.cuisine).toBe("food");
-    expect(canonicalizeDomain("technology")).toBe("tech");
-    expect(canonicalizeDomain("Persons")).toBe("people");
-    expect(canonicalizeDomain(" location ")).toBe("places");
-    expect(canonicalizeDomain("Cuisine")).toBe("food");
+  it("does not infer English synonym buckets", () => {
+    expect(canonicalizeDomain("technology")).toBe("technology");
+    expect(canonicalizeDomain("Persons")).toBe("persons");
+    expect(canonicalizeDomain(" location ")).toBe("location");
+    expect(canonicalizeDomain("Cuisine")).toBe("cuisine");
   });
 });

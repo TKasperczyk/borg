@@ -34,6 +34,7 @@ export const perceptionResultSchema = z.object({
   entities: z.array(z.string().min(1)),
   mode: cognitiveModeSchema,
   affectiveSignal: affectiveSignalSchema,
+  affectiveSignalDegraded: z.boolean().optional(),
   temporalCue: temporalCueSchema.nullable(),
 });
 

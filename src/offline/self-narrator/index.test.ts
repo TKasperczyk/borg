@@ -17,6 +17,7 @@ function createSelfNarratorResponse(input: {
     confidence: number;
     evidence_episode_ids: string[];
   } | null;
+  period_decision?: "continue_current" | "open_new";
 }) {
   const observations =
     input.observation === null
@@ -44,6 +45,8 @@ function createSelfNarratorResponse(input: {
         name: SELF_NARRATOR_TOOL_NAME,
         input: {
           observations,
+          period_decision: input.period_decision ?? "open_new",
+          period_decision_confidence: 0.8,
         },
       },
     ],
@@ -169,6 +172,146 @@ describe("SelfNarratorProcess", () => {
 
       expect(harness.growthMarkersRepository.list()).toEqual([]);
       expect(harness.autobiographicalRepository.currentPeriod()).toBeNull();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("honors continue_current for theme updates without opening a new period", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          period_decision: "continue_current",
+          observation: {
+            category: "understanding",
+            theme: "deployment",
+            what_changed: "Deployment review stayed within the current period.",
+            before_description: null,
+            after_description: "The current period now includes deployment review.",
+            confidence: 0.8,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+          },
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock: {
+        now: () => Date.UTC(2026, 6, 15),
+      },
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const current = harness.autobiographicalRepository.upsertPeriod({
+        label: "2026-Q1",
+        start_ts: Date.UTC(2026, 0, 1),
+        narrative: "Planning quarter.",
+        themes: ["planning"],
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          title: "Deploy rehearsal",
+          narrative: "Deployment review became concrete.",
+          tags: ["deploy"],
+          created_at: Date.UTC(2026, 6, 10),
+          updated_at: Date.UTC(2026, 6, 10),
+        }),
+      );
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          title: "Deploy follow-up",
+          narrative: "Deployment review stayed active.",
+          tags: ["deploy"],
+          created_at: Date.UTC(2026, 6, 11),
+          updated_at: Date.UTC(2026, 6, 11),
+        }),
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items.some((item) => item.action === "close_period")).toBe(false);
+      expect(plan.items.some((item) => item.action === "open_period")).toBe(false);
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "update_period_narrative",
+            period_id: current.id,
+          }),
+        ]),
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("ignores open_new when cadence has not elapsed", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          period_decision: "open_new",
+          observation: {
+            category: "skill",
+            theme: "operations",
+            what_changed: "Operations became more visible.",
+            before_description: null,
+            after_description: "Operations evidence is accumulating.",
+            confidence: 0.8,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+          },
+        }),
+      ],
+    });
+    const now = Date.UTC(2026, 0, 3);
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock: {
+        now: () => now,
+      },
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      harness.autobiographicalRepository.upsertPeriod({
+        label: "2026-Q1",
+        start_ts: Date.UTC(2026, 0, 1),
+        narrative: "Fresh period.",
+        themes: ["planning"],
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          tags: ["ops"],
+          created_at: now,
+          updated_at: now,
+        }),
+      );
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          tags: ["ops"],
+          created_at: now + 1,
+          updated_at: now + 1,
+        }),
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items.some((item) => item.action === "close_period")).toBe(false);
+      expect(plan.items.some((item) => item.action === "open_period")).toBe(false);
+      expect(plan.items.some((item) => item.action === "update_period_narrative")).toBe(true);
     } finally {
       await harness.cleanup();
     }

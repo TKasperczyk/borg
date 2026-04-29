@@ -197,6 +197,60 @@ describe("self migrations", () => {
     }
   });
 
+  it("backfills open-question dedupe keys to v2 hashes with collision suffixes", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const dbPath = join(tempDir, "self.db");
+    tempDirs.push(tempDir);
+
+    const legacyDb = openDatabase(dbPath, {
+      migrations: selfMigrations.filter((migration) => migration.id < 267),
+    });
+
+    try {
+      const insert = legacyDb.prepare(`
+        INSERT INTO open_questions (
+          id, question, urgency, status, audience_entity_id, related_episode_ids,
+          related_semantic_node_ids, source, created_at, last_touched, resolution_episode_id,
+          resolution_note, resolved_at, abandoned_reason, abandoned_at, dedupe_key,
+          provenance_kind, provenance_episode_ids, provenance_process
+        ) VALUES (?, ?, 0.5, 'open', NULL, '[]', '[]', 'user', ?, ?, NULL, NULL, NULL, NULL, NULL, ?, 'system', NULL, NULL)
+      `);
+
+      insert.run(
+        "oq_aaaaaaaaaaaaaaaa",
+        "Ａｔｌａｓ 的部署为什么失败？",
+        1_000,
+        1_000,
+        "legacy:first",
+      );
+      insert.run(
+        "oq_bbbbbbbbbbbbbbbb",
+        "atlas 的部署为什么失败？",
+        2_000,
+        2_000,
+        "legacy:second",
+      );
+    } finally {
+      legacyDb.close();
+    }
+
+    const db = openDatabase(dbPath, {
+      migrations: selfMigrations,
+    });
+
+    try {
+      const rows = db
+        .prepare("SELECT id, dedupe_key FROM open_questions ORDER BY created_at ASC")
+        .all() as Array<{ id: string; dedupe_key: string }>;
+
+      expect(rows).toHaveLength(2);
+      expect(rows[0]?.dedupe_key).toMatch(/^v2:/);
+      expect(rows[1]?.dedupe_key).toBe(`${rows[0]?.dedupe_key}|collision:oq_bbbbbbbbbbbbbbbb`);
+    } finally {
+      db.close();
+    }
+  });
+
   it("backfills evidence-backed fields from reinforcement history", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const dbPath = join(tempDir, "self.db");

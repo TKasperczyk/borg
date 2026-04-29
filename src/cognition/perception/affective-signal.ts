@@ -1,14 +1,12 @@
 import type { LLMClient } from "../../llm/index.js";
-import {
-  AffectiveExtractor,
-  analyzeAffectiveSignalHeuristically,
-  type AffectiveSignal,
-} from "../../memory/affective/index.js";
+import { AffectiveExtractor, type AffectiveSignal } from "../../memory/affective/index.js";
+import type { AffectiveExtractorDegradedReason } from "../../memory/affective/index.js";
 
 export type DetectAffectiveSignalOptions = {
   llmClient?: LLMClient;
   model?: string;
   useLlmFallback?: boolean;
+  onDegraded?: (reason: AffectiveExtractorDegradedReason, error?: unknown) => Promise<void> | void;
 };
 
 export async function detectAffectiveSignal(
@@ -20,11 +18,8 @@ export async function detectAffectiveSignal(
     llmClient: options.llmClient,
     model: options.model,
     useLlmFallback: options.useLlmFallback,
+    onDegraded: options.onDegraded,
   });
 
   return extractor.analyze(text, recentHistory);
-}
-
-export function detectAffectiveSignalHeuristically(text: string): AffectiveSignal {
-  return analyzeAffectiveSignalHeuristically(text);
 }

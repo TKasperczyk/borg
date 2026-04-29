@@ -521,7 +521,7 @@ describe("semantic repositories", () => {
 
     expect(updated).toMatchObject({
       id: inserted.id,
-      domain: "tech",
+      domain: "technology",
     });
   });
 
@@ -546,11 +546,11 @@ describe("semantic repositories", () => {
     });
 
     expect(await fixture.nodeRepository.getMany([archived.id, active.id])).toEqual([null, active]);
-    expect(await fixture.nodeRepository.findByLabelOrAlias("Legacy Atlas", 3)).toEqual([
+    expect(await fixture.nodeRepository.findByExactLabelOrAlias("Legacy Atlas", 3)).toEqual([
       expect.objectContaining({ id: active.id }),
     ]);
     expect(
-      await fixture.nodeRepository.findByLabelOrAlias("atlas legacy", 3, {
+      await fixture.nodeRepository.findByExactLabelOrAlias("atlas legacy", 3, {
         includeArchived: true,
       }),
     ).toEqual(

@@ -7,7 +7,6 @@ import {
 } from "../../llm/index.js";
 import {
   affectiveSignalSchema,
-  analyzeAffectiveSignalHeuristically,
   emotionalArcSchema,
   type AffectiveSignal,
   type EmotionalArc,
@@ -45,12 +44,14 @@ const EPISODIC_SOURCE_STREAM_KINDS = ["user_msg", "agent_msg"] as const;
 const EPISODIC_CONTEXT_STREAM_KINDS = ["user_msg", "agent_msg", "perception"] as const;
 const perceptionAffectiveContentSchema = z.object({
   affectiveSignal: affectiveSignalSchema,
+  affectiveSignalDegraded: z.boolean().optional(),
 });
 const perceptionContextContentSchema = z.object({
   mode: z.string().min(1),
   entities: z.array(z.string().min(1)),
   temporalCue: z.unknown().nullable().default(null),
   affectiveSignal: affectiveSignalSchema,
+  affectiveSignalDegraded: z.boolean().optional(),
 });
 export const EXTRACT_EPISODES_TOOL = {
   name: EXTRACT_EPISODES_TOOL_NAME,
@@ -131,10 +132,6 @@ function uniqueStreamEntryIds(entries: readonly StreamEntry[]): Episode["source_
   return [...new Set(entries.map((entry) => entry.id))];
 }
 
-function entryContentText(entry: StreamEntry): string {
-  return typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content ?? null);
-}
-
 function isEpisodicSourceEntry(entry: StreamEntry): boolean {
   return (EPISODIC_SOURCE_STREAM_KINDS as readonly string[]).includes(entry.kind);
 }
@@ -161,7 +158,11 @@ function perceptionSignalFromEntry(entry: StreamEntry): AffectiveSignal | null {
 
   const parsed = perceptionAffectiveContentSchema.safeParse(entry.content);
 
-  return parsed.success ? parsed.data.affectiveSignal : null;
+  if (!parsed.success || parsed.data.affectiveSignalDegraded === true) {
+    return null;
+  }
+
+  return parsed.data.affectiveSignal;
 }
 
 function perceptionSignalForUserEntry(
@@ -220,6 +221,7 @@ function perceptionContextLine(entry: StreamEntry): string | null {
     entities: parsed.data.entities,
     temporalCue: parsed.data.temporalCue,
     affectiveSignal: parsed.data.affectiveSignal,
+    affectiveSignalDegraded: parsed.data.affectiveSignalDegraded === true,
     audience: entry.audience,
   });
 }
@@ -268,11 +270,13 @@ function buildEmotionalArc(
     return null;
   }
 
-  const signals = userEntries.map(
-    (entry) =>
-      perceptionSignalForUserEntry(entry, contextEntries, streamOrderById) ??
-      analyzeAffectiveSignalHeuristically(entryContentText(entry)),
-  );
+  const signals = userEntries
+    .map((entry) => perceptionSignalForUserEntry(entry, contextEntries, streamOrderById))
+    .filter((signal): signal is AffectiveSignal => signal !== null);
+
+  if (signals.length === 0) {
+    return null;
+  }
   const byPeak = [...signals].sort(
     (left, right) =>
       Math.abs(right.valence) + right.arousal - (Math.abs(left.valence) + left.arousal),

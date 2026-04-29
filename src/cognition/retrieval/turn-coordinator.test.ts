@@ -8,6 +8,7 @@ import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import type { RetrievedContext } from "../../retrieval/index.js";
+import { FakeLLMClient } from "../../llm/index.js";
 import { ManualClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
@@ -24,6 +25,7 @@ import { TurnRetrievalCoordinator } from "./turn-coordinator.js";
 const audienceEntityId = "entity_alice" as EntityId;
 const atlasEntityId = "entity_atlas" as EntityId;
 const bobEntityId = "entity_bob" as EntityId;
+const PROCEDURAL_CONTEXT_TOOL_NAME = "EmitProceduralContext";
 
 function makeCommitment(id: string, priority: number, createdAt: number): CommitmentRecord {
   return {
@@ -225,6 +227,27 @@ describe("TurnRetrievalCoordinator", () => {
       evaluatedCandidates: [],
     };
     const select = vi.fn(async () => selectedSkill);
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_context",
+              name: PROCEDURAL_CONTEXT_TOOL_NAME,
+              input: {
+                problem_kind: "code_debugging",
+                domain_tags: ["atlas", "typescript"],
+                confidence: 0.8,
+              },
+            },
+          ],
+        },
+      ],
+    });
     const coordinator = new TurnRetrievalCoordinator({
       commitmentRepository: {
         getApplicable,
@@ -277,6 +300,8 @@ describe("TurnRetrievalCoordinator", () => {
       suppressionSet,
       findEntityByName: (name) =>
         name === "Atlas" ? atlasEntityId : name === "Bob" ? bobEntityId : null,
+      llmClient: llm,
+      proceduralContextModel: "haiku",
     });
 
     expect(result.applicableCommitments).toEqual([high, low]);
@@ -285,11 +310,11 @@ describe("TurnRetrievalCoordinator", () => {
     expect(result.retrieval).toBe(retrieval);
     expect(result.selectedSkill).toBe(selectedSkill);
     expect(result.proceduralContext).toMatchObject({
-      problem_kind: "other",
-      domain_tags: ["atlas", "bob"],
+      problem_kind: "code_debugging",
+      domain_tags: ["atlas", "typescript"],
       audience_scope: "known_other",
-      context_key: "other:atlas,bob:known_other",
     });
+    expect(result.proceduralContext?.context_key).toMatch(/^v2:/);
     expect(select).toHaveBeenCalledWith("Solve Atlas Atlas Bob", {
       k: 5,
       proceduralContext: result.proceduralContext,
