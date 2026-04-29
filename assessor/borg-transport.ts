@@ -71,7 +71,7 @@ export type BorgTransportOptions = {
   clock?: ManualClock;
 };
 
-const MOCK_RESPONSE_COUNT = 400;
+const MOCK_RESPONSE_COUNT = 20_000;
 const DEFAULT_BORG_STAKES = "low";
 const OPEN_HOOK_SETTLE_MS = 100;
 
@@ -597,6 +597,14 @@ export class BorgTransport {
     return readTraceEvents(this.tracePath);
   }
 
+  getBorg(): Borg {
+    if (this.borg === undefined) {
+      throw new Error("BorgTransport.open() must be called before getBorg()");
+    }
+
+    return this.borg;
+  }
+
   streamTail(limit: number) {
     if (this.borg === undefined) {
       throw new Error("BorgTransport.open() must be called before streamTail()");
@@ -657,7 +665,10 @@ export class BorgTransport {
     );
     const sourceNames = tick.events.map((event) => event.sourceName).join(",");
     const eventStatuses = tick.events
-      .map((event) => `${event.sourceName}:${event.status}${event.error === undefined ? "" : `(${event.error})`}`)
+      .map(
+        (event) =>
+          `${event.sourceName}:${event.status}${event.error === undefined ? "" : `(${event.error})`}`,
+      )
       .join("|");
 
     return [

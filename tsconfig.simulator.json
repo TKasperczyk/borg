@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["simulator/**/*", "assessor/**/*", "eval/support/**/*", "src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

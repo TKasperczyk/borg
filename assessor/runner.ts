@@ -212,7 +212,7 @@ async function evaluateAssertion(
   };
 }
 
-async function evaluateAssertions(input: {
+export async function evaluateAssertions(input: {
   scenario: Scenario;
   transport: BorgTransport;
   turns: readonly ConversationTurn[];
