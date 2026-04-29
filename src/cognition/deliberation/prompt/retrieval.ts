@@ -35,15 +35,14 @@ export function summarizeRetrievalConfidence(
     fragments.join(" "),
   ];
 
+  // Policy text lives in EPISTEMIC_POSTURE_SECTION at the system-prompt
+  // level (not here), because policy in the untrusted-data block is
+  // explicitly told not to be treated as instruction. Here we just
+  // surface the empty-state evidence so the LLM sees retrieval ran.
   if (confidence.sampleSize === 0) {
-    lines.push(
-      "No relevant memory was retrieved for this turn.",
-      "Policy: If asked for specific facts, figures, citations, attributions, or claims that cannot be grounded in retrieved memory, say plainly that you do not know or call tool.openQuestions.create to record the question. Do not fabricate specifics or attribute claims to people you have not retrieved.",
-    );
+    lines.push("No relevant memory was retrieved for this turn.");
   } else if (confidence.overall < LOW_RETRIEVAL_CONFIDENCE_THRESHOLD) {
-    lines.push(
-      "Policy: Low retrieval confidence means you must not over-claim. Ground specific facts, figures, citations, attributions, and claims in retrieved memory; otherwise say plainly that you do not know or call tool.openQuestions.create.",
-    );
+    lines.push("Retrieval confidence is low; specific claims here are weakly supported.");
   }
 
   // Internal hint: the being should speak more cautiously when overall is low.

@@ -67,18 +67,16 @@ function makeClosedEdge(overrides: Partial<SemanticEdge> = {}): SemanticEdge {
 }
 
 describe("retrieval confidence prompt rendering", () => {
-  it("renders an explicit no-evidence policy when confidence has zero samples", () => {
+  it("surfaces empty-state evidence when confidence has zero samples", () => {
     const summary = summarizeRetrievalConfidence(makeRetrievalConfidence());
 
     expect(summary).not.toBeNull();
     expect(summary).toContain("overall=0.00");
     expect(summary).toContain("samples=0");
     expect(summary).toContain("No relevant memory was retrieved for this turn.");
-    expect(summary).toContain("tool.openQuestions.create");
-    expect(summary).toContain("Do not fabricate specifics");
   });
 
-  it("adds grounding policy only when non-empty confidence is low", () => {
+  it("flags weakly-supported claims when non-empty confidence is low", () => {
     const low = summarizeRetrievalConfidence(
       makeRetrievalConfidence({ overall: 0.2, evidenceStrength: 0.2, sampleSize: 1 }),
     );
@@ -86,10 +84,24 @@ describe("retrieval confidence prompt rendering", () => {
       makeRetrievalConfidence({ overall: 0.8, evidenceStrength: 0.8, sampleSize: 3 }),
     );
 
-    expect(low).toContain("must not over-claim");
-    expect(low).toContain("tool.openQuestions.create");
-    expect(healthy).not.toContain("tool.openQuestions.create");
-    expect(healthy).not.toContain("Policy:");
+    expect(low).toContain("Retrieval confidence is low");
+    expect(low).toContain("weakly supported");
+    expect(healthy).not.toContain("Retrieval confidence is low");
+  });
+
+  it("does not embed policy text in the untrusted retrieval block", () => {
+    // Policy text lives in EPISTEMIC_POSTURE_SECTION at the system-prompt
+    // level, not in retrieval evidence; the untrusted-data preamble tells
+    // the LLM to disregard imperative wording in those blocks.
+    const empty = summarizeRetrievalConfidence(makeRetrievalConfidence());
+    const low = summarizeRetrievalConfidence(
+      makeRetrievalConfidence({ overall: 0.2, sampleSize: 1 }),
+    );
+
+    expect(empty).not.toContain("Policy:");
+    expect(empty).not.toContain("tool.openQuestions.create");
+    expect(low).not.toContain("Policy:");
+    expect(low).not.toContain("tool.openQuestions.create");
   });
 
   it("renders an empty retrieved-episodes placeholder", () => {
