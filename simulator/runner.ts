@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 
 import { BorgTransport } from "../assessor/borg-transport.js";
 import type { Scenario } from "../assessor/types.js";
+import type { MaintenanceCadence, ReviewQueueItem } from "../src/index.js";
 
 import { MetricsCapture } from "./metrics.js";
 import { PersonaSession } from "./persona.js";
@@ -23,6 +24,7 @@ export type SimulatorRunnerOptions = {
   metricsPath: string;
   probeEvery: number;
   checkEvery: number;
+  maintenanceEvery?: number;
   keep?: boolean;
   mock?: boolean;
   env?: NodeJS.ProcessEnv;
@@ -33,6 +35,8 @@ export type SimulatorRunnerOptions = {
   probeRunner?: typeof runProbe;
   overseerRunner?: (options: RunOverseerOptions) => Promise<OverseerVerdict>;
 };
+
+const DEFAULT_MAINTENANCE_EVERY = 10;
 
 function simulatorScenario(persona: Persona, totalTurns: number): Scenario {
   return {
@@ -76,6 +80,53 @@ function formatErrorChain(error: unknown): string {
   return parts.length === 0 ? String(error) : parts.join(" -> ");
 }
 
+async function autoAcceptNewInsightReviews(transport: BorgTransport, turn: number): Promise<void> {
+  const borg = transport.getBorg();
+  let reviews: ReviewQueueItem[];
+
+  try {
+    reviews = borg.review.list({ kind: "new_insight", openOnly: true });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[simulator] failed to list new_insight reviews after maintenance at turn ${turn}: ${formatErrorChain(error)}`,
+    );
+    return;
+  }
+
+  for (const review of reviews) {
+    try {
+      await borg.review.resolve(review.id, {
+        decision: "accept",
+        reason: "auto-accept (long-horizon harness)",
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[simulator] failed to auto-accept new_insight review ${review.id} at turn ${turn}: ${formatErrorChain(error)}`,
+      );
+    }
+  }
+}
+
+async function runMaintenanceTick(
+  transport: BorgTransport,
+  turn: number,
+  cadence: MaintenanceCadence,
+): Promise<void> {
+  try {
+    await transport.getBorg().maintenance.scheduler.tick(cadence);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[simulator] ${cadence} maintenance tick at turn ${turn} failed: ${formatErrorChain(error)}`,
+    );
+    return;
+  }
+
+  await autoAcceptNewInsightReviews(transport, turn);
+}
+
 export class SimulatorRunner {
   private readonly options: SimulatorRunnerOptions;
   private turnFailures: Array<{ turn: number; error: string }> = [];
@@ -89,12 +140,19 @@ export class SimulatorRunner {
       throw new Error("totalTurns must be a positive integer");
     }
 
+    const maintenanceEvery = this.options.maintenanceEvery ?? DEFAULT_MAINTENANCE_EVERY;
+
+    if (!Number.isInteger(maintenanceEvery) || maintenanceEvery <= 0) {
+      throw new Error("maintenanceEvery must be a positive integer");
+    }
+
     const started = performance.now();
     const transport = new BorgTransport({
       runId: this.options.runId,
       scenario: simulatorScenario(this.options.persona, this.options.totalTurns),
       keep: this.options.keep,
       mock: this.options.mock,
+      maintenance: true,
       env: this.options.env,
       dataDir: this.options.dataDir,
       tracePath: this.options.tracePath,
@@ -192,11 +250,17 @@ export class SimulatorRunner {
 
         finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn);
 
-        if (
+        const overseerDue =
           Number.isInteger(this.options.checkEvery) &&
           this.options.checkEvery > 0 &&
-          turn % this.options.checkEvery === 0
-        ) {
+          turn % this.options.checkEvery === 0;
+
+        if (turn % maintenanceEvery === 0) {
+          await runMaintenanceTick(transport, turn, "light");
+        }
+
+        if (overseerDue) {
+          await runMaintenanceTick(transport, turn, "heavy");
           overseerCheckpoints.push(
             await overseerRunner({
               transport,
@@ -250,6 +314,7 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Episodes: ${report.finalMetrics.episode_count}`,
     `- Semantic nodes: ${report.finalMetrics.semantic_node_count}`,
     `- Semantic edges: ${report.finalMetrics.semantic_edge_count}`,
+    `- Semantic added since previous check: ${report.finalMetrics.semantic_nodes_added_since_last_check} nodes, ${report.finalMetrics.semantic_edges_added_since_last_check} edges`,
     `- Open questions: ${report.finalMetrics.open_question_count}`,
     `- Active goals: ${report.finalMetrics.active_goal_count}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,

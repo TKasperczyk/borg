@@ -26,7 +26,7 @@ import {
   type GoalId,
   type SessionId,
 } from "../src/util/ids.js";
-import { createEvalBorg } from "../eval/support/create-eval-borg.js";
+import { createEvalBorg, type CreateEvalBorgOptions } from "../eval/support/create-eval-borg.js";
 
 import { latestTurnId, readTraceEvents, summarizeTraceFile } from "./trace-reader.js";
 import type { DeepPartial, Scenario, TracePhase, TraceRecord } from "./types.js";
@@ -63,6 +63,7 @@ export type BorgTransportOptions = {
   scenario: Scenario;
   keep?: boolean;
   mock?: boolean;
+  maintenance?: boolean;
   env?: NodeJS.ProcessEnv;
   dataDir?: string;
   tracePath?: string;
@@ -74,6 +75,7 @@ export type BorgTransportOptions = {
 const MOCK_RESPONSE_COUNT = 20_000;
 const DEFAULT_BORG_STAKES = "low";
 const OPEN_HOOK_SETTLE_MS = 100;
+type EvalConfigOverrides = NonNullable<CreateEvalBorgOptions["config"]>;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -133,12 +135,17 @@ function deepMerge<T>(base: T, override: DeepPartial<T> | undefined): T {
   return merged as T;
 }
 
-function disabledBackgroundOverrides(): DeepPartial<Config> {
+function autonomyDisabledOverrides(): DeepPartial<Config> {
   return {
-    maintenance: {
+    autonomy: {
       enabled: false,
     },
-    autonomy: {
+  };
+}
+
+function maintenanceDisabledOverrides(): DeepPartial<Config> {
+  return {
+    maintenance: {
       enabled: false,
     },
   };
@@ -148,6 +155,7 @@ function createRealConfig(input: {
   dataDir: string;
   env: NodeJS.ProcessEnv;
   scenario: Scenario;
+  maintenance: boolean;
 }): Config {
   const loaded = loadConfig({
     dataDir: input.dataDir,
@@ -156,12 +164,15 @@ function createRealConfig(input: {
       BORG_DATA_DIR: input.dataDir,
     },
   });
-  const withBackgroundDisabled = deepMerge(loaded, disabledBackgroundOverrides());
-
-  return deepMerge(withBackgroundDisabled, {
+  const withAutonomyDisabled = deepMerge(loaded, autonomyDisabledOverrides());
+  const withScenarioOverrides = deepMerge(withAutonomyDisabled, {
     ...input.scenario.borgConfigOverrides,
     dataDir: input.dataDir,
   });
+
+  return input.maintenance
+    ? withScenarioOverrides
+    : deepMerge(withScenarioOverrides, maintenanceDisabledOverrides());
 }
 
 function contentBlockText(block: LLMContentBlock): string {
@@ -448,6 +459,7 @@ export class BorgTransport {
   private readonly scenario: Scenario;
   private readonly env: NodeJS.ProcessEnv;
   private readonly mock: boolean;
+  private readonly maintenance: boolean;
   private readonly llmClient?: BorgOpenOptions["llmClient"];
   private readonly embeddingClient?: BorgOpenOptions["embeddingClient"];
   private readonly clock: ManualClock;
@@ -464,6 +476,7 @@ export class BorgTransport {
     this.scenario = options.scenario;
     this.env = options.env ?? process.env;
     this.mock = options.mock ?? false;
+    this.maintenance = options.maintenance ?? false;
     this.llmClient = options.llmClient;
     this.embeddingClient = options.embeddingClient;
     this.clock = options.clock ?? new ManualClock(Date.now());
@@ -482,26 +495,32 @@ export class BorgTransport {
     };
 
     if (this.mock) {
+      const mockConfig: EvalConfigOverrides = {
+        ...(this.scenario.borgConfigOverrides as EvalConfigOverrides),
+        dataDir: this.dataDir,
+        autonomy: deepMerge(
+          {
+            ...DEFAULT_CONFIG.autonomy,
+            enabled: false,
+          },
+          this.scenario.borgConfigOverrides?.autonomy,
+        ),
+      };
+
+      if (!this.maintenance) {
+        mockConfig.maintenance = deepMerge(
+          this.scenario.borgConfigOverrides?.maintenance ?? {},
+          maintenanceDisabledOverrides().maintenance,
+        );
+      }
+
       this.borg = await createEvalBorg({
         tempDir: this.dataDir,
         llm: this.llmClient ?? createMockBorgLlmClient(),
         clock: this.clock,
         tracerPath: this.tracePath,
         env,
-        config: {
-          ...(this.scenario.borgConfigOverrides as Record<string, unknown>),
-          dataDir: this.dataDir,
-          maintenance: {
-            enabled: false,
-          },
-          autonomy: deepMerge(
-            {
-              ...DEFAULT_CONFIG.autonomy,
-              enabled: false,
-            },
-            this.scenario.borgConfigOverrides?.autonomy,
-          ),
-        },
+        config: mockConfig,
       });
       this.seedScenarioGoals();
       await sleep(OPEN_HOOK_SETTLE_MS);
@@ -513,6 +532,7 @@ export class BorgTransport {
         dataDir: this.dataDir,
         env,
         scenario: this.scenario,
+        maintenance: this.maintenance,
       }),
       env,
       tracerPath: this.tracePath,

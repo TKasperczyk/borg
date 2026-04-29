@@ -185,6 +185,8 @@ function buildPrompt(options: RunOverseerOptions): string {
         `episodes=${row.episode_count}`,
         `semantic_nodes=${row.semantic_node_count}`,
         `semantic_edges=${row.semantic_edge_count}`,
+        `semantic_nodes_added=${row.semantic_nodes_added_since_last_check}`,
+        `semantic_edges_added=${row.semantic_edges_added_since_last_check}`,
         `open_questions=${row.open_question_count}`,
         `active_goals=${row.active_goal_count}`,
         `retrieval_ms=${row.retrieval_latency_ms ?? "null"}`,

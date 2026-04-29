@@ -16,6 +16,8 @@ export type MetricsRow = {
   episode_count: number;
   semantic_node_count: number;
   semantic_edge_count: number;
+  semantic_nodes_added_since_last_check: number;
+  semantic_edges_added_since_last_check: number;
   open_question_count: number;
   active_goal_count: number;
   mood_valence: number;
