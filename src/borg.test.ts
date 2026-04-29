@@ -49,6 +49,31 @@ function createTurnPlanResponse(referencedEpisodeIds: string[] = []) {
   };
 }
 
+function createGenerationGateResponse(input: {
+  decision: "proceed" | "suppress";
+  substantive: boolean;
+  reason?: string;
+}) {
+  return {
+    text: "",
+    input_tokens: 8,
+    output_tokens: 4,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_generation_gate",
+        name: "EmitGenerationGateDecision",
+        input: {
+          decision: input.decision,
+          substantive: input.substantive,
+          reason: input.reason ?? "classified by generation gate",
+          confidence: 0.9,
+        },
+      },
+    ],
+  };
+}
+
 function createTraitReflectionResponse(input: {
   traitLabel: string;
   evidence: string;
@@ -2025,12 +2050,14 @@ describe("Borg", () => {
         "sonnet",
         "haiku",
         "haiku",
+        "haiku",
       ]);
       expect(llm.requests[0]?.budget).toBe("procedural-context");
       expect(llm.requests[2]?.budget).toBe("commitment-judge");
       expect(llm.requests[3]?.budget).toBe("commitment-revision");
       expect(llm.requests[4]?.budget).toBe("commitment-judge");
-      expect(llm.requests[5]?.budget).toBe("reflection");
+      expect(llm.requests[5]?.budget).toBe("generation-stop-commitment");
+      expect(llm.requests[6]?.budget).toBe("reflection");
     } finally {
       await borg.close();
     }
@@ -2191,6 +2218,11 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createGenerationGateResponse({
+            decision: "proceed",
+            substantive: true,
+            reason: "The repeated short deploy message is a real request.",
+          }),
           {
             text: "Use the rollback fallback.",
             input_tokens: 10,

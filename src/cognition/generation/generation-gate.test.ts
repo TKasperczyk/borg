@@ -50,6 +50,15 @@ function recencyAssistant(content: string) {
   };
 }
 
+class CountingEmbeddingClient extends TestEmbeddingClient {
+  readonly embedBatchTexts: string[][] = [];
+
+  async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+    this.embedBatchTexts.push([...texts]);
+    return super.embedBatch(texts);
+  }
+}
+
 describe("GenerationGate", () => {
   it("treats only whitespace-only user input as minimal", () => {
     expect(isMinimalUserGenerationInput("   \n\t")).toBe(true);
@@ -77,9 +86,9 @@ describe("GenerationGate", () => {
     });
 
     const result = await gate.evaluate({
-      userMessage: "用户:---",
+      userMessage: "用户: ---",
       workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
-      recencyMessages: [recencyUser("用户:---"), recencyAssistant("")],
+      recencyMessages: [recencyUser("用户: ---"), recencyAssistant("")],
     });
 
     expect(result.action).toBe("suppress");
@@ -203,6 +212,28 @@ describe("GenerationGate", () => {
     expect(result.signals.minimalUserInput).toBe(false);
     expect(result.signals.repeatedMinimalExchange).toBe(true);
     expect(result.classified).toBe(true);
+  });
+
+  it("does not measure repeated-probe similarity for ordinary multiword turns", async () => {
+    const llm = new FakeLLMClient();
+    const embeddingClient = new CountingEmbeddingClient();
+    const gate = new GenerationGate({
+      llmClient: llm,
+      embeddingClient,
+      model: "test-background",
+      hardCapTurns: 50,
+    });
+
+    const result = await gate.evaluate({
+      userMessage: "Can we inspect the scheduler retry queue now?",
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      recencyMessages: [recencyUser("Previous unrelated turn")],
+    });
+
+    expect(result.action).toBe("proceed");
+    expect(result.classified).toBe(false);
+    expect(embeddingClient.embedBatchTexts).toEqual([]);
+    expect(llm.requests).toHaveLength(0);
   });
 
   it("allows first brief legitimate replies and CJK substantive messages without consulting the classifier", async () => {

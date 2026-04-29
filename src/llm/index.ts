@@ -1171,6 +1171,8 @@ export class FakeLLMClient implements LLMClient {
   }
 
   async complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
+    this.requests.push(options);
+
     const response = this.responses[0];
 
     if (
@@ -1180,8 +1182,6 @@ export class FakeLLMClient implements LLMClient {
     ) {
       return defaultStopCommitmentResponse();
     }
-
-    this.requests.push(options);
 
     if (isProceduralContextFallbackRequest(options) && !isProceduralContextResponse(response)) {
       return defaultProceduralContextResponse();

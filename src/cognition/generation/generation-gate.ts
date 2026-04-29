@@ -87,7 +87,7 @@ export function isMinimalUserGenerationInput(text: string): boolean {
 function isCompactRepeatedProbe(text: string): boolean {
   const trimmed = text.trim();
 
-  return trimmed.length > 0 && !/\s/u.test(trimmed);
+  return trimmed.length > 0 && trimmed.length <= 32;
 }
 
 function recentUserMessages(messages: readonly RecencyMessage[]): string[] {
@@ -175,10 +175,10 @@ export class GenerationGate {
     const activeStop = input.workingMemory.discourse_state?.stop_until_substantive_content ?? null;
     const recentUsers = recentUserMessages(input.recencyMessages);
     const minimalUserInput = isMinimalUserGenerationInput(input.userMessage);
-    const currentHasContent = input.userMessage.trim().length > 0;
+    const compactProbe = isCompactRepeatedProbe(input.userMessage);
     const recentMinimalUserRun = countRecentMinimalRun(recentUsers);
     const repeatedMinimalSimilarity =
-      activeStop === null && currentHasContent
+      activeStop === null && compactProbe
         ? await measureRepeatedMinimalSimilarity({
             userMessage: input.userMessage,
             recentUserMessages: recentUsers,
@@ -187,7 +187,7 @@ export class GenerationGate {
           })
         : null;
     const repeatedMinimalExchange =
-      isCompactRepeatedProbe(input.userMessage) &&
+      compactProbe &&
       recentUsers.length > 0 &&
       repeatedMinimalSimilarity !== null &&
       repeatedMinimalSimilarity >= REPEATED_SIMILARITY_THRESHOLD;

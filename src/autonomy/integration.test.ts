@@ -489,7 +489,8 @@ describe("autonomy integration", () => {
       expect(finalizerSystem).toContain(
         "Next step: Inspect the Apollo launch readiness notes (kind: research",
       );
-      expect(llm.requests[1]?.messages[0]?.content).toContain('"origin":"autonomous"');
+      const reflectionRequest = llm.requests.find((request) => request.budget === "reflection");
+      expect(reflectionRequest?.messages[0]?.content).toContain('"origin":"autonomous"');
     } finally {
       await borg.close();
     }

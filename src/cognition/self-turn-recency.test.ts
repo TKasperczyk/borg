@@ -105,8 +105,12 @@ describe("self-turn recency", () => {
         stakes: "low",
       });
 
-      expect(llm.requests).toHaveLength(3);
-      expect(llm.requests[1]?.messages).toEqual([
+      const finalizerRequests = llm.requests.filter((request) =>
+        request.budget?.startsWith("cognition-system"),
+      );
+
+      expect(finalizerRequests).toHaveLength(2);
+      expect(finalizerRequests[1]?.messages).toEqual([
         {
           role: "user",
           content: "What changed since yesterday?",
@@ -154,8 +158,12 @@ describe("self-turn recency", () => {
         stakes: "low",
       });
 
-      expect(llm.requests).toHaveLength(2);
-      expect(llm.requests[1]?.messages).toEqual([
+      const finalizerRequests = llm.requests.filter((request) =>
+        request.budget?.startsWith("cognition-system"),
+      );
+
+      expect(finalizerRequests).toHaveLength(2);
+      expect(finalizerRequests[1]?.messages).toEqual([
         {
           role: "user",
           content: "Pause and reflect on recent changes.",

@@ -46,6 +46,11 @@ const guards: readonly Guard[] = [
       "(?i)(const\\s+\\w+\\s*=\\s*\\[[^\\n\\]]*\\b(?:stop|stopping|responding|generate|output|human|assistant|user)\\b[^\\n\\]]*\\b(?:stop|stopping|responding|generate|output|human|assistant|user)\\b|/[^\\n/]*\\(\\?:[^\\n/]*\\b(?:human|assistant|user)\\b[^\\n/]*\\b(?:human|assistant|user)\\b[^\\n/]*\\))",
     paths: ["src/cognition/generation"],
   },
+  {
+    name: "generation English Set wordlist marker",
+    pattern: "new Set\\s*\\(\\s*\\[",
+    paths: ["src/cognition/generation"],
+  },
 ];
 
 function rg(pattern: string, paths: readonly string[]): string {
