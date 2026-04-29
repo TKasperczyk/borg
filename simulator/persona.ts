@@ -167,35 +167,74 @@ export class PersonaSession {
       this.client === undefined
         ? await createDefaultPersonaClient(this.env)
         : { client: this.client, systemPrefix: this.systemPrefix };
-    const userMessage =
+    const baseUserMessage =
       this.messages.length === 0 || borgPreviousResponse === null
         ? initialPrompt(this.persona)
         : borgPreviousResponse;
 
-    this.messages.push({
-      role: "user",
-      content: userMessage,
-    });
+    // Build the candidate request messages without committing to
+    // history yet -- if the call fails or returns empty, we retry with
+    // a nudge before mutating session state. Committing both user and
+    // assistant messages atomically (only after a successful non-empty
+    // response) is what keeps the history alternation contract intact:
+    // a previous version pushed the user message before the API call,
+    // and an empty response then left an orphan user message that
+    // poisoned subsequent turns.
+    const requestMessages: MessageParam[] = [
+      ...this.messages,
+      { role: "user", content: baseUserMessage },
+    ];
 
+    const text = await this.callPersona(initialized, requestMessages);
+
+    if (text.length > 0) {
+      this.messages.push({ role: "user", content: baseUserMessage });
+      this.messages.push({ role: "assistant", content: text });
+      return text;
+    }
+
+    // Empty response: retry once with a generic nudge appended as an
+    // additional user turn. Opus occasionally returns empty after
+    // many self-play turns when it decides there is nothing meaningful
+    // to add; a continuation prompt usually unsticks it.
+    const nudgedRequest: MessageParam[] = [
+      ...requestMessages,
+      {
+        role: "assistant",
+        content: "(empty)",
+      },
+      {
+        role: "user",
+        content:
+          "Keep the conversation going -- ask a question, change the subject, or share what's on your mind today. Do not produce an empty response.",
+      },
+    ];
+    const nudgedText = await this.callPersona(initialized, nudgedRequest);
+
+    if (nudgedText.length === 0) {
+      throw new Error("Persona LLM produced an empty turn even after a nudge");
+    }
+
+    // Commit only the original user message + the recovered assistant
+    // response -- the nudge exchange is harness-internal and should
+    // not pollute the persona's apparent conversation history.
+    this.messages.push({ role: "user", content: baseUserMessage });
+    this.messages.push({ role: "assistant", content: nudgedText });
+    return nudgedText;
+  }
+
+  private async callPersona(
+    initialized: PersonaClientInit,
+    messages: MessageParam[],
+  ): Promise<string> {
     const response = await initialized.client.messages
       .stream({
         model: this.model,
         system: systemParam(initialized.systemPrefix, this.persona),
-        messages: this.messages,
+        messages,
         max_tokens: 4_000,
       })
       .finalMessage();
-    const text = responseText(response);
-
-    if (text.length === 0) {
-      throw new Error("Persona LLM produced an empty turn");
-    }
-
-    this.messages.push({
-      role: "assistant",
-      content: text,
-    });
-
-    return text;
+    return responseText(response);
   }
 }

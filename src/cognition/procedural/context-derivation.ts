@@ -99,14 +99,16 @@ function deriveProblemKind(
   return hasCodeEntity ? "code_design" : "other";
 }
 
-// proceduralContextDomainTagSchema enforces .max(64) on each tag after
-// canonicalization (which collapses whitespace/punctuation but never
-// lengthens). LLM-extracted entities are occasionally verbose phrases
-// rather than concise nouns -- those would overflow the schema and
-// crash the turn. Filter at source: any raw entity that would still be
-// >64 chars after canonicalization is dropped (it's almost certainly
-// noise, not a useful procedural-context tag).
+// proceduralContextSchema enforces both per-tag length (.max(64) after
+// canonicalization) and array size (.max(32) tags). LLM-extracted
+// entities are occasionally verbose phrases rather than concise nouns,
+// and rich user messages can produce many entities. Filter both at
+// source: drop entities that would exceed per-tag length, and cap the
+// resulting tag list at the schema's array max so a chatty turn
+// doesn't crash later validation. Entities/keywords beyond the cap
+// are dropped silently -- the first 32 are typically the most salient.
 const MAX_DOMAIN_TAG_LENGTH = 64;
+const MAX_DOMAIN_TAGS = 32;
 
 function deriveDomainTags(userMessage: string, entities: readonly string[]): string[] {
   const tags: string[] = [];
@@ -123,7 +125,7 @@ function deriveDomainTags(userMessage: string, entities: readonly string[]): str
     }
   }
 
-  return tags;
+  return tags.slice(0, MAX_DOMAIN_TAGS);
 }
 
 export type DeriveProceduralContextInput = {
