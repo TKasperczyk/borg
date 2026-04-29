@@ -25,6 +25,12 @@ const proceduralContextDomainTagSchema = z
   .transform((value) => canonicalizeDomainTag(value))
   .pipe(z.string().min(1).max(64));
 
+const proceduralContextMetadataBaseSchema = z.object({
+  problem_kind: proceduralContextProblemKindSchema,
+  domain_tags: z.array(proceduralContextDomainTagSchema).max(32),
+  audience_scope: proceduralContextAudienceScopeSchema,
+});
+
 export type ProceduralContextProblemKind = z.infer<typeof proceduralContextProblemKindSchema>;
 export type ProceduralContextAudienceScope = z.infer<typeof proceduralContextAudienceScopeSchema>;
 
@@ -95,9 +101,7 @@ export function deriveLegacyProceduralContextKey(input: {
   return `${input.problem_kind}:${domainTags.join(",")}:${input.audience_scope}`;
 }
 
-export function parseLegacyProceduralContextKey(
-  key: string,
-): {
+export function parseLegacyProceduralContextKey(key: string): {
   problem_kind: ProceduralContextProblemKind;
   domain_tags: string[];
   audience_scope: ProceduralContextAudienceScope;
@@ -132,11 +136,16 @@ export function deriveProceduralContextKeyAliases(context: ProceduralContext): s
   ];
 }
 
+export const proceduralContextMetadataSchema = proceduralContextMetadataBaseSchema.transform(
+  (context) => ({
+    ...context,
+    domain_tags: canonicalizeDomainTags(context.domain_tags),
+  }),
+);
+
 export const proceduralContextSchema = z
   .object({
-    problem_kind: proceduralContextProblemKindSchema,
-    domain_tags: z.array(proceduralContextDomainTagSchema).max(32),
-    audience_scope: proceduralContextAudienceScopeSchema,
+    ...proceduralContextMetadataBaseSchema.shape,
     context_key: z.string().min(1),
   })
   .transform((context) => {
@@ -153,4 +162,5 @@ export const proceduralContextSchema = z
     };
   });
 
+export type ProceduralContextMetadata = z.infer<typeof proceduralContextMetadataSchema>;
 export type ProceduralContext = z.infer<typeof proceduralContextSchema>;

@@ -11,13 +11,14 @@ import {
   episodeIdSchema,
   type Episode,
 } from "../../memory/episodic/index.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
   semanticEdgeIdSchema,
   semanticNodeIdSchema,
   semanticNodeSchema,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
-import { bestVectorSimilarity } from "../../retrieval/embedding-similarity.js";
+import { bestVectorSimilarity, cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { createSemanticEdgeId, createSemanticNodeId } from "../../util/ids.js";
 import { BudgetExceededError, SemanticError } from "../../util/errors.js";
@@ -131,6 +132,16 @@ type ReflectionGoalVector = {
   vector: Float32Array;
 };
 
+type ReflectionTagVector = {
+  tag: string;
+  vector: Float32Array;
+};
+
+type ReflectionTagGroup = {
+  key: string;
+  tags: readonly string[];
+};
+
 const reflectorReversalSchema = z.object({
   nodeId: semanticNodeIdSchema,
   nodeCreated: z.boolean(),
@@ -201,16 +212,28 @@ function parseInsight(result: LLMCompleteResult) {
 function collectReflectionClusters(
   episodes: readonly Episode[],
   goalVectors: readonly ReflectionGoalVector[],
+  tagGroups: readonly ReflectionTagGroup[],
   minSupport: number,
   maxInsightsPerRun: number,
   goalSimilarityThreshold: number,
 ): ReflectionCluster[] {
   const byKey = new Map<string, Episode[]>();
+  const tagGroupByTag = new Map<string, string>();
+
+  for (const group of tagGroups) {
+    for (const tag of group.tags) {
+      tagGroupByTag.set(tag, group.key);
+    }
+  }
 
   for (const episode of episodes) {
     for (const tag of episode.tags) {
-      const key = `${episodeAccessScopeKey(episode)}|tag:${tag.toLowerCase()}`;
-      byKey.set(key, [...(byKey.get(key) ?? []), episode]);
+      const groupKey = tagGroupByTag.get(tag.trim());
+
+      if (groupKey !== undefined) {
+        const key = `${episodeAccessScopeKey(episode)}|tag:${groupKey}`;
+        byKey.set(key, [...(byKey.get(key) ?? []), episode]);
+      }
     }
 
     for (const goal of goalVectors) {
@@ -237,6 +260,80 @@ function collectReflectionClusters(
     .filter((cluster) => cluster.episodes.length >= minSupport)
     .sort((left, right) => right.episodes.length - left.episodes.length)
     .slice(0, maxInsightsPerRun);
+}
+
+function uniqueEpisodeTags(episodes: readonly Episode[]): string[] {
+  const tags: string[] = [];
+  const seen = new Set<string>();
+
+  for (const episode of episodes) {
+    for (const tag of episode.tags) {
+      const trimmed = tag.trim();
+
+      if (trimmed.length === 0 || seen.has(trimmed)) {
+        continue;
+      }
+
+      seen.add(trimmed);
+      tags.push(trimmed);
+    }
+  }
+
+  return tags;
+}
+
+async function buildReflectionTagGroups(input: {
+  embeddingClient: EmbeddingClient;
+  episodes: readonly Episode[];
+  similarityThreshold: number;
+}): Promise<ReflectionTagGroup[]> {
+  const tags = uniqueEpisodeTags(input.episodes);
+
+  if (tags.length === 0) {
+    return [];
+  }
+
+  const embeddings = await input.embeddingClient.embedBatch(tags);
+  const tagVectors = tags.flatMap((tag, index): ReflectionTagVector[] => {
+    const vector = embeddings[index];
+    return vector === undefined ? [] : [{ tag, vector }];
+  });
+  const remaining = new Set(tagVectors.map((_, index) => index));
+  const groups: ReflectionTagGroup[] = [];
+
+  for (let seedIndex = 0; seedIndex < tagVectors.length; seedIndex += 1) {
+    if (!remaining.has(seedIndex)) {
+      continue;
+    }
+
+    const seed = tagVectors[seedIndex];
+
+    if (seed === undefined) {
+      continue;
+    }
+
+    remaining.delete(seedIndex);
+    const group = [seed];
+
+    for (const candidateIndex of [...remaining]) {
+      const candidate = tagVectors[candidateIndex];
+
+      if (
+        candidate !== undefined &&
+        cosineSimilarity(seed.vector, candidate.vector) >= input.similarityThreshold
+      ) {
+        group.push(candidate);
+        remaining.delete(candidateIndex);
+      }
+    }
+
+    groups.push({
+      key: group.map((item) => item.tag).join("+"),
+      tags: group.map((item) => item.tag),
+    });
+  }
+
+  return groups;
 }
 
 async function semanticNodeMatchesClusterScope(
@@ -432,6 +529,7 @@ export class ReflectorProcess implements OfflineProcess {
     const activeGoals = ctx.goalsRepository.list({ status: "active" });
     const goalDescriptions = activeGoals.map((goal) => goal.description);
     let goalVectors: ReflectionGoalVector[] = [];
+    let tagGroups: ReflectionTagGroup[] = [];
 
     if (activeGoals.length > 0) {
       try {
@@ -460,9 +558,25 @@ export class ReflectorProcess implements OfflineProcess {
         });
       }
     }
+    if (episodes.some((episode) => episode.tags.length > 0)) {
+      try {
+        tagGroups = await buildReflectionTagGroups({
+          embeddingClient: ctx.embeddingClient,
+          episodes,
+          similarityThreshold: ctx.config.offline.reflector.goalSimilarityThreshold,
+        });
+      } catch (error) {
+        errors.push({
+          process: this.name,
+          message: error instanceof Error ? error.message : String(error),
+          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
+        });
+      }
+    }
     const clusters = collectReflectionClusters(
       episodes,
       goalVectors,
+      tagGroups,
       ctx.config.offline.reflector.minSupport,
       ctx.config.offline.reflector.maxInsightsPerRun,
       ctx.config.offline.reflector.goalSimilarityThreshold,

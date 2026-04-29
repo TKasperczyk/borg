@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 type Guard = {
   name: string;
   pattern: string;
-  path: string;
+  paths: readonly string[];
   allowedUntilTokenizerRemoval?: boolean;
 };
 
@@ -12,28 +12,38 @@ const guards: readonly Guard[] = [
   {
     name: "generic tokenizer usage",
     pattern: "tokenizeText|util/text/tokenize",
-    path: "src",
+    paths: ["src"],
   },
   {
     name: "affective/procedural/semantic heuristic constants",
     pattern:
       "POSITIVE_WORDS|NEGATIVE_WORDS|GRATITUDE_PATTERNS|DOMAIN_KEYWORDS|PROBLEM_KIND_RULES|DOMAIN_SYNONYMS",
-    path: "src",
+    paths: ["src"],
   },
   {
     name: "substring semantic label matching",
-    pattern: "label\\.includes|alias\\.includes",
-    path: "src",
+    pattern: "\\b(label|alias)\\s*\\.\\s*(includes|indexOf)\\s*\\(",
+    paths: ["src/memory/semantic", "src/retrieval"],
   },
   {
-    name: "semantic query label splitting",
-    pattern: "split\\(/\\\\\\[,\\\\\\\\n",
-    path: "src",
+    name: "natural-language query punctuation splitting",
+    pattern: "\\.split\\(\\s*/\\[[^\\]]*(,|\\\\n|\\\\r)[^\\]]*\\]",
+    paths: ["src/retrieval", "src/cognition/perception"],
+  },
+  {
+    name: "ASCII-only tokenization",
+    pattern: "\\.split\\(\\s*/\\[\\^a-z",
+    paths: ["src"],
+  },
+  {
+    name: "affective English wordlist marker",
+    pattern: "english wordlist|new Set\\s*\\(\\s*\\[",
+    paths: ["src/memory/affective"],
   },
 ];
 
-function rg(pattern: string, path: string): string {
-  const result = spawnSync("rg", ["--line-number", pattern, path], {
+function rg(pattern: string, paths: readonly string[]): string {
+  const result = spawnSync("rg", ["--line-number", pattern, ...paths], {
     encoding: "utf8",
   });
 
@@ -50,7 +60,7 @@ function rg(pattern: string, path: string): string {
 
 const tokenizerRemoved =
   !existsSync("src/util/text/tokenize.ts") ||
-  rg("^export function tokenizeText", "src/util/text/tokenize.ts").length === 0;
+  rg("^export function tokenizeText", ["src/util/text/tokenize.ts"]).length === 0;
 const failures: string[] = [];
 
 for (const guard of guards) {
@@ -58,7 +68,7 @@ for (const guard of guards) {
     continue;
   }
 
-  const matches = rg(guard.pattern, guard.path);
+  const matches = rg(guard.pattern, guard.paths);
 
   if (matches.length > 0) {
     failures.push(`${guard.name}:\n${matches}`);

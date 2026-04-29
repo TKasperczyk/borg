@@ -206,7 +206,7 @@ function computeSocialRelevance(
     : 0.2;
 }
 
-function computeEntityRelevance(
+function computeExactEntityMentionBonus(
   episode: Episode,
   entityTerms: readonly string[] | undefined,
 ): number {
@@ -270,7 +270,12 @@ export function scoreCandidate(
     searchOptions.audienceEntityId,
     searchOptions.participantEntityIds,
   );
-  const entityRelevance = computeEntityRelevance(candidate.episode, searchOptions.entityTerms);
+  // This is deliberately only a verbatim mention bonus. Cross-language semantic relevance is
+  // handled by vector candidate retrieval and embedding-backed goal/value scoring.
+  const entityRelevance = computeExactEntityMentionBonus(
+    candidate.episode,
+    searchOptions.entityTerms,
+  );
   const suppressionPenalty =
     searchOptions.suppressionSet?.isSuppressed(candidate.episode.id) === true ? 1 : 0;
 

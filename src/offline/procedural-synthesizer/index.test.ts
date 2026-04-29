@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { FakeLLMClient } from "../../llm/index.js";
 import { DEFAULT_CONFIG } from "../../config/index.js";
-import { SkillSelector } from "../../memory/procedural/index.js";
+import { SkillSelector, deriveProceduralContextKey } from "../../memory/procedural/index.js";
 import { createWorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { SuppressionSet } from "../../cognition/attention/index.js";
@@ -1443,6 +1443,90 @@ describe("ProceduralSynthesizerProcess", () => {
         context_key: "code_debugging:typescript:known_other",
       }),
     ]);
+  });
+
+  it("uses stored metadata for v2 context sketches and split audience validation", async () => {
+    const selfContext = {
+      problem_kind: "code_debugging" as const,
+      domain_tags: ["typescript", "deployment"],
+      audience_scope: "self" as const,
+    };
+    const knownOtherContext = {
+      ...selfContext,
+      audience_scope: "known_other" as const,
+    };
+    const selfKey = deriveProceduralContextKey(selfContext);
+    const knownOtherKey = deriveProceduralContextKey(knownOtherContext);
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "Mixed-audience deployment debugging",
+              approach: "This invalidly crosses audience scopes.",
+              target_contexts: [selfKey, knownOtherKey],
+            },
+            {
+              applies_when: "Duplicate self deployment debugging",
+              approach: "A duplicate target keeps the proposal shaped like a split.",
+              target_contexts: [selfKey],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 5,
+        minDivergenceForSplit: 0.3,
+      }),
+      llmClient: llm,
+    });
+    const { contextRows } = await addSkillWithContextStats(harness, {
+      contexts: [
+        {
+          contextKey: selfKey,
+          alpha: 6,
+          beta: 1,
+          attempts: 5,
+          successes: 5,
+          failures: 0,
+        },
+        {
+          contextKey: knownOtherKey,
+          alpha: 1,
+          beta: 6,
+          attempts: 5,
+          successes: 0,
+          failures: 5,
+        },
+      ],
+    });
+    harness.skillRepository.restoreContextStats(
+      contextRows.map((row) => ({
+        ...row,
+        procedural_context: row.context_key === selfKey ? selfContext : knownOtherContext,
+      })),
+    );
+
+    const process = createProcess(harness);
+    const result = await process.run(harness.createContext(), {});
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(prompt).toContain("code_debugging; typescript, deployment; audience=self");
+    expect(prompt).toContain("code_debugging; typescript, deployment; audience=known_other");
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toEqual([]);
+    expect(
+      new StreamReader({ dataDir: harness.tempDir }).tail(5).map((entry) => entry.content),
+    ).toContainEqual(
+      expect.objectContaining({
+        hook: "skill_split_decision",
+        decision: "no_split",
+        rationale: "Rejected split proposal: Skill split part crosses audience scopes",
+      }),
+    );
   });
 
   it("does not duplicate the same planned split review on repeated apply", async () => {

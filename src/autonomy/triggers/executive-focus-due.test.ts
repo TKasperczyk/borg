@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AutonomyScheduler } from "../scheduler.js";
 import { AutonomyWakesRepository } from "../wakes-repository.js";
-import { createOfflineTestHarness } from "../../offline/test-support.js";
+import { TestEmbeddingClient, createOfflineTestHarness } from "../../offline/test-support.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
 import { StreamWatermarkRepository, StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
@@ -21,9 +22,29 @@ describe("executive focus due trigger", () => {
     cleanup = undefined;
   });
 
-  async function createHarness(start = 1_000_000) {
+  class FailingEmbeddingClient implements EmbeddingClient {
+    async embed(): Promise<Float32Array> {
+      throw new Error("embedding unavailable");
+    }
+
+    async embedBatch(): Promise<Float32Array[]> {
+      throw new Error("embedding unavailable");
+    }
+  }
+
+  class ApolloEmbeddingClient extends TestEmbeddingClient {
+    async embed(text: string): Promise<Float32Array> {
+      return text.includes("Apollo") ? Float32Array.from([1, 0, 0, 0]) : super.embed(text);
+    }
+
+    async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+      return Promise.all(texts.map((text) => this.embed(text)));
+    }
+  }
+
+  async function createHarness(start = 1_000_000, embeddingClient?: EmbeddingClient) {
     const clock = new ManualClock(start);
-    const harness = await createOfflineTestHarness({ clock });
+    const harness = await createOfflineTestHarness({ clock, embeddingClient });
     cleanup = harness.cleanup;
     const watermarkRepository = new StreamWatermarkRepository({
       db: harness.db,
@@ -46,6 +67,7 @@ describe("executive focus due trigger", () => {
       goalsRepository: harness.goalsRepository,
       executiveStepsRepository: harness.executiveStepsRepository,
       episodicRepository: harness.episodicRepository,
+      embeddingClient: harness.embeddingClient,
       watermarkRepository: harness.watermarkRepository,
       threshold: 0.45,
       stalenessMs: 86_400_000,
@@ -187,6 +209,62 @@ describe("executive focus due trigger", () => {
       due_step: {
         id: step.id,
       },
+    });
+  });
+
+  it("uses embedding context fit for autonomy executive scoring", async () => {
+    const harness = await createHarness(1_000_000, new ApolloEmbeddingClient());
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Act on the Apollo launch checklist",
+      kind: "act",
+      dueAt: harness.clock.now(),
+      provenance: { kind: "manual" },
+    });
+    const trigger = createTrigger(harness);
+
+    const events = await trigger.scan();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload.selected_score.components.context_fit).toBeGreaterThan(0);
+  });
+
+  it("falls back to zero context fit and emits degraded trace when embeddings fail", async () => {
+    const harness = await createHarness(1_000_000, new FailingEmbeddingClient());
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    harness.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Act on the Apollo launch checklist",
+      kind: "act",
+      dueAt: harness.clock.now(),
+      provenance: { kind: "manual" },
+    });
+    const emit = vi.fn();
+    const trigger = createTrigger(harness, {
+      tracer: {
+        enabled: true,
+        includePayloads: false,
+        emit,
+      },
+    });
+
+    const events = await trigger.scan();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload.selected_score.components.context_fit).toBe(0);
+    expect(emit).toHaveBeenCalledWith("retrieval_degraded", {
+      turnId: "autonomy:executive_focus_due",
+      subsystem: "scoring_features",
+      reason: "embedding unavailable",
     });
   });
 

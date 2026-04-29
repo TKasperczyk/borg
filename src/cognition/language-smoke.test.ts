@@ -6,6 +6,10 @@ import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import { computeExecutiveContextFits, selectExecutiveFocus } from "../executive/index.js";
 import { FakeLLMClient, type LLMCompleteOptions } from "../llm/index.js";
 import { SkillSelector } from "../memory/procedural/index.js";
+import {
+  buildSelfScoringFeatureSet,
+  toRetrievalScoringFeatures,
+} from "../retrieval/scoring-features.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import {
   TestEmbeddingClient,
@@ -130,9 +134,14 @@ describe("cross-language cognition smoke", () => {
         onClassifierFailure: classifierFailure,
         clock: harness.clock,
       }).perceive(chineseTurn);
-      const contextFitByGoalId = await computeExecutiveContextFits({
+      const selfScoringFeatures = await buildSelfScoringFeatureSet({
         embeddingClient,
         goals: [goal],
+        activeValues: [valueRecord],
+      });
+      const contextFitByGoalId = await computeExecutiveContextFits({
+        embeddingClient,
+        goalVectors: selfScoringFeatures.goalVectors,
         contextText: chineseTurn,
       });
       const executiveFocus = selectExecutiveFocus({
@@ -143,6 +152,10 @@ describe("cross-language cognition smoke", () => {
         deadlineLookaheadMs: 7 * 24 * 60 * 60 * 1_000,
         staleMs: 14 * 24 * 60 * 60 * 1_000,
         contextFitByGoalId,
+      });
+      const retrievalScoringFeatures = toRetrievalScoringFeatures({
+        selfFeatures: selfScoringFeatures,
+        primaryGoalId: executiveFocus.selected_goal?.id ?? null,
       });
       const coordinator = new TurnRetrievalCoordinator({
         commitmentRepository: harness.commitmentRepository,
@@ -172,6 +185,8 @@ describe("cross-language cognition smoke", () => {
           traits: [],
         },
         executiveFocus,
+        activeValues: [valueRecord],
+        scoringFeatures: retrievalScoringFeatures,
         suppressionSet: new SuppressionSet(),
         findEntityByName: () => null,
         llmClient,
@@ -182,6 +197,7 @@ describe("cross-language cognition smoke", () => {
         goalDescriptions: [goal.description],
         primaryGoalDescription: goal.description,
         activeValues: [valueRecord],
+        scoringFeatures: retrievalScoringFeatures,
         includeOpenQuestions: true,
       });
 

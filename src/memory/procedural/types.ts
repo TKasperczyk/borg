@@ -12,7 +12,12 @@ import {
   workingEntityIdSchema,
   type PendingProceduralAttempt,
 } from "../working/types.js";
-import { proceduralContextSchema, type ProceduralContext } from "./context.js";
+import {
+  proceduralContextMetadataSchema,
+  proceduralContextSchema,
+  type ProceduralContext,
+  type ProceduralContextMetadata,
+} from "./context.js";
 
 export const skillIdSchema = z
   .string()
@@ -107,6 +112,7 @@ export type ProceduralEvidenceRecord = z.infer<typeof proceduralEvidenceSchema>;
 export const skillContextStatsSchema = z.object({
   skill_id: skillIdSchema,
   context_key: z.string().min(1),
+  procedural_context: proceduralContextMetadataSchema.nullable().optional(),
   alpha: z.number().positive(),
   beta: z.number().positive(),
   attempts: z.number().int().nonnegative(),
@@ -125,3 +131,4 @@ export type EntityIdValue = EntityId;
 export type PendingProceduralAttemptValue = PendingProceduralAttempt;
 export type ProceduralEvidenceIdValue = ProceduralEvidenceId;
 export type ProceduralContextValue = ProceduralContext;
+export type ProceduralContextMetadataValue = ProceduralContextMetadata;

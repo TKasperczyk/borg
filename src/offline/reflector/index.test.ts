@@ -268,6 +268,82 @@ describe("reflector process", () => {
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
   });
 
+  it("clusters equivalent tags through embeddings instead of exact tag text", async () => {
+    const episodes = [
+      createEpisodeFixture(
+        {
+          title: "Deploy note",
+          tags: ["deploy"],
+          created_at: 10_000,
+          updated_at: 10_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "部署记录",
+          tags: ["部署"],
+          created_at: 20_000,
+          updated_at: 20_000,
+        },
+        [1, 0, 0, 0],
+      ),
+      createEpisodeFixture(
+        {
+          title: "Deploy followup",
+          tags: ["deploy"],
+          created_at: 30_000,
+          updated_at: 30_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectorResponse({
+          label: "Deployment rollback notes repeat",
+          description: "Deployment notes repeat across languages.",
+          confidence: 0.6,
+          source_episode_ids: episodes.map((episode) => episode.id),
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["deploy", [1, 0, 0, 0]],
+          ["部署", [1, 0, 0, 0]],
+          ["Deployment rollback notes repeat", [1, 0, 0, 0]],
+          [
+            "Deployment rollback notes repeat\nDeployment notes repeat across languages.",
+            [1, 0, 0, 0],
+          ],
+        ]),
+      ),
+    });
+    cleanup.push(harness.cleanup);
+
+    for (const episode of episodes) {
+      await harness.episodicRepository.insert(episode);
+    }
+
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+      clock: harness.clock,
+    });
+    const result = await process.run(harness.createContext(), {
+      dryRun: true,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toHaveLength(1);
+    expect(String(result.changes[0]?.targets.cluster)).toContain("deploy+部署");
+  });
+
   it("keeps existing insight updates pending until review acceptance and restores snapshots", async () => {
     const previousEpisodes = [
       createEpisodeFixture(

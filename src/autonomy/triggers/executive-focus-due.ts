@@ -1,14 +1,21 @@
 import {
   DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD,
+  computeExecutiveContextFits,
   selectExecutiveFocus,
 } from "../../executive/index.js";
 import type { ExecutiveStep, ExecutiveStepsRepository } from "../../executive/index.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
   isEpisodeVisibleToAudience,
   type EpisodicRepository,
 } from "../../memory/episodic/index.js";
 import type { GoalRecord, GoalTreeNode, GoalsRepository } from "../../memory/self/index.js";
+import {
+  buildSelfScoringFeatureSet,
+  type GoalScoringVector,
+} from "../../retrieval/scoring-features.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
+import type { TurnTracer } from "../../cognition/tracing/tracer.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "../../util/ids.js";
 import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
@@ -55,6 +62,7 @@ export type ExecutiveFocusDueTriggerOptions = {
   goalsRepository: GoalsRepository;
   executiveStepsRepository: ExecutiveStepsRepository;
   episodicRepository: EpisodicRepository;
+  embeddingClient: EmbeddingClient;
   watermarkRepository: StreamWatermarkRepository;
   threshold?: number;
   stalenessMs: number;
@@ -67,6 +75,7 @@ export type ExecutiveFocusDueTriggerOptions = {
     staleMs: number;
   };
   clock?: Clock;
+  tracer?: TurnTracer;
   sessionId?: SessionId;
 };
 
@@ -246,11 +255,34 @@ export function createExecutiveFocusDueTrigger(
     });
   }
 
-  function scoreGoals(input: {
+  async function scoreGoals(input: {
     goals: readonly GoalRecord[];
+    goalVectors: readonly GoalScoringVector[];
     nowMs: number;
     autonomyPayload: Record<string, unknown>;
   }) {
+    const executiveContextText = [
+      AUTONOMOUS_WAKE_USER_MESSAGE,
+      JSON.stringify(input.autonomyPayload),
+    ].join(" ");
+    let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> = new Map();
+
+    try {
+      contextFitByGoalId = await computeExecutiveContextFits({
+        embeddingClient: options.embeddingClient,
+        goalVectors: input.goalVectors,
+        contextText: executiveContextText,
+      });
+    } catch (error) {
+      if (options.tracer?.enabled === true) {
+        options.tracer.emit("retrieval_degraded", {
+          turnId: "autonomy:executive_focus_due",
+          subsystem: "executive_context_fit",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     return selectExecutiveFocus({
       goals: input.goals,
       cognitionInput: AUTONOMOUS_WAKE_USER_MESSAGE,
@@ -259,6 +291,7 @@ export function createExecutiveFocusDueTrigger(
       threshold,
       deadlineLookaheadMs: options.deadlineLookaheadMs,
       staleMs: options.stalenessMs,
+      contextFitByGoalId,
     });
   }
 
@@ -275,6 +308,27 @@ export function createExecutiveFocusDueTrigger(
         goalsRepository: options.goalsRepository,
         episodicRepository: options.episodicRepository,
       });
+      let goalVectors: GoalScoringVector[] = [];
+
+      try {
+        goalVectors = [
+          ...(
+            await buildSelfScoringFeatureSet({
+              embeddingClient: options.embeddingClient,
+              goals,
+              activeValues: [],
+            })
+          ).goalVectors,
+        ];
+      } catch (error) {
+        if (options.tracer?.enabled === true) {
+          options.tracer.emit("retrieval_degraded", {
+            turnId: "autonomy:executive_focus_due",
+            subsystem: "scoring_features",
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       const goalsById = new Map(goals.map((goal) => [goal.id, goal]));
       const events: DueEvent<ExecutiveFocusDuePayload>[] = [];
       const eventGoalIds = new Set<GoalRecord["id"]>();
@@ -300,8 +354,9 @@ export function createExecutiveFocusDueTrigger(
         }
 
         const topOpenStep = options.executiveStepsRepository.topOpen(goal.id);
-        const focus = scoreGoals({
+        const focus = await scoreGoals({
           goals,
+          goalVectors,
           nowMs,
           autonomyPayload: {
             trigger: TRIGGER_NAME,
@@ -339,8 +394,9 @@ export function createExecutiveFocusDueTrigger(
         eventGoalIds.add(goal.id);
       }
 
-      const focus = scoreGoals({
+      const focus = await scoreGoals({
         goals,
+        goalVectors,
         nowMs,
         autonomyPayload: {
           trigger: TRIGGER_NAME,

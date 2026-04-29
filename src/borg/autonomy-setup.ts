@@ -13,7 +13,9 @@ import {
   createScheduledReflectionTrigger,
 } from "../autonomy/index.js";
 import type { TurnOrchestrator } from "../cognition/index.js";
+import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { Config } from "../config/index.js";
+import type { EmbeddingClient } from "../embeddings/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
@@ -28,6 +30,7 @@ export type BuildAutonomySchedulerOptions = {
   config: Config;
   commitmentRepository: CommitmentRepository;
   episodicRepository: EpisodicRepository;
+  embeddingClient: EmbeddingClient;
   goalsRepository: GoalsRepository;
   executiveStepsRepository: ExecutiveStepsRepository;
   openQuestionsRepository: OpenQuestionsRepository;
@@ -38,6 +41,7 @@ export type BuildAutonomySchedulerOptions = {
   toolDispatcher: ToolDispatcher;
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
+  tracer?: TurnTracer;
 };
 
 export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): AutonomyScheduler {
@@ -70,6 +74,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             goalsRepository: options.goalsRepository,
             executiveStepsRepository: options.executiveStepsRepository,
             episodicRepository: options.episodicRepository,
+            embeddingClient: options.embeddingClient,
             watermarkRepository: options.streamWatermarkRepository,
             threshold: options.config.executive.goalFocusThreshold,
             stalenessMs: options.config.autonomy.executiveFocus.stalenessSec * 1_000,
@@ -82,6 +87,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
               staleMs: options.config.autonomy.triggers.goalFollowupDue.staleMs,
             },
             clock: options.clock,
+            tracer: options.tracer,
           }),
         ]
       : []),

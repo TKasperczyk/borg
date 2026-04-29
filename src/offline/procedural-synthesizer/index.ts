@@ -16,10 +16,13 @@ import {
 import {
   proceduralEvidenceIdSchema,
   proceduralEvidenceSchema,
+  parseLegacyProceduralContextKey,
   skillContextStatsSchema,
   skillIdSchema,
   skillSchema,
+  type ProceduralContextMetadata,
   type ProceduralEvidenceRecord,
+  type SkillContextStatsRecord,
   type SkillRecord,
 } from "../../memory/procedural/index.js";
 import type { ReviewQueueItem, SkillSplitReviewPayload } from "../../memory/semantic/index.js";
@@ -307,42 +310,25 @@ function isSkillSplitParseFailure(error: unknown): boolean {
   return error instanceof StorageError && error.code === "PROCEDURAL_SKILL_SPLIT_INVALID";
 }
 
-function parseContextKey(contextKey: string): {
-  problemKind: string;
-  domainTags: string[];
-  audienceScope: string;
-} {
-  const firstSeparator = contextKey.indexOf(":");
-  const lastSeparator = contextKey.lastIndexOf(":");
-
-  if (firstSeparator < 0 || lastSeparator <= firstSeparator) {
-    return {
-      problemKind: "other",
-      domainTags: [],
-      audienceScope: "unknown",
-    };
+function resolveContextMetadata(stats: SkillContextStatsRecord): ProceduralContextMetadata | null {
+  if (stats.procedural_context !== null && stats.procedural_context !== undefined) {
+    return stats.procedural_context;
   }
 
-  const problemKind = contextKey.slice(0, firstSeparator);
-  const domainTags = contextKey
-    .slice(firstSeparator + 1, lastSeparator)
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter((tag) => tag.length > 0);
-  const audienceScope = contextKey.slice(lastSeparator + 1);
-
-  return {
-    problemKind,
-    domainTags,
-    audienceScope,
-  };
+  return parseLegacyProceduralContextKey(stats.context_key);
 }
 
-function sketchContextKey(contextKey: string): string {
-  const parsed = parseContextKey(contextKey);
-  const tagText = parsed.domainTags.length === 0 ? "no domain tags" : parsed.domainTags.join(", ");
+function sketchContextStats(stats: SkillContextStatsRecord): string {
+  const parsed = resolveContextMetadata(stats);
 
-  return `${parsed.problemKind}; ${tagText}; audience=${parsed.audienceScope}`;
+  if (parsed === null) {
+    return "unknown; no domain tags; audience=unknown";
+  }
+
+  const tagText =
+    parsed.domain_tags.length === 0 ? "no domain tags" : parsed.domain_tags.join(", ");
+
+  return `${parsed.problem_kind}; ${tagText}; audience=${parsed.audience_scope}`;
 }
 
 function buildSplitPrompt(candidate: SkillSplitCandidate): string {
@@ -370,7 +356,7 @@ function buildSplitPrompt(candidate: SkillSplitCandidate): string {
     ...candidate.buckets.map((bucket) =>
       JSON.stringify({
         context_key: bucket.stats.context_key,
-        sketch: sketchContextKey(bucket.stats.context_key),
+        sketch: sketchContextStats(bucket.stats),
         posterior_mean: Number(bucket.posterior_mean.toFixed(3)),
         alpha: bucket.stats.alpha,
         beta: bucket.stats.beta,
@@ -625,8 +611,8 @@ function recordClusterOutcomes(
   return current;
 }
 
-function contextAudienceScope(contextKey: string): string {
-  return parseContextKey(contextKey).audienceScope;
+function contextAudienceScope(stats: SkillContextStatsRecord): string {
+  return resolveContextMetadata(stats)?.audience_scope ?? "unknown";
 }
 
 function validateSplitParts(
@@ -644,7 +630,10 @@ function validateSplitParts(
     });
   }
 
-  const allowedContexts = new Set(item.buckets.map((bucket) => bucket.stats.context_key));
+  const statsByContext = new Map(
+    item.buckets.map((bucket) => [bucket.stats.context_key, bucket.stats]),
+  );
+  const allowedContexts = new Set(statsByContext.keys());
   const assignedContexts = new Set<string>();
 
   const normalizedParts = parts.map((part) => {
@@ -659,7 +648,10 @@ function validateSplitParts(
     }
 
     const audienceScopes = new Set(
-      targetContexts.map((contextKey) => contextAudienceScope(contextKey)),
+      targetContexts.map((contextKey) => {
+        const stats = statsByContext.get(contextKey);
+        return stats === undefined ? "unknown" : contextAudienceScope(stats);
+      }),
     );
 
     if (audienceScopes.size > 1) {
@@ -1176,10 +1168,8 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
             item,
             parts,
             proposedAt,
-            splitCooldownDays:
-              ctx.config.offline.proceduralSynthesizer.splitCooldownDays,
-            splitClaimStaleSec:
-              ctx.config.offline.proceduralSynthesizer.splitClaimStaleSec,
+            splitCooldownDays: ctx.config.offline.proceduralSynthesizer.splitCooldownDays,
+            splitClaimStaleSec: ctx.config.offline.proceduralSynthesizer.splitClaimStaleSec,
           }),
           reason: `Skill split proposed for divergent context outcomes on ${item.skill.applies_when}`,
         });

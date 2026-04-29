@@ -277,6 +277,10 @@ describe("TurnRetrievalCoordinator", () => {
       },
     };
     const suppressionSet = SuppressionSet.fromEntries([], 1);
+    const scoringFeatures = {
+      goalVectors: [Float32Array.from([1, 0, 0, 0])],
+      valueVectors: [Float32Array.from([0, 1, 0, 0])],
+    };
     const audienceEntity: EntityRecord = {
       id: audienceEntityId,
       canonical_name: "Alice",
@@ -297,6 +301,7 @@ describe("TurnRetrievalCoordinator", () => {
       perception: makePerception("problem_solving"),
       workingMemory,
       selfSnapshot: makeSelfSnapshot(),
+      scoringFeatures,
       suppressionSet,
       findEntityByName: (name) =>
         name === "Atlas" ? atlasEntityId : name === "Bob" ? bobEntityId : null,
@@ -327,6 +332,7 @@ describe("TurnRetrievalCoordinator", () => {
         entityTerms: ["Atlas", "Bob"],
         goalDescriptions: ["Ship the sprint"],
         moodState: currentMood,
+        scoringFeatures,
         suppressionSet,
         includeOpenQuestions: false,
         traceTurnId: "turn-1",
@@ -343,6 +349,7 @@ describe("TurnRetrievalCoordinator", () => {
       expect.objectContaining({
         audienceEntityId,
         limit: 3,
+        scoringFeatures,
         strictTimeRange: false,
         traceTurnId: "turn-1",
       }),

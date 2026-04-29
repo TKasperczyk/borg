@@ -19,6 +19,10 @@ import type {
   RetrievalPipeline,
   RetrievalSearchOptions,
 } from "../../retrieval/index.js";
+import {
+  selectActiveScoringValues,
+  type RetrievalScoringFeatures,
+} from "../../retrieval/scoring-features.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { LLMClient } from "../../llm/index.js";
@@ -27,16 +31,6 @@ import { computeRetrievalLimit, computeWeights, type SuppressionSet } from "../a
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
 import { deriveProceduralContext } from "../procedural/context-derivation.js";
 import type { PerceptionResult } from "../types.js";
-
-function selectActiveValues(values: readonly SelfSnapshot["values"][number][], candidateLimit = 2) {
-  const established = values.filter((value) => value.state === "established");
-  const candidates = values
-    .filter((value) => value.state !== "established")
-    .sort((left, right) => right.priority - left.priority || left.created_at - right.created_at)
-    .slice(0, candidateLimit);
-
-  return [...established, ...candidates];
-}
 
 function buildSkillSelectionQuery(userMessage: string, entities: readonly string[]): string {
   return [userMessage, ...entities]
@@ -94,6 +88,8 @@ export type TurnRetrievalCoordinatorInput = {
   workingMemory: WorkingMemory;
   selfSnapshot: SelfSnapshot;
   executiveFocus?: ExecutiveFocus | null;
+  activeValues?: readonly SelfSnapshot["values"][number][];
+  scoringFeatures?: RetrievalScoringFeatures;
   suppressionSet: SuppressionSet;
   findEntityByName: (name: string) => EntityId | null;
   llmClient?: LLMClient;
@@ -202,7 +198,7 @@ export class TurnRetrievalCoordinator {
     const affectiveTrajectory = this.options.moodRepository.history(input.sessionId, {
       limit: 5,
     });
-    const activeValues = selectActiveValues(input.selfSnapshot.values);
+    const activeValues = input.activeValues ?? selectActiveScoringValues(input.selfSnapshot.values);
     const goalSelection = selectGoalDescriptions(input.selfSnapshot.goals, input.executiveFocus);
 
     const attentionWeights = computeWeights(input.perception.mode, {
@@ -219,6 +215,7 @@ export class TurnRetrievalCoordinator {
       goalDescriptions: goalSelection.goalDescriptions,
       primaryGoalDescription: goalSelection.primaryGoalDescription,
       activeValues,
+      ...(input.scoringFeatures === undefined ? {} : { scoringFeatures: input.scoringFeatures }),
       temporalCue: input.perception.temporalCue,
       strictTimeRange: input.perception.temporalCue !== null,
       moodState: retrievalMood,

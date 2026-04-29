@@ -149,6 +149,7 @@ export async function openBorgDependencies(
       config,
       commitmentRepository: repositories.commitmentRepository,
       episodicRepository: repositories.episodicRepository,
+      embeddingClient,
       goalsRepository: repositories.goalsRepository,
       executiveStepsRepository: repositories.executiveStepsRepository,
       openQuestionsRepository: repositories.openQuestionsRepository,
@@ -159,6 +160,7 @@ export async function openBorgDependencies(
       toolDispatcher,
       createStreamWriter: repositories.createStreamWriter,
       clock,
+      tracer,
     });
     const maintenanceScheduler = buildMaintenanceScheduler({
       config,

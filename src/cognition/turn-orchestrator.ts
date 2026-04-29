@@ -18,6 +18,12 @@ import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import type { Reflector } from "./reflection/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
+import {
+  buildSelfScoringFeatureSet,
+  selectActiveScoringValues,
+  toRetrievalScoringFeatures,
+  type SelfScoringFeatureSet,
+} from "../retrieval/scoring-features.js";
 import type { LLMClient } from "../llm/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
@@ -383,11 +389,7 @@ export class TurnOrchestrator {
         );
       }
     } catch (error) {
-      await this.appendHookFailureEvent(
-        streamWriter,
-        "stream_ingestion_pre_turn_catchup",
-        error,
-      );
+      await this.appendHookFailureEvent(streamWriter, "stream_ingestion_pre_turn_catchup", error);
     }
   }
 
@@ -454,13 +456,33 @@ export class TurnOrchestrator {
         ]
           .join(" ")
           .trim();
-        let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> =
-          new Map();
+        const activeScoringValues = selectActiveScoringValues(selfSnapshot.values);
+        let selfScoringFeatures: SelfScoringFeatureSet = {
+          goalVectors: [],
+          valueVectors: [],
+        };
+        let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> = new Map();
+
+        try {
+          selfScoringFeatures = await buildSelfScoringFeatureSet({
+            embeddingClient: this.options.embeddingClient,
+            goals: selfSnapshot.goals,
+            activeValues: activeScoringValues,
+          });
+        } catch (error) {
+          if (this.tracer.enabled) {
+            this.tracer.emit("retrieval_degraded", {
+              turnId,
+              subsystem: "scoring_features",
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
 
         try {
           contextFitByGoalId = await computeExecutiveContextFits({
             embeddingClient: this.options.embeddingClient,
-            goals: selfSnapshot.goals,
+            goalVectors: selfScoringFeatures.goalVectors,
             contextText: executiveContextText,
           });
         } catch (error) {
@@ -487,6 +509,10 @@ export class TurnOrchestrator {
           }),
           getForcedExecutiveFocusGoalId(input.autonomyTrigger),
         );
+        const retrievalScoringFeatures = toRetrievalScoringFeatures({
+          selfFeatures: selfScoringFeatures,
+          primaryGoalId: executiveFocus.selected_goal?.id ?? null,
+        });
         const executiveFocusWithStep =
           executiveFocus.selected_goal === null
             ? executiveFocus
@@ -542,6 +568,8 @@ export class TurnOrchestrator {
           workingMemory,
           selfSnapshot,
           executiveFocus: executiveFocusWithStep,
+          activeValues: activeScoringValues,
+          scoringFeatures: retrievalScoringFeatures,
           suppressionSet,
           findEntityByName: (name) => this.options.entityRepository.findByName(name),
           llmClient,

@@ -20,11 +20,14 @@ export {
 } from "./repository.js";
 export {
   deriveProceduralContextKey,
+  parseLegacyProceduralContextKey,
   proceduralContextAudienceScopeSchema,
+  proceduralContextMetadataSchema,
   proceduralContextProblemKindSchema,
   proceduralContextSchema,
   type ProceduralContext,
   type ProceduralContextAudienceScope,
+  type ProceduralContextMetadata,
   type ProceduralContextProblemKind,
 } from "./context.js";
 export { SkillSelector, type SkillSelectorOptions } from "./selector.js";
@@ -38,6 +41,7 @@ export {
   skillSchema,
   skillStatsSchema,
   type PendingProceduralAttemptValue,
+  type ProceduralContextMetadataValue,
   type ProceduralContextValue,
   type ProceduralEvidenceIdValue,
   type ProceduralEvidenceRecord,

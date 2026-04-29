@@ -8,6 +8,7 @@ import { Borg, FakeLLMClient, ManualClock, type LLMCompleteOptions } from "../in
 import type { BorgDependencies } from "../borg/types.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { SelfSnapshot } from "./deliberation/deliberator.js";
+import type { EmbeddingClient } from "../embeddings/index.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
 import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
 import {
@@ -17,7 +18,21 @@ import {
   type EpisodeId,
 } from "../util/ids.js";
 
-async function openTestBorg(tempDir: string, llm: FakeLLMClient, clock: ManualClock) {
+class CountingEmbeddingClient extends TestEmbeddingClient {
+  readonly embedBatchTexts: string[][] = [];
+
+  async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+    this.embedBatchTexts.push([...texts]);
+    return super.embedBatch(texts);
+  }
+}
+
+async function openTestBorg(
+  tempDir: string,
+  llm: FakeLLMClient,
+  clock: ManualClock,
+  embeddingClient: EmbeddingClient = new TestEmbeddingClient(),
+) {
   return Borg.open({
     config: createTestConfig({
       dataDir: tempDir,
@@ -46,7 +61,7 @@ async function openTestBorg(tempDir: string, llm: FakeLLMClient, clock: ManualCl
     }),
     clock,
     embeddingDimensions: 4,
-    embeddingClient: new TestEmbeddingClient(),
+    embeddingClient,
     llmClient: llm,
     liveExtraction: false,
   });
@@ -603,7 +618,8 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         createEmptyReflectionResponse(),
       ],
     });
-    const borg = await openTestBorg(tempDir, llm, clock);
+    const embeddingClient = new CountingEmbeddingClient();
+    const borg = await openTestBorg(tempDir, llm, clock, embeddingClient);
 
     try {
       borg.self.goals.add({
@@ -641,6 +657,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(executiveBlock).not.toContain("Background maintenance");
       expect(finalizerSystem).toContain("goals Background maintenance");
       expect(finalizerSystem).toContain("Apollo launch plan");
+      expect(
+        embeddingClient.embedBatchTexts.filter((texts) =>
+          texts.some((text) => text.includes("Apollo launch plan")),
+        ),
+      ).toHaveLength(1);
     } finally {
       await borg.close();
     }

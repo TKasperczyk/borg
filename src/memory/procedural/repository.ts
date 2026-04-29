@@ -21,7 +21,12 @@ import {
 } from "../../util/ids.js";
 
 import { computeBetaStats, type BetaStats } from "./bayes.js";
-import { proceduralContextSchema, type ProceduralContext } from "./context.js";
+import {
+  proceduralContextMetadataSchema,
+  proceduralContextSchema,
+  type ProceduralContext,
+  type ProceduralContextMetadata,
+} from "./context.js";
 import {
   proceduralEvidenceSchema,
   proceduralOutcomeClassificationSchema,
@@ -193,8 +198,34 @@ function parseProceduralContextColumn(value: unknown): ProceduralContext | undef
   }
 }
 
+function parseProceduralContextMetadataColumn(
+  value: unknown,
+): ProceduralContextMetadata | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  try {
+    const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+    return proceduralContextMetadataSchema.parse(parsed);
+  } catch (error) {
+    throw new StorageError("Failed to parse procedural context metadata", {
+      cause: error,
+      code: "PROCEDURAL_CONTEXT_INVALID",
+    });
+  }
+}
+
 function serializeProceduralContext(context: ProceduralContext | null | undefined): string | null {
   return context === null || context === undefined ? null : serializeJsonValue(context);
+}
+
+function serializeProceduralContextMetadata(
+  context: ProceduralContextMetadata | ProceduralContext | null | undefined,
+): string | null {
+  return context === null || context === undefined
+    ? null
+    : serializeJsonValue(proceduralContextMetadataSchema.parse(context));
 }
 
 function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvidenceRecord {
@@ -238,6 +269,7 @@ function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvid
 }
 
 function skillContextStatsFromRow(row: Record<string, unknown>): SkillContextStatsRecord {
+  const proceduralContext = parseProceduralContextMetadataColumn(row.procedural_context_json);
   const parsed = skillContextStatsSchema.safeParse({
     skill_id: row.skill_id,
     context_key: row.context_key,
@@ -252,6 +284,7 @@ function skillContextStatsFromRow(row: Record<string, unknown>): SkillContextSta
         ? null
         : Number(row.last_successful),
     updated_at: Number(row.updated_at),
+    ...(proceduralContext === undefined ? {} : { procedural_context: proceduralContext }),
   });
 
   if (!parsed.success) {
@@ -281,11 +314,13 @@ function recordContextOutcomeInTransaction(
   input: {
     skillId: SkillId;
     contextKey: string;
+    proceduralContext?: ProceduralContextMetadata | ProceduralContext | null;
     success: boolean;
     ts: number;
   },
 ): void {
   const contextKey = assertContextKey(input.contextKey);
+  const proceduralContextJson = serializeProceduralContextMetadata(input.proceduralContext);
   const incrementAlpha = input.success ? 1 : 0;
   const incrementBeta = input.success ? 0 : 1;
   const incrementSuccesses = input.success ? 1 : 0;
@@ -294,10 +329,14 @@ function recordContextOutcomeInTransaction(
   db.prepare(
     `
       INSERT INTO skill_context_stats (
-        skill_id, context_key, alpha, beta, attempts, successes, failures,
+        skill_id, context_key, procedural_context_json, alpha, beta, attempts, successes, failures,
         last_used, last_successful, updated_at
-      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
       ON CONFLICT (skill_id, context_key) DO UPDATE SET
+        procedural_context_json = COALESCE(
+          excluded.procedural_context_json,
+          skill_context_stats.procedural_context_json
+        ),
         alpha = alpha + ?,
         beta = beta + ?,
         attempts = attempts + 1,
@@ -310,6 +349,7 @@ function recordContextOutcomeInTransaction(
   ).run(
     input.skillId,
     contextKey,
+    proceduralContextJson,
     1 + incrementAlpha,
     1 + incrementBeta,
     incrementSuccesses,
@@ -738,10 +778,11 @@ export class SkillRepository {
     const insert = this.db.prepare(
       `
         INSERT INTO skill_context_stats (
-          skill_id, context_key, alpha, beta, attempts, successes, failures,
+          skill_id, context_key, procedural_context_json, alpha, beta, attempts, successes, failures,
           last_used, last_successful, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (skill_id, context_key) DO UPDATE SET
+          procedural_context_json = excluded.procedural_context_json,
           alpha = excluded.alpha,
           beta = excluded.beta,
           attempts = excluded.attempts,
@@ -759,6 +800,7 @@ export class SkillRepository {
         insert.run(
           parsed.skill_id,
           parsed.context_key,
+          serializeProceduralContextMetadata(parsed.procedural_context),
           parsed.alpha,
           parsed.beta,
           parsed.attempts,
@@ -913,9 +955,9 @@ export class SkillRepository {
           const insertContextStats = this.db.prepare(
             `
               INSERT INTO skill_context_stats (
-                skill_id, context_key, alpha, beta, attempts, successes, failures,
+                skill_id, context_key, procedural_context_json, alpha, beta, attempts, successes, failures,
                 last_used, last_successful, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `,
           );
 
@@ -932,6 +974,7 @@ export class SkillRepository {
               insertContextStats.run(
                 newSkill.id,
                 stats.context_key,
+                serializeProceduralContextMetadata(stats.procedural_context),
                 stats.alpha,
                 stats.beta,
                 stats.attempts,
@@ -1152,6 +1195,7 @@ export class SkillRepository {
         recordContextOutcomeInTransaction(this.db, {
           skillId,
           contextKey: parsedContext.context_key,
+          proceduralContext: parsedContext,
           success,
           ts: nowMs,
         });
@@ -1201,6 +1245,7 @@ export class ProceduralContextStatsRepository {
   recordContextOutcome(input: {
     skillId: SkillId;
     contextKey: string;
+    proceduralContext?: ProceduralContextMetadata | ProceduralContext | null;
     success: boolean;
     ts?: number;
   }): SkillContextStatsRecord {
@@ -1211,6 +1256,7 @@ export class ProceduralContextStatsRepository {
       recordContextOutcomeInTransaction(this.db, {
         skillId: input.skillId,
         contextKey,
+        proceduralContext: input.proceduralContext,
         success: input.success,
         ts,
       });

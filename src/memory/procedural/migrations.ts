@@ -1,5 +1,6 @@
 import type { Migration } from "../../storage/sqlite/index.js";
 import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
+import { serializeJsonValue } from "../../util/json-value.js";
 import { deriveProceduralContextKey, parseLegacyProceduralContextKey } from "./context.js";
 
 function nextAvailableContextKey(
@@ -96,6 +97,7 @@ export const proceduralMigrations = [
       CREATE TABLE IF NOT EXISTS skill_context_stats (
         skill_id TEXT NOT NULL,
         context_key TEXT NOT NULL,
+        procedural_context_json TEXT,
         alpha REAL NOT NULL,
         beta REAL NOT NULL,
         attempts INTEGER NOT NULL,
@@ -189,6 +191,10 @@ export const proceduralMigrations = [
     id: 182,
     name: "backfill-procedural-context-keys-v2",
     up: (db) => {
+      if (!tableHasColumn(db, "skill_context_stats", "procedural_context_json")) {
+        db.exec("ALTER TABLE skill_context_stats ADD COLUMN procedural_context_json TEXT");
+      }
+
       const rows = db
         .prepare(
           `
@@ -201,7 +207,8 @@ export const proceduralMigrations = [
       const update = db.prepare(
         `
           UPDATE skill_context_stats
-          SET context_key = ?
+          SET context_key = ?,
+              procedural_context_json = COALESCE(procedural_context_json, ?)
           WHERE skill_id = ? AND context_key = ?
         `,
       );
@@ -225,11 +232,47 @@ export const proceduralMigrations = [
             )
             .get(row.skill_id, baseKey);
           const nextKey =
-            existing === undefined
-              ? baseKey
-              : nextAvailableContextKey(db, row.skill_id, baseKey);
+            existing === undefined ? baseKey : nextAvailableContextKey(db, row.skill_id, baseKey);
 
-          update.run(nextKey, row.skill_id, row.context_key);
+          update.run(nextKey, serializeJsonValue(parsed), row.skill_id, row.context_key);
+        }
+      })();
+    },
+  },
+  {
+    id: 183,
+    name: "add-skill-context-stats-procedural-context-json",
+    up: (db) => {
+      if (!tableHasColumn(db, "skill_context_stats", "procedural_context_json")) {
+        db.exec("ALTER TABLE skill_context_stats ADD COLUMN procedural_context_json TEXT");
+      }
+
+      const rows = db
+        .prepare(
+          `
+            SELECT skill_id, context_key
+            FROM skill_context_stats
+            WHERE procedural_context_json IS NULL
+          `,
+        )
+        .all() as Array<{ skill_id: string; context_key: string }>;
+      const update = db.prepare(
+        `
+          UPDATE skill_context_stats
+          SET procedural_context_json = ?
+          WHERE skill_id = ? AND context_key = ?
+        `,
+      );
+
+      db.transaction(() => {
+        for (const row of rows) {
+          const parsed = parseLegacyProceduralContextKey(row.context_key);
+
+          if (parsed === null) {
+            continue;
+          }
+
+          update.run(serializeJsonValue(parsed), row.skill_id, row.context_key);
         }
       })();
     },
