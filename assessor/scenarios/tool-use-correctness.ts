@@ -13,9 +13,9 @@ import type { Scenario } from "../types.js";
 // The strong fix is to add a setup hook that seeds semantic nodes/edges
 // before the conversation runs. That requires Scenario type changes and
 // transport plumbing; tracked as future work. For now, soften the
-// assertion to what's actually observable: Borg engaged retrieval AND
-// the response shows relational reasoning. This stops the scenario
-// false-failing while keeping some signal.
+// assertion to what's structurally observable: Borg engaged retrieval
+// and invoked semantic.walk. The assessor verdict handles whether the
+// response gave coherent relational reasoning.
 export const toolUseCorrectnessScenario: Scenario = {
   name: "tool-use-correctness",
   description:
@@ -24,7 +24,7 @@ export const toolUseCorrectnessScenario: Scenario = {
   maxTurns: 4,
   systemPrompt: [
     "Mention two related concepts in turn 1, then ask Borg how they relate in turn 2.",
-    "Pass if the relationship turn engaged retrieval AND Borg's response acknowledges the relationship explicitly (uses words like 'relate', 'connect', 'depend', 'differ', or similar relational language).",
+    "Pass if the relationship turn engaged retrieval and Borg's response handles the relationship coherently.",
     "Note: a deep graph-walk test requires semantic seeding which the harness doesn't yet support.",
   ].join("\n"),
   mockConversation: [
@@ -39,23 +39,10 @@ export const toolUseCorrectnessScenario: Scenario = {
       turn: "last",
     },
     {
-      type: "any_of",
-      description: "Response demonstrates graph-aware reasoning OR invoked the semantic walk tool.",
-      assertions: [
-        {
-          type: "tool_called",
-          description: "Model invoked semantic.walk.",
-          toolNameIncludes: "semantic.walk",
-          turn: "last",
-        },
-        {
-          type: "response_matches",
-          description: "Response uses relational language.",
-          pattern: "\\b(relate|relation|connect|depend|differ|interact|tie|link)\\w*\\b",
-          flags: "i",
-          turn: "last",
-        },
-      ],
+      type: "tool_called",
+      description: "Model invoked semantic.walk.",
+      toolNameIncludes: "semantic.walk",
+      turn: "last",
     },
   ],
 };

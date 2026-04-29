@@ -8,9 +8,11 @@ export const failingMockFixtureScenario: Scenario = {
   mockConversation: ["Say anything except the expected fixture token."],
   traceAssertions: [
     {
-      type: "response_matches",
-      description: "Fixture expects an impossible response token.",
-      pattern: "\\bUNREACHABLE_FIXTURE_TOKEN\\b",
+      // Mock mode never invokes this synthetic tool; the fixture needs one
+      // reliable structural failure to verify CLI exit-code handling.
+      type: "tool_called",
+      description: "Fixture expects an impossible synthetic tool call.",
+      toolNameIncludes: "fixture.never.called",
       turn: "last",
     },
   ],

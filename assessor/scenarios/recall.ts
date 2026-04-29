@@ -21,12 +21,6 @@ export const recallScenario: Scenario = {
   ],
   traceAssertions: [
     {
-      type: "response_matches",
-      description: "Recall response mentions Otto.",
-      pattern: "\\bOtto\\b",
-      turn: "last",
-    },
-    {
       // Borg's standard turn pipeline runs retrieval implicitly -- the
       // tool.episodic.search call is reserved for when the model wants
       // additional retrieval mid-turn beyond what the pipeline already

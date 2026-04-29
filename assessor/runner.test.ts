@@ -49,7 +49,7 @@ describe("ScenarioRunner", () => {
 
     expect(result.verdict.status).toBe("fail");
     expect(result.traceAssertions.some((assertion) => !assertion.passed)).toBe(true);
-    expect(result.verdict.evidence.join("\n")).toContain("UNREACHABLE_FIXTURE_TOKEN");
+    expect(result.verdict.evidence.join("\n")).toContain("fixture.never.called");
   });
 
   it("marks reports with failed mock assertions as failing", async () => {

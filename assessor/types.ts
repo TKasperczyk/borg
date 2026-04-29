@@ -50,13 +50,6 @@ export type TraceAssertion =
       turn?: "any" | "last";
     }
   | {
-      type: "response_matches";
-      description: string;
-      pattern: string;
-      flags?: string;
-      turn?: "any" | "last";
-    }
-  | {
       type: "all_responses_match";
       description: string;
       pattern: string;

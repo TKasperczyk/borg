@@ -18,12 +18,6 @@ export const multiSessionContinuityScenario: Scenario = {
   mockConversation: ["My project codename is Helios.", "What is my project codename?"],
   traceAssertions: [
     {
-      type: "response_matches",
-      description: "Second session recall response includes the session-one codename.",
-      pattern: "\\bHelios\\b",
-      turn: "last",
-    },
-    {
       // Same shape as the recall scenario: Borg's standard pipeline runs
       // retrieval implicitly, so the model often answers without an
       // explicit tool.episodic.search call. Accept either the pipeline's

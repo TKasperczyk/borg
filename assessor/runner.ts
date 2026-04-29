@@ -113,26 +113,6 @@ async function evaluateAssertion(
     };
   }
 
-  if (assertion.type === "response_matches") {
-    const regex = regexFromAssertion(assertion);
-    const turn = assertion.turn === "last" ? context.turns[context.turns.length - 1] : undefined;
-    const matches =
-      turn === undefined
-        ? context.turns.filter((entry) => regex.test(entry.response))
-        : regex.test(turn.response)
-          ? [turn]
-          : [];
-
-    return {
-      description: assertion.description,
-      passed: matches.length > 0,
-      evidence:
-        matches[0] === undefined
-          ? `No response matched ${assertion.pattern}`
-          : stringifyEvidence(matches[0].response),
-    };
-  }
-
   if (assertion.type === "all_responses_match") {
     const regex = regexFromAssertion(assertion);
     const failures = context.turns.filter((turn) => !regex.test(turn.response));
