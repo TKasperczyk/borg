@@ -15,9 +15,106 @@ const ENTITY_FALLBACK_TOOL_NAME = "EmitEntityExtraction";
 const ENTITY_FALLBACK_MAX_INPUT_CHARS = 2_000;
 export const ENTITY_FALLBACK_TOOL = {
   name: ENTITY_FALLBACK_TOOL_NAME,
-  description: "Emit named entities, handles, products, and quoted phrases from the input.",
+  description:
+    "Emit specific named entities from the input. Names of people, places, products, project codenames, organizations, and @-handles only.",
   inputSchema: toToolInputSchema(entityFallbackSchema),
 } satisfies LLMToolDefinition;
+
+const ENTITY_LLM_SYSTEM_PROMPT = [
+  "Extract specific named entities from the user's text. Examples of valid entities: a person's name (Otto, Tom Kasperczyk), a place name (Sevilla, Granada), a product or codename (Helios, JetStream, Postgres), an organization (Anthropic, OpenAI), a @-handle (@yourname), a project's working title.",
+  "",
+  "Do NOT extract any of the following:",
+  "- Common words, even when capitalized at sentence start (Good, If, The, And, But)",
+  "- Stopwords or pronouns (you, me, this, that)",
+  "- Generic nouns that are not names (system, project, dog, conversation, message)",
+  "- Sentence fragments or quoted spans of dialogue (anything containing punctuation that's not part of a name)",
+  "- Chat-format markers ('Human:', 'Assistant:', 'User:', 'AI:', anything ending in ':')",
+  "- Bracketed stage directions or scene markers ('[end]', '[Held]', '[.]')",
+  "- Verbatim phrases longer than ~6 words",
+  "",
+  "If the text contains no specific named entities, return an empty list. An empty list is the correct output for most casual text. Do not invent entities to fill the list.",
+].join("\n");
+
+// Output sanitization: even with a tightened prompt, occasional bad
+// extractions slip through. Filter at the boundary as defense in
+// depth. Same belt-and-suspenders pattern as proceduralContextSchema's
+// domain_tags caps and dialogue.ts's empty-content placeholder.
+const MAX_ENTITY_LENGTH = 64;
+const MIN_ENTITY_LENGTH = 2;
+const FORBIDDEN_ENTITY_PATTERNS: readonly RegExp[] = [
+  /^(human|assistant|user|ai|system):/i,
+  /^\[.*\]$/,
+  /^[\p{P}\p{S}]+$/u,
+];
+const ENTITY_STOPWORDS: ReadonlySet<string> = new Set([
+  "a",
+  "an",
+  "the",
+  "and",
+  "or",
+  "but",
+  "if",
+  "of",
+  "to",
+  "in",
+  "on",
+  "for",
+  "at",
+  "by",
+  "with",
+  "as",
+  "is",
+  "it",
+  "this",
+  "that",
+  "these",
+  "those",
+  "you",
+  "me",
+  "we",
+  "us",
+  "they",
+  "them",
+  "good",
+  "bad",
+  "yes",
+  "no",
+  "ok",
+  "okay",
+  "right",
+  "left",
+  "up",
+  "down",
+  "out",
+  "in",
+  "fine",
+  "sure",
+  "maybe",
+  "yeah",
+  "yep",
+  "nope",
+  "thanks",
+]);
+
+function isAcceptableEntity(value: string): boolean {
+  const trimmed = value.trim();
+
+  if (trimmed.length < MIN_ENTITY_LENGTH || trimmed.length > MAX_ENTITY_LENGTH) {
+    return false;
+  }
+
+  if (ENTITY_STOPWORDS.has(trimmed.toLowerCase())) {
+    return false;
+  }
+
+  for (const pattern of FORBIDDEN_ENTITY_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 function parseEntityFallback(result: LLMCompleteResult): string[] {
   const call = result.tool_calls.find((toolCall) => toolCall.name === ENTITY_FALLBACK_TOOL_NAME);
@@ -37,17 +134,17 @@ function parseEntityFallback(result: LLMCompleteResult): string[] {
     });
   }
 
-  return dedupe(parsed.data.entities);
+  return sanitizeEntities(parsed.data.entities);
 }
 
-function dedupe(values: readonly string[]): string[] {
+function sanitizeEntities(values: readonly string[]): string[] {
   const seen = new Set<string>();
   const items: string[] = [];
 
   for (const value of values) {
     const normalized = value.trim();
 
-    if (normalized.length === 0) {
+    if (!isAcceptableEntity(normalized)) {
       continue;
     }
 
@@ -64,92 +161,65 @@ function dedupe(values: readonly string[]): string[] {
   return items;
 }
 
-function rangeContains(ranges: readonly [number, number][], index: number): boolean {
-  return ranges.some(([start, end]) => index >= start && index < end);
-}
-
-export function extractEntitiesHeuristically(text: string): string[] {
-  const entities: string[] = [];
-  const coveredRanges: Array<[number, number]> = [];
+// Query-side label hint extraction for semantic-retrieval graph
+// lookups. NOT used for perception's entity extraction (that's
+// LLM-only -- see EntityExtractor). The retrieval path needs a
+// synchronous, cheap way to surface label candidates from a query
+// string for graph node matching, and an LLM call there would add
+// per-turn latency for each retrieval round. Limited to the
+// strongest signals: @-handles and quoted phrases. Title-case and
+// stand-alone capitalized words were removed because they
+// produced massive false-positive rates ('Good', 'If', 'The'
+// matched as entities).
+export function extractQueryLabelHints(text: string): string[] {
+  const hints: string[] = [];
 
   for (const match of text.matchAll(/@[a-zA-Z0-9_]+/g)) {
-    entities.push(match[0]);
+    hints.push(match[0]);
   }
 
-  for (const match of text.matchAll(/"([^"\n]+)"/g)) {
-    if (match[1] !== undefined && match.index !== undefined) {
-      entities.push(match[1]);
-      coveredRanges.push([match.index, match.index + match[0].length]);
-    }
-  }
-
-  for (const match of text.matchAll(/'([^'\n]{3,})'/g)) {
-    if (match[1] !== undefined && match.index !== undefined) {
-      entities.push(match[1]);
-      coveredRanges.push([match.index, match.index + match[0].length]);
+  for (const match of text.matchAll(/"([^"\n]{1,64})"/g)) {
+    if (match[1] !== undefined) {
+      hints.push(match[1]);
     }
   }
 
-  for (const match of text.matchAll(/\b(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/g)) {
-    if (match.index === undefined) {
-      continue;
+  for (const match of text.matchAll(/'([^'\n]{3,64})'/g)) {
+    if (match[1] !== undefined) {
+      hints.push(match[1]);
     }
-
-    entities.push(match[0]);
-    coveredRanges.push([match.index, match.index + match[0].length]);
   }
 
-  for (const match of text.matchAll(/\b(?:[A-Z]{2,}|[A-Z][a-z]+)\b/g)) {
-    if (match.index === undefined) {
-      continue;
-    }
-
-    if (rangeContains(coveredRanges, match.index)) {
-      continue;
-    }
-
-    if (match.index === 0 && match[0] !== match[0].toUpperCase()) {
-      continue;
-    }
-
-    entities.push(match[0]);
-  }
-
-  return dedupe(entities);
+  return sanitizeEntities(hints);
 }
 
 export type EntityExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
-  useLlmFallback?: boolean;
   shortTextThreshold?: number;
 };
 
 export class EntityExtractor {
-  private readonly useLlmFallback: boolean;
   private readonly shortTextThreshold: number;
 
   constructor(private readonly options: EntityExtractorOptions = {}) {
-    this.useLlmFallback = options.useLlmFallback ?? true;
     this.shortTextThreshold = options.shortTextThreshold ?? 160;
   }
 
   async extractEntities(text: string): Promise<string[]> {
-    const heuristicEntities = extractEntitiesHeuristically(text);
     const normalizedText = text.trim();
 
-    if (
-      !this.useLlmFallback ||
-      this.options.llmClient === undefined ||
-      normalizedText.length === 0
-    ) {
-      return heuristicEntities;
+    if (normalizedText.length === 0) {
+      return [];
     }
 
-    const model = this.options.model;
-
-    if (model === undefined) {
-      return heuristicEntities;
+    if (this.options.llmClient === undefined || this.options.model === undefined) {
+      // No LLM available. Returning empty entities is the honest
+      // answer; the previous regex heuristic produced false-positive
+      // entities at high rates ('Good', 'If', '[End.]'), and those
+      // entities then poisoned downstream retrieval. Empty is better
+      // than wrong.
+      return [];
     }
 
     try {
@@ -158,8 +228,8 @@ export class EntityExtractor {
           ? normalizedText.slice(0, ENTITY_FALLBACK_MAX_INPUT_CHARS)
           : normalizedText;
       const response = await this.options.llmClient.complete({
-        model,
-        system: "Extract named entities, handles, products, and quoted phrases.",
+        model: this.options.model,
+        system: ENTITY_LLM_SYSTEM_PROMPT,
         messages: [
           {
             role: "user",
@@ -171,7 +241,7 @@ export class EntityExtractor {
         max_tokens: 512,
         budget: "perception-entity-fallback",
       });
-      return dedupe([...heuristicEntities, ...parseEntityFallback(response)]);
+      return parseEntityFallback(response);
     } catch (error) {
       if (error instanceof CognitionError || error instanceof LLMError) {
         throw error;

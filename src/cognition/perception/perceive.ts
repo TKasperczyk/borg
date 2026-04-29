@@ -7,7 +7,7 @@ import {
   type AffectiveSignal,
 } from "../../memory/affective/index.js";
 import { detectAffectiveSignal } from "./affective-signal.js";
-import { EntityExtractor, extractEntitiesHeuristically } from "./entity-extractor.js";
+import { EntityExtractor } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
 import { detectTemporalCue } from "./temporal-cue.js";
 
@@ -102,7 +102,6 @@ export class Perceiver {
     this.entityExtractor = new EntityExtractor({
       llmClient: options.llmClient,
       model: options.model,
-      useLlmFallback: options.useLlmFallback,
     });
     this.modeDetector = new ModeDetector({
       llmClient: options.llmClient,
@@ -146,7 +145,12 @@ export class Perceiver {
       runPerceptionClassifierSafely({
         classifier: "entity_extractor",
         run: () => this.entityExtractor.extractEntities(text),
-        fallback: () => extractEntitiesHeuristically(text),
+        // Fallback returns empty entities. Previous regex-heuristic
+        // fallback produced false-positive entities at high rates
+        // ('Good', 'If', '[End.]') that poisoned downstream
+        // retrieval. Empty is the honest signal when the LLM call
+        // fails -- the turn proceeds with no entities for this turn.
+        fallback: () => [],
         onFailure: this.onClassifierFailure,
       }),
       runPerceptionClassifierSafely({

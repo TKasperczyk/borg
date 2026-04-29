@@ -4116,9 +4116,13 @@ describe("Borg", () => {
       });
 
       expect(result.response).toContain("still completed");
+      // hot_entities is empty when entity-extractor classifier degrades:
+      // the regex-heuristic fallback was removed in favor of LLM-only
+      // extraction, so a failed LLM call yields empty entities rather
+      // than false positives.
       expect(borg.workmem.load()).toMatchObject({
         mode: "idle",
-        hot_entities: ["@alice", "Project Atlas"],
+        hot_entities: [],
       });
       expect(borg.stream.tail(10)).toEqual(
         expect.arrayContaining([

@@ -1,5 +1,5 @@
 /* Semantic-band retrieval for label/vector lookup and graph walks. */
-import { extractEntitiesHeuristically } from "../cognition/perception/entity-extractor.js";
+import { extractQueryLabelHints } from "../cognition/perception/entity-extractor.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
@@ -343,7 +343,7 @@ export async function resolveSemanticContext(
   }
 
   const underReviewMultiplier = normalizeUnderReviewMultiplier(options.underReviewMultiplier);
-  const labels = [...extractEntitiesHeuristically(query), ...query.split(/[,\n]+/)]
+  const labels = [...extractQueryLabelHints(query), ...query.split(/[,\n]+/)]
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
   const matchedNodeCandidatesById = new Map<SemanticNode["id"], MatchedNodeCandidate>();

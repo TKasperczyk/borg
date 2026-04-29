@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { EntityExtractor, extractEntitiesHeuristically } from "./entity-extractor.js";
+import { EntityExtractor, extractQueryLabelHints } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
 import { Perceiver, runPerceptionClassifierSafely } from "./perceive.js";
 import { detectTemporalCue } from "./temporal-cue.js";
@@ -109,12 +109,24 @@ describe("perception", () => {
     });
   });
 
-  it("extracts entities with heuristics", () => {
+  it("returns empty entities when no LLM client is configured", async () => {
+    // Perception entity extraction is LLM-only: the previous regex
+    // heuristic produced false-positive entities at high rates
+    // ('Good', 'If', '[End.]') that poisoned downstream retrieval.
+    // Without an LLM the honest signal is empty.
+    const extractor = new EntityExtractor();
+
+    expect(await extractor.extractEntities("Jane Doe said yesterday was rough")).toEqual([]);
+  });
+
+  it("extracts query label hints for semantic-retrieval graph lookups", () => {
+    // Query label hints are a separate, narrow heuristic used only by
+    // semantic-retrieval to surface label candidates from a synthesized
+    // query string. Limited to @-handles and quoted phrases -- the noisy
+    // title-case + capitalized-word patterns were removed.
     expect(
-      extractEntitiesHeuristically(
-        'Talk to @alice about "Project Atlas" with Jane Doe at ACME tomorrow.',
-      ),
-    ).toEqual(["@alice", "Project Atlas", "Jane Doe", "ACME"]);
+      extractQueryLabelHints('Talk to @alice about "Project Atlas" tomorrow.'),
+    ).toEqual(["@alice", "Project Atlas"]);
   });
 
   it("defaults to idle when no LLM client is configured", async () => {
@@ -160,7 +172,6 @@ describe("perception", () => {
     const entityExtractor = new EntityExtractor({
       llmClient: llm,
       model: "haiku",
-      useLlmFallback: true,
     });
     const modeDetector = new ModeDetector({
       llmClient: llm,
@@ -201,7 +212,6 @@ describe("perception", () => {
     const extractor = new EntityExtractor({
       llmClient: llm,
       model: "haiku",
-      useLlmFallback: true,
       shortTextThreshold: 40,
     });
     const longLowercaseText = `${"pgvector qdrant ".repeat(180)}borg memory index drift`;
@@ -233,7 +243,6 @@ describe("perception", () => {
     const extractor = new EntityExtractor({
       llmClient: llm,
       model: "haiku",
-      useLlmFallback: true,
     });
 
     expect(await extractor.extractEntities("yesterday Sam mentioned bicycles")).toEqual([
@@ -269,7 +278,12 @@ describe("perception", () => {
     );
   });
 
-  it("falls back to heuristic entities when entity extraction throws", async () => {
+  it("falls back to empty entities when entity extraction throws", async () => {
+    // The previous regex-heuristic fallback was removed -- it
+    // produced false-positive entities at high rates that poisoned
+    // downstream retrieval. Empty entities is the honest signal on
+    // failure. The turn proceeds; mode and other classifiers run
+    // independently per Promise.all.
     const onClassifierFailure = vi.fn();
     const llm = new FakeLLMClient({
       responses: [invalidEntityResponse(), modeResponse("problem_solving")],
@@ -286,7 +300,7 @@ describe("perception", () => {
       'Talk to @alice about "Project Atlas" with Jane Doe.',
     );
 
-    expect(perceived.entities).toEqual(["@alice", "Project Atlas", "Jane Doe"]);
+    expect(perceived.entities).toEqual([]);
     expect(perceived.mode).toBe("problem_solving");
     expect(onClassifierFailure).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -312,7 +326,7 @@ describe("perception", () => {
 
     const perceived = await perceiver.perceive('Meet @alice about "Project Atlas".');
 
-    expect(perceived.entities).toEqual(["@alice", "Project Atlas"]);
+    expect(perceived.entities).toEqual([]);
     expect(perceived.mode).toBe("idle");
     expect(onClassifierFailure).toHaveBeenCalledTimes(2);
     expect(onClassifierFailure).toHaveBeenCalledWith(
@@ -356,11 +370,12 @@ describe("perception", () => {
     }).toEqual(successful);
   });
 
-  it("produces a perception result with null temporal cue when no LLM is configured", async () => {
-    // Previously this module had a hardcoded "yesterday" -> 24h-window
-    // pattern. With the heuristic tier removed, temporal extraction is
-    // LLM-only; without an LLM client the cue is null and retrieval
-    // simply doesn't get a time filter -- which is the safe default.
+  it("produces a perception result with empty entities and null temporal cue when no LLM is configured", async () => {
+    // Without an LLM, perception's entity extraction returns []
+    // (heuristic was removed -- it produced too many false positives
+    // like 'Good', 'If', '[End.]'). Mode degrades to 'idle' and the
+    // temporal cue degrades to null. The turn proceeds with an
+    // empty perception payload rather than confidently-wrong tags.
     const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
     const perceiver = new Perceiver({
       useLlmFallback: false,
@@ -368,7 +383,7 @@ describe("perception", () => {
     });
     const perceived = await perceiver.perceive("Jane Doe said yesterday was rough");
 
-    expect(perceived.entities).toContain("Jane Doe");
+    expect(perceived.entities).toEqual([]);
     expect(perceived.temporalCue).toBeNull();
     expect(perceived.mode).toBe("idle");
   });
