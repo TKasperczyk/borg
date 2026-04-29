@@ -19,7 +19,13 @@ import {
 } from "../util/ids.js";
 
 class CountingEmbeddingClient extends TestEmbeddingClient {
+  readonly embedTexts: string[] = [];
   readonly embedBatchTexts: string[][] = [];
+
+  async embed(text: string): Promise<Float32Array> {
+    this.embedTexts.push(text);
+    return super.embed(text);
+  }
 
   async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
     this.embedBatchTexts.push([...texts]);
@@ -1037,6 +1043,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_800_000_200_000);
+    const embeddingClient = new CountingEmbeddingClient();
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -1057,12 +1064,14 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         }),
       ],
     });
-    const borg = await openTestBorg(tempDir, llm, clock);
+    const borg = await openTestBorg(tempDir, llm, clock, embeddingClient);
 
     try {
       await borg.turn({
         userMessage: "Stop responding if I keep sending filler.",
       });
+      embeddingClient.embedTexts.length = 0;
+      embeddingClient.embedBatchTexts.length = 0;
       const result = await borg.turn({
         userMessage: "No.",
       });
@@ -1075,6 +1084,8 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         reason: "active_discourse_stop",
       });
       expect(tailKinds.slice(-3)).toEqual(["user_msg", "perception", "agent_suppressed"]);
+      expect(embeddingClient.embedTexts).toEqual([]);
+      expect(embeddingClient.embedBatchTexts).toEqual([]);
       expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toMatchObject({
         provenance: "self_commitment_extractor",
       });

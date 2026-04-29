@@ -25,6 +25,7 @@ type ChatOptions = {
   audience: string;
   stakes: TurnStakes;
   clientMode: ScriptClientSelectionMode;
+  verbose: boolean;
 };
 
 const ansi = createAnsi();
@@ -83,6 +84,7 @@ function parseStartupArgs(argv: readonly string[]): ChatOptions {
   let audience = "user";
   let stakes: TurnStakes = "medium";
   let clientMode: ScriptClientSelectionMode = "auto";
+  let verbose = process.env.BORG_VERBOSE === "1";
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -137,6 +139,11 @@ function parseStartupArgs(argv: readonly string[]): ChatOptions {
       continue;
     }
 
+    if (arg === "--verbose") {
+      verbose = true;
+      continue;
+    }
+
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -145,6 +152,7 @@ function parseStartupArgs(argv: readonly string[]): ChatOptions {
     audience,
     stakes,
     clientMode,
+    verbose,
   };
 }
 
@@ -410,6 +418,7 @@ async function main(): Promise<void> {
     session: options.session,
     audience: options.audience,
     stakes: options.stakes,
+    verbose: options.verbose,
   };
   let closed = false;
   let shuttingDown: Promise<void> | null = null;
@@ -917,15 +926,17 @@ async function main(): Promise<void> {
       writeLine(`${ansi.strong("borg >")} ${result.response}`);
     }
 
-    const pathLabel =
-      result.path === "system_1" ? "s1" : result.path === "system_2" ? "s2" : "suppressed";
-    const suppression =
-      result.emission.kind === "suppressed" ? ` suppression=${result.emission.reason}` : "";
-    printDim(
-      `[mode=${result.mode} path=${pathLabel} emitted=${result.emitted}${suppression} tokens=${result.usage.input_tokens}/${result.usage.output_tokens} retrieved=${result.retrievedEpisodeIds.length} intents=${result.intents.length} thoughts=${result.thoughts.length}]`,
-    );
+    if (state.verbose) {
+      const pathLabel =
+        result.path === "system_1" ? "s1" : result.path === "system_2" ? "s2" : "suppressed";
+      const suppression =
+        result.emission.kind === "suppressed" ? ` suppression=${result.emission.reason}` : "";
+      printDim(
+        `[mode=${result.mode} path=${pathLabel} emitted=${result.emitted}${suppression} tokens=${result.usage.input_tokens}/${result.usage.output_tokens} retrieved=${result.retrievedEpisodeIds.length} intents=${result.intents.length} thoughts=${result.thoughts.length}]`,
+      );
+    }
 
-    if (result.path === "system_2" && result.thoughts.length > 0) {
+    if (state.verbose && result.path === "system_2" && result.thoughts.length > 0) {
       for (const thought of result.thoughts) {
         for (const line of formatThoughtLines(thought)) {
           printDim(line);

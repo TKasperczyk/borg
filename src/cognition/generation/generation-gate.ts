@@ -209,7 +209,7 @@ export class GenerationGate {
     const recentUsers = recentUserMessages(input.recencyMessages);
     const minimalUserInput = isMinimalUserGenerationInput(input.userMessage);
     const recentMinimalUserRun = countRecentMinimalRun(recentUsers);
-    const repeatedMinimalSimilarity = minimalUserInput
+    const repeatedMinimalSimilarity = activeStop === null && minimalUserInput
       ? await measureRepeatedMinimalSimilarity({
           userMessage: input.userMessage,
           recentUserMessages: recentUsers,
@@ -313,13 +313,14 @@ export class GenerationGate {
         activeStop !== null && parsed.substantive !== true
           ? "active_discourse_stop"
           : "generation_gate";
+      const action =
+        activeStop !== null && parsed.substantive !== true ? "suppress" : parsed.decision;
 
       return {
-        action: parsed.decision,
-        ...(parsed.decision === "suppress" ? { reason: suppressReason } : {}),
+        action,
+        ...(action === "suppress" ? { reason: suppressReason } : {}),
         explanation: parsed.reason,
-        clearDiscourseStop:
-          activeStop !== null && parsed.decision === "proceed" && parsed.substantive,
+        clearDiscourseStop: activeStop !== null && action === "proceed" && parsed.substantive,
         classified: true,
         signals,
       };

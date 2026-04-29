@@ -547,7 +547,6 @@ export class TurnOrchestrator {
           audienceEntityId === null
             ? null
             : this.options.socialRepository.getProfile(audienceEntityId);
-        const selfSnapshot = await this.buildSelfSnapshot(audienceEntityId);
         const perceptionResult = await turnPerception.perceive({
           sessionId,
           isSelfAudience,
@@ -559,82 +558,6 @@ export class TurnOrchestrator {
         const recencyWindow = perceptionResult.recencyWindow;
         const workingMood = perceptionResult.workingMood;
         workingMemory = perceptionResult.workingMemory;
-        const executiveContextText = [
-          cognitionInput,
-          ...perception.entities,
-          input.autonomyTrigger === null || input.autonomyTrigger === undefined
-            ? ""
-            : JSON.stringify(input.autonomyTrigger.payload),
-        ]
-          .join(" ")
-          .trim();
-        const activeScoringValues = selectActiveScoringValues(selfSnapshot.values);
-        let selfScoringFeatures: SelfScoringFeatureSet = {
-          goalVectors: [],
-          valueVectors: [],
-        };
-        let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> = new Map();
-
-        try {
-          selfScoringFeatures = await buildSelfScoringFeatureSet({
-            embeddingClient: this.options.embeddingClient,
-            goals: selfSnapshot.goals,
-            activeValues: activeScoringValues,
-          });
-        } catch (error) {
-          if (this.tracer.enabled) {
-            this.tracer.emit("retrieval_degraded", {
-              turnId,
-              subsystem: "scoring_features",
-              reason: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-
-        try {
-          contextFitByGoalId = await computeExecutiveContextFits({
-            embeddingClient: this.options.embeddingClient,
-            goalVectors: selfScoringFeatures.goalVectors,
-            contextText: executiveContextText,
-          });
-        } catch (error) {
-          if (this.tracer.enabled) {
-            this.tracer.emit("retrieval_degraded", {
-              turnId,
-              subsystem: "executive_context_fit",
-              reason: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-
-        const executiveFocus = applyForcedExecutiveFocus(
-          selectExecutiveFocus({
-            goals: selfSnapshot.goals,
-            cognitionInput,
-            perceptionEntities: perception.entities,
-            autonomyPayload: input.autonomyTrigger?.payload ?? null,
-            nowMs: this.clock.now(),
-            threshold: this.options.config.executive.goalFocusThreshold,
-            deadlineLookaheadMs: this.options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
-            staleMs: this.options.config.autonomy.triggers.goalFollowupDue.staleMs,
-            contextFitByGoalId,
-          }),
-          getForcedExecutiveFocusGoalId(input.autonomyTrigger),
-        );
-        const retrievalScoringFeatures = toRetrievalScoringFeatures({
-          selfFeatures: selfScoringFeatures,
-          primaryGoalId: executiveFocus.selected_goal?.id ?? null,
-        });
-        const executiveFocusWithStep =
-          executiveFocus.selected_goal === null
-            ? executiveFocus
-            : {
-                ...executiveFocus,
-                next_step: this.options.executiveStepsRepository.topOpen(
-                  executiveFocus.selected_goal.id,
-                ),
-              };
-
         const suppressionSet = SuppressionSet.fromEntries(
           workingMemory.suppressed,
           workingMemory.turn_counter,
@@ -777,6 +700,84 @@ export class TurnOrchestrator {
             toolCalls: [],
           };
         }
+
+        const selfSnapshot = await this.buildSelfSnapshot(audienceEntityId);
+        const executiveContextText = [
+          cognitionInput,
+          ...perception.entities,
+          input.autonomyTrigger === null || input.autonomyTrigger === undefined
+            ? ""
+            : JSON.stringify(input.autonomyTrigger.payload),
+        ]
+          .join(" ")
+          .trim();
+        const activeScoringValues = selectActiveScoringValues(selfSnapshot.values);
+        let selfScoringFeatures: SelfScoringFeatureSet = {
+          goalVectors: [],
+          valueVectors: [],
+        };
+        let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> =
+          new Map();
+
+        try {
+          selfScoringFeatures = await buildSelfScoringFeatureSet({
+            embeddingClient: this.options.embeddingClient,
+            goals: selfSnapshot.goals,
+            activeValues: activeScoringValues,
+          });
+        } catch (error) {
+          if (this.tracer.enabled) {
+            this.tracer.emit("retrieval_degraded", {
+              turnId,
+              subsystem: "scoring_features",
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
+        try {
+          contextFitByGoalId = await computeExecutiveContextFits({
+            embeddingClient: this.options.embeddingClient,
+            goalVectors: selfScoringFeatures.goalVectors,
+            contextText: executiveContextText,
+          });
+        } catch (error) {
+          if (this.tracer.enabled) {
+            this.tracer.emit("retrieval_degraded", {
+              turnId,
+              subsystem: "executive_context_fit",
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
+        const executiveFocus = applyForcedExecutiveFocus(
+          selectExecutiveFocus({
+            goals: selfSnapshot.goals,
+            cognitionInput,
+            perceptionEntities: perception.entities,
+            autonomyPayload: input.autonomyTrigger?.payload ?? null,
+            nowMs: this.clock.now(),
+            threshold: this.options.config.executive.goalFocusThreshold,
+            deadlineLookaheadMs: this.options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
+            staleMs: this.options.config.autonomy.triggers.goalFollowupDue.staleMs,
+            contextFitByGoalId,
+          }),
+          getForcedExecutiveFocusGoalId(input.autonomyTrigger),
+        );
+        const retrievalScoringFeatures = toRetrievalScoringFeatures({
+          selfFeatures: selfScoringFeatures,
+          primaryGoalId: executiveFocus.selected_goal?.id ?? null,
+        });
+        const executiveFocusWithStep =
+          executiveFocus.selected_goal === null
+            ? executiveFocus
+            : {
+                ...executiveFocus,
+                next_step: this.options.executiveStepsRepository.topOpen(
+                  executiveFocus.selected_goal.id,
+                ),
+              };
 
         const retrievalContext = await this.turnRetrievalCoordinator.coordinate({
           sessionId,

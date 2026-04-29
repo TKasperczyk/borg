@@ -1273,7 +1273,7 @@ describe("cli", () => {
 
     expect(
       await runCli(
-        ["node", "borg", "turn", "Atlas deploy has a pnpm failure", "--stakes", "high"],
+        ["node", "borg", "turn", "Atlas deploy has a pnpm failure", "--stakes", "high", "--verbose"],
         {
           stdout: stdout.stream,
           stderr: stderr.stream,
@@ -1287,6 +1287,62 @@ describe("cli", () => {
     expect(stdout.read()).toContain("[mode=problem_solving]");
     expect(stdout.read()).toContain("[path=system_2]");
     expect(stdout.read()).toContain("ep_aaaaaaaaaaaaaaaa");
+    expect(stderr.read()).toBe("");
+  });
+
+  it("prints nothing for suppressed turn output unless verbose", async () => {
+    const tempDir = createCliTempDir(tempDirs);
+    const stdout = createOutputBuffer();
+    const stderr = createOutputBuffer();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_cli_suppressed",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+                referenced_episode_ids: [],
+                intents: [],
+              },
+            },
+          ],
+        },
+        {
+          text: "Human: Done.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        {
+          text: "Human: Done.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+
+    expect(
+      await runCli(["node", "borg", "turn", "Atlas deploy has a pnpm failure"], {
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        dataDir: tempDir,
+        openBorg: async () => openTestBorg(tempDir, llm),
+      }),
+    ).toBe(0);
+
+    expect(stdout.read()).toBe("");
     expect(stderr.read()).toBe("");
   });
 

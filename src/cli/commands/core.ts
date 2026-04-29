@@ -113,6 +113,7 @@ export function registerCoreCommands(cli: CAC, deps: CliCommandDeps): void {
     .option("--session <id>", "Session id to use")
     .option("--audience <audience>", "Audience label for the stream")
     .option("--stakes <stakes>", "Turn stakes: low | medium | high")
+    .option("--verbose", "Print turn metadata")
     .action(async (message: string, commandOptions: CommandOptions) => {
       const result = await withBorg(options, async (borg) =>
         borg.turn({
@@ -126,6 +127,11 @@ export function registerCoreCommands(cli: CAC, deps: CliCommandDeps): void {
 
       if (result.emitted) {
         writeLine(stdout, result.response);
+      }
+
+      const verbose = commandOptions.verbose === true || env.BORG_VERBOSE === "1";
+      if (!verbose) {
+        return;
       }
 
       const suppression =

@@ -40,4 +40,24 @@ describe("validateAssistantOutput", () => {
       },
     });
   });
+
+  it.each([
+    "(not generating)",
+    "(not generating.)",
+    "[not generating]",
+    "(not replying)",
+    "[not replying]",
+    "(no reply generated.)",
+    "(no reply)",
+    "[no reply]",
+    "No reply generated.",
+  ])("blocks v8 non-generation stand-in %s", (draft) => {
+    expect(validateAssistantOutput(draft)).toMatchObject({
+      ok: false,
+      failure: {
+        reason: "invalid_non_generation_text",
+        kind: "non_generation_text",
+      },
+    });
+  });
 });

@@ -356,6 +356,120 @@ describe("deliberator", () => {
     );
   });
 
+  it("short-circuits S2 no-output plans before the finalizer tool loop", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_no_output",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "No assistant message is appropriate.",
+                referenced_episode_ids: [],
+                intents: [],
+                emission_recommendation: "no_output",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    let invoked = false;
+    const dispatcher = createToolDispatcher(tempDirs);
+    dispatcher.register({
+      name: "tool.test.write",
+      description: "Should never run on no-output finalizer.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "write",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({ ok: z.literal(true) }),
+      async invoke() {
+        invoked = true;
+        return { ok: true } as const;
+      },
+    });
+    const deliberator = new Deliberator({
+      llmClient: llm,
+      toolDispatcher: dispatcher,
+      cognitionModel: "sonnet",
+      backgroundModel: "haiku",
+    });
+    const streamDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(streamDir);
+    const writer = new StreamWriter({
+      dataDir: streamDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(0),
+    });
+
+    try {
+      const result = await deliberator.run(
+        {
+          sessionId: DEFAULT_SESSION_ID,
+          userMessage: "No.",
+          perception: {
+            entities: [],
+            mode: "reflective",
+            affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+            temporalCue: null,
+          },
+          retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+          retrievalConfidence: makeRetrievalConfidence(),
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 2,
+            current_focus: null,
+            hot_entities: [],
+            pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
+            suppressed: [],
+            mode: "reflective",
+            updated_at: 0,
+          },
+          selfSnapshot: { values: [], goals: [], traits: [] },
+          options: { stakes: "high" },
+        },
+        writer,
+      );
+
+      expect(result.emitted).toBe(false);
+      expect(result.emission).toEqual({
+        kind: "suppressed",
+        reason: "s2_planner_no_output",
+      });
+      expect(result.response).toBe("");
+      expect(result.tool_calls).toEqual([]);
+      expect(result.usage).toEqual({
+        input_tokens: 8,
+        output_tokens: 4,
+        stop_reason: "tool_use",
+      });
+      expect(llm.requests).toHaveLength(1);
+      expect(invoked).toBe(false);
+      const thoughts = new StreamReader({
+        dataDir: streamDir,
+        sessionId: DEFAULT_SESSION_ID,
+      })
+        .tail(10)
+        .filter((entry) => entry.kind === "thought");
+      expect(thoughts).toHaveLength(1);
+      expect(String(thoughts[0]?.content)).toContain("emission: no_output");
+    } finally {
+      writer.close();
+    }
+  });
+
   it("wires autobiographical period, recent growth, and audience profile into the prompt", async () => {
     const llm = new FakeLLMClient({
       responses: [

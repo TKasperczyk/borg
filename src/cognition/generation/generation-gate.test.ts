@@ -118,6 +118,47 @@ describe("GenerationGate", () => {
     expect(result.classified).toBe(true);
   });
 
+  it("forces suppression when active stop classifier says proceed but not substantive", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        gateResponse({
+          decision: "proceed",
+          substantive: false,
+          reason: "The current turn is still not substantive.",
+        }),
+      ],
+    });
+    const gate = new GenerationGate({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(),
+      model: "test-background",
+      hardCapTurns: 50,
+    });
+    const workingMemory = setStopUntilSubstantiveContent(
+      createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      {
+        provenance: "self_commitment_extractor",
+        sourceStreamEntryId: createStreamEntryId(),
+        reason: "The assistant promised to stop.",
+        sinceTurn: 1,
+      },
+    );
+
+    const result = await gate.evaluate({
+      userMessage: "No.",
+      workingMemory: {
+        ...workingMemory,
+        turn_counter: 2,
+      },
+      recencyMessages: [],
+    });
+
+    expect(result.action).toBe("suppress");
+    expect(result.reason).toBe("active_discourse_stop");
+    expect(result.clearDiscourseStop).toBe(false);
+    expect(result.classified).toBe(true);
+  });
+
   it("classifies sustained minimal loops before allowing another response", async () => {
     const llm = new FakeLLMClient({
       responses: [

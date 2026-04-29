@@ -211,6 +211,30 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("Compare against the last clean release state");
   });
 
+  it("renders active discourse stop state in working state", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: {
+              provenance: "validator",
+              source_stream_entry_id: "strm_aaaaaaaaaaaaaaaa" as never,
+              reason: "Output validator suppressed generation.",
+              since_turn: 7,
+            },
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_working_state");
+
+    expect(block).toContain(
+      "Discourse control: stop-until-substantive-content active since turn 7 (provenance: validator). Minimal input does not require a response.",
+    );
+  });
+
   it("renders the selected skill first with up to two evaluated alternatives", () => {
     const tracePath = makeSkill(
       "skl_aaaaaaaaaaaaaaaa",

@@ -352,6 +352,13 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
     }
   }
 
+  const stopState = workingMemory.discourse_state?.stop_until_substantive_content ?? null;
+  if (stopState !== null) {
+    lines.push(
+      `Discourse control: stop-until-substantive-content active since turn ${stopState.since_turn} (provenance: ${stopState.provenance}). Minimal input does not require a response.`,
+    );
+  }
+
   const pendingAttempts = workingMemory.pending_procedural_attempts ?? [];
   if (pendingAttempts.length > 0) {
     lines.push(

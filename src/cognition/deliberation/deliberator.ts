@@ -311,48 +311,7 @@ export class Deliberator {
       turnId: context.turnId,
     });
     const plan = planner.plan;
-
-    // Verification steps from the plan drive any secondary retrieval. If the
-    // plan didn't surface anything to double-check, we skip the re-retrieve
-    // call entirely (Phase D removed the regex-on-scratchpad approach).
-    const verificationQuery = plan === null ? "" : plan.verification_steps.join("; ").trim();
-    const secondaryRetrieval =
-      verificationQuery.length > 0 && context.reRetrieve !== undefined
-        ? await context.reRetrieve(verificationQuery, { limit: 3 })
-        : [];
-
-    const planSection = plan === null ? null : formatTurnPlanForPrompt(plan);
     const thoughts = plan === null ? [] : [formatTurnPlanForThought(plan)];
-    const additionalRetrievalBlock = renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
-      {
-        tag: "borg_additional_retrieval",
-        content: summarizeRetrievedEpisodes(
-          "Additional retrieval",
-          secondaryRetrieval,
-          retrievalContextBudget,
-        ),
-      },
-    ]);
-    const finalResponse = await this.runValidatedFinalizer({
-      context,
-      finalizerOptions: {
-        llmClient: this.options.llmClient,
-        dispatcher: this.options.toolDispatcher,
-        sessionId: context.sessionId,
-        audienceEntityId: context.audienceEntityId,
-        model: this.options.cognitionModel,
-        baseSystemPrompt,
-        initialMessages: dialogueBlockMessages,
-        tools: deliberatorTools,
-        userEntryId: context.userEntryId,
-        maxTokens: systemTwoMaxTokens,
-        path: "system_2",
-        additionalPromptSections: [additionalRetrievalBlock, planSection],
-        tracer: this.tracer,
-        turnId: context.turnId,
-      },
-      baseAdditionalPromptSections: [additionalRetrievalBlock, planSection],
-    });
     const persistedThoughtEntries = await persistDeliberationThoughts(streamWriter, thoughts);
     const thoughtsPersisted = persistedThoughtEntries.length > 0;
 
@@ -376,6 +335,69 @@ export class Deliberator {
         });
       }
     }
+
+    if (plan?.emission_recommendation === "no_output") {
+      return {
+        path: "system_2",
+        response: "",
+        emitted: false,
+        emission: {
+          kind: "suppressed",
+          reason: "s2_planner_no_output",
+        },
+        emissionRecommendation: "no_output",
+        thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),
+        thoughts,
+        tool_calls: [],
+        usage: planner.usage,
+        decision_reason: decision.reason,
+        retrievedEpisodes: [...context.retrievalResult],
+        referencedEpisodeIds: plan.referenced_episode_ids,
+        intents: [],
+        thoughtsPersisted,
+      };
+    }
+
+    // Verification steps from the plan drive any secondary retrieval. If the
+    // plan didn't surface anything to double-check, we skip the re-retrieve
+    // call entirely (Phase D removed the regex-on-scratchpad approach).
+    const verificationQuery = plan === null ? "" : plan.verification_steps.join("; ").trim();
+    const secondaryRetrieval =
+      verificationQuery.length > 0 && context.reRetrieve !== undefined
+        ? await context.reRetrieve(verificationQuery, { limit: 3 })
+        : [];
+
+    const additionalRetrievalBlock = renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
+      {
+        tag: "borg_additional_retrieval",
+        content: summarizeRetrievedEpisodes(
+          "Additional retrieval",
+          secondaryRetrieval,
+          retrievalContextBudget,
+        ),
+      },
+    ]);
+    const planSection = plan === null ? null : formatTurnPlanForPrompt(plan);
+    const finalResponse = await this.runValidatedFinalizer({
+      context,
+      finalizerOptions: {
+        llmClient: this.options.llmClient,
+        dispatcher: this.options.toolDispatcher,
+        sessionId: context.sessionId,
+        audienceEntityId: context.audienceEntityId,
+        model: this.options.cognitionModel,
+        baseSystemPrompt,
+        initialMessages: dialogueBlockMessages,
+        tools: deliberatorTools,
+        userEntryId: context.userEntryId,
+        maxTokens: systemTwoMaxTokens,
+        path: "system_2",
+        additionalPromptSections: [additionalRetrievalBlock, planSection],
+        tracer: this.tracer,
+        turnId: context.turnId,
+      },
+      baseAdditionalPromptSections: [additionalRetrievalBlock, planSection],
+    });
     const usage = aggregateUsage(planner.usage, finalResponse.result.usage);
     const emission =
       finalResponse.suppressedFailure === null
