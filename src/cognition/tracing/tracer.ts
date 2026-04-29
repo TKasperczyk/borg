@@ -21,7 +21,6 @@ export type TurnTraceEventName =
   | "plan_persisted"
   | "plan_persistence_skipped"
   | "generation_suppressed"
-  | "output_validator_blocked"
   | "discourse_state_set"
   | "discourse_state_cleared"
   | "discourse_state_hard_cap"

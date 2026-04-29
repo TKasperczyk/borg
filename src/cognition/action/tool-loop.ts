@@ -54,6 +54,7 @@ export type ExecuteToolLoopOptions = {
   thinking?: LLMConverseOptions["thinking"];
   maxIterations?: number;
   maxToolCallsPerIteration?: number;
+  terminalToolNames?: readonly string[];
   tracer?: TurnTracer;
   turnId?: string;
   traceLabel?: string;
@@ -63,7 +64,8 @@ export type ToolLoopResult = {
   text: string;
   iterations: number;
   toolCallsMade: ToolLoopCallRecord[];
-  stopReason: "text" | "max_iterations";
+  terminalToolCalls: LLMToolUseBlock[];
+  stopReason: "text" | "max_iterations" | "terminal_tool";
   usage: ToolLoopUsage;
 };
 
@@ -190,6 +192,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
   const messages = options.initialMessages.map((message) => cloneMessage(message));
   const anthropicTools = toAnthropicToolDefinitions(options.tools);
   const allowedToolNames = new Set(options.tools.map((tool) => tool.name));
+  const terminalToolNames = new Set(options.terminalToolNames ?? []);
   const toolCallsMade: ToolLoopCallRecord[] = [];
   let iterations = 0;
   let toolsEnabled = anthropicTools.length > 0;
@@ -236,6 +239,9 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
     usage = aggregateUsage(usage, response);
 
     const toolUseBlocks = response.messageBlocks.filter(isToolUseBlock);
+    const terminalToolCalls = toolUseBlocks.filter(
+      (block) => allowedToolNames.has(block.name) && terminalToolNames.has(block.name),
+    );
 
     if (traceEnabled && options.turnId !== undefined) {
       options.tracer?.emit("llm_call_response", {
@@ -258,11 +264,23 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       });
     }
 
+    if (toolsEnabled && terminalToolCalls.length > 0) {
+      return {
+        text: extractText(response.messageBlocks),
+        iterations,
+        toolCallsMade,
+        terminalToolCalls,
+        stopReason: "terminal_tool",
+        usage,
+      };
+    }
+
     if (!toolsEnabled || toolUseBlocks.length === 0) {
       return {
         text: extractText(response.messageBlocks),
         iterations,
         toolCallsMade,
+        terminalToolCalls: [],
         stopReason: forcedTextOnly ? "max_iterations" : "text",
         usage,
       };

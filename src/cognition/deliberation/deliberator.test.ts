@@ -162,6 +162,66 @@ describe("deliberator", () => {
     ]);
   });
 
+  it("treats finalizer no_output tool calls as suppressed S1 emissions", async () => {
+    for (const text of ["", "This text must be discarded."]) {
+      const llm = new FakeLLMClient({
+        responses: [
+          {
+            text,
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_no_output",
+                name: "no_output",
+                input: {},
+              },
+            ],
+          },
+        ],
+      });
+      const deliberator = createDeliberator(llm, tempDirs);
+
+      const result = await deliberator.run({
+        sessionId: DEFAULT_SESSION_ID,
+        userMessage: "Please continue with the actual topic.",
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+          temporalCue: null,
+        },
+        retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+        retrievalConfidence: makeRetrievalConfidence(),
+        workingMemory: {
+          session_id: DEFAULT_SESSION_ID,
+          turn_counter: 1,
+          current_focus: null,
+          hot_entities: [],
+          pending_intents: [],
+          pending_social_attribution: null,
+          pending_trait_attribution: null,
+          mood: null,
+          pending_procedural_attempts: [],
+          suppressed: [],
+          mode: "problem_solving",
+          updated_at: 0,
+        },
+        selfSnapshot: { values: [], goals: [], traits: [] },
+        options: { stakes: "low" },
+      });
+
+      expect(result.response).toBe("");
+      expect(result.emitted).toBe(false);
+      expect(result.emission).toEqual({
+        kind: "suppressed",
+        reason: "no_output_tool",
+      });
+      expect(result.tool_calls).toEqual([]);
+    }
+  });
+
   it("passes only deliberator-allowed tools to the final-response loop", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -239,7 +299,10 @@ describe("deliberator", () => {
       options: { stakes: "low" },
     });
 
-    expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual(["tool.test.visible"]);
+    expect(llm.converseRequests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "tool.test.visible",
+      "no_output",
+    ]);
     expect(result.tool_calls).toMatchObject([
       {
         callId: "toolu_visible",
@@ -465,6 +528,108 @@ describe("deliberator", () => {
         .filter((entry) => entry.kind === "thought");
       expect(thoughts).toHaveLength(1);
       expect(String(thoughts[0]?.content)).toContain("emission: no_output");
+    } finally {
+      writer.close();
+    }
+  });
+
+  it("persists S2 plan audit when the finalizer calls no_output", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_emit",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+                referenced_episode_ids: [],
+                intents: [],
+                emission_recommendation: "emit",
+              },
+            },
+          ],
+        },
+        {
+          text: "This text must be discarded.",
+          input_tokens: 12,
+          output_tokens: 6,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_no_output",
+              name: "no_output",
+              input: {},
+            },
+          ],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+    const streamDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(streamDir);
+    const writer = new StreamWriter({
+      dataDir: streamDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(0),
+    });
+
+    try {
+      const result = await deliberator.run(
+        {
+          sessionId: DEFAULT_SESSION_ID,
+          userMessage: "Reflect on whether this needs a response.",
+          perception: {
+            entities: [],
+            mode: "reflective",
+            affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+            temporalCue: null,
+          },
+          retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+          retrievalConfidence: makeRetrievalConfidence(),
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 2,
+            current_focus: null,
+            hot_entities: [],
+            pending_intents: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
+            suppressed: [],
+            mode: "reflective",
+            updated_at: 0,
+          },
+          selfSnapshot: { values: [], goals: [], traits: [] },
+          options: { stakes: "high" },
+        },
+        writer,
+      );
+
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toEqual({
+        kind: "suppressed",
+        reason: "no_output_tool",
+      });
+      expect(result.thoughtsPersisted).toBe(true);
+      expect(result.thoughtStreamEntryIds).toHaveLength(1);
+      expect(llm.requests).toHaveLength(2);
+      const thoughts = new StreamReader({
+        dataDir: streamDir,
+        sessionId: DEFAULT_SESSION_ID,
+      })
+        .tail(10)
+        .filter((entry) => entry.kind === "thought");
+      expect(thoughts).toHaveLength(1);
     } finally {
       writer.close();
     }

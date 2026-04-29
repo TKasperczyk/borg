@@ -97,7 +97,7 @@ export const pendingProceduralAttemptSchema = z.object({
 export const discourseStopProvenanceSchema = z.enum([
   "generation_gate",
   "self_commitment_extractor",
-  "validator",
+  "no_output_tool",
   "s2_planner_no_output",
 ]);
 

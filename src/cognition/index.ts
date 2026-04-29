@@ -37,12 +37,6 @@ export {
   type GenerationGateStructuralSignals,
 } from "./generation/generation-gate.js";
 export {
-  renderOutputValidatorRetrySection,
-  validateAssistantOutput,
-  type OutputValidationFailure,
-  type OutputValidationResult,
-} from "./generation/output-validator.js";
-export {
   StopCommitmentExtractor,
   type ExtractStopCommitmentInput,
   type StopCommitmentExtraction,

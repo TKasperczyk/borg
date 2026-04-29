@@ -62,6 +62,22 @@ function textResponse(text: string) {
   };
 }
 
+function noOutputResponse(text = "") {
+  return {
+    text,
+    input_tokens: 8,
+    output_tokens: 4,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_no_output",
+        name: "no_output",
+        input: {},
+      },
+    ],
+  };
+}
+
 function reflectionResponse() {
   return {
     text: "",
@@ -136,15 +152,10 @@ function agentMessages(borg: Borg): string[] {
 }
 
 describe("stop primitive v8 regressions", () => {
-  it("blocks v8 Human-label assistant drafts and persists no role-label agent messages", async () => {
-    for (const invalidDraft of [
-      "Human: ---",
-      "Human: Done.",
-      "Human: (silence)",
-      "Human: Right.",
-    ]) {
+  it("suppresses finalizer no_output tool calls and persists discourse state", async () => {
+    for (const finalizerText of ["", "This text must be discarded."]) {
       const llm = new FakeLLMClient({
-        responses: [textResponse(invalidDraft), textResponse(invalidDraft)],
+        responses: [noOutputResponse(finalizerText)],
       });
       const borg = await openRegressionBorg(llm);
 
@@ -152,42 +163,27 @@ describe("stop primitive v8 regressions", () => {
         const result = await borg.turn({
           userMessage: "Please continue with the actual topic.",
         });
+        const entries = borg.stream.tail(10);
+        const suppressionEntry = entries.find((entry) => entry.kind === "agent_suppressed");
+        const activeStop = borg.workmem.load().discourse_state?.stop_until_substantive_content;
 
         expect(result.emitted).toBe(false);
+        expect(result.response).toBe("");
         expect(result.emission).toMatchObject({
           kind: "suppressed",
-          reason: "output_validator",
+          reason: "no_output_tool",
         });
-        expect(agentMessages(borg).some((message) => /^Human:/u.test(message))).toBe(false);
+        expect(agentMessages(borg)).toEqual([]);
+        expect(suppressionEntry?.content).toMatchObject({
+          reason: "no_output_tool",
+        });
+        expect(activeStop).toMatchObject({
+          provenance: "no_output_tool",
+          source_stream_entry_id: suppressionEntry?.id,
+        });
       } finally {
         await borg.close();
       }
-    }
-  });
-
-  it("blocks Human: No. and leaves validator discourse state active", async () => {
-    const llm = new FakeLLMClient({
-      responses: [textResponse("Human: No."), textResponse("Human: No.")],
-    });
-    const borg = await openRegressionBorg(llm);
-
-    try {
-      const result = await borg.turn({
-        userMessage: "Please continue with the actual topic.",
-      });
-      const activeStop = borg.workmem.load().discourse_state?.stop_until_substantive_content;
-
-      expect(result.emitted).toBe(false);
-      expect(result.emission).toMatchObject({
-        kind: "suppressed",
-        reason: "output_validator",
-      });
-      expect(activeStop).toMatchObject({
-        provenance: "validator",
-      });
-      expect(agentMessages(borg).some((message) => /^Human:/u.test(message))).toBe(false);
-    } finally {
-      await borg.close();
     }
   });
 

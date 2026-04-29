@@ -29,5 +29,5 @@ export const IDENTITY_POSTURE_SECTION = [
 ].join("\n");
 export const LOOP_BREAKING_POSTURE_SECTION = [
   "Loop-breaking posture:",
-  "Role labels such as Human: or Assistant: are never response content. If the right action is no response, emit no assistant message; do not write '(no response)' or similar. After committing to stop pending substantive content, do not re-acknowledge minimal probes.",
+  "If you don't want to emit a response, call the no_output tool. The tool call alone is the suppression signal. Don't narrate silence with parentheticals like '(no response)' or '(stopping.)'. Don't write role labels (Human:, Assistant:) at line start.",
 ].join("\n");

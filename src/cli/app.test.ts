@@ -1273,7 +1273,15 @@ describe("cli", () => {
 
     expect(
       await runCli(
-        ["node", "borg", "turn", "Atlas deploy has a pnpm failure", "--stakes", "high", "--verbose"],
+        [
+          "node",
+          "borg",
+          "turn",
+          "Atlas deploy has a pnpm failure",
+          "--stakes",
+          "high",
+          "--verbose",
+        ],
         {
           stdout: stdout.stream,
           stderr: stderr.stream,
@@ -1317,18 +1325,17 @@ describe("cli", () => {
           ],
         },
         {
-          text: "Human: Done.",
+          text: "",
           input_tokens: 8,
           output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-        {
-          text: "Human: Done.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_no_output_cli",
+              name: "no_output",
+              input: {},
+            },
+          ],
         },
       ],
     });

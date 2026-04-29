@@ -10,7 +10,7 @@ import {
   UNTRUSTED_DATA_PREAMBLE,
 } from "./constants.js";
 import { buildDialogueMessages, toContentBlockMessages } from "./dialogue.js";
-import { runFinalizer } from "./finalizer.js";
+import { NO_OUTPUT_FINALIZER_TOOL_NAME, runFinalizer } from "./finalizer.js";
 import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
 import { summarizeRetrievedEpisodes } from "./prompt/retrieval.js";
@@ -19,12 +19,7 @@ import { buildBaseSystemPrompt } from "./prompt/system-prompt.js";
 import { runS2Planner } from "./s2-planner.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
-import { isMinimalUserGenerationInput } from "../generation/generation-gate.js";
-import {
-  renderOutputValidatorRetrySection,
-  validateAssistantOutput,
-  type OutputValidationFailure,
-} from "../generation/output-validator.js";
+import type { GenerationSuppressionReason, PendingTurnEmission } from "../generation/types.js";
 import type {
   DeliberationContext,
   DeliberationResult,
@@ -74,29 +69,46 @@ function dedupeRetrievedEpisodes(results: readonly RetrievedEpisode[]): Retrieve
 
 type FinalizerResult = Awaited<ReturnType<typeof runFinalizer>>;
 
-type ValidatedFinalizerResult = {
-  result: FinalizerResult;
-  suppressedFailure: OutputValidationFailure | null;
-  retryUsed: boolean;
+type FinalizerEmission = {
+  response: string;
+  emitted: boolean;
+  emission: PendingTurnEmission;
 };
 
-function combineFinalizerResults(
-  first: FinalizerResult,
-  second: FinalizerResult,
-): FinalizerResult {
-  return {
-    text: second.text,
-    iterations: first.iterations + second.iterations,
-    toolCallsMade: [...first.toolCallsMade, ...second.toolCallsMade],
-    stopReason: second.stopReason,
-    usage: aggregateUsage(first.usage, second.usage),
-  };
+function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppressionReason | null {
+  if (result.terminalToolCalls.some((call) => call.name === NO_OUTPUT_FINALIZER_TOOL_NAME)) {
+    return "no_output_tool";
+  }
+
+  if (result.text.trim().length === 0) {
+    return "empty_finalizer";
+  }
+
+  return null;
 }
 
-function allowsOutputValidatorRetry(context: DeliberationContext): boolean {
-  const activeStop = context.workingMemory.discourse_state?.stop_until_substantive_content ?? null;
+function buildFinalizerEmission(result: FinalizerResult): FinalizerEmission {
+  const suppressionReason = finalizerSuppressionReason(result);
 
-  return activeStop === null && !isMinimalUserGenerationInput(context.userMessage);
+  if (suppressionReason !== null) {
+    return {
+      response: "",
+      emitted: false,
+      emission: {
+        kind: "suppressed",
+        reason: suppressionReason,
+      },
+    };
+  }
+
+  return {
+    response: result.text,
+    emitted: true,
+    emission: {
+      kind: "message",
+      content: result.text,
+    },
+  };
 }
 
 export class Deliberator {
@@ -106,97 +118,6 @@ export class Deliberator {
   constructor(private readonly options: DeliberatorOptions) {
     this.tracer = options.tracer ?? NOOP_TRACER;
     this.clock = options.clock ?? new SystemClock();
-  }
-
-  private emitOutputValidatorBlocked(input: {
-    context: DeliberationContext;
-    path: "system_1" | "system_2";
-    failure: OutputValidationFailure;
-    retry: boolean;
-  }): void {
-    if (!this.tracer.enabled || input.context.turnId === undefined) {
-      return;
-    }
-
-    this.tracer.emit("output_validator_blocked", {
-      turnId: input.context.turnId,
-      path: input.path,
-      reason: input.failure.reason,
-      kind: input.failure.kind,
-      retry: input.retry,
-      ...(input.failure.line === undefined ? {} : { line: input.failure.line }),
-      ...(input.failure.label === undefined ? {} : { label: input.failure.label }),
-    });
-  }
-
-  private async runValidatedFinalizer(input: {
-    context: DeliberationContext;
-    finalizerOptions: Parameters<typeof runFinalizer>[0];
-    baseAdditionalPromptSections?: readonly (string | null)[];
-  }): Promise<ValidatedFinalizerResult> {
-    const first = await runFinalizer(input.finalizerOptions);
-    const firstValidation = validateAssistantOutput(first.text);
-
-    if (firstValidation.ok) {
-      return {
-        result: first,
-        suppressedFailure: null,
-        retryUsed: false,
-      };
-    }
-
-    const allowRetry = allowsOutputValidatorRetry(input.context);
-    this.emitOutputValidatorBlocked({
-      context: input.context,
-      path: input.finalizerOptions.path,
-      failure: firstValidation.failure,
-      retry: allowRetry,
-    });
-
-    if (!allowRetry) {
-      return {
-        result: {
-          ...first,
-          text: "",
-        },
-        suppressedFailure: firstValidation.failure,
-        retryUsed: false,
-      };
-    }
-
-    const retry = await runFinalizer({
-      ...input.finalizerOptions,
-      additionalPromptSections: [
-        ...(input.baseAdditionalPromptSections ?? []),
-        renderOutputValidatorRetrySection(firstValidation.failure),
-      ],
-    });
-    const combined = combineFinalizerResults(first, retry);
-    const retryValidation = validateAssistantOutput(retry.text);
-
-    if (retryValidation.ok) {
-      return {
-        result: combined,
-        suppressedFailure: null,
-        retryUsed: true,
-      };
-    }
-
-    this.emitOutputValidatorBlocked({
-      context: input.context,
-      path: input.finalizerOptions.path,
-      failure: retryValidation.failure,
-      retry: false,
-    });
-
-    return {
-      result: {
-        ...combined,
-        text: "",
-      },
-      suppressedFailure: retryValidation.failure,
-      retryUsed: true,
-    };
   }
 
   async run(
@@ -247,45 +168,33 @@ export class Deliberator {
     const deliberatorTools = this.options.toolDispatcher.listTools("deliberator");
 
     if (decision.path === "system_1") {
-      const response = await this.runValidatedFinalizer({
-        context,
-        finalizerOptions: {
-          llmClient: this.options.llmClient,
-          dispatcher: this.options.toolDispatcher,
-          sessionId: context.sessionId,
-          audienceEntityId: context.audienceEntityId,
-          model: this.options.cognitionModel,
-          baseSystemPrompt,
-          initialMessages: dialogueBlockMessages,
-          tools: deliberatorTools,
-          userEntryId: context.userEntryId,
-          maxTokens: systemOneMaxTokens,
-          path: "system_1",
-          tracer: this.tracer,
-          turnId: context.turnId,
-        },
+      const response = await runFinalizer({
+        llmClient: this.options.llmClient,
+        dispatcher: this.options.toolDispatcher,
+        sessionId: context.sessionId,
+        audienceEntityId: context.audienceEntityId,
+        model: this.options.cognitionModel,
+        baseSystemPrompt,
+        initialMessages: dialogueBlockMessages,
+        tools: deliberatorTools,
+        userEntryId: context.userEntryId,
+        maxTokens: systemOneMaxTokens,
+        path: "system_1",
+        tracer: this.tracer,
+        turnId: context.turnId,
       });
-      const emission =
-        response.suppressedFailure === null
-          ? ({
-              kind: "message",
-              content: response.result.text,
-            } as const)
-          : ({
-              kind: "suppressed",
-              reason: response.suppressedFailure.reason,
-            } as const);
+      const finalized = buildFinalizerEmission(response);
 
       return {
         path: "system_1",
-        response: response.suppressedFailure === null ? response.result.text : "",
-        emitted: response.suppressedFailure === null,
-        emission,
+        response: finalized.response,
+        emitted: finalized.emitted,
+        emission: finalized.emission,
         emissionRecommendation: "emit",
         thoughtStreamEntryIds: [],
         thoughts: [],
-        tool_calls: response.result.toolCallsMade,
-        usage: response.result.usage,
+        tool_calls: response.toolCallsMade,
+        usage: response.usage,
         decision_reason: decision.reason,
         retrievedEpisodes: [...context.retrievalResult],
         referencedEpisodeIds: null,
@@ -378,47 +287,34 @@ export class Deliberator {
       },
     ]);
     const planSection = plan === null ? null : formatTurnPlanForPrompt(plan);
-    const finalResponse = await this.runValidatedFinalizer({
-      context,
-      finalizerOptions: {
-        llmClient: this.options.llmClient,
-        dispatcher: this.options.toolDispatcher,
-        sessionId: context.sessionId,
-        audienceEntityId: context.audienceEntityId,
-        model: this.options.cognitionModel,
-        baseSystemPrompt,
-        initialMessages: dialogueBlockMessages,
-        tools: deliberatorTools,
-        userEntryId: context.userEntryId,
-        maxTokens: systemTwoMaxTokens,
-        path: "system_2",
-        additionalPromptSections: [additionalRetrievalBlock, planSection],
-        tracer: this.tracer,
-        turnId: context.turnId,
-      },
-      baseAdditionalPromptSections: [additionalRetrievalBlock, planSection],
+    const finalResponse = await runFinalizer({
+      llmClient: this.options.llmClient,
+      dispatcher: this.options.toolDispatcher,
+      sessionId: context.sessionId,
+      audienceEntityId: context.audienceEntityId,
+      model: this.options.cognitionModel,
+      baseSystemPrompt,
+      initialMessages: dialogueBlockMessages,
+      tools: deliberatorTools,
+      userEntryId: context.userEntryId,
+      maxTokens: systemTwoMaxTokens,
+      path: "system_2",
+      additionalPromptSections: [additionalRetrievalBlock, planSection],
+      tracer: this.tracer,
+      turnId: context.turnId,
     });
-    const usage = aggregateUsage(planner.usage, finalResponse.result.usage);
-    const emission =
-      finalResponse.suppressedFailure === null
-        ? ({
-            kind: "message",
-            content: finalResponse.result.text,
-          } as const)
-        : ({
-            kind: "suppressed",
-            reason: finalResponse.suppressedFailure.reason,
-          } as const);
+    const usage = aggregateUsage(planner.usage, finalResponse.usage);
+    const finalized = buildFinalizerEmission(finalResponse);
 
     return {
       path: "system_2",
-      response: finalResponse.suppressedFailure === null ? finalResponse.result.text : "",
-      emitted: finalResponse.suppressedFailure === null,
-      emission,
+      response: finalized.response,
+      emitted: finalized.emitted,
+      emission: finalized.emission,
       emissionRecommendation: plan?.emission_recommendation ?? "emit",
       thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),
       thoughts,
-      tool_calls: finalResponse.result.toolCallsMade,
+      tool_calls: finalResponse.toolCallsMade,
       usage,
       decision_reason: decision.reason,
       retrievedEpisodes: dedupeRetrievedEpisodes([

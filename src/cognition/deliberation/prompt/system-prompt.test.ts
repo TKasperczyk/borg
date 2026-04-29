@@ -218,9 +218,9 @@ describe("buildBaseSystemPrompt", () => {
           ...makeContext().workingMemory,
           discourse_state: {
             stop_until_substantive_content: {
-              provenance: "validator",
+              provenance: "no_output_tool",
               source_stream_entry_id: "strm_aaaaaaaaaaaaaaaa" as never,
-              reason: "Output validator suppressed generation.",
+              reason: "Finalizer called no_output.",
               since_turn: 7,
             },
           },
@@ -231,7 +231,7 @@ describe("buildBaseSystemPrompt", () => {
     const block = extractBlock(prompt, "borg_discourse_control");
 
     expect(block).toContain(
-      "Discourse control: stop-until-substantive-content active since turn 7 (provenance: validator). Minimal input does not require a response.",
+      "Discourse control: stop-until-substantive-content active since turn 7 (provenance: no_output_tool). Minimal input does not require a response.",
     );
     expect(extractBlock(prompt, "borg_working_state")).not.toContain("Discourse control");
   });
@@ -457,8 +457,8 @@ describe("buildBaseSystemPrompt", () => {
     const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
 
     expect(prompt).toContain("Loop-breaking posture:");
-    expect(prompt).toContain("Role labels such as Human: or Assistant:");
-    expect(prompt).toContain("emit no assistant message");
-    expect(prompt).toContain("do not re-acknowledge minimal probes");
+    expect(prompt).toContain("call the no_output tool");
+    expect(prompt).toContain("tool call alone is the suppression signal");
+    expect(prompt).toContain("Don't write role labels (Human:, Assistant:) at line start.");
   });
 });

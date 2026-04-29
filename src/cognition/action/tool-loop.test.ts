@@ -114,6 +114,73 @@ describe("executeToolLoop", () => {
     expect(llm.converseRequests[0]?.tools).toBeUndefined();
   });
 
+  it("returns immediately when a terminal tool is called", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const dispatcher = createDispatcher(tempDir);
+    const terminalTool: ToolDefinition = {
+      name: "no_output",
+      description: "Terminal suppression signal.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({}).strict(),
+      async invoke() {
+        throw new Error("terminal tools are not dispatched");
+      },
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        [
+          {
+            type: "text",
+            text: "discard me",
+          },
+          {
+            type: "tool_use",
+            id: "toolu_terminal",
+            name: "no_output",
+            input: {},
+          },
+        ],
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      systemPrompt: "be concise",
+      initialMessages: baseMessages(),
+      tools: [terminalTool],
+      terminalToolNames: ["no_output"],
+      origin: "deliberator",
+      budget: "test",
+    });
+
+    expect(result).toMatchObject({
+      text: "discard me",
+      iterations: 0,
+      toolCallsMade: [],
+      stopReason: "terminal_tool",
+    });
+    expect(result.terminalToolCalls).toMatchObject([
+      {
+        id: "toolu_terminal",
+        name: "no_output",
+        input: {},
+      },
+    ]);
+    expect(llm.converseRequests).toHaveLength(1);
+    expect(
+      new StreamReader({
+        dataDir: tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+      }).tail(10),
+    ).toEqual([]);
+  });
+
   it("runs a single tool-use round and returns the final text", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

@@ -397,7 +397,9 @@ export class TurnOrchestrator {
   private setDiscourseStopState(input: {
     workingMemory: WorkingMemory;
     provenance: Parameters<typeof setStopUntilSubstantiveContent>[1]["provenance"];
-    sourceStreamEntryId?: Parameters<typeof setStopUntilSubstantiveContent>[1]["sourceStreamEntryId"];
+    sourceStreamEntryId?: Parameters<
+      typeof setStopUntilSubstantiveContent
+    >[1]["sourceStreamEntryId"];
     reason: string;
     turnId: string;
   }): WorkingMemory {
@@ -613,8 +615,7 @@ export class TurnOrchestrator {
             activeTurns: gateResult.signals.hardCapActiveTurns,
             hardCapTurns: this.options.config.generation.discourseStateHardCapTurns,
             stateReason:
-              workingMemory.discourse_state?.stop_until_substantive_content?.reason ??
-              "unknown",
+              workingMemory.discourse_state?.stop_until_substantive_content?.reason ?? "unknown",
           });
         }
 
@@ -628,8 +629,7 @@ export class TurnOrchestrator {
 
         if (gateResult.action === "suppress") {
           const suppressionReason = gateResult.reason ?? "generation_gate";
-          const activeStop =
-            workingMemory.discourse_state?.stop_until_substantive_content ?? null;
+          const activeStop = workingMemory.discourse_state?.stop_until_substantive_content ?? null;
 
           if (activeStop === null) {
             workingMemory = this.setDiscourseStopState({
@@ -716,8 +716,7 @@ export class TurnOrchestrator {
           goalVectors: [],
           valueVectors: [],
         };
-        let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> =
-          new Map();
+        let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> = new Map();
 
         try {
           selfScoringFeatures = await buildSelfScoringFeatureSet({
@@ -933,20 +932,16 @@ export class TurnOrchestrator {
             reason: actionEmission.reason,
             markerEntryId: persistedAgentEntry.id,
           };
-          const validatorSuppressionReasons = new Set([
-            "output_validator",
-            "empty_finalizer",
-            "invalid_non_generation_text",
-          ]);
-          const suppressedWorkingMemory = validatorSuppressionReasons.has(actionEmission.reason)
-            ? this.setDiscourseStopState({
-                workingMemory: actionResult.workingMemory,
-                provenance: "validator",
-                sourceStreamEntryId: persistedAgentEntry.id,
-                reason: `Output validator suppressed generation: ${actionEmission.reason}.`,
-                turnId,
-              })
-            : actionResult.workingMemory;
+          const suppressedWorkingMemory =
+            actionEmission.reason === "no_output_tool"
+              ? this.setDiscourseStopState({
+                  workingMemory: actionResult.workingMemory,
+                  provenance: "no_output_tool",
+                  sourceStreamEntryId: persistedAgentEntry.id,
+                  reason: "Finalizer called no_output for this turn.",
+                  turnId,
+                })
+              : actionResult.workingMemory;
 
           if (this.tracer.enabled) {
             this.tracer.emit("generation_suppressed", {
@@ -986,9 +981,14 @@ export class TurnOrchestrator {
           llmClient,
           model: this.options.config.anthropic.models.background,
           onDegraded: (reason, error) =>
-            this.appendHookFailureEvent(streamWriter, "self_stop_commitment_extraction", error ?? reason, {
-              reason,
-            }),
+            this.appendHookFailureEvent(
+              streamWriter,
+              "self_stop_commitment_extraction",
+              error ?? reason,
+              {
+                reason,
+              },
+            ),
         });
         const stopCommitment = await stopCommitmentExtractor.extract({
           userMessage: input.userMessage,

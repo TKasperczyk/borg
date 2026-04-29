@@ -3,9 +3,8 @@ import type { StreamEntryId } from "../../util/ids.js";
 export type GenerationSuppressionReason =
   | "generation_gate"
   | "active_discourse_stop"
-  | "output_validator"
   | "empty_finalizer"
-  | "invalid_non_generation_text"
+  | "no_output_tool"
   | "s2_planner_no_output";
 
 export type PendingTurnEmission =

@@ -130,18 +130,17 @@ describe("SimulatorRunner", () => {
             ],
           },
           {
-            text: "Human: Done.",
+            text: "",
             input_tokens: 8,
             output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Assistant: Still invalid.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_no_output",
+                name: "no_output",
+                input: {},
+              },
+            ],
           },
         ],
       }),
