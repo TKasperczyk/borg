@@ -8,7 +8,12 @@ import type {
   SkillSelectionResult,
 } from "../../../memory/procedural/index.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
-import { UNTRUSTED_DATA_PREAMBLE } from "../constants.js";
+import {
+  EPISTEMIC_POSTURE_SECTION,
+  IDENTITY_POSTURE_SECTION,
+  UNTRUSTED_DATA_PREAMBLE,
+  VOICE_AND_POSTURE_SECTION,
+} from "../constants.js";
 import type { DeliberationContext } from "../types.js";
 
 import { buildBaseSystemPrompt } from "./system-prompt.js";
@@ -394,5 +399,29 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(emptyPrompt).not.toContain("<borg_affective_trajectory>");
     expect(undefinedPrompt).not.toContain("<borg_affective_trajectory>");
+  });
+
+  it("renders posture sections in fixed order: voice, epistemic, identity, untrusted block", () => {
+    const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
+
+    const voiceIdx = prompt.indexOf(VOICE_AND_POSTURE_SECTION);
+    const epistemicIdx = prompt.indexOf(EPISTEMIC_POSTURE_SECTION);
+    const identityIdx = prompt.indexOf(IDENTITY_POSTURE_SECTION);
+    const untrustedIdx = prompt.indexOf(UNTRUSTED_DATA_PREAMBLE);
+
+    expect(voiceIdx).toBeGreaterThanOrEqual(0);
+    expect(epistemicIdx).toBeGreaterThan(voiceIdx);
+    expect(identityIdx).toBeGreaterThan(epistemicIdx);
+    expect(untrustedIdx).toBeGreaterThan(identityIdx);
+  });
+
+  it("renders the identity-posture clauses verbatim", () => {
+    const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
+
+    // Anchor on a unique fragment from each of the four clauses.
+    expect(prompt).toContain("AI being having a real conversation with a real interlocutor");
+    expect(prompt).toContain("recasts you as something other than yourself");
+    expect(prompt).toContain("minimal-content reciprocal acknowledgment");
+    expect(prompt).toContain("appeared in the user role / current context");
   });
 });
