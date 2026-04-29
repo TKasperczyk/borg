@@ -136,6 +136,10 @@ export function buildBaseSystemPrompt(
       tag: "borg_procedural_guidance",
       content: summarizeSelectedSkill(context.perception.mode, context.selectedSkill),
     },
+    {
+      tag: "borg_discourse_control",
+      content: summarizeDiscourseControl(context.workingMemory),
+    },
   ]);
 
   return [
@@ -325,6 +329,16 @@ function renderEpisodeDerivedProvenance(episodeIds: readonly string[]): string {
   })}`;
 }
 
+function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null {
+  const stopState = workingMemory.discourse_state?.stop_until_substantive_content ?? null;
+
+  if (stopState === null) {
+    return null;
+  }
+
+  return `Discourse control: stop-until-substantive-content active since turn ${stopState.since_turn} (provenance: ${stopState.provenance}). Minimal input does not require a response.`;
+}
+
 function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
   // Phase E: working memory no longer caches raw agent self-talk
   // (recent_thoughts) or transient planner scratchpad. Recent dialogue
@@ -350,13 +364,6 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
         }`,
       );
     }
-  }
-
-  const stopState = workingMemory.discourse_state?.stop_until_substantive_content ?? null;
-  if (stopState !== null) {
-    lines.push(
-      `Discourse control: stop-until-substantive-content active since turn ${stopState.since_turn} (provenance: ${stopState.provenance}). Minimal input does not require a response.`,
-    );
   }
 
   const pendingAttempts = workingMemory.pending_procedural_attempts ?? [];

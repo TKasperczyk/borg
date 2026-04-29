@@ -211,7 +211,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("Compare against the last clean release state");
   });
 
-  it("renders active discourse stop state in working state", () => {
+  it("renders active discourse stop state in trusted guidance", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
         workingMemory: {
@@ -228,11 +228,12 @@ describe("buildBaseSystemPrompt", () => {
       }),
       PROMPT_OPTIONS,
     );
-    const block = extractBlock(prompt, "borg_working_state");
+    const block = extractBlock(prompt, "borg_discourse_control");
 
     expect(block).toContain(
       "Discourse control: stop-until-substantive-content active since turn 7 (provenance: validator). Minimal input does not require a response.",
     );
+    expect(extractBlock(prompt, "borg_working_state")).not.toContain("Discourse control");
   });
 
   it("renders the selected skill first with up to two evaluated alternatives", () => {
