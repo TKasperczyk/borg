@@ -60,7 +60,23 @@ function latencyBetween(
   const start = records.find((record) => record.event === startEvent);
   const end = [...records].reverse().find((record) => record.event === endEvent);
 
-  if (start === undefined || end === undefined || end.ts < start.ts) {
+  if (start === undefined || end === undefined) {
+    return null;
+  }
+
+  // Tracer records both `ts` (logical clock, can be a ManualClock that
+  // shares values across all events in a turn) and `wallMs`
+  // (performance.now monotonic real time). Latency is meaningful only
+  // off real time; fall back to ts only if wallMs is missing for some
+  // reason (older records).
+  const startWall = typeof start.wallMs === "number" ? start.wallMs : null;
+  const endWall = typeof end.wallMs === "number" ? end.wallMs : null;
+
+  if (startWall !== null && endWall !== null && endWall >= startWall) {
+    return Math.round(endWall - startWall);
+  }
+
+  if (end.ts < start.ts) {
     return null;
   }
 

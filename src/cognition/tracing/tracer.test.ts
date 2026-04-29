@@ -69,15 +69,16 @@ describe("TurnTracer", () => {
     expect(() => emitContractEvent(new NoopTracer())).not.toThrow();
     expect(() => emitContractEvent(tracer)).not.toThrow();
 
-    expect(readTraceEvents(tracePath)).toEqual([
-      {
-        ts: 42,
-        turnId: "turn_contract",
-        event: "recency_compiled",
-        messageCount: 0,
-        sourceEntryIds: [],
-      },
-    ]);
+    const events = readTraceEvents(tracePath);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      ts: 42,
+      turnId: "turn_contract",
+      event: "recency_compiled",
+      messageCount: 0,
+      sourceEntryIds: [],
+    });
+    expect(typeof events[0]?.wallMs).toBe("number");
   });
 
   it("writes valid JSONL with turn correlation", () => {
@@ -152,12 +153,14 @@ describe("TurnTracer", () => {
       success: true,
     });
 
-    expect(readTraceEvents(tracePath)[0]).toEqual({
+    const event = readTraceEvents(tracePath)[0];
+    expect(event).toMatchObject({
       ts: 500,
       turnId: "turn_env",
       event: "plan_extraction",
       success: true,
     });
+    expect(typeof event?.wallMs).toBe("number");
   });
 
   it("emits expected events in order for a full Borg turn", async () => {

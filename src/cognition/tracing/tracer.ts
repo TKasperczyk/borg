@@ -1,5 +1,6 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { serializeJsonValue, type JsonValue } from "../../util/json-value.js";
@@ -93,8 +94,15 @@ export class JsonlTracer implements TurnTracer {
 
   emit(event: TurnTraceEventName, data: TurnTraceData): void {
     const { turnId, ...payload } = data;
+    // ts uses the injected logical clock (ManualClock in tests, SystemClock
+    // in prod) so trace event ordering follows Borg's logical time.
+    // wallMs is high-resolution monotonic real time -- needed for intra-
+    // turn latency measurement (e.g., metrics.capture's
+    // retrieval/deliberation latency calculations) because under a
+    // ManualClock all events within one turn share the same logical ts.
     const entry: Record<string, JsonValue> = {
       ts: this.clock.now(),
+      wallMs: performance.now(),
       turnId,
       event,
     };
