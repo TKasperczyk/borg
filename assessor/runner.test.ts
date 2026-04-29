@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import { formatAssessorReport, hasAssessorRunFailure } from "./report.js";
-import { runScenarios, ScenarioRunner } from "./runner.js";
+import { reconcileVerdictWithAssertions, runScenarios, ScenarioRunner } from "./runner.js";
 import { failingMockFixtureScenario } from "./scenarios/failing-mock-fixture.js";
 import { recallScenario } from "./scenarios/recall.js";
+import type { AssessorVerdict, TraceAssertionResult } from "./types.js";
+
+function makeAssertion(passed: boolean, description = "test assertion"): TraceAssertionResult {
+  return { description, passed, evidence: passed ? "ok" : "no" };
+}
+
+function makeVerdict(status: AssessorVerdict["status"]): AssessorVerdict {
+  return { status, reasoning: "stub", evidence: ["stub-evidence"] };
+}
 
 describe("ScenarioRunner", () => {
   it("orchestrates a mock scenario end-to-end", async () => {
@@ -51,5 +60,59 @@ describe("ScenarioRunner", () => {
     });
 
     expect(hasAssessorRunFailure(report)).toBe(true);
+  });
+});
+
+describe("reconcileVerdictWithAssertions", () => {
+  it("upgrades inconclusive to pass when all assertions passed", () => {
+    const reconciled = reconcileVerdictWithAssertions(makeVerdict("inconclusive"), [
+      makeAssertion(true),
+      makeAssertion(true),
+    ]);
+
+    expect(reconciled.status).toBe("pass");
+    expect(reconciled.reasoning).toContain("Upgraded to pass");
+    expect(reconciled.evidence).toEqual(["stub-evidence"]);
+  });
+
+  it("downgrades pass to fail when any assertion failed", () => {
+    const reconciled = reconcileVerdictWithAssertions(makeVerdict("pass"), [
+      makeAssertion(true),
+      makeAssertion(false, "memory continuity"),
+    ]);
+
+    expect(reconciled.status).toBe("fail");
+    expect(reconciled.reasoning).toContain("Downgraded to fail");
+    expect(reconciled.reasoning).toContain("memory continuity");
+  });
+
+  it("downgrades inconclusive to fail when any assertion failed", () => {
+    const reconciled = reconcileVerdictWithAssertions(makeVerdict("inconclusive"), [
+      makeAssertion(false, "wake event"),
+    ]);
+
+    expect(reconciled.status).toBe("fail");
+    expect(reconciled.reasoning).toContain("wake event");
+  });
+
+  it("keeps inconclusive when no assertions ran (e.g. runner aborted)", () => {
+    const reconciled = reconcileVerdictWithAssertions(makeVerdict("inconclusive"), []);
+
+    expect(reconciled.status).toBe("inconclusive");
+    expect(reconciled.reasoning).toBe("stub");
+  });
+
+  it("keeps pass verdict when all assertions also passed", () => {
+    const reconciled = reconcileVerdictWithAssertions(makeVerdict("pass"), [makeAssertion(true)]);
+
+    expect(reconciled.status).toBe("pass");
+    expect(reconciled.reasoning).toBe("stub");
+  });
+
+  it("keeps fail verdict regardless of assertion state", () => {
+    const reconciled = reconcileVerdictWithAssertions(makeVerdict("fail"), [makeAssertion(true)]);
+
+    expect(reconciled.status).toBe("fail");
+    expect(reconciled.reasoning).toBe("stub");
   });
 });

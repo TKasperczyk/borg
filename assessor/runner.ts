@@ -339,6 +339,52 @@ function buildMockVerdict(
   };
 }
 
+// Combines the assessor's submitted verdict with independent trace
+// assertion results. Assertions are dispositive when they cover what
+// the assessor cannot directly observe (autonomous turns, mood-state
+// internals, cross-session retrieval); a passing assertion set rescues
+// an inconclusive verdict, and a failing assertion overrides a
+// surface-level pass.
+export function reconcileVerdictWithAssertions(
+  verdict: AssessorVerdict,
+  assertions: readonly TraceAssertionResult[],
+): AssessorVerdict {
+  if (assertions.length === 0) {
+    return verdict;
+  }
+
+  const allPassed = assertions.every((assertion) => assertion.passed);
+  const failedDescriptions = assertions
+    .filter((assertion) => !assertion.passed)
+    .map((assertion) => assertion.description);
+
+  if (verdict.status === "pass" && !allPassed) {
+    return {
+      status: "fail",
+      reasoning: `${verdict.reasoning}\n\nDowngraded to fail: trace assertion(s) failed even though the assessor verdict was pass: ${failedDescriptions.join("; ")}.`,
+      evidence: verdict.evidence,
+    };
+  }
+
+  if (verdict.status === "inconclusive" && allPassed) {
+    return {
+      status: "pass",
+      reasoning: `${verdict.reasoning}\n\nUpgraded to pass: all ${assertions.length} trace assertion(s) passed independently of the assessor verdict.`,
+      evidence: verdict.evidence,
+    };
+  }
+
+  if (verdict.status === "inconclusive" && !allPassed) {
+    return {
+      status: "fail",
+      reasoning: `${verdict.reasoning}\n\nDowngraded to fail: trace assertion(s) failed: ${failedDescriptions.join("; ")}.`,
+      evidence: verdict.evidence,
+    };
+  }
+
+  return verdict;
+}
+
 function costFor(turns: readonly ConversationTurn[], usage: AssessorUsage) {
   const borgTokens = turns.reduce(
     (sum, turn) => sum + (turn.usage?.input_tokens ?? 0) + (turn.usage?.output_tokens ?? 0),
@@ -432,7 +478,7 @@ export class ScenarioRunner {
 
       return {
         scenario: this.options.scenario,
-        verdict: assessed.verdict,
+        verdict: reconcileVerdictWithAssertions(assessed.verdict, assertions),
         turns,
         traceAssertions: assertions,
         coveredPhases: coveredPhases(transport.readTraceEvents()),
