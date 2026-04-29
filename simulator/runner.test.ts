@@ -2,8 +2,9 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { MaintenanceScheduler, type MaintenanceTickResult } from "../src/offline/scheduler.js";
 import { runSimulation } from "./runner.js";
 import { tomPersona } from "./personas/tom.js";
 
@@ -16,15 +17,32 @@ function tempDir(): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
+
   while (tempDirs.length > 0) {
     rmSync(tempDirs.pop() as string, { recursive: true, force: true });
   }
 });
 
+function spyMaintenanceTick() {
+  return vi
+    .spyOn(MaintenanceScheduler.prototype, "tick")
+    .mockImplementation(async (cadence): Promise<MaintenanceTickResult> => {
+      return {
+        status: "ok",
+        cadence,
+        ts: Date.now(),
+        processes: [],
+        result: null,
+      };
+    });
+}
+
 describe("SimulatorRunner", () => {
   it("runs a 20-turn mock simulation with probes, overseer checkpoints, and metrics", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
+    spyMaintenanceTick();
     const report = await runSimulation({
       runId: "sim-runner-test",
       persona: tomPersona,
@@ -66,5 +84,27 @@ describe("SimulatorRunner", () => {
     expect(report.overseerCheckpoints).toHaveLength(2);
     expect(metricsRows).toHaveLength(20);
     expect(metricsRows.at(-1)?.turn_counter).toBe(20);
+  });
+
+  it("runs periodic maintenance ticks on cadence in mock mode", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const tickSpy = spyMaintenanceTick();
+
+    await runSimulation({
+      runId: "sim-runner-maintenance-test",
+      persona: tomPersona,
+      totalTurns: 20,
+      probeEvery: 999,
+      checkEvery: 999,
+      maintenanceEvery: 10,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+
+    expect(tickSpy).toHaveBeenCalledTimes(2);
+    expect(tickSpy.mock.calls.map(([cadence]) => cadence)).toEqual(["light", "light"]);
   });
 });

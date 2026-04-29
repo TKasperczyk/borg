@@ -23,7 +23,10 @@ afterEach(() => {
   }
 });
 
-function fakeBorg(): Borg {
+function fakeBorg(counts: { semanticNodes?: number; semanticEdges?: number } = {}): Borg {
+  const semanticNodeCount = counts.semanticNodes ?? 1;
+  const semanticEdgeCount = counts.semanticEdges ?? 2;
+
   return {
     mood: {
       current: () => ({ valence: -0.2, arousal: 0.4 }),
@@ -33,10 +36,12 @@ function fakeBorg(): Borg {
     },
     semantic: {
       nodes: {
-        list: async () => [{ id: "node_1" }],
+        list: async () =>
+          Array.from({ length: semanticNodeCount }, (_, index) => ({ id: `node_${index}` })),
       },
       edges: {
-        list: () => [{ id: "edge_1" }, { id: "edge_2" }],
+        list: () =>
+          Array.from({ length: semanticEdgeCount }, (_, index) => ({ id: `edge_${index}` })),
       },
     },
     self: {
@@ -81,6 +86,8 @@ describe("MetricsCapture", () => {
     expect(row.episode_count).toBe(2);
     expect(row.semantic_node_count).toBe(1);
     expect(row.semantic_edge_count).toBe(2);
+    expect(row.semantic_nodes_added_since_last_check).toBe(0);
+    expect(row.semantic_edges_added_since_last_check).toBe(0);
     expect(row.open_question_count).toBe(1);
     expect(row.active_goal_count).toBe(2);
     expect(row.retrieval_latency_ms).toBe(25);
@@ -88,5 +95,21 @@ describe("MetricsCapture", () => {
     expect(row.borg_input_tokens).toBe(11);
     expect(row.borg_output_tokens).toBe(7);
     expect(written).toEqual(row);
+  });
+
+  it("records semantic graph growth since the previous capture", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const capture = new MetricsCapture(metricsPath);
+
+    await capture.capture(fakeBorg({ semanticNodes: 1, semanticEdges: 2 }), "turn-1", 1);
+    const row = await capture.capture(
+      fakeBorg({ semanticNodes: 4, semanticEdges: 5 }),
+      "turn-2",
+      2,
+    );
+
+    expect(row.semantic_nodes_added_since_last_check).toBe(3);
+    expect(row.semantic_edges_added_since_last_check).toBe(3);
   });
 });

@@ -16,6 +16,7 @@ type ParsedOptions = {
   turns?: string | number;
   probeEvery?: string | number;
   checkEvery?: string | number;
+  maintenanceEvery?: string | number;
   out?: string;
   metricsOut?: string;
   keep?: boolean;
@@ -90,6 +91,7 @@ async function main(): Promise<void> {
     .option("--turns <n>", "Number of continuous turns", { default: 1000 })
     .option("--probe-every <n>", "Inject a probe every N turns", { default: 100 })
     .option("--check-every <n>", "Run overseer every N turns", { default: 250 })
+    .option("--maintenance-every <n>", "Run light maintenance every N turns", { default: 10 })
     .option("--out <path>", "Write markdown report to a file")
     .option("--metrics-out <path>", "Write metrics JSONL to a file")
     .option("--keep", "Keep Borg data dirs and trace files for inspection")
@@ -110,6 +112,7 @@ async function main(): Promise<void> {
     totalTurns: parsePositiveInteger(options.turns, "--turns", 1000),
     probeEvery: parsePositiveInteger(options.probeEvery, "--probe-every", 100),
     checkEvery: parsePositiveInteger(options.checkEvery, "--check-every", 250),
+    maintenanceEvery: parsePositiveInteger(options.maintenanceEvery, "--maintenance-every", 10),
     metricsPath,
     keep: options.keep === true,
     mock: selectMode(options),

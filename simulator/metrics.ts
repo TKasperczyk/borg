@@ -114,6 +114,8 @@ function usageForTurn(records: readonly TraceRecord[]): {
 export class MetricsCapture {
   private readonly filepath: string;
   private readonly tracePath?: string;
+  private previousSemanticNodeCount?: number;
+  private previousSemanticEdgeCount?: number;
 
   constructor(filepath: string, options: MetricsCaptureOptions = {}) {
     this.filepath = filepath;
@@ -130,6 +132,14 @@ export class MetricsCapture {
     const episodeResult = await borg.episodic.list({ limit: LARGE_COUNT_LIMIT });
     const semanticNodes = await borg.semantic.nodes.list({ limit: LARGE_COUNT_LIMIT });
     const semanticEdges = borg.semantic.edges.list({ includeInvalid: true });
+    const semanticNodesAdded =
+      this.previousSemanticNodeCount === undefined
+        ? 0
+        : Math.max(0, semanticNodes.length - this.previousSemanticNodeCount);
+    const semanticEdgesAdded =
+      this.previousSemanticEdgeCount === undefined
+        ? 0
+        : Math.max(0, semanticEdges.length - this.previousSemanticEdgeCount);
     const openQuestions = borg.self.openQuestions.list({
       status: "open",
       limit: LARGE_COUNT_LIMIT,
@@ -142,6 +152,8 @@ export class MetricsCapture {
       episode_count: episodeResult.items.length,
       semantic_node_count: semanticNodes.length,
       semantic_edge_count: semanticEdges.length,
+      semantic_nodes_added_since_last_check: semanticNodesAdded,
+      semantic_edges_added_since_last_check: semanticEdgesAdded,
       open_question_count: openQuestions.length,
       active_goal_count: flattenGoalCount(activeGoals),
       mood_valence: mood.valence,
@@ -160,6 +172,8 @@ export class MetricsCapture {
       borg_output_tokens: usage.outputTokens,
     };
 
+    this.previousSemanticNodeCount = semanticNodes.length;
+    this.previousSemanticEdgeCount = semanticEdges.length;
     appendJsonlLine(this.filepath, `${JSON.stringify(row)}\n`);
     return row;
   }
