@@ -54,6 +54,7 @@ export type SimulatorRunReport = {
     evidence: string;
   }>;
   overseerCheckpoints: OverseerVerdict[];
+  turnFailures: Array<{ turn: number; error: string }>;
   finalMetrics: MetricsRow;
   durationMs: number;
 };

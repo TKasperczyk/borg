@@ -99,11 +99,22 @@ function deriveProblemKind(
   return hasCodeEntity ? "code_design" : "other";
 }
 
+// proceduralContextDomainTagSchema enforces .max(64) on each tag after
+// canonicalization (which collapses whitespace/punctuation but never
+// lengthens). LLM-extracted entities are occasionally verbose phrases
+// rather than concise nouns -- those would overflow the schema and
+// crash the turn. Filter at source: any raw entity that would still be
+// >64 chars after canonicalization is dropped (it's almost certainly
+// noise, not a useful procedural-context tag).
+const MAX_DOMAIN_TAG_LENGTH = 64;
+
 function deriveDomainTags(userMessage: string, entities: readonly string[]): string[] {
   const tags: string[] = [];
 
   for (const entity of entities) {
-    tags.push(entity);
+    if (entity.length <= MAX_DOMAIN_TAG_LENGTH) {
+      tags.push(entity);
+    }
   }
 
   for (const keyword of DOMAIN_KEYWORDS) {

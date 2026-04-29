@@ -54,6 +54,7 @@ function stripProbe(result: ProbeResult): SimulatorRunReport["probes"][number] {
 
 export class SimulatorRunner {
   private readonly options: SimulatorRunnerOptions;
+  private turnFailures: Array<{ turn: number; error: string }> = [];
 
   constructor(options: SimulatorRunnerOptions) {
     this.options = options;
@@ -97,24 +98,50 @@ export class SimulatorRunner {
     try {
       await transport.open();
 
+      // Long-horizon runs amortize cost across hours, so a single failing
+      // turn (LLM rate-limit, transient API error, schema validation crash
+      // in some Borg phase) shouldn't abort the whole run -- it should
+      // be logged and the loop continues. We do bail if too many
+      // consecutive turns fail, since that indicates the harness itself
+      // is broken rather than an isolated turn-level fault.
+      const MAX_CONSECUTIVE_FAILURES = 5;
+      let consecutiveFailures = 0;
+      const turnFailures: Array<{ turn: number; error: string }> = [];
+
       for (let turn = 1; turn <= this.options.totalTurns; turn += 1) {
         const scheduledProbe = probes[turn];
-        let turnId: string;
+        let turnId: string | null = null;
 
-        if (scheduledProbe !== undefined) {
-          const probe = await probeRunner({
-            scenarioName: scheduledProbe,
-            transport,
-            turnNumber: turn,
-          });
-          probeResults.push(stripProbe(probe));
-          lastBorgResponse = probe.response;
-          turnId = probe.turnId;
-        } else {
-          const message = await persona.nextTurn(lastBorgResponse);
-          const result = await transport.chat(message);
-          lastBorgResponse = result.response;
-          turnId = result.turnId;
+        try {
+          if (scheduledProbe !== undefined) {
+            const probe = await probeRunner({
+              scenarioName: scheduledProbe,
+              transport,
+              turnNumber: turn,
+            });
+            probeResults.push(stripProbe(probe));
+            lastBorgResponse = probe.response;
+            turnId = probe.turnId;
+          } else {
+            const message = await persona.nextTurn(lastBorgResponse);
+            const result = await transport.chat(message);
+            lastBorgResponse = result.response;
+            turnId = result.turnId;
+          }
+          consecutiveFailures = 0;
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          turnFailures.push({ turn, error: detail });
+          consecutiveFailures += 1;
+          // eslint-disable-next-line no-console
+          console.warn(`[simulator] turn ${turn} failed: ${detail}`);
+
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            throw new Error(
+              `Simulator aborting: ${consecutiveFailures} consecutive turn failures (last: ${detail})`,
+            );
+          }
+          continue;
         }
 
         finalMetrics = await metrics.capture(transport.getBorg(), turnId, turn);
@@ -137,6 +164,8 @@ export class SimulatorRunner {
         }
       }
 
+      this.turnFailures = turnFailures;
+
       if (finalMetrics === undefined) {
         throw new Error("Simulator completed without metrics");
       }
@@ -147,6 +176,7 @@ export class SimulatorRunner {
         totalTurns: this.options.totalTurns,
         probes: probeResults,
         overseerCheckpoints,
+        turnFailures: this.turnFailures,
         finalMetrics,
         durationMs: performance.now() - started,
       };
@@ -205,6 +235,14 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
       for (const observation of checkpoint.observations) {
         lines.push(`  - ${observation}`);
       }
+    }
+    lines.push("");
+  }
+
+  if (report.turnFailures.length > 0) {
+    lines.push("## Turn Failures", "");
+    for (const failure of report.turnFailures) {
+      lines.push(`- Turn ${failure.turn}: ${failure.error}`);
     }
     lines.push("");
   }
