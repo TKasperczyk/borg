@@ -123,6 +123,28 @@ function responseText(message: Message): string {
     .trim();
 }
 
+// Anthropic rejects requests where any message has empty content with
+// a 400 'user messages must have non-empty content'. Defense in depth:
+// even though we try not to push empty content into history, certain
+// edge cases (Borg returning empty, content with only whitespace,
+// LLM-internal stop blocks) can sneak in. Sanitize at the boundary so
+// a single empty cell doesn't poison the whole request.
+const EMPTY_CONTENT_PLACEHOLDER = "(no content)";
+
+function sanitizeMessages(messages: readonly MessageParam[]): MessageParam[] {
+  return messages.map((msg) => {
+    if (typeof msg.content !== "string") {
+      return msg;
+    }
+
+    if (msg.content.trim().length === 0) {
+      return { ...msg, content: EMPTY_CONTENT_PLACEHOLDER };
+    }
+
+    return msg;
+  });
+}
+
 function initialPrompt(persona: Persona): string {
   const facts =
     persona.seedFacts === undefined || persona.seedFacts.length === 0
@@ -167,10 +189,20 @@ export class PersonaSession {
       this.client === undefined
         ? await createDefaultPersonaClient(this.env)
         : { client: this.client, systemPrefix: this.systemPrefix };
+
+    // borgPreviousResponse can be null (first turn), empty string, or
+    // whitespace-only -- the latter two happen when Borg's pipeline
+    // returns an empty response (e.g., a probe whose finalizer text
+    // was zero-length, or a Borg internal failure). Treating an empty
+    // string as a real user message would push empty content into our
+    // history and trigger a 400 from Anthropic on the next turn. Fall
+    // back to the initial prompt so the persona has something to
+    // respond to instead of nothing.
+    const trimmedBorgResponse = borgPreviousResponse?.trim() ?? "";
     const baseUserMessage =
-      this.messages.length === 0 || borgPreviousResponse === null
+      this.messages.length === 0 || trimmedBorgResponse.length === 0
         ? initialPrompt(this.persona)
-        : borgPreviousResponse;
+        : trimmedBorgResponse;
 
     // Build the candidate request messages without committing to
     // history yet -- if the call fails or returns empty, we retry with
@@ -231,7 +263,7 @@ export class PersonaSession {
       .stream({
         model: this.model,
         system: systemParam(initialized.systemPrefix, this.persona),
-        messages,
+        messages: sanitizeMessages(messages),
         max_tokens: 4_000,
       })
       .finalMessage();
