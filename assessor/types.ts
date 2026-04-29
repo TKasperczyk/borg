@@ -50,12 +50,6 @@ export type TraceAssertion =
       turn?: "any" | "last";
     }
   | {
-      type: "all_responses_match";
-      description: string;
-      pattern: string;
-      flags?: string;
-    }
-  | {
       type: "stream_entry";
       description: string;
       kind?: StreamEntry["kind"];

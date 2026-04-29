@@ -34,10 +34,6 @@ export type RunScenariosOptions = Omit<ScenarioRunnerOptions, "scenario"> & {
   scenarios: readonly Scenario[];
 };
 
-function regexFromAssertion(input: { pattern: string; flags?: string }): RegExp {
-  return new RegExp(input.pattern, input.flags ?? "i");
-}
-
 function lastTurnId(turns: readonly ConversationTurn[]): string | null {
   return turns[turns.length - 1]?.turnId ?? null;
 }
@@ -110,20 +106,6 @@ async function evaluateAssertion(
       passed: match !== undefined,
       evidence:
         match === undefined ? `No matching event for ${assertion.eventIncludes}` : match.event,
-    };
-  }
-
-  if (assertion.type === "all_responses_match") {
-    const regex = regexFromAssertion(assertion);
-    const failures = context.turns.filter((turn) => !regex.test(turn.response));
-
-    return {
-      description: assertion.description,
-      passed: context.turns.length > 0 && failures.length === 0,
-      evidence:
-        failures[0] === undefined
-          ? `${context.turns.length} response(s) matched`
-          : `First failure: ${stringifyEvidence(failures[0].response)}`,
     };
   }
 
