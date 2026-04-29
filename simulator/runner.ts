@@ -52,6 +52,30 @@ function stripProbe(result: ProbeResult): SimulatorRunReport["probes"][number] {
   };
 }
 
+// Walks the Error.cause chain to surface diagnostics that LLMError and
+// other wrappers normally hide. Without this, every transient
+// failure shows up in the simulator log as 'Failed to complete
+// Anthropic request' with no signal about what actually failed.
+function formatErrorChain(error: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = error;
+  let depth = 0;
+
+  while (current !== null && current !== undefined && depth < 5) {
+    if (current instanceof Error) {
+      const name = current.name === "Error" ? "" : `${current.name}: `;
+      parts.push(`${name}${current.message}`);
+      current = (current as Error & { cause?: unknown }).cause;
+    } else {
+      parts.push(String(current));
+      break;
+    }
+    depth += 1;
+  }
+
+  return parts.length === 0 ? String(error) : parts.join(" -> ");
+}
+
 export class SimulatorRunner {
   private readonly options: SimulatorRunnerOptions;
   private turnFailures: Array<{ turn: number; error: string }> = [];
@@ -105,36 +129,55 @@ export class SimulatorRunner {
       // consecutive turns fail, since that indicates the harness itself
       // is broken rather than an isolated turn-level fault.
       const MAX_CONSECUTIVE_FAILURES = 5;
+      const TRANSIENT_RETRY_ATTEMPTS = 2;
+      const TRANSIENT_RETRY_DELAY_MS = 2_000;
       let consecutiveFailures = 0;
       const turnFailures: Array<{ turn: number; error: string }> = [];
 
+      const attemptTurn = async (
+        turn: number,
+        scheduledProbe: string | undefined,
+      ): Promise<{ turnId: string; response: string }> => {
+        if (scheduledProbe !== undefined) {
+          const probe = await probeRunner({
+            scenarioName: scheduledProbe,
+            transport,
+            turnNumber: turn,
+          });
+          probeResults.push(stripProbe(probe));
+          return { turnId: probe.turnId, response: probe.response };
+        }
+        const message = await persona.nextTurn(lastBorgResponse);
+        const result = await transport.chat(message);
+        return { turnId: result.turnId, response: result.response };
+      };
+
       for (let turn = 1; turn <= this.options.totalTurns; turn += 1) {
         const scheduledProbe = probes[turn];
-        let turnId: string | null = null;
+        let success: { turnId: string; response: string } | null = null;
+        let attemptError: unknown = null;
 
-        try {
-          if (scheduledProbe !== undefined) {
-            const probe = await probeRunner({
-              scenarioName: scheduledProbe,
-              transport,
-              turnNumber: turn,
-            });
-            probeResults.push(stripProbe(probe));
-            lastBorgResponse = probe.response;
-            turnId = probe.turnId;
-          } else {
-            const message = await persona.nextTurn(lastBorgResponse);
-            const result = await transport.chat(message);
-            lastBorgResponse = result.response;
-            turnId = result.turnId;
+        for (let attempt = 0; attempt <= TRANSIENT_RETRY_ATTEMPTS; attempt += 1) {
+          try {
+            success = await attemptTurn(turn, scheduledProbe);
+            attemptError = null;
+            break;
+          } catch (error) {
+            attemptError = error;
+            if (attempt < TRANSIENT_RETRY_ATTEMPTS) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS * (attempt + 1)),
+              );
+            }
           }
-          consecutiveFailures = 0;
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
+        }
+
+        if (success === null) {
+          const detail = formatErrorChain(attemptError);
           turnFailures.push({ turn, error: detail });
           consecutiveFailures += 1;
           // eslint-disable-next-line no-console
-          console.warn(`[simulator] turn ${turn} failed: ${detail}`);
+          console.warn(`[simulator] turn ${turn} failed after retries: ${detail}`);
 
           if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
             throw new Error(
@@ -144,7 +187,10 @@ export class SimulatorRunner {
           continue;
         }
 
-        finalMetrics = await metrics.capture(transport.getBorg(), turnId, turn);
+        lastBorgResponse = success.response;
+        consecutiveFailures = 0;
+
+        finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn);
 
         if (
           Number.isInteger(this.options.checkEvery) &&
