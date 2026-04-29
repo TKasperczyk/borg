@@ -7,22 +7,13 @@ import type { MaintenanceCadence, ReviewQueueItem } from "../src/index.js";
 import { MetricsCapture } from "./metrics.js";
 import { PersonaSession } from "./persona.js";
 import { runOverseer, type RunOverseerOptions } from "./overseer.js";
-import { runProbe, scheduleProbes } from "./probes.js";
-import type {
-  MetricsRow,
-  OverseerVerdict,
-  Persona,
-  ProbeResult,
-  ProbeSchedule,
-  SimulatorRunReport,
-} from "./types.js";
+import type { MetricsRow, OverseerVerdict, Persona, SimulatorRunReport } from "./types.js";
 
 export type SimulatorRunnerOptions = {
   runId: string;
   persona: Persona;
   totalTurns: number;
   metricsPath: string;
-  probeEvery: number;
   checkEvery: number;
   maintenanceEvery?: number;
   keep?: boolean;
@@ -30,9 +21,7 @@ export type SimulatorRunnerOptions = {
   env?: NodeJS.ProcessEnv;
   dataDir?: string;
   tracePath?: string;
-  probeSchedule?: ProbeSchedule;
   personaSession?: PersonaSession;
-  probeRunner?: typeof runProbe;
   overseerRunner?: (options: RunOverseerOptions) => Promise<OverseerVerdict>;
 };
 
@@ -44,15 +33,6 @@ function simulatorScenario(persona: Persona, totalTurns: number): Scenario {
     description: `Long-horizon simulator run for ${persona.displayName}.`,
     systemPrompt: persona.systemPrompt,
     maxTurns: totalTurns,
-  };
-}
-
-function stripProbe(result: ProbeResult): SimulatorRunReport["probes"][number] {
-  return {
-    turn: result.turn,
-    scenarioName: result.scenarioName,
-    passed: result.passed,
-    evidence: result.evidence,
   };
 }
 
@@ -167,12 +147,7 @@ export class SimulatorRunner {
         mock: this.options.mock,
         env: this.options.env,
       });
-    const probes =
-      this.options.probeSchedule ??
-      scheduleProbes(this.options.totalTurns, this.options.probeEvery);
-    const probeRunner = this.options.probeRunner ?? runProbe;
     const overseerRunner = this.options.overseerRunner ?? runOverseer;
-    const probeResults: SimulatorRunReport["probes"] = [];
     const overseerCheckpoints: SimulatorRunReport["overseerCheckpoints"] = [];
     let lastBorgResponse: string | null = null;
     let finalMetrics: MetricsRow | undefined;
@@ -192,32 +167,19 @@ export class SimulatorRunner {
       let consecutiveFailures = 0;
       const turnFailures: Array<{ turn: number; error: string }> = [];
 
-      const attemptTurn = async (
-        turn: number,
-        scheduledProbe: string | undefined,
-      ): Promise<{ turnId: string; response: string }> => {
-        if (scheduledProbe !== undefined) {
-          const probe = await probeRunner({
-            scenarioName: scheduledProbe,
-            transport,
-            turnNumber: turn,
-          });
-          probeResults.push(stripProbe(probe));
-          return { turnId: probe.turnId, response: probe.response };
-        }
+      const attemptTurn = async (): Promise<{ turnId: string; response: string }> => {
         const message = await persona.nextTurn(lastBorgResponse);
         const result = await transport.chat(message);
         return { turnId: result.turnId, response: result.response };
       };
 
       for (let turn = 1; turn <= this.options.totalTurns; turn += 1) {
-        const scheduledProbe = probes[turn];
         let success: { turnId: string; response: string } | null = null;
         let attemptError: unknown = null;
 
         for (let attempt = 0; attempt <= TRANSIENT_RETRY_ATTEMPTS; attempt += 1) {
           try {
-            success = await attemptTurn(turn, scheduledProbe);
+            success = await attemptTurn();
             attemptError = null;
             break;
           } catch (error) {
@@ -284,7 +246,6 @@ export class SimulatorRunner {
         runId: this.options.runId,
         persona: this.options.persona.key,
         totalTurns: this.options.totalTurns,
-        probes: probeResults,
         overseerCheckpoints,
         turnFailures: this.turnFailures,
         finalMetrics,
@@ -319,20 +280,7 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Active goals: ${report.finalMetrics.active_goal_count}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,
     "",
-    "## Probes",
-    "",
   ];
-
-  if (report.probes.length === 0) {
-    lines.push("No probes scheduled.", "");
-  } else {
-    for (const probe of report.probes) {
-      lines.push(
-        `- Turn ${probe.turn}: ${probe.scenarioName} ${probe.passed ? "passed" : "failed"} -- ${probe.evidence}`,
-      );
-    }
-    lines.push("");
-  }
 
   lines.push("## Overseer Checkpoints", "");
 

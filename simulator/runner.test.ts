@@ -39,7 +39,7 @@ function spyMaintenanceTick() {
 }
 
 describe("SimulatorRunner", () => {
-  it("runs a 20-turn mock simulation with probes, overseer checkpoints, and metrics", async () => {
+  it("runs a 20-turn mock simulation with overseer checkpoints and metrics", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
     spyMaintenanceTick();
@@ -47,24 +47,11 @@ describe("SimulatorRunner", () => {
       runId: "sim-runner-test",
       persona: tomPersona,
       totalTurns: 20,
-      probeEvery: 5,
       checkEvery: 10,
       metricsPath,
       dataDir: join(dir, "data"),
       tracePath: join(dir, "trace.jsonl"),
       mock: true,
-      probeRunner: async ({ scenarioName, transport, turnNumber }) => {
-        const result = await transport.chat("What's my dog's name?");
-
-        return {
-          turn: turnNumber,
-          scenarioName,
-          passed: true,
-          evidence: `Mock probe ${scenarioName} passed at ${result.turnId}.`,
-          response: result.response,
-          turnId: result.turnId,
-        };
-      },
       overseerRunner: async ({ turnCounter }) => ({
         ts: Date.now(),
         turn_counter: turnCounter,
@@ -79,8 +66,7 @@ describe("SimulatorRunner", () => {
       .map((line) => JSON.parse(line) as { turn_counter: number });
 
     expect(report.totalTurns).toBe(20);
-    expect(report.probes).toHaveLength(3);
-    expect(report.probes.every((probe) => probe.passed)).toBe(true);
+    expect(Object.hasOwn(report, "probes")).toBe(false);
     expect(report.overseerCheckpoints).toHaveLength(2);
     expect(metricsRows).toHaveLength(20);
     expect(metricsRows.at(-1)?.turn_counter).toBe(20);
@@ -95,7 +81,6 @@ describe("SimulatorRunner", () => {
       runId: "sim-runner-maintenance-test",
       persona: tomPersona,
       totalTurns: 20,
-      probeEvery: 999,
       checkEvery: 999,
       maintenanceEvery: 10,
       metricsPath,

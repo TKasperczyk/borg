@@ -5,10 +5,6 @@ export type Persona = {
   seedFacts?: string[];
 };
 
-export type ProbeSchedule = {
-  [turnNumber: number]: string;
-};
-
 export type MetricsRow = {
   ts: number;
   turn_counter: number;
@@ -36,25 +32,10 @@ export type OverseerVerdict = {
   recommendation: string;
 };
 
-export type ProbeResult = {
-  turn: number;
-  scenarioName: string;
-  passed: boolean;
-  evidence: string;
-  response: string;
-  turnId: string;
-};
-
 export type SimulatorRunReport = {
   runId: string;
   persona: string;
   totalTurns: number;
-  probes: Array<{
-    turn: number;
-    scenarioName: string;
-    passed: boolean;
-    evidence: string;
-  }>;
   overseerCheckpoints: OverseerVerdict[];
   turnFailures: Array<{ turn: number; error: string }>;
   finalMetrics: MetricsRow;

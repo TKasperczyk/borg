@@ -14,7 +14,6 @@ import type { Persona } from "./types.js";
 type ParsedOptions = {
   persona?: string;
   turns?: string | number;
-  probeEvery?: string | number;
   checkEvery?: string | number;
   maintenanceEvery?: string | number;
   out?: string;
@@ -89,7 +88,6 @@ async function main(): Promise<void> {
   cli
     .option("--persona <key>", "Persona key to run", { default: "tom" })
     .option("--turns <n>", "Number of continuous turns", { default: 1000 })
-    .option("--probe-every <n>", "Inject a probe every N turns", { default: 100 })
     .option("--check-every <n>", "Run overseer every N turns", { default: 250 })
     .option("--maintenance-every <n>", "Run light maintenance every N turns", { default: 10 })
     .option("--out <path>", "Write markdown report to a file")
@@ -110,7 +108,6 @@ async function main(): Promise<void> {
     runId,
     persona: selectPersona(options.persona),
     totalTurns: parsePositiveInteger(options.turns, "--turns", 1000),
-    probeEvery: parsePositiveInteger(options.probeEvery, "--probe-every", 100),
     checkEvery: parsePositiveInteger(options.checkEvery, "--check-every", 250),
     maintenanceEvery: parsePositiveInteger(options.maintenanceEvery, "--maintenance-every", 10),
     metricsPath,
