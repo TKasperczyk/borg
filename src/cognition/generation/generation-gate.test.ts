@@ -51,14 +51,24 @@ function recencyAssistant(content: string) {
 }
 
 describe("GenerationGate", () => {
-  it("recognizes minimal user inputs without treating substantive short clauses as minimal", () => {
-    expect(isMinimalUserGenerationInput("No.")).toBe(true);
-    expect(isMinimalUserGenerationInput("Human: ---")).toBe(true);
+  it("treats only whitespace-only user input as minimal", () => {
+    expect(isMinimalUserGenerationInput("   \n\t")).toBe(true);
+    expect(isMinimalUserGenerationInput("No.")).toBe(false);
+    expect(isMinimalUserGenerationInput("用户: ---")).toBe(false);
     expect(isMinimalUserGenerationInput("no, because the server is failing")).toBe(false);
+    expect(isMinimalUserGenerationInput("调度器正在丢弃排队的任务")).toBe(false);
   });
 
-  it("suppresses a minimal role-label prefix probe without an LLM call", async () => {
-    const llm = new FakeLLMClient();
+  it("lets the LLM classifier handle repeated non-English role-label probes", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        gateResponse({
+          decision: "suppress",
+          substantive: false,
+          reason: "The repeated localized transcript-label probe should not receive output.",
+        }),
+      ],
+    });
     const gate = new GenerationGate({
       llmClient: llm,
       embeddingClient: new TestEmbeddingClient(),
@@ -67,15 +77,16 @@ describe("GenerationGate", () => {
     });
 
     const result = await gate.evaluate({
-      userMessage: "Human: ---",
+      userMessage: "用户:---",
       workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
-      recencyMessages: [],
+      recencyMessages: [recencyUser("用户:---"), recencyAssistant("")],
     });
 
     expect(result.action).toBe("suppress");
     expect(result.reason).toBe("generation_gate");
-    expect(result.classified).toBe(false);
-    expect(llm.requests).toHaveLength(0);
+    expect(result.classified).toBe(true);
+    expect(result.signals.repeatedMinimalExchange).toBe(true);
+    expect(llm.requests).toHaveLength(1);
   });
 
   it("classifies active stop state and clears it only for substantive content", async () => {
@@ -159,7 +170,7 @@ describe("GenerationGate", () => {
     expect(result.classified).toBe(true);
   });
 
-  it("classifies sustained minimal loops before allowing another response", async () => {
+  it("classifies repeated similar exchanges before allowing another response", async () => {
     const llm = new FakeLLMClient({
       responses: [
         gateResponse({
@@ -189,11 +200,12 @@ describe("GenerationGate", () => {
 
     expect(result.action).toBe("suppress");
     expect(result.reason).toBe("generation_gate");
+    expect(result.signals.minimalUserInput).toBe(false);
     expect(result.signals.repeatedMinimalExchange).toBe(true);
     expect(result.classified).toBe(true);
   });
 
-  it("allows first brief legitimate replies without consulting the classifier", async () => {
+  it("allows first brief legitimate replies and CJK substantive messages without consulting the classifier", async () => {
     const llm = new FakeLLMClient();
     const gate = new GenerationGate({
       llmClient: llm,
@@ -208,8 +220,56 @@ describe("GenerationGate", () => {
       recencyMessages: [],
     });
 
+    const cjk = await gate.evaluate({
+      userMessage: "调度器正在丢弃排队的任务",
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      recencyMessages: [],
+    });
+
     expect(result.action).toBe("proceed");
     expect(result.classified).toBe(false);
+    expect(cjk.action).toBe("proceed");
+    expect(cjk.classified).toBe(false);
     expect(llm.requests).toHaveLength(0);
+  });
+
+  it("describes brief replies semantically instead of using English-only examples", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        gateResponse({
+          decision: "proceed",
+          substantive: true,
+          reason: "The current turn has real content.",
+        }),
+      ],
+    });
+    const gate = new GenerationGate({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(),
+      model: "test-background",
+      hardCapTurns: 50,
+    });
+    const workingMemory = setStopUntilSubstantiveContent(
+      createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      {
+        provenance: "self_commitment_extractor",
+        sourceStreamEntryId: createStreamEntryId(),
+        reason: "The assistant promised to stop.",
+        sinceTurn: 1,
+      },
+    );
+
+    await gate.evaluate({
+      userMessage: "戻ります。スケジューラの件を続けます。",
+      workingMemory: {
+        ...workingMemory,
+        turn_counter: 2,
+      },
+      recencyMessages: [],
+    });
+
+    expect(String(llm.requests[0]?.system)).toContain(
+      "brief acknowledgments, direct answers, or minimal confirmations in any language",
+    );
   });
 });

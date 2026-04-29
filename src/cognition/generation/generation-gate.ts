@@ -13,12 +13,8 @@ import type { WorkingMemory } from "../../memory/working/index.js";
 import type { GenerationSuppressionReason } from "./types.js";
 
 const GATE_TOOL_NAME = "EmitGenerationGateDecision";
-const MINIMAL_TOKEN_LIMIT = 3;
-const MINIMAL_CHAR_LIMIT = 32;
 const MINIMAL_LOOP_TURN_COUNT = 3;
 const REPEATED_SIMILARITY_THRESHOLD = 0.96;
-const ROLE_LABEL_LINE_PATTERN = /^\s*(?:human|assistant|user|ai|borg)\s*:/imu;
-const ROLE_LABEL_PREFIX_PATTERN = /^\s*(?:human|assistant|user|ai|borg)\s*:\s*/iu;
 
 const generationGateDecisionSchema = z.object({
   decision: z.enum(["proceed", "suppress"]),
@@ -29,15 +25,12 @@ const generationGateDecisionSchema = z.object({
 
 export const GENERATION_GATE_TOOL = {
   name: GATE_TOOL_NAME,
-  description:
-    "Decide whether the assistant should emit a message for the current user turn.",
+  description: "Decide whether the assistant should emit a message for the current user turn.",
   inputSchema: toToolInputSchema(generationGateDecisionSchema),
 } satisfies LLMToolDefinition;
 
 export type GenerationGateStructuralSignals = {
   minimalUserInput: boolean;
-  roleLabelAtLineStart: boolean;
-  emergencyRoleLabelPrefix: boolean;
   activeDiscourseStop: boolean;
   recentMinimalUserRun: number;
   repeatedMinimalSimilarity: number | null;
@@ -87,40 +80,14 @@ function parseGateDecision(result: LLMCompleteResult): ParsedGateDecision {
   return parsed.data;
 }
 
-function countTokens(text: string): number {
-  return text.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
-}
-
-function stripRoleLabelPrefix(text: string): string {
-  return text.replace(ROLE_LABEL_PREFIX_PATTERN, "");
-}
-
 export function isMinimalUserGenerationInput(text: string): boolean {
-  const trimmed = stripRoleLabelPrefix(text).trim();
-
-  if (trimmed.length === 0) {
-    return true;
-  }
-
-  const tokenCount = countTokens(trimmed);
-
-  if (tokenCount === 0) {
-    return true;
-  }
-
-  return tokenCount <= MINIMAL_TOKEN_LIMIT && trimmed.length <= MINIMAL_CHAR_LIMIT;
+  return text.trim().length === 0;
 }
 
-function hasRoleLabelLine(text: string): boolean {
-  return ROLE_LABEL_LINE_PATTERN.test(text);
-}
+function isCompactRepeatedProbe(text: string): boolean {
+  const trimmed = text.trim();
 
-function hasEmergencyRoleLabelPrefix(text: string): boolean {
-  if (!ROLE_LABEL_PREFIX_PATTERN.test(text)) {
-    return false;
-  }
-
-  return isMinimalUserGenerationInput(text);
+  return trimmed.length > 0 && !/\s/u.test(trimmed);
 }
 
 function recentUserMessages(messages: readonly RecencyMessage[]): string[] {
@@ -208,18 +175,20 @@ export class GenerationGate {
     const activeStop = input.workingMemory.discourse_state?.stop_until_substantive_content ?? null;
     const recentUsers = recentUserMessages(input.recencyMessages);
     const minimalUserInput = isMinimalUserGenerationInput(input.userMessage);
+    const currentHasContent = input.userMessage.trim().length > 0;
     const recentMinimalUserRun = countRecentMinimalRun(recentUsers);
-    const repeatedMinimalSimilarity = activeStop === null && minimalUserInput
-      ? await measureRepeatedMinimalSimilarity({
-          userMessage: input.userMessage,
-          recentUserMessages: recentUsers,
-          embeddingClient: this.options.embeddingClient,
-          onDegraded: this.options.onDegraded,
-        })
-      : null;
+    const repeatedMinimalSimilarity =
+      activeStop === null && currentHasContent
+        ? await measureRepeatedMinimalSimilarity({
+            userMessage: input.userMessage,
+            recentUserMessages: recentUsers,
+            embeddingClient: this.options.embeddingClient,
+            onDegraded: this.options.onDegraded,
+          })
+        : null;
     const repeatedMinimalExchange =
-      minimalUserInput &&
-      recentMinimalUserRun > 0 &&
+      isCompactRepeatedProbe(input.userMessage) &&
+      recentUsers.length > 0 &&
       repeatedMinimalSimilarity !== null &&
       repeatedMinimalSimilarity >= REPEATED_SIMILARITY_THRESHOLD;
     const hardCapActiveTurns =
@@ -229,8 +198,6 @@ export class GenerationGate {
     const hardCapDue = activeStop !== null && hardCapActiveTurns >= this.options.hardCapTurns;
     const signals: GenerationGateStructuralSignals = {
       minimalUserInput,
-      roleLabelAtLineStart: hasRoleLabelLine(input.userMessage),
-      emergencyRoleLabelPrefix: hasEmergencyRoleLabelPrefix(input.userMessage),
       activeDiscourseStop: activeStop !== null,
       recentMinimalUserRun,
       repeatedMinimalSimilarity,
@@ -239,25 +206,10 @@ export class GenerationGate {
       hardCapActiveTurns,
     };
 
-    if (signals.emergencyRoleLabelPrefix) {
-      return {
-        action: "suppress",
-        reason: activeStop === null ? "generation_gate" : "active_discourse_stop",
-        explanation: "Current user input is a minimal role-label prefix probe.",
-        clearDiscourseStop: false,
-        classified: false,
-        signals,
-      };
-    }
-
     const sustainedMinimalLoop =
       minimalUserInput && recentMinimalUserRun + 1 >= MINIMAL_LOOP_TURN_COUNT;
     const shouldClassify =
-      activeStop !== null ||
-      signals.roleLabelAtLineStart ||
-      repeatedMinimalExchange ||
-      sustainedMinimalLoop ||
-      hardCapDue;
+      activeStop !== null || repeatedMinimalExchange || sustainedMinimalLoop || hardCapDue;
 
     if (!shouldClassify) {
       return {
@@ -287,7 +239,7 @@ export class GenerationGate {
           "Suppress only when the current turn is a loop probe, role-label trap, or non-substantive continuation under an active stop-until-substantive-content state.",
           "Proceed when the user provides a real request, new information, or a legitimate brief reply that should receive a normal assistant response.",
           "If an active stop state is present, clear it only by marking substantive=true for a current user turn with real content.",
-          "Do not treat ordinary first-time short replies such as 'yes', 'thanks', or 'no' as suppressible unless the context shows an active stop or sustained loop.",
+          "Do not treat ordinary first-time brief acknowledgments, direct answers, or minimal confirmations in any language as suppressible unless the context shows an active stop or sustained loop.",
         ].join("\n"),
         messages: [
           {

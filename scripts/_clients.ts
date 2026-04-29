@@ -227,6 +227,14 @@ export class ScriptedDebugLLM implements LLMClient {
       });
     }
 
+    if (options.budget === "generation-stop-commitment") {
+      return buildToolResult(options, {
+        classification: "none",
+        reason: "No operational no-output commitment.",
+        confidence: 0,
+      });
+    }
+
     if (
       /Think briefly about what the assistant should verify, clarify, or compare before answering\./i.test(
         system,

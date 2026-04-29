@@ -40,6 +40,12 @@ const guards: readonly Guard[] = [
     pattern: "english wordlist|new Set\\s*\\(\\s*\\[",
     paths: ["src/memory/affective"],
   },
+  {
+    name: "generation English wordlist or role-label regex marker",
+    pattern:
+      "(?i)(const\\s+\\w+\\s*=\\s*\\[[^\\n\\]]*\\b(?:stop|stopping|responding|generate|output|human|assistant|user)\\b[^\\n\\]]*\\b(?:stop|stopping|responding|generate|output|human|assistant|user)\\b|/[^\\n/]*\\(\\?:[^\\n/]*\\b(?:human|assistant|user)\\b[^\\n/]*\\b(?:human|assistant|user)\\b[^\\n/]*\\))",
+    paths: ["src/cognition/generation"],
+  },
 ];
 
 function rg(pattern: string, paths: readonly string[]): string {

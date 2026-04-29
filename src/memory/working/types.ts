@@ -135,11 +135,41 @@ const workingMemoryObjectSchema = z.object({
   updated_at: z.number().finite(),
 });
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function migrateLegacyDiscourseState(record: Record<string, unknown>): Record<string, unknown> {
+  const discourseState = record.discourse_state;
+
+  if (!isPlainRecord(discourseState)) {
+    return record;
+  }
+
+  const stopState = discourseState.stop_until_substantive_content;
+
+  if (!isPlainRecord(stopState) || stopState.provenance !== "validator") {
+    return record;
+  }
+
+  return {
+    ...record,
+    discourse_state: {
+      ...discourseState,
+      stop_until_substantive_content: {
+        ...stopState,
+        provenance: "no_output_tool",
+      },
+    },
+  };
+}
+
 // Backward-compat preprocess: legacy persisted files may have a singular
 // `pending_procedural_attempt: T | null` (Sprint 53 moved to a list) or
 // the now-removed `last_selected_skill_*` fields (Sprint 54 dropped them
-// as unused). Drop the dead fields and migrate the singular slot to the
-// array shape on read.
+// as unused). Sprint no_output also retired the persisted `validator`
+// discourse provenance; map it to `no_output_tool` on read. Drop the dead
+// fields and migrate legacy slots before validation.
 export const workingMemorySchema = z.preprocess((input) => {
   if (input === null || typeof input !== "object" || Array.isArray(input)) {
     return input;
@@ -162,16 +192,18 @@ export const workingMemorySchema = z.preprocess((input) => {
           },
         };
 
-  if ("pending_procedural_attempts" in withDiscourseState) {
-    return withDiscourseState;
+  const migrated = migrateLegacyDiscourseState(withDiscourseState);
+
+  if ("pending_procedural_attempts" in migrated) {
+    return migrated;
   }
 
   if (legacyAttempt === undefined) {
-    return withDiscourseState;
+    return migrated;
   }
 
   return {
-    ...withDiscourseState,
+    ...migrated,
     pending_procedural_attempts: legacyAttempt === null ? [] : [legacyAttempt],
   };
 }, workingMemoryObjectSchema);

@@ -17,7 +17,7 @@ const STOP_COMMITMENT_TOOL_NAME = "EmitStopCommitmentClassification";
 const STOP_COMMITMENT_TOOL = {
   name: STOP_COMMITMENT_TOOL_NAME,
   description:
-    "Classify whether an assistant response commits to stop responding until the user provides substantive new content.",
+    "Classify whether an assistant response commits to emit no assistant messages until the user provides substantive new content.",
   inputSchema: toToolInputSchema(stopCommitmentSchema),
 } satisfies LLMToolDefinition;
 
@@ -41,14 +41,6 @@ export type StopCommitmentExtraction = {
   reason: string;
   confidence: number;
 };
-
-const STOP_TRIGGER_TERMS = ["stop", "stopping", "responding", "generate", "output"] as const;
-
-function shouldClassify(response: string): boolean {
-  const normalized = response.toLowerCase();
-
-  return STOP_TRIGGER_TERMS.some((term) => normalized.includes(term));
-}
 
 function parseResponse(result: LLMCompleteResult): StopCommitmentExtraction | null {
   const call = result.tool_calls.find((toolCall) => toolCall.name === STOP_COMMITMENT_TOOL_NAME);
@@ -86,10 +78,6 @@ export class StopCommitmentExtractor {
   }
 
   async extract(input: ExtractStopCommitmentInput): Promise<StopCommitmentExtraction | null> {
-    if (!shouldClassify(input.agentResponse)) {
-      return null;
-    }
-
     if (this.options.llmClient === undefined || this.options.model === undefined) {
       return this.degraded("llm_unavailable");
     }
@@ -100,8 +88,8 @@ export class StopCommitmentExtractor {
           model: this.options.model,
           system: [
             "Classify whether the assistant response is an operational commitment to stop emitting assistant messages until the user provides substantive new content.",
-            "Return stop_until_substantive_content only for direct commitments like 'I will stop responding to these' or 'No further output absent real content'.",
-            "Return none for ordinary wording like 'I'll stop explaining and answer directly' or any local style/topic stop that does not imply future no-output behavior.",
+            "Return stop_until_substantive_content only for direct, future-facing commitments to emit no assistant messages until substantive user content appears.",
+            "Return none for local style, topic, or explanation-boundary commitments that do not imply future no-output behavior.",
           ].join("\n"),
           messages: [
             {
