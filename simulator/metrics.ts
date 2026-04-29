@@ -145,6 +145,9 @@ export class MetricsCapture {
       limit: LARGE_COUNT_LIMIT,
     });
     const activeGoals = borg.self.goals.list({ status: "active" });
+    const generationSuppressions = borg.stream
+      .tail(LARGE_COUNT_LIMIT)
+      .filter((entry) => entry.kind === "agent_suppressed").length;
     const row: MetricsRow = {
       ts: Date.now(),
       turn_counter: turnCounter,
@@ -156,6 +159,7 @@ export class MetricsCapture {
       semantic_edges_added_since_last_check: semanticEdgesAdded,
       open_question_count: openQuestions.length,
       active_goal_count: flattenGoalCount(activeGoals),
+      generation_suppression_count: generationSuppressions,
       mood_valence: mood.valence,
       mood_arousal: mood.arousal,
       retrieval_latency_ms: latencyBetween(

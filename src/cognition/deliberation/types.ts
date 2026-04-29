@@ -23,9 +23,11 @@ import type {
 } from "../../retrieval/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
 import type { Clock } from "../../util/clock.js";
-import type { EntityId, SessionId } from "../../util/ids.js";
+import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ToolLoopCallRecord } from "../action/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
+import type { PendingTurnEmission } from "../generation/types.js";
+import type { EmissionRecommendation } from "../generation/types.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
@@ -119,6 +121,10 @@ export type DeliberationUsage = {
 export type DeliberationResult = {
   path: "system_1" | "system_2";
   response: string;
+  emitted?: boolean;
+  emission?: PendingTurnEmission;
+  emissionRecommendation?: EmissionRecommendation;
+  thoughtStreamEntryIds?: readonly StreamEntryId[];
   thoughts: string[];
   tool_calls: ToolLoopCallRecord[];
   usage: DeliberationUsage;

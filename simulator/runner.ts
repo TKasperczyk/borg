@@ -2,7 +2,7 @@ import { performance } from "node:perf_hooks";
 
 import { BorgTransport } from "../assessor/borg-transport.js";
 import type { Scenario } from "../assessor/types.js";
-import type { MaintenanceCadence, ReviewQueueItem } from "../src/index.js";
+import type { BorgOpenOptions, MaintenanceCadence, ReviewQueueItem } from "../src/index.js";
 
 import { MetricsCapture } from "./metrics.js";
 import { PersonaSession } from "./persona.js";
@@ -21,6 +21,8 @@ export type SimulatorRunnerOptions = {
   env?: NodeJS.ProcessEnv;
   dataDir?: string;
   tracePath?: string;
+  llmClient?: BorgOpenOptions["llmClient"];
+  embeddingClient?: BorgOpenOptions["embeddingClient"];
   personaSession?: PersonaSession;
   overseerRunner?: (options: RunOverseerOptions) => Promise<OverseerVerdict>;
 };
@@ -136,6 +138,8 @@ export class SimulatorRunner {
       env: this.options.env,
       dataDir: this.options.dataDir,
       tracePath: this.options.tracePath,
+      llmClient: this.options.llmClient,
+      embeddingClient: this.options.embeddingClient,
     });
     const metrics = new MetricsCapture(this.options.metricsPath, {
       tracePath: transport.tracePath,
@@ -151,6 +155,8 @@ export class SimulatorRunner {
     const overseerCheckpoints: SimulatorRunReport["overseerCheckpoints"] = [];
     let lastBorgResponse: string | null = null;
     let finalMetrics: MetricsRow | undefined;
+    let resultState: SimulatorRunReport["resultState"] = "completed";
+    let stoppedTurn: number | undefined;
 
     try {
       await transport.open();
@@ -167,14 +173,18 @@ export class SimulatorRunner {
       let consecutiveFailures = 0;
       const turnFailures: Array<{ turn: number; error: string }> = [];
 
-      const attemptTurn = async (): Promise<{ turnId: string; response: string }> => {
+      const attemptTurn = async (): Promise<{
+        turnId: string;
+        response: string;
+        emitted: boolean;
+      }> => {
         const message = await persona.nextTurn(lastBorgResponse);
         const result = await transport.chat(message);
-        return { turnId: result.turnId, response: result.response };
+        return { turnId: result.turnId, response: result.response, emitted: result.emitted };
       };
 
       for (let turn = 1; turn <= this.options.totalTurns; turn += 1) {
-        let success: { turnId: string; response: string } | null = null;
+        let success: { turnId: string; response: string; emitted: boolean } | null = null;
         let attemptError: unknown = null;
 
         for (let attempt = 0; attempt <= TRANSIENT_RETRY_ATTEMPTS; attempt += 1) {
@@ -207,10 +217,17 @@ export class SimulatorRunner {
           continue;
         }
 
-        lastBorgResponse = success.response;
         consecutiveFailures = 0;
 
         finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn);
+
+        if (!success.emitted) {
+          resultState = "stopped_by_suppression";
+          stoppedTurn = turn;
+          break;
+        }
+
+        lastBorgResponse = success.response;
 
         const overseerDue =
           Number.isInteger(this.options.checkEvery) &&
@@ -246,6 +263,8 @@ export class SimulatorRunner {
         runId: this.options.runId,
         persona: this.options.persona.key,
         totalTurns: this.options.totalTurns,
+        resultState,
+        ...(stoppedTurn === undefined ? {} : { stoppedTurn }),
         overseerCheckpoints,
         turnFailures: this.turnFailures,
         finalMetrics,
@@ -268,6 +287,7 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     "",
     `Persona: ${report.persona}`,
     `Turns: ${report.totalTurns}`,
+    `Result: ${report.resultState}${report.stoppedTurn === undefined ? "" : ` at turn ${report.stoppedTurn}`}`,
     `Duration: ${Math.round(report.durationMs)}ms`,
     "",
     "## Final Metrics",

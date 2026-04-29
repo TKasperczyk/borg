@@ -812,6 +812,85 @@ describe("episodic extractor", () => {
     ]);
   });
 
+  it("does not extract a user-only turn marked as agent_suppressed", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+    const entityRepository = new EntityRepository({
+      db,
+      clock,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const user = await writer.append({
+      kind: "user_msg",
+      content: "No.",
+    });
+    clock.advance(1);
+    await writer.append({
+      kind: "agent_suppressed",
+      content: {
+        reason: "generation_gate",
+        user_entry_id: user.id,
+      },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse([
+          {
+            title: "Should not be read",
+            narrative: "This response should not be consumed.",
+            source_stream_ids: [user.id],
+            participants: ["Borg"],
+            tags: ["suppression"],
+            confidence: 0.8,
+            significance: 0.7,
+          },
+        ]),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: tempDir,
+      episodicRepository: repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository,
+      clock,
+    });
+
+    await expect(extractor.extractFromStream()).resolves.toEqual({
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+    });
+    expect(llm.requests).toHaveLength(0);
+  });
+
   it("rejects hallucinated source stream ids", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({

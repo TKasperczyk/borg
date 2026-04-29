@@ -57,6 +57,17 @@ import {
 import { NOOP_TRACER, type TurnTracer } from "./tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
 import { SessionLock } from "./session-lock.js";
+import type {
+  AgentSuppressedStreamContent,
+  PendingTurnEmission,
+  TurnEmission,
+} from "./generation/types.js";
+import {
+  clearStopUntilSubstantiveContent,
+  setStopUntilSubstantiveContent,
+} from "./generation/discourse-state.js";
+import { GenerationGate } from "./generation/generation-gate.js";
+import { StopCommitmentExtractor } from "./generation/self-stop-commitment.js";
 
 function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>): GoalRecord[] {
   const flattened: GoalRecord[] = [];
@@ -167,8 +178,10 @@ export type TurnInput = {
 
 export type TurnResult = {
   mode: CognitiveMode;
-  path: "system_1" | "system_2";
+  path: "system_1" | "system_2" | "suppressed";
   response: string;
+  emitted: boolean;
+  emission: TurnEmission;
   thoughts: string[];
   usage: {
     input_tokens: number;
@@ -363,6 +376,105 @@ export class TurnOrchestrator {
     await appendInternalFailureEvent(streamWriter, hook, error, details);
   }
 
+  private async appendSuppressionMarker(input: {
+    streamWriter: StreamWriter;
+    reason: Extract<PendingTurnEmission, { kind: "suppressed" }>["reason"];
+    userEntryId?: AgentSuppressedStreamContent["user_entry_id"];
+    turnId: string;
+    audience?: string;
+  }) {
+    return input.streamWriter.append({
+      kind: "agent_suppressed",
+      content: {
+        reason: input.reason,
+        user_entry_id: input.userEntryId,
+        turn_id: input.turnId,
+      } satisfies AgentSuppressedStreamContent,
+      ...(input.audience === undefined ? {} : { audience: input.audience }),
+    });
+  }
+
+  private setDiscourseStopState(input: {
+    workingMemory: WorkingMemory;
+    provenance: Parameters<typeof setStopUntilSubstantiveContent>[1]["provenance"];
+    sourceStreamEntryId?: Parameters<typeof setStopUntilSubstantiveContent>[1]["sourceStreamEntryId"];
+    reason: string;
+    turnId: string;
+  }): WorkingMemory {
+    const next = setStopUntilSubstantiveContent(input.workingMemory, {
+      provenance: input.provenance,
+      sourceStreamEntryId: input.sourceStreamEntryId,
+      reason: input.reason,
+      sinceTurn: input.workingMemory.turn_counter,
+    });
+
+    if (this.tracer.enabled) {
+      this.tracer.emit("discourse_state_set", {
+        turnId: input.turnId,
+        state: "stop_until_substantive_content",
+        provenance: input.provenance,
+        reason: input.reason,
+        ...(input.sourceStreamEntryId === undefined
+          ? {}
+          : { sourceStreamEntryId: input.sourceStreamEntryId }),
+      });
+    }
+
+    return next;
+  }
+
+  private clearDiscourseStopState(input: {
+    workingMemory: WorkingMemory;
+    reason: string;
+    turnId: string;
+  }): WorkingMemory {
+    const active = input.workingMemory.discourse_state?.stop_until_substantive_content ?? null;
+    const next = clearStopUntilSubstantiveContent(input.workingMemory);
+
+    if (active !== null && this.tracer.enabled) {
+      this.tracer.emit("discourse_state_cleared", {
+        turnId: input.turnId,
+        state: "stop_until_substantive_content",
+        provenance: active.provenance,
+        reason: input.reason,
+      });
+    }
+
+    return next;
+  }
+
+  private async appendDiscourseHardCapEvent(input: {
+    streamWriter: StreamWriter;
+    turnId: string;
+    activeTurns: number;
+    hardCapTurns: number;
+    stateReason: string;
+  }): Promise<void> {
+    if (this.tracer.enabled) {
+      this.tracer.emit("discourse_state_hard_cap", {
+        turnId: input.turnId,
+        state: "stop_until_substantive_content",
+        activeTurns: input.activeTurns,
+        hardCapTurns: input.hardCapTurns,
+      });
+    }
+
+    try {
+      await input.streamWriter.append({
+        kind: "internal_event",
+        content: {
+          hook: "discourse_state_hard_cap",
+          turn_id: input.turnId,
+          active_turns: input.activeTurns,
+          hard_cap_turns: input.hardCapTurns,
+          state_reason: input.stateReason,
+        },
+      });
+    } catch {
+      // Best-effort telemetry only.
+    }
+  }
+
   private async catchUpStreamIngestion(
     sessionId: SessionId,
     streamWriter: StreamWriter,
@@ -554,6 +666,118 @@ export class TurnOrchestrator {
         });
         const persistedUserEntry = openingPersistence.persistedUserEntry;
         workingMemory = openingPersistence.workingMemory;
+
+        const generationGate = new GenerationGate({
+          llmClient,
+          embeddingClient: this.options.embeddingClient,
+          model: this.options.config.anthropic.models.background,
+          hardCapTurns: this.options.config.generation.discourseStateHardCapTurns,
+          onDegraded: (reason, error) =>
+            this.appendHookFailureEvent(streamWriter, "generation_gate", error ?? reason, {
+              reason,
+            }),
+        });
+        const gateResult = await generationGate.evaluate({
+          userMessage: input.userMessage,
+          workingMemory,
+          recencyMessages: recencyWindow.messages,
+        });
+
+        if (gateResult.signals.hardCapDue) {
+          await this.appendDiscourseHardCapEvent({
+            streamWriter,
+            turnId,
+            activeTurns: gateResult.signals.hardCapActiveTurns,
+            hardCapTurns: this.options.config.generation.discourseStateHardCapTurns,
+            stateReason:
+              workingMemory.discourse_state?.stop_until_substantive_content?.reason ??
+              "unknown",
+          });
+        }
+
+        if (gateResult.clearDiscourseStop) {
+          workingMemory = this.clearDiscourseStopState({
+            workingMemory,
+            reason: gateResult.explanation,
+            turnId,
+          });
+        }
+
+        if (gateResult.action === "suppress") {
+          const suppressionReason = gateResult.reason ?? "generation_gate";
+          const activeStop =
+            workingMemory.discourse_state?.stop_until_substantive_content ?? null;
+
+          if (activeStop === null) {
+            workingMemory = this.setDiscourseStopState({
+              workingMemory,
+              provenance: "generation_gate",
+              sourceStreamEntryId: persistedUserEntry.id,
+              reason: gateResult.explanation,
+              turnId,
+            });
+          }
+
+          const suppressionActionResult = await performAction({
+            response: "",
+            emission: {
+              kind: "suppressed",
+              reason: suppressionReason,
+            },
+            toolCalls: [],
+            intents: [],
+            workingMemory: {
+              ...workingMemory,
+              updated_at: this.clock.now(),
+            },
+          });
+          const suppressionMarker = await this.appendSuppressionMarker({
+            streamWriter,
+            reason: suppressionReason,
+            userEntryId: persistedUserEntry.id,
+            turnId,
+            audience: input.audience,
+          });
+          const suppressionEmission: TurnEmission = {
+            kind: "suppressed",
+            reason: suppressionReason,
+            markerEntryId: suppressionMarker.id,
+          };
+
+          if (this.tracer.enabled) {
+            this.tracer.emit("generation_suppressed", {
+              turnId,
+              reason: suppressionReason,
+              streamEntryId: suppressionMarker.id,
+              source: "generation_gate",
+              classified: gateResult.classified,
+            });
+          }
+
+          this.options.workingMemoryStore.save({
+            ...suppressionActionResult.workingMemory,
+            updated_at: this.clock.now(),
+          });
+
+          return {
+            mode: perception.mode,
+            path: "suppressed",
+            response: "",
+            emitted: false,
+            emission: suppressionEmission,
+            thoughts: [],
+            usage: {
+              input_tokens: 0,
+              output_tokens: 0,
+              stop_reason: "suppressed",
+            },
+            retrievedEpisodeIds: [],
+            referencedEpisodeIds: [],
+            intents: [],
+            toolCalls: [],
+          };
+        }
+
         const retrievalContext = await this.turnRetrievalCoordinator.coordinate({
           sessionId,
           turnId,
@@ -624,37 +848,165 @@ export class TurnOrchestrator {
           streamWriter,
         );
 
+        if (deliberation.emissionRecommendation === "no_output") {
+          workingMemory = this.setDiscourseStopState({
+            workingMemory,
+            provenance: "s2_planner_no_output",
+            sourceStreamEntryId: deliberation.thoughtStreamEntryIds?.[0],
+            reason: "S2 planner recommended no assistant message for this turn.",
+            turnId,
+          });
+        }
+
         workingMemory = {
           ...workingMemory,
           updated_at: this.clock.now(),
         };
-        const commitmentCheck = await this.commitmentGuardRunner.run({
-          llmClient,
-          turnId,
-          response: deliberation.response,
-          userMessage: input.userMessage,
-          cognitionInput,
-          origin: input.origin,
-          autonomyTrigger: input.autonomyTrigger,
-          commitments: applicableCommitments,
-          relevantEntities: perception.entities,
-          streamWriter,
-        });
+        const deliberationEmission: PendingTurnEmission =
+          deliberation.emissionRecommendation === "no_output"
+            ? {
+                kind: "suppressed",
+                reason: "s2_planner_no_output",
+              }
+            : (deliberation.emission ?? {
+                kind: "message",
+                content: deliberation.response,
+              });
+        const actionResult =
+          deliberationEmission.kind === "suppressed"
+            ? await performAction({
+                response: "",
+                emission: deliberationEmission,
+                toolCalls: deliberation.tool_calls,
+                intents: [],
+                workingMemory,
+              })
+            : await (async () => {
+                const commitmentCheck = await this.commitmentGuardRunner.run({
+                  llmClient,
+                  turnId,
+                  response: deliberation.response,
+                  userMessage: input.userMessage,
+                  cognitionInput,
+                  origin: input.origin,
+                  autonomyTrigger: input.autonomyTrigger,
+                  commitments: applicableCommitments,
+                  relevantEntities: perception.entities,
+                  streamWriter,
+                });
 
-        const actionResult = await performAction({
-          response: commitmentCheck.final_response,
-          toolCalls: deliberation.tool_calls,
-          intents: deliberation.intents,
-          workingMemory,
-        });
-        const agentEntry = {
-          kind: "agent_msg",
+                return performAction({
+                  response: commitmentCheck.final_response,
+                  emission: {
+                    kind: "message",
+                    content: commitmentCheck.final_response,
+                  },
+                  toolCalls: deliberation.tool_calls,
+                  intents: deliberation.intents,
+                  workingMemory,
+                });
+              })();
+        const actionEmission: PendingTurnEmission = actionResult.emission ?? {
+          kind: "message",
           content: actionResult.response,
-          tool_calls: actionResult.tool_calls,
-          ...(input.audience === undefined ? {} : { audience: input.audience }),
-        } satisfies Parameters<StreamWriter["append"]>[0];
+        };
+        const persistedAgentEntry =
+          actionEmission.kind === "message"
+            ? await streamWriter.append({
+                kind: "agent_msg",
+                content: actionResult.response,
+                tool_calls: actionResult.tool_calls,
+                ...(input.audience === undefined ? {} : { audience: input.audience }),
+              })
+            : await this.appendSuppressionMarker({
+                streamWriter,
+                reason: actionEmission.reason,
+                userEntryId: persistedUserEntry.id,
+                turnId,
+                audience: input.audience,
+              });
 
-        const persistedAgentEntry = await streamWriter.append(agentEntry);
+        if (actionEmission.kind === "suppressed") {
+          const suppressionEmission: TurnEmission = {
+            kind: "suppressed",
+            reason: actionEmission.reason,
+            markerEntryId: persistedAgentEntry.id,
+          };
+          const validatorSuppressionReasons = new Set([
+            "output_validator",
+            "empty_finalizer",
+            "invalid_non_generation_text",
+          ]);
+          const suppressedWorkingMemory = validatorSuppressionReasons.has(actionEmission.reason)
+            ? this.setDiscourseStopState({
+                workingMemory: actionResult.workingMemory,
+                provenance: "validator",
+                sourceStreamEntryId: persistedAgentEntry.id,
+                reason: `Output validator suppressed generation: ${actionEmission.reason}.`,
+                turnId,
+              })
+            : actionResult.workingMemory;
+
+          if (this.tracer.enabled) {
+            this.tracer.emit("generation_suppressed", {
+              turnId,
+              reason: actionEmission.reason,
+              streamEntryId: persistedAgentEntry.id,
+            });
+          }
+
+          this.options.workingMemoryStore.save({
+            ...suppressedWorkingMemory,
+            updated_at: this.clock.now(),
+          });
+
+          return {
+            mode: perception.mode,
+            path: "suppressed",
+            response: "",
+            emitted: false,
+            emission: suppressionEmission,
+            thoughts: deliberation.thoughts,
+            usage: deliberation.usage,
+            retrievedEpisodeIds: deliberation.retrievedEpisodes.map((result) => result.episode.id),
+            referencedEpisodeIds: [...(deliberation.referencedEpisodeIds ?? [])],
+            intents: [],
+            toolCalls: [...actionResult.tool_calls],
+          };
+        }
+
+        const messageEmission: TurnEmission = {
+          kind: "message",
+          content: actionResult.response,
+          agentMessageId: persistedAgentEntry.id,
+        };
+        let postActionWorkingMemory = actionResult.workingMemory;
+        const stopCommitmentExtractor = new StopCommitmentExtractor({
+          llmClient,
+          model: this.options.config.anthropic.models.background,
+          onDegraded: (reason, error) =>
+            this.appendHookFailureEvent(streamWriter, "self_stop_commitment_extraction", error ?? reason, {
+              reason,
+            }),
+        });
+        const stopCommitment = await stopCommitmentExtractor.extract({
+          userMessage: input.userMessage,
+          agentResponse: actionResult.response,
+        });
+
+        if (stopCommitment !== null) {
+          postActionWorkingMemory = this.setDiscourseStopState({
+            workingMemory: postActionWorkingMemory,
+            provenance: "self_commitment_extractor",
+            sourceStreamEntryId: persistedAgentEntry.id,
+            reason: stopCommitment.reason,
+            turnId,
+          });
+        }
+        const actionResultForReflection = {
+          ...actionResult,
+          workingMemory: postActionWorkingMemory,
+        };
         let moodSnapshot = workingMood;
 
         if (input.origin !== "autonomous" && perception.affectiveSignalDegraded !== true) {
@@ -701,12 +1053,12 @@ export class TurnOrchestrator {
             userMessage: input.userMessage,
             perception,
             workingMemory: {
-              ...workingMemory,
+              ...postActionWorkingMemory,
               mood: moodSnapshot,
             },
             selfSnapshot,
             deliberationResult: deliberation,
-            actionResult,
+            actionResult: actionResultForReflection,
             retrievedEpisodes: deliberation.retrievedEpisodes,
             retrievalConfidence: retrieval.confidence,
             executiveFocus: executiveFocusWithStep,
@@ -735,7 +1087,7 @@ export class TurnOrchestrator {
           isUserTurn,
           userMessage: input.userMessage,
           perception,
-          actionResult,
+          actionResult: actionResultForReflection,
           selectedSkill,
           proceduralContext,
           reflectedWorkingMemory,
@@ -779,6 +1131,8 @@ export class TurnOrchestrator {
           mode: perception.mode,
           path: deliberation.path,
           response: actionResult.response,
+          emitted: true,
+          emission: messageEmission,
           thoughts: deliberation.thoughts,
           usage: deliberation.usage,
           retrievedEpisodeIds: deliberation.retrievedEpisodes.map((result) => result.episode.id),

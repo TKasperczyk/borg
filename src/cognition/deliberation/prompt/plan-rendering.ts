@@ -16,6 +16,7 @@ export function formatTurnPlanForPrompt(plan: TurnPlan): string | null {
     plan.verification_steps.length > 0 ||
     plan.tensions.length > 0 ||
     plan.voice_note.trim().length > 0 ||
+    plan.emission_recommendation === "no_output" ||
     plan.intents.length > 0;
 
   if (!hasContent) {
@@ -42,6 +43,10 @@ export function formatTurnPlanForPrompt(plan: TurnPlan): string | null {
 
   if (plan.voice_note.trim().length > 0) {
     lines.push(`  Voice note: ${plan.voice_note.trim()}`);
+  }
+
+  if (plan.emission_recommendation === "no_output") {
+    lines.push("  Emission recommendation: no assistant message");
   }
 
   if (plan.intents.length > 0) {

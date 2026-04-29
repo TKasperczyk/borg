@@ -72,8 +72,9 @@ function streamKindToRole(kind: StreamEntry["kind"]): RecencyMessage["role"] | n
  *   - Roles alternate.
  *
  * Non-conversational entries (`thought`, `internal_event`, `tool_call`,
- * `tool_result`, `perception`, `dream_report`) are ignored here. The stream
- * keeps them, but they are not part of the dialogue layer the LLM sees.
+ * `tool_result`, `perception`, `agent_suppressed`, `dream_report`) are
+ * ignored here. The stream keeps them, but they are not part of the dialogue
+ * layer the LLM sees.
  */
 export class TurnContextCompiler {
   private readonly maxMessages: number;

@@ -52,6 +52,9 @@ function fakeBorg(counts: { semanticNodes?: number; semanticEdges?: number } = {
         list: () => [{ id: "goal_1", children: [{ id: "goal_2" }] }],
       },
     },
+    stream: {
+      tail: () => [{ kind: "agent_suppressed" }],
+    },
   } as unknown as Borg;
 }
 
@@ -90,6 +93,7 @@ describe("MetricsCapture", () => {
     expect(row.semantic_edges_added_since_last_check).toBe(0);
     expect(row.open_question_count).toBe(1);
     expect(row.active_goal_count).toBe(2);
+    expect(row.generation_suppression_count).toBe(1);
     expect(row.retrieval_latency_ms).toBe(25);
     expect(row.deliberation_latency_ms).toBe(60);
     expect(row.borg_input_tokens).toBe(11);

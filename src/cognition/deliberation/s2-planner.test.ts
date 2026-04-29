@@ -39,6 +39,7 @@ describe("s2 planner", () => {
                 verification_steps: ["confirm rollback state"],
                 tensions: [],
                 voice_note: "stay direct",
+                emission_recommendation: "emit",
                 referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
                 intents: [
                   {
@@ -65,6 +66,7 @@ describe("s2 planner", () => {
     expect(result.plan).toMatchObject({
       verification_steps: ["confirm rollback state"],
       voice_note: "stay direct",
+      emission_recommendation: "emit",
       referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
       intents: [
         {
@@ -84,6 +86,45 @@ describe("s2 planner", () => {
       output_tokens: 7,
       stop_reason: "tool_use",
     });
+  });
+
+  it("parses an explicit no-output emission recommendation", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 5,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_no_output",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: ["Conversation has closed."],
+                voice_note: "Do not narrate silence.",
+                emission_recommendation: "no_output",
+                referenced_episode_ids: [],
+                intents: [],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await runS2Planner({
+      llmClient: llm,
+      model: "sonnet",
+      baseSystemPrompt: "base",
+      dialogueMessages: [{ role: "user", content: "No." }],
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      maxTokens: 512,
+    });
+
+    expect(result.plan?.emission_recommendation).toBe("no_output");
   });
 
   it("emits exhaustion trace when both planner attempts omit EmitTurnPlan", async () => {

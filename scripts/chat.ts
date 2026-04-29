@@ -913,9 +913,16 @@ async function main(): Promise<void> {
       stakes: state.stakes,
     });
 
-    writeLine(`${ansi.strong("borg >")} ${result.response}`);
+    if (result.emitted) {
+      writeLine(`${ansi.strong("borg >")} ${result.response}`);
+    }
+
+    const pathLabel =
+      result.path === "system_1" ? "s1" : result.path === "system_2" ? "s2" : "suppressed";
+    const suppression =
+      result.emission.kind === "suppressed" ? ` suppression=${result.emission.reason}` : "";
     printDim(
-      `[mode=${result.mode} path=${result.path === "system_1" ? "s1" : "s2"} tokens=${result.usage.input_tokens}/${result.usage.output_tokens} retrieved=${result.retrievedEpisodeIds.length} intents=${result.intents.length} thoughts=${result.thoughts.length}]`,
+      `[mode=${result.mode} path=${pathLabel} emitted=${result.emitted}${suppression} tokens=${result.usage.input_tokens}/${result.usage.output_tokens} retrieved=${result.retrievedEpisodeIds.length} intents=${result.intents.length} thoughts=${result.thoughts.length}]`,
     );
 
     if (result.path === "system_2" && result.thoughts.length > 0) {

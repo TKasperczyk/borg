@@ -41,7 +41,12 @@ const extractorResponseSchema = z.object({
 type ExtractorCandidate = z.infer<typeof extractorCandidateSchema>;
 const EXTRACT_EPISODES_TOOL_NAME = "EmitEpisodeCandidates";
 const EPISODIC_SOURCE_STREAM_KINDS = ["user_msg", "agent_msg"] as const;
-const EPISODIC_CONTEXT_STREAM_KINDS = ["user_msg", "agent_msg", "perception"] as const;
+const EPISODIC_CONTEXT_STREAM_KINDS = [
+  "user_msg",
+  "agent_msg",
+  "agent_suppressed",
+  "perception",
+] as const;
 const perceptionAffectiveContentSchema = z.object({
   affectiveSignal: affectiveSignalSchema,
   affectiveSignalDegraded: z.boolean().optional(),
@@ -134,6 +139,20 @@ function uniqueStreamEntryIds(entries: readonly StreamEntry[]): Episode["source_
 
 function isEpisodicSourceEntry(entry: StreamEntry): boolean {
   return (EPISODIC_SOURCE_STREAM_KINDS as readonly string[]).includes(entry.kind);
+}
+
+function suppressedUserEntryId(entry: StreamEntry): string | null {
+  if (entry.kind !== "agent_suppressed") {
+    return null;
+  }
+
+  if (entry.content === null || typeof entry.content !== "object" || Array.isArray(entry.content)) {
+    return null;
+  }
+
+  const userEntryId = (entry.content as { user_entry_id?: unknown }).user_entry_id;
+
+  return typeof userEntryId === "string" && userEntryId.length > 0 ? userEntryId : null;
 }
 
 function streamOrderComparator(
@@ -510,7 +529,16 @@ export class EpisodicExtractor {
       }
     }
 
-    if (streamEntries.length === 0) {
+    const suppressedUserEntryIds = new Set(
+      contextEntries
+        .map((entry) => suppressedUserEntryId(entry))
+        .filter((entryId): entryId is string => entryId !== null),
+    );
+    const extractableStreamEntries = streamEntries.filter(
+      (entry) => entry.kind !== "user_msg" || !suppressedUserEntryIds.has(entry.id),
+    );
+
+    if (extractableStreamEntries.length === 0) {
       return {
         inserted: 0,
         updated: 0,
@@ -521,7 +549,7 @@ export class EpisodicExtractor {
     let inserted = 0;
     let updated = 0;
     let skipped = 0;
-    const chunks = chunkEntries(streamEntries, this.chunkTokenLimit);
+    const chunks = chunkEntries(extractableStreamEntries, this.chunkTokenLimit);
 
     for (const chunk of chunks) {
       const chunkById = new Map(chunk.map((entry) => [entry.id, entry]));

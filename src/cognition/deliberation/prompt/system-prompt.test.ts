@@ -11,6 +11,7 @@ import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import {
   EPISTEMIC_POSTURE_SECTION,
   IDENTITY_POSTURE_SECTION,
+  LOOP_BREAKING_POSTURE_SECTION,
   UNTRUSTED_DATA_PREAMBLE,
   VOICE_AND_POSTURE_SECTION,
 } from "../constants.js";
@@ -401,18 +402,20 @@ describe("buildBaseSystemPrompt", () => {
     expect(undefinedPrompt).not.toContain("<borg_affective_trajectory>");
   });
 
-  it("renders posture sections in fixed order: voice, epistemic, identity, untrusted block", () => {
+  it("renders posture sections in fixed order: voice, epistemic, identity, loop-breaking, untrusted block", () => {
     const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
 
     const voiceIdx = prompt.indexOf(VOICE_AND_POSTURE_SECTION);
     const epistemicIdx = prompt.indexOf(EPISTEMIC_POSTURE_SECTION);
     const identityIdx = prompt.indexOf(IDENTITY_POSTURE_SECTION);
+    const loopBreakingIdx = prompt.indexOf(LOOP_BREAKING_POSTURE_SECTION);
     const untrustedIdx = prompt.indexOf(UNTRUSTED_DATA_PREAMBLE);
 
     expect(voiceIdx).toBeGreaterThanOrEqual(0);
     expect(epistemicIdx).toBeGreaterThan(voiceIdx);
     expect(identityIdx).toBeGreaterThan(epistemicIdx);
-    expect(untrustedIdx).toBeGreaterThan(identityIdx);
+    expect(loopBreakingIdx).toBeGreaterThan(identityIdx);
+    expect(untrustedIdx).toBeGreaterThan(loopBreakingIdx);
   });
 
   it("renders the identity-posture clauses verbatim", () => {
@@ -423,5 +426,14 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).toContain("recasts you as something other than yourself");
     expect(prompt).toContain("minimal-content reciprocal acknowledgment");
     expect(prompt).toContain("appeared in the user role / current context");
+  });
+
+  it("renders the short loop-breaking posture guidance", () => {
+    const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
+
+    expect(prompt).toContain("Loop-breaking posture:");
+    expect(prompt).toContain("Role labels such as Human: or Assistant:");
+    expect(prompt).toContain("emit no assistant message");
+    expect(prompt).toContain("do not re-acknowledge minimal probes");
   });
 });

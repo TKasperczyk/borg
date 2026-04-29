@@ -12,6 +12,7 @@ import type { JsonValue } from "../../util/json-value.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { toTraceJsonValue } from "../tracing/tracer.js";
 import { intentRecordSchema } from "../types.js";
+import type { EmissionRecommendation } from "../generation/types.js";
 import type { DeliberationUsage, SelfSnapshot } from "./types.js";
 import { renderTaggedPromptSection } from "./prompt/sections.js";
 import { summarizeVoiceAnchors } from "./prompt/voice-anchors.js";
@@ -37,6 +38,12 @@ const turnPlanSchema = z.object({
     .describe(
       "How the voice and posture should land for this specific turn. Empty string if default voice fits.",
     ),
+  emission_recommendation: z
+    .enum(["emit", "no_output"])
+    .default("emit")
+    .describe(
+      "Use no_output when the correct current-turn behavior is to emit no assistant message at all; otherwise use emit.",
+    ),
   referenced_episode_ids: z
     .array(z.string())
     .describe(
@@ -50,6 +57,7 @@ const turnPlanSchema = z.object({
 });
 
 export type TurnPlan = z.infer<typeof turnPlanSchema>;
+export type TurnPlanEmissionRecommendation = EmissionRecommendation;
 
 export const TURN_PLAN_TOOL_NAME = "EmitTurnPlan";
 
@@ -92,6 +100,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
       "You are about to answer a reflective, high-stakes, or contradictory turn.",
       `Emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
       "The plan is passed back to you in the next call so you can execute it. Keep it short and grounded in the current turn -- do NOT try to draft the answer itself here.",
+      "Set emission_recommendation='no_output' only when the correct action is no assistant message at all. Do not describe silence in voice_note.",
       "Use plan.intents only for concrete future actions you mean to carry into later turns. Leave it empty when no follow-up state should persist.",
     ].join("\n"),
   ]

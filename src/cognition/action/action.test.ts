@@ -55,4 +55,33 @@ describe("performAction", () => {
     ]);
     expect(result.workingMemory.pending_intents).toEqual(result.intents);
   });
+
+  it("keeps suppressed actions out of response text and pending intents", async () => {
+    const workingMemory = createWorkingMemory(DEFAULT_SESSION_ID, 100);
+
+    const result = await performAction({
+      response: "This text must not be emitted.",
+      emission: {
+        kind: "suppressed",
+        reason: "generation_gate",
+      },
+      toolCalls: [],
+      intents: [
+        {
+          description: "Should not persist",
+          next_action: "should not carry forward",
+        },
+      ],
+      workingMemory,
+    });
+
+    expect(result.response).toBe("");
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "generation_gate",
+    });
+    expect(result.intents).toEqual([]);
+    expect(result.workingMemory.pending_intents).toEqual([]);
+  });
 });

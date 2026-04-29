@@ -88,6 +88,78 @@ function createEmptyReflectionResponse() {
   };
 }
 
+function createStopCommitmentResponse(input: {
+  classification: "stop_until_substantive_content" | "none";
+  reason?: string;
+}) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_stop_commitment",
+        name: "EmitStopCommitmentClassification",
+        input: {
+          classification: input.classification,
+          reason: input.reason ?? "The assistant committed to stop until substantive content.",
+          confidence: 0.94,
+        },
+      },
+    ],
+  };
+}
+
+function createNoOutputTurnPlanResponse() {
+  return {
+    text: "",
+    input_tokens: 8,
+    output_tokens: 4,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_no_output_plan",
+        name: "EmitTurnPlan",
+        input: {
+          uncertainty: "",
+          verification_steps: [],
+          tensions: [],
+          voice_note: "Hold output because the current turn does not warrant an assistant message.",
+          referenced_episode_ids: [],
+          intents: [],
+          emission_recommendation: "no_output",
+        },
+      },
+    ],
+  };
+}
+
+function createGenerationGateResponse(input: {
+  decision: "proceed" | "suppress";
+  substantive: boolean;
+  reason?: string;
+}) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_generation_gate",
+        name: "EmitGenerationGateDecision",
+        input: {
+          decision: input.decision,
+          substantive: input.substantive,
+          reason: input.reason ?? "Generation gate classified the turn.",
+          confidence: 0.95,
+        },
+      },
+    ],
+  };
+}
+
 function createStepReflectionResponse(input: {
   stepOutcomes?: Array<{
     step_id: string;
@@ -867,6 +939,266 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           kind: "ask_user",
         },
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("records user-visible stop commitments as durable discourse state", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_000_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "I will stop responding until you bring substantive content.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        createStopCommitmentResponse({
+          classification: "stop_until_substantive_content",
+          reason: "The assistant committed to stop until substantive content arrives.",
+        }),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const result = await borg.turn({
+        userMessage: "Stop responding if I keep sending filler.",
+      });
+      const activeStop = borg.workmem.load().discourse_state?.stop_until_substantive_content;
+
+      expect(result.emitted).toBe(true);
+      expect(result.response).toContain("I will stop responding");
+      expect(activeStop).toMatchObject({
+        provenance: "self_commitment_extractor",
+        source_stream_entry_id: result.agentMessageId,
+        reason: "The assistant committed to stop until substantive content arrives.",
+        since_turn: 1,
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("turns S2 no-output recommendations into suppressed turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_100_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createNoOutputTurnPlanResponse(),
+        {
+          text: "This finalizer text must not be emitted.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const result = await borg.turn({
+        userMessage: "No.",
+        stakes: "high",
+      });
+      const entries = borg.stream.tail(10);
+      const thoughtEntry = entries.find((entry) => entry.kind === "thought");
+      const suppressionEntry = entries.find((entry) => entry.kind === "agent_suppressed");
+      const activeStop = borg.workmem.load().discourse_state?.stop_until_substantive_content;
+
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "s2_planner_no_output",
+      });
+      expect(entries.some((entry) => entry.kind === "agent_msg")).toBe(false);
+      expect(suppressionEntry?.content).toMatchObject({
+        reason: "s2_planner_no_output",
+      });
+      expect(activeStop).toMatchObject({
+        provenance: "s2_planner_no_output",
+        source_stream_entry_id: thoughtEntry?.id,
+        since_turn: 1,
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("runs the generation gate before retrieval and finalization under active stop state", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_200_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "I will stop responding until you bring substantive content.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        createStopCommitmentResponse({
+          classification: "stop_until_substantive_content",
+        }),
+        createEmptyReflectionResponse(),
+        createGenerationGateResponse({
+          decision: "suppress",
+          substantive: false,
+          reason: "The user sent another minimal probe under an active stop.",
+        }),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      await borg.turn({
+        userMessage: "Stop responding if I keep sending filler.",
+      });
+      const result = await borg.turn({
+        userMessage: "No.",
+      });
+      const tailKinds = borg.stream.tail(6).map((entry) => entry.kind);
+
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "active_discourse_stop",
+      });
+      expect(tailKinds.slice(-3)).toEqual(["user_msg", "perception", "agent_suppressed"]);
+      expect(borg.workmem.load().discourse_state?.stop_until_substantive_content).toMatchObject({
+        provenance: "self_commitment_extractor",
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("suppresses validator-blocked role labels immediately for minimal turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_300_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Human: Done.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const result = await borg.turn({
+        userMessage: "thanks",
+      });
+      const entries = borg.stream.tail(10);
+
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "output_validator",
+      });
+      expect(entries.some((entry) => entry.kind === "agent_msg")).toBe(false);
+      expect(entries.some((entry) => entry.kind === "agent_suppressed")).toBe(true);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("retries validator-blocked role labels once for substantive turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_400_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Human: Done.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        {
+          text: "The scheduler issue is a queue stall.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const result = await borg.turn({
+        userMessage: "Can you summarize the scheduler issue?",
+      });
+
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("The scheduler issue is a queue stall.");
+      expect(systemText(llm.requests[1])).toContain("borg_output_validator_feedback");
+      expect(
+        borg.stream
+          .tail(10)
+          .filter((entry) => entry.kind === "agent_msg")
+          .map((entry) => String(entry.content)),
+      ).toEqual(["The scheduler issue is a queue stall."]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("suppresses validator-blocked output after one failed retry", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_500_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Human: Done.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        {
+          text: "Assistant: Still invalid.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const result = await borg.turn({
+        userMessage: "Can you summarize the scheduler issue?",
+      });
+
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "output_validator",
+      });
+      expect(borg.stream.tail(10).some((entry) => entry.kind === "agent_msg")).toBe(false);
     } finally {
       await borg.close();
     }

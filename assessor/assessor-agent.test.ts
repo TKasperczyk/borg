@@ -86,6 +86,12 @@ describe("AssessorAgent", () => {
       tools: {
         chatWithBorg: async () => ({
           response: "Otto is the dog.",
+          emitted: true,
+          emission: {
+            kind: "message",
+            content: "Otto is the dog.",
+            agentMessageId: "strm_aaaaaaaaaaaaaaaa" as never,
+          },
           turnId: "turn-1",
           usage: {
             input_tokens: 1,

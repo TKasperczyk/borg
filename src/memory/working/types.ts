@@ -94,6 +94,24 @@ export const pendingProceduralAttemptSchema = z.object({
   procedural_context: proceduralContextSchema.nullable().optional(),
 });
 
+export const discourseStopProvenanceSchema = z.enum([
+  "generation_gate",
+  "self_commitment_extractor",
+  "validator",
+  "s2_planner_no_output",
+]);
+
+export const stopUntilSubstantiveContentSchema = z.object({
+  provenance: discourseStopProvenanceSchema,
+  source_stream_entry_id: workingStreamEntryIdSchema.optional(),
+  reason: z.string().min(1),
+  since_turn: z.number().int().nonnegative(),
+});
+
+export const discourseStateSchema = z.object({
+  stop_until_substantive_content: stopUntilSubstantiveContentSchema.nullable().default(null),
+});
+
 // Sprint 53: pending procedural attempts are now a bounded list, not one
 // slot. Multi-step debugging or delayed-feedback work needs to track each
 // attempt independently; reflection retires only grounded success/failure
@@ -112,6 +130,7 @@ const workingMemoryObjectSchema = z.object({
   suppressed: z.array(suppressedEntrySchema).default([]),
   mood: affectiveSignalSchema.nullable().default(null),
   pending_procedural_attempts: z.array(pendingProceduralAttemptSchema).default([]),
+  discourse_state: discourseStateSchema.optional(),
   mode: cognitiveModeSchema.nullable(),
   updated_at: z.number().finite(),
 });
@@ -133,17 +152,26 @@ export const workingMemorySchema = z.preprocess((input) => {
     last_selected_skill_turn: _legacySkillTurn,
     ...rest
   } = record;
+  const withDiscourseState =
+    "discourse_state" in rest
+      ? rest
+      : {
+          ...rest,
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
+        };
 
-  if ("pending_procedural_attempts" in rest) {
-    return rest;
+  if ("pending_procedural_attempts" in withDiscourseState) {
+    return withDiscourseState;
   }
 
   if (legacyAttempt === undefined) {
-    return rest;
+    return withDiscourseState;
   }
 
   return {
-    ...rest,
+    ...withDiscourseState,
     pending_procedural_attempts: legacyAttempt === null ? [] : [legacyAttempt],
   };
 }, workingMemoryObjectSchema);
@@ -152,14 +180,17 @@ export type WorkingMemory = z.infer<typeof workingMemorySchema>;
 export type PendingSocialAttribution = z.infer<typeof pendingSocialAttributionSchema>;
 export type PendingTraitAttribution = z.infer<typeof pendingTraitAttributionSchema>;
 export type PendingProceduralAttempt = z.infer<typeof pendingProceduralAttemptSchema>;
+export type DiscourseState = z.infer<typeof discourseStateSchema>;
+export type DiscourseStopProvenance = z.infer<typeof discourseStopProvenanceSchema>;
+export type StopUntilSubstantiveContent = z.infer<typeof stopUntilSubstantiveContentSchema>;
 
 /**
  * Derived live-state only. Phase E removed `scratchpad` (S2 planner output
  * -- the stream now persists that as a structured `plan:` thought entry)
  * and `recent_thoughts` (agent self-talk, redundant with the stream's
- * `thought` entries and never a source of recent dialogue). If cognition
- * needs discourse state later (thread summary, active threads), derive it
- * from the stream per-turn rather than caching it here.
+ * `thought` entries and never a source of recent dialogue). Discourse
+ * control state is the one durable turn-control exception: it gates future
+ * generation rather than summarizing conversation content.
  */
 export function createWorkingMemory(sessionId: SessionId, timestamp: number): WorkingMemory {
   return {
@@ -173,6 +204,9 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
     suppressed: [],
     mood: null,
     pending_procedural_attempts: [],
+    discourse_state: {
+      stop_until_substantive_content: null,
+    },
     mode: null,
     updated_at: timestamp,
   };

@@ -72,6 +72,12 @@ const configFileSchema = z
       })
       .partial()
       .optional(),
+    generation: z
+      .object({
+        discourseStateHardCapTurns: z.number().int().positive().optional(),
+      })
+      .partial()
+      .optional(),
     streamIngestion: z
       .object({
         preTurnCatchup: z
@@ -356,6 +362,9 @@ export const configSchema = z.object({
       underReviewMultiplier: z.number().min(0).max(1),
     }),
   }),
+  generation: z.object({
+    discourseStateHardCapTurns: z.number().int().positive(),
+  }),
   streamIngestion: z.object({
     preTurnCatchup: z.object({
       maxEntries: z.number().int().positive(),
@@ -562,6 +571,9 @@ export const DEFAULT_CONFIG: Config = {
     semantic: {
       underReviewMultiplier: 0.5,
     },
+  },
+  generation: {
+    discourseStateHardCapTurns: 50,
   },
   streamIngestion: {
     preTurnCatchup: {
@@ -974,6 +986,12 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           fileConfig.retrieval?.semantic?.underReviewMultiplier ??
           DEFAULT_CONFIG.retrieval.semantic.underReviewMultiplier,
       },
+    },
+    generation: {
+      discourseStateHardCapTurns:
+        readOptionalEnvNumber(env, "BORG_GENERATION_DISCOURSE_HARD_CAP_TURNS") ??
+        fileConfig.generation?.discourseStateHardCapTurns ??
+        DEFAULT_CONFIG.generation.discourseStateHardCapTurns,
     },
     streamIngestion: {
       preTurnCatchup: {

@@ -124,10 +124,15 @@ export function registerCoreCommands(cli: CAC, deps: CliCommandDeps): void {
         }),
       );
 
-      writeLine(stdout, result.response);
+      if (result.emitted) {
+        writeLine(stdout, result.response);
+      }
+
+      const suppression =
+        result.emission.kind === "suppressed" ? ` [suppression=${result.emission.reason}]` : "";
       writeLine(
         stdout,
-        `[mode=${result.mode}] [path=${result.path}] [tokens=${result.usage.input_tokens}/${result.usage.output_tokens}] [retrieved=${result.retrievedEpisodeIds.join(",") || "none"}]`,
+        `[mode=${result.mode}] [path=${result.path}] [emitted=${result.emitted}]${suppression} [tokens=${result.usage.input_tokens}/${result.usage.output_tokens}] [retrieved=${result.retrievedEpisodeIds.join(",") || "none"}]`,
       );
     });
 

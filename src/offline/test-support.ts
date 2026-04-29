@@ -193,6 +193,10 @@ export function createTestConfig(
         ...overrides.retrieval?.semantic,
       },
     },
+    generation: {
+      ...DEFAULT_CONFIG.generation,
+      ...overrides.generation,
+    },
     streamIngestion: {
       ...DEFAULT_CONFIG.streamIngestion,
       ...overrides.streamIngestion,

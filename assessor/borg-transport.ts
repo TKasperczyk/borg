@@ -18,6 +18,7 @@ import {
   type LLMContentBlock,
   type LLMConverseOptions,
   type LLMConverseResult,
+  type TurnEmission,
   type LLMToolCall,
 } from "../src/index.js";
 import {
@@ -33,6 +34,8 @@ import type { DeepPartial, Scenario, TracePhase, TraceRecord } from "./types.js"
 
 export type ChatWithBorgResult = {
   response: string;
+  emitted: boolean;
+  emission: TurnEmission;
   turnId: string;
   sessionId?: string;
   usage: {
@@ -592,6 +595,8 @@ export class BorgTransport {
 
     return {
       response: result.response,
+      emitted: result.emitted,
+      emission: result.emission,
       turnId,
       ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
       usage: {

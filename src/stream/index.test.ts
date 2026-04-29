@@ -79,6 +79,10 @@ describe("stream", () => {
         content: { note: "thinking" },
       },
       {
+        kind: "agent_suppressed",
+        content: { reason: "generation_gate" },
+      },
+      {
         kind: "internal_event",
         content: "done",
         compressed: true,
@@ -105,7 +109,11 @@ describe("stream", () => {
 
     expect(filtered).toHaveLength(1);
     expect(filtered[0]?.kind).toBe("thought");
-    expect(reader.tail(2).map((entry) => entry.kind)).toEqual(["thought", "internal_event"]);
+    expect(reader.tail(3).map((entry) => entry.kind)).toEqual([
+      "thought",
+      "agent_suppressed",
+      "internal_event",
+    ]);
   });
 
   it("assigns append timestamps after acquiring the stream lock", async () => {

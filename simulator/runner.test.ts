@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { FakeLLMClient } from "../src/index.js";
 import { MaintenanceScheduler, type MaintenanceTickResult } from "../src/offline/scheduler.js";
 import { runSimulation } from "./runner.js";
 import { tomPersona } from "./personas/tom.js";
@@ -91,5 +92,68 @@ describe("SimulatorRunner", () => {
 
     expect(tickSpy).toHaveBeenCalledTimes(2);
     expect(tickSpy.mock.calls.map(([cadence]) => cadence)).toEqual(["light", "light"]);
+  });
+
+  it("stops self-play when Borg suppresses a turn", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    spyMaintenanceTick();
+    const report = await runSimulation({
+      runId: "sim-runner-suppression-test",
+      persona: tomPersona,
+      totalTurns: 5,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_plan",
+                name: "EmitTurnPlan",
+                input: {
+                  uncertainty: "",
+                  verification_steps: [],
+                  tensions: [],
+                  voice_note: "",
+                  referenced_episode_ids: [],
+                  intents: [],
+                },
+              },
+            ],
+          },
+          {
+            text: "Human: Done.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          {
+            text: "Assistant: Still invalid.",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+    });
+    const metricsRows = readFileSync(metricsPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as { turn_counter: number });
+
+    expect(report.resultState).toBe("stopped_by_suppression");
+    expect(report.stoppedTurn).toBe(1);
+    expect(metricsRows).toHaveLength(1);
+    expect(metricsRows[0]?.turn_counter).toBe(1);
   });
 });

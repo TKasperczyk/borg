@@ -16,6 +16,7 @@ export type MetricsRow = {
   semantic_edges_added_since_last_check: number;
   open_question_count: number;
   active_goal_count: number;
+  generation_suppression_count: number;
   mood_valence: number;
   mood_arousal: number;
   retrieval_latency_ms: number | null;
@@ -32,10 +33,14 @@ export type OverseerVerdict = {
   recommendation: string;
 };
 
+export type SimulatorResultState = "completed" | "stopped_by_suppression";
+
 export type SimulatorRunReport = {
   runId: string;
   persona: string;
   totalTurns: number;
+  resultState: SimulatorResultState;
+  stoppedTurn?: number;
   overseerCheckpoints: OverseerVerdict[];
   turnFailures: Array<{ turn: number; error: string }>;
   finalMetrics: MetricsRow;

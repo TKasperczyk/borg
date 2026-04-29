@@ -11,6 +11,7 @@ import {
   type OfflineMaintenanceProcessPlan,
   type SessionId,
   type StreamEntry,
+  type TurnResult,
 } from "../src/index.ts";
 import { createAnsi } from "./_ansi.ts";
 import { selectScriptClients } from "./_clients.ts";
@@ -69,6 +70,16 @@ function header(phase: number, title: string): void {
 function truncate(text: string, limit = 160): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
   return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit - 1)}…`;
+}
+
+function logTurnResponse(turn: TurnResult): void {
+  if (turn.emitted) {
+    info(`response ${truncate(turn.response)}`);
+    return;
+  }
+
+  const reason = turn.emission.kind === "suppressed" ? turn.emission.reason : "unknown";
+  info(`suppressed reason=${reason}`);
 }
 
 function parseSections(value: string | undefined): Set<number> | null {
@@ -254,7 +265,7 @@ async function runPhase3(borg: Borg, state: DebugState): Promise<void> {
   info(
     `turn mode=${turn.mode} path=${turn.path} retrieved=${turn.retrievedEpisodeIds.length} tokens=${turn.usage.input_tokens}/${turn.usage.output_tokens}`,
   );
-  info(`response ${truncate(turn.response)}`);
+  logTurnResponse(turn);
 }
 
 async function runPhase4(borg: Borg, state: DebugState): Promise<void> {
@@ -293,12 +304,12 @@ async function runPhase4(borg: Borg, state: DebugState): Promise<void> {
   );
   const guardOutcome = softened
     ? "softened"
-    : /unsafe block/i.test(turn.response)
+    : turn.emitted && /unsafe block/i.test(turn.response)
       ? "not revised"
       : "revised";
 
   info(`commitment guard ${guardOutcome}`);
-  info(`response ${truncate(turn.response)}`);
+  logTurnResponse(turn);
 }
 
 async function runPhase5(borg: Borg, state: DebugState): Promise<void> {

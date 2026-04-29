@@ -213,6 +213,7 @@ function buildPrompt(options: RunOverseerOptions): string {
         `semantic_edges_added=${row.semantic_edges_added_since_last_check}`,
         `open_questions=${row.open_question_count}`,
         `active_goals=${row.active_goal_count}`,
+        `generation_suppressions=${row.generation_suppression_count}`,
         `retrieval_ms=${row.retrieval_latency_ms ?? "null"}`,
       ].join(" "),
     )

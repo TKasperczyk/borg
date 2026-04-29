@@ -93,6 +93,8 @@ describe("TurnContextCompiler", () => {
       clock.advance(10);
       await writer.append({ kind: "internal_event", content: "something happened" });
       clock.advance(10);
+      await writer.append({ kind: "agent_suppressed", content: { reason: "generation_gate" } });
+      clock.advance(10);
       await writer.append({
         kind: "agent_msg",
         content: "looking",

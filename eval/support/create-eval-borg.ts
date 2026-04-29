@@ -17,6 +17,7 @@ type EvalConfigOverrides = {
   retrieval?: Partial<Omit<Config["retrieval"], "semantic">> & {
     semantic?: Partial<Config["retrieval"]["semantic"]>;
   };
+  generation?: Partial<Config["generation"]>;
   streamIngestion?: Partial<Omit<Config["streamIngestion"], "preTurnCatchup">> & {
     preTurnCatchup?: Partial<Config["streamIngestion"]["preTurnCatchup"]>;
   };
@@ -118,6 +119,10 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
         ...DEFAULT_CONFIG.retrieval.semantic,
         ...options.config?.retrieval?.semantic,
       },
+    },
+    generation: {
+      ...DEFAULT_CONFIG.generation,
+      ...options.config?.generation,
     },
     streamIngestion: {
       ...DEFAULT_CONFIG.streamIngestion,
