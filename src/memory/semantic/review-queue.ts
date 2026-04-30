@@ -114,8 +114,12 @@ export type ReviewQueueRepositoryOptions = {
   identityEventRepository?: IdentityEventRepository;
   applyCorrection?: (item: ReviewQueueItem) => Promise<void> | void;
   skillSplitReviewHandler?: SkillSplitReviewHandler;
-  onEnqueue?: (item: ReviewQueueItem, input: ReviewQueueInsertInput) => void;
-  onEnqueueError?: (error: unknown, item: ReviewQueueItem, input: ReviewQueueInsertInput) => void;
+  onEnqueue?: (item: ReviewQueueItem, input: ReviewQueueInsertInput) => void | Promise<void>;
+  onEnqueueError?: (
+    error: unknown,
+    item: ReviewQueueItem,
+    input: ReviewQueueInsertInput,
+  ) => void | Promise<void>;
 };
 
 const SEMANTIC_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
@@ -580,6 +584,7 @@ function mapReviewRow(row: Record<string, unknown>): ReviewQueueItem {
 
 export class ReviewQueueRepository {
   private readonly clock: Clock;
+  private readonly pendingEnqueueHooks = new Set<Promise<void>>();
   private skillSplitReviewHandler?: SkillSplitReviewHandler;
 
   constructor(private readonly options: ReviewQueueRepositoryOptions) {
@@ -589,6 +594,33 @@ export class ReviewQueueRepository {
 
   private get db(): SqliteDatabase {
     return this.options.db;
+  }
+
+  private reportEnqueueHookError(
+    error: unknown,
+    item: ReviewQueueItem,
+    input: ReviewQueueInsertInput,
+  ): void {
+    try {
+      void Promise.resolve(this.options.onEnqueueError?.(error, item, input)).catch(() => {
+        // Best-effort hook error reporting only.
+      });
+    } catch {
+      // Best-effort hook error reporting only.
+    }
+  }
+
+  private trackEnqueueHook(task: Promise<void>): void {
+    this.pendingEnqueueHooks.add(task);
+    void task.finally(() => {
+      this.pendingEnqueueHooks.delete(task);
+    });
+  }
+
+  async flushEnqueueHooks(): Promise<void> {
+    while (this.pendingEnqueueHooks.size > 0) {
+      await Promise.all([...this.pendingEnqueueHooks]);
+    }
   }
 
   setSkillSplitReviewHandler(handler: SkillSplitReviewHandler): void {
@@ -620,13 +652,17 @@ export class ReviewQueueRepository {
     const item = mapReviewRow(row);
 
     try {
-      this.options.onEnqueue?.(item, input);
-    } catch (error) {
-      try {
-        this.options.onEnqueueError?.(error, item, input);
-      } catch {
-        // Best-effort hook error reporting only.
+      const hookResult = this.options.onEnqueue?.(item, input);
+
+      if (hookResult !== undefined) {
+        this.trackEnqueueHook(
+          Promise.resolve(hookResult).catch((error) => {
+            this.reportEnqueueHookError(error, item, input);
+          }),
+        );
       }
+    } catch (error) {
+      this.reportEnqueueHookError(error, item, input);
     }
 
     return item;

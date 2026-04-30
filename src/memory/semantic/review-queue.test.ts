@@ -15,7 +15,10 @@ import {
   type SkillId,
 } from "../../util/ids.js";
 import { OpenQuestionsRepository, selfMigrations } from "../self/index.js";
-import { enqueueOpenQuestionForReview } from "../self/review-open-question-hook.js";
+import {
+  enqueueOpenQuestionForReview,
+  type ReviewOpenQuestionExtractorLike,
+} from "../self/review-open-question-hook.js";
 import { semanticMigrations } from "./migrations.js";
 import { ReviewQueueRepository } from "./review-queue.js";
 import {
@@ -60,11 +63,26 @@ describe("review queue", () => {
       db,
       clock,
     });
+    const pendingHooks: Promise<void>[] = [];
+    const openQuestionExtractor = {
+      extract: vi.fn(async (_item, context) => ({
+        question: "¿Qué afirmación debería conservarse?",
+        urgency: 0.82,
+        related_episode_ids: [],
+        related_semantic_node_ids: [...context.allowed_semantic_node_ids],
+      })),
+    } satisfies ReviewOpenQuestionExtractorLike;
     const reviewQueue = new ReviewQueueRepository({
       db,
       clock,
       semanticNodeRepository: nodeRepository,
-      onEnqueue: (item) => enqueueOpenQuestionForReview(openQuestionsRepository, item),
+      onEnqueue: (item) => {
+        const pending = enqueueOpenQuestionForReview(openQuestionsRepository, item, {
+          extractor: openQuestionExtractor,
+        });
+        pendingHooks.push(pending);
+        return pending;
+      },
     });
     const edgeRepository = new SemanticEdgeRepository({
       db,
@@ -129,13 +147,18 @@ describe("review queue", () => {
       last_verified_at: 1_000,
     });
 
+    await Promise.all(pendingHooks);
+
     const openItems = reviewQueue.getOpen();
     const openQuestions = openQuestionsRepository.list({ status: "open" });
 
     expect(openItems).toHaveLength(1);
     expect(openItems[0]?.kind).toBe("contradiction");
     expect(openItems[0]?.reason).toContain("conflicts_with_support_chain");
+    expect(openQuestionExtractor.extract).toHaveBeenCalledOnce();
     expect(openQuestions[0]?.source).toBe("contradiction");
+    expect(openQuestions[0]?.question).toBe("¿Qué afirmación debería conservarse?");
+    expect(openQuestions[0]?.urgency).toBe(0.82);
     expect(openQuestions[0]?.related_semantic_node_ids).toEqual([first.id, second.id]);
 
     const resolved = await reviewQueue.resolve(openItems[0]!.id, {

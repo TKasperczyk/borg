@@ -47,6 +47,7 @@ import {
 import {
   appendOpenQuestionHookFailureEvent,
   enqueueOpenQuestionForReview,
+  type ReviewOpenQuestionExtractorLike,
 } from "../memory/self/review-open-question-hook.js";
 import {
   ReviewQueueRepository,
@@ -341,6 +342,7 @@ export async function createOfflineTestHarness(
     embeddingClient?: EmbeddingClient;
     embeddingDimensions?: number;
     configOverrides?: DeepPartial<Config>;
+    reviewOpenQuestionExtractor?: ReviewOpenQuestionExtractorLike | null;
   } = {},
 ): Promise<OfflineTestHarness> {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -502,7 +504,10 @@ export async function createOfflineTestHarness(
     commitmentRepository,
     identityService,
     identityEventRepository,
-    onEnqueue: (item) => enqueueOpenQuestionForReview(identityService, item),
+    onEnqueue: (item) =>
+      enqueueOpenQuestionForReview(identityService, item, {
+        extractor: options.reviewOpenQuestionExtractor ?? null,
+      }),
     onEnqueueError: (error) => {
       const promise = appendOpenQuestionHookFailureEvent(
         streamWriter,
@@ -554,6 +559,7 @@ export async function createOfflineTestHarness(
     semanticUnderReviewMultiplier: config.retrieval.semantic.underReviewMultiplier,
   });
   const flushHookLogs = async () => {
+    await reviewQueueRepository.flushEnqueueHooks();
     await Promise.all([...pendingHookLogs]);
   };
 

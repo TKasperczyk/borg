@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeLLMClient } from "../../llm/index.js";
+import type { ReviewOpenQuestionExtractorLike } from "../../memory/self/index.js";
 import { StreamReader } from "../../stream/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { createMaintenanceRunId } from "../../util/ids.js";
@@ -53,9 +54,20 @@ describe("overseer process", () => {
         ]),
       ],
     });
+    const reviewOpenQuestionExtractor: ReviewOpenQuestionExtractorLike = {
+      async extract(_item, context) {
+        return {
+          question: "¿Qué atribución debería corregirse?",
+          urgency: 0.61,
+          related_episode_ids: [...context.allowed_episode_ids],
+          related_semantic_node_ids: [],
+        };
+      },
+    };
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(nowMs),
       llmClient: llm,
+      reviewOpenQuestionExtractor,
       configOverrides: {
         anthropic: {
           models: {
@@ -88,6 +100,7 @@ describe("overseer process", () => {
     const result = await process.run(harness.createContext(), {
       dryRun: false,
     });
+    await harness.flushHookLogs();
 
     expect(result.errors).toEqual([]);
     expect(llm.requests[0]?.tool_choice).toEqual({
@@ -107,6 +120,8 @@ describe("overseer process", () => {
     expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([
       expect.objectContaining({
         source: "overseer",
+        question: "¿Qué atribución debería corregirse?",
+        urgency: 0.61,
       }),
     ]);
 

@@ -60,7 +60,17 @@ export {
 export {
   appendInternalFailureEvent,
   enqueueOpenQuestionForReview,
+  type ReviewOpenQuestionExtractorLike,
+  type ReviewOpenQuestionHookOptions,
 } from "./review-open-question-hook.js";
+export {
+  REVIEW_OPEN_QUESTION_TOOL,
+  ReviewOpenQuestionExtractor,
+  type OpenQuestionProposal,
+  type ReviewOpenQuestionContext,
+  type ReviewOpenQuestionExtractorDegradedEvent,
+  type ReviewOpenQuestionExtractorOptions,
+} from "./review-open-question-extractor.js";
 export {
   goalIdSchema,
   goalPatchSchema,

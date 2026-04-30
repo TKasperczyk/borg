@@ -30,6 +30,10 @@ import {
   enqueueOpenQuestionForReview,
 } from "../memory/self/review-open-question-hook.js";
 import {
+  ReviewOpenQuestionExtractor,
+  type ReviewOpenQuestionExtractorDegradedEvent,
+} from "../memory/self/review-open-question-extractor.js";
+import {
   ReviewQueueRepository,
   SemanticBeliefDependencyRepository,
   SemanticEdgeRepository,
@@ -250,6 +254,26 @@ export async function buildBorgRepositories(
     commitmentRepository,
     identityEventRepository,
   });
+  const reportReviewOpenQuestionExtractorDegraded = (
+    event: ReviewOpenQuestionExtractorDegradedEvent,
+  ) => {
+    const writer = createDefaultStreamWriter();
+    const { error, ...details } = event;
+
+    return appendInternalFailureEvent(
+      writer,
+      "review_open_question_extractor",
+      error ?? event.reason,
+      details,
+    ).finally(() => {
+      writer.close();
+    });
+  };
+  const reviewOpenQuestionExtractor = new ReviewOpenQuestionExtractor({
+    llmClient: options.llmClient,
+    model: config.anthropic.models.background,
+    onDegraded: reportReviewOpenQuestionExtractorDegraded,
+  });
   const createdReviewQueueRepository = new ReviewQueueRepository({
     db: sqlite,
     clock,
@@ -270,7 +294,10 @@ export async function buildBorgRepositories(
 
       return applyCorrectionReview(item);
     },
-    onEnqueue: (item) => enqueueOpenQuestionForReview(identityService, item),
+    onEnqueue: (item) =>
+      enqueueOpenQuestionForReview(identityService, item, {
+        extractor: reviewOpenQuestionExtractor,
+      }),
     onEnqueueError: (error) => {
       const writer = createDefaultStreamWriter();
       void appendOpenQuestionHookFailureEvent(writer, "review_queue_open_question", error).finally(

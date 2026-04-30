@@ -172,6 +172,8 @@ export class MaintenanceOrchestrator {
           results.push(await process.apply(context, processPlan));
         } catch (error) {
           results.push(this.createFailureResult(process.name, false, error));
+        } finally {
+          await context.reviewQueueRepository.flushEnqueueHooks();
         }
       }
 
