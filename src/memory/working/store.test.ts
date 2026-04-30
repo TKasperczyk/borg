@@ -31,15 +31,14 @@ describe("working memory store", () => {
     expect(initial).toMatchObject({
       session_id: DEFAULT_SESSION_ID,
       turn_counter: 0,
-      current_focus: null,
       hot_entities: [],
       pending_intents: [],
     });
+    expect(initial).not.toHaveProperty("current_focus");
 
     store.save({
       ...initial,
       turn_counter: 2,
-      current_focus: "Atlas",
       hot_entities: ["Atlas"],
       updated_at: 200,
     });
@@ -51,9 +50,9 @@ describe("working memory store", () => {
 
     expect(reloaded).toMatchObject({
       turn_counter: 2,
-      current_focus: "Atlas",
       hot_entities: ["Atlas"],
     });
+    expect(reloaded).not.toHaveProperty("current_focus");
 
     store.clear(DEFAULT_SESSION_ID);
     expect(store.load(DEFAULT_SESSION_ID).turn_counter).toBe(0);
@@ -121,7 +120,6 @@ describe("working memory store", () => {
       JSON.stringify({
         session_id: DEFAULT_SESSION_ID,
         turn_counter: 9,
-        current_focus: null,
         hot_entities: [],
         pending_intents: [],
         pending_social_attribution: null,
@@ -154,6 +152,41 @@ describe("working memory store", () => {
       reason: "Output validator suppressed generation: output_validator.",
       since_turn: 7,
     });
+  });
+
+  it("drops legacy current_focus on load", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const workingDir = join(tempDir, "working");
+    mkdirSync(workingDir, { recursive: true });
+    writeFileSync(
+      join(workingDir, `${DEFAULT_SESSION_ID}.json`),
+      JSON.stringify({
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 4,
+        current_focus: "first 80 chars of an old turn",
+        hot_entities: ["Atlas"],
+        pending_intents: [],
+        pending_social_attribution: null,
+        pending_trait_attribution: null,
+        suppressed: [],
+        mood: null,
+        pending_procedural_attempts: [],
+        mode: "problem_solving",
+        updated_at: 500,
+      }),
+    );
+
+    const loaded = new WorkingMemoryStore({
+      dataDir: tempDir,
+      clock: new FixedClock(100),
+    }).load(DEFAULT_SESSION_ID);
+
+    expect(loaded).toMatchObject({
+      turn_counter: 4,
+      hot_entities: ["Atlas"],
+    });
+    expect(loaded).not.toHaveProperty("current_focus");
   });
 
   it("caps pending intents to the most recent unique next actions", () => {

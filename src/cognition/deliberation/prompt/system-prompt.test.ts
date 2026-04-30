@@ -43,7 +43,6 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
     workingMemory: {
       session_id: DEFAULT_SESSION_ID,
       turn_counter: 3,
-      current_focus: "rollout",
       hot_entities: ["rollout"],
       pending_intents: [],
       pending_social_attribution: null,

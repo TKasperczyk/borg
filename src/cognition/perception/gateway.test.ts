@@ -120,7 +120,6 @@ describe("PerceptionGateway", () => {
     });
     expect(result.workingMemory).toMatchObject({
       turn_counter: 1,
-      current_focus: "plain lower text",
       hot_entities: [],
       mood: result.workingMood,
       mode: "idle",

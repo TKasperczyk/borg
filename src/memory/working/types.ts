@@ -122,7 +122,6 @@ export const PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS = 8;
 const workingMemoryObjectSchema = z.object({
   session_id: workingSessionIdSchema,
   turn_counter: z.number().int().nonnegative(),
-  current_focus: z.string().min(1).nullable(),
   hot_entities: z.array(z.string().min(1)),
   pending_intents: z.array(intentRecordSchema),
   pending_social_attribution: pendingSocialAttributionSchema.nullable().default(null),
@@ -165,8 +164,9 @@ function migrateLegacyDiscourseState(record: Record<string, unknown>): Record<st
 }
 
 // Backward-compat preprocess: legacy persisted files may have a singular
-// `pending_procedural_attempt: T | null` (Sprint 53 moved to a list) or
-// the now-removed `last_selected_skill_*` fields (Sprint 54 dropped them
+// `pending_procedural_attempt: T | null` (Sprint 53 moved to a list),
+// `current_focus` (now derived from `hot_entities` at prompt render time),
+// or the now-removed `last_selected_skill_*` fields (Sprint 54 dropped them
 // as unused). Sprint no_output also retired the persisted `validator`
 // discourse provenance; map it to `no_output_tool` on read. Drop the dead
 // fields and migrate legacy slots before validation.
@@ -178,6 +178,7 @@ export const workingMemorySchema = z.preprocess((input) => {
   const record = input as Record<string, unknown>;
   const {
     pending_procedural_attempt: legacyAttempt,
+    current_focus: _legacyCurrentFocus,
     last_selected_skill_id: _legacySkillId,
     last_selected_skill_turn: _legacySkillTurn,
     ...rest
@@ -228,7 +229,6 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
   return {
     session_id: sessionId,
     turn_counter: 0,
-    current_focus: null,
     hot_entities: [],
     pending_intents: [],
     pending_social_attribution: null,

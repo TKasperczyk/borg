@@ -132,7 +132,6 @@ export class PerceptionGateway {
     const workingMemory = {
       ...input.workingMemory,
       turn_counter: input.workingMemory.turn_counter + 1,
-      current_focus: perception.entities[0] ?? (input.cognitionInput.slice(0, 80) || null),
       hot_entities: perception.entities,
       mood: workingMood,
       mode: perception.mode,
