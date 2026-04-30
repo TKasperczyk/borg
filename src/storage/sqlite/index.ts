@@ -145,6 +145,10 @@ export function openDatabase(path: string, options: OpenDatabaseOptions = {}): S
       throw error;
     }
   } catch (error) {
+    if (error instanceof StorageError) {
+      throw error;
+    }
+
     throw new StorageError(`Failed to open SQLite database at ${path}`, {
       cause: error,
     });
