@@ -59,6 +59,7 @@ import {
   createCorrectionReviewHandler,
   createSkillSplitReviewQueueHandler,
   createSemanticNodesTableSchema,
+  registerBuiltinReviewQueueHandlers,
   semanticMigrations,
   type ReviewQueueItem,
   type SemanticEdge,
@@ -524,6 +525,7 @@ export async function createOfflineTestHarness(
       pendingHookLogs.add(promise);
     },
   });
+  registerBuiltinReviewQueueHandlers(reviewQueueRepository);
   reviewQueueRepository.registerHandler(
     createCorrectionReviewHandler({
       applyCorrection: (item) => {

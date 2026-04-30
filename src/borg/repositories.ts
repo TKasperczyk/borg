@@ -42,6 +42,7 @@ import {
   SemanticNodeRepository,
   SemanticReviewService,
   createCorrectionReviewHandler,
+  registerBuiltinReviewQueueHandlers,
   type ReviewQueueItem,
 } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
@@ -277,6 +278,7 @@ export async function buildBorgRepositories(
     onDegraded: reportReviewOpenQuestionExtractorDegraded,
   });
   const reviewHandlers = new ReviewQueueHandlerRegistry();
+  registerBuiltinReviewQueueHandlers(reviewHandlers);
   reviewHandlers.register(
     createCorrectionReviewHandler({
       applyCorrection: (item) => {

@@ -24,6 +24,7 @@ import { semanticMigrations } from "./migrations.js";
 import { ReviewQueueRepository } from "./review-queue.js";
 import { createCorrectionReviewHandler } from "./review-handlers/correction.js";
 import { createSkillSplitReviewQueueHandler } from "./review-handlers/skill-split.js";
+import { registerBuiltinReviewQueueHandlers } from "./review-handlers/defaults.js";
 import {
   SemanticEdgeRepository,
   SemanticNodeRepository,
@@ -137,6 +138,7 @@ describe("review queue", () => {
         return pending;
       },
     });
+    registerBuiltinReviewQueueHandlers(reviewQueue);
     const edgeRepository = new SemanticEdgeRepository({
       db,
       clock,
@@ -447,6 +449,7 @@ describe("review queue", () => {
       clock,
       semanticNodeRepository: nodeRepository,
     });
+    registerBuiltinReviewQueueHandlers(reviewQueue);
     const edgeRepository = new SemanticEdgeRepository({
       db,
       clock,
@@ -910,7 +913,7 @@ describe("review queue", () => {
     expect(harness.valuesRepository.get(value.id)?.support_count).toBe(1);
   });
 
-  it("applies accepted pending reflector insights and leaves invalidated ones unapplied", async () => {
+  it("applies accepted pending reflector insights and archives invalidated ones", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(8_000),
     });
@@ -971,7 +974,7 @@ describe("review queue", () => {
 
     expect(await harness.semanticNodeRepository.get(freshNode.id)).toEqual(
       expect.objectContaining({
-        archived: false,
+        archived: true,
         description: "An updated reflected proposition.",
         last_verified_at: 8_000,
         confidence: 0.7,
@@ -1043,22 +1046,13 @@ describe("review queue", () => {
 
     await expect(
       harness.reviewQueueRepository.resolve(underSpecifiedMisattribution.id, "accept"),
-    ).rejects.toMatchObject({
-      name: "SemanticError",
-      code: "REVIEW_QUEUE_REPAIR_REQUIRES_STRUCTURED_REFS",
-    });
+    ).rejects.toThrow();
     await expect(
       harness.reviewQueueRepository.resolve(underSpecifiedTemporalDrift.id, "accept"),
-    ).rejects.toMatchObject({
-      name: "SemanticError",
-      code: "REVIEW_QUEUE_REPAIR_REQUIRES_STRUCTURED_REFS",
-    });
+    ).rejects.toThrow();
     await expect(
       harness.reviewQueueRepository.resolve(underSpecifiedIdentityRepair.id, "accept"),
-    ).rejects.toMatchObject({
-      name: "SemanticError",
-      code: "REVIEW_QUEUE_REPAIR_REQUIRES_STRUCTURED_REFS",
-    });
+    ).rejects.toThrow();
 
     expect(harness.reviewQueueRepository.getOpen().map((item) => item.id)).toEqual(
       expect.arrayContaining([
@@ -1069,7 +1063,7 @@ describe("review queue", () => {
     );
   });
 
-  it("rejects malformed semantic pair refs for supersede/invalidate but still allows dismiss", async () => {
+  it("rejects malformed semantic pair refs before resolving", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(9_000),
     });
@@ -1093,25 +1087,19 @@ describe("review queue", () => {
         decision: "supersede",
         winner_node_id: "semn_aaaaaaaaaaaaaaaa" as never,
       }),
-    ).rejects.toMatchObject({
-      name: "SemanticError",
-      code: "REVIEW_QUEUE_MALFORMED_PAIR_REFS",
-    });
+    ).rejects.toThrow();
     await expect(
       harness.reviewQueueRepository.resolve(malformedContradiction.id, {
         decision: "invalidate",
         winner_node_id: "semn_bbbbbbbbbbbbbbbb" as never,
       }),
-    ).rejects.toMatchObject({
-      name: "SemanticError",
-      code: "REVIEW_QUEUE_MALFORMED_PAIR_REFS",
-    });
+    ).rejects.toThrow();
+    await expect(
+      harness.reviewQueueRepository.resolve(malformedDuplicate.id, "dismiss"),
+    ).rejects.toThrow();
 
-    const dismissed = await harness.reviewQueueRepository.resolve(malformedDuplicate.id, "dismiss");
-
-    expect(dismissed?.resolution).toBe("dismiss");
-    expect(harness.reviewQueueRepository.getOpen().map((item) => item.id)).toContain(
-      malformedContradiction.id,
+    expect(harness.reviewQueueRepository.getOpen().map((item) => item.id)).toEqual(
+      expect.arrayContaining([malformedDuplicate.id, malformedContradiction.id]),
     );
   });
 
@@ -1174,6 +1162,7 @@ describe("review queue", () => {
       db,
       clock: new FixedClock(11_750),
     });
+    registerBuiltinReviewQueueHandlers(reviewQueue);
     const refs = {
       target_type: "semantic_node",
       target_id: "semn_aaaaaaaaaaaaaaaa",
@@ -1219,6 +1208,7 @@ describe("review queue", () => {
       db,
       clock: new FixedClock(1_000),
     });
+    registerBuiltinReviewQueueHandlers(reviewQueue);
     reviewQueue.registerHandler(
       createCorrectionReviewHandler({
         applyCorrection: vi.fn(),

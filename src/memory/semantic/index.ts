@@ -15,7 +15,6 @@ export {
   reviewQueueItemSchema,
   reviewResolutionSchema,
   reviewResolutionInputSchema,
-  skillSplitReviewPayloadSchema,
   type ReviewKind,
   type BeliefRevisionTarget,
   type BeliefRevisionReasonCode,
@@ -31,17 +30,52 @@ export {
   type ReviewResolution,
   type ReviewResolutionInput,
   type ReviewTransactionScope,
-  type SkillSplitReviewApplyResult,
-  type SkillSplitReviewHandler,
-  type SkillSplitReviewPayload,
 } from "./review-queue.js";
+export {
+  beliefRevisionReviewRefsSchema,
+  createBeliefRevisionReviewQueueHandler,
+  type BeliefRevisionReviewRefs,
+} from "./review-handlers/belief-revision.js";
 export {
   correctionReviewRefsSchema,
   createCorrectionReviewHandler,
   type CorrectionReviewHandlerOptions,
   type CorrectionReviewRefs,
 } from "./review-handlers/correction.js";
-export { createSkillSplitReviewQueueHandler } from "./review-handlers/skill-split.js";
+export { registerBuiltinReviewQueueHandlers } from "./review-handlers/defaults.js";
+export {
+  createIdentityInconsistencyReviewQueueHandler,
+  identityInconsistencyReviewRefsSchema,
+  type IdentityInconsistencyReviewRefs,
+} from "./review-handlers/identity-inconsistency.js";
+export {
+  createNewInsightReviewQueueHandler,
+  newInsightReviewRefsSchema,
+  type NewInsightReviewRefs,
+} from "./review-handlers/new-insight.js";
+export {
+  createMisattributionReviewQueueHandler,
+  misattributionReviewRefsSchema,
+  type MisattributionReviewRefs,
+} from "./review-handlers/misattribution.js";
+export {
+  createSkillSplitReviewQueueHandler,
+  skillSplitReviewPayloadSchema,
+  type SkillSplitReviewApplyResult,
+  type SkillSplitReviewHandler,
+  type SkillSplitReviewPayload,
+} from "./review-handlers/skill-split.js";
+export {
+  createSemanticPairReviewQueueHandler,
+  semanticPairReviewRefsSchema,
+  type SemanticPairReviewKind,
+  type SemanticPairReviewRefs,
+} from "./review-handlers/semantic-pair.js";
+export {
+  createTemporalDriftReviewQueueHandler,
+  temporalDriftReviewRefsSchema,
+  type TemporalDriftReviewRefs,
+} from "./review-handlers/temporal-drift.js";
 export { SemanticReviewService, type SemanticReviewServiceOptions } from "./review-service.js";
 export {
   SemanticBeliefDependencyRepository,

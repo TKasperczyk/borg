@@ -2,13 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FixedClock } from "../../../util/clock.js";
 import type { EpisodeId, SkillId } from "../../../util/ids.js";
+import { type ReviewHandlerContext, type ReviewQueueItem } from "../review-queue.js";
 import {
-  type ReviewHandlerContext,
-  type ReviewQueueItem,
+  createSkillSplitReviewQueueHandler,
   type SkillSplitReviewHandler,
   type SkillSplitReviewPayload,
-} from "../review-queue.js";
-import { createSkillSplitReviewQueueHandler } from "./skill-split.js";
+} from "./skill-split.js";
 
 const originalSkillId = "skl_aaaaaaaaaaaaaaaa" as SkillId;
 const newSkillId = "skl_bbbbbbbbbbbbbbbb" as SkillId;
