@@ -948,7 +948,8 @@ export class Reflector {
       return;
     }
 
-    for (const proposal of proposals) {
+    for (let proposalIndex = 0; proposalIndex < proposals.length; proposalIndex += 1) {
+      const proposal = proposals[proposalIndex]!;
       const question = proposal.question.trim();
 
       if (question.length === 0) {
@@ -962,6 +963,8 @@ export class Reflector {
       if (droppedEpisodeIds.length > 0) {
         await this.appendReflectorInternalEvent(streamWriter, {
           hook: "reflection_open_question_filtered_episode_ids",
+          proposal_index: proposalIndex,
+          question,
           dropped_episode_ids: droppedEpisodeIds,
           kept_episode_ids: relatedEpisodeIds,
         });
