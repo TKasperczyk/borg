@@ -1847,7 +1847,6 @@ describe("ProceduralSynthesizerProcess", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 2,
-            current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
             pending_social_attribution: null,
@@ -1895,7 +1894,6 @@ describe("ProceduralSynthesizerProcess", () => {
             workingMemory: {
               session_id: DEFAULT_SESSION_ID,
               turn_counter: 2,
-              current_focus: "Atlas",
               hot_entities: ["Atlas"],
               pending_intents: [],
               pending_social_attribution: null,

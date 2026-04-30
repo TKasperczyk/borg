@@ -344,11 +344,12 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
   // (recent_thoughts) or transient planner scratchpad. Recent dialogue
   // reaches cognition via the recency lane (Phase A); persistent thoughts
   // live in the stream. What's left here is derived live-turn state
-  // (current focus, hot entities, mood) that the model uses to anchor
-  // the turn in the *right now*.
+  // (hot entities, mood) that the model uses to anchor the turn in the
+  // *right now*.
   const mood = workingMemory.mood;
+  const focus = workingMemory.hot_entities[0] ?? "none";
   const lines = [
-    `Working memory: focus=${workingMemory.current_focus ?? "none"}; entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${
+    `Working memory: focus=${focus}; entities=${workingMemory.hot_entities.join(", ") || "none"}; mood=${
       mood === null || mood === undefined
         ? "neutral"
         : `${mood.valence.toFixed(2)}/${mood.arousal.toFixed(2)}`

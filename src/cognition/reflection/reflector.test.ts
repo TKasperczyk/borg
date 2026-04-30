@@ -168,7 +168,6 @@ function createOpenQuestionReflectionContext(
   } = {},
 ) {
   const workingMemory = createWorkingMemoryFixture({
-    current_focus: "Atlas",
     hot_entities: ["Atlas"],
     mode: "reflective",
   });
@@ -229,7 +228,6 @@ function createPendingProceduralReflectionContext() {
   const workingMemory = {
     session_id: DEFAULT_SESSION_ID,
     turn_counter: 2,
-    current_focus: "Rust",
     hot_entities: ["Rust"],
     pending_intents: [],
     pending_social_attribution: null,
@@ -357,7 +355,6 @@ function createExecutiveReflectionContext(input: {
   const workingMemory = {
     session_id: DEFAULT_SESSION_ID,
     turn_counter: 1,
-    current_focus: "Apollo",
     hot_entities: ["Apollo"],
     pending_intents: pendingIntents,
     pending_social_attribution: null,
@@ -1140,7 +1137,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
           pending_social_attribution: null,
@@ -1179,7 +1175,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
             pending_social_attribution: null,
@@ -1211,7 +1206,7 @@ describe("reflector", () => {
     // cache; thoughts live in the stream (persisted by the deliberator),
     // and working memory holds derived live-turn state only.
     expect(reflected.turn_counter).toBe(1);
-    expect(reflected.current_focus).toBe("Atlas");
+    expect(reflected.hot_entities).toEqual(["Atlas"]);
   });
 
   it("applies user-turn reflector progress updates without review", async () => {
@@ -1252,7 +1247,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
           pending_social_attribution: null,
@@ -1291,7 +1285,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
             pending_social_attribution: null,
@@ -1421,7 +1414,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: "Atlas",
           hot_entities: ["Atlas"],
           pending_intents: [],
           pending_social_attribution: null,
@@ -1460,7 +1452,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: "Atlas",
             hot_entities: ["Atlas"],
             pending_intents: [],
             pending_social_attribution: null,
@@ -1535,7 +1526,6 @@ describe("reflector", () => {
     });
     const workingMemory = createWorkingMemoryFixture({
       turn_counter: 2,
-      current_focus: "Atlas",
       hot_entities: ["Atlas"],
       pending_intents: pendingIntents,
       mode: "problem_solving" as const,
@@ -1739,7 +1729,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: null,
           hot_entities: [],
           pending_intents: [],
           pending_social_attribution: null,
@@ -1778,7 +1767,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: null,
             hot_entities: [],
             pending_intents: [],
             pending_social_attribution: null,
@@ -1839,7 +1827,6 @@ describe("reflector", () => {
       identityService: harness.identityService,
     });
     const workingMemory = createWorkingMemoryFixture({
-      current_focus: "Atlas",
       hot_entities: ["Atlas"],
       mode: "reflective",
     });
@@ -1936,7 +1923,6 @@ describe("reflector", () => {
       model: "claude-opus-4-7",
     });
     const workingMemory = createWorkingMemoryFixture({
-      current_focus: "Atlas",
       hot_entities: ["Atlas"],
       mode: "reflective",
     });
@@ -2031,7 +2017,6 @@ describe("reflector", () => {
       identityService: harness.identityService,
     });
     const workingMemory = createWorkingMemoryFixture({
-      current_focus: "Atlas",
       hot_entities: ["Atlas"],
       mode: "reflective",
     });
@@ -2128,7 +2113,6 @@ describe("reflector", () => {
     });
     const retrieved = createRetrievedEpisode(episode, 0.1);
     const workingMemory = createWorkingMemoryFixture({
-      current_focus: "Atlas",
       hot_entities: ["Atlas"],
       mode: "reflective",
     });
@@ -2390,7 +2374,6 @@ describe("reflector", () => {
       identityService: brokenIdentityService,
     });
     const workingMemory = createWorkingMemoryFixture({
-      current_focus: "Atlas",
       hot_entities: ["Atlas"],
       mode: "reflective",
     });
@@ -2517,7 +2500,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 2,
-            current_focus: "Rust",
             hot_entities: ["Rust"],
             pending_intents: [],
             pending_social_attribution: null,
@@ -2565,7 +2547,6 @@ describe("reflector", () => {
             workingMemory: {
               session_id: DEFAULT_SESSION_ID,
               turn_counter: 2,
-              current_focus: "Rust",
               hot_entities: ["Rust"],
               pending_intents: [],
               pending_social_attribution: null,
@@ -2692,7 +2673,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 2,
-          current_focus: "Rust",
           hot_entities: ["Rust"],
           pending_intents: [],
           pending_social_attribution: null,
@@ -2731,7 +2711,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 2,
-            current_focus: "Rust",
             hot_entities: ["Rust"],
             pending_intents: [],
             pending_social_attribution: null,
@@ -2787,7 +2766,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: "Rust",
           hot_entities: ["Rust"],
           pending_intents: [],
           pending_social_attribution: null,
@@ -2835,7 +2813,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: "Rust",
             hot_entities: ["Rust"],
             pending_intents: [],
             pending_social_attribution: null,
@@ -2922,7 +2899,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: "Rust",
           hot_entities: ["Rust"],
           pending_intents: [],
           pending_social_attribution: null,
@@ -2970,7 +2946,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: "Rust",
             hot_entities: ["Rust"],
             pending_intents: [],
             pending_social_attribution: null,
@@ -3051,7 +3026,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: null,
           hot_entities: [],
           pending_intents: [],
           pending_social_attribution: null,
@@ -3090,7 +3064,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: null,
             hot_entities: [],
             pending_intents: [],
             pending_social_attribution: null,
@@ -3173,7 +3146,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: null,
           hot_entities: [],
           pending_intents: [],
           pending_social_attribution: null,
@@ -3212,7 +3184,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: null,
             hot_entities: [],
             pending_intents: [],
             pending_social_attribution: null,
@@ -3288,7 +3259,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: null,
           hot_entities: [],
           pending_intents: [],
           pending_social_attribution: null,
@@ -3327,7 +3297,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: null,
             hot_entities: [],
             pending_intents: [],
             pending_social_attribution: null,
@@ -3396,7 +3365,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: null,
           hot_entities: [],
           pending_intents: [],
           pending_social_attribution: null,
@@ -3435,7 +3403,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: null,
             hot_entities: [],
             pending_intents: [],
             pending_social_attribution: null,
@@ -3489,7 +3456,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: null,
           hot_entities: [],
           pending_intents: [],
           pending_social_attribution: null,
@@ -3528,7 +3494,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: null,
             hot_entities: [],
             pending_intents: [],
             pending_social_attribution: null,
@@ -3614,7 +3579,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: null,
           hot_entities: [],
           pending_intents: [],
           pending_social_attribution: null,
@@ -3653,7 +3617,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: null,
             hot_entities: [],
             pending_intents: [],
             pending_social_attribution: null,
@@ -3752,7 +3715,6 @@ describe("reflector", () => {
         workingMemory: {
           session_id: DEFAULT_SESSION_ID,
           turn_counter: 1,
-          current_focus: null,
           hot_entities: [],
           pending_intents: [],
           pending_social_attribution: null,
@@ -3791,7 +3753,6 @@ describe("reflector", () => {
           workingMemory: {
             session_id: DEFAULT_SESSION_ID,
             turn_counter: 1,
-            current_focus: null,
             hot_entities: [],
             pending_intents: [],
             pending_social_attribution: null,
