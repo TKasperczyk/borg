@@ -5,7 +5,6 @@ import {
   type CommitmentRecord,
   type EntityRepository,
 } from "../../memory/commitments/index.js";
-import type { StreamWriter } from "../../stream/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 
@@ -26,7 +25,6 @@ export type CommitmentGuardRunnerInput = {
   autonomyTrigger?: AutonomyTriggerContext | null;
   commitments: readonly CommitmentRecord[];
   relevantEntities: readonly string[];
-  streamWriter: Pick<StreamWriter, "append">;
 };
 
 export class CommitmentGuardRunner {
@@ -56,21 +54,14 @@ export class CommitmentGuardRunner {
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("commitment_check", {
         turnId: input.turnId,
-        verdict: commitmentCheck.fallback_applied
-          ? "fallback_applied"
-          : commitmentCheck.revised
-            ? "rewritten"
-            : "passed",
+        verdict:
+          commitmentCheck.emission.kind === "suppressed"
+            ? "suppressed"
+            : commitmentCheck.revised
+              ? "rewritten"
+              : "passed",
         rewriteTriggered: commitmentCheck.revised,
         violationCount: commitmentCheck.violations.length,
-      });
-    }
-
-    if (commitmentCheck.fallback_applied) {
-      await input.streamWriter.append({
-        kind: "internal_event",
-        content:
-          "Commitment guard fell back to a softened response after revision still violated an active commitment.",
       });
     }
 

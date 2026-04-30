@@ -16,8 +16,9 @@ export type CommitmentCheckResult = {
   passed: boolean;
   violations: CommitmentViolation[];
   revised: boolean;
-  final_response: string;
-  fallback_applied: boolean;
+  emission:
+    | { kind: "message"; content: string }
+    | { kind: "suppressed"; reason: "commitment_revision_failed" };
 };
 
 export type CommitmentCheckerOptions = {
@@ -255,8 +256,10 @@ export class CommitmentChecker {
         passed: true,
         violations: [],
         revised: false,
-        final_response: input.response,
-        fallback_applied: false,
+        emission: {
+          kind: "message",
+          content: input.response,
+        },
       };
     }
 
@@ -294,8 +297,10 @@ export class CommitmentChecker {
         passed: true,
         violations,
         revised: true,
-        final_response: revisedResponse,
-        fallback_applied: false,
+        emission: {
+          kind: "message",
+          content: revisedResponse,
+        },
       };
     }
 
@@ -303,9 +308,10 @@ export class CommitmentChecker {
       passed: true,
       violations,
       revised: true,
-      final_response:
-        "I should be careful here, so I'll keep this brief and avoid making a stronger commitment.",
-      fallback_applied: true,
+      emission: {
+        kind: "suppressed",
+        reason: "commitment_revision_failed",
+      },
     };
   }
 }

@@ -99,6 +99,7 @@ export const discourseStopProvenanceSchema = z.enum([
   "self_commitment_extractor",
   "no_output_tool",
   "s2_planner_no_output",
+  "commitment_guard",
 ]);
 
 export const stopUntilSubstantiveContentSchema = z.object({

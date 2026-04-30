@@ -892,15 +892,12 @@ export class TurnOrchestrator {
                   autonomyTrigger: input.autonomyTrigger,
                   commitments: applicableCommitments,
                   relevantEntities: perception.entities,
-                  streamWriter,
                 });
 
+                const commitmentEmission = commitmentCheck.emission;
                 return performAction({
-                  response: commitmentCheck.final_response,
-                  emission: {
-                    kind: "message",
-                    content: commitmentCheck.final_response,
-                  },
+                  response: commitmentEmission.kind === "message" ? commitmentEmission.content : "",
+                  emission: commitmentEmission,
                   toolCalls: deliberation.tool_calls,
                   intents: deliberation.intents,
                   workingMemory,
@@ -932,16 +929,28 @@ export class TurnOrchestrator {
             reason: actionEmission.reason,
             markerEntryId: persistedAgentEntry.id,
           };
-          const suppressedWorkingMemory =
-            actionEmission.reason === "no_output_tool"
-              ? this.setDiscourseStopState({
-                  workingMemory: actionResult.workingMemory,
-                  provenance: "no_output_tool",
-                  sourceStreamEntryId: persistedAgentEntry.id,
-                  reason: "Finalizer called no_output for this turn.",
-                  turnId,
-                })
-              : actionResult.workingMemory;
+          let suppressedWorkingMemory = actionResult.workingMemory;
+
+          if (actionEmission.reason === "no_output_tool") {
+            suppressedWorkingMemory = this.setDiscourseStopState({
+              workingMemory: suppressedWorkingMemory,
+              provenance: "no_output_tool",
+              sourceStreamEntryId: persistedAgentEntry.id,
+              reason: "Finalizer called no_output for this turn.",
+              turnId,
+            });
+          }
+
+          if (actionEmission.reason === "commitment_revision_failed") {
+            suppressedWorkingMemory = this.setDiscourseStopState({
+              workingMemory: suppressedWorkingMemory,
+              provenance: "commitment_guard",
+              sourceStreamEntryId: persistedAgentEntry.id,
+              reason:
+                "Commitment guard suppressed this turn because revision still violated an active commitment.",
+              turnId,
+            });
+          }
 
           if (this.tracer.enabled) {
             this.tracer.emit("generation_suppressed", {

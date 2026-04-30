@@ -5,7 +5,8 @@ export type GenerationSuppressionReason =
   | "active_discourse_stop"
   | "empty_finalizer"
   | "no_output_tool"
-  | "s2_planner_no_output";
+  | "s2_planner_no_output"
+  | "commitment_revision_failed";
 
 export type PendingTurnEmission =
   | {

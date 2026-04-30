@@ -78,7 +78,10 @@ describe("commitment checker", () => {
     expect(result.passed).toBe(true);
     expect(result.violations).toEqual([]);
     expect(result.revised).toBe(false);
-    expect(result.final_response).toBe("I can't discuss Atlas with Sam.");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "I can't discuss Atlas with Sam.",
+    });
 
     db.close();
   });
@@ -130,8 +133,10 @@ describe("commitment checker", () => {
     });
 
     expect(result.revised).toBe(true);
-    expect(result.fallback_applied).toBe(false);
-    expect(result.final_response).toContain("general status update");
+    expect(result.emission).toMatchObject({
+      kind: "message",
+      content: expect.stringContaining("general status update"),
+    });
     expect(llm.requests[0]?.model).toBe("haiku");
     expect(llm.requests[1]?.model).toBe("sonnet");
     expect(llm.requests[2]?.model).toBe("haiku");
@@ -158,7 +163,7 @@ describe("commitment checker", () => {
     db.close();
   });
 
-  it("falls back to a brief reply when even the revised response still violates", async () => {
+  it("suppresses output when even the revised response still violates", async () => {
     const db = openDatabase(":memory:", { migrations: commitmentMigrations });
     const clock = new FixedClock(1_000);
     const entities = new EntityRepository({ db, clock });
@@ -200,8 +205,13 @@ describe("commitment checker", () => {
     });
 
     expect(result.revised).toBe(true);
-    expect(result.fallback_applied).toBe(true);
-    expect(result.final_response).toContain("keep this brief");
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "commitment_revision_failed",
+    });
+    expect("final_response" in result).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("I should be careful here");
+    expect(JSON.stringify(result)).not.toContain("keep this brief");
 
     db.close();
   });
@@ -244,7 +254,10 @@ describe("commitment checker", () => {
       confidence: 1,
     });
     expect(result.revised).toBe(true);
-    expect(result.final_response).toBe("I should avoid discussing that topic.");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "I should avoid discussing that topic.",
+    });
 
     db.close();
   });
@@ -289,7 +302,10 @@ describe("commitment checker", () => {
     });
     expect(result.violations[0]?.reason).toContain("Commitment judge failed");
     expect(result.revised).toBe(true);
-    expect(result.final_response).toBe("I should avoid discussing that topic.");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "I should avoid discussing that topic.",
+    });
 
     db.close();
   });

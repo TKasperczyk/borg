@@ -166,6 +166,30 @@ function createGenerationGateResponse(input: {
   };
 }
 
+function createCommitmentJudgeResponse(
+  violations: Array<{ commitment_id: string; reason: string; confidence?: number }>,
+) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_commitment_judge",
+        name: "EmitCommitmentViolations",
+        input: {
+          violations: violations.map((violation) => ({
+            commitment_id: violation.commitment_id,
+            reason: violation.reason,
+            confidence: violation.confidence ?? 0.9,
+          })),
+        },
+      },
+    ],
+  };
+}
+
 function createStepReflectionResponse(input: {
   stepOutcomes?: Array<{
     step_id: string;
@@ -1032,6 +1056,79 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(activeStop).toMatchObject({
         provenance: "s2_planner_no_output",
         source_stream_entry_id: thoughtEntry?.id,
+        since_turn: 1,
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("suppresses the turn when commitment revision still violates", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_150_000);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const commitment = borg.commitments.add({
+        type: "boundary",
+        directive: "Do not disclose launch dates.",
+        priority: 10,
+        provenance: { kind: "manual" },
+      });
+
+      llm.pushResponse({
+        text: "The launch is tomorrow.",
+        input_tokens: 8,
+        output_tokens: 4,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse(
+        createCommitmentJudgeResponse([
+          {
+            commitment_id: commitment.id,
+            reason: "Discloses a launch date.",
+          },
+        ]),
+      );
+      llm.pushResponse({
+        text: "The launch is still tomorrow.",
+        input_tokens: 8,
+        output_tokens: 4,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse(
+        createCommitmentJudgeResponse([
+          {
+            commitment_id: commitment.id,
+            reason: "Still discloses a launch date after rewrite.",
+          },
+        ]),
+      );
+
+      const result = await borg.turn({
+        userMessage: "When is launch?",
+      });
+      const entries = borg.stream.tail(10);
+      const suppressionEntry = entries.find((entry) => entry.kind === "agent_suppressed");
+      const activeStop = borg.workmem.load().discourse_state?.stop_until_substantive_content;
+
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "commitment_revision_failed",
+      });
+      expect(entries.some((entry) => entry.kind === "agent_msg")).toBe(false);
+      expect(suppressionEntry?.content).toMatchObject({
+        reason: "commitment_revision_failed",
+      });
+      expect(activeStop).toMatchObject({
+        provenance: "commitment_guard",
+        source_stream_entry_id: suppressionEntry?.id,
         since_turn: 1,
       });
     } finally {

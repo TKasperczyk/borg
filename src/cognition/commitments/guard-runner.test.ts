@@ -2,14 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
-import type { StreamEntry, StreamEntryInput, StreamWriter } from "../../stream/index.js";
-import { DEFAULT_SESSION_ID } from "../../stream/index.js";
-import type { CommitmentId, StreamEntryId } from "../../util/ids.js";
+import type { CommitmentId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { CommitmentGuardRunner } from "./guard-runner.js";
 
 const commitmentId = "cmt_abcdefghijklmnop" as CommitmentId;
-const streamEntryId = "strm_abcdefghijklmnop" as StreamEntryId;
 
 function makeCommitment(): CommitmentRecord {
   return {
@@ -51,25 +48,6 @@ function verdictResponse(violations: unknown[]): LLMCompleteResult {
   };
 }
 
-function makeStreamWriter() {
-  const appended: StreamEntryInput[] = [];
-  const streamWriter: Pick<StreamWriter, "append"> = {
-    append: async (input) => {
-      appended.push(input);
-
-      return {
-        ...input,
-        id: streamEntryId,
-        timestamp: 2_000,
-        session_id: DEFAULT_SESSION_ID,
-        compressed: input.compressed ?? false,
-      } satisfies StreamEntry;
-    },
-  };
-
-  return { appended, streamWriter };
-}
-
 function makeRunner(tracer: TurnTracer) {
   return new CommitmentGuardRunner({
     detectionModel: "judge-model",
@@ -86,7 +64,6 @@ describe("CommitmentGuardRunner", () => {
     const llm = new FakeLLMClient({
       responses: [verdictResponse([])],
     });
-    const { appended, streamWriter } = makeStreamWriter();
     const tracer: TurnTracer = {
       enabled: true,
       includePayloads: false,
@@ -111,11 +88,12 @@ describe("CommitmentGuardRunner", () => {
       },
       commitments: [makeCommitment()],
       relevantEntities: ["Atlas"],
-      streamWriter,
     });
 
-    expect(result.final_response).toBe("No launch dates.");
-    expect(appended).toEqual([]);
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "No launch dates.",
+    });
     expect(llm.requests[0]?.messages[0]?.content).toContain("User message: Raw autonomous wake");
     expect(llm.requests[0]?.messages[0]?.content).toContain(
       "<borg_untrusted_autonomy_context>\nFormatted autonomy context\n</borg_untrusted_autonomy_context>",
@@ -128,7 +106,7 @@ describe("CommitmentGuardRunner", () => {
     });
   });
 
-  it("emits fallback trace and appends the original fallback internal event", async () => {
+  it("emits suppression trace when revision still violates a commitment", async () => {
     const violation = {
       commitment_id: commitmentId,
       reason: "Discloses launch date.",
@@ -147,7 +125,6 @@ describe("CommitmentGuardRunner", () => {
         verdictResponse([violation]),
       ],
     });
-    const { appended, streamWriter } = makeStreamWriter();
     const tracer: TurnTracer = {
       enabled: true,
       includePayloads: false,
@@ -164,25 +141,17 @@ describe("CommitmentGuardRunner", () => {
       autonomyTrigger: null,
       commitments: [makeCommitment()],
       relevantEntities: [],
-      streamWriter,
     });
 
-    expect(result.fallback_applied).toBe(true);
-    expect(result.final_response).toBe(
-      "I should be careful here, so I'll keep this brief and avoid making a stronger commitment.",
-    );
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "commitment_revision_failed",
+    });
     expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
       turnId: "turn-2",
-      verdict: "fallback_applied",
+      verdict: "suppressed",
       rewriteTriggered: true,
       violationCount: 1,
     });
-    expect(appended).toEqual([
-      {
-        kind: "internal_event",
-        content:
-          "Commitment guard fell back to a softened response after revision still violated an active commitment.",
-      },
-    ]);
   });
 });
