@@ -16,7 +16,12 @@ import { socialMigrations } from "../memory/social/index.js";
 import { offlineMigrations } from "../offline/index.js";
 import { retrievalMigrations } from "../retrieval/index.js";
 import { LanceDbStore, type LanceDbTable } from "../storage/lancedb/index.js";
-import { openDatabase, type Migration, type SqliteDatabase } from "../storage/sqlite/index.js";
+import {
+  composeMigrations,
+  openDatabase,
+  type Migration,
+  type SqliteDatabase,
+} from "../storage/sqlite/index.js";
 import { streamEntryIndexMigrations, streamWatermarkMigrations } from "../stream/index.js";
 
 export type BorgStorage = {
@@ -143,22 +148,22 @@ export function resolveBorgConfig(options: {
 }
 
 function createMigrations(): Migration[] {
-  return [
-    ...episodicMigrations,
-    ...selfMigrations,
-    ...executiveMigrations,
-    ...identityMigrations,
-    ...affectiveMigrations,
-    ...retrievalMigrations,
-    ...semanticMigrations,
-    ...commitmentMigrations,
-    ...socialMigrations,
-    ...proceduralMigrations,
-    ...offlineMigrations,
-    ...autonomyMigrations,
-    ...streamWatermarkMigrations,
-    ...streamEntryIndexMigrations,
-  ];
+  return composeMigrations(
+    episodicMigrations,
+    selfMigrations,
+    executiveMigrations,
+    identityMigrations,
+    affectiveMigrations,
+    retrievalMigrations,
+    semanticMigrations,
+    commitmentMigrations,
+    socialMigrations,
+    proceduralMigrations,
+    offlineMigrations,
+    autonomyMigrations,
+    streamWatermarkMigrations,
+    streamEntryIndexMigrations,
+  );
 }
 
 export function openBorgStorage(config: Config): BorgStorage {

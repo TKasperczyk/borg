@@ -23,7 +23,7 @@ import { socialMigrations } from "./memory/social/index.js";
 import { offlineMigrations } from "./offline/index.js";
 import { retrievalMigrations } from "./retrieval/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
-import { openDatabase } from "./storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "./storage/sqlite/index.js";
 import { FixedClock } from "./util/clock.js";
 import { DEFAULT_SESSION_ID, createEpisodeId, createStreamEntryId } from "./util/ids.js";
 
@@ -107,17 +107,17 @@ describe("Borg Sprint 7", () => {
     const clock = new FixedClock(1_000);
     const embeddingClient = new RustEmbeddingClient();
     const sqlite = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [
-        ...episodicMigrations,
-        ...selfMigrations,
-        ...affectiveMigrations,
-        ...retrievalMigrations,
-        ...semanticMigrations,
-        ...commitmentMigrations,
-        ...socialMigrations,
-        ...proceduralMigrations,
-        ...offlineMigrations,
-      ],
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        affectiveMigrations,
+        retrievalMigrations,
+        semanticMigrations,
+        commitmentMigrations,
+        socialMigrations,
+        proceduralMigrations,
+        offlineMigrations,
+      ),
     });
     const lance = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -304,17 +304,17 @@ describe("Borg Sprint 7", () => {
       expect(updatedSkill?.alpha).toBe(2);
       expect(updatedSkill?.successes).toBe(1);
       const verificationDb = openDatabase(join(tempDir, "borg.db"), {
-        migrations: [
-          ...episodicMigrations,
-          ...selfMigrations,
-          ...affectiveMigrations,
-          ...retrievalMigrations,
-          ...semanticMigrations,
-          ...commitmentMigrations,
-          ...socialMigrations,
-          ...proceduralMigrations,
-          ...offlineMigrations,
-        ],
+        migrations: composeMigrations(
+          episodicMigrations,
+          selfMigrations,
+          affectiveMigrations,
+          retrievalMigrations,
+          semanticMigrations,
+          commitmentMigrations,
+          socialMigrations,
+          proceduralMigrations,
+          offlineMigrations,
+        ),
       });
 
       try {

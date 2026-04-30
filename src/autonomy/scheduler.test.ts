@@ -16,7 +16,7 @@ import {
 import { ManualClock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import { createOfflineTestHarness } from "../offline/test-support.js";
-import { openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
+import { composeMigrations, openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { SessionBusyError } from "../util/errors.js";
 
 import { createCommitmentExpiringTrigger, createScheduledReflectionTrigger } from "./index.js";
@@ -336,7 +336,7 @@ describe("AutonomyScheduler", () => {
     });
     cleanup = harness.cleanup;
     const secondDb = openDatabase(join(harness.tempDir, "borg.db"), {
-      migrations: [...autonomyMigrations, ...streamWatermarkMigrations],
+      migrations: composeMigrations(autonomyMigrations, streamWatermarkMigrations),
     });
 
     try {

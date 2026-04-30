@@ -13,7 +13,7 @@ import { EpisodicRepository, createEpisodesTableSchema } from "../../memory/epis
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
-import { openDatabase } from "../../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import {
   StreamReader,
   StreamWatermarkRepository,
@@ -431,11 +431,7 @@ describe("StreamIngestionCoordinator", () => {
       expect(first.processedEntries).toBe(2);
       expect(second.processedEntries).toBe(2);
       expect(third.processedEntries).toBe(1);
-      expect(extractedContents).toEqual([
-        ["one", "two"],
-        ["three", "four"],
-        ["five"],
-      ]);
+      expect(extractedContents).toEqual([["one", "two"], ["three", "four"], ["five"]]);
 
       const watermark = repo.get("episodic-extractor", DEFAULT_SESSION_ID);
       expect(watermark?.lastTs).toBe(140);
@@ -534,12 +530,12 @@ describe("StreamIngestionCoordinator", () => {
       uri: join(dataDir, "lancedb"),
     });
     const db = openDatabase(join(dataDir, "borg.db"), {
-      migrations: [
-        ...episodicMigrations,
-        ...selfMigrations,
-        ...retrievalMigrations,
-        ...streamWatermarkMigrations,
-      ],
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        streamWatermarkMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",

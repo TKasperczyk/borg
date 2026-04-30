@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { openDatabase } from "../../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
 import { identityMigrations, IdentityEventRepository } from "../identity/index.js";
@@ -12,7 +12,7 @@ describe("commitment repository", () => {
 
   it("filters by audience and supports revoke/supersede", () => {
     const db = openDatabase(":memory:", {
-      migrations: [...commitmentMigrations, ...identityMigrations],
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
     });
     const clock = new FixedClock(1_000);
     const identityEvents = new IdentityEventRepository({
@@ -81,7 +81,7 @@ describe("commitment repository", () => {
 
   it("treats a null audience as public-only for active commitment lists", () => {
     const db = openDatabase(":memory:", {
-      migrations: [...commitmentMigrations, ...identityMigrations],
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
     });
     const clock = new FixedClock(1_000);
     const entities = new EntityRepository({
@@ -134,7 +134,7 @@ describe("commitment repository", () => {
 
   it("applies commitments made to an entity only for that entity by default", () => {
     const db = openDatabase(":memory:", {
-      migrations: [...commitmentMigrations, ...identityMigrations],
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
     });
     const clock = new FixedClock(1_000);
     const entities = new EntityRepository({
@@ -207,7 +207,7 @@ describe("commitment repository", () => {
 
   it("materializes expiration and records an identity event", () => {
     const db = openDatabase(":memory:", {
-      migrations: [...commitmentMigrations, ...identityMigrations],
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
     });
     const clock = new FixedClock(1_000);
     const identityEvents = new IdentityEventRepository({

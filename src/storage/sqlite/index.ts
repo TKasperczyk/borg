@@ -67,6 +67,42 @@ export class SqliteDatabase {
   }
 }
 
+function composeMigrationId(migration: Migration): number {
+  let hash = 0x811c9dc5;
+  const key = `${migration.name}:${migration.id}`;
+
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+
+  return hash + 1;
+}
+
+// Band migration arrays restart at id=1; shared SQLite DBs need stable global ids.
+export function composeMigrations(...groups: readonly (readonly Migration[])[]): Migration[] {
+  const seenIds = new Map<number, string>();
+
+  return groups.flatMap((group) =>
+    group.map((migration) => {
+      const id = composeMigrationId(migration);
+      const label = `${migration.name}:${migration.id}`;
+      const existing = seenIds.get(id);
+
+      if (existing !== undefined) {
+        throw new StorageError(`Composed migration id collision between ${existing} and ${label}`);
+      }
+
+      seenIds.set(id, label);
+
+      return {
+        ...migration,
+        id,
+      };
+    }),
+  );
+}
+
 function ensureMigrationTable(db: SqliteDatabase): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { selfMigrations } from "../self/migrations.js";
 import { LanceDbTable, LanceDbStore } from "../../storage/lancedb/index.js";
-import { openDatabase } from "../../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
@@ -93,7 +93,7 @@ async function createHarness(): Promise<Harness> {
     uri: join(tempDir, "lancedb"),
   });
   const db = openDatabase(join(tempDir, "borg.db"), {
-    migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+    migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
   });
   const table = await store.openTable({
     name: "episodes",

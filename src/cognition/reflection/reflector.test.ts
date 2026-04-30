@@ -8,7 +8,7 @@ import { SuppressionSet } from "../attention/index.js";
 import { Reflector, type ReflectorOptions } from "./reflector.js";
 import { FakeLLMClient } from "../../llm/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
-import { openDatabase } from "../../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import { episodicMigrations } from "../../memory/episodic/migrations.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "../../memory/episodic/repository.js";
@@ -295,12 +295,12 @@ async function createExecutiveReflectionHarness(clock = new FixedClock(1_000)) {
     uri: join(tempDir, "lancedb"),
   });
   const db = openDatabase(join(tempDir, "borg.db"), {
-    migrations: [
-      ...episodicMigrations,
-      ...selfMigrations,
-      ...executiveMigrations,
-      ...retrievalMigrations,
-    ],
+    migrations: composeMigrations(
+      episodicMigrations,
+      selfMigrations,
+      executiveMigrations,
+      retrievalMigrations,
+    ),
   });
   const table = await store.openTable({
     name: "episodes",
@@ -1029,7 +1029,7 @@ describe("reflector", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -1669,7 +1669,7 @@ describe("reflector", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
     });
     const table = await store.openTable({
       name: "episodes",

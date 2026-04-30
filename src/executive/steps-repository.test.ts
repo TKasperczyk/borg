@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { selfMigrations, GoalsRepository } from "../memory/self/index.js";
-import { openDatabase } from "../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../storage/sqlite/index.js";
 import { ManualClock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
 
@@ -12,7 +12,7 @@ const manualProvenance = { kind: "manual" } as const;
 
 function createHarness(start = 1_000) {
   const db = openDatabase(":memory:", {
-    migrations: [...selfMigrations, ...executiveMigrations],
+    migrations: composeMigrations(selfMigrations, executiveMigrations),
   });
   const clock = new ManualClock(start);
   const steps = new ExecutiveStepsRepository({

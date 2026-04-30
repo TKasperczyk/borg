@@ -10,7 +10,7 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient } from "../llm/index.js";
 import { EntityRepository, commitmentMigrations } from "../memory/commitments/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
-import { openDatabase } from "../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../storage/sqlite/index.js";
 import { episodicMigrations } from "../memory/episodic/migrations.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "../memory/episodic/repository.js";
 import { createTestConfig } from "../offline/test-support.js";
@@ -281,12 +281,12 @@ describe("cli", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [
-        ...episodicMigrations,
-        ...selfMigrations,
-        ...retrievalMigrations,
-        ...commitmentMigrations,
-      ],
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -421,12 +421,12 @@ describe("cli", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [
-        ...episodicMigrations,
-        ...selfMigrations,
-        ...retrievalMigrations,
-        ...commitmentMigrations,
-      ],
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -561,12 +561,12 @@ describe("cli", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [
-        ...episodicMigrations,
-        ...selfMigrations,
-        ...retrievalMigrations,
-        ...commitmentMigrations,
-      ],
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+      ),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -675,7 +675,7 @@ describe("cli", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -783,7 +783,7 @@ describe("cli", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -962,7 +962,7 @@ describe("cli", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -1043,7 +1043,7 @@ describe("cli", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
     });
     const table = await store.openTable({
       name: "episodes",
@@ -1183,7 +1183,7 @@ describe("cli", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
+      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
     });
     const table = await store.openTable({
       name: "episodes",

@@ -1,47 +1,36 @@
 import type { Migration } from "../../storage/sqlite/index.js";
-import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const affectiveMigrations = [
   {
-    id: 170,
-    name: "create-mood-tables",
-    up: `
-      CREATE TABLE IF NOT EXISTS mood_state (
-        session_id TEXT PRIMARY KEY,
-        valence REAL NOT NULL,
-        arousal REAL NOT NULL,
-        updated_at INTEGER NOT NULL,
-        half_life_hours REAL NOT NULL,
-        recent_triggers TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS mood_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL,
-        ts INTEGER NOT NULL,
-        valence REAL NOT NULL,
-        arousal REAL NOT NULL,
-        trigger_episode_id TEXT,
-        trigger_reason TEXT
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_mood_history_session_ts
-        ON mood_history (session_id, ts DESC);
-    `,
-  },
-  {
-    id: 230,
-    name: "add-mood-history-provenance",
+    id: 1,
+    name: "affective_initial_schema",
     up: (db) => {
-      if (!tableHasColumn(db, "mood_history", "provenance_kind")) {
-        db.exec("ALTER TABLE mood_history ADD COLUMN provenance_kind TEXT");
-      }
-      if (!tableHasColumn(db, "mood_history", "provenance_episode_ids")) {
-        db.exec("ALTER TABLE mood_history ADD COLUMN provenance_episode_ids TEXT");
-      }
-      if (!tableHasColumn(db, "mood_history", "provenance_process")) {
-        db.exec("ALTER TABLE mood_history ADD COLUMN provenance_process TEXT");
-      }
+      db.exec(`
+        CREATE TABLE mood_state (
+          session_id TEXT PRIMARY KEY,
+          valence REAL NOT NULL,
+          arousal REAL NOT NULL,
+          updated_at INTEGER NOT NULL,
+          half_life_hours REAL NOT NULL,
+          recent_triggers TEXT NOT NULL
+        );
+
+        CREATE TABLE mood_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          valence REAL NOT NULL,
+          arousal REAL NOT NULL,
+          trigger_episode_id TEXT,
+          trigger_reason TEXT,
+          provenance_kind TEXT,
+          provenance_episode_ids TEXT,
+          provenance_process TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mood_history_session_ts
+          ON mood_history (session_id, ts DESC);
+      `);
     },
   },
 ] as const satisfies readonly Migration[];

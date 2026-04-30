@@ -70,7 +70,7 @@ import {
   streamWatermarkMigrations,
 } from "../stream/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
-import { openDatabase } from "../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../storage/sqlite/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { FixedClock, type Clock } from "../util/clock.js";
 import {
@@ -361,22 +361,22 @@ export async function createOfflineTestHarness(
     uri: join(tempDir, "lancedb"),
   });
   const db = openDatabase(join(tempDir, "borg.db"), {
-    migrations: [
-      ...episodicMigrations,
-      ...selfMigrations,
-      ...executiveMigrations,
-      ...affectiveMigrations,
-      ...retrievalMigrations,
-      ...semanticMigrations,
-      ...commitmentMigrations,
-      ...socialMigrations,
-      ...proceduralMigrations,
-      ...identityMigrations,
-      ...offlineMigrations,
-      ...autonomyMigrations,
-      ...streamWatermarkMigrations,
-      ...streamEntryIndexMigrations,
-    ],
+    migrations: composeMigrations(
+      episodicMigrations,
+      selfMigrations,
+      executiveMigrations,
+      affectiveMigrations,
+      retrievalMigrations,
+      semanticMigrations,
+      commitmentMigrations,
+      socialMigrations,
+      proceduralMigrations,
+      identityMigrations,
+      offlineMigrations,
+      autonomyMigrations,
+      streamWatermarkMigrations,
+      streamEntryIndexMigrations,
+    ),
   });
   const episodesTable = await lance.openTable({
     name: "episodes",

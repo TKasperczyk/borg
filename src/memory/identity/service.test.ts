@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { openDatabase } from "../../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { createEpisodeId } from "../../util/ids.js";
 import { commitmentMigrations, CommitmentRepository } from "../commitments/index.js";
@@ -20,7 +20,7 @@ import { IdentityService } from "./service.js";
 
 function createHarness(clock: FixedClock | ManualClock) {
   const db = openDatabase(":memory:", {
-    migrations: [...selfMigrations, ...commitmentMigrations, ...identityMigrations],
+    migrations: composeMigrations(selfMigrations, commitmentMigrations, identityMigrations),
   });
   const identityEvents = new IdentityEventRepository({
     db,

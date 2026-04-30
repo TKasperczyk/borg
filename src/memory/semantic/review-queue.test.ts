@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LanceDbStore } from "../../storage/lancedb/index.js";
-import { openDatabase } from "../../storage/sqlite/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
@@ -59,7 +59,7 @@ describe("review queue", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...semanticMigrations, ...selfMigrations],
+      migrations: composeMigrations(semanticMigrations, selfMigrations),
     });
     const table = await store.openTable({
       name: "semantic_nodes",
@@ -277,7 +277,7 @@ describe("review queue", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...semanticMigrations, ...selfMigrations],
+      migrations: composeMigrations(semanticMigrations, selfMigrations),
     });
     const table = await store.openTable({
       name: "semantic_nodes",
@@ -389,7 +389,7 @@ describe("review queue", () => {
       uri: join(tempDir, "lancedb"),
     });
     const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...semanticMigrations, ...selfMigrations],
+      migrations: composeMigrations(semanticMigrations, selfMigrations),
     });
     const table = await store.openTable({
       name: "semantic_nodes",
