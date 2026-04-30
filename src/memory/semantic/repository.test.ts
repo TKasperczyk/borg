@@ -619,7 +619,7 @@ describe("semantic repositories", () => {
     expect(listVectorSyncOutbox(fixture.db)).toHaveLength(0);
   });
 
-  it("does not let an in-flight vector sync delete a newer pending generation", async () => {
+  it("re-enqueues repair work when an in-flight vector sync overwrites a newer generation", async () => {
     const fixture = await createSemanticFixture();
 
     cleanup.push(async () => {
@@ -642,10 +642,14 @@ describe("semantic repositories", () => {
     firstAdjust();
 
     const originalUpsert = fixture.table.upsert.bind(fixture.table);
-    let concurrentAdjustmentApplied = false;
+    let upsertCalls = 0;
+    let secondSyncResult: Awaited<
+      ReturnType<SemanticNodeRepository["syncPendingVectorUpdates"]>
+    > | null = null;
     const tableSpy = vi.spyOn(fixture.table, "upsert").mockImplementation(async (rows, options) => {
-      if (!concurrentAdjustmentApplied) {
-        concurrentAdjustmentApplied = true;
+      upsertCalls += 1;
+
+      if (upsertCalls === 1) {
         const secondAdjust = fixture.db.transaction(() =>
           fixture.nodeRepository.adjustConfidenceTransactional({
             id: inserted.id,
@@ -655,6 +659,10 @@ describe("semantic repositories", () => {
           }),
         );
         secondAdjust();
+        secondSyncResult = await fixture.nodeRepository.syncPendingVectorUpdates({
+          nodeIds: [inserted.id],
+          limit: 1,
+        });
       }
 
       return originalUpsert(rows, options);
@@ -670,12 +678,17 @@ describe("semantic repositories", () => {
       failed: [],
       pending: 1,
     });
+    expect(secondSyncResult).toEqual({
+      synced: 1,
+      failed: [],
+      pending: 0,
+    });
     expect((await fixture.nodeRepository.get(inserted.id))?.confidence).toBeCloseTo(0.4);
     expect(listVectorSyncOutbox(fixture.db)).toEqual([
       expect.objectContaining({
         node_id: inserted.id,
-        reason: "second_generation",
-        generation: 2,
+        reason: "stale_upsert_repair",
+        generation: 1,
         attempts: 0,
       }),
     ]);

@@ -368,7 +368,7 @@ export class SemanticNodeRepository {
     return row ?? null;
   }
 
-  private enqueueVectorSyncTransactional(input: {
+  private enqueueVectorSyncRow(input: {
     nodeId: SemanticNodeId;
     reason?: string;
     createdAt: number;
@@ -389,6 +389,22 @@ export class SemanticNodeRepository {
         `,
       )
       .run(input.nodeId, normalizeOutboxReason(input.reason), input.createdAt);
+  }
+
+  private enqueueVectorSyncTransactional(input: {
+    nodeId: SemanticNodeId;
+    reason?: string;
+    createdAt: number;
+  }): void {
+    this.enqueueVectorSyncRow(input);
+  }
+
+  private enqueueVectorSyncRowForResync(nodeId: SemanticNodeId, reason: string): void {
+    this.enqueueVectorSyncRow({
+      nodeId,
+      reason,
+      createdAt: this.clock.now(),
+    });
   }
 
   private countPendingVectorSyncs(nodeIds: readonly SemanticNodeId[] | undefined): number {
@@ -741,6 +757,7 @@ export class SemanticNodeRepository {
         const deleted = this.deleteVectorSyncOutboxRow(row);
 
         if (!deleted) {
+          this.enqueueVectorSyncRowForResync(nodeId, "stale_upsert_repair");
           continue;
         }
 
