@@ -501,11 +501,13 @@ export class SemanticNodeRepository {
       try {
         await this.table.remove(`id = ${quoteSqlString(nodeId)}`);
       } catch (error) {
-        return {
-          kind: "source_missing",
-          message: `Semantic node ${nodeId} is missing in SQLite; cleared pending vector sync after LanceDB cleanup failed: ${errorMessage(error)}`,
-          code: "SEMANTIC_NODE_VECTOR_SYNC_SOURCE_MISSING",
-        };
+        throw new SemanticError(
+          `Semantic node ${nodeId} is missing in SQLite; LanceDB cleanup failed: ${errorMessage(error)}`,
+          {
+            cause: error,
+            code: "SEMANTIC_NODE_VECTOR_SYNC_SOURCE_MISSING_CLEANUP_FAILED",
+          },
+        );
       }
 
       return {

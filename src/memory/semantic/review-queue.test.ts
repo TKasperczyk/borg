@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
@@ -21,7 +22,11 @@ import {
 } from "../self/review-open-question-hook.js";
 import { deriveProceduralContextKey } from "../procedural/index.js";
 import { semanticMigrations } from "./migrations.js";
-import { ReviewQueueRepository } from "./review-queue.js";
+import {
+  ReviewQueueRepository,
+  type ReviewQueueHandler,
+  type ReviewResolution,
+} from "./review-queue.js";
 import { createCorrectionReviewHandler } from "./review-handlers/correction.js";
 import { createSkillSplitReviewQueueHandler } from "./review-handlers/skill-split.js";
 import { registerBuiltinReviewQueueHandlers } from "./review-handlers/defaults.js";
@@ -83,6 +88,18 @@ function createPendingInsightRefs(input: {
         size: 1,
       },
     },
+  };
+}
+
+function createDeferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((next) => {
+    resolve = next;
+  });
+
+  return {
+    promise,
+    resolve,
   };
 }
 
@@ -1101,6 +1118,181 @@ describe("review queue", () => {
     expect(harness.reviewQueueRepository.getOpen().map((item) => item.id)).toEqual(
       expect.arrayContaining([malformedDuplicate.id, malformedContradiction.id]),
     );
+  });
+
+  it("keeps semantic pair reviews open when required nodes are missing", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...semanticMigrations],
+    });
+    const reviewQueue = new ReviewQueueRepository({
+      db,
+      clock: new FixedClock(9_250),
+      semanticNodeRepository: {
+        getMany: vi.fn(async () => [null, null]),
+      } as never,
+    });
+    registerBuiltinReviewQueueHandlers(reviewQueue);
+
+    try {
+      const item = reviewQueue.enqueue({
+        kind: "duplicate",
+        refs: {
+          node_ids: ["semn_aaaaaaaaaaaaaaaa", "semn_bbbbbbbbbbbbbbbb"],
+        },
+        reason: "duplicate pair points at missing nodes",
+      });
+
+      await expect(
+        reviewQueue.resolve(item.id, {
+          decision: "supersede",
+          winner_node_id: "semn_aaaaaaaaaaaaaaaa" as never,
+        }),
+      ).rejects.toMatchObject({
+        name: "SemanticError",
+        code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
+      });
+
+      expect(reviewQueue.get(item.id)).toMatchObject({
+        resolved_at: null,
+        resolution: null,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("guards cross-store applying-state acquisition with compare-and-set", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...semanticMigrations],
+    });
+    const prepareGate = createDeferred();
+    const applyGate = createDeferred();
+    const apply = vi.fn(async () => {
+      await applyGate.promise;
+    });
+    const handler: ReviewQueueHandler<
+      "correction",
+      unknown,
+      { decision: "accept"; started_at: number }
+    > = {
+      kind: "correction",
+      refsSchema: z.object({}).strict(),
+      allowedResolutions: new Set<ReviewResolution>(["accept"]),
+      transactionScope: () => "cross_store_applying_state",
+      applyingState: {
+        key: "__test_applying",
+        schema: z
+          .object({
+            decision: z.literal("accept"),
+            started_at: z.number().finite(),
+          })
+          .strict(),
+        async prepare({ ctx }) {
+          await prepareGate.promise;
+          return {
+            decision: "accept",
+            started_at: ctx.clock.now(),
+          };
+        },
+        matches: (state, resolution) => state.decision === resolution.decision,
+      },
+      apply,
+    };
+    const reviewQueue = new ReviewQueueRepository({
+      db,
+      clock: new FixedClock(9_500),
+    });
+    reviewQueue.registerHandler(handler);
+
+    try {
+      const item = reviewQueue.enqueue({
+        kind: "correction",
+        refs: {},
+        reason: "custom cross-store correction",
+      });
+      const first = reviewQueue.resolve(item.id, "accept");
+      const second = reviewQueue.resolve(item.id, "accept");
+      const settled = Promise.allSettled([first, second]);
+
+      prepareGate.resolve();
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      });
+
+      applyGate.resolve();
+      const results = await settled;
+      const fulfilled = results.filter((result) => result.status === "fulfilled");
+      const rejected = results.filter((result) => result.status === "rejected");
+
+      expect(apply).toHaveBeenCalledTimes(1);
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]).toMatchObject({
+        reason: expect.objectContaining({
+          code: "REVIEW_QUEUE_RESOLUTION_RACE",
+        }),
+      });
+      expect(reviewQueue.get(item.id)).toMatchObject({
+        resolved_at: 9_500,
+        resolution: "accept",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("guards external review finalization with compare-and-set", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...semanticMigrations],
+    });
+    const applyGate = createDeferred();
+    const apply = vi.fn(async () => {
+      await applyGate.promise;
+    });
+    const handler: ReviewQueueHandler<"correction", unknown> = {
+      kind: "correction",
+      refsSchema: z.object({}).strict(),
+      allowedResolutions: new Set<ReviewResolution>(["accept"]),
+      transactionScope: () => "external",
+      apply,
+    };
+    const reviewQueue = new ReviewQueueRepository({
+      db,
+      clock: new FixedClock(9_750),
+    });
+    reviewQueue.registerHandler(handler);
+
+    try {
+      const item = reviewQueue.enqueue({
+        kind: "correction",
+        refs: {},
+        reason: "custom external correction",
+      });
+      const first = reviewQueue.resolve(item.id, "accept");
+      const second = reviewQueue.resolve(item.id, "accept");
+      const settled = Promise.allSettled([first, second]);
+
+      expect(apply).toHaveBeenCalledTimes(2);
+
+      applyGate.resolve();
+      const results = await settled;
+      const fulfilled = results.filter((result) => result.status === "fulfilled");
+      const rejected = results.filter((result) => result.status === "rejected");
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]).toMatchObject({
+        reason: expect.objectContaining({
+          code: "REVIEW_QUEUE_ALREADY_RESOLVED",
+        }),
+      });
+      expect(reviewQueue.get(item.id)).toMatchObject({
+        resolved_at: 9_750,
+        resolution: "accept",
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it("resolves harness correction rows through the registered correction handler", async () => {

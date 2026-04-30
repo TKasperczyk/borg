@@ -596,16 +596,42 @@ export class ReviewQueueRepository {
     resolution: ResolvedReviewDecision,
     resolvedAt: number,
     refs: Record<string, unknown>,
+    expectedRefs: Record<string, unknown>,
     applyingStateKey = REVIEW_APPLYING_REF_KEY,
   ): void {
-    this.db
-      .prepare("UPDATE review_queue SET refs = ?, resolved_at = ?, resolution = ? WHERE id = ?")
+    const result = this.db
+      .prepare(
+        `
+          UPDATE review_queue
+          SET refs = ?, resolved_at = ?, resolution = ?
+          WHERE id = ? AND resolved_at IS NULL AND refs = ?
+        `,
+      )
       .run(
         serializeJsonValue(this.refsWithoutApplyingState(refs, applyingStateKey)),
         resolvedAt,
         resolution.decision,
         itemId,
+        serializeJsonValue(expectedRefs),
       );
+
+    if (result.changes === 1) {
+      return;
+    }
+
+    const current = this.get(itemId);
+
+    if (current !== null && current.resolved_at !== null) {
+      throw new SemanticError(`Review item ${itemId} was already resolved`, {
+        code: "REVIEW_QUEUE_ALREADY_RESOLVED",
+        cause: { itemId, resolution: current.resolution },
+      });
+    }
+
+    throw new SemanticError(`Review item ${itemId} resolution lost a concurrent race`, {
+      code: "REVIEW_QUEUE_RESOLUTION_RACE",
+      cause: { itemId },
+    });
   }
 
   private handlerApplyingStateKey(
@@ -640,6 +666,36 @@ export class ReviewQueueRepository {
     return handler.applyingState.schema.parse(item.refs[key]);
   }
 
+  private assertApplyingStateRefsCurrent(item: ReviewQueueItem): void {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE review_queue
+          SET refs = refs
+          WHERE id = ? AND resolved_at IS NULL AND refs = ?
+        `,
+      )
+      .run(item.id, serializeJsonValue(item.refs));
+
+    if (result.changes === 1) {
+      return;
+    }
+
+    const current = this.get(item.id);
+
+    if (current !== null && current.resolved_at !== null) {
+      throw new SemanticError(`Review item ${item.id} was already resolved`, {
+        code: "REVIEW_QUEUE_ALREADY_RESOLVED",
+        cause: { itemId: item.id, resolution: current.resolution },
+      });
+    }
+
+    throw new SemanticError(`Review item ${item.id} resolution lost applying-state race`, {
+      code: "REVIEW_QUEUE_RESOLUTION_RACE",
+      cause: { itemId: item.id },
+    });
+  }
+
   private async ensureHandlerApplyingState(
     handler: ReviewQueueHandler<ReviewKind, unknown, unknown>,
     item: ReviewQueueItem,
@@ -663,6 +719,8 @@ export class ReviewQueueRepository {
         });
       }
 
+      this.assertApplyingStateRefsCurrent(item);
+
       return { item, applyingState: existing };
     }
 
@@ -678,9 +736,31 @@ export class ReviewQueueRepository {
       [key]: applyingState,
     };
 
-    this.db
-      .prepare("UPDATE review_queue SET refs = ? WHERE id = ? AND resolved_at IS NULL")
-      .run(serializeJsonValue(nextRefs), item.id);
+    const result = this.db
+      .prepare(
+        `
+          UPDATE review_queue
+          SET refs = ?
+          WHERE id = ? AND resolved_at IS NULL AND refs = ?
+        `,
+      )
+      .run(serializeJsonValue(nextRefs), item.id, serializeJsonValue(item.refs));
+
+    if (result.changes !== 1) {
+      const current = this.get(item.id);
+
+      if (current !== null && current.resolved_at !== null) {
+        throw new SemanticError(`Review item ${item.id} was already resolved`, {
+          code: "REVIEW_QUEUE_ALREADY_RESOLVED",
+          cause: { itemId: item.id, resolution: current.resolution },
+        });
+      }
+
+      throw new SemanticError(`Review item ${item.id} resolution lost applying-state race`, {
+        code: "REVIEW_QUEUE_RESOLUTION_RACE",
+        cause: { itemId: item.id },
+      });
+    }
 
     return {
       item: {
@@ -713,7 +793,14 @@ export class ReviewQueueRepository {
       const finalResolution = outcome?.finalResolution ?? resolution;
       const nextRefs = outcome?.refs ?? item.refs;
 
-      this.markResolved(item.id, finalResolution, resolvedAt, nextRefs, applyingStateKey);
+      this.markResolved(
+        item.id,
+        finalResolution,
+        resolvedAt,
+        nextRefs,
+        item.refs,
+        applyingStateKey,
+      );
       this.db.exec("COMMIT");
 
       return {
@@ -757,7 +844,14 @@ export class ReviewQueueRepository {
     const nextRefs = outcome?.refs ?? applyingItem.refs;
     const applyingStateKey = this.handlerApplyingStateKey(handler);
 
-    this.markResolved(applyingItem.id, finalResolution, resolvedAt, nextRefs, applyingStateKey);
+    this.markResolved(
+      applyingItem.id,
+      finalResolution,
+      resolvedAt,
+      nextRefs,
+      applyingItem.refs,
+      applyingStateKey,
+    );
 
     return {
       ...applyingItem,
@@ -785,7 +879,14 @@ export class ReviewQueueRepository {
     const nextRefs = outcome?.refs ?? item.refs;
     const applyingStateKey = this.handlerApplyingStateKey(handler);
 
-    this.markResolved(item.id, finalResolution, resolvedAt, nextRefs, applyingStateKey);
+    this.markResolved(
+      item.id,
+      finalResolution,
+      resolvedAt,
+      nextRefs,
+      item.refs,
+      applyingStateKey,
+    );
 
     return {
       ...item,

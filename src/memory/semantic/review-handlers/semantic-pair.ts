@@ -171,7 +171,12 @@ export function createSemanticPairReviewQueueHandler(
       const second = nodes[1];
 
       if (first === null || first === undefined || second === null || second === undefined) {
-        return;
+        throw new SemanticError(
+          `Semantic pair targets missing for review item ${item.id}: ${refs.node_ids.join(", ")}`,
+          {
+            code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
+          },
+        );
       }
 
       const winner = first.id === winnerNodeId ? first : second;

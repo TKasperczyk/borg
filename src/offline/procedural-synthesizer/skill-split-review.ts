@@ -128,6 +128,7 @@ export function createSkillSplitReviewHandler(
         skillId: payload.original_skill_id,
         parts,
         supersededAt: options.clock.now(),
+        claimedAt: payload.cooldown.claimed_at,
       });
 
       if (split === null) {

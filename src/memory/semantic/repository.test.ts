@@ -501,6 +501,78 @@ describe("semantic repositories", () => {
     expect(listVectorSyncOutbox(fixture.db)).toHaveLength(0);
   });
 
+  it("keeps missing-source vector cleanup retryable when LanceDB removal fails", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const inserted = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Missing source cleanup retry"),
+    );
+    const adjust = fixture.db.transaction(() =>
+      fixture.nodeRepository.adjustConfidenceTransactional({
+        id: inserted.id,
+        updatedAt: 2_000,
+        reason: "missing_source_cleanup_retry",
+        adjust: () => 0.4,
+      }),
+    );
+    adjust();
+    fixture.db.prepare("DELETE FROM semantic_nodes WHERE id = ?").run(inserted.id);
+
+    const tableSpy = vi
+      .spyOn(fixture.table, "remove")
+      .mockRejectedValueOnce(new Error("lance cleanup unavailable"));
+    const first = await fixture.nodeRepository.syncPendingVectorUpdates({
+      nodeIds: [inserted.id],
+      limit: 1,
+    });
+
+    expect(first).toEqual({
+      synced: 0,
+      failed: [
+        expect.objectContaining({
+          nodeId: inserted.id,
+          code: "SEMANTIC_NODE_VECTOR_SYNC_SOURCE_MISSING_CLEANUP_FAILED",
+          message: expect.stringContaining("lance cleanup unavailable"),
+        }),
+      ],
+      pending: 1,
+    });
+    expect(listVectorSyncOutbox(fixture.db)).toEqual([
+      expect.objectContaining({
+        node_id: inserted.id,
+        attempts: 1,
+        last_error: expect.stringContaining("lance cleanup unavailable"),
+      }),
+    ]);
+    expect(await fixture.nodeRepository.get(inserted.id)).not.toBeNull();
+
+    tableSpy.mockRestore();
+
+    const second = await fixture.nodeRepository.syncPendingVectorUpdates({
+      nodeIds: [inserted.id],
+      limit: 1,
+    });
+
+    expect(second).toEqual({
+      synced: 0,
+      failed: [
+        expect.objectContaining({
+          nodeId: inserted.id,
+          code: "SEMANTIC_NODE_VECTOR_SYNC_SOURCE_MISSING",
+        }),
+      ],
+      pending: 0,
+    });
+    expect(await fixture.nodeRepository.get(inserted.id)).toBeNull();
+    expect(listVectorSyncOutbox(fixture.db)).toHaveLength(0);
+  });
+
   it("removes pending vector sync work when deleting a semantic node", async () => {
     const fixture = await createSemanticFixture();
 

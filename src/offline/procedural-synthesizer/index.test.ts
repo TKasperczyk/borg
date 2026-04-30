@@ -1175,6 +1175,68 @@ describe("ProceduralSynthesizerProcess", () => {
     );
   });
 
+  it("rejects accepted split reviews after a newer split claim takes over", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSkillSplitResponse({
+          decision: "split",
+          parts: [
+            {
+              applies_when: "TypeScript debugging comparison",
+              approach: "Compare the compiler failure with the last passing TypeScript state.",
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
+            },
+            {
+              applies_when: "Roadmap planning comparison",
+              approach: "Compare the roadmap against the current goal list.",
+              target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
+            },
+          ],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({
+        minContextAttemptsForSplit: 3,
+        minDivergenceForSplit: 0.01,
+      }),
+      llmClient: llm,
+    });
+    const { skill } = await addSkillWithContextStats(harness);
+
+    const process = createProcess(harness);
+    await process.run(harness.createContext(), {});
+    const review = getOpenSkillSplitReview(harness, skill.id);
+    const originalClaim = (review!.refs.cooldown as { claimed_at: number }).claimed_at;
+    const newerClaim = originalClaim + 1_000;
+
+    expect(
+      harness.skillRepository.claimSplit({
+        skillId: skill.id,
+        claimedAt: newerClaim,
+        staleBefore: newerClaim,
+      }),
+    ).toBe(true);
+
+    const resolved = await harness.reviewQueueRepository.resolve(review!.id, "accept");
+
+    expect(resolved).toMatchObject({
+      resolution: "reject",
+      refs: expect.objectContaining({
+        review_resolution: expect.objectContaining({
+          requested_decision: "accept",
+          reason: `Skill split no longer applies: ${skill.id}`,
+        }),
+      }),
+    });
+    expect(harness.skillRepository.get(skill.id)).toMatchObject({
+      status: "active",
+      splitting_at: newerClaim,
+      last_split_attempt_at: expect.any(Number),
+    });
+    expect(harness.skillRepository.list()).toHaveLength(1);
+  });
+
   it("does not call the split LLM when another run already holds the claim", async () => {
     const llm = new FakeLLMClient({
       responses: [

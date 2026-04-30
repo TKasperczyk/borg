@@ -1152,11 +1152,6 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
         });
 
         if (hasOpenSkillSplitReview(existingOpenSplitReviews, item.skill.id)) {
-          ctx.skillRepository.recordSplitAttemptAndClearClaim({
-            skillId: item.skill.id,
-            attemptedAt: this.clock.now(),
-            claimedAt: item.split_claimed_at ?? null,
-          });
           continue;
         }
 
@@ -1171,11 +1166,6 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
             splitClaimStaleSec: ctx.config.offline.proceduralSynthesizer.splitClaimStaleSec,
           }),
           reason: `Skill split proposed for divergent context outcomes on ${item.skill.applies_when}`,
-        });
-        ctx.skillRepository.recordSplitAttemptAndClearClaim({
-          skillId: item.skill.id,
-          attemptedAt: proposedAt,
-          claimedAt: item.split_claimed_at ?? null,
         });
         changes.push(buildQueuedSplitChange({ item, reviewItem }));
       } catch (error) {
