@@ -20,6 +20,7 @@ import {
 import { EpisodicRepository, episodeIdSchema } from "../../memory/episodic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { EntityId, EpisodeId, GoalId, SkillId, StreamEntryId } from "../../util/ids.js";
+import { LLMError } from "../../util/errors.js";
 import { z } from "zod";
 
 import type { ActionResult } from "../action/index.js";
@@ -156,13 +157,7 @@ const strictReflectionOutputSchema = z.object({
     .default([]),
 });
 
-const reflectionOutputParseSchema = strictReflectionOutputSchema.extend({
-  step_outcomes: z.array(z.unknown()).default([]),
-  proposed_steps: z.array(z.unknown()).default([]),
-});
-
 type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema>;
-type RawReflectionOutput = z.infer<typeof reflectionOutputParseSchema>;
 
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
@@ -357,7 +352,7 @@ export class Reflector {
     }
 
     try {
-      reflectionOutput = await this.runReflectionJudgment(context, streamWriter);
+      reflectionOutput = await this.runReflectionJudgment(context);
     } catch (error) {
       await appendInternalFailureEvent(streamWriter, "reflection_judgment", error);
     }
@@ -996,56 +991,7 @@ export class Reflector {
     }
   }
 
-  private async parseExecutiveReflectionItems(
-    raw: RawReflectionOutput,
-    streamWriter: StreamWriter,
-  ): Promise<ReflectionOutput> {
-    const stepOutcomes: ReflectionOutput["step_outcomes"] = [];
-    const proposedSteps: ReflectionOutput["proposed_steps"] = [];
-
-    for (const [index, item] of raw.step_outcomes.entries()) {
-      const parsed = executiveStepOutcomeSchema.safeParse(item);
-
-      if (!parsed.success) {
-        await this.appendReflectorInternalEvent(streamWriter, {
-          hook: "reflector_executive_item_dropped",
-          reason: "malformed_step_outcome",
-          index,
-          error: parsed.error.message,
-        });
-        continue;
-      }
-
-      stepOutcomes.push(parsed.data);
-    }
-
-    for (const [index, item] of raw.proposed_steps.entries()) {
-      const parsed = proposedExecutiveStepSchema.safeParse(item);
-
-      if (!parsed.success) {
-        await this.appendReflectorInternalEvent(streamWriter, {
-          hook: "reflector_executive_item_dropped",
-          reason: "malformed_proposed_step",
-          index,
-          error: parsed.error.message,
-        });
-        continue;
-      }
-
-      proposedSteps.push(parsed.data);
-    }
-
-    return {
-      ...raw,
-      step_outcomes: stepOutcomes,
-      proposed_steps: proposedSteps,
-    };
-  }
-
-  private async runReflectionJudgment(
-    context: ReflectionContext,
-    streamWriter: StreamWriter,
-  ): Promise<ReflectionOutput> {
+  private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
     const pendingProceduralAttempts = context.workingMemory.pending_procedural_attempts ?? [];
     const pendingIntents = context.workingMemory.pending_intents;
     const referencedEpisodeIds = selectReferencedRetrievedEpisodeIds(
@@ -1137,13 +1083,16 @@ export class Reflector {
       return emptyReflectionOutput();
     }
 
-    const parsed = reflectionOutputParseSchema.safeParse(toolCall.input);
+    const parsed = strictReflectionOutputSchema.safeParse(toolCall.input);
 
     if (!parsed.success) {
-      throw parsed.error;
+      throw new LLMError("Reflector returned invalid reflection payload", {
+        cause: parsed.error,
+        code: "REFLECTOR_OUTPUT_INVALID",
+      });
     }
 
-    return this.parseExecutiveReflectionItems(parsed.data, streamWriter);
+    return parsed.data;
   }
 }
 

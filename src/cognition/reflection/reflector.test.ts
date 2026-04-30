@@ -730,74 +730,92 @@ describe("reflector", () => {
     ).toBe(true);
   });
 
-  it("keeps valid non-executive reflection when an executive item is malformed", async () => {
-    const harness = await createOfflineTestHarness({
-      llmClient: new FakeLLMClient({
-        responses: [
+  it.each([
+    {
+      executiveOutput: {
+        step_outcomes: [
           {
-            text: "",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "tool_use",
-            tool_calls: [
-              {
-                id: "toolu_reflection",
-                name: "EmitTurnReflection",
-                input: {
-                  advanced_goals: [],
-                  procedural_outcomes: [
-                    {
-                      attempt_turn_counter: 1,
-                      classification: "success",
-                      evidence: "The user's follow-up confirmed the approach worked.",
-                      grounded: true,
-                      skill_actually_applied: true,
-                    },
-                  ],
-                  trait_demonstrations: [],
-                  intent_updates: [],
-                  step_outcomes: [
-                    {
-                      new_status: "doing",
-                      evidence: "Missing step_id should only drop this executive item.",
-                    },
-                  ],
-                  proposed_steps: [],
-                },
-              },
-            ],
+            new_status: "doing",
+            evidence: "Missing step_id rejects the whole reflection.",
           },
         ],
-      }),
-    });
-    cleanup.push(harness.cleanup);
-    const reflector = createHarnessReflector(harness, {
-      clock: harness.clock,
-      llmClient: harness.llmClient,
-      model: "haiku",
-      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
-    });
+        proposed_steps: [],
+      },
+    },
+    {
+      executiveOutput: {
+        step_outcomes: [],
+        proposed_steps: [
+          {
+            description: "Review launch notes",
+            kind: "think",
+            rationale: "Missing goal_id rejects the whole reflection.",
+          },
+        ],
+      },
+    },
+  ])(
+    "rejects the whole reflection when executive output is malformed",
+    async ({ executiveOutput }) => {
+      const harness = await createOfflineTestHarness({
+        llmClient: new FakeLLMClient({
+          responses: [
+            createRawReflectionResponse({
+              advanced_goals: [],
+              procedural_outcomes: [
+                {
+                  attempt_turn_counter: 1,
+                  classification: "success",
+                  evidence: "The user's follow-up confirmed the approach worked.",
+                  grounded: true,
+                  skill_actually_applied: true,
+                },
+              ],
+              trait_demonstrations: [],
+              intent_updates: [],
+              ...executiveOutput,
+            }),
+          ],
+        }),
+      });
+      cleanup.push(harness.cleanup);
+      const reflector = createHarnessReflector(harness, {
+        clock: harness.clock,
+        llmClient: harness.llmClient,
+        model: "haiku",
+        proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+      });
 
-    const reflected = await reflector.reflect(
-      createPendingProceduralReflectionContext(),
-      harness.streamWriter,
-    );
-
-    expect(reflected.pending_procedural_attempts).toEqual([]);
-    expect(harness.proceduralEvidenceRepository.list()).toHaveLength(1);
-    expect(
-      new StreamReader({
+      const reflected = await reflector.reflect(
+        createPendingProceduralReflectionContext(),
+        harness.streamWriter,
+      );
+      const events = new StreamReader({
         dataDir: harness.tempDir,
         sessionId: DEFAULT_SESSION_ID,
-      })
-        .tail(10)
-        .some(
+      }).tail(10);
+
+      expect(reflected.pending_procedural_attempts).toHaveLength(1);
+      expect(harness.proceduralEvidenceRepository.list()).toEqual([]);
+      expect(
+        events.some(
           (entry) =>
             entry.kind === "internal_event" &&
-            (entry.content as { reason?: string }).reason === "malformed_step_outcome",
+            (entry.content as { hook?: string; error?: string }).hook === "reflection_judgment" &&
+            (entry.content as { error?: string }).error?.startsWith(
+              "LLMError: Reflector returned invalid reflection payload",
+            ),
         ),
-    ).toBe(true);
-  });
+      ).toBe(true);
+      expect(
+        events.some(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            (entry.content as { hook?: string }).hook === "reflector_executive_item_dropped",
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("creates proposed executive steps and drops proposals over the open-step cap", async () => {
     const harness = await createExecutiveReflectionHarness();
