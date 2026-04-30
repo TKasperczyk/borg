@@ -9,6 +9,7 @@ import { FakeLLMClient } from "../../llm/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { LLMError } from "../../util/errors.js";
 import { createEntityId, createSemanticNodeId, type EpisodeId } from "../../util/ids.js";
 import type { Episode } from "../episodic/types.js";
 import { SemanticExtractor } from "./extractor.js";
@@ -830,7 +831,7 @@ describe("semantic extractor", () => {
     );
   });
 
-  it("normalizes string-wrapped tool payloads before validation", async () => {
+  it("rejects malformed string-wrapped tool payloads", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -859,6 +860,7 @@ describe("semantic extractor", () => {
       rmSync(tempDir, { recursive: true, force: true });
     });
 
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident");
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -883,20 +885,25 @@ describe("semantic extractor", () => {
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
-      episodicRepository: createEpisodeLookup([
-        buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident"),
-      ]),
+      episodicRepository: createEpisodeLookup([episode]),
       llmClient: llm,
       model: "haiku",
       clock,
     });
 
-    const result = await extractor.extractFromEpisodes([
-      buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas incident"),
-    ]);
+    let error: unknown;
 
-    expect(result.insertedNodes).toBe(2);
-    expect(result.insertedEdges).toBe(1);
+    try {
+      await extractor.extractFromEpisodes([episode]);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(LLMError);
+    expect(error).toMatchObject({
+      code: "SEMANTIC_EXTRACTOR_INVALID",
+    });
+    expect(edgeRepository.listEdges()).toHaveLength(0);
   });
 
   it("keeps homonyms separate by access scope, not by domain", async () => {

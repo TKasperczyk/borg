@@ -121,7 +121,7 @@ function parseResponse(result: LLMCompleteResult): {
     });
   }
 
-  const parsed = extractorResponseSchema.safeParse(normalizeSemanticToolInput(call.input));
+  const parsed = extractorResponseSchema.safeParse(call.input);
 
   if (!parsed.success) {
     throw new LLMError("Semantic extractor returned invalid payload", {
@@ -131,56 +131,6 @@ function parseResponse(result: LLMCompleteResult): {
   }
 
   return parsed.data;
-}
-
-function parseJsonArrayString(value: string): unknown {
-  const trimmed = value.trim();
-
-  if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) {
-    return value;
-  }
-
-  try {
-    return JSON.parse(trimmed) as unknown;
-  } catch {
-    return value;
-  }
-}
-
-function normalizeSemanticToolInput(input: unknown): unknown {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) {
-    return input;
-  }
-
-  const record = input as Record<string, unknown>;
-  const normalized: Record<string, unknown> = { ...record };
-  const rawNodes = normalized.nodes;
-
-  if (typeof rawNodes === "string") {
-    const parts = rawNodes.split(/\s*<parameter name="edges">\s*/);
-
-    if (parts.length === 2) {
-      normalized.nodes = parseJsonArrayString(parts[0] ?? "");
-      normalized.edges = parseJsonArrayString(parts[1] ?? "");
-      return normalized;
-    }
-
-    normalized.nodes = parseJsonArrayString(rawNodes);
-  }
-
-  if (typeof normalized.edges === "string") {
-    normalized.edges = parseJsonArrayString(normalized.edges);
-  }
-
-  if (normalized.nodes === undefined) {
-    normalized.nodes = [];
-  }
-
-  if (normalized.edges === undefined) {
-    normalized.edges = [];
-  }
-
-  return normalized;
 }
 
 function mergeAliases(left: readonly string[], right: readonly string[]): string[] {
