@@ -12,7 +12,11 @@ import { EntityExtractor } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
 import { detectTemporalCue } from "./temporal-cue.js";
 
-export type PerceptionClassifierName = "entity_extractor" | "mode_detector" | "affective_signal";
+export type PerceptionClassifierName =
+  | "entity_extractor"
+  | "mode_detector"
+  | "affective_signal"
+  | "temporal_cue";
 
 export type PerceptionClassifierFailure = {
   classifier: PerceptionClassifierName;
@@ -191,6 +195,26 @@ export class Perceiver {
       detectTemporalCue(text, nowMs, {
         llmClient: this.temporalCueUseLlmFallback ? this.llmClient : undefined,
         model: this.temporalCueUseLlmFallback ? this.model : undefined,
+        onDegraded: async (reason, error) => {
+          if (this.tracer.enabled && this.turnId !== undefined) {
+            this.tracer.emit("perception_classifier_degraded", {
+              turnId: this.turnId,
+              classifier: "temporal_cue",
+              reason,
+            });
+          }
+
+          if (error !== undefined) {
+            try {
+              await this.onClassifierFailure?.({
+                classifier: "temporal_cue",
+                error,
+              });
+            } catch {
+              // Best-effort hook logging only.
+            }
+          }
+        },
       }),
     ]);
 

@@ -5,10 +5,8 @@ import { BorgError } from "../util/errors.js";
 import type { AuditLog } from "./audit-log.js";
 import { maintenancePlanSchema, type MaintenancePlan } from "./plan-file.js";
 import {
-  OFFLINE_PROCESS_NAMES,
   type OfflineContext,
   type OfflineProcess,
-  type OfflineProcessError,
   type OfflineProcessName,
   type OfflineResult,
   type OrchestratorResult,

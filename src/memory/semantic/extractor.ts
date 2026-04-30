@@ -15,12 +15,7 @@ import type { Episode, EpisodicRepository } from "../episodic/index.js";
 import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import type { SemanticReviewService } from "./review-service.js";
 import { canonicalizeDomain } from "./domain.js";
-import {
-  semanticNodeKindSchema,
-  semanticRelationSchema,
-  type SemanticEdge,
-  type SemanticNode,
-} from "./types.js";
+import { semanticNodeKindSchema, semanticRelationSchema, type SemanticNode } from "./types.js";
 
 const extractorNodeSchema = z.object({
   kind: semanticNodeKindSchema,
@@ -441,9 +436,13 @@ export class SemanticExtractor {
     }
 
     for (const candidate of parsed.nodes) {
-      const matches = await this.options.nodeRepository.findByExactLabelOrAlias(candidate.label, 3, {
-        includeArchived: true,
-      });
+      const matches = await this.options.nodeRepository.findByExactLabelOrAlias(
+        candidate.label,
+        3,
+        {
+          includeArchived: true,
+        },
+      );
 
       for (const match of matches) {
         if (!existingNodes.has(match.label.toLowerCase())) {

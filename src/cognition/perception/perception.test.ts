@@ -412,6 +412,61 @@ describe("perception", () => {
     expect(perceived.affectiveSignalDegraded).toBe(true);
   });
 
+  it("notifies when temporal cue extraction degrades without an LLM", async () => {
+    const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
+    const onDegraded = vi.fn();
+
+    const cue = await detectTemporalCue("Jane said yesterday was rough", nowMs, {
+      onDegraded,
+    });
+
+    expect(cue).toBeNull();
+    expect(onDegraded).toHaveBeenCalledWith("llm_unavailable");
+  });
+
+  it("emits the perception degraded trace when temporal cue extraction fails", async () => {
+    const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const onClassifierFailure = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        entityResponse(["Jane"]),
+        modeResponse("reflective"),
+        () => {
+          throw new Error("temporal unavailable");
+        },
+      ],
+    });
+    const perceiver = new Perceiver({
+      llmClient: llm,
+      model: "haiku",
+      affectiveUseLlmFallback: false,
+      clock: new FixedClock(nowMs),
+      tracer,
+      turnId: "turn-1",
+      onClassifierFailure,
+    });
+
+    const perceived = await perceiver.perceive("Jane said yesterday was rough");
+
+    expect(perceived.temporalCue).toBeNull();
+    expect(tracer.emit).toHaveBeenCalledWith("perception_classifier_degraded", {
+      turnId: "turn-1",
+      classifier: "temporal_cue",
+      reason: "llm_failed",
+    });
+    expect(onClassifierFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        classifier: "temporal_cue",
+        error: expect.any(Error),
+      }),
+    );
+  });
+
   it("extracts a temporal cue via the LLM when one is configured", async () => {
     const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
     const sinceTs = nowMs - 24 * 60 * 60 * 1_000;

@@ -1,6 +1,3 @@
-export const AUTONOMOUS_WAKE_USER_MESSAGE =
-  "(autonomous wake) review the trigger context and decide whether to act.";
-
 export type AutonomyTriggerContext = {
   source_name: string;
   source_type: "trigger" | "condition";

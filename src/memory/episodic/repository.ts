@@ -856,22 +856,6 @@ export class EpisodicRepository {
     return results;
   }
 
-  private rankEpisodesByHeat(
-    episodes: readonly Episode[],
-    statsById: ReadonlyMap<EpisodeId, EpisodeStats>,
-  ): Episode[] {
-    const nowMs = this.clock.now();
-
-    return [...episodes].sort((left, right) => {
-      const leftStats = statsById.get(left.id) ?? defaultEpisodeStats(left);
-      const rightStats = statsById.get(right.id) ?? defaultEpisodeStats(right);
-      const leftHeat = computeEpisodeHeat(left, leftStats, nowMs);
-      const rightHeat = computeEpisodeHeat(right, rightStats, nowMs);
-
-      return rightHeat - leftHeat || compareEpisodes(left, right);
-    });
-  }
-
   private upsertStats(stats: EpisodeStats): void {
     const parsed = episodeStatsSchema.parse(stats);
 

@@ -2,7 +2,6 @@ import type { MoodRepository } from "../../memory/affective/index.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
-import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyCondition, DueEvent } from "../types.js";
 
 const CONDITION_NAME = "mood_valence_drop" as const;
@@ -82,7 +81,7 @@ export function createMoodValenceDropCondition(
       return {
         audience: "self",
         stakes: "low",
-        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        userMessage: "",
         autonomyTrigger: {
           source_name: event.sourceName,
           source_type: event.sourceType,

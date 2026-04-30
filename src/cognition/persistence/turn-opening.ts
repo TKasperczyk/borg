@@ -15,6 +15,7 @@ export type TurnOpeningPersistenceOptions = {
 export type TurnOpeningPersistenceInput = {
   streamWriter: Pick<StreamWriter, "append">;
   userMessage: string;
+  persistUserMessage?: boolean;
   audience?: string;
   workingMemory: WorkingMemory;
   pendingSocialAttribution: PendingSocialAttribution | null;
@@ -25,7 +26,8 @@ export type TurnOpeningPersistenceInput = {
 };
 
 export type TurnOpeningPersistenceResult = {
-  persistedUserEntry: StreamEntry;
+  persistedUserEntry: StreamEntry | null;
+  persistedPerceptionEntry: StreamEntry;
   workingMemory: WorkingMemory;
 };
 
@@ -33,13 +35,14 @@ export class TurnOpeningPersistence {
   constructor(private readonly options: TurnOpeningPersistenceOptions) {}
 
   async persist(input: TurnOpeningPersistenceInput): Promise<TurnOpeningPersistenceResult> {
-    const userEntry = {
-      kind: "user_msg",
-      content: input.userMessage,
-      ...(input.audience === undefined ? {} : { audience: input.audience }),
-    } satisfies Parameters<StreamWriter["append"]>[0];
-
-    const persistedUserEntry = await input.streamWriter.append(userEntry);
+    const persistedUserEntry =
+      input.persistUserMessage === false
+        ? null
+        : await input.streamWriter.append({
+            kind: "user_msg",
+            content: input.userMessage,
+            ...(input.audience === undefined ? {} : { audience: input.audience }),
+          });
 
     const workingMemory = this.options.workingMemoryStore.save({
       ...input.workingMemory,
@@ -49,7 +52,7 @@ export class TurnOpeningPersistence {
       updated_at: input.now(),
     });
 
-    await input.streamWriter.append({
+    const persistedPerceptionEntry = await input.streamWriter.append({
       kind: "perception",
       content: {
         mode: input.perception.mode,
@@ -63,6 +66,7 @@ export class TurnOpeningPersistence {
 
     return {
       persistedUserEntry,
+      persistedPerceptionEntry,
       workingMemory,
     };
   }

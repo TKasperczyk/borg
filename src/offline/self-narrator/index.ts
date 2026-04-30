@@ -188,14 +188,17 @@ function cadenceAllowsNewPeriod(
   return ageMs >= cadenceHintDays * DAY_MS;
 }
 
-function buildNarrative(existingNarrative: string | null, observations: readonly string[]): string {
+function buildNarrative(
+  existingNarrative: string | null,
+  observations: readonly string[],
+): string | null {
   const parts = uniqueStrings([
     existingNarrative?.trim() ?? "",
     ...observations.map((observation) => observation.trim()),
   ]);
 
   if (parts.length === 0) {
-    return "A new autobiographical period began.";
+    return null;
   }
 
   return parts.join(" ");
@@ -433,43 +436,49 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const openNewPeriod =
       periodDecision === "open_new" &&
       themes.length > 0 &&
-      cadenceAllowsNewPeriod(
-        currentPeriod,
-        nowMs,
-        ctx.config.offline.selfNarrator.cadenceHintDays,
-      );
-    let targetPeriod = currentPeriod;
-
+      cadenceAllowsNewPeriod(currentPeriod, nowMs, ctx.config.offline.selfNarrator.cadenceHintDays);
     if (currentPeriod === null || openNewPeriod) {
-      if (currentPeriod !== null) {
+      const narrative = buildNarrative(null, observations);
+
+      if (narrative === null) {
+        if (sourceEpisodes.length >= minSupportEpisodes && errors.length === 0) {
+          errors.push({
+            process: this.name,
+            message:
+              "Self-narrator produced no autobiographical narrative parts; skipped period creation.",
+            code: "SELF_NARRATOR_EMPTY_NARRATIVE",
+          });
+        }
+      } else {
+        if (currentPeriod !== null) {
+          items.push({
+            action: "close_period",
+            previous: currentPeriod,
+            end_ts: nowMs,
+          });
+        }
+
+        const period = autobiographicalPeriodSchema.parse({
+          id: createAutobiographicalPeriodId(),
+          label: nextLabel,
+          start_ts: sourceEpisodes.at(-1)?.start_time ?? nowMs,
+          end_ts: null,
+          narrative,
+          key_episode_ids: keyEpisodeIds,
+          themes,
+          provenance: {
+            kind: "offline",
+            process: this.name,
+          },
+          created_at: nowMs,
+          last_updated: nowMs,
+        });
+
         items.push({
-          action: "close_period",
-          previous: currentPeriod,
-          end_ts: nowMs,
+          action: "open_period",
+          period,
         });
       }
-
-      const period = autobiographicalPeriodSchema.parse({
-        id: createAutobiographicalPeriodId(),
-        label: nextLabel,
-        start_ts: sourceEpisodes.at(-1)?.start_time ?? nowMs,
-        end_ts: null,
-        narrative: buildNarrative(null, observations),
-        key_episode_ids: keyEpisodeIds,
-        themes,
-        provenance: {
-          kind: "offline",
-          process: this.name,
-        },
-        created_at: nowMs,
-        last_updated: nowMs,
-      });
-
-      items.push({
-        action: "open_period",
-        period,
-      });
-      targetPeriod = period;
     } else if (currentPeriod !== null) {
       const nextNarrative = buildNarrative(currentPeriod.narrative, observations);
       const nextThemes = uniqueStrings([...currentPeriod.themes, ...themes]).slice(0, 6);
@@ -479,7 +488,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       ]).slice(0, 8);
 
       if (
-        nextNarrative !== currentPeriod.narrative ||
+        (nextNarrative !== null && nextNarrative !== currentPeriod.narrative) ||
         JSON.stringify(nextThemes) !== JSON.stringify(currentPeriod.themes) ||
         JSON.stringify(nextKeyEpisodes) !== JSON.stringify(currentPeriod.key_episode_ids)
       ) {
@@ -487,7 +496,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           action: "update_period_narrative",
           period_id: currentPeriod.id,
           previous: currentPeriod,
-          narrative: nextNarrative,
+          narrative: nextNarrative ?? currentPeriod.narrative,
           key_episode_ids: nextKeyEpisodes,
           themes: nextThemes,
         });
@@ -500,9 +509,6 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
         marker,
       });
     }
-
-    void targetPeriod;
-
     return selfNarratorPlanSchema.parse({
       process: this.name,
       items,

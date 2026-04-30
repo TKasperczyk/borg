@@ -20,6 +20,7 @@ const TEMPORAL_CUE_TOOL = {
 export type TemporalCueDetectorOptions = {
   llmClient?: LLMClient;
   model?: string;
+  onDegraded?: (reason: "llm_unavailable" | "llm_failed", error?: unknown) => Promise<void> | void;
 };
 
 /**
@@ -40,6 +41,7 @@ export async function detectTemporalCue(
   options: TemporalCueDetectorOptions = {},
 ): Promise<TemporalCue | null> {
   if (options.llmClient === undefined || options.model === undefined) {
+    await options.onDegraded?.("llm_unavailable");
     return null;
   }
 
@@ -93,9 +95,10 @@ export async function detectTemporalCue(
       cue.label = label;
     }
     return cue;
-  } catch {
+  } catch (error) {
     // Any failure on this cheap enrichment path degrades gracefully to
     // "no temporal filter" rather than breaking the turn.
+    await options.onDegraded?.("llm_failed", error);
     return null;
   }
 }

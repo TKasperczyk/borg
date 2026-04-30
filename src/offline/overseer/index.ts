@@ -62,21 +62,6 @@ export const OVERSEER_TOOL = {
 
 const HOUR_MS = 60 * 60 * 1_000;
 
-const overseerTargetSchema = z.discriminatedUnion("target_type", [
-  z.object({
-    target_type: z.literal("episode"),
-    target_id: episodeIdSchema,
-  }),
-  z.object({
-    target_type: z.literal("semantic_node"),
-    target_id: semanticNodeIdSchema,
-  }),
-  z.object({
-    target_type: z.literal("semantic_edge"),
-    target_id: semanticEdgeIdSchema,
-  }),
-]);
-
 const overseerPlanItemBaseSchema = z.object({
   kind: overseerFlagKindSchema,
   reason: z.string().min(1),

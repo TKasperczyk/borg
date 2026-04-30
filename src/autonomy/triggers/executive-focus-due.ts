@@ -18,7 +18,6 @@ import type { StreamWatermarkRepository } from "../../stream/index.js";
 import type { TurnTracer } from "../../cognition/tracing/tracer.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "../../util/ids.js";
-import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 
 const TRIGGER_NAME = "executive_focus_due" as const;
@@ -261,10 +260,7 @@ export function createExecutiveFocusDueTrigger(
     nowMs: number;
     autonomyPayload: Record<string, unknown>;
   }) {
-    const executiveContextText = [
-      AUTONOMOUS_WAKE_USER_MESSAGE,
-      JSON.stringify(input.autonomyPayload),
-    ].join(" ");
+    const executiveContextText = JSON.stringify(input.autonomyPayload);
     let contextFitByGoalId: Awaited<ReturnType<typeof computeExecutiveContextFits>> = new Map();
 
     try {
@@ -285,7 +281,7 @@ export function createExecutiveFocusDueTrigger(
 
     return selectExecutiveFocus({
       goals: input.goals,
-      cognitionInput: AUTONOMOUS_WAKE_USER_MESSAGE,
+      cognitionInput: executiveContextText,
       autonomyPayload: input.autonomyPayload,
       nowMs: input.nowMs,
       threshold,
@@ -443,7 +439,7 @@ export function createExecutiveFocusDueTrigger(
       return {
         audience: "self",
         stakes: "low",
-        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        userMessage: "",
         autonomyTrigger: {
           source_name: event.sourceName,
           source_type: event.sourceType,

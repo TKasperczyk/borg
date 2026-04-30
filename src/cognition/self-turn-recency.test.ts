@@ -121,7 +121,7 @@ describe("self-turn recency", () => {
     }
   });
 
-  it("includes prior self-turns when another autonomous self-turn runs", async () => {
+  it("does not treat prior autonomous wakes as dialogue recency", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const llm = new FakeLLMClient({
@@ -164,14 +164,6 @@ describe("self-turn recency", () => {
 
       expect(finalizerRequests).toHaveLength(2);
       expect(finalizerRequests[1]?.messages).toEqual([
-        {
-          role: "user",
-          content: "Pause and reflect on recent changes.",
-        },
-        {
-          role: "assistant",
-          content: "I reflected on the last few turns.",
-        },
         {
           role: "user",
           content: "Continue the reflection with any new pattern you notice.",

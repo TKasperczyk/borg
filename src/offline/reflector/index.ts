@@ -527,7 +527,6 @@ export class ReflectorProcess implements OfflineProcess {
       (episode) => !(ctx.episodicRepository.getStats(episode.id)?.archived ?? false),
     );
     const activeGoals = ctx.goalsRepository.list({ status: "active" });
-    const goalDescriptions = activeGoals.map((goal) => goal.description);
     let goalVectors: ReflectionGoalVector[] = [];
     let tagGroups: ReflectionTagGroup[] = [];
 

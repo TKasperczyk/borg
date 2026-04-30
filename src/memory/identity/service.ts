@@ -92,13 +92,13 @@ function isProgressOnlyGoalPatch(patch: GoalPatch): boolean {
   );
 }
 
-function autobiographicalPeriodGuardState(current: AutobiographicalPeriod): IdentityGuardState {
+function autobiographicalPeriodGuardState(): IdentityGuardState {
   return {
     state: "established",
   };
 }
 
-function growthMarkerGuardState(current: GrowthMarker): IdentityGuardState {
+function growthMarkerGuardState(): IdentityGuardState {
   return {
     state: "established",
   };
@@ -252,7 +252,7 @@ export class IdentityService {
 
     if (periodClosedByCreate !== null) {
       const closeDecision = this.guard.evaluateChange({
-        current: autobiographicalPeriodGuardState(periodClosedByCreate),
+        current: autobiographicalPeriodGuardState(),
         provenance: input.provenance,
       });
 
@@ -735,7 +735,7 @@ export class IdentityService {
     }
 
     const decision = this.guard.evaluateChange({
-      current: autobiographicalPeriodGuardState(current),
+      current: autobiographicalPeriodGuardState(),
       provenance,
       throughReview: options.throughReview,
     });
@@ -951,7 +951,7 @@ export class IdentityService {
     }
 
     const decision = this.guard.evaluateChange({
-      current: autobiographicalPeriodGuardState(current),
+      current: autobiographicalPeriodGuardState(),
       provenance,
       throughReview: options.throughReview,
     });
@@ -1017,7 +1017,7 @@ export class IdentityService {
     }
 
     const decision = this.guard.evaluateChange({
-      current: growthMarkerGuardState(current),
+      current: growthMarkerGuardState(),
       provenance,
       throughReview: options.throughReview,
     });

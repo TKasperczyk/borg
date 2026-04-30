@@ -581,6 +581,7 @@ export class TurnOrchestrator {
         const openingPersistence = await this.turnOpeningPersistence.persist({
           streamWriter,
           userMessage: input.userMessage,
+          persistUserMessage: isUserTurn,
           audience: input.audience,
           workingMemory,
           pendingSocialAttribution,
@@ -590,6 +591,8 @@ export class TurnOrchestrator {
           now: () => this.clock.now(),
         });
         const persistedUserEntry = openingPersistence.persistedUserEntry;
+        const persistedUserEntryId = persistedUserEntry?.id;
+        const persistedPerceptionEntry = openingPersistence.persistedPerceptionEntry;
         workingMemory = openingPersistence.workingMemory;
 
         const generationGate = new GenerationGate({
@@ -635,7 +638,7 @@ export class TurnOrchestrator {
             workingMemory = this.setDiscourseStopState({
               workingMemory,
               provenance: "generation_gate",
-              sourceStreamEntryId: persistedUserEntry.id,
+              sourceStreamEntryId: persistedUserEntryId,
               reason: gateResult.explanation,
               turnId,
             });
@@ -657,7 +660,7 @@ export class TurnOrchestrator {
           const suppressionMarker = await this.appendSuppressionMarker({
             streamWriter,
             reason: suppressionReason,
-            userEntryId: persistedUserEntry.id,
+            userEntryId: persistedUserEntryId,
             turnId,
             audience: input.audience,
           });
@@ -822,7 +825,7 @@ export class TurnOrchestrator {
             audience: input.audience,
             audienceEntityId,
             userMessage: input.userMessage,
-            userEntryId: persistedUserEntry.id,
+            userEntryId: persistedUserEntryId,
             autonomyTrigger: input.autonomyTrigger ?? null,
             perception,
             retrievalResult: retrievedEpisodes,
@@ -918,7 +921,7 @@ export class TurnOrchestrator {
             : await this.appendSuppressionMarker({
                 streamWriter,
                 reason: actionEmission.reason,
-                userEntryId: persistedUserEntry.id,
+                userEntryId: persistedUserEntryId,
                 turnId,
                 audience: input.audience,
               });
@@ -1075,7 +1078,10 @@ export class TurnOrchestrator {
             selectedSkillId: selectedSkill?.skill.id ?? null,
             audienceEntityId,
             suppressionSet,
-            currentTurnStreamEntryIds: [persistedUserEntry.id, persistedAgentEntry.id],
+            currentTurnStreamEntryIds:
+              persistedUserEntryId === undefined
+                ? [persistedPerceptionEntry.id, persistedAgentEntry.id]
+                : [persistedUserEntryId, persistedAgentEntry.id],
           },
           streamWriter,
         );
@@ -1101,7 +1107,7 @@ export class TurnOrchestrator {
           selectedSkill,
           proceduralContext,
           reflectedWorkingMemory,
-          persistedUserEntryId: persistedUserEntry.id,
+          persistedUserEntryId,
           persistedAgentEntryId: persistedAgentEntry.id,
           audienceEntityId,
         });

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { moodHistoryEntrySchema, type MoodHistoryEntry } from "../../memory/affective/index.js";
+import { moodHistoryEntrySchema } from "../../memory/affective/index.js";
 import { computeEpisodeHeat } from "../../memory/episodic/heat.js";
 import type { EpisodicRepository } from "../../memory/episodic/index.js";
 import {
@@ -13,7 +13,7 @@ import {
   type EpisodeTier,
 } from "../../memory/episodic/types.js";
 import { traitIdSchema, traitSchema } from "../../memory/self/index.js";
-import { socialProfileSchema, type SocialProfile } from "../../memory/social/index.js";
+import { socialProfileSchema } from "../../memory/social/index.js";
 import type { Clock } from "../../util/clock.js";
 
 import type { ReverserRegistry } from "../audit-log.js";

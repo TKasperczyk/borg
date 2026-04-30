@@ -3,7 +3,7 @@ import { SystemClock, type Clock } from "../util/clock.js";
 import { SessionBusyError } from "../util/errors.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
-import type { TurnInput, TurnOrchestrator } from "../cognition/index.js";
+import type { TurnOrchestrator } from "../cognition/index.js";
 
 import type {
   AutonomyConditionName,

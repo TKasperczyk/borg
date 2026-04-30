@@ -17,15 +17,13 @@ import {
 } from "../../storage/codecs.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import { SemanticError, StorageError } from "../../util/errors.js";
+import { SemanticError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import {
   createSemanticEdgeId,
-  createSemanticNodeId,
   parseEpisodeId,
   parseSemanticEdgeId,
   parseSemanticNodeId,
-  type EpisodeId,
   type SemanticEdgeId,
   type SemanticNodeId,
 } from "../../util/ids.js";
@@ -46,7 +44,6 @@ import {
   type SemanticNodePatch,
   type SemanticNodeSearchCandidate,
   type SemanticNodeSearchOptions,
-  type SemanticRelation,
 } from "./types.js";
 import { canonicalizeDomain } from "./domain.js";
 

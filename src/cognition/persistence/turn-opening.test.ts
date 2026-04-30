@@ -143,8 +143,55 @@ describe("TurnOpeningPersistence", () => {
       ],
       updated_at: 2_000,
     });
-    expect(result.persistedUserEntry.id).toBe(userEntryId);
+    expect(result.persistedUserEntry?.id).toBe(userEntryId);
+    expect(result.persistedPerceptionEntry.id).toBe(perceptionEntryId);
     expect(result.workingMemory).toEqual(save.mock.results[0]?.value);
+  });
+
+  it("skips user message persistence for autonomous turns", async () => {
+    const sequence: string[] = [];
+    const { appended, streamWriter } = makeStreamWriter(sequence);
+
+    const result = await new TurnOpeningPersistence({
+      workingMemoryStore: {
+        save: vi.fn((memory) => {
+          sequence.push("save:working_memory");
+          return memory;
+        }),
+      },
+    }).persist({
+      streamWriter,
+      userMessage: "",
+      persistUserMessage: false,
+      audience: "self",
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 500),
+      pendingSocialAttribution: null,
+      pendingTraitAttribution: null,
+      suppressionSet: SuppressionSet.fromEntries([], 0),
+      perception: makePerception(),
+      now: () => 1_000,
+    });
+
+    expect(sequence).toEqual(["save:working_memory", "append:perception"]);
+    expect(appended).toEqual([
+      {
+        kind: "perception",
+        content: {
+          mode: "problem_solving",
+          entities: ["Atlas"],
+          temporalCue: null,
+          affectiveSignal: {
+            valence: -0.2,
+            arousal: 0.5,
+            dominant_emotion: "fear",
+          },
+          affectiveSignalDegraded: false,
+        },
+        audience: "self",
+      },
+    ]);
+    expect(result.persistedUserEntry).toBeNull();
+    expect(result.persistedPerceptionEntry.id).toBe(perceptionEntryId);
   });
 
   it("omits audience from opening stream entries when no audience was provided", async () => {

@@ -573,6 +573,53 @@ describe("SelfNarratorProcess", () => {
     }
   });
 
+  it("does not synthesize a fallback narrative when no observations are emitted", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          observation: null,
+          period_decision: "open_new",
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          tags: ["atlas"],
+        }),
+      );
+      await harness.episodicRepository.insert(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          tags: ["atlas"],
+          created_at: 2_000_000,
+          updated_at: 2_000_000,
+        }),
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items.some((item) => item.action === "open_period")).toBe(false);
+      expect(plan.errors).toEqual([
+        expect.objectContaining({
+          code: "SELF_NARRATOR_EMPTY_NARRATIVE",
+        }),
+      ]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("skips invalid observations that do not cite enough supporting episodes", async () => {
     const llm = new FakeLLMClient({
       responses: [

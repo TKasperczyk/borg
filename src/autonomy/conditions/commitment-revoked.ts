@@ -1,8 +1,7 @@
 import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
-import { SystemClock, type Clock } from "../../util/clock.js";
+import type { Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
-import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyCondition, DueEvent } from "../types.js";
 
 const CONDITION_NAME = "commitment_revoked" as const;
@@ -25,7 +24,6 @@ export type CommitmentRevokedConditionOptions = {
 export function createCommitmentRevokedCondition(
   options: CommitmentRevokedConditionOptions,
 ): AutonomyCondition<CommitmentRevokedPayload> {
-  const clock = options.clock ?? new SystemClock();
   const sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
 
   return {
@@ -66,7 +64,7 @@ export function createCommitmentRevokedCondition(
       return {
         audience: "self",
         stakes: "low",
-        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        userMessage: "",
         autonomyTrigger: {
           source_name: event.sourceName,
           source_type: event.sourceType,

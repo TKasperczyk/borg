@@ -177,6 +177,7 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
       default: 20,
       type: [Number],
     })
+    .option("--narrative <text>", "Autobiographical period narrative")
     .action(async (action: string, arg: string | undefined, commandOptions: CommandOptions) => {
       if (action === "current") {
         const period = await withBorg(options, async (borg) =>
@@ -201,7 +202,7 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
           borg.self.autobiographical.upsertPeriod({
             label: parseRequiredText(arg, "<label>"),
             start_ts: Date.now(),
-            narrative: "A new autobiographical period began.",
+            narrative: parseRequiredText(commandOptions.narrative, "--narrative"),
             provenance: {
               kind: "manual",
             },

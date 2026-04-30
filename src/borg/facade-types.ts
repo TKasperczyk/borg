@@ -21,7 +21,6 @@ import type {
   ReviewKind,
   ReviewQueueItem,
   ReviewResolutionInput,
-  SemanticEdge,
   SemanticEdgeRepository,
   SemanticGraph,
   SemanticNode,

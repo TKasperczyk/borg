@@ -711,11 +711,14 @@ describe("cli", () => {
 
     const periodOut = createOutputBuffer();
     expect(
-      await runCli(["node", "borg", "period", "open", "2026-Q2"], {
-        stdout: periodOut.stream,
-        stderr: createOutputBuffer().stream,
-        dataDir: tempDir,
-      }),
+      await runCli(
+        ["node", "borg", "period", "open", "2026-Q2", "--narrative", "Manual period note."],
+        {
+          stdout: periodOut.stream,
+          stderr: createOutputBuffer().stream,
+          dataDir: tempDir,
+        },
+      ),
     ).toBe(0);
     const period = JSON.parse(periodOut.read()) as { id: string };
 

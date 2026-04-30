@@ -9,7 +9,6 @@ import {
 import { LLMError } from "../../util/errors.js";
 
 import {
-  affectiveSignalSchema,
   createNeutralAffectiveSignal,
   dominantEmotionSchema,
   type AffectiveSignal,

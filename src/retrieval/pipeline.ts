@@ -47,7 +47,6 @@ import {
   resolveSemanticContext,
   toRetrievedSemantic,
   type RetrievedSemantic,
-  type RetrievedSemanticHit,
 } from "./semantic-retrieval.js";
 import { resolveTimeSignals } from "./time-signals.js";
 

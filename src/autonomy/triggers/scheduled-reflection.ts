@@ -2,7 +2,6 @@ import type { IdentityEvent } from "../../memory/identity/index.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
-import { AUTONOMOUS_WAKE_USER_MESSAGE } from "../../cognition/autonomy-trigger.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 
 const TRIGGER_NAME = "scheduled_reflection" as const;
@@ -67,7 +66,7 @@ export function createScheduledReflectionTrigger(
       return {
         audience: "self",
         stakes: "low",
-        userMessage: AUTONOMOUS_WAKE_USER_MESSAGE,
+        userMessage: "",
         autonomyTrigger: {
           source_name: event.sourceName,
           source_type: event.sourceType,

@@ -10,11 +10,7 @@ import {
   type Provenance,
 } from "../memory/common/provenance.js";
 import { type EpisodePatch, type EpisodicRepository } from "../memory/episodic/index.js";
-import {
-  type IdentityEventRepository,
-  type IdentityRecordType,
-  type IdentityService,
-} from "../memory/identity/index.js";
+import { type IdentityEventRepository, type IdentityService } from "../memory/identity/index.js";
 import type {
   CommitmentRecord,
   CommitmentRepository,
