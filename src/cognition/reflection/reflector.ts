@@ -11,7 +11,7 @@ import {
 } from "../../executive/types.js";
 import { GoalsRepository, TraitsRepository, type GoalRecord } from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
-import { semanticNodeIdSchema, type ReviewQueueRepository } from "../../memory/semantic/index.js";
+import type { ReviewQueueRepository } from "../../memory/semantic/index.js";
 import { ProceduralEvidenceRepository, SkillRepository } from "../../memory/procedural/index.js";
 import {
   appendInternalFailureEvent,
@@ -76,7 +76,6 @@ const reflectionOpenQuestionSchema = z.object({
   question: z.string().min(1),
   urgency: z.number().min(0).max(1),
   related_episode_ids: z.array(episodeIdSchema),
-  related_semantic_node_ids: z.array(semanticNodeIdSchema),
 });
 
 const strictReflectionOutputSchema = z.object({
@@ -152,7 +151,7 @@ const strictReflectionOutputSchema = z.object({
     .array(reflectionOpenQuestionSchema)
     .max(5)
     .describe(
-      "Durable unresolved questions from this completed turn that should be remembered in self-memory. Emit zero items unless the turn reveals a real question worth revisiting. Write the question in the user's language and attach only related ids present in the reflection input.",
+      "Durable unresolved questions from this completed turn that should be remembered in self-memory. Emit zero items unless the turn reveals a real question worth revisiting. Write the question in the user's language and attach only related episode ids present in the reflection input.",
     )
     .default([]),
 });
@@ -451,7 +450,12 @@ export class Reflector {
       }
     }
 
-    await this.applyReflectionOpenQuestions(context, reflectionOutput.open_questions, streamWriter);
+    await this.applyReflectionOpenQuestions(
+      context,
+      reflectionOutput.open_questions,
+      referencedEpisodeIdSet,
+      streamWriter,
+    );
 
     context.suppressionSet.tickTurn();
 
@@ -926,6 +930,7 @@ export class Reflector {
   private async applyReflectionOpenQuestions(
     context: ReflectionContext,
     proposals: readonly ReflectionOutput["open_questions"][number][],
+    referencedEpisodeIdSet: ReadonlySet<EpisodeId>,
     streamWriter: StreamWriter,
   ): Promise<void> {
     if (proposals.length === 0) {
@@ -950,8 +955,18 @@ export class Reflector {
         continue;
       }
 
-      const relatedEpisodeIds = [...new Set(proposal.related_episode_ids)];
-      const relatedSemanticNodeIds = [...new Set(proposal.related_semantic_node_ids)];
+      const proposedEpisodeIds = [...new Set(proposal.related_episode_ids)];
+      const relatedEpisodeIds = proposedEpisodeIds.filter((id) => referencedEpisodeIdSet.has(id));
+      const droppedEpisodeIds = proposedEpisodeIds.filter((id) => !referencedEpisodeIdSet.has(id));
+
+      if (droppedEpisodeIds.length > 0) {
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflection_open_question_filtered_episode_ids",
+          dropped_episode_ids: droppedEpisodeIds,
+          kept_episode_ids: relatedEpisodeIds,
+        });
+      }
+
       const provenance =
         relatedEpisodeIds.length > 0
           ? {
@@ -969,7 +984,6 @@ export class Reflector {
           urgency: proposal.urgency,
           audience_entity_id: context.audienceEntityId ?? null,
           related_episode_ids: relatedEpisodeIds,
-          related_semantic_node_ids: relatedSemanticNodeIds,
           provenance,
           source: "reflection",
         });

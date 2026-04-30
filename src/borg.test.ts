@@ -111,7 +111,6 @@ function createEmptyReflectionResponse(
     question: string;
     urgency: number;
     related_episode_ids: string[];
-    related_semantic_node_ids: string[];
   }> = [],
 ) {
   return {
@@ -2392,7 +2391,6 @@ describe("Borg", () => {
               question: "What uncertainty remains about Atlas?",
               urgency: 0.6,
               related_episode_ids: [],
-              related_semantic_node_ids: [],
             },
           ]),
         ],

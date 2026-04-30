@@ -67,7 +67,6 @@ function createReflectionResponse(
     question: string;
     urgency: number;
     related_episode_ids: string[];
-    related_semantic_node_ids: string[];
   }> = [],
 ) {
   return {
@@ -96,6 +95,22 @@ function createReflectionResponse(
           proposed_steps: proposedSteps,
           open_questions: openQuestions,
         },
+      },
+    ],
+  };
+}
+
+function createRawReflectionResponse(input: Record<string, unknown>) {
+  return {
+    text: "",
+    input_tokens: 8,
+    output_tokens: 4,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_reflection",
+        name: "EmitTurnReflection",
+        input,
       },
     ],
   };
@@ -142,6 +157,64 @@ function createHarnessReflector(
     traitsRepository: harness.traitsRepository,
     ...overrides,
   });
+}
+
+function createOpenQuestionReflectionContext(
+  options: {
+    retrievedEpisodes?: RetrievedEpisode[];
+    referencedEpisodeIds?: RetrievedEpisode["episode"]["id"][] | null;
+    retrievalConfidence?: RetrievalConfidence;
+    response?: string;
+  } = {},
+) {
+  const workingMemory = createWorkingMemoryFixture({
+    current_focus: "Atlas",
+    hot_entities: ["Atlas"],
+    mode: "reflective",
+  });
+  const response = options.response ?? "I still need to compare more evidence.";
+
+  return {
+    userMessage: "Why is Atlas still failing?",
+    workingMemory,
+    selfSnapshot: {
+      values: [],
+      goals: [],
+      traits: [],
+    },
+    deliberationResult: {
+      path: "system_2" as const,
+      response,
+      thoughts: [],
+      tool_calls: [],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "end_turn" as const,
+      },
+      decision_reason: "low confidence" as const,
+      retrievedEpisodes: options.retrievedEpisodes ?? [],
+      referencedEpisodeIds: options.referencedEpisodeIds ?? null,
+      intents: [],
+      thoughtsPersisted: false,
+    },
+    actionResult: {
+      response,
+      tool_calls: [],
+      intents: [],
+      workingMemory,
+    },
+    retrievedEpisodes: options.retrievedEpisodes ?? [],
+    retrievalConfidence:
+      options.retrievalConfidence ??
+      createRetrievalConfidence({
+        overall: 0.2,
+        evidenceStrength: 0.2,
+        coverage: 0.2,
+        sampleSize: 1,
+      }),
+    suppressionSet: new SuppressionSet(1),
+  } satisfies Parameters<Reflector["reflect"]>[0];
 }
 
 function createPendingProceduralReflectionContext() {
@@ -1737,7 +1810,6 @@ describe("reflector", () => {
             question: "¿Qué evidencia falta sobre Atlas?",
             urgency: 0.73,
             related_episode_ids: [episode.id],
-            related_semantic_node_ids: [],
           },
         ],
       ),
@@ -1832,7 +1904,6 @@ describe("reflector", () => {
                 question: "What uncertainty remains about Atlas?",
                 urgency: 0.6,
                 related_episode_ids: [],
-                related_semantic_node_ids: [],
               },
             ],
           ),
@@ -1926,7 +1997,6 @@ describe("reflector", () => {
                 question: "What uncertainty remains about Atlas?",
                 urgency: 0.6,
                 related_episode_ids: [],
-                related_semantic_node_ids: [],
               },
             ],
           ),
@@ -2017,7 +2087,7 @@ describe("reflector", () => {
     ]);
   });
 
-  it("does not add an open question when reflection output omits open_questions", async () => {
+  it("does not add an open question when reflection output has an empty open_questions array", async () => {
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({
         responses: [createReflectionResponse()],
@@ -2091,6 +2161,172 @@ describe("reflector", () => {
     expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([]);
   });
 
+  it("does not add an open question when the reflection tool input omits open_questions", async () => {
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [
+          createRawReflectionResponse({
+            advanced_goals: [],
+            procedural_outcomes: [],
+            trait_demonstrations: [],
+            intent_updates: [],
+          }),
+        ],
+      }),
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-7",
+      identityService: harness.identityService,
+    });
+
+    await reflector.reflect(createOpenQuestionReflectionContext(), harness.streamWriter);
+
+    expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: "six proposals",
+      openQuestions: Array.from({ length: 6 }, (_, index) => ({
+        question: `Question ${index + 1}?`,
+        urgency: 0.5,
+        related_episode_ids: [],
+      })),
+    },
+    {
+      name: "negative urgency",
+      openQuestions: [
+        {
+          question: "What uncertainty remains about Atlas?",
+          urgency: -0.1,
+          related_episode_ids: [],
+        },
+      ],
+    },
+    {
+      name: "too-large urgency",
+      openQuestions: [
+        {
+          question: "What uncertainty remains about Atlas?",
+          urgency: 1.1,
+          related_episode_ids: [],
+        },
+      ],
+    },
+    {
+      name: "invalid episode id format",
+      openQuestions: [
+        {
+          question: "What uncertainty remains about Atlas?",
+          urgency: 0.6,
+          related_episode_ids: ["not-a-real-id"],
+        },
+      ],
+    },
+  ])(
+    "rejects malformed open_questions from reflection output: $name",
+    async ({ openQuestions }) => {
+      const harness = await createOfflineTestHarness({
+        llmClient: new FakeLLMClient({
+          responses: [
+            createRawReflectionResponse({
+              open_questions: openQuestions,
+            }),
+          ],
+        }),
+      });
+      cleanup.push(harness.cleanup);
+      const reflector = createHarnessReflector(harness, {
+        clock: harness.clock,
+        llmClient: harness.llmClient,
+        model: "claude-opus-4-7",
+        identityService: harness.identityService,
+      });
+
+      await reflector.reflect(createOpenQuestionReflectionContext(), harness.streamWriter);
+
+      expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([]);
+      expect(
+        new StreamReader({
+          dataDir: harness.tempDir,
+          sessionId: DEFAULT_SESSION_ID,
+        })
+          .tail(5)
+          .some(
+            (entry) =>
+              entry.kind === "internal_event" &&
+              (entry.content as { hook?: string }).hook === "reflection_judgment",
+          ),
+      ).toBe(true);
+    },
+  );
+
+  it("drops format-valid episode ids that are not referenced by the reflection context", async () => {
+    const hallucinatedEpisodeId = "ep_aaaaaaaaaaaaaaaa";
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+              {
+                question: "What uncertainty remains about Atlas?",
+                urgency: 0.6,
+                related_episode_ids: [hallucinatedEpisodeId],
+              },
+            ],
+          ),
+        ],
+      }),
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-7",
+      identityService: harness.identityService,
+    });
+
+    await reflector.reflect(createOpenQuestionReflectionContext(), harness.streamWriter);
+
+    expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([
+      expect.objectContaining({
+        question: "What uncertainty remains about Atlas?",
+        related_episode_ids: [],
+        provenance: {
+          kind: "online",
+          process: "reflector",
+        },
+      }),
+    ]);
+    expect(
+      new StreamReader({
+        dataDir: harness.tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+      })
+        .tail(5)
+        .some(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            (entry.content as { hook?: string; dropped_episode_ids?: string[] }).hook ===
+              "reflection_open_question_filtered_episode_ids" &&
+            (
+              entry.content as {
+                dropped_episode_ids?: string[];
+              }
+            ).dropped_episode_ids?.includes(hallucinatedEpisodeId) === true,
+        ),
+    ).toBe(true);
+  });
+
   it("logs and continues when the reflection open-question hook fails", async () => {
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({
@@ -2107,7 +2343,6 @@ describe("reflector", () => {
                 question: "What uncertainty remains about Atlas?",
                 urgency: 0.6,
                 related_episode_ids: [],
-                related_semantic_node_ids: [],
               },
             ],
           ),
