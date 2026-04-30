@@ -131,6 +131,24 @@ function listBeliefDependencies(db: ReturnType<typeof openDatabase>) {
   }>;
 }
 
+function listVectorSyncOutbox(db: ReturnType<typeof openDatabase>) {
+  return db
+    .prepare(
+      `
+        SELECT node_id, reason, attempts, last_attempt_at, last_error
+        FROM semantic_node_vector_sync_outbox
+        ORDER BY id ASC
+      `,
+    )
+    .all() as Array<{
+    node_id: string;
+    reason: string;
+    attempts: number;
+    last_attempt_at: number | null;
+    last_error: string | null;
+  }>;
+}
+
 function runRevisionSubstrateMigration(db: ReturnType<typeof openDatabase>): void {
   const migration = semanticMigrations.find((item) => item.id === 135);
 
@@ -472,6 +490,132 @@ describe("semantic repositories", () => {
     expect(listed).toHaveLength(1);
     expect(deleted).toBe(true);
     expect(await fixture.nodeRepository.get(inserted.id)).toBeNull();
+  });
+
+  it("adjusts semantic node confidence transactionally and drains vector sync work", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const inserted = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Transactional confidence"),
+    );
+    const adjust = fixture.db.transaction(() =>
+      fixture.nodeRepository.adjustConfidenceTransactional({
+        id: inserted.id,
+        updatedAt: 2_000,
+        reason: "test_confidence_adjustment",
+        adjust: (confidence) => confidence * 0.5,
+      }),
+    );
+    const adjustment = adjust();
+
+    expect(adjustment).toEqual({
+      id: inserted.id,
+      previousConfidence: 0.7,
+      nextConfidence: 0.35,
+      updatedAt: 2_000,
+    });
+    expect(fixture.nodeRepository.getStoredConfidence(inserted.id)).toBeCloseTo(0.35);
+    expect((await fixture.nodeRepository.get(inserted.id))?.confidence).toBeCloseTo(0.7);
+    expect(listVectorSyncOutbox(fixture.db)).toEqual([
+      expect.objectContaining({
+        node_id: inserted.id,
+        reason: "test_confidence_adjustment",
+        attempts: 0,
+        last_error: null,
+      }),
+    ]);
+
+    await expect(fixture.nodeRepository.syncPendingVectorUpdates()).resolves.toEqual({
+      synced: 1,
+      failed: [],
+      pending: 0,
+    });
+    expect((await fixture.nodeRepository.get(inserted.id))?.confidence).toBeCloseTo(0.35);
+    expect(listVectorSyncOutbox(fixture.db)).toHaveLength(0);
+  });
+
+  it("requires transactional confidence adjustments to run inside a sqlite transaction", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const inserted = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Non-transactional confidence"),
+    );
+
+    expect(() =>
+      fixture.nodeRepository.adjustConfidenceTransactional({
+        id: inserted.id,
+        adjust: (confidence) => confidence * 0.5,
+      }),
+    ).toThrow("inside a SQLite transaction");
+  });
+
+  it("keeps vector sync work durable when LanceDB reconciliation fails", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const inserted = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Retry confidence"),
+    );
+    const adjust = fixture.db.transaction(() =>
+      fixture.nodeRepository.adjustConfidenceTransactional({
+        id: inserted.id,
+        updatedAt: 2_000,
+        reason: "test_retry",
+        adjust: () => 0.4,
+      }),
+    );
+    adjust();
+
+    const failure = new Error("lance unavailable");
+    const tableSpy = vi.spyOn(fixture.table, "upsert").mockRejectedValueOnce(failure);
+    const firstSync = await fixture.nodeRepository.syncPendingVectorUpdates();
+
+    expect(firstSync).toEqual({
+      synced: 0,
+      failed: [
+        expect.objectContaining({
+          nodeId: inserted.id,
+          message: "lance unavailable",
+        }),
+      ],
+      pending: 1,
+    });
+    expect(listVectorSyncOutbox(fixture.db)).toEqual([
+      expect.objectContaining({
+        node_id: inserted.id,
+        attempts: 1,
+        last_attempt_at: 1_000,
+        last_error: "lance unavailable",
+      }),
+    ]);
+    expect((await fixture.nodeRepository.get(inserted.id))?.confidence).toBeCloseTo(0.7);
+
+    tableSpy.mockRestore();
+
+    await expect(fixture.nodeRepository.syncPendingVectorUpdates()).resolves.toEqual({
+      synced: 1,
+      failed: [],
+      pending: 0,
+    });
+    expect((await fixture.nodeRepository.get(inserted.id))?.confidence).toBeCloseTo(0.4);
+    expect(listVectorSyncOutbox(fixture.db)).toHaveLength(0);
   });
 
   it("canonicalizes the final stored domain on update even when the patch omits domain", async () => {

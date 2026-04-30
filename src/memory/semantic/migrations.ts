@@ -338,4 +338,23 @@ export const semanticMigrations: Migration[] = [
       `);
     },
   },
+  {
+    id: 137,
+    name: "semantic_node_vector_sync_outbox",
+    up: `
+      CREATE TABLE IF NOT EXISTS semantic_node_vector_sync_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        node_id TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at INTEGER NULL,
+        last_error TEXT NULL,
+        UNIQUE(node_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS semantic_node_vector_sync_outbox_created_idx
+        ON semantic_node_vector_sync_outbox(created_at, id);
+    `,
+  },
 ];

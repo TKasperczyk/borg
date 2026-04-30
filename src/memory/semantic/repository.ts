@@ -35,6 +35,7 @@ import {
   semanticEdgeIdSchema,
   semanticEdgePatchSchema,
   semanticEdgeSchema,
+  semanticNodeIdSchema,
   semanticNodePatchSchema,
   semanticNodeSchema,
   semanticRelationSchema,
@@ -85,6 +86,8 @@ const SEMANTIC_VECTOR_CODEC = {
   errorCode: "SEMANTIC_ROW_INVALID",
   createError: (message, options) => new SemanticError(message, options),
 } satisfies Float32ArrayCodecOptions;
+const DEFAULT_VECTOR_SYNC_OUTBOX_LIMIT = 50;
+const DEFAULT_CONFIDENCE_ADJUSTMENT_REASON = "semantic_node_confidence_adjustment";
 
 function assertPositiveLimit(limit: number | undefined, label: string, fallback: number): number {
   const resolved = limit ?? fallback;
@@ -114,6 +117,46 @@ function getDistance(row: Record<string, unknown>): number | undefined {
 
 function normalizeAliases(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+function normalizeVectorSyncOutboxLimit(limit: number | undefined): number {
+  return assertPositiveLimit(
+    limit,
+    "Semantic node vector sync outbox limit",
+    DEFAULT_VECTOR_SYNC_OUTBOX_LIMIT,
+  );
+}
+
+function normalizeOutboxReason(reason: string | undefined): string {
+  const normalized = reason?.trim() ?? "";
+
+  return normalized.length === 0 ? DEFAULT_CONFIDENCE_ADJUSTMENT_REASON : normalized;
+}
+
+function parseConfidence(value: unknown, label: string): number {
+  const confidence = Number(value);
+
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    throw new SemanticError(`${label} must be a finite number between 0 and 1`, {
+      code: "SEMANTIC_NODE_CONFIDENCE_INVALID",
+    });
+  }
+
+  return confidence;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (error instanceof Error && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+
+    return typeof code === "string" ? code : undefined;
+  }
+
+  return undefined;
 }
 
 function nodeToRow(node: SemanticNode): SemanticNodeRow {
@@ -245,6 +288,45 @@ export type SemanticNodeRepositoryOptions = {
   clock?: Clock;
 };
 
+export type SemanticNodeConfidenceAdjustmentInput = {
+  id: SemanticNodeId;
+  adjust: (currentConfidence: number) => number | null;
+  updatedAt?: number;
+  reason?: string;
+};
+
+export type SemanticNodeConfidenceAdjustment = {
+  id: SemanticNodeId;
+  previousConfidence: number;
+  nextConfidence: number;
+  updatedAt: number;
+};
+
+export type SemanticNodeVectorSyncFailure = {
+  outboxId: number;
+  nodeId: SemanticNodeId;
+  message: string;
+  code?: string;
+};
+
+export type SemanticNodeVectorSyncResult = {
+  synced: number;
+  failed: SemanticNodeVectorSyncFailure[];
+  pending: number;
+};
+
+export type SemanticNodeVectorSyncOptions = {
+  limit?: number;
+  nodeIds?: readonly SemanticNodeId[];
+};
+
+type SemanticNodeVectorSyncOutboxRow = {
+  id: number;
+  node_id: string;
+  reason: string;
+  attempts: number;
+};
+
 export class SemanticNodeRepository {
   private readonly clock: Clock;
 
@@ -258,6 +340,150 @@ export class SemanticNodeRepository {
 
   private get db(): SqliteDatabase {
     return this.options.db;
+  }
+
+  private getSqlNodeRow(id: SemanticNodeId): Record<string, unknown> | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT id, kind, label, description, domain, aliases, confidence, source_episode_ids,
+                 created_at, updated_at, last_verified_at, archived, superseded_by
+          FROM semantic_nodes
+          WHERE id = ?
+        `,
+      )
+      .get(id) as Record<string, unknown> | undefined;
+
+    return row ?? null;
+  }
+
+  private enqueueVectorSyncTransactional(input: {
+    nodeId: SemanticNodeId;
+    reason?: string;
+    createdAt: number;
+  }): void {
+    this.db
+      .prepare(
+        `
+          INSERT INTO semantic_node_vector_sync_outbox (
+            node_id, reason, created_at, attempts, last_attempt_at, last_error
+          ) VALUES (?, ?, ?, 0, NULL, NULL)
+          ON CONFLICT(node_id) DO UPDATE SET
+            reason = excluded.reason,
+            created_at = excluded.created_at,
+            attempts = 0,
+            last_attempt_at = NULL,
+            last_error = NULL
+        `,
+      )
+      .run(input.nodeId, normalizeOutboxReason(input.reason), input.createdAt);
+  }
+
+  private countPendingVectorSyncs(nodeIds: readonly SemanticNodeId[] | undefined): number {
+    if (nodeIds !== undefined) {
+      if (nodeIds.length === 0) {
+        return 0;
+      }
+
+      const placeholders = nodeIds.map(() => "?").join(", ");
+
+      return (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM semantic_node_vector_sync_outbox WHERE node_id IN (${placeholders})`,
+          )
+          .get(...nodeIds) as { count: number }
+      ).count;
+    }
+
+    return (
+      this.db.prepare("SELECT COUNT(*) AS count FROM semantic_node_vector_sync_outbox").get() as {
+        count: number;
+      }
+    ).count;
+  }
+
+  private listPendingVectorSyncs(options: {
+    limit: number;
+    nodeIds?: readonly SemanticNodeId[];
+  }): SemanticNodeVectorSyncOutboxRow[] {
+    if (options.nodeIds !== undefined) {
+      if (options.nodeIds.length === 0) {
+        return [];
+      }
+
+      const placeholders = options.nodeIds.map(() => "?").join(", ");
+
+      return this.db
+        .prepare(
+          `
+            SELECT id, node_id, reason, attempts
+            FROM semantic_node_vector_sync_outbox
+            WHERE node_id IN (${placeholders})
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+          `,
+        )
+        .all(...options.nodeIds, options.limit) as SemanticNodeVectorSyncOutboxRow[];
+    }
+
+    return this.db
+      .prepare(
+        `
+          SELECT id, node_id, reason, attempts
+          FROM semantic_node_vector_sync_outbox
+          ORDER BY created_at ASC, id ASC
+          LIMIT ?
+        `,
+      )
+      .all(options.limit) as SemanticNodeVectorSyncOutboxRow[];
+  }
+
+  private recordVectorSyncFailure(row: SemanticNodeVectorSyncOutboxRow, error: unknown): void {
+    this.db
+      .prepare(
+        `
+          UPDATE semantic_node_vector_sync_outbox
+          SET attempts = attempts + 1,
+              last_attempt_at = ?,
+              last_error = ?
+          WHERE id = ?
+        `,
+      )
+      .run(this.clock.now(), errorMessage(error), row.id);
+  }
+
+  private async syncVectorOutboxRow(row: SemanticNodeVectorSyncOutboxRow): Promise<void> {
+    const nodeId = parseSemanticNodeId(row.node_id);
+    const sqlRow = this.getSqlNodeRow(nodeId);
+
+    if (sqlRow === null) {
+      throw new SemanticError(`Cannot sync missing semantic node ${nodeId} to LanceDB`, {
+        code: "SEMANTIC_NODE_VECTOR_SYNC_SOURCE_MISSING",
+      });
+    }
+
+    const vectorRows = await this.table.list({
+      where: `id = ${quoteSqlString(nodeId)}`,
+      limit: 1,
+    });
+    const vectorRow = vectorRows[0];
+
+    if (vectorRow === undefined) {
+      throw new SemanticError(`Cannot sync semantic node ${nodeId}; LanceDB row is missing`, {
+        code: "SEMANTIC_NODE_VECTOR_SYNC_TARGET_MISSING",
+      });
+    }
+
+    const currentVectorNode = nodeFromRow(vectorRow);
+    const next = nodeFromRow({
+      ...sqlRow,
+      embedding: currentVectorNode.embedding,
+    });
+
+    await this.table.upsert([nodeToRow(next)], {
+      on: "id",
+    });
   }
 
   private upsertSqlRow(node: SemanticNode): void {
@@ -379,6 +605,117 @@ export class SemanticNodeRepository {
     const row = rows[0];
 
     return row === undefined ? null : nodeFromRow(row);
+  }
+
+  getStoredConfidence(id: SemanticNodeId): number | null {
+    const row = this.getSqlNodeRow(semanticNodeIdSchema.parse(id));
+
+    return row === null ? null : parseConfidence(row.confidence, "Semantic node confidence");
+  }
+
+  adjustConfidenceTransactional(
+    input: SemanticNodeConfidenceAdjustmentInput,
+  ): SemanticNodeConfidenceAdjustment | null {
+    if (!this.db.raw.inTransaction) {
+      throw new SemanticError(
+        "Semantic node confidence adjustments must run inside a SQLite transaction",
+        {
+          code: "SEMANTIC_NODE_CONFIDENCE_ADJUSTMENT_REQUIRES_TRANSACTION",
+        },
+      );
+    }
+
+    const id = semanticNodeIdSchema.parse(input.id);
+    const updatedAt = input.updatedAt ?? this.clock.now();
+
+    if (!Number.isFinite(updatedAt)) {
+      throw new SemanticError("Semantic node confidence update time must be finite", {
+        code: "SEMANTIC_NODE_CONFIDENCE_UPDATED_AT_INVALID",
+      });
+    }
+
+    const current = this.getSqlNodeRow(id);
+
+    if (current === null) {
+      return null;
+    }
+
+    const previousConfidence = parseConfidence(
+      current.confidence,
+      "Current semantic node confidence",
+    );
+    const adjusted = input.adjust(previousConfidence);
+
+    if (adjusted === null) {
+      return null;
+    }
+
+    const nextConfidence = parseConfidence(adjusted, "Next semantic node confidence");
+
+    if (nextConfidence === previousConfidence) {
+      return null;
+    }
+
+    const result = this.db
+      .prepare("UPDATE semantic_nodes SET confidence = ?, updated_at = ? WHERE id = ?")
+      .run(nextConfidence, updatedAt, id);
+
+    if (result.changes !== 1) {
+      return null;
+    }
+
+    this.enqueueVectorSyncTransactional({
+      nodeId: id,
+      reason: input.reason,
+      createdAt: updatedAt,
+    });
+
+    return {
+      id,
+      previousConfidence,
+      nextConfidence,
+      updatedAt,
+    };
+  }
+
+  async syncPendingVectorUpdates(
+    options: SemanticNodeVectorSyncOptions = {},
+  ): Promise<SemanticNodeVectorSyncResult> {
+    const limit = normalizeVectorSyncOutboxLimit(options.limit);
+    const nodeIds =
+      options.nodeIds === undefined
+        ? undefined
+        : [...new Set(options.nodeIds.map((id) => semanticNodeIdSchema.parse(id)))];
+    const rows = this.listPendingVectorSyncs({
+      limit,
+      nodeIds,
+    });
+    const failed: SemanticNodeVectorSyncFailure[] = [];
+    let synced = 0;
+
+    for (const row of rows) {
+      const nodeId = parseSemanticNodeId(row.node_id);
+
+      try {
+        await this.syncVectorOutboxRow(row);
+        this.db.prepare("DELETE FROM semantic_node_vector_sync_outbox WHERE id = ?").run(row.id);
+        synced += 1;
+      } catch (error) {
+        this.recordVectorSyncFailure(row, error);
+        failed.push({
+          outboxId: row.id,
+          nodeId,
+          message: errorMessage(error),
+          code: errorCode(error),
+        });
+      }
+    }
+
+    return {
+      synced,
+      failed,
+      pending: this.countPendingVectorSyncs(nodeIds),
+    };
   }
 
   async getMany(

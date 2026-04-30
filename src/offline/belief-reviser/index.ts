@@ -10,6 +10,7 @@ import {
   type ReviewQueueInsertInput,
   type SemanticEdge,
   type SemanticNode,
+  type SemanticNodeVectorSyncFailure,
 } from "../../memory/semantic/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { BudgetExceededError } from "../../util/errors.js";
@@ -180,6 +181,7 @@ type ConfidenceDrop = {
   targetId: SemanticNode["id"];
   previousConfidence: number;
   nextConfidence: number;
+  appliedAt: number;
 };
 type BeliefRevisionClaim = z.infer<typeof beliefRevisionClaimSchema>;
 type ApplyEventResult = {
@@ -873,7 +875,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       .some((edge) => edge.relation !== "supports" && !dependencyPathEdgeIds.has(edge.id));
   }
 
-  private maybeDropUnsupportedNodeConfidenceInSqlite(
+  private maybeDropUnsupportedNodeConfidence(
     ctx: OfflineContext,
     review: BeliefRevisionReview,
   ): ConfidenceDrop | null {
@@ -885,48 +887,65 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       return null;
     }
 
-    const current = this.options.db
-      .prepare("SELECT confidence FROM semantic_nodes WHERE id = ?")
-      .get(review.target_id) as { confidence: number } | undefined;
+    const adjustment = ctx.semanticNodeRepository.adjustConfidenceTransactional({
+      id: review.target_id,
+      updatedAt: ctx.clock.now(),
+      reason: "belief_reviser_unsupported_node",
+      adjust: (currentConfidence) => {
+        const nextConfidence = Math.max(
+          this.confidenceFloor,
+          currentConfidence * this.confidenceDropMultiplier,
+        );
 
-    if (current === undefined) {
-      return null;
-    }
+        return nextConfidence < currentConfidence ? nextConfidence : null;
+      },
+    });
 
-    const currentConfidence = Number(current.confidence);
-    const nextConfidence = Math.max(
-      this.confidenceFloor,
-      currentConfidence * this.confidenceDropMultiplier,
-    );
-
-    if (nextConfidence >= currentConfidence) {
-      return null;
-    }
-
-    this.options.db
-      .prepare("UPDATE semantic_nodes SET confidence = ?, updated_at = ? WHERE id = ?")
-      .run(nextConfidence, ctx.clock.now(), review.target_id);
-
-    return {
-      targetId: review.target_id,
-      previousConfidence: currentConfidence,
-      nextConfidence,
-    };
+    return adjustment === null
+      ? null
+      : {
+          targetId: adjustment.id,
+          previousConfidence: adjustment.previousConfidence,
+          nextConfidence: adjustment.nextConfidence,
+          appliedAt: adjustment.updatedAt,
+        };
   }
 
-  private async syncConfidenceDropToVectorStore(
-    ctx: OfflineContext,
-    drop: ConfidenceDrop,
-  ): Promise<void> {
-    const current = await ctx.semanticNodeRepository.get(drop.targetId);
-
-    if (current === null || current.confidence === drop.nextConfidence) {
-      return;
+  private recordSemanticNodeVectorSyncFailures(
+    failures: readonly SemanticNodeVectorSyncFailure[],
+    errors: OfflineResult["errors"],
+    fallbackCode: string,
+  ): void {
+    for (const failure of failures) {
+      errors.push({
+        process: this.name,
+        message:
+          failure.code === undefined ? failure.message : `${failure.code}: ${failure.message}`,
+        code: fallbackCode,
+      });
     }
+  }
 
-    await ctx.semanticNodeRepository.update(drop.targetId, {
-      confidence: drop.nextConfidence,
-    });
+  private async syncPendingSemanticNodeVectorUpdates(
+    ctx: OfflineContext,
+    errors: OfflineResult["errors"],
+    input: {
+      nodeIds?: readonly SemanticNode["id"][];
+      failureCode: string;
+    },
+  ): Promise<void> {
+    try {
+      const result = await ctx.semanticNodeRepository.syncPendingVectorUpdates({
+        nodeIds: input.nodeIds,
+      });
+      this.recordSemanticNodeVectorSyncFailures(result.failed, errors, input.failureCode);
+    } catch (error) {
+      errors.push({
+        process: this.name,
+        message: error instanceof Error ? error.message : String(error),
+        code: input.failureCode,
+      });
+    }
   }
 
   private ownsPreparedNodeSync(ctx: OfflineContext, sync: NodeVectorSync): boolean {
@@ -1239,14 +1258,6 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     };
   }
 
-  private confidenceFromSqlite(targetId: SemanticNode["id"]): number | null {
-    const row = this.options.db
-      .prepare("SELECT confidence FROM semantic_nodes WHERE id = ?")
-      .get(targetId) as { confidence: number } | undefined;
-
-    return row === undefined ? null : Number(row.confidence);
-  }
-
   private nodeSyncFromApplyingState(
     reviewId: ReviewQueueItem["id"],
     expectedClaim: BeliefRevisionClaim,
@@ -1378,7 +1389,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       }
 
       if (verdict.verdict === "weaken") {
-        const currentConfidence = this.confidenceFromSqlite(refs.target_id);
+        const currentConfidence = ctx.semanticNodeRepository.getStoredConfidence(refs.target_id);
 
         if (currentConfidence === null) {
           return {
@@ -1781,6 +1792,10 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     const errors = [...plan.errors];
     let tokensUsed = plan.tokens_used;
 
+    await this.syncPendingSemanticNodeVectorUpdates(ctx, errors, {
+      failureCode: "belief_reviser_pending_vector_sync_failed",
+    });
+
     for (const item of plan.items) {
       const applyEvent = this.options.db.transaction(() => {
         const latest = this.options.db
@@ -1806,7 +1821,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
             continue;
           }
 
-          const drop = this.maybeDropUnsupportedNodeConfidenceInSqlite(ctx, review);
+          const drop = this.maybeDropUnsupportedNodeConfidence(ctx, review);
 
           const autoConfidenceDrop =
             drop === null
@@ -1814,7 +1829,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
               : {
                   previous_confidence: drop.previousConfidence,
                   next_confidence: drop.nextConfidence,
-                  applied_at: ctx.clock.now(),
+                  applied_at: drop.appliedAt,
                 };
 
           ctx.reviewQueueRepository.enqueue({
@@ -1850,17 +1865,16 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       }
 
       if (result.processed) {
-        for (const drop of result.confidenceDrops) {
-          try {
-            await this.syncConfidenceDropToVectorStore(ctx, drop);
-          } catch (error) {
-            errors.push({
-              process: this.name,
-              message: error instanceof Error ? error.message : String(error),
-              code: "belief_reviser_confidence_drop_vector_sync_failed",
-            });
-          }
+        const droppedNodeIds = result.confidenceDrops.map((drop) => drop.targetId);
 
+        if (droppedNodeIds.length > 0) {
+          await this.syncPendingSemanticNodeVectorUpdates(ctx, errors, {
+            nodeIds: droppedNodeIds,
+            failureCode: "belief_reviser_confidence_drop_vector_sync_failed",
+          });
+        }
+
+        for (const drop of result.confidenceDrops) {
           changes.push(buildConfidenceDropChange(drop, item.event_id));
 
           try {

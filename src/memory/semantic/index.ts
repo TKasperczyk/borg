@@ -46,7 +46,12 @@ export {
   SemanticNodeRepository,
   createSemanticNodesTableSchema,
   type SemanticEdgeRepositoryOptions,
+  type SemanticNodeConfidenceAdjustment,
+  type SemanticNodeConfidenceAdjustmentInput,
   type SemanticNodeRepositoryOptions,
+  type SemanticNodeVectorSyncFailure,
+  type SemanticNodeVectorSyncOptions,
+  type SemanticNodeVectorSyncResult,
 } from "./repository.js";
 export {
   SEMANTIC_NODE_KINDS,
