@@ -1,16 +1,6 @@
 import { ConfigError, StorageError } from "../util/errors.js";
 import type { JsonValue } from "../util/json-value.js";
-import {
-  parseCommitmentId,
-  parseEpisodeId,
-  parseGoalId,
-  parseOpenQuestionId,
-  parseSemanticEdgeId,
-  parseSemanticNodeId,
-  parseTraitId,
-  parseValueId,
-  type EntityId,
-} from "../util/ids.js";
+import { correctionTargetIdKindDescriptors, type EntityId } from "../util/ids.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import type { Config } from "../config/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
@@ -56,54 +46,28 @@ const MANUAL_PROVENANCE = {
   kind: "manual" as const,
 };
 
-type CorrectionTargetType =
-  | "episode"
-  | "semantic_node"
-  | "semantic_edge"
-  | "value"
-  | "goal"
-  | "trait"
-  | "commitment"
-  | "open_question";
+type CorrectionTargetDescriptor = (typeof correctionTargetIdKindDescriptors)[number];
 
-type ParsedCorrectionTarget =
-  | { type: "episode"; id: ReturnType<typeof parseEpisodeId> }
-  | { type: "semantic_node"; id: ReturnType<typeof parseSemanticNodeId> }
-  | { type: "semantic_edge"; id: ReturnType<typeof parseSemanticEdgeId> }
-  | { type: "value"; id: ReturnType<typeof parseValueId> }
-  | { type: "goal"; id: ReturnType<typeof parseGoalId> }
-  | { type: "trait"; id: ReturnType<typeof parseTraitId> }
-  | { type: "commitment"; id: ReturnType<typeof parseCommitmentId> }
-  | { type: "open_question"; id: ReturnType<typeof parseOpenQuestionId> };
+type CorrectionTargetType = CorrectionTargetDescriptor["kind"];
+
+type ParsedCorrectionTarget<
+  TDescriptor extends CorrectionTargetDescriptor = CorrectionTargetDescriptor,
+> = TDescriptor extends CorrectionTargetDescriptor
+  ? { type: TDescriptor["kind"]; id: ReturnType<TDescriptor["parse"]> }
+  : never;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseTarget(id: string): ParsedCorrectionTarget {
-  if (id.startsWith("ep_")) {
-    return { type: "episode", id: parseEpisodeId(id) };
-  }
-  if (id.startsWith("semn_")) {
-    return { type: "semantic_node", id: parseSemanticNodeId(id) };
-  }
-  if (id.startsWith("seme_")) {
-    return { type: "semantic_edge", id: parseSemanticEdgeId(id) };
-  }
-  if (id.startsWith("val_")) {
-    return { type: "value", id: parseValueId(id) };
-  }
-  if (id.startsWith("goal_")) {
-    return { type: "goal", id: parseGoalId(id) };
-  }
-  if (id.startsWith("trt_")) {
-    return { type: "trait", id: parseTraitId(id) };
-  }
-  if (id.startsWith("cmt_")) {
-    return { type: "commitment", id: parseCommitmentId(id) };
-  }
-  if (id.startsWith("oq_")) {
-    return { type: "open_question", id: parseOpenQuestionId(id) };
+  for (const descriptor of correctionTargetIdKindDescriptors) {
+    if (id.startsWith(descriptor.prefix)) {
+      return {
+        type: descriptor.kind,
+        id: descriptor.parse(id),
+      } as ParsedCorrectionTarget<typeof descriptor>;
+    }
   }
 
   throw new StorageError(`Unsupported correction target id: ${id}`, {

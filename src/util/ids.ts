@@ -36,18 +36,27 @@ export type AuditId = number & {
 export const DEFAULT_SESSION_ID = DEFAULT_SESSION_LITERAL as SessionId;
 
 export type IdHelpers<BrandName extends string> = {
+  readonly prefix: string;
   readonly pattern: RegExp;
   create(): BrandedId<BrandName>;
   is(value: string): value is BrandedId<BrandName>;
   parse(value: string): BrandedId<BrandName>;
 };
 
+export type IdKindDescriptor<TKind extends string, TId extends string> = {
+  readonly kind: TKind;
+  readonly prefix: string;
+  readonly parse: (raw: string) => TId;
+};
+
 export function createIdHelpers<BrandName extends string>(prefix: string): IdHelpers<BrandName> {
-  const pattern = new RegExp(`^${prefix}_[${ID_ALPHABET}]{${ID_LENGTH}}$`);
+  const fullPrefix = `${prefix}_`;
+  const pattern = new RegExp(`^${fullPrefix}[${ID_ALPHABET}]{${ID_LENGTH}}$`);
 
   return {
+    prefix: fullPrefix,
     pattern,
-    create: () => `${prefix}_${createNanoId()}` as BrandedId<BrandName>,
+    create: () => `${fullPrefix}${createNanoId()}` as BrandedId<BrandName>,
     is: (value: string): value is BrandedId<BrandName> => pattern.test(value),
     parse: (value: string): BrandedId<BrandName> => {
       if (!pattern.test(value)) {
@@ -74,6 +83,7 @@ export const commitmentIdHelpers = createIdHelpers<"CommitmentId">("cmt");
 export const entityIdHelpers = createIdHelpers<"EntityId">("ent");
 export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
 export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
+  prefix: "procevi_",
   pattern: new RegExp(`^procevi_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
   create: () => `procevi_${createAutonomyWakeNanoId()}` as ProceduralEvidenceId,
   is: (value: string): value is ProceduralEvidenceId =>
@@ -89,6 +99,7 @@ export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
 export const maintenanceRunIdHelpers = createIdHelpers<"MaintenanceRunId">("run");
 export const executiveStepIdHelpers = createIdHelpers<"ExecutiveStepId">("exstep");
 export const autonomyWakeIdHelpers: IdHelpers<"AutonomyWakeId"> = {
+  prefix: "autonomy_wake_",
   pattern: new RegExp(`^autonomy_wake_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
   create: () => `autonomy_wake_${createAutonomyWakeNanoId()}` as AutonomyWakeId,
   is: (value: string): value is AutonomyWakeId => autonomyWakeIdHelpers.pattern.test(value),
@@ -197,6 +208,17 @@ export function parseMaintenanceRunId(value: string): MaintenanceRunId {
 export function parseAutonomyWakeId(value: string): AutonomyWakeId {
   return autonomyWakeIdHelpers.parse(value);
 }
+
+export const correctionTargetIdKindDescriptors = [
+  { kind: "episode", prefix: episodeIdHelpers.prefix, parse: parseEpisodeId },
+  { kind: "semantic_node", prefix: semanticNodeIdHelpers.prefix, parse: parseSemanticNodeId },
+  { kind: "semantic_edge", prefix: semanticEdgeIdHelpers.prefix, parse: parseSemanticEdgeId },
+  { kind: "value", prefix: valueIdHelpers.prefix, parse: parseValueId },
+  { kind: "goal", prefix: goalIdHelpers.prefix, parse: parseGoalId },
+  { kind: "trait", prefix: traitIdHelpers.prefix, parse: parseTraitId },
+  { kind: "commitment", prefix: commitmentIdHelpers.prefix, parse: parseCommitmentId },
+  { kind: "open_question", prefix: openQuestionIdHelpers.prefix, parse: parseOpenQuestionId },
+] as const satisfies readonly IdKindDescriptor<string, string>[];
 
 export function parseAuditId(value: number | string): AuditId {
   const candidate =

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SESSION_ID,
   autonomyWakeIdHelpers,
+  correctionTargetIdKindDescriptors,
   createAutonomyWakeId,
   createSessionId,
   createStreamEntryId,
@@ -37,5 +38,23 @@ describe("ids", () => {
   it("rejects audit ids with trailing junk", () => {
     expect(parseAuditId("12")).toBe(12);
     expect(() => parseAuditId("12junk")).toThrow(/Invalid audit identifier/);
+  });
+
+  it("registers correction target id kinds", () => {
+    expect(
+      correctionTargetIdKindDescriptors.map((descriptor) => ({
+        kind: descriptor.kind,
+        prefix: descriptor.prefix,
+      })),
+    ).toEqual([
+      { kind: "episode", prefix: "ep_" },
+      { kind: "semantic_node", prefix: "semn_" },
+      { kind: "semantic_edge", prefix: "seme_" },
+      { kind: "value", prefix: "val_" },
+      { kind: "goal", prefix: "goal_" },
+      { kind: "trait", prefix: "trt_" },
+      { kind: "commitment", prefix: "cmt_" },
+      { kind: "open_question", prefix: "oq_" },
+    ]);
   });
 });
