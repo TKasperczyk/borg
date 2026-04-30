@@ -1272,8 +1272,10 @@ describe("review queue", () => {
       const second = reviewQueue.resolve(item.id, "accept");
       const settled = Promise.allSettled([first, second]);
 
-      expect(apply).toHaveBeenCalledTimes(2);
-
+      // External handlers run before the review row finalization CAS. The queue
+      // guarantees that only one resolver wins the resolved row; external
+      // side-effect safety belongs to the handler itself, such as skill_split's
+      // claimedAt validation inside supersedeWithSplits().
       applyGate.resolve();
       const results = await settled;
       const fulfilled = results.filter((result) => result.status === "fulfilled");

@@ -719,6 +719,16 @@ export class ReviewQueueRepository {
         });
       }
 
+      // Matching applying state is intentionally re-enterable. It is the crash
+      // recovery path: if a process died after recording applying state but
+      // before finalizing the review row, retrying the same resolution should
+      // finish the handler's apply step. Current Borg runs review resolution in
+      // one orchestrated process, so legitimate concurrent resolvers for the
+      // same item are not part of the architecture. In a future multi-process
+      // deployment, side-effect safety for this path must come from handler
+      // idempotence or claim-mismatch checks. Stricter exclusion would require
+      // an ownership token or claim id in applying state, which is deliberately
+      // deferred to a separate design round.
       this.assertApplyingStateRefsCurrent(item);
 
       return { item, applyingState: existing };
@@ -868,6 +878,12 @@ export class ReviewQueueRepository {
     resolution: ResolvedReviewDecision,
   ): Promise<ReviewQueueItem> {
     const resolvedAt = this.clock.now();
+    // External handlers apply before the review row's final CAS. The queue only
+    // protects finalization here; it does not exclude another resolver from
+    // entering the external side-effect boundary. External handlers must provide
+    // their own concurrency safety, such as skill_split's claimedAt validation
+    // in supersedeWithSplits(). If a future external handler needs queue-level
+    // exclusion, make it a cross_store_applying_state handler instead.
     const outcome = await handler.apply({
       item,
       refs,
