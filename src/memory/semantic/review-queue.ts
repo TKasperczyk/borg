@@ -618,6 +618,9 @@ export class ReviewQueueRepository {
   }
 
   async flushEnqueueHooks(): Promise<void> {
+    // Online turns let review-derived open-question extraction run in the
+    // background. Maintenance drains after each process, and lifecycle close
+    // drains before SQLite closes so pending hook writes survive shutdown.
     while (this.pendingEnqueueHooks.size > 0) {
       await Promise.all([...this.pendingEnqueueHooks]);
     }

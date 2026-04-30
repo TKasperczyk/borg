@@ -120,6 +120,36 @@ describe("review open-question extractor", () => {
     ]);
   });
 
+  it("fails closed when an LLM client is configured without a model", async () => {
+    const events: unknown[] = [];
+    const llm = new FakeLLMClient({
+      responses: [
+        createToolResponse({
+          question: "¿Qué atribución debería conservar esta memoria?",
+          urgency: 0.64,
+          related_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+          related_semantic_node_ids: [],
+        }),
+      ],
+    });
+    const extractor = new ReviewOpenQuestionExtractor({
+      llmClient: llm,
+      onDegraded: (event) => {
+        events.push(event);
+      },
+    });
+
+    await expect(extractor.extract(createReviewItem(), createContext())).resolves.toBeNull();
+    expect(llm.requests).toEqual([]);
+    expect(events).toEqual([
+      expect.objectContaining({
+        reason: "llm_unavailable",
+        review_item_id: 1,
+        review_kind: "misattribution",
+      }),
+    ]);
+  });
+
   it("fails closed and emits degraded observability when the LLM call fails", async () => {
     const events: unknown[] = [];
     const extractor = new ReviewOpenQuestionExtractor({
@@ -134,6 +164,64 @@ describe("review open-question extractor", () => {
     expect(events).toEqual([
       expect.objectContaining({
         reason: "llm_call_failed",
+        review_item_id: 1,
+        review_kind: "misattribution",
+      }),
+    ]);
+  });
+
+  it("fails closed and emits degraded observability when the LLM omits the tool call", async () => {
+    const events: unknown[] = [];
+    const extractor = new ReviewOpenQuestionExtractor({
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "",
+            input_tokens: 4,
+            output_tokens: 2,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+        ],
+      }),
+      model: "bg-model",
+      onDegraded: (event) => {
+        events.push(event);
+      },
+    });
+
+    await expect(extractor.extract(createReviewItem(), createContext())).resolves.toBeNull();
+    expect(events).toEqual([
+      expect.objectContaining({
+        reason: "missing_tool",
+        review_item_id: 1,
+        review_kind: "misattribution",
+      }),
+    ]);
+  });
+
+  it("fails closed and emits degraded observability when the tool payload is invalid", async () => {
+    const events: unknown[] = [];
+    const extractor = new ReviewOpenQuestionExtractor({
+      llmClient: new FakeLLMClient({
+        responses: [
+          createToolResponse({
+            urgency: -0.1,
+            related_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+            related_semantic_node_ids: [],
+          }),
+        ],
+      }),
+      model: "bg-model",
+      onDegraded: (event) => {
+        events.push(event);
+      },
+    });
+
+    await expect(extractor.extract(createReviewItem(), createContext())).resolves.toBeNull();
+    expect(events).toEqual([
+      expect.objectContaining({
+        reason: "invalid_payload",
         review_item_id: 1,
         review_kind: "misattribution",
       }),
@@ -190,6 +278,58 @@ describe("review open-question extractor", () => {
         urgency: 0.73,
         related_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
         related_semantic_node_ids: ["semn_aaaaaaaaaaaaaaaa"],
+      }),
+    ]);
+  });
+
+  it("persists all-filtered proposals with offline provenance", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...selfMigrations],
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    cleanup.push(() => {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const extractor = {
+      extract: vi.fn(async () => ({
+        question: "¿Qué debería quedar pendiente?",
+        urgency: 0.58,
+        related_episode_ids: [
+          parseEpisodeId("ep_bbbbbbbbbbbbbbbb"),
+          parseEpisodeId("ep_cccccccccccccccc"),
+        ],
+        related_semantic_node_ids: [parseSemanticNodeId("semn_bbbbbbbbbbbbbbbb")],
+      })),
+    };
+
+    await enqueueOpenQuestionForReview(
+      repository,
+      createReviewItem({
+        kind: "identity_inconsistency",
+        refs: {
+          target_type: "episode",
+          target_id: "ep_aaaaaaaaaaaaaaaa",
+        },
+      }),
+      { extractor },
+    );
+
+    expect(repository.list({ status: "open" })).toEqual([
+      expect.objectContaining({
+        question: "¿Qué debería quedar pendiente?",
+        urgency: 0.58,
+        related_episode_ids: [],
+        related_semantic_node_ids: [],
+        provenance: {
+          kind: "offline",
+          process: "overseer",
+        },
       }),
     ]);
   });

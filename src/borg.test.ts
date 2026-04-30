@@ -11,7 +11,7 @@ import { FakeLLMClient, type LLMClient } from "./llm/index.js";
 import { EntityRepository, commitmentMigrations } from "./memory/commitments/index.js";
 import { episodicMigrations } from "./memory/episodic/index.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "./memory/episodic/repository.js";
-import { selfMigrations } from "./memory/self/index.js";
+import { REVIEW_OPEN_QUESTION_TOOL, selfMigrations } from "./memory/self/index.js";
 import { retrievalMigrations } from "./retrieval/index.js";
 import { LanceDbStore } from "./storage/lancedb/index.js";
 import { openDatabase, SqliteDatabase } from "./storage/sqlite/index.js";
@@ -128,6 +128,27 @@ function createEmptyReflectionResponse(
           trait_demonstrations: [],
           intent_updates: [],
           open_questions: openQuestions,
+        },
+      },
+    ],
+  };
+}
+
+function createReviewOpenQuestionResponse() {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_review_open_question",
+        name: REVIEW_OPEN_QUESTION_TOOL.name,
+        input: {
+          question: "¿Qué atribución debería revisar?",
+          urgency: 0.68,
+          related_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+          related_semantic_node_ids: [],
         },
       },
     ],
@@ -1027,6 +1048,116 @@ describe("Borg", () => {
         if (closePromise === undefined) {
           await borg.close().catch(() => undefined);
         }
+      }
+    }
+  });
+
+  it("drains pending review open-question hooks before closing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    let notifyHookStarted: (() => void) | undefined;
+    let releaseHook: (() => void) | undefined;
+    const hookStarted = new Promise<void>((resolve) => {
+      notifyHookStarted = resolve;
+    });
+    const hookRelease = new Promise<void>((resolve) => {
+      releaseHook = resolve;
+    });
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      }),
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          async () => {
+            notifyHookStarted?.();
+            await hookRelease;
+
+            return createReviewOpenQuestionResponse();
+          },
+        ],
+      }),
+    });
+
+    let closePromise: Promise<void> | undefined;
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          reviewQueueRepository: {
+            enqueue(input: {
+              kind: "misattribution";
+              refs: Record<string, unknown>;
+              reason: string;
+            }): unknown;
+          };
+        };
+      };
+
+      internal.deps.reviewQueueRepository.enqueue({
+        kind: "misattribution",
+        refs: {
+          target_type: "episode",
+          target_id: "ep_aaaaaaaaaaaaaaaa",
+        },
+        reason: "La memoria mezcla dos atribuciones.",
+      });
+      await hookStarted;
+
+      closePromise = borg.close();
+      await Promise.resolve();
+      releaseHook?.();
+      await closePromise;
+
+      const reopened = await Borg.open({
+        dataDir: tempDir,
+        clock,
+        embeddingDimensions: 4,
+        embeddingClient: new ScriptedEmbeddingClient(),
+        llmClient: new FakeLLMClient(),
+      });
+
+      try {
+        expect(reopened.self.openQuestions.list({ status: "open" })).toEqual([
+          expect.objectContaining({
+            question: "¿Qué atribución debería revisar?",
+            urgency: 0.68,
+            related_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+          }),
+        ]);
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      releaseHook?.();
+      if (closePromise === undefined) {
+        await borg.close().catch(() => undefined);
+      } else {
+        await closePromise.catch(() => undefined);
       }
     }
   });

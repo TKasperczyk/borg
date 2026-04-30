@@ -71,6 +71,12 @@ export async function closeBorgDependencies(deps: BorgDependencies): Promise<voi
     collectCloseError("stream ingestion coordinator", error);
   } finally {
     try {
+      await deps.reviewQueueRepository?.flushEnqueueHooks?.();
+    } catch (error) {
+      collectCloseError("review queue enqueue hooks", error);
+    }
+
+    try {
       deps.sqlite.close();
     } catch (error) {
       collectCloseError("SQLite database", error);
