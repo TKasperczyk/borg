@@ -1,6 +1,7 @@
 // Summarizes episodic and semantic retrieval results for deliberation prompts.
 import type { SemanticNode } from "../../../memory/semantic/index.js";
 import type {
+  EvidenceItem,
   RetrievalConfidence,
   RetrievedEpisode,
   RetrievedSemantic,
@@ -10,6 +11,13 @@ import type {
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
 
 const LOW_RETRIEVAL_CONFIDENCE_THRESHOLD = 0.45;
+
+export type RetrievedEvidenceSummaryInput = {
+  evidence?: readonly EvidenceItem[];
+  episodes?: readonly RetrievedEpisode[];
+  semantic?: RetrievedSemantic | null | undefined;
+  openQuestions?: readonly { id: string; question: string; urgency: number }[];
+};
 
 export function summarizeRetrievalConfidence(
   confidence: RetrievalConfidence | null | undefined,
@@ -110,6 +118,111 @@ export function summarizeRetrievedEpisodes(
   }
 
   return lines.join("\n");
+}
+
+export function summarizeRetrievedEvidence(
+  label: string,
+  input: RetrievedEvidenceSummaryInput,
+  maxTokens = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
+): string | null {
+  const evidence = input.evidence ?? [];
+
+  if (evidence.length > 0) {
+    return summarizeEvidenceItems(label, evidence, maxTokens);
+  }
+
+  const fallbackSections = [
+    summarizeRetrievedEpisodes(label, input.episodes ?? [], maxTokens),
+    summarizeSemanticContext(input.semantic, Math.max(500, Math.floor(maxTokens / 2))),
+    summarizeOpenQuestionEvidence(input.openQuestions ?? []),
+  ].filter((section): section is string => section !== null && section.length > 0);
+
+  if (fallbackSections.length === 0) {
+    return "No retrieved evidence for this turn.";
+  }
+
+  return fallbackSections.join("\n\n");
+}
+
+function summarizeEvidenceItems(
+  label: string,
+  evidence: readonly EvidenceItem[],
+  maxTokens: number,
+): string {
+  const lines = [`${label}:`];
+  let usedTokens = estimatePromptTokens(lines[0] ?? label);
+
+  for (const item of evidence) {
+    const block = summarizeEvidenceItem(item);
+    const blockTokens = estimatePromptTokens(block);
+
+    if (usedTokens + blockTokens > maxTokens) {
+      lines.push("- ... truncated");
+      break;
+    }
+
+    lines.push(block);
+    usedTokens += blockTokens;
+  }
+
+  return lines.join("\n");
+}
+
+function summarizeEvidenceItem(item: EvidenceItem): string {
+  const text = truncatePromptText(item.text, 360);
+  const provenance = summarizeEvidenceProvenance(item);
+  const terms = item.matchedTerms.length === 0 ? "" : ` terms=${item.matchedTerms.join(", ")}`;
+
+  return [
+    `- ${item.source} [score=${item.score.toFixed(2)} intent=${item.recallIntentId}${terms}]${provenance}`,
+    `  ${text}`,
+  ].join("\n");
+}
+
+function summarizeEvidenceProvenance(item: EvidenceItem): string {
+  const provenance = item.provenance;
+
+  if (provenance === undefined) {
+    return "";
+  }
+
+  const parts = [
+    provenance.episodeId === undefined ? null : `episode=${provenance.episodeId}`,
+    provenance.nodeId === undefined ? null : `node=${provenance.nodeId}`,
+    provenance.edgeId === undefined ? null : `edge=${provenance.edgeId}`,
+    provenance.commitmentId === undefined ? null : `commitment=${provenance.commitmentId}`,
+    provenance.openQuestionId === undefined ? null : `open_question=${provenance.openQuestionId}`,
+    provenance.streamIds === undefined || provenance.streamIds.length === 0
+      ? null
+      : `streams=${provenance.streamIds.slice(0, 3).join(", ")}`,
+  ].filter((part): part is string => part !== null);
+
+  return parts.length === 0 ? "" : ` (${parts.join("; ")})`;
+}
+
+function summarizeOpenQuestionEvidence(
+  openQuestions: readonly { id: string; question: string; urgency: number }[],
+): string | null {
+  if (openQuestions.length === 0) {
+    return null;
+  }
+
+  return [
+    "Open questions:",
+    ...openQuestions
+      .slice(0, 4)
+      .map(
+        (question) =>
+          `- ${question.question} [open_question=${question.id} urgency=${question.urgency.toFixed(2)}]`,
+      ),
+  ].join("\n");
+}
+
+function truncatePromptText(text: string, maxChars: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > maxChars
+    ? `${normalized.slice(0, maxChars - 3).trimEnd()}...`
+    : normalized;
 }
 
 function summarizeSemanticNodeDescription(node: SemanticNode): string {

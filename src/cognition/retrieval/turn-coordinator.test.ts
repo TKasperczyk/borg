@@ -167,9 +167,7 @@ describe("TurnRetrievalCoordinator", () => {
   it("builds retrieval context and preserves reRetrieve override precedence", async () => {
     const high = makeCommitment("cmt_high", 10, 200);
     const low = makeCommitment("cmt_low", 1, 100);
-    const getApplicable = vi.fn(({ aboutEntity }: { aboutEntity?: EntityId | null }) =>
-      aboutEntity === atlasEntityId || aboutEntity === bobEntityId ? [low, high] : [],
-    );
+    const getApplicable = vi.fn(() => [low, high]);
     const pendingCorrections = [
       makeReviewItem(1, {}),
       makeReviewItem(2, { audience_entity_id: audienceEntityId }),
@@ -318,6 +316,10 @@ describe("TurnRetrievalCoordinator", () => {
     });
 
     expect(result.applicableCommitments).toEqual([high, low]);
+    expect(getApplicable).toHaveBeenCalledWith({
+      audience: audienceEntityId,
+      nowMs: 2_000,
+    });
     expect(result.pendingCorrections.map((item) => item.id)).toEqual([1, 2]);
     expect(result.affectiveTrajectory).toBe(affectiveTrajectory);
     expect(result.retrieval).toBe(retrieval);

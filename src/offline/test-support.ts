@@ -567,12 +567,15 @@ export async function createOfflineTestHarness(
   );
   const retrievalPipeline = new RetrievalPipeline({
     embeddingClient,
+    llmClient,
+    recallExpansionModel: config.anthropic.models.recallExpansion,
     episodicRepository,
     semanticNodeRepository,
     semanticGraph,
     reviewQueueRepository,
     openQuestionsRepository,
     entityRepository,
+    commitmentRepository,
     dataDir: tempDir,
     entryIndex,
     clock,

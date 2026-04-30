@@ -26,11 +26,7 @@ import {
   VOICE_AND_POSTURE_SECTION,
 } from "../constants.js";
 import type { DeliberationContext, SelfSnapshot } from "../types.js";
-import {
-  summarizeRetrievalConfidence,
-  summarizeRetrievedEpisodes,
-  summarizeSemanticContext,
-} from "./retrieval.js";
+import { summarizeRetrievedEvidence, summarizeRetrievalConfidence } from "./retrieval.js";
 import { renderTaggedPromptBlock } from "./sections.js";
 
 export type BuildBaseSystemPromptOptions = {
@@ -85,24 +81,21 @@ export function buildBaseSystemPrompt(
       content: summarizeAudienceProfile(context.audienceProfile),
     },
     {
-      tag: "borg_retrieved_episodes",
-      content: summarizeRetrievedEpisodes(
-        "Retrieved context",
-        context.retrievalResult,
+      tag: "borg_retrieved_evidence",
+      content: summarizeRetrievedEvidence(
+        "Retrieved evidence",
+        {
+          evidence: context.retrievedEvidence ?? [],
+          episodes: context.retrievalResult,
+          semantic: context.retrievedSemantic ?? null,
+          openQuestions: context.openQuestionsContext ?? [],
+        },
         options.retrievalContextBudget,
       ),
     },
     {
       tag: "borg_retrieval_confidence",
       content: summarizeRetrievalConfidence(context.retrievalConfidence ?? null),
-    },
-    {
-      tag: "borg_retrieved_semantic",
-      content: summarizeSemanticContext(
-        context.retrievedSemantic ?? null,
-        options.semanticContextBudget,
-        options.nowMs,
-      ),
     },
     {
       tag: "borg_open_questions",

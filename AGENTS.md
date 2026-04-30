@@ -18,12 +18,13 @@ processes, and retrieval pipeline.
 - **Structured state:** SQLite (`better-sqlite3`) for goals, commitments,
   graph edges, skills, stats
 - **Stream log:** JSONL atomic append on disk
-- **LLM:** Anthropic SDK (`@anthropic-ai/sdk`). All three slots
-  (cognition, extraction, background) default to Opus 4.7. borg runs
+- **LLM:** Anthropic SDK (`@anthropic-ai/sdk`). The cognition,
+  extraction, and background slots default to Opus 4.7. borg runs
   under OAuth subscription -- there is no per-token cost to optimize
-  for, so we pay the latency for consistent quality across the stack.
-  The three slots still exist in config so deployments CAN split if
-  they ever need to.
+  for, so we pay the latency for consistent quality across reasoning-heavy
+  work. Recall expansion has its own `recallExpansion` slot, defaulting
+  to Haiku, because it is a small structured fanout task rather than a
+  background reasoning pass.
 - **Embeddings:** OpenAI-compatible endpoint (default LM Studio, qwen3-embedding-8b,
   4096 dims).
 - **Validation:** Zod.

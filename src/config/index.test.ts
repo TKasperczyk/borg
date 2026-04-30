@@ -35,6 +35,7 @@ describe("config", () => {
       cognition: "claude-opus-4-7",
       background: "claude-opus-4-7",
       extraction: "claude-opus-4-7",
+      recallExpansion: "claude-haiku-4-5-20251001",
     });
     expect(config.perception.useLlmFallback).toBe(true);
     expect(config.affective.useLlmFallback).toBe(true);
@@ -78,6 +79,7 @@ describe("config", () => {
       anthropic: {
         models: {
           cognition: "file-cognition",
+          recallExpansion: "file-recall",
         },
       },
       offline: {
@@ -110,6 +112,7 @@ describe("config", () => {
         BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
         BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES: "8",
+        BORG_MODEL_RECALL_EXPANSION: "env-recall",
         ANTHROPIC_API_KEY: "secret",
       },
     });
@@ -120,6 +123,7 @@ describe("config", () => {
     expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBe("secret");
     expect(config.anthropic.models.cognition).toBe("file-cognition");
+    expect(config.anthropic.models.recallExpansion).toBe("env-recall");
     expect(config.executive.goalFocusThreshold).toBe(0.6);
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(8);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
@@ -127,11 +131,12 @@ describe("config", () => {
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);
   });
 
-  it("defaults all anthropic model slots to opus 4.7", () => {
+  it("defaults recall expansion to the dedicated Haiku slot", () => {
     expect(DEFAULT_CONFIG.anthropic.models).toEqual({
       cognition: "claude-opus-4-7",
       background: "claude-opus-4-7",
       extraction: "claude-opus-4-7",
+      recallExpansion: "claude-haiku-4-5-20251001",
     });
   });
 

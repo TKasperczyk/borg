@@ -1081,6 +1081,10 @@ function isPendingActionJudgeFallbackRequest(options: LLMCompleteOptions): boole
   return options.budget === "pending-action-judge";
 }
 
+function isRecallExpansionFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "recall-expansion";
+}
+
 function isProceduralContextResponse(response: FakeLLMResponse | undefined): boolean {
   if (response === undefined || typeof response === "function" || typeof response !== "object") {
     return false;
@@ -1131,6 +1135,24 @@ function isPendingActionJudgeResponse(response: FakeLLMResponse | undefined): bo
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "ClassifyPendingAction",
+    );
+  }
+
+  return false;
+}
+
+function isRecallExpansionResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "EmitRecallExpansion");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "EmitRecallExpansion",
     );
   }
 
@@ -1213,9 +1235,17 @@ export class FakeLLMClient implements LLMClient {
   }
 
   async complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
-    this.requests.push(options);
-
     const response = this.responses[0];
+
+    if (
+      isRecallExpansionFallbackRequest(options) &&
+      typeof response !== "function" &&
+      !isRecallExpansionResponse(response)
+    ) {
+      throw new LLMError("FakeLLMClient has no scripted recall expansion response available");
+    }
+
+    this.requests.push(options);
 
     if (
       isStopCommitmentFallbackRequest(options) &&

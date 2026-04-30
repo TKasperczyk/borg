@@ -11,8 +11,7 @@ import { FixedClock } from "../util/clock.js";
 import { mergeCandidates } from "./episodic-candidates.js";
 
 const QUERY = "architecture";
-const MAYA_CORRECTION_QUERY =
-  "my partner's not Maya. Also, Thursday's design review is next week.";
+const MAYA_CORRECTION_QUERY = "my partner's not Maya. Also, Thursday's design review is next week.";
 const NOW_MS = 10_000_000_000;
 
 function defaultWeights() {
@@ -352,7 +351,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     expect(results.filter((item) => item.episode.id === shared.id)).toHaveLength(1);
   });
 
-  it("hard-excludes out-of-range episodes when strictTimeRange is enabled", async () => {
+  it("keeps strict time filtering local to the time recall intent", async () => {
     harness = await createHarness();
     await insertHotVectorDecoys(harness, 40, {
       start_time: 900_000,
@@ -387,12 +386,10 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       }),
     });
 
-    expect(results).toHaveLength(1);
-    expect(results[0]?.episode.id).toBe(inRange.id);
+    expect(results).toHaveLength(3);
+    expect(results.map((item) => item.episode.id)).toContain(inRange.id);
     expect(
-      results.every(
-        (item) => item.episode.start_time <= 170_000 && item.episode.end_time >= 140_000,
-      ),
+      results.some((item) => item.episode.start_time > 170_000 || item.episode.end_time < 140_000),
     ).toBe(true);
   });
 
@@ -583,8 +580,8 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       }),
     });
 
-    expect(results).toHaveLength(1);
     expect(results[0]?.episode.id).toBe(explicit.id);
+    expect(results.map((item) => item.episode.id)).toContain(cueOnly.id);
   });
 
   it("does not empty results when a strict cue range matches nothing", async () => {

@@ -958,7 +958,7 @@ status annotated.
 
 ## Part 7: Honest Tradeoffs & Pushback
 
-**LLM call budget.** borg runs under OAuth subscription (shared Claude Code credentials), not per-token API billing, so the original "cheap-model the background" pressure is gone. All three slots (cognition, extraction, background) default to Opus 4.7. Dream cycles, mood extractions, affective re-ranking, reflection passes, and overseer checks all run on the best model available. The three slots are still separate in config so a deployment CAN downshift extraction/background if it ever needs to (e.g., hitting rate limits, or switching off subscription), but the default is quality-everywhere.
+**LLM call budget.** borg runs under OAuth subscription (shared Claude Code credentials), not per-token API billing, so the original "cheap-model the background" pressure is gone. The cognition, extraction, and background slots default to Opus 4.7. Dream cycles, mood extractions, affective re-ranking, reflection passes, and overseer checks all run on the best model available. Recall expansion has a separate `recallExpansion` slot that defaults to Haiku because it is a small structured fanout task, not background reasoning. The slots are separate in config so a deployment CAN downshift individual lanes if it ever needs to (e.g., hitting rate limits, or switching off subscription), but the default is quality for reasoning-heavy work and fast structured recall expansion.
 
 **Schema rigidity.** Multiple memory bands means multiple schemas, retrieval paths, and migration stories. Start with **Stream + Episodic + Semantic + Self**, get those solid, then add the rest.
 

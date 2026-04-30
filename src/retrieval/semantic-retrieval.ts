@@ -54,6 +54,7 @@ export type SemanticRetrievalOptions = {
   asOf?: number;
   underReviewMultiplier?: number;
   queryVector?: Float32Array;
+  exactTerms?: readonly string[];
 };
 
 export type SemanticRetrievalDependencies = {
@@ -341,6 +342,16 @@ export async function resolveSemanticContext(
 
   for (const item of byVector) {
     recordMatchedNode(matchedNodeCandidatesById, item.node, item.similarity);
+  }
+
+  for (const term of options.exactTerms ?? []) {
+    const exactMatches = await semanticNodeRepository.findByExactLabelOrAlias(term, 5, {
+      includeArchived: false,
+    });
+
+    for (const node of exactMatches) {
+      recordMatchedNode(matchedNodeCandidatesById, node, 1);
+    }
   }
 
   const matchedNodeCandidates = [...matchedNodeCandidatesById.values()];

@@ -339,12 +339,15 @@ export async function buildBorgRepositories(
   });
   const retrievalPipeline = new RetrievalPipeline({
     embeddingClient,
+    llmClient: options.llmClient,
+    recallExpansionModel: config.anthropic.models.recallExpansion,
     episodicRepository,
     semanticNodeRepository,
     semanticGraph,
     reviewQueueRepository: createdReviewQueueRepository,
     openQuestionsRepository,
     entityRepository,
+    commitmentRepository,
     dataDir: config.dataDir,
     entryIndex,
     clock,

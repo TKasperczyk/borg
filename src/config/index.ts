@@ -49,6 +49,7 @@ const configFileSchema = z
             cognition: z.string().min(1).optional(),
             background: z.string().min(1).optional(),
             extraction: z.string().min(1).optional(),
+            recallExpansion: z.string().min(1).optional(),
           })
           .partial()
           .optional(),
@@ -342,6 +343,7 @@ export const configSchema = z.object({
         cognition: z.string().min(1),
         background: z.string().min(1),
         extraction: z.string().min(1),
+        recallExpansion: z.string().min(1),
       }),
     })
     .superRefine((value, context) => {
@@ -550,16 +552,13 @@ export const DEFAULT_CONFIG: Config = {
     auth: "auto",
     apiKey: undefined,
     models: {
-      // All slots default to Opus 4.7. borg runs under OAuth subscription
-      // (not per-token billing), so cost optimization is not a concern. We
-      // accept the latency hit on synchronous classifier calls in exchange
-      // for consistent quality across extraction, reflection, and all
-      // offline maintenance. The three slots still exist so individual
-      // deployments CAN split them via config or env vars if they ever
-      // need to.
+      // The main cognition/extraction/background slots default to Opus 4.7.
+      // Recall expansion is a small structured fanout task and has its own
+      // Haiku slot so it can stay fast without reusing background.
       cognition: "claude-opus-4-7",
       background: "claude-opus-4-7",
       extraction: "claude-opus-4-7",
+      recallExpansion: "claude-haiku-4-5-20251001",
     },
   },
   procedural: {
@@ -967,6 +966,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvString(env, "BORG_MODEL_EXTRACTION") ??
           fileConfig.anthropic?.models?.extraction ??
           DEFAULT_CONFIG.anthropic.models.extraction,
+        recallExpansion:
+          readOptionalEnvString(env, "BORG_MODEL_RECALL_EXPANSION") ??
+          fileConfig.anthropic?.models?.recallExpansion ??
+          DEFAULT_CONFIG.anthropic.models.recallExpansion,
       },
     },
     procedural: {

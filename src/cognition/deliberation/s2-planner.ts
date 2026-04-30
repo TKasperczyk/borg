@@ -47,7 +47,7 @@ const turnPlanSchema = z.object({
   referenced_episode_ids: z
     .array(z.string())
     .describe(
-      "List the episode_ids from borg_retrieved_episodes that you actually used as evidence; empty if none were drawn on.",
+      "List the episode_ids from borg_retrieved_evidence that you actually used as evidence; empty if none were drawn on.",
     ),
   intents: z
     .array(intentRecordSchema)
@@ -64,7 +64,7 @@ export const TURN_PLAN_TOOL_NAME = "EmitTurnPlan";
 const TURN_PLAN_TOOL: LLMToolDefinition = {
   name: TURN_PLAN_TOOL_NAME,
   description:
-    "Emit a structured plan for this reflective/high-stakes turn before the final response. The plan is passed back to you in the final-response call so you can execute against it. List the episode_ids from borg_retrieved_episodes that you actually used as evidence; empty if none were drawn on. Emit follow-up intents only for concrete future actions worth carrying in working memory.",
+    "Emit a structured plan for this reflective/high-stakes turn before the final response. The plan is passed back to you in the final-response call so you can execute against it. List the episode_ids from borg_retrieved_evidence that you actually used as evidence; empty if none were drawn on. Emit follow-up intents only for concrete future actions worth carrying in working memory.",
   inputSchema: toToolInputSchema(turnPlanSchema),
 };
 

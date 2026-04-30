@@ -763,7 +763,7 @@ describe("Borg", () => {
     }
   });
 
-  it("treats explicit public API timeRange as a strict filter", async () => {
+  it("keeps explicit public API timeRange local to the time recall intent", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(10_000_000_000);
@@ -862,7 +862,8 @@ describe("Borg", () => {
         },
       });
 
-      expect(results.map((item) => item.episode.id)).toEqual([inRangeId]);
+      expect(results.map((item) => item.episode.id)).toContain(inRangeId);
+      expect(results.some((item) => item.episode.id !== inRangeId)).toBe(true);
     } finally {
       await borg.close();
     }

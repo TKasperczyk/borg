@@ -2,6 +2,7 @@
 import type { OpenQuestion } from "../memory/self/index.js";
 
 import { computeRetrievalConfidence, type RetrievalConfidence } from "./confidence.js";
+import type { EvidenceItem, RecallIntent } from "./recall-types.js";
 import type { RetrievedEpisode } from "./scoring.js";
 import type { RetrievedSemantic } from "./semantic-retrieval.js";
 
@@ -9,6 +10,8 @@ export type RetrievedContext = {
   episodes: RetrievedEpisode[];
   semantic: RetrievedSemantic;
   open_questions: OpenQuestion[];
+  evidence: EvidenceItem[];
+  recall_intents: RecallIntent[];
   contradiction_present: boolean;
   confidence: RetrievalConfidence;
 };
@@ -17,6 +20,8 @@ export function assembleRetrievedContext(input: {
   episodes: RetrievedEpisode[];
   semantic: RetrievedSemantic;
   openQuestions: OpenQuestion[];
+  evidence: EvidenceItem[];
+  recallIntents: RecallIntent[];
   contradictionPresent: boolean;
   nowMs: number;
   expectedCount?: number;
@@ -40,6 +45,8 @@ export function assembleRetrievedContext(input: {
     episodes: input.episodes,
     semantic: input.semantic,
     open_questions: input.openQuestions,
+    evidence: input.evidence,
+    recall_intents: input.recallIntents,
     contradiction_present: input.contradictionPresent,
     confidence,
   };

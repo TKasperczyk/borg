@@ -116,64 +116,17 @@ export class TurnRetrievalCoordinator {
     this.tracer = options.tracer ?? NOOP_TRACER;
   }
 
-  private collectApplicableCommitments(
-    audienceEntityId: EntityId | null,
-    perceivedEntities: readonly string[],
-    findEntityByName: (name: string) => EntityId | null,
-  ): CommitmentRecord[] {
-    const aboutEntityIds: Array<EntityId | null> = [];
-    const seenEntities = new Set<string>();
-
-    for (const entity of perceivedEntities) {
-      const normalized = entity.trim();
-
-      if (normalized.length === 0) {
-        continue;
-      }
-
-      const key = normalized.toLowerCase();
-
-      if (seenEntities.has(key)) {
-        continue;
-      }
-
-      seenEntities.add(key);
-      const entityId = findEntityByName(normalized);
-
-      if (entityId !== null) {
-        aboutEntityIds.push(entityId);
-      }
-    }
-
-    if (aboutEntityIds.length === 0) {
-      aboutEntityIds.push(null);
-    }
-
-    const byId = new Map<string, CommitmentRecord>();
-
-    for (const aboutEntityId of aboutEntityIds) {
-      const applicable = this.options.commitmentRepository.getApplicable({
+  private collectApplicableCommitments(audienceEntityId: EntityId | null): CommitmentRecord[] {
+    return this.options.commitmentRepository
+      .getApplicable({
         audience: audienceEntityId,
-        aboutEntity: aboutEntityId,
         nowMs: this.options.clock.now(),
-      });
-
-      for (const commitment of applicable) {
-        byId.set(commitment.id, commitment);
-      }
-    }
-
-    return [...byId.values()].sort(
-      (left, right) => right.priority - left.priority || left.created_at - right.created_at,
-    );
+      })
+      .sort((left, right) => right.priority - left.priority || left.created_at - right.created_at);
   }
 
   async coordinate(input: TurnRetrievalCoordinatorInput): Promise<TurnRetrievalCoordinatorResult> {
-    const applicableCommitments = this.collectApplicableCommitments(
-      input.audienceEntityId,
-      input.perception.entities,
-      input.findEntityByName,
-    );
+    const applicableCommitments = this.collectApplicableCommitments(input.audienceEntityId);
     const pendingCorrections = this.options.reviewQueueRepository
       .list({
         kind: "correction",

@@ -835,6 +835,7 @@ export class TurnOrchestrator {
             perception,
             retrievalResult: retrievedEpisodes,
             retrievedSemantic,
+            retrievedEvidence: retrieval.evidence,
             contradictionPresent: retrieval.contradiction_present,
             retrievalConfidence: retrieval.confidence,
             applicableCommitments,

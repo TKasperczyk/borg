@@ -1,6 +1,11 @@
 import type { AttentionWeights, TemporalCue } from "../cognition/types.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
-import type { EntityRepository } from "../memory/commitments/index.js";
+import type { LLMClient } from "../llm/index.js";
+import type {
+  CommitmentRecord,
+  CommitmentRepository,
+  EntityRepository,
+} from "../memory/commitments/index.js";
 import { isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
 import type {
@@ -15,18 +20,21 @@ import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
 import type { ReviewQueueRepository } from "../memory/semantic/review-queue.js";
 import type { SemanticNode } from "../memory/semantic/types.js";
 import type { SocialProfile } from "../memory/social/index.js";
-import type { StreamEntryIndexRepository } from "../stream/index.js";
+import type { StreamEntry, StreamEntryIndexRepository } from "../stream/index.js";
 import { NOOP_TRACER, type TurnTracer } from "../cognition/tracing/tracer.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
-import type { EntityId } from "../util/ids.js";
+import type { EntityId, EpisodeId } from "../util/ids.js";
 import type { JsonValue } from "../util/json-value.js";
 
 import { CitationResolver, type CitationResolverOptions } from "./citations.js";
 import { assembleRetrievedContext, type RetrievedContext } from "./context-assembly.js";
-import { generateEpisodicCandidates } from "./episodic-candidates.js";
+import { rankEvidenceItems } from "./evidence-pool.js";
 import { applyMmr } from "./mmr.js";
 import { retrieveOpenQuestionsForQuery as retrieveOpenQuestionsForQueryFromRepository } from "./open-questions.js";
+import { RawStreamAdapter } from "./raw-stream-adapter.js";
+import { DEFAULT_RECALL_EXPANSION_MODEL, expandRecall } from "./recall-expansion.js";
+import type { EvidenceItem, RecallIntent, RecallIntentKind } from "./recall-types.js";
 import {
   buildRetrievedEpisode,
   clamp,
@@ -46,6 +54,7 @@ import {
 import {
   resolveSemanticContext,
   toRetrievedSemantic,
+  type ResolvedSemanticRetrieval,
   type RetrievedSemantic,
 } from "./semantic-retrieval.js";
 import { resolveTimeSignals } from "./time-signals.js";
@@ -61,6 +70,8 @@ export type {
 
 export type RetrievalPipelineOptions = {
   embeddingClient: EmbeddingClient;
+  llmClient?: LLMClient;
+  recallExpansionModel?: string;
   episodicRepository: EpisodicRepository;
   dataDir: string;
   entryIndex?: StreamEntryIndexRepository;
@@ -69,6 +80,7 @@ export type RetrievalPipelineOptions = {
   reviewQueueRepository?: Pick<ReviewQueueRepository, "listOpenBeliefRevisionsByTarget">;
   openQuestionsRepository?: OpenQuestionsRepository;
   entityRepository?: Pick<EntityRepository, "findByName">;
+  commitmentRepository?: Pick<CommitmentRepository, "list">;
   clock?: Clock;
   tracer?: TurnTracer;
   scoreWeights?: ScoreWeights;
@@ -106,6 +118,45 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
 export type RetrievalGetEpisodeOptions = {
   audienceEntityId?: EntityId | null;
   crossAudience?: boolean;
+};
+
+type ExpansionOutcome = {
+  succeeded: boolean;
+  facetIntents: RecallIntent[];
+  namedTerms: string[];
+};
+
+type EpisodeEvidenceCandidate = {
+  intent: RecallIntent;
+  candidate: EpisodeSearchCandidate;
+  matchedTerms: string[];
+  score: EpisodeScoreDetails;
+};
+
+type RawEpisodeEvidenceCandidate = Omit<EpisodeEvidenceCandidate, "score">;
+
+type EpisodeScoreDetails = {
+  decayedSalience: number;
+  heat: number;
+  goalRelevance: number;
+  valueAlignment: number;
+  timeRelevance: number;
+  moodBoost: number;
+  socialRelevance: number;
+  entityRelevance: number;
+  suppressionPenalty: number;
+  score: number;
+};
+
+type SemanticEvidenceCandidate = {
+  intent: RecallIntent;
+  semantic: ResolvedSemanticRetrieval;
+};
+
+type OpenQuestionEvidenceCandidate = {
+  intent: RecallIntent;
+  question: OpenQuestion;
+  score: number;
 };
 
 export class RetrievalPipeline {
@@ -170,7 +221,6 @@ export class RetrievalPipeline {
 
     const nowMs = this.clock.now();
     const limit = Math.max(1, options.limit ?? 5);
-    const queryVector = await this.options.embeddingClient.embed(query);
     let scoringFeatures = options.scoringFeatures;
 
     if (scoringFeatures === undefined) {
@@ -197,93 +247,29 @@ export class RetrievalPipeline {
       }
     }
 
-    const timeSignals = resolveTimeSignals(options);
-    const candidates = await generateEpisodicCandidates({
-      repository: this.options.episodicRepository,
-      query,
-      queryVector,
+    const intents = await this.buildRecallIntents(query, options);
+    const episodeCandidates = await this.collectEpisodicEvidenceCandidates(
+      intents,
       options,
+      scoringFeatures,
+      nowMs,
       limit,
-      timeSignals,
-    });
-    const participantEntityIds = this.resolveParticipantEntityIds(
-      candidates,
-      options.audienceEntityId,
     );
-    const scored = candidates.map((entry) => {
-      const candidate = entry.candidate;
-      const score = scoreCandidate(
-        candidate,
-        {
-          ...options,
-          scoringFeatures,
-          ...(participantEntityIds === undefined ? {} : { participantEntityIds }),
-        },
-        nowMs,
-        timeSignals.scoringRange,
-        this.scoringDefaults(),
-      );
-
-      return {
-        ...entry,
-        candidate,
-        ...score,
-      };
-    });
-    const preMmrLimit = Math.max(limit * 4, 24);
-    const trimmed = [...scored]
-      .sort(
-        (left, right) =>
-          right.score - left.score ||
-          right.candidate.similarity - left.candidate.similarity ||
-          right.candidate.episode.updated_at - left.candidate.episode.updated_at,
-      )
-      .slice(0, preMmrLimit);
-    const selected = applyMmr(
-      trimmed.map((item) => ({
-        item,
-        vector: item.candidate.episode.embedding,
-        relevanceScore: item.score,
-      })),
-      {
-        limit,
-        lambda: options.mmrLambda ?? this.mmrLambda,
-      },
+    const selectedEpisodeCandidates = this.selectEpisodeEvidenceCandidates(
+      episodeCandidates,
+      limit,
+      options,
     );
     const citationResolver = this.createCitationResolver();
     const citationEntries = await citationResolver.resolveCitationEntries(
-      selected.flatMap((choice) => choice.item.candidate.episode.source_stream_ids),
+      selectedEpisodeCandidates.flatMap((item) => item.candidate.episode.source_stream_ids),
     );
-    const semantic = await resolveSemanticContext(
-      query,
-      {
-        ...options,
-        queryVector,
-        underReviewMultiplier:
-          options.underReviewMultiplier ?? this.options.semanticUnderReviewMultiplier,
-      },
-      {
-        embeddingClient: this.options.embeddingClient,
-        episodicRepository: this.options.episodicRepository,
-        semanticNodeRepository: this.options.semanticNodeRepository,
-        semanticGraph: this.options.semanticGraph,
-        reviewQueueRepository: this.options.reviewQueueRepository,
-      },
-    );
-    const openQuestions =
-      options.includeOpenQuestions === true
-        ? await this.retrieveOpenQuestionsForQuery(query, {
-            relatedSemanticNodeIds: semantic.matchedNodeIds,
-            audienceEntityId: options.audienceEntityId ?? null,
-            limit: options.openQuestionsLimit,
-            queryVector,
-            traceTurnId: options.traceTurnId,
-          })
-        : [];
+    const semanticRetrievals = await this.collectSemanticRetrievals(intents, options);
+    const semantic = mergeSemanticRetrievals(semanticRetrievals.map((item) => item.semantic));
+    const openQuestions = await this.collectOpenQuestions(intents, semantic, options);
     const results: RetrievedEpisode[] = [];
 
-    for (const choice of selected) {
-      const item = choice.item;
+    for (const item of selectedEpisodeCandidates) {
       const citationChain = citationResolver.resolveCitationChainFromMap(
         item.candidate.episode.source_stream_ids,
         citationEntries,
@@ -291,16 +277,16 @@ export class RetrievalPipeline {
       );
       const result = buildRetrievedEpisode(
         item.candidate,
-        item.decayedSalience,
-        item.heat,
-        item.goalRelevance,
-        item.valueAlignment,
-        item.timeRelevance,
-        item.moodBoost,
-        item.socialRelevance,
-        item.entityRelevance,
-        item.suppressionPenalty,
-        clamp(item.score, 0, 1),
+        item.score.decayedSalience,
+        item.score.heat,
+        item.score.goalRelevance,
+        item.score.valueAlignment,
+        item.score.timeRelevance,
+        item.score.moodBoost,
+        item.score.socialRelevance,
+        item.score.entityRelevance,
+        item.score.suppressionPenalty,
+        clamp(item.score.score, 0, 1),
         citationChain,
       );
 
@@ -312,10 +298,31 @@ export class RetrievalPipeline {
       results.push(result);
     }
 
+    const episodeEvidence = episodeCandidates.map((item) => episodeCandidateToEvidence(item));
+    const semanticEvidence = semanticRetrievals.flatMap((item) =>
+      semanticRetrievalToEvidence(item.semantic, item.intent),
+    );
+    const openQuestionEvidence = openQuestions.flatMap((item) =>
+      openQuestionToEvidence(item.question, item.intent, item.score),
+    );
+    const commitmentEvidence = this.collectCommitmentEvidence(intents, options);
+    const rawStreamEvidence = [
+      ...streamEntriesToEvidence(citationEntries, selectedEpisodeCandidates),
+      ...this.collectRecentRawStreamEvidence(intents),
+    ];
+    const evidence = rankEvidenceItems([
+      ...episodeEvidence,
+      ...semanticEvidence,
+      ...openQuestionEvidence,
+      ...commitmentEvidence,
+      ...rawStreamEvidence,
+    ]);
     const context = assembleRetrievedContext({
       episodes: results,
       semantic: toRetrievedSemantic(semantic),
-      openQuestions,
+      openQuestions: openQuestions.map((item) => item.question),
+      evidence,
+      recallIntents: intents,
       contradictionPresent: semantic.contradictionPresent,
       nowMs,
       expectedCount: limit,
@@ -337,6 +344,458 @@ export class RetrievalPipeline {
   async search(query: string, options: RetrievalSearchOptions = {}): Promise<RetrievedEpisode[]> {
     const result = await this.searchWithContext(query, options);
     return result.episodes;
+  }
+
+  private async buildRecallIntents(
+    query: string,
+    options: RetrievalSearchOptions,
+  ): Promise<RecallIntent[]> {
+    const intents: RecallIntent[] = [
+      {
+        id: "recall_raw_text_0",
+        kind: "raw_text",
+        query,
+        terms: [],
+        priority: 100,
+        source: "raw-user-message",
+      },
+    ];
+    const expansion = await this.tryExpandRecall(query, options);
+
+    intents.push(...expansion.facetIntents);
+
+    const knownTerms: Array<{ term: string; source: RecallIntent["source"] }> = expansion.succeeded
+      ? expansion.namedTerms.map((term) => ({ term, source: "llm-expansion" }))
+      : [
+          ...(options.entityTerms ?? []).map((term) => ({
+            term,
+            source: "perception-entities" as const,
+          })),
+          ...(options.audienceTerms ?? []).map((term) => ({
+            term,
+            source: "audience-aliases" as const,
+          })),
+        ];
+
+    for (const [index, item] of dedupeTermInputs(knownTerms).entries()) {
+      intents.push({
+        id: `recall_known_term_${index}`,
+        kind: "known_term",
+        query: item.term,
+        terms: [item.term],
+        priority: 90,
+        source: item.source,
+      });
+    }
+
+    const timeIntentRange = resolveTimeSignals(options).scoringRange;
+
+    if (timeIntentRange !== null) {
+      intents.push({
+        id: "recall_time_0",
+        kind: "time",
+        query: options.temporalCue?.label ?? "time range",
+        terms: [],
+        timeRange: timeIntentRange,
+        strictTime: options.strictTimeRange === true,
+        priority: 70,
+        source: "temporal-cue",
+      });
+    }
+
+    intents.push({
+      id: "recall_recent_0",
+      kind: "recent",
+      query: "recent memory",
+      terms: [],
+      priority: 10,
+      source: "recency",
+    });
+
+    return intents;
+  }
+
+  private async tryExpandRecall(
+    query: string,
+    options: RetrievalSearchOptions,
+  ): Promise<ExpansionOutcome> {
+    if (this.options.llmClient === undefined) {
+      return {
+        succeeded: false,
+        facetIntents: [],
+        namedTerms: [],
+      };
+    }
+
+    try {
+      const expansion = await expandRecall({
+        llmClient: this.options.llmClient,
+        model: this.options.recallExpansionModel ?? DEFAULT_RECALL_EXPANSION_MODEL,
+        userMessage: query,
+      });
+      const namedTerms = dedupeStrings(expansion.named_terms);
+      const facetIntents = expansion.facets.map((facet, index): RecallIntent => {
+        const kind: RecallIntentKind = facet.kind;
+
+        return {
+          id: `recall_${kind}_${index}`,
+          kind,
+          query: facet.query,
+          terms: [],
+          priority: 60 + facet.priority * 20,
+          source: "llm-expansion",
+        };
+      });
+
+      return {
+        succeeded: true,
+        facetIntents,
+        namedTerms,
+      };
+    } catch (error) {
+      if (
+        this.tracer.enabled &&
+        options.traceTurnId !== undefined &&
+        !isUnscriptedFakeRecallExpansion(error)
+      ) {
+        this.tracer.emit("retrieval_degraded", {
+          turnId: options.traceTurnId,
+          subsystem: "recall_expansion",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      return {
+        succeeded: false,
+        facetIntents: [],
+        namedTerms: [],
+      };
+    }
+  }
+
+  private async collectEpisodicEvidenceCandidates(
+    intents: readonly RecallIntent[],
+    options: RetrievalSearchOptions,
+    scoringFeatures: RetrievalScoringFeatures,
+    nowMs: number,
+    limit: number,
+  ): Promise<EpisodeEvidenceCandidate[]> {
+    const rawCandidates = (
+      await Promise.all(
+        intents.map((intent) => this.collectEpisodicCandidatesForIntent(intent, options, limit)),
+      )
+    ).flat();
+    const participantEntityIds = this.resolveParticipantEntityIds(
+      rawCandidates,
+      options.audienceEntityId,
+    );
+
+    return rawCandidates.map((entry) => {
+      const score = this.scoreEpisodeCandidateForIntent(
+        entry,
+        options,
+        scoringFeatures,
+        nowMs,
+        participantEntityIds,
+      );
+
+      return {
+        ...entry,
+        score,
+      };
+    });
+  }
+
+  private async collectEpisodicCandidatesForIntent(
+    intent: RecallIntent,
+    options: RetrievalSearchOptions,
+    limit: number,
+  ): Promise<RawEpisodeEvidenceCandidate[]> {
+    const vectorBudget = Math.max(limit * 2, 12);
+    const indexedBudget = Math.max(limit * 2, 8);
+    const recentBudget = Math.max(limit, 4);
+
+    if (intent.kind === "raw_text" || intent.kind === "topic" || intent.kind === "relationship") {
+      const intentVector = await this.options.embeddingClient.embed(intent.query);
+      const candidates = await this.options.episodicRepository.searchByVector(intentVector, {
+        ...episodeSearchOptions(options),
+        limit: vectorBudget,
+      });
+
+      return candidates.map((candidate) => ({
+        intent,
+        candidate,
+        matchedTerms: [],
+      }));
+    }
+
+    if (intent.kind === "known_term") {
+      const candidates = await this.options.episodicRepository.searchByParticipantsOrTags(
+        intent.terms,
+        {
+          ...episodeVisibilityOptions(options),
+          limit: indexedBudget,
+        },
+      );
+
+      return candidates.map((candidate) => ({
+        intent,
+        candidate,
+        matchedTerms: [...intent.terms],
+      }));
+    }
+
+    if (intent.kind === "time" && intent.timeRange !== undefined) {
+      const candidates = await this.options.episodicRepository.searchByTimeRange(intent.timeRange, {
+        ...episodeVisibilityOptions(options),
+        limit: indexedBudget,
+      });
+
+      return candidates.map((candidate) => ({
+        intent,
+        candidate,
+        matchedTerms: [],
+      }));
+    }
+
+    if (intent.kind === "recent") {
+      const recentLimit = Math.max(1, Math.ceil(recentBudget / 2));
+      const heatLimit = Math.max(1, recentBudget - recentLimit);
+      const [recent, hottest] = await Promise.all([
+        this.options.episodicRepository.listRecent({
+          ...episodeVisibilityOptions(options),
+          limit: recentLimit,
+        }),
+        this.options.episodicRepository.listHottest({
+          ...episodeVisibilityOptions(options),
+          limit: heatLimit,
+        }),
+      ]);
+
+      return mergeRawEpisodeCandidates([
+        ...recent.map((candidate) => ({
+          intent,
+          candidate,
+          matchedTerms: [],
+        })),
+        ...hottest.map((candidate) => ({
+          intent,
+          candidate,
+          matchedTerms: [],
+        })),
+      ]);
+    }
+
+    return [];
+  }
+
+  private scoreEpisodeCandidateForIntent(
+    entry: RawEpisodeEvidenceCandidate,
+    options: RetrievalSearchOptions,
+    scoringFeatures: RetrievalScoringFeatures,
+    nowMs: number,
+    participantEntityIds: ParticipantEntityResolutionLookup | undefined,
+  ): EpisodeScoreDetails {
+    const intentTimeRange = entry.intent.kind === "time" ? (entry.intent.timeRange ?? null) : null;
+    const score = scoreCandidate(
+      entry.candidate,
+      {
+        ...options,
+        scoringFeatures,
+        entityTerms: entry.intent.kind === "known_term" ? entry.intent.terms : [],
+        ...(participantEntityIds === undefined ? {} : { participantEntityIds }),
+      },
+      nowMs,
+      intentTimeRange,
+      this.scoringDefaults(),
+    );
+    const exactBoost = entry.intent.kind === "known_term" ? 0.25 : 0;
+    const recencyBoost = entry.intent.kind === "recent" ? 0.05 : 0;
+
+    return {
+      ...score,
+      score: clamp(score.score + exactBoost + recencyBoost, 0, 1),
+    };
+  }
+
+  private selectEpisodeEvidenceCandidates(
+    candidates: readonly EpisodeEvidenceCandidate[],
+    limit: number,
+    options: RetrievalSearchOptions,
+  ): EpisodeEvidenceCandidate[] {
+    const bestByEpisodeId = new Map<EpisodeId, EpisodeEvidenceCandidate>();
+
+    for (const candidate of candidates) {
+      const current = bestByEpisodeId.get(candidate.candidate.episode.id);
+
+      if (
+        current === undefined ||
+        candidate.score.score > current.score.score ||
+        (candidate.score.score === current.score.score &&
+          candidate.candidate.episode.updated_at > current.candidate.episode.updated_at)
+      ) {
+        bestByEpisodeId.set(candidate.candidate.episode.id, candidate);
+      }
+    }
+
+    const preMmrLimit = Math.max(limit * 4, 24);
+    const trimmed = [...bestByEpisodeId.values()]
+      .sort(
+        (left, right) =>
+          right.score.score - left.score.score ||
+          right.candidate.similarity - left.candidate.similarity ||
+          right.candidate.episode.updated_at - left.candidate.episode.updated_at,
+      )
+      .slice(0, preMmrLimit);
+
+    return applyMmr(
+      trimmed.map((item) => ({
+        item,
+        vector: item.candidate.episode.embedding,
+        relevanceScore: item.score.score,
+      })),
+      {
+        limit,
+        lambda: options.mmrLambda ?? this.mmrLambda,
+      },
+    ).map((choice) => choice.item);
+  }
+
+  private async collectSemanticRetrievals(
+    intents: readonly RecallIntent[],
+    options: RetrievalSearchOptions,
+  ): Promise<SemanticEvidenceCandidate[]> {
+    const relevantIntents = intents.filter((intent) => isSemanticIntentKind(intent.kind));
+    const results: SemanticEvidenceCandidate[] = [];
+
+    for (const intent of relevantIntents) {
+      try {
+        const intentVector = await this.options.embeddingClient.embed(intent.query);
+        const semantic = await resolveSemanticContext(
+          intent.query,
+          {
+            ...options,
+            queryVector: intentVector,
+            exactTerms: intent.kind === "known_term" ? intent.terms : [],
+            underReviewMultiplier:
+              options.underReviewMultiplier ?? this.options.semanticUnderReviewMultiplier,
+          },
+          {
+            embeddingClient: this.options.embeddingClient,
+            episodicRepository: this.options.episodicRepository,
+            semanticNodeRepository: this.options.semanticNodeRepository,
+            semanticGraph: this.options.semanticGraph,
+            reviewQueueRepository: this.options.reviewQueueRepository,
+          },
+        );
+
+        results.push({
+          intent,
+          semantic,
+        });
+      } catch (error) {
+        if (this.tracer.enabled && options.traceTurnId !== undefined) {
+          this.tracer.emit("retrieval_degraded", {
+            turnId: options.traceTurnId,
+            subsystem: "semantic",
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    return results;
+  }
+
+  private async collectOpenQuestions(
+    intents: readonly RecallIntent[],
+    semantic: ResolvedSemanticRetrieval,
+    options: RetrievalSearchOptions,
+  ): Promise<OpenQuestionEvidenceCandidate[]> {
+    const shouldInclude = options.includeOpenQuestions === true;
+    const relevantIntents = intents.filter(
+      (intent) =>
+        intent.kind === "open_question" || (shouldInclude && isSemanticIntentKind(intent.kind)),
+    );
+    const byId = new Map<string, OpenQuestionEvidenceCandidate>();
+
+    for (const intent of relevantIntents) {
+      const questions = await this.retrieveOpenQuestionsForQuery(intent.query, {
+        relatedSemanticNodeIds: semantic.matchedNodeIds,
+        audienceEntityId: options.audienceEntityId ?? null,
+        limit: options.openQuestionsLimit,
+        traceTurnId: options.traceTurnId,
+      });
+
+      for (const question of questions) {
+        const score = question.urgency + intent.priority / 100;
+        const current = byId.get(question.id);
+
+        if (current === undefined || score > current.score) {
+          byId.set(question.id, {
+            intent,
+            question,
+            score,
+          });
+        }
+      }
+    }
+
+    return [...byId.values()].sort(
+      (left, right) =>
+        right.score - left.score ||
+        right.question.urgency - left.question.urgency ||
+        right.question.last_touched - left.question.last_touched,
+    );
+  }
+
+  private collectCommitmentEvidence(
+    intents: readonly RecallIntent[],
+    options: RetrievalSearchOptions,
+  ): EvidenceItem[] {
+    if (this.options.commitmentRepository === undefined) {
+      return [];
+    }
+
+    const activeCommitments = this.options.commitmentRepository.list({
+      activeOnly: true,
+      audience: options.audienceEntityId ?? null,
+      nowMs: this.clock.now(),
+    });
+    const evidence: EvidenceItem[] = [];
+
+    for (const intent of intents) {
+      if (intent.kind !== "commitment" && intent.kind !== "known_term") {
+        continue;
+      }
+
+      for (const commitment of activeCommitments) {
+        const matchedTerms = matchedCommitmentTerms(commitment, intent);
+
+        if (intent.kind !== "commitment" && matchedTerms.length === 0) {
+          continue;
+        }
+
+        evidence.push(commitmentToEvidence(commitment, intent, matchedTerms));
+      }
+    }
+
+    return evidence;
+  }
+
+  private collectRecentRawStreamEvidence(intents: readonly RecallIntent[]): EvidenceItem[] {
+    const recentIntent = intents.find((intent) => intent.kind === "recent");
+
+    if (recentIntent === undefined) {
+      return [];
+    }
+
+    const adapter = new RawStreamAdapter({
+      dataDir: this.options.dataDir,
+      entryIndex: this.options.entryIndex,
+    });
+
+    return adapter.recent({ limit: 3 }).map((entry) => streamEntryToEvidence(entry, recentIntent));
   }
 
   async getEpisode(
@@ -490,4 +949,366 @@ function countSemanticHits(semantic: RetrievedSemantic): number {
     semantic.contradiction_hits.length +
     semantic.category_hits.length
   );
+}
+
+function isUnscriptedFakeRecallExpansion(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message === "FakeLLMClient has no scripted recall expansion response available"
+  );
+}
+
+function episodeVisibilityOptions(options: RetrievalSearchOptions): EpisodeSearchOptions {
+  return {
+    audienceEntityId: options.audienceEntityId,
+    crossAudience: options.crossAudience,
+    globalIdentitySelfAudienceEntityId: options.globalIdentitySelfAudienceEntityId,
+  };
+}
+
+function episodeSearchOptions(options: RetrievalSearchOptions): EpisodeSearchOptions {
+  return {
+    ...episodeVisibilityOptions(options),
+    minSimilarity: options.minSimilarity,
+    tagFilter: options.tagFilter,
+    tierFilter: options.tierFilter,
+  };
+}
+
+function normalizeTermInput(value: string): string {
+  return value.trim();
+}
+
+function normalizeTermKey(value: string): string {
+  return normalizeTermInput(value).toLowerCase();
+}
+
+function dedupeStrings(values: readonly string[]): string[] {
+  return dedupeTermInputs(values.map((term) => ({ term, source: "llm-expansion" as const }))).map(
+    (item) => item.term,
+  );
+}
+
+function dedupeTermInputs<T extends { term: string; source: RecallIntent["source"] }>(
+  values: readonly T[],
+): T[] {
+  const byKey = new Map<string, T>();
+
+  for (const value of values) {
+    const term = normalizeTermInput(value.term);
+
+    if (term.length === 0) {
+      continue;
+    }
+
+    const key = normalizeTermKey(term);
+
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        ...value,
+        term,
+      });
+    }
+  }
+
+  return [...byKey.values()];
+}
+
+function mergeRawEpisodeCandidates(
+  candidates: readonly RawEpisodeEvidenceCandidate[],
+): RawEpisodeEvidenceCandidate[] {
+  const byId = new Map<EpisodeId, RawEpisodeEvidenceCandidate>();
+
+  for (const candidate of candidates) {
+    const current = byId.get(candidate.candidate.episode.id);
+
+    if (
+      current === undefined ||
+      candidate.candidate.similarity > current.candidate.similarity ||
+      (candidate.candidate.similarity === current.candidate.similarity &&
+        candidate.candidate.episode.updated_at > current.candidate.episode.updated_at)
+    ) {
+      byId.set(candidate.candidate.episode.id, candidate);
+    }
+  }
+
+  return [...byId.values()];
+}
+
+function isSemanticIntentKind(kind: RecallIntentKind): boolean {
+  return (
+    kind === "raw_text" ||
+    kind === "topic" ||
+    kind === "relationship" ||
+    kind === "known_term" ||
+    kind === "commitment" ||
+    kind === "open_question"
+  );
+}
+
+function mergeSemanticRetrievals(
+  retrievals: readonly ResolvedSemanticRetrieval[],
+): ResolvedSemanticRetrieval {
+  const supports = new Map<string, SemanticNode>();
+  const contradicts = new Map<string, SemanticNode>();
+  const categories = new Map<string, SemanticNode>();
+  const matchedNodes = new Map<string, ResolvedSemanticRetrieval["matchedNodes"][number]>();
+  const supportHits = new Map<string, ResolvedSemanticRetrieval["supportHits"][number]>();
+  const causalHits = new Map<string, ResolvedSemanticRetrieval["causalHits"][number]>();
+  const contradictionHits = new Map<
+    string,
+    ResolvedSemanticRetrieval["contradictionHits"][number]
+  >();
+  const categoryHits = new Map<string, ResolvedSemanticRetrieval["categoryHits"][number]>();
+
+  for (const retrieval of retrievals) {
+    for (const node of retrieval.context.supports) {
+      supports.set(node.id, node);
+    }
+
+    for (const node of retrieval.context.contradicts) {
+      contradicts.set(node.id, node);
+    }
+
+    for (const node of retrieval.context.categories) {
+      categories.set(node.id, node);
+    }
+
+    for (const node of retrieval.matchedNodes) {
+      const current = matchedNodes.get(node.id);
+
+      if (current === undefined || (node.retrieval_score ?? 0) > (current.retrieval_score ?? 0)) {
+        matchedNodes.set(node.id, node);
+      }
+    }
+
+    for (const hit of retrieval.supportHits) {
+      supportHits.set(semanticHitKey(hit), hit);
+    }
+
+    for (const hit of retrieval.causalHits) {
+      causalHits.set(semanticHitKey(hit), hit);
+    }
+
+    for (const hit of retrieval.contradictionHits) {
+      contradictionHits.set(semanticHitKey(hit), hit);
+    }
+
+    for (const hit of retrieval.categoryHits) {
+      categoryHits.set(semanticHitKey(hit), hit);
+    }
+  }
+
+  const sortedMatchedNodes = [...matchedNodes.values()].sort(
+    (left, right) =>
+      (right.retrieval_score ?? 0) - (left.retrieval_score ?? 0) ||
+      (right.base_retrieval_score ?? 0) - (left.base_retrieval_score ?? 0) ||
+      right.updated_at - left.updated_at ||
+      left.id.localeCompare(right.id),
+  );
+
+  return {
+    context: {
+      supports: [...supports.values()],
+      contradicts: [...contradicts.values()],
+      categories: [...categories.values()],
+    },
+    contradictionPresent: contradictionHits.size > 0 || contradicts.size > 0,
+    matchedNodeIds: sortedMatchedNodes.map((node) => node.id),
+    matchedNodes: sortedMatchedNodes,
+    supportHits: [...supportHits.values()],
+    causalHits: [...causalHits.values()],
+    contradictionHits: [...contradictionHits.values()],
+    categoryHits: [...categoryHits.values()],
+    asOf: retrievals.find((retrieval) => retrieval.asOf !== undefined)?.asOf,
+  };
+}
+
+function semanticHitKey(hit: ResolvedSemanticRetrieval["supportHits"][number]): string {
+  return [hit.root_node_id, hit.node.id, ...hit.edgePath.map((edge) => edge.id)].join("|");
+}
+
+function episodeCandidateToEvidence(item: EpisodeEvidenceCandidate): EvidenceItem {
+  const episode = item.candidate.episode;
+
+  return {
+    id: `evidence_episode_${episode.id}_${item.intent.id}`,
+    source: "episode",
+    text: `${episode.title}: ${episode.narrative}`,
+    provenance: {
+      episodeId: episode.id,
+      streamIds: [...episode.source_stream_ids],
+    },
+    recallIntentId: item.intent.id,
+    matchedTerms: [...item.matchedTerms],
+    score: item.score.score,
+    scoreBreakdown: {
+      vector: item.candidate.similarity,
+      salience: item.score.decayedSalience,
+      recency: computeRecencyEvidenceScore(episode.updated_at),
+      exactTerm: item.intent.kind === "known_term" ? item.score.entityRelevance : undefined,
+    },
+  };
+}
+
+function semanticRetrievalToEvidence(
+  semantic: ResolvedSemanticRetrieval,
+  intent: RecallIntent,
+): EvidenceItem[] {
+  const nodeEvidence = semantic.matchedNodes.map(
+    (node): EvidenceItem => ({
+      id: `evidence_semantic_node_${node.id}_${intent.id}`,
+      source: "semantic_node",
+      text: `${node.label}: ${node.description}`,
+      provenance: {
+        nodeId: node.id,
+      },
+      recallIntentId: intent.id,
+      matchedTerms: intent.kind === "known_term" ? [...intent.terms] : [],
+      score: clamp(node.retrieval_score ?? node.base_retrieval_score ?? 0.5, 0, 1),
+      scoreBreakdown: {
+        vector: node.base_retrieval_score,
+        exactTerm: intent.kind === "known_term" ? 1 : undefined,
+      },
+    }),
+  );
+  const edgeEvidence = [
+    ...semantic.supportHits,
+    ...semantic.causalHits,
+    ...semantic.contradictionHits,
+    ...semantic.categoryHits,
+  ].map((hit): EvidenceItem => {
+    const edge = hit.edgePath.at(-1);
+    const edgeId = edge?.id;
+
+    return {
+      id: `evidence_semantic_edge_${edgeId ?? hit.node.id}_${intent.id}`,
+      source: "semantic_edge",
+      text: `${hit.node.label}: ${hit.node.description}`,
+      provenance: {
+        ...(edgeId === undefined ? {} : { edgeId }),
+        nodeId: hit.node.id,
+      },
+      recallIntentId: intent.id,
+      matchedTerms: [],
+      score: averageEdgeConfidence(hit.edgePath),
+      scoreBreakdown: {
+        provenance: hit.edgePath.length > 0 ? 1 : 0,
+      },
+    };
+  });
+
+  return [...nodeEvidence, ...edgeEvidence];
+}
+
+function averageEdgeConfidence(
+  edgePath: ResolvedSemanticRetrieval["supportHits"][number]["edgePath"],
+) {
+  if (edgePath.length === 0) {
+    return 0.3;
+  }
+
+  return clamp(edgePath.reduce((sum, edge) => sum + edge.confidence, 0) / edgePath.length, 0, 1);
+}
+
+function openQuestionToEvidence(
+  question: OpenQuestion,
+  intent: RecallIntent,
+  score: number,
+): EvidenceItem {
+  return {
+    id: `evidence_open_question_${question.id}_${intent.id}`,
+    source: "open_question",
+    text: question.question,
+    provenance: {
+      openQuestionId: question.id,
+    },
+    recallIntentId: intent.id,
+    matchedTerms: [],
+    score: clamp(score, 0, 1),
+    scoreBreakdown: {
+      salience: question.urgency,
+    },
+  };
+}
+
+function streamEntriesToEvidence(
+  entries: ReadonlyMap<string, StreamEntry>,
+  episodeCandidates: readonly EpisodeEvidenceCandidate[],
+): EvidenceItem[] {
+  const intentByStreamId = new Map<string, RecallIntent>();
+
+  for (const candidate of episodeCandidates) {
+    for (const streamId of candidate.candidate.episode.source_stream_ids) {
+      intentByStreamId.set(streamId, candidate.intent);
+    }
+  }
+
+  return [...entries.values()]
+    .filter((entry) => intentByStreamId.has(entry.id))
+    .map((entry) => streamEntryToEvidence(entry, intentByStreamId.get(entry.id)!));
+}
+
+function streamEntryToEvidence(entry: StreamEntry, intent: RecallIntent): EvidenceItem {
+  return {
+    id: `evidence_raw_stream_${entry.id}_${intent.id}`,
+    source: "raw_stream",
+    text: streamEntryContentToText(entry),
+    provenance: {
+      streamIds: [entry.id],
+    },
+    recallIntentId: intent.id,
+    matchedTerms: [],
+    score: intent.kind === "recent" ? 0.2 : 1,
+    scoreBreakdown: {
+      provenance: 1,
+      recency: intent.kind === "recent" ? 1 : undefined,
+    },
+  };
+}
+
+function streamEntryContentToText(entry: StreamEntry): string {
+  if (typeof entry.content === "string") {
+    return entry.content;
+  }
+
+  return JSON.stringify(entry.content ?? null);
+}
+
+function matchedCommitmentTerms(commitment: CommitmentRecord, intent: RecallIntent): string[] {
+  if (intent.terms.length === 0) {
+    return [];
+  }
+
+  const directive = commitment.directive.toLowerCase();
+
+  return intent.terms.filter((term) => directive.indexOf(normalizeTermKey(term)) >= 0);
+}
+
+function commitmentToEvidence(
+  commitment: CommitmentRecord,
+  intent: RecallIntent,
+  matchedTerms: readonly string[],
+): EvidenceItem {
+  const lexical = matchedTerms.length > 0 ? 1 : intent.kind === "commitment" ? 0.25 : 0;
+
+  return {
+    id: `evidence_commitment_${commitment.id}_${intent.id}`,
+    source: "commitment",
+    text: `${commitment.type}: ${commitment.directive}`,
+    provenance: {
+      commitmentId: commitment.id,
+    },
+    recallIntentId: intent.id,
+    matchedTerms: [...matchedTerms],
+    score: clamp(commitment.priority / 10 + lexical * 0.4, 0, 1),
+    scoreBreakdown: {
+      lexical,
+      exactTerm: matchedTerms.length > 0 ? 1 : undefined,
+    },
+  };
+}
+
+function computeRecencyEvidenceScore(updatedAt: number): number {
+  return Number.isFinite(updatedAt) ? 0.1 : 0;
 }

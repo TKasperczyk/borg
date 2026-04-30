@@ -1,4 +1,5 @@
 export { retrievalMigrations } from "./migrations.js";
+export type { EvidenceItem, EvidencePool, RecallIntent } from "./recall-types.js";
 export {
   computeRetrievalConfidence,
   type ComputeRetrievalConfidenceInput,

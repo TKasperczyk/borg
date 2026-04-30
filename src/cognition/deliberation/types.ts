@@ -16,6 +16,7 @@ import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
+  EvidenceItem,
   RetrievalConfidence,
   RetrievedEpisode,
   RetrievedSemantic,
@@ -71,6 +72,7 @@ export type DeliberationContext = {
    * retrieved independently of episode hits.
    */
   retrievedSemantic?: RetrievedSemantic | null;
+  retrievedEvidence?: readonly EvidenceItem[];
   contradictionPresent?: boolean;
   retrievalConfidence?: RetrievalConfidence | null;
   applicableCommitments?: readonly CommitmentRecord[];

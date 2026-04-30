@@ -58,6 +58,7 @@ function openCorrectionBorg(tempDir: string, llm = new FakeLLMClient()) {
           cognition: "sonnet",
           background: "haiku",
           extraction: "haiku",
+          recallExpansion: "haiku",
         },
       },
     },
