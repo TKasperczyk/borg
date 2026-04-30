@@ -13,6 +13,12 @@ export const temporalCueSchema = z.object({
   label: z.string().min(1).optional(),
 });
 
+export const factualChallengeSignalSchema = z.object({
+  disputed_entity: z.string().trim().min(1).nullable(),
+  disputed_property: z.string().trim().min(1).nullable(),
+  user_position: z.string().trim().min(1),
+});
+
 export const intentRecordSchema = z.object({
   description: z.string().min(1),
   next_action: z.string().min(1).nullable(),
@@ -36,11 +42,13 @@ export const perceptionResultSchema = z.object({
   affectiveSignal: affectiveSignalSchema,
   affectiveSignalDegraded: z.boolean().optional(),
   temporalCue: temporalCueSchema.nullable(),
+  factualChallenge: factualChallengeSignalSchema.nullable().optional(),
 });
 
 export type CognitiveMode = z.infer<typeof cognitiveModeSchema>;
 export type AffectiveSignal = z.infer<typeof affectiveSignalSchema>;
 export type TemporalCue = z.infer<typeof temporalCueSchema>;
+export type FactualChallengeSignal = z.infer<typeof factualChallengeSignalSchema>;
 export type IntentRecord = z.infer<typeof intentRecordSchema>;
 export type AttentionWeights = z.infer<typeof attentionWeightsSchema>;
 export type PerceptionResult = z.infer<typeof perceptionResultSchema>;

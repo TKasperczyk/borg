@@ -15,6 +15,7 @@ import type {
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
+import type { ChallengeEvidence } from "../../../retrieval/index.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import {
   CURRENT_USER_MESSAGE_REMINDER,
@@ -38,6 +39,9 @@ export type BuildBaseSystemPromptOptions = {
   semanticContextBudget: number;
   nowMs?: number;
 };
+
+const CHALLENGE_EVIDENCE_GUIDANCE =
+  "If the user is contradicting a fact you remember and you have evidence in your own history (above), default behavior is to surface the evidence with citation ('I have you naming her Maya in our conversation about the two-day broth -- could that be different?') and ask for reconciliation. Do not disavow remembered facts solely because the user is asserting otherwise. If the user provides new evidence or explicitly says they had forgotten, then update.";
 
 export function buildBaseSystemPrompt(
   context: DeliberationContext,
@@ -93,6 +97,10 @@ export function buildBaseSystemPrompt(
       ),
     },
     {
+      tag: "challenge_evidence",
+      content: summarizeChallengeEvidence(context.challengeEvidence ?? null),
+    },
+    {
       tag: "borg_retrieval_confidence",
       content: summarizeRetrievalConfidence(context.retrievalConfidence ?? null),
     },
@@ -139,6 +147,13 @@ export function buildBaseSystemPrompt(
     {
       tag: "borg_discourse_control",
       content: summarizeDiscourseControl(context.workingMemory),
+    },
+    {
+      tag: "borg_challenge_evidence_guidance",
+      content:
+        context.challengeEvidence === null || context.challengeEvidence === undefined
+          ? null
+          : CHALLENGE_EVIDENCE_GUIDANCE,
     },
   ]);
 
@@ -416,6 +431,50 @@ function summarizePendingCorrections(items: readonly ReviewQueueItem[]): string 
         ? item.refs.prompt_summary.trim()
         : `user proposed a correction for ${typeof item.refs.target_id === "string" ? item.refs.target_id : "an existing record"}`;
     lines.push(`- ${summary}`);
+  }
+
+  return lines.join("\n");
+}
+
+function summarizeChallengeEvidence(evidence: ChallengeEvidence | null | undefined): string | null {
+  if (evidence === null || evidence === undefined) {
+    return null;
+  }
+
+  const lines = [
+    `Factual challenge: disputed_entity=${evidence.disputed_entity ?? "unknown"}; disputed_property=${evidence.disputed_property ?? "unknown"}`,
+    `User position: ${compactPromptText(evidence.user_position, 220)}`,
+    `References found: ${evidence.reference_count}`,
+  ];
+
+  if (evidence.episodes.length > 0) {
+    lines.push("Episode matches:");
+
+    for (const episode of evidence.episodes.slice(0, 5)) {
+      lines.push(
+        `- ${episode.episode_id}: ${compactPromptText(episode.title, 120)} -- ${compactPromptText(episode.context, 260)}`,
+      );
+      lines.push(`  participants: ${episode.participants.join(", ") || "none"}`);
+      lines.push(`  tags: ${episode.tags.join(", ") || "none"}`);
+      lines.push(`  source_stream_ids: ${episode.source_stream_ids.join(", ")}`);
+    }
+  }
+
+  if (evidence.raw_user_messages.length > 0) {
+    lines.push("Raw user_msg snippets:");
+
+    for (const snippet of evidence.raw_user_messages.slice(0, 8)) {
+      const audience = snippet.audience === undefined ? "" : ` audience=${snippet.audience}`;
+      lines.push(
+        `- ${snippet.stream_entry_id} ${new Date(snippet.timestamp).toISOString()} session=${snippet.session_id}${audience}: ${compactPromptText(snippet.snippet, 280)}`,
+      );
+    }
+  }
+
+  if (evidence.reference_count === 0) {
+    lines.push(
+      "No direct episode participant/tag or raw user_msg references matched the disputed entity.",
+    );
   }
 
   return lines.join("\n");

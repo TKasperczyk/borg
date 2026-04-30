@@ -1077,6 +1077,10 @@ function isStopCommitmentFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "generation-stop-commitment";
 }
 
+function isFactualChallengeFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "perception-factual-challenge";
+}
+
 function isProceduralContextResponse(response: FakeLLMResponse | undefined): boolean {
   if (response === undefined || typeof response === "function" || typeof response !== "object") {
     return false;
@@ -1109,6 +1113,24 @@ function isStopCommitmentResponse(response: FakeLLMResponse | undefined): boolea
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "EmitStopCommitmentClassification",
+    );
+  }
+
+  return false;
+}
+
+function isFactualChallengeResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "EmitFactualChallenge");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "EmitFactualChallenge",
     );
   }
 
@@ -1155,6 +1177,24 @@ function defaultStopCommitmentResponse(): LLMCompleteResult {
   };
 }
 
+function defaultFactualChallengeResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_factual_challenge",
+        name: "EmitFactualChallenge",
+        input: {
+          factual_challenge: null,
+        },
+      },
+    ],
+  };
+}
+
 export class FakeLLMClient implements LLMClient {
   private readonly usageSink?: TokenUsageSink;
   readonly requests: LLMCompleteOptions[] = [];
@@ -1185,6 +1225,10 @@ export class FakeLLMClient implements LLMClient {
 
     if (isProceduralContextFallbackRequest(options) && !isProceduralContextResponse(response)) {
       return defaultProceduralContextResponse();
+    }
+
+    if (isFactualChallengeFallbackRequest(options) && !isFactualChallengeResponse(response)) {
+      return defaultFactualChallengeResponse();
     }
 
     this.responses.shift();

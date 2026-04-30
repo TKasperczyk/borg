@@ -17,7 +17,7 @@ import type { ExecutiveFocus, ExecutiveStepsRepository } from "../executive/inde
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import type { Reflector } from "./reflection/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
-import type { RetrievalPipeline } from "../retrieval/index.js";
+import { retrieveFactualChallengeEvidence, type RetrievalPipeline } from "../retrieval/index.js";
 import {
   buildSelfScoringFeatureSet,
   selectActiveScoringValues,
@@ -810,6 +810,18 @@ export class TurnOrchestrator {
         const retrievedSemantic = retrievalContext.retrievedSemantic;
         const proceduralContext = retrievalContext.proceduralContext;
         const selectedSkill = retrievalContext.selectedSkill;
+        const challengeEvidence =
+          perception.factualChallenge === null || perception.factualChallenge === undefined
+            ? null
+            : await retrieveFactualChallengeEvidence({
+                challenge: perception.factualChallenge,
+                episodicRepository: this.options.episodicRepository,
+                dataDir: this.options.config.dataDir,
+                excludeStreamEntryIds:
+                  persistedUserEntryId === undefined ? [] : [persistedUserEntryId],
+                audienceEntityId,
+                audience: input.audience,
+              });
         const deliberator = new Deliberator({
           llmClient,
           toolDispatcher: this.options.toolDispatcher,
@@ -835,6 +847,7 @@ export class TurnOrchestrator {
             applicableCommitments,
             openQuestionsContext: retrieval.open_questions,
             pendingCorrectionsContext: pendingCorrections,
+            challengeEvidence,
             selectedSkill,
             entityRepository: this.options.entityRepository,
             workingMemory,

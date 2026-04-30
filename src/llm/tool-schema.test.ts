@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { ENTITY_FALLBACK_TOOL } from "../cognition/perception/entity-extractor.js";
+import { FACTUAL_CHALLENGE_TOOL } from "../cognition/perception/factual-challenge.js";
 import { MODE_FALLBACK_TOOL } from "../cognition/perception/mode-detector.js";
 import { AFFECTIVE_FALLBACK_TOOL } from "../memory/affective/extractor.js";
 import { EXTRACT_EPISODES_TOOL } from "../memory/episodic/extractor.js";
@@ -62,6 +63,7 @@ describe("tool schemas", () => {
       { tool: SELF_NARRATOR_TOOL, required: ["observations"] },
       { tool: ENTITY_FALLBACK_TOOL, required: ["entities"] },
       { tool: MODE_FALLBACK_TOOL, required: ["mode"] },
+      { tool: FACTUAL_CHALLENGE_TOOL, required: ["factual_challenge"] },
       { tool: AFFECTIVE_FALLBACK_TOOL, required: ["valence", "arousal", "dominant_emotion"] },
     ] as const;
 

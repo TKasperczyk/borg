@@ -188,6 +188,48 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("- Check the Atlas rollout after tests finish -> review deploy status");
   });
 
+  it("renders factual challenge evidence with the reconciliation guidance", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        challengeEvidence: {
+          disputed_entity: "Maya",
+          disputed_property: "is my partner",
+          user_position: "Maya is not my partner.",
+          reference_count: 2,
+          episodes: [
+            {
+              episode_id: "ep_aaaaaaaaaaaaaaaa" as never,
+              title: "Two-day broth plan",
+              context: "Tom said Maya wanted the two-day broth for her birthday.",
+              participants: ["Tom", "Maya"],
+              tags: ["Maya"],
+              start_time: 1_000,
+              end_time: 2_000,
+              source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"] as never,
+            },
+          ],
+          raw_user_messages: [
+            {
+              stream_entry_id: "strm_aaaaaaaaaaaaaaaa" as never,
+              session_id: DEFAULT_SESSION_ID,
+              timestamp: NOW_MS,
+              snippet: "Maya wants the two-day broth for her birthday.",
+            },
+          ],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const evidenceBlock = extractBlock(prompt, "challenge_evidence");
+    const guidanceBlock = extractBlock(prompt, "borg_challenge_evidence_guidance");
+
+    expect(evidenceBlock).toContain("Factual challenge: disputed_entity=Maya");
+    expect(evidenceBlock).toContain("ep_aaaaaaaaaaaaaaaa");
+    expect(evidenceBlock).toContain("Maya wants the two-day broth");
+    expect(guidanceBlock).toContain("surface the evidence with citation");
+    expect(guidanceBlock).toContain("Do not disavow remembered facts");
+  });
+
   it("renders pending procedural attempts in working state so cognition can see them", () => {
     // Sprint 55 regression test: Sprint 53 multi-slot mechanism was
     // invisible to deliberation because the prompt summarizer ignored
