@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeLLMClient } from "../../llm/index.js";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { SkillSelector, deriveProceduralContextKey } from "../../memory/procedural/index.js";
+import { createSkillSplitReviewQueueHandler } from "../../memory/semantic/index.js";
 import { createWorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { SuppressionSet } from "../../cognition/attention/index.js";
@@ -1364,13 +1365,15 @@ describe("ProceduralSynthesizerProcess", () => {
         },
       ],
     });
-    harness.reviewQueueRepository.setSkillSplitReviewHandler(
-      createSkillSplitReviewHandler({
-        skillRepository: harness.skillRepository,
-        auditLog: harness.auditLog,
-        clock: harness.clock,
-        workingMemoryStore,
-      }),
+    harness.reviewQueueRepository.registerHandler(
+      createSkillSplitReviewQueueHandler(
+        createSkillSplitReviewHandler({
+          skillRepository: harness.skillRepository,
+          auditLog: harness.auditLog,
+          clock: harness.clock,
+          workingMemoryStore,
+        }),
+      ),
     );
 
     const process = createProcess(harness);

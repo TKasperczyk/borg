@@ -22,6 +22,7 @@ import type {
   SemanticEdgeRepository,
   SemanticNodeRepository,
 } from "../memory/semantic/index.js";
+import { createSkillSplitReviewQueueHandler } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import {
@@ -141,13 +142,15 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
         options.config.offline.beliefReviser.consecutiveParseFailureLimit,
     }),
   } satisfies Record<OfflineProcessName, OfflineProcess>;
-  options.reviewQueueRepository.setSkillSplitReviewHandler(
-    createSkillSplitReviewHandler({
-      skillRepository: options.skillRepository,
-      auditLog,
-      clock: options.clock,
-      workingMemoryStore: options.workingMemoryStore,
-    }),
+  options.reviewQueueRepository.registerHandler(
+    createSkillSplitReviewQueueHandler(
+      createSkillSplitReviewHandler({
+        skillRepository: options.skillRepository,
+        auditLog,
+        clock: options.clock,
+        workingMemoryStore: options.workingMemoryStore,
+      }),
+    ),
   );
   const maintenanceOrchestrator = new MaintenanceOrchestrator({
     baseContext: {

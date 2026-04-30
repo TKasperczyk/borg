@@ -38,7 +38,6 @@ import {
 export const REVIEW_KINDS = [
   "contradiction",
   "duplicate",
-  "stale",
   "new_insight",
   "misattribution",
   "temporal_drift",
@@ -87,11 +86,12 @@ export type ReviewQueueItem = z.infer<typeof reviewQueueItemSchema>;
 export type ReviewKind = z.infer<typeof reviewKindSchema>;
 export type ReviewResolution = z.infer<typeof reviewResolutionSchema>;
 export type ReviewResolutionInput = z.infer<typeof reviewResolutionInputSchema>;
-type ResolvedReviewDecision = {
+export type ReviewApplyDecision = {
   decision: ReviewResolution;
   winner_node_id?: z.infer<typeof semanticNodeIdSchema>;
   reason?: string;
 };
+type ResolvedReviewDecision = ReviewApplyDecision;
 
 export type ReviewQueueInsertInput = {
   kind: ReviewKind;
@@ -113,7 +113,7 @@ export type ReviewQueueRepositoryOptions = {
   identityService?: IdentityService;
   identityEventRepository?: IdentityEventRepository;
   applyCorrection?: (item: ReviewQueueItem) => Promise<void> | void;
-  skillSplitReviewHandler?: SkillSplitReviewHandler;
+  handlers?: ReviewQueueHandlerRegistry;
   onEnqueue?: (item: ReviewQueueItem, input: ReviewQueueInsertInput) => void | Promise<void>;
   onEnqueueError?: (
     error: unknown,
@@ -134,15 +134,7 @@ const NEW_INSIGHT_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
   "dismiss",
 ]);
 const LIFECYCLE_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject", "dismiss"]);
-const CORRECTION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject"]);
-const SKILL_SPLIT_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["accept", "reject"]);
-const BELIEF_REVISION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
-  "keep",
-  "weaken",
-  "archive_node",
-  "invalidate_edge",
-  "dismiss",
-]);
+const BELIEF_REVISION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["dismiss"]);
 
 const misattributionEpisodePatchSchema = episodePatchSchema
   .pick({
@@ -326,6 +318,81 @@ export type SkillSplitReviewHandler = {
   ) => Promise<void> | void;
 };
 
+export type ReviewTransactionScope = "sqlite" | "cross_store_applying_state" | "external";
+
+export type ReviewApplyOutcome = {
+  finalResolution?: ReviewApplyDecision;
+  refs?: Record<string, unknown>;
+};
+
+export type ReviewHandlerContext = {
+  db: SqliteDatabase;
+  clock: Clock;
+  episodicRepository?: EpisodicRepository;
+  semanticNodeRepository?: SemanticNodeRepository;
+  semanticEdgeRepository?: SemanticEdgeRepository;
+  valuesRepository?: ValuesRepository;
+  goalsRepository?: GoalsRepository;
+  traitsRepository?: TraitsRepository;
+  autobiographicalRepository?: AutobiographicalRepository;
+  commitmentRepository?: CommitmentRepository;
+  identityService?: IdentityService;
+  identityEventRepository?: IdentityEventRepository;
+  applyCorrection?: (item: ReviewQueueItem) => Promise<void> | void;
+};
+
+export type ReviewApplyingStateSpec<TRefs, TState> = {
+  key?: string;
+  schema: z.ZodType<TState>;
+  prepare: (input: {
+    item: ReviewQueueItem;
+    refs: TRefs;
+    resolution: ReviewApplyDecision;
+    ctx: ReviewHandlerContext;
+  }) => Promise<TState> | TState;
+  matches: (state: TState, resolution: ReviewApplyDecision) => boolean;
+};
+
+export type ReviewQueueHandler<K extends ReviewKind, TRefs, TState = never> = {
+  kind: K;
+  refsSchema: z.ZodType<TRefs>;
+  allowedResolutions: ReadonlySet<ReviewResolution>;
+  transactionScope: (input: {
+    item: ReviewQueueItem;
+    refs: TRefs;
+    resolution: ReviewApplyDecision;
+    ctx: ReviewHandlerContext;
+  }) => ReviewTransactionScope;
+  applyingState?: ReviewApplyingStateSpec<TRefs, TState>;
+  apply: (input: {
+    item: ReviewQueueItem;
+    refs: TRefs;
+    resolution: ReviewApplyDecision;
+    applyingState: TState | null;
+    ctx: ReviewHandlerContext;
+  }) => Promise<ReviewApplyOutcome | void> | ReviewApplyOutcome | void;
+};
+
+export class ReviewQueueHandlerRegistry {
+  private readonly handlers = new Map<
+    ReviewKind,
+    ReviewQueueHandler<ReviewKind, unknown, unknown>
+  >();
+
+  register<K extends ReviewKind, TRefs, TState>(
+    handler: ReviewQueueHandler<K, TRefs, TState>,
+  ): void {
+    this.handlers.set(
+      handler.kind,
+      handler as unknown as ReviewQueueHandler<ReviewKind, unknown, unknown>,
+    );
+  }
+
+  get(kind: ReviewKind): ReviewQueueHandler<ReviewKind, unknown, unknown> | null {
+    return this.handlers.get(kind) ?? null;
+  }
+}
+
 const semanticEdgeReviewClosureRefsSchema = z
   .object({
     target_type: z.literal("semantic_edge").optional(),
@@ -339,59 +406,81 @@ const semanticEdgeReviewClosureRefsSchema = z
   })
   .passthrough();
 
-const reviewSemanticNodePayloadSchema = z.object({
-  id: semanticNodeIdSchema,
-  kind: z.enum(["concept", "entity", "proposition"]),
-  label: z.string().min(1),
-  description: z.string().min(1),
-  domain: z.string().min(1).nullable().default(null),
-  aliases: z.array(z.string().min(1)),
-  confidence: z.number().min(0).max(1),
-  source_episode_ids: z.array(episodeIdSchema).min(1),
-  created_at: z.number().finite(),
-  updated_at: z.number().finite(),
-  last_verified_at: z.number().finite(),
-  embedding: z.array(z.number().finite()),
-  archived: z.boolean(),
-  superseded_by: semanticNodeIdSchema.nullable(),
-});
+const reviewSemanticNodePayloadSchema = z
+  .object({
+    id: semanticNodeIdSchema,
+    kind: z.enum(["concept", "entity", "proposition"]),
+    label: z.string().min(1),
+    description: z.string().min(1),
+    domain: z.string().min(1).nullable().default(null),
+    aliases: z.array(z.string().min(1)),
+    confidence: z.number().min(0).max(1),
+    source_episode_ids: z.array(episodeIdSchema).min(1),
+    created_at: z.number().finite(),
+    updated_at: z.number().finite(),
+    last_verified_at: z.number().finite(),
+    embedding: z.array(z.number().finite()),
+    archived: z.boolean(),
+    superseded_by: semanticNodeIdSchema.nullable(),
+  })
+  .strict();
 
 const pendingReflectorTargetSchema = z.discriminatedUnion("mode", [
-  z.object({
-    mode: z.literal("insert"),
-    node: reviewSemanticNodePayloadSchema,
-  }),
-  z.object({
-    mode: z.literal("update"),
-    node_id: semanticNodeIdSchema,
-    patch: z.object({
-      description: z.string().min(1),
-      confidence: z.number().min(0).max(1),
-      source_episode_ids: z.array(episodeIdSchema).min(1),
-      last_verified_at: z.number().finite(),
-      embedding: z.array(z.number().finite()),
-      archived: z.boolean(),
-    }),
-  }),
+  z
+    .object({
+      mode: z.literal("insert"),
+      node: reviewSemanticNodePayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("update"),
+      node_id: semanticNodeIdSchema,
+      patch: z
+        .object({
+          description: z.string().min(1),
+          confidence: z.number().min(0).max(1),
+          source_episode_ids: z.array(episodeIdSchema).min(1),
+          last_verified_at: z.number().finite(),
+          embedding: z.array(z.number().finite()),
+          archived: z.boolean(),
+        })
+        .strict(),
+    })
+    .strict(),
 ]);
 
-const pendingReflectorSupportEdgeSchema = z.object({
-  id: semanticEdgeIdSchema,
-  insight_node_id: semanticNodeIdSchema,
-  target_node_id: semanticNodeIdSchema,
-  source_episode_ids: z.array(episodeIdSchema).min(1),
-  confidence: z.number().min(0).max(1),
-});
+const pendingReflectorSupportEdgeSchema = z
+  .object({
+    id: semanticEdgeIdSchema,
+    insight_node_id: semanticNodeIdSchema,
+    target_node_id: semanticNodeIdSchema,
+    source_episode_ids: z.array(episodeIdSchema).min(1),
+    confidence: z.number().min(0).max(1),
+  })
+  .strict();
 
 const pendingReflectorInsightSchema = z
   .object({
     target: pendingReflectorTargetSchema,
     candidate_support_edges: z.array(pendingReflectorSupportEdgeSchema).default([]),
-    evidence_cluster: z.object({
-      key: z.string().min(1),
-      episode_ids: z.array(episodeIdSchema).min(1),
-      size: z.number().int().positive(),
-    }),
+    evidence_cluster: z
+      .object({
+        key: z.string().min(1),
+        episode_ids: z.array(episodeIdSchema).min(1),
+        size: z.number().int().positive(),
+      })
+      .strict(),
+  })
+  .strict();
+
+const newInsightRefsSchema = z
+  .object({
+    node_ids: z.array(semanticNodeIdSchema).min(1),
+    episode_ids: z.array(episodeIdSchema).min(1),
+    evidence_cluster_key: z.string().min(1),
+    evidence_cluster_size: z.number().int().positive(),
+    reflector_pending_insight: pendingReflectorInsightSchema,
   })
   .strict();
 
@@ -409,14 +498,6 @@ const reviewApplyingStateSchema = z
     decision: reviewResolutionSchema,
     winner_node_id: semanticNodeIdSchema.nullable().optional(),
     started_at: z.number().finite(),
-    semantic_node_patch: z
-      .object({
-        node_id: semanticNodeIdSchema,
-        confidence: z.number().min(0).max(1).optional(),
-        last_verified_at: z.number().finite().optional(),
-      })
-      .strict()
-      .optional(),
   })
   .strict();
 
@@ -454,10 +535,6 @@ type SemanticEdgeClosureRefs = {
   byEdgeId?: SemanticEdge["id"];
   reason: string;
 };
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 function deserializeReviewSemanticNode(
   node: z.infer<typeof reviewSemanticNodePayloadSchema>,
@@ -504,13 +581,12 @@ function throwMalformedPairRefsError(kind: ReviewKind): never {
 function isResolutionCompatible(kind: ReviewKind, resolution: ReviewResolution): boolean {
   switch (kind) {
     case "correction":
-      return CORRECTION_REVIEW_RESOLUTIONS.has(resolution);
+      return false;
     case "contradiction":
     case "duplicate":
       return SEMANTIC_REVIEW_RESOLUTIONS.has(resolution);
     case "new_insight":
       return NEW_INSIGHT_REVIEW_RESOLUTIONS.has(resolution);
-    case "stale":
     case "misattribution":
     case "temporal_drift":
     case "identity_inconsistency":
@@ -518,7 +594,7 @@ function isResolutionCompatible(kind: ReviewKind, resolution: ReviewResolution):
     case "belief_revision":
       return BELIEF_REVISION_REVIEW_RESOLUTIONS.has(resolution);
     case "skill_split":
-      return SKILL_SPLIT_REVIEW_RESOLUTIONS.has(resolution);
+      return false;
   }
 }
 
@@ -584,16 +660,34 @@ function mapReviewRow(row: Record<string, unknown>): ReviewQueueItem {
 
 export class ReviewQueueRepository {
   private readonly clock: Clock;
+  private readonly handlers: ReviewQueueHandlerRegistry;
   private readonly pendingEnqueueHooks = new Set<Promise<void>>();
-  private skillSplitReviewHandler?: SkillSplitReviewHandler;
 
   constructor(private readonly options: ReviewQueueRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
-    this.skillSplitReviewHandler = options.skillSplitReviewHandler;
+    this.handlers = options.handlers ?? new ReviewQueueHandlerRegistry();
   }
 
   private get db(): SqliteDatabase {
     return this.options.db;
+  }
+
+  private get handlerContext(): ReviewHandlerContext {
+    return {
+      db: this.db,
+      clock: this.clock,
+      episodicRepository: this.options.episodicRepository,
+      semanticNodeRepository: this.options.semanticNodeRepository,
+      semanticEdgeRepository: this.options.semanticEdgeRepository,
+      valuesRepository: this.options.valuesRepository,
+      goalsRepository: this.options.goalsRepository,
+      traitsRepository: this.options.traitsRepository,
+      autobiographicalRepository: this.options.autobiographicalRepository,
+      commitmentRepository: this.options.commitmentRepository,
+      identityService: this.options.identityService,
+      identityEventRepository: this.options.identityEventRepository,
+      applyCorrection: this.options.applyCorrection,
+    };
   }
 
   private reportEnqueueHookError(
@@ -626,8 +720,10 @@ export class ReviewQueueRepository {
     }
   }
 
-  setSkillSplitReviewHandler(handler: SkillSplitReviewHandler): void {
-    this.skillSplitReviewHandler = handler;
+  registerHandler<K extends ReviewKind, TRefs, TState>(
+    handler: ReviewQueueHandler<K, TRefs, TState>,
+  ): void {
+    this.handlers.register(handler);
   }
 
   enqueue(input: ReviewQueueInsertInput): ReviewQueueItem {
@@ -861,9 +957,12 @@ export class ReviewQueueRepository {
     );
   }
 
-  private refsWithoutApplyingState(refs: Record<string, unknown>): Record<string, unknown> {
+  private refsWithoutApplyingState(
+    refs: Record<string, unknown>,
+    key = REVIEW_APPLYING_REF_KEY,
+  ): Record<string, unknown> {
     const next = { ...refs };
-    delete next[REVIEW_APPLYING_REF_KEY];
+    delete next[key];
     return next;
   }
 
@@ -988,22 +1087,12 @@ export class ReviewQueueRepository {
     }
   }
 
-  private targetLooksCrossStore(targetId: unknown): boolean {
-    return (
-      typeof targetId === "string" && (targetId.startsWith("ep_") || targetId.startsWith("semn_"))
-    );
-  }
-
   private resolutionTouchesCrossStore(
     item: ReviewQueueItem,
     resolution: ResolvedReviewDecision,
   ): boolean {
     if (resolution.decision === "dismiss") {
       return false;
-    }
-
-    if (item.kind === "correction") {
-      return resolution.decision === "accept" && this.targetLooksCrossStore(item.refs.target_id);
     }
 
     if (item.kind === "contradiction" || item.kind === "duplicate") {
@@ -1014,10 +1103,6 @@ export class ReviewQueueRepository {
     }
 
     if (item.kind === "new_insight") {
-      return resolution.decision === "accept" || resolution.decision === "invalidate";
-    }
-
-    if (item.kind === "stale") {
       return resolution.decision === "accept";
     }
 
@@ -1036,11 +1121,12 @@ export class ReviewQueueRepository {
     resolution: ResolvedReviewDecision,
     resolvedAt: number,
     refs: Record<string, unknown>,
+    applyingStateKey = REVIEW_APPLYING_REF_KEY,
   ): void {
     this.db
       .prepare("UPDATE review_queue SET refs = ?, resolved_at = ?, resolution = ? WHERE id = ?")
       .run(
-        serializeJsonValue(this.refsWithoutApplyingState(refs)),
+        serializeJsonValue(this.refsWithoutApplyingState(refs, applyingStateKey)),
         resolvedAt,
         resolution.decision,
         itemId,
@@ -1057,39 +1143,6 @@ export class ReviewQueueRepository {
       started_at: this.clock.now(),
     };
 
-    if (
-      this.options.semanticNodeRepository === undefined ||
-      (item.kind !== "new_insight" && item.kind !== "stale") ||
-      resolution.decision !== "accept"
-    ) {
-      return state;
-    }
-
-    const rawNodeId =
-      item.kind === "new_insight"
-        ? Array.isArray(item.refs.node_ids)
-          ? item.refs.node_ids[0]
-          : undefined
-        : item.refs.target_type === "semantic_node"
-          ? item.refs.target_id
-          : item.refs.node_id;
-
-    if (typeof rawNodeId !== "string") {
-      return state;
-    }
-
-    const nodeId = semanticNodeIdSchema.parse(rawNodeId);
-    const current = await this.options.semanticNodeRepository.get(nodeId);
-
-    if (current === null) {
-      return state;
-    }
-
-    state.semantic_node_patch = {
-      node_id: nodeId,
-      confidence: clamp(current.confidence + (item.kind === "new_insight" ? 0.1 : -0.05), 0, 1),
-      last_verified_at: this.clock.now(),
-    };
     return state;
   }
 
@@ -1173,11 +1226,199 @@ export class ReviewQueueRepository {
     };
   }
 
-  private async resolveSkillSplitReview(
+  private handlerApplyingStateKey(
+    handler: ReviewQueueHandler<ReviewKind, unknown, unknown>,
+  ): string {
+    return handler.applyingState?.key ?? REVIEW_APPLYING_REF_KEY;
+  }
+
+  private parseHandlerRefs(
+    handler: ReviewQueueHandler<ReviewKind, unknown, unknown>,
+    item: ReviewQueueItem,
+  ): unknown {
+    return handler.refsSchema.parse(
+      this.refsWithoutApplyingState(item.refs, this.handlerApplyingStateKey(handler)),
+    );
+  }
+
+  private getHandlerApplyingState(
+    handler: ReviewQueueHandler<ReviewKind, unknown, unknown>,
+    item: ReviewQueueItem,
+  ): unknown | null {
+    if (handler.applyingState === undefined) {
+      return null;
+    }
+
+    const key = this.handlerApplyingStateKey(handler);
+
+    if (!Object.hasOwn(item.refs, key)) {
+      return null;
+    }
+
+    return handler.applyingState.schema.parse(item.refs[key]);
+  }
+
+  private async ensureHandlerApplyingState(
+    handler: ReviewQueueHandler<ReviewKind, unknown, unknown>,
+    item: ReviewQueueItem,
+    refs: unknown,
+    resolution: ResolvedReviewDecision,
+  ): Promise<{ item: ReviewQueueItem; applyingState: unknown }> {
+    if (handler.applyingState === undefined) {
+      throw new SemanticError("Review handler did not declare applying state", {
+        code: "REVIEW_QUEUE_APPLYING_STATE_UNSUPPORTED",
+        cause: { itemId: item.id, kind: item.kind },
+      });
+    }
+
+    const existing = this.getHandlerApplyingState(handler, item);
+
+    if (existing !== null) {
+      if (!handler.applyingState.matches(existing, resolution)) {
+        throw new SemanticError("Review item is already applying a different resolution", {
+          code: "REVIEW_QUEUE_RESOLUTION_IN_PROGRESS",
+          cause: { itemId: item.id },
+        });
+      }
+
+      return { item, applyingState: existing };
+    }
+
+    const applyingState = await handler.applyingState.prepare({
+      item,
+      refs,
+      resolution,
+      ctx: this.handlerContext,
+    });
+    const key = this.handlerApplyingStateKey(handler);
+    const nextRefs = {
+      ...item.refs,
+      [key]: applyingState,
+    };
+
+    this.db
+      .prepare("UPDATE review_queue SET refs = ? WHERE id = ? AND resolved_at IS NULL")
+      .run(serializeJsonValue(nextRefs), item.id);
+
+    return {
+      item: {
+        ...item,
+        refs: nextRefs,
+      },
+      applyingState,
+    };
+  }
+
+  private async resolveWithHandlerSqliteTransaction(
+    handler: ReviewQueueHandler<ReviewKind, unknown, unknown>,
+    item: ReviewQueueItem,
+    refs: unknown,
+    resolution: ResolvedReviewDecision,
+  ): Promise<ReviewQueueItem> {
+    const resolvedAt = this.clock.now();
+    const applyingStateKey = this.handlerApplyingStateKey(handler);
+
+    this.db.exec("BEGIN IMMEDIATE");
+
+    try {
+      const outcome = await handler.apply({
+        item,
+        refs,
+        resolution,
+        applyingState: null,
+        ctx: this.handlerContext,
+      });
+      const finalResolution = outcome?.finalResolution ?? resolution;
+      const nextRefs = outcome?.refs ?? item.refs;
+
+      this.markResolved(item.id, finalResolution, resolvedAt, nextRefs, applyingStateKey);
+      this.db.exec("COMMIT");
+
+      return {
+        ...item,
+        refs: this.refsWithoutApplyingState(nextRefs, applyingStateKey),
+        resolved_at: resolvedAt,
+        resolution: finalResolution.decision,
+      };
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Keep the original failure.
+      }
+
+      throw error;
+    }
+  }
+
+  private async resolveWithHandlerApplyingState(
+    handler: ReviewQueueHandler<ReviewKind, unknown, unknown>,
+    item: ReviewQueueItem,
+    refs: unknown,
+    resolution: ResolvedReviewDecision,
+  ): Promise<ReviewQueueItem> {
+    const { item: applyingItem, applyingState } = await this.ensureHandlerApplyingState(
+      handler,
+      item,
+      refs,
+      resolution,
+    );
+    const outcome = await handler.apply({
+      item: applyingItem,
+      refs,
+      resolution,
+      applyingState,
+      ctx: this.handlerContext,
+    });
+    const resolvedAt = this.clock.now();
+    const finalResolution = outcome?.finalResolution ?? resolution;
+    const nextRefs = outcome?.refs ?? applyingItem.refs;
+    const applyingStateKey = this.handlerApplyingStateKey(handler);
+
+    this.markResolved(applyingItem.id, finalResolution, resolvedAt, nextRefs, applyingStateKey);
+
+    return {
+      ...applyingItem,
+      refs: this.refsWithoutApplyingState(nextRefs, applyingStateKey),
+      resolved_at: resolvedAt,
+      resolution: finalResolution.decision,
+    };
+  }
+
+  private async resolveWithExternalHandler(
+    handler: ReviewQueueHandler<ReviewKind, unknown, unknown>,
+    item: ReviewQueueItem,
+    refs: unknown,
+    resolution: ResolvedReviewDecision,
+  ): Promise<ReviewQueueItem> {
+    const resolvedAt = this.clock.now();
+    const outcome = await handler.apply({
+      item,
+      refs,
+      resolution,
+      applyingState: null,
+      ctx: this.handlerContext,
+    });
+    const finalResolution = outcome?.finalResolution ?? resolution;
+    const nextRefs = outcome?.refs ?? item.refs;
+    const applyingStateKey = this.handlerApplyingStateKey(handler);
+
+    this.markResolved(item.id, finalResolution, resolvedAt, nextRefs, applyingStateKey);
+
+    return {
+      ...item,
+      refs: this.refsWithoutApplyingState(nextRefs, applyingStateKey),
+      resolved_at: resolvedAt,
+      resolution: finalResolution.decision,
+    };
+  }
+
+  private async resolveWithRegisteredHandler(
+    handler: ReviewQueueHandler<ReviewKind, unknown, unknown>,
     item: ReviewQueueItem,
     resolution: ResolvedReviewDecision,
   ): Promise<ReviewQueueItem> {
-    if (!isResolutionCompatible(item.kind, resolution.decision)) {
+    if (!handler.allowedResolutions.has(resolution.decision)) {
       throw new SemanticError(
         `Resolution "${resolution.decision}" is incompatible with review kind "${item.kind}"`,
         {
@@ -1186,67 +1427,23 @@ export class ReviewQueueRepository {
       );
     }
 
-    const payload = skillSplitReviewPayloadSchema.parse(item.refs);
-    const handler = this.skillSplitReviewHandler;
+    const refs = this.parseHandlerRefs(handler, item);
+    const scope = handler.transactionScope({
+      item,
+      refs,
+      resolution,
+      ctx: this.handlerContext,
+    });
 
-    if (handler === undefined) {
-      throw new SemanticError("No skill split applier configured for review queue", {
-        code: "REVIEW_QUEUE_SKILL_SPLIT_UNSUPPORTED",
-      });
+    if (scope === "sqlite") {
+      return this.resolveWithHandlerSqliteTransaction(handler, item, refs, resolution);
     }
 
-    const resolvedAt = this.clock.now();
-    let finalResolution: ResolvedReviewDecision = resolution;
-    let refs: Record<string, unknown>;
-
-    if (resolution.decision === "accept") {
-      const result = await handler.accept(item, payload);
-
-      if (result.status === "applied") {
-        refs = {
-          ...item.refs,
-          review_resolution: {
-            decision: "accept",
-            applied_at: resolvedAt,
-            new_skill_ids: result.newSkillIds,
-          },
-        };
-      } else {
-        finalResolution = {
-          decision: "reject",
-          reason: result.reason,
-        };
-        refs = {
-          ...item.refs,
-          review_resolution: {
-            decision: "reject",
-            rejected_at: resolvedAt,
-            reason: result.reason,
-            requested_decision: "accept",
-          },
-        };
-      }
-    } else {
-      const reason = resolution.reason ?? "operator rejected skill split";
-      await handler.reject(item, payload, reason);
-      refs = {
-        ...item.refs,
-        review_resolution: {
-          decision: "reject",
-          rejected_at: resolvedAt,
-          reason,
-        },
-      };
+    if (scope === "cross_store_applying_state") {
+      return this.resolveWithHandlerApplyingState(handler, item, refs, resolution);
     }
 
-    this.markResolved(item.id, finalResolution, resolvedAt, refs);
-
-    return {
-      ...item,
-      refs: this.refsWithoutApplyingState(refs),
-      resolved_at: resolvedAt,
-      resolution: finalResolution.decision,
-    };
+    return this.resolveWithExternalHandler(handler, item, refs, resolution);
   }
 
   async resolve(itemId: number, decision: ReviewResolutionInput): Promise<ReviewQueueItem | null> {
@@ -1267,8 +1464,22 @@ export class ReviewQueueRepository {
       return item;
     }
 
+    const handler = this.handlers.get(item.kind);
+
+    if (handler !== null) {
+      return this.resolveWithRegisteredHandler(handler, item, resolution);
+    }
+
+    if (item.kind === "correction") {
+      throw new SemanticError("No correction applier configured for review queue", {
+        code: "REVIEW_QUEUE_CORRECTION_UNSUPPORTED",
+      });
+    }
+
     if (item.kind === "skill_split") {
-      return this.resolveSkillSplitReview(item, resolution);
+      throw new SemanticError("No skill split applier configured for review queue", {
+        code: "REVIEW_QUEUE_SKILL_SPLIT_UNSUPPORTED",
+      });
     }
 
     if (!isResolutionCompatible(item.kind, resolution.decision)) {
@@ -1289,30 +1500,17 @@ export class ReviewQueueRepository {
     item: ReviewQueueItem,
     decision: ResolvedReviewDecision,
   ): Promise<void> {
-    if (item.kind === "correction") {
-      if (decision.decision === "accept") {
-        if (this.options.applyCorrection === undefined) {
-          throw new SemanticError("No correction applier configured for review queue", {
-            code: "REVIEW_QUEUE_CORRECTION_UNSUPPORTED",
-          });
-        }
-
-        await this.options.applyCorrection(item);
-      }
-
-      return;
-    }
-
     switch (item.kind) {
+      case "correction":
+        throw new SemanticError("No correction applier configured for review queue", {
+          code: "REVIEW_QUEUE_CORRECTION_UNSUPPORTED",
+        });
       case "contradiction":
       case "duplicate":
         await this.applySemanticPairResolution(item, decision);
         return;
       case "new_insight":
         await this.applyNewInsightResolution(item, decision);
-        return;
-      case "stale":
-        await this.applyStaleResolution(item, decision);
         return;
       case "misattribution":
         await this.applyMisattributionResolution(item, decision);
@@ -1324,8 +1522,11 @@ export class ReviewQueueRepository {
         await this.applyIdentityInconsistencyResolution(item, decision);
         return;
       case "belief_revision":
-      case "skill_split":
         return;
+      case "skill_split":
+        throw new SemanticError("No skill split applier configured for review queue", {
+          code: "REVIEW_QUEUE_SKILL_SPLIT_UNSUPPORTED",
+        });
     }
   }
 
@@ -1402,182 +1603,84 @@ export class ReviewQueueRepository {
     item: ReviewQueueItem,
     decision: ResolvedReviewDecision,
   ): Promise<void> {
-    const pendingReflectorInsight = pendingReflectorInsightSchema.safeParse(
-      item.refs.reflector_pending_insight,
-    );
+    const refs = newInsightRefsSchema.parse(this.refsWithoutApplyingState(item.refs));
 
-    if (pendingReflectorInsight.success) {
-      if (decision.decision !== "accept") {
-        return;
-      }
-
-      if (this.options.semanticNodeRepository === undefined) {
-        throw new SemanticError("Semantic node repository is required for pending insight review", {
-          code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
-        });
-      }
-
-      const target = pendingReflectorInsight.data.target;
-      const candidateSupportEdges = pendingReflectorInsight.data.candidate_support_edges;
-      const insightNodeId = targetNodeId(target);
-
-      if (target.mode === "insert") {
-        await this.options.semanticNodeRepository.insert(
-          deserializeReviewSemanticNode(target.node),
-        );
-      } else {
-        const updated = await this.options.semanticNodeRepository.update(target.node_id, {
-          description: target.patch.description,
-          confidence: target.patch.confidence,
-          source_episode_ids: target.patch.source_episode_ids,
-          last_verified_at: target.patch.last_verified_at,
-          embedding: Float32Array.from(target.patch.embedding),
-          archived: target.patch.archived,
-        });
-
-        if (updated === null) {
-          throw new SemanticError(
-            `Unknown semantic node id for pending insight: ${target.node_id}`,
-            {
-              code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
-            },
-          );
-        }
-      }
-
-      if (candidateSupportEdges.length > 0) {
-        if (this.options.semanticEdgeRepository === undefined) {
-          throw new SemanticError(
-            "Semantic edge repository is required for pending insight review",
-            {
-              code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
-            },
-          );
-        }
-
-        for (const edge of candidateSupportEdges) {
-          if (edge.insight_node_id !== insightNodeId) {
-            throw new SemanticError(
-              "Pending insight support edge points at the wrong insight node",
-              {
-                code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
-                cause: { itemId: item.id, insightNodeId, edgeInsightNodeId: edge.insight_node_id },
-              },
-            );
-          }
-
-          // Edge convention: `from --supports--> to` reads as
-          // "from is evidence supporting to". The existing anchor node
-          // (target_node_id) is the supporting evidence; the new insight
-          // is what gets supported. Retrieval walks supports OUT, so a
-          // query that matches the evidence anchor surfaces the insight.
-          const duplicate = this.options.semanticEdgeRepository.listEdges({
-            fromId: edge.target_node_id,
-            toId: edge.insight_node_id,
-            relation: "supports",
-          });
-          if (duplicate.length > 0) {
-            continue;
-          }
-
-          this.options.semanticEdgeRepository.addEdge({
-            id: edge.id,
-            from_node_id: edge.target_node_id,
-            to_node_id: edge.insight_node_id,
-            relation: "supports",
-            confidence: edge.confidence,
-            evidence_episode_ids: edge.source_episode_ids,
-            created_at: this.clock.now(),
-            last_verified_at: this.clock.now(),
-          });
-        }
-      }
-
+    if (decision.decision !== "accept") {
       return;
     }
 
-    if (
-      this.options.semanticNodeRepository === undefined ||
-      (decision.decision !== "invalidate" && decision.decision !== "accept")
-    ) {
-      return;
+    if (this.options.semanticNodeRepository === undefined) {
+      throw new SemanticError("Semantic node repository is required for pending insight review", {
+        code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
+      });
     }
 
-    const rawNodeIds = item.refs.node_ids;
+    const target = refs.reflector_pending_insight.target;
+    const candidateSupportEdges = refs.reflector_pending_insight.candidate_support_edges;
+    const insightNodeId = targetNodeId(target);
 
-    if (!Array.isArray(rawNodeIds) || rawNodeIds.length < 1) {
-      return;
-    }
+    if (target.mode === "insert") {
+      await this.options.semanticNodeRepository.insert(deserializeReviewSemanticNode(target.node));
+    } else {
+      const updated = await this.options.semanticNodeRepository.update(target.node_id, {
+        description: target.patch.description,
+        confidence: target.patch.confidence,
+        source_episode_ids: target.patch.source_episode_ids,
+        last_verified_at: target.patch.last_verified_at,
+        embedding: Float32Array.from(target.patch.embedding),
+        archived: target.patch.archived,
+      });
 
-    const nodeId = semanticNodeIdSchema.parse(rawNodeIds[0]);
-
-    if (decision.decision === "accept") {
-      const applyingPatch = this.getApplyingState(item)?.semantic_node_patch;
-
-      if (applyingPatch?.node_id === nodeId && applyingPatch.confidence !== undefined) {
-        await this.options.semanticNodeRepository.update(nodeId, {
-          confidence: applyingPatch.confidence,
-          last_verified_at: applyingPatch.last_verified_at ?? this.clock.now(),
-          archived: false,
+      if (updated === null) {
+        throw new SemanticError(`Unknown semantic node id for pending insight: ${target.node_id}`, {
+          code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
         });
-        return;
+      }
+    }
+
+    if (candidateSupportEdges.length === 0) {
+      return;
+    }
+
+    if (this.options.semanticEdgeRepository === undefined) {
+      throw new SemanticError("Semantic edge repository is required for pending insight review", {
+        code: "REVIEW_QUEUE_REPAIR_UNSUPPORTED",
+      });
+    }
+
+    for (const edge of candidateSupportEdges) {
+      if (edge.insight_node_id !== insightNodeId) {
+        throw new SemanticError("Pending insight support edge points at the wrong insight node", {
+          code: "REVIEW_QUEUE_TARGET_NOT_FOUND",
+          cause: { itemId: item.id, insightNodeId, edgeInsightNodeId: edge.insight_node_id },
+        });
       }
 
-      const current = await this.options.semanticNodeRepository.get(nodeId);
-
-      if (current === null) {
-        return;
+      // Edge convention: `from --supports--> to` reads as
+      // "from is evidence supporting to". The existing anchor node
+      // (target_node_id) is the supporting evidence; the new insight
+      // is what gets supported. Retrieval walks supports OUT, so a
+      // query that matches the evidence anchor surfaces the insight.
+      const duplicate = this.options.semanticEdgeRepository.listEdges({
+        fromId: edge.target_node_id,
+        toId: edge.insight_node_id,
+        relation: "supports",
+      });
+      if (duplicate.length > 0) {
+        continue;
       }
 
-      await this.options.semanticNodeRepository.update(nodeId, {
-        confidence: clamp(current.confidence + 0.1, 0, 1),
+      this.options.semanticEdgeRepository.addEdge({
+        id: edge.id,
+        from_node_id: edge.target_node_id,
+        to_node_id: edge.insight_node_id,
+        relation: "supports",
+        confidence: edge.confidence,
+        evidence_episode_ids: edge.source_episode_ids,
+        created_at: this.clock.now(),
         last_verified_at: this.clock.now(),
-        archived: false,
       });
-      return;
     }
-
-    await this.options.semanticNodeRepository.update(nodeId, {
-      archived: true,
-    });
-  }
-
-  private async applyStaleResolution(
-    item: ReviewQueueItem,
-    decision: ResolvedReviewDecision,
-  ): Promise<void> {
-    if (decision.decision !== "accept" || this.options.semanticNodeRepository === undefined) {
-      return;
-    }
-
-    const rawTargetId =
-      item.refs.target_type === "semantic_node" ? item.refs.target_id : item.refs.node_id;
-
-    if (typeof rawTargetId !== "string") {
-      return;
-    }
-
-    const targetId = semanticNodeIdSchema.parse(rawTargetId);
-    const applyingPatch = this.getApplyingState(item)?.semantic_node_patch;
-
-    if (applyingPatch?.node_id === targetId && applyingPatch.confidence !== undefined) {
-      await this.options.semanticNodeRepository.update(targetId, {
-        last_verified_at: applyingPatch.last_verified_at ?? this.clock.now(),
-        confidence: applyingPatch.confidence,
-      });
-      return;
-    }
-
-    const current = await this.options.semanticNodeRepository.get(targetId);
-
-    if (current === null) {
-      return;
-    }
-
-    await this.options.semanticNodeRepository.update(targetId, {
-      last_verified_at: this.clock.now(),
-      confidence: clamp(current.confidence - 0.05, 0, 1),
-    });
   }
 
   private async applyMisattributionResolution(

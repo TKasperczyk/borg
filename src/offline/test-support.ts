@@ -55,6 +55,7 @@ import {
   SemanticGraph,
   SemanticEdgeRepository,
   SemanticNodeRepository,
+  createSkillSplitReviewQueueHandler,
   createSemanticNodesTableSchema,
   semanticMigrations,
   type SemanticEdge,
@@ -538,12 +539,14 @@ export async function createOfflineTestHarness(
     clock,
     registry,
   });
-  reviewQueueRepository.setSkillSplitReviewHandler(
-    createSkillSplitReviewHandler({
-      skillRepository,
-      auditLog,
-      clock,
-    }),
+  reviewQueueRepository.registerHandler(
+    createSkillSplitReviewQueueHandler(
+      createSkillSplitReviewHandler({
+        skillRepository,
+        auditLog,
+        clock,
+      }),
+    ),
   );
   const retrievalPipeline = new RetrievalPipeline({
     embeddingClient,

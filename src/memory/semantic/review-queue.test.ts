@@ -22,6 +22,8 @@ import {
 import { deriveProceduralContextKey } from "../procedural/index.js";
 import { semanticMigrations } from "./migrations.js";
 import { ReviewQueueRepository } from "./review-queue.js";
+import { createCorrectionReviewHandler } from "./review-handlers/correction.js";
+import { createSkillSplitReviewQueueHandler } from "./review-handlers/skill-split.js";
 import {
   SemanticEdgeRepository,
   SemanticNodeRepository,
@@ -43,6 +45,45 @@ const ROADMAP_PLANNING_CONTEXT_KEY = deriveProceduralContextKey({
   domain_tags: ["roadmap"],
   audience_scope: "self",
 });
+
+function createPendingInsightRefs(input: {
+  nodeId: string;
+  episodeId: EpisodeId;
+  description: string;
+  confidence: number;
+  lastVerifiedAt: number;
+  embedding: readonly number[];
+  clusterKey?: string;
+}) {
+  const clusterKey = input.clusterKey ?? "cluster:insight";
+
+  return {
+    node_ids: [input.nodeId],
+    episode_ids: [input.episodeId],
+    evidence_cluster_key: clusterKey,
+    evidence_cluster_size: 1,
+    reflector_pending_insight: {
+      target: {
+        mode: "update" as const,
+        node_id: input.nodeId,
+        patch: {
+          description: input.description,
+          confidence: input.confidence,
+          source_episode_ids: [input.episodeId],
+          last_verified_at: input.lastVerifiedAt,
+          embedding: [...input.embedding],
+          archived: false,
+        },
+      },
+      candidate_support_edges: [],
+      evidence_cluster: {
+        key: clusterKey,
+        episode_ids: [input.episodeId],
+        size: 1,
+      },
+    },
+  };
+}
 
 describe("review queue", () => {
   const cleanup: Array<() => Promise<void>> = [];
@@ -869,7 +910,7 @@ describe("review queue", () => {
     expect(harness.valuesRepository.get(value.id)?.support_count).toBe(1);
   });
 
-  it("verifies accepted new insights, archives invalidated ones, and refreshes stale semantic nodes", async () => {
+  it("applies accepted pending reflector insights and leaves invalidated ones unapplied", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(8_000),
     });
@@ -888,118 +929,72 @@ describe("review queue", () => {
         [0, 0, 1, 0],
       ),
     );
-    const staleNode = await harness.semanticNodeRepository.insert(
-      createSemanticNodeFixture(
-        {
-          label: "Stale claim",
-          description: "Needs a verification pass.",
-          source_episode_ids: [episode],
-          confidence: 0.8,
-          last_verified_at: 10,
-        },
-        [0, 1, 0, 0],
-      ),
-    );
 
     const newInsight = harness.reviewQueueRepository.enqueue({
       kind: "new_insight",
-      refs: {
-        node_ids: [freshNode.id],
-      },
+      refs: createPendingInsightRefs({
+        nodeId: freshNode.id,
+        episodeId: episode,
+        description: "An updated reflected proposition.",
+        confidence: 0.7,
+        lastVerifiedAt: 8_000,
+        embedding: [0, 0, 1, 0],
+      }),
       reason: "fresh insight should be reconsidered",
-    });
-    const stale = harness.reviewQueueRepository.enqueue({
-      kind: "stale",
-      refs: {
-        target_type: "semantic_node",
-        target_id: staleNode.id,
-      },
-      reason: "stale node needs refresh",
     });
 
     await harness.reviewQueueRepository.resolve(newInsight.id, "accept");
-    await harness.reviewQueueRepository.resolve(stale.id, "accept");
 
     expect(await harness.semanticNodeRepository.get(freshNode.id)).toEqual(
       expect.objectContaining({
         archived: false,
+        description: "An updated reflected proposition.",
         confidence: 0.7,
         last_verified_at: 8_000,
       }),
     );
     const invalidatedInsight = harness.reviewQueueRepository.enqueue({
       kind: "new_insight",
-      refs: {
-        node_ids: [freshNode.id],
-      },
+      refs: createPendingInsightRefs({
+        nodeId: freshNode.id,
+        episodeId: episode,
+        description: "This patch should not be applied.",
+        confidence: 0.95,
+        lastVerifiedAt: 9_000,
+        embedding: [1, 0, 0, 0],
+        clusterKey: "cluster:invalidated",
+      }),
       reason: "fresh insight should be reconsidered again",
     });
 
     await harness.reviewQueueRepository.resolve(invalidatedInsight.id, "invalidate");
 
-    expect((await harness.semanticNodeRepository.get(freshNode.id))?.archived).toBe(true);
-    expect(await harness.semanticNodeRepository.get(staleNode.id)).toEqual(
+    expect(await harness.semanticNodeRepository.get(freshNode.id)).toEqual(
       expect.objectContaining({
+        archived: false,
+        description: "An updated reflected proposition.",
         last_verified_at: 8_000,
-        confidence: 0.75,
+        confidence: 0.7,
       }),
     );
   });
 
-  it("keeps stale rejects sqlite-only so a crash can be retried with another decision", async () => {
+  it("rejects legacy new insight refs even for dismiss", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(8_500),
     });
     cleanup.push(harness.cleanup);
 
-    const episode = createEpisodeFixture().id;
-    const staleNode = await harness.semanticNodeRepository.insert(
-      createSemanticNodeFixture(
-        {
-          label: "Stale retry claim",
-          description: "Needs a verification pass.",
-          source_episode_ids: [episode],
-          confidence: 0.8,
-          last_verified_at: 10,
-        },
-        [0, 1, 0, 0],
-      ),
-    );
-    const stale = harness.reviewQueueRepository.enqueue({
-      kind: "stale",
+    const legacy = harness.reviewQueueRepository.enqueue({
+      kind: "new_insight",
       refs: {
-        target_type: "semantic_node",
-        target_id: staleNode.id,
+        node_ids: ["semn_cccccccccccccccc"],
       },
-      reason: "stale node needs refresh",
+      reason: "legacy reflector insight",
     });
-    const markResolvedSpy = vi
-      .spyOn(
-        harness.reviewQueueRepository as unknown as {
-          markResolved: (...args: unknown[]) => void;
-        },
-        "markResolved",
-      )
-      .mockImplementationOnce(() => {
-        throw new Error("crash after stale reject");
-      });
 
-    await expect(harness.reviewQueueRepository.resolve(stale.id, "reject")).rejects.toThrow(
-      "crash after stale reject",
-    );
-    markResolvedSpy.mockRestore();
-
-    expect(harness.reviewQueueRepository.getOpen().map((item) => item.id)).toContain(stale.id);
-
-    const accepted = await harness.reviewQueueRepository.resolve(stale.id, "accept");
-
-    expect(accepted?.resolution).toBe("accept");
-    expect(await harness.semanticNodeRepository.get(staleNode.id)).toEqual(
-      expect.objectContaining({
-        last_verified_at: 8_500,
-        confidence: 0.75,
-      }),
-    );
+    await expect(harness.reviewQueueRepository.resolve(legacy.id, "dismiss")).rejects.toThrow();
+    expect(harness.reviewQueueRepository.getOpen().map((item) => item.id)).toContain(legacy.id);
   });
 
   it("rejects accept on under-specified repair rows and leaves them open", async () => {
@@ -1127,20 +1122,28 @@ describe("review queue", () => {
     const reviewQueue = new ReviewQueueRepository({
       db,
       clock: new FixedClock(1_000),
-      skillSplitReviewHandler: {
+    });
+    reviewQueue.registerHandler(
+      createCorrectionReviewHandler({
+        applyCorrection: vi.fn(),
+      }),
+    );
+    reviewQueue.registerHandler(
+      createSkillSplitReviewQueueHandler({
         accept: () => ({
           status: "applied",
           newSkillIds: ["skl_bbbbbbbbbbbbbbbb" as SkillId],
         }),
         reject: () => undefined,
-      },
-    });
+      }),
+    );
 
     try {
       const correction = reviewQueue.enqueue({
         kind: "correction",
         refs: {
-          record_id: "val_aaaaaaaaaaaaaaaa",
+          target_type: "value",
+          target_id: "val_aaaaaaaaaaaaaaaa",
           patch: {
             description: "Prefer grounded claims.",
           },
@@ -1156,17 +1159,15 @@ describe("review queue", () => {
       });
       const newInsight = reviewQueue.enqueue({
         kind: "new_insight",
-        refs: {
-          node_ids: ["semn_dddddddddddddddd"],
-        },
+        refs: createPendingInsightRefs({
+          nodeId: "semn_dddddddddddddddd",
+          episodeId: "ep_aaaaaaaaaaaaaaaa" as EpisodeId,
+          description: "Fresh reflector insight.",
+          confidence: 0.7,
+          lastVerifiedAt: 1_000,
+          embedding: [0, 0, 0, 1],
+        }),
         reason: "fresh reflector insight",
-      });
-      const stale = reviewQueue.enqueue({
-        kind: "stale",
-        refs: {
-          node_id: "semn_cccccccccccccccc",
-        },
-        reason: "needs refresh",
       });
       const skillSplit = reviewQueue.enqueue({
         kind: "skill_split",
@@ -1278,8 +1279,7 @@ describe("review queue", () => {
 
       const rejectedCorrection = await reviewQueue.resolve(correction.id, "reject");
       const dismissedContradiction = await reviewQueue.resolve(contradiction.id, "dismiss");
-      const acceptedInsight = await reviewQueue.resolve(newInsight.id, "accept");
-      const acceptedStale = await reviewQueue.resolve(stale.id, "accept");
+      const dismissedInsight = await reviewQueue.resolve(newInsight.id, "dismiss");
       const rejectedSkillSplit = await reviewQueue.resolve(skillSplit.id, {
         decision: "reject",
         reason: "operator rejected",
@@ -1287,8 +1287,7 @@ describe("review queue", () => {
 
       expect(rejectedCorrection?.resolution).toBe("reject");
       expect(dismissedContradiction?.resolution).toBe("dismiss");
-      expect(acceptedInsight?.resolution).toBe("accept");
-      expect(acceptedStale?.resolution).toBe("accept");
+      expect(dismissedInsight?.resolution).toBe("dismiss");
       expect(rejectedSkillSplit).toMatchObject({
         resolution: "reject",
         refs: expect.objectContaining({

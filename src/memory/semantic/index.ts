@@ -10,6 +10,7 @@ export {
   ReviewQueueRepository,
   REVIEW_KINDS,
   REVIEW_RESOLUTIONS,
+  ReviewQueueHandlerRegistry,
   reviewKindSchema,
   reviewQueueItemSchema,
   reviewResolutionSchema,
@@ -20,14 +21,27 @@ export {
   type BeliefRevisionReasonCode,
   type BeliefRevisionVisibilityOptions,
   type OpenBeliefRevisionStatus,
+  type ReviewApplyingStateSpec,
+  type ReviewApplyDecision,
+  type ReviewApplyOutcome,
+  type ReviewHandlerContext,
+  type ReviewQueueHandler,
   type ReviewQueueInsertInput,
   type ReviewQueueItem,
   type ReviewResolution,
   type ReviewResolutionInput,
+  type ReviewTransactionScope,
   type SkillSplitReviewApplyResult,
   type SkillSplitReviewHandler,
   type SkillSplitReviewPayload,
 } from "./review-queue.js";
+export {
+  correctionReviewRefsSchema,
+  createCorrectionReviewHandler,
+  type CorrectionReviewHandlerOptions,
+  type CorrectionReviewRefs,
+} from "./review-handlers/correction.js";
+export { createSkillSplitReviewQueueHandler } from "./review-handlers/skill-split.js";
 export { SemanticReviewService, type SemanticReviewServiceOptions } from "./review-service.js";
 export {
   SemanticBeliefDependencyRepository,

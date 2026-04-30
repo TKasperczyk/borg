@@ -35,11 +35,13 @@ import {
 } from "../memory/self/review-open-question-extractor.js";
 import {
   ReviewQueueRepository,
+  ReviewQueueHandlerRegistry,
   SemanticBeliefDependencyRepository,
   SemanticEdgeRepository,
   SemanticGraph,
   SemanticNodeRepository,
   SemanticReviewService,
+  createCorrectionReviewHandler,
   type ReviewQueueItem,
 } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
@@ -274,9 +276,22 @@ export async function buildBorgRepositories(
     model: config.anthropic.models.background,
     onDegraded: reportReviewOpenQuestionExtractorDegraded,
   });
+  const reviewHandlers = new ReviewQueueHandlerRegistry();
+  reviewHandlers.register(
+    createCorrectionReviewHandler({
+      applyCorrection: (item) => {
+        if (applyCorrectionReview === undefined) {
+          throw new Error("Correction service not initialized");
+        }
+
+        return applyCorrectionReview(item);
+      },
+    }),
+  );
   const createdReviewQueueRepository = new ReviewQueueRepository({
     db: sqlite,
     clock,
+    handlers: reviewHandlers,
     episodicRepository,
     semanticNodeRepository,
     semanticEdgeRepository,
@@ -287,13 +302,6 @@ export async function buildBorgRepositories(
     commitmentRepository,
     identityService,
     identityEventRepository,
-    applyCorrection: (item) => {
-      if (applyCorrectionReview === undefined) {
-        throw new Error("Correction service not initialized");
-      }
-
-      return applyCorrectionReview(item);
-    },
     onEnqueue: (item) =>
       enqueueOpenQuestionForReview(identityService, item, {
         extractor: reviewOpenQuestionExtractor,

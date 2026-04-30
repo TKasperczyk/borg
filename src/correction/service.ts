@@ -32,6 +32,7 @@ import type {
   EntityRepository,
 } from "../memory/commitments/index.js";
 import {
+  correctionReviewRefsSchema,
   type ReviewQueueItem,
   type ReviewQueueRepository,
   semanticNodePatchSchema,
@@ -940,15 +941,9 @@ export class CorrectionService {
   }
 
   async applyCorrectionReview(item: ReviewQueueItem): Promise<void> {
-    const targetId = typeof item.refs.target_id === "string" ? item.refs.target_id : null;
-    const patch = item.refs.patch;
+    const refs = correctionReviewRefsSchema.parse(item.refs);
+    const patch = refs.patch;
     const proposedProvenance = parseReviewProvenance(item.refs);
-
-    if (targetId === null) {
-      throw new StorageError("Correction review item is missing target_id", {
-        code: "REVIEW_QUEUE_INVALID",
-      });
-    }
 
     if (!isRecord(patch)) {
       throw new StorageError("Correction review item is missing an object patch", {
@@ -956,14 +951,12 @@ export class CorrectionService {
       });
     }
 
-    const target = parseTarget(targetId);
-
-    switch (target.type) {
+    switch (refs.target_type) {
       case "episode": {
-        const current = await this.options.episodicRepository.get(target.id);
+        const current = await this.options.episodicRepository.get(refs.target_id);
 
         if (current === null) {
-          throw new StorageError(`Unknown episode id: ${target.id}`, {
+          throw new StorageError(`Unknown episode id: ${refs.target_id}`, {
             code: "EPISODE_NOT_FOUND",
           });
         }
@@ -974,18 +967,18 @@ export class CorrectionService {
           return;
         }
 
-        const next = await this.options.episodicRepository.update(target.id, parsedPatch);
+        const next = await this.options.episodicRepository.update(refs.target_id, parsedPatch);
         const existingEvent = this.options.identityEventRepository.findByReviewKey({
           reviewItemId: item.id,
           recordType: "episode",
-          recordId: target.id,
+          recordId: refs.target_id,
           action: "correction_apply",
         });
 
         if (existingEvent === null) {
           this.options.identityEventRepository.record({
             record_type: "episode",
-            record_id: target.id,
+            record_id: refs.target_id,
             action: "correction_apply",
             old_value: toIdentityJsonValue(current),
             new_value: next === null ? null : toIdentityJsonValue(next),
@@ -997,10 +990,10 @@ export class CorrectionService {
         return;
       }
       case "semantic_node": {
-        const current = await this.options.semanticNodeRepository.get(target.id);
+        const current = await this.options.semanticNodeRepository.get(refs.target_id);
 
         if (current === null) {
-          throw new StorageError(`Unknown semantic node id: ${target.id}`, {
+          throw new StorageError(`Unknown semantic node id: ${refs.target_id}`, {
             code: "SEMANTIC_NODE_NOT_FOUND",
           });
         }
@@ -1011,18 +1004,18 @@ export class CorrectionService {
           return;
         }
 
-        const next = await this.options.semanticNodeRepository.update(target.id, parsedPatch);
+        const next = await this.options.semanticNodeRepository.update(refs.target_id, parsedPatch);
         const existingEvent = this.options.identityEventRepository.findByReviewKey({
           reviewItemId: item.id,
           recordType: "semantic_node",
-          recordId: target.id,
+          recordId: refs.target_id,
           action: "correction_apply",
         });
 
         if (existingEvent === null) {
           this.options.identityEventRepository.record({
             record_type: "semantic_node",
-            record_id: target.id,
+            record_id: refs.target_id,
             action: "correction_apply",
             old_value: toIdentityJsonValue(current),
             new_value: next === null ? null : toIdentityJsonValue(next),
@@ -1035,7 +1028,7 @@ export class CorrectionService {
       }
       case "semantic_edge": {
         throw new StorageError(
-          `Semantic edge corrections are applied with semantic edge invalidate: ${target.id}`,
+          `Semantic edge corrections are applied with semantic edge invalidate: ${refs.target_id}`,
           {
             code: "SEMANTIC_EDGE_CORRECTION_UNSUPPORTED",
           },
@@ -1043,7 +1036,7 @@ export class CorrectionService {
       }
       case "value": {
         const result = this.options.identityService.updateValue(
-          target.id,
+          refs.target_id,
           patch,
           proposedProvenance,
           {
@@ -1054,7 +1047,7 @@ export class CorrectionService {
         );
 
         if (result.status !== "applied") {
-          throw new StorageError(`Correction for value ${target.id} still requires review`, {
+          throw new StorageError(`Correction for value ${refs.target_id} still requires review`, {
             code: "IDENTITY_REVIEW_REQUIRED",
           });
         }
@@ -1062,14 +1055,19 @@ export class CorrectionService {
         return;
       }
       case "goal": {
-        const next = this.options.identityService.updateGoal(target.id, patch, proposedProvenance, {
-          throughReview: true,
-          reason: item.reason,
-          reviewItemId: item.id,
-        });
+        const next = this.options.identityService.updateGoal(
+          refs.target_id,
+          patch,
+          proposedProvenance,
+          {
+            throughReview: true,
+            reason: item.reason,
+            reviewItemId: item.id,
+          },
+        );
 
         if (next.status !== "applied") {
-          throw new StorageError(`Correction for goal ${target.id} still requires review`, {
+          throw new StorageError(`Correction for goal ${refs.target_id} still requires review`, {
             code: "IDENTITY_REVIEW_REQUIRED",
           });
         }
@@ -1078,7 +1076,7 @@ export class CorrectionService {
       }
       case "trait": {
         const result = this.options.identityService.updateTrait(
-          target.id,
+          refs.target_id,
           patch,
           proposedProvenance,
           {
@@ -1089,7 +1087,7 @@ export class CorrectionService {
         );
 
         if (result.status !== "applied") {
-          throw new StorageError(`Correction for trait ${target.id} still requires review`, {
+          throw new StorageError(`Correction for trait ${refs.target_id} still requires review`, {
             code: "IDENTITY_REVIEW_REQUIRED",
           });
         }
@@ -1098,7 +1096,7 @@ export class CorrectionService {
       }
       case "commitment": {
         const result = this.options.identityService.updateCommitment(
-          target.id,
+          refs.target_id,
           patch,
           proposedProvenance,
           {
@@ -1109,16 +1107,19 @@ export class CorrectionService {
         );
 
         if (result.status !== "applied") {
-          throw new StorageError(`Correction for commitment ${target.id} still requires review`, {
-            code: "IDENTITY_REVIEW_REQUIRED",
-          });
+          throw new StorageError(
+            `Correction for commitment ${refs.target_id} still requires review`,
+            {
+              code: "IDENTITY_REVIEW_REQUIRED",
+            },
+          );
         }
 
         return;
       }
       case "open_question": {
         const next = this.options.identityService.updateOpenQuestion(
-          target.id,
+          refs.target_id,
           openQuestionPatchSchema.parse(patch) as OpenQuestionPatch,
           proposedProvenance,
           {
@@ -1130,7 +1131,7 @@ export class CorrectionService {
 
         if (next.status !== "applied") {
           throw new StorageError(
-            `Correction for open question ${target.id} still requires review`,
+            `Correction for open question ${refs.target_id} still requires review`,
             {
               code: "IDENTITY_REVIEW_REQUIRED",
             },
