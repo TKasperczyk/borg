@@ -9,7 +9,6 @@ import {
 } from "../../memory/affective/index.js";
 import { detectAffectiveSignal } from "./affective-signal.js";
 import { EntityExtractor } from "./entity-extractor.js";
-import { detectFactualChallenge } from "./factual-challenge.js";
 import { ModeDetector } from "./mode-detector.js";
 import { detectTemporalCue } from "./temporal-cue.js";
 
@@ -17,8 +16,7 @@ export type PerceptionClassifierName =
   | "entity_extractor"
   | "mode_detector"
   | "affective_signal"
-  | "temporal_cue"
-  | "factual_challenge";
+  | "temporal_cue";
 
 export type PerceptionClassifierFailure = {
   classifier: PerceptionClassifierName;
@@ -64,13 +62,6 @@ export type PerceiverOptions = {
    * fakes or no LLM, degrades to "no temporal filter".
    */
   temporalCueUseLlmFallback?: boolean;
-  /**
-   * If true (default) and an LLM client + model are configured, detect
-   * user challenges to remembered/stored facts as a separate perception
-   * signal. This is intentionally not a cognitive mode; it opens a
-   * verification retrieval lane without changing coarse routing.
-   */
-  factualChallengeUseLlmFallback?: boolean;
   clock?: Clock;
   detectAffectiveSignal?: typeof detectAffectiveSignal;
   onAffectiveError?: (error: unknown) => Promise<void> | void;
@@ -94,7 +85,6 @@ export class Perceiver {
   private readonly model?: string;
   private readonly affectiveUseLlmFallback: boolean;
   private readonly temporalCueUseLlmFallback: boolean;
-  private readonly factualChallengeUseLlmFallback: boolean;
   private readonly detectAffectiveSignal: typeof detectAffectiveSignal;
   private readonly onAffectiveError?: (error: unknown) => Promise<void> | void;
   private readonly onClassifierFailure?: PerceptionClassifierFailureObserver;
@@ -108,7 +98,6 @@ export class Perceiver {
     this.model = options.model;
     this.affectiveUseLlmFallback = options.affectiveUseLlmFallback ?? true;
     this.temporalCueUseLlmFallback = options.temporalCueUseLlmFallback ?? true;
-    this.factualChallengeUseLlmFallback = options.factualChallengeUseLlmFallback ?? true;
     this.detectAffectiveSignal = options.detectAffectiveSignal ?? detectAffectiveSignal;
     this.onAffectiveError = options.onAffectiveError;
     this.onClassifierFailure = options.onClassifierFailure;
@@ -181,7 +170,7 @@ export class Perceiver {
     }
 
     const nowMs = this.clock.now();
-    const [entities, mode, affective, temporalCue, factualChallenge] = await Promise.all([
+    const [entities, mode, affective, temporalCue] = await Promise.all([
       runPerceptionClassifierSafely({
         classifier: "entity_extractor",
         run: () => this.entityExtractor.extractEntities(text),
@@ -227,30 +216,6 @@ export class Perceiver {
           }
         },
       }),
-      detectFactualChallenge(text, recentHistory, {
-        llmClient: this.factualChallengeUseLlmFallback ? this.llmClient : undefined,
-        model: this.factualChallengeUseLlmFallback ? this.model : undefined,
-        onDegraded: async (reason, error) => {
-          if (this.tracer.enabled && this.turnId !== undefined) {
-            this.tracer.emit("perception_classifier_degraded", {
-              turnId: this.turnId,
-              classifier: "factual_challenge",
-              reason,
-            });
-          }
-
-          if (error !== undefined) {
-            try {
-              await this.onClassifierFailure?.({
-                classifier: "factual_challenge",
-                error,
-              });
-            } catch {
-              // Best-effort hook logging only.
-            }
-          }
-        },
-      }),
     ]);
 
     const perception = perceptionResultSchema.parse({
@@ -259,7 +224,6 @@ export class Perceiver {
       affectiveSignal: affective.signal,
       affectiveSignalDegraded: affective.degraded,
       temporalCue,
-      factualChallenge,
     });
 
     if (this.tracer.enabled && this.turnId !== undefined) {

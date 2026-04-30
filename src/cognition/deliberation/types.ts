@@ -17,7 +17,6 @@ import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
   RetrievalConfidence,
-  ChallengeEvidence,
   RetrievedEpisode,
   RetrievedSemantic,
   RetrievalSearchOptions,
@@ -77,7 +76,6 @@ export type DeliberationContext = {
   applicableCommitments?: readonly CommitmentRecord[];
   openQuestionsContext?: readonly OpenQuestion[];
   pendingCorrectionsContext?: readonly ReviewQueueItem[];
-  challengeEvidence?: ChallengeEvidence | null;
   selectedSkill?: SkillSelectionResult | null;
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;

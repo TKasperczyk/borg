@@ -302,7 +302,6 @@ describe("TurnTracer", () => {
       "perception_started",
       "perception_classifier_degraded",
       "perception_classifier_degraded",
-      "perception_classifier_degraded",
       "perception_completed",
       "retrieval_started",
       "retrieval_completed",
@@ -327,7 +326,7 @@ describe("TurnTracer", () => {
       events
         .filter((event) => event.event === "perception_classifier_degraded")
         .map((event) => event.classifier),
-    ).toEqual(["affective_signal", "temporal_cue", "factual_challenge"]);
+    ).toEqual(["affective_signal", "temporal_cue"]);
     expect(events.find((event) => event.event === "tool_call_completed")).toMatchObject({
       toolName: "tool.episodic.search",
       success: true,

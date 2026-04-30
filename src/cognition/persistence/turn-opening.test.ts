@@ -120,7 +120,6 @@ describe("TurnOpeningPersistence", () => {
           mode: "problem_solving",
           entities: ["Atlas"],
           temporalCue: null,
-          factualChallenge: null,
           affectiveSignal: {
             valence: -0.2,
             arousal: 0.5,
@@ -181,7 +180,6 @@ describe("TurnOpeningPersistence", () => {
           mode: "problem_solving",
           entities: ["Atlas"],
           temporalCue: null,
-          factualChallenge: null,
           affectiveSignal: {
             valence: -0.2,
             arousal: 0.5,

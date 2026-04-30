@@ -4,13 +4,6 @@ export {
   type ComputeRetrievalConfidenceInput,
   type RetrievalConfidence,
 } from "./confidence.js";
-export {
-  retrieveFactualChallengeEvidence,
-  type ChallengeEvidence,
-  type ChallengeEvidenceEpisode,
-  type ChallengeEvidenceRawSnippet,
-  type RetrieveFactualChallengeEvidenceOptions,
-} from "./factual-challenge-evidence.js";
 export { applyMmr, type MmrCandidate } from "./mmr.js";
 export {
   RetrievalPipeline,

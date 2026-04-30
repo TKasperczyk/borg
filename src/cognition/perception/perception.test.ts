@@ -3,14 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { FakeLLMClient } from "../../llm/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { EntityExtractor } from "./entity-extractor.js";
-import { detectFactualChallenge } from "./factual-challenge.js";
 import { ModeDetector } from "./mode-detector.js";
 import { Perceiver, runPerceptionClassifierSafely } from "./perceive.js";
 import { detectTemporalCue } from "./temporal-cue.js";
 
 const ENTITY_TOOL_NAME = "EmitEntityExtraction";
 const MODE_TOOL_NAME = "EmitModeDetection";
-const FACTUAL_CHALLENGE_TOOL_NAME = "EmitFactualChallenge";
 
 function invalidEntityResponse() {
   return {
@@ -71,28 +69,6 @@ function modeResponse(mode: string) {
         id: "toolu_mode",
         name: MODE_TOOL_NAME,
         input: { mode },
-      },
-    ],
-  };
-}
-
-function factualChallengeResponse(
-  factualChallenge: {
-    disputed_entity: string | null;
-    disputed_property: string | null;
-    user_position: string;
-  } | null,
-) {
-  return {
-    text: "",
-    input_tokens: 1,
-    output_tokens: 1,
-    stop_reason: "tool_use",
-    tool_calls: [
-      {
-        id: "toolu_factual_challenge",
-        name: FACTUAL_CHALLENGE_TOOL_NAME,
-        input: { factual_challenge: factualChallenge },
       },
     ],
   };
@@ -233,86 +209,6 @@ describe("perception", () => {
     });
   });
 
-  it("returns null for clean input with no factual challenge", async () => {
-    const llm = new FakeLLMClient({
-      responses: [factualChallengeResponse(null)],
-    });
-
-    const challenge = await detectFactualChallenge("Maya and I are making soup tonight.", [], {
-      llmClient: llm,
-      model: "haiku",
-    });
-
-    expect(challenge).toBeNull();
-    expect(llm.requests[0]?.tool_choice).toEqual({
-      type: "tool",
-      name: FACTUAL_CHALLENGE_TOOL_NAME,
-    });
-  });
-
-  it("detects explicit contradictions of remembered facts", async () => {
-    const llm = new FakeLLMClient({
-      responses: [
-        factualChallengeResponse({
-          disputed_entity: "Maya",
-          disputed_property: "is my partner",
-          user_position: "The user says they never said Maya was their partner.",
-        }),
-      ],
-    });
-
-    await expect(
-      detectFactualChallenge("You said Maya is my partner, but I never said that.", [], {
-        llmClient: llm,
-        model: "haiku",
-      }),
-    ).resolves.toEqual({
-      disputed_entity: "Maya",
-      disputed_property: "is my partner",
-      user_position: "The user says they never said Maya was their partner.",
-    });
-  });
-
-  it("detects polite factual corrections", async () => {
-    const llm = new FakeLLMClient({
-      responses: [
-        factualChallengeResponse({
-          disputed_entity: "Maya",
-          disputed_property: "is my partner",
-          user_position: "Maya is not the user's partner.",
-        }),
-      ],
-    });
-
-    const challenge = await detectFactualChallenge(
-      "Small correction: Maya is not my partner.",
-      [],
-      {
-        llmClient: llm,
-        model: "haiku",
-      },
-    );
-
-    expect(challenge).toEqual({
-      disputed_entity: "Maya",
-      disputed_property: "is my partner",
-      user_position: "Maya is not the user's partner.",
-    });
-  });
-
-  it("returns null for generic disagreement that does not dispute a stored fact", async () => {
-    const llm = new FakeLLMClient({
-      responses: [factualChallengeResponse(null)],
-    });
-
-    const challenge = await detectFactualChallenge("I disagree with that approach.", [], {
-      llmClient: llm,
-      model: "haiku",
-    });
-
-    expect(challenge).toBeNull();
-  });
-
   it("runs the entity fallback for long zero-hit text and truncates the prompt", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -384,7 +280,6 @@ describe("perception", () => {
       model: "haiku",
       affectiveUseLlmFallback: false,
       temporalCueUseLlmFallback: false,
-      factualChallengeUseLlmFallback: false,
       modeWhenLlmAbsent: "relational",
       onClassifierFailure,
     });
@@ -416,7 +311,6 @@ describe("perception", () => {
       model: "haiku",
       affectiveUseLlmFallback: false,
       temporalCueUseLlmFallback: false,
-      factualChallengeUseLlmFallback: false,
       onClassifierFailure,
     });
 
@@ -444,7 +338,6 @@ describe("perception", () => {
       model: "haiku",
       affectiveUseLlmFallback: false,
       temporalCueUseLlmFallback: false,
-      factualChallengeUseLlmFallback: false,
       modeWhenLlmAbsent: "idle",
       onClassifierFailure,
     });
@@ -476,7 +369,6 @@ describe("perception", () => {
       model: "haiku",
       affectiveUseLlmFallback: false,
       temporalCueUseLlmFallback: false,
-      factualChallengeUseLlmFallback: false,
     }).perceive("plain lower text");
     const degraded = await new Perceiver({
       llmClient: new FakeLLMClient({
@@ -485,7 +377,6 @@ describe("perception", () => {
       model: "haiku",
       affectiveUseLlmFallback: false,
       temporalCueUseLlmFallback: false,
-      factualChallengeUseLlmFallback: false,
       modeWhenLlmAbsent: "idle",
     }).perceive("plain lower text");
 
@@ -555,7 +446,6 @@ describe("perception", () => {
       model: "haiku",
       affectiveUseLlmFallback: false,
       clock: new FixedClock(nowMs),
-      factualChallengeUseLlmFallback: false,
       tracer,
       turnId: "turn-1",
       onClassifierFailure,
