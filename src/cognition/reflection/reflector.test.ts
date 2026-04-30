@@ -63,6 +63,12 @@ function createReflectionResponse(
     due_at?: number | null;
     rationale: string;
   }> = [],
+  openQuestions: Array<{
+    question: string;
+    urgency: number;
+    related_episode_ids: string[];
+    related_semantic_node_ids: string[];
+  }> = [],
 ) {
   return {
     text: "",
@@ -88,6 +94,7 @@ function createReflectionResponse(
           intent_updates: intentUpdates,
           step_outcomes: stepOutcomes,
           proposed_steps: proposedSteps,
+          open_questions: openQuestions,
         },
       },
     ],
@@ -1702,120 +1709,55 @@ describe("reflector", () => {
     expect(episodicRepository.getStats(episode.id)?.use_count).toBe(1);
   });
 
-  it("adds an open question when high relevance score has low retrieval confidence", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    const clock = new FixedClock(1_000);
-    const store = new LanceDbStore({
-      uri: join(tempDir, "lancedb"),
+  it("persists LLM-emitted open questions with structured urgency and provenance", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
     });
-    const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
-    });
-    const table = await store.openTable({
-      name: "episodes",
-      schema: createEpisodesTableSchema(4),
-    });
-    const episodicRepository = new EpisodicRepository({
-      table,
-      db,
-      clock,
-    });
-    const goalsRepository = new GoalsRepository({
-      db,
-      clock,
-    });
-    const traitsRepository = new TraitsRepository({
-      db,
-      clock,
-    });
-    const openQuestionsRepository = new OpenQuestionsRepository({
-      db,
-      clock,
-    });
-    const identityService = {
-      addOpenQuestion(input: Parameters<OpenQuestionsRepository["add"]>[0]) {
-        return openQuestionsRepository.add(input);
-      },
-      updateGoal() {
-        throw new Error("unexpected goal update");
-      },
-      updateGoalProgressFromReflection() {
-        throw new Error("unexpected goal progress update");
-      },
-    };
-    const writer = new StreamWriter({
-      dataDir: tempDir,
-      sessionId: DEFAULT_SESSION_ID,
-      clock,
-    });
+    cleanup.push(harness.cleanup);
 
-    cleanup.push(async () => {
-      writer.close();
-      db.close();
-      await store.close();
-      rmSync(tempDir, { recursive: true, force: true });
-    });
-
-    const episode = await episodicRepository.insert({
-      id: "ep_cccccccccccccccc" as never,
-      title: "Atlas uncertainty",
-      narrative: "The logs were incomplete and the root cause stayed unclear.",
-      participants: ["Atlas"],
-      location: null,
-      start_time: 0,
-      end_time: 1,
-      source_stream_ids: ["strm_cccccccccccccccc" as never],
-      significance: 0.5,
-      tags: ["atlas"],
-      confidence: 0.4,
-      lineage: {
-        derived_from: [],
-        supersedes: [],
-      },
-      emotional_arc: null,
-      embedding: Float32Array.from([1, 0, 0, 0]),
-      created_at: 0,
-      updated_at: 0,
-    });
-
-    const reflector = new Reflector({
-      clock,
-      episodicRepository,
-      goalsRepository,
-      traitsRepository,
-      identityService,
-    });
-    const retrieved: RetrievedEpisode = {
-      episode,
-      score: 0.92,
-      scoreBreakdown: createRetrievalScoreFixture({
-        similarity: 0.9,
-        decayedSalience: 0.1,
-        heat: 1,
-        goalRelevance: 0,
-        timeRelevance: 0,
-        suppressionPenalty: 0,
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        title: "Atlas uncertainty",
+        narrative: "The logs were incomplete and the root cause stayed unclear.",
+        tags: ["atlas"],
       }),
-      citationChain: [],
-    };
+    );
+    const retrieved = createRetrievedEpisode(episode, 0.92);
+    llm.pushResponse(
+      createReflectionResponse(
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            question: "¿Qué evidencia falta sobre Atlas?",
+            urgency: 0.73,
+            related_episode_ids: [episode.id],
+            related_semantic_node_ids: [],
+          },
+        ],
+      ),
+    );
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-7",
+      identityService: harness.identityService,
+    });
+    const workingMemory = createWorkingMemoryFixture({
+      current_focus: "Atlas",
+      hot_entities: ["Atlas"],
+      mode: "reflective",
+    });
 
     await reflector.reflect(
       {
         userMessage: "Why is Atlas still failing?",
-        workingMemory: {
-          session_id: DEFAULT_SESSION_ID,
-          turn_counter: 1,
-          current_focus: "Atlas",
-          hot_entities: ["Atlas"],
-          pending_intents: [],
-          pending_social_attribution: null,
-          pending_trait_attribution: null,
-          mood: null,
-          pending_procedural_attempts: [],
-          suppressed: [],
-          mode: "reflective",
-          updated_at: 0,
-        },
+        workingMemory,
         selfSnapshot: {
           values: [],
           goals: [],
@@ -1833,7 +1775,7 @@ describe("reflector", () => {
           },
           decision_reason: "low confidence",
           retrievedEpisodes: [retrieved],
-          referencedEpisodeIds: null,
+          referencedEpisodeIds: [episode.id],
           intents: [],
           thoughtsPersisted: false,
         },
@@ -1841,20 +1783,7 @@ describe("reflector", () => {
           response: "I still need to compare more evidence.",
           tool_calls: [],
           intents: [],
-          workingMemory: {
-            session_id: DEFAULT_SESSION_ID,
-            turn_counter: 1,
-            current_focus: "Atlas",
-            hot_entities: ["Atlas"],
-            pending_intents: [],
-            pending_social_attribution: null,
-            pending_trait_attribution: null,
-            mood: null,
-            pending_procedural_attempts: [],
-            suppressed: [],
-            mode: "reflective",
-            updated_at: 0,
-          },
+          workingMemory,
         },
         retrievedEpisodes: [retrieved],
         retrievalConfidence: createRetrievalConfidence({
@@ -1865,11 +1794,18 @@ describe("reflector", () => {
         }),
         suppressionSet: new SuppressionSet(1),
       },
-      writer,
+      harness.streamWriter,
     );
 
-    expect(openQuestionsRepository.list({ status: "open" })).toEqual([
+    const promptContext = JSON.parse(llm.requests[0]?.messages[0]?.content ?? "{}") as {
+      retrieval_confidence?: RetrievalConfidence;
+    };
+
+    expect(promptContext.retrieval_confidence?.overall).toBe(0.2);
+    expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([
       expect.objectContaining({
+        question: "¿Qué evidencia falta sobre Atlas?",
+        urgency: 0.73,
         source: "reflection",
         related_episode_ids: [episode.id],
         provenance: {
@@ -1880,31 +1816,46 @@ describe("reflector", () => {
     ]);
   });
 
-  it("logs and skips reflector-created open questions when identity service is unavailable", async () => {
-    const harness = await createOfflineTestHarness();
+  it("logs and skips LLM-emitted open questions when identity service is unavailable", async () => {
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+              {
+                question: "What uncertainty remains about Atlas?",
+                urgency: 0.6,
+                related_episode_ids: [],
+                related_semantic_node_ids: [],
+              },
+            ],
+          ),
+        ],
+      }),
+    });
     cleanup.push(harness.cleanup);
 
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-7",
+    });
+    const workingMemory = createWorkingMemoryFixture({
+      current_focus: "Atlas",
+      hot_entities: ["Atlas"],
+      mode: "reflective",
     });
 
     await reflector.reflect(
       {
         userMessage: "Why is Atlas still failing?",
-        workingMemory: {
-          session_id: DEFAULT_SESSION_ID,
-          turn_counter: 1,
-          current_focus: "Atlas",
-          hot_entities: ["Atlas"],
-          pending_intents: [],
-          pending_social_attribution: null,
-          pending_trait_attribution: null,
-          mood: null,
-          pending_procedural_attempts: [],
-          suppressed: [],
-          mode: "reflective",
-          updated_at: 0,
-        },
+        workingMemory,
         selfSnapshot: {
           values: [],
           goals: [],
@@ -1930,20 +1881,7 @@ describe("reflector", () => {
           response: "I still need to compare more evidence.",
           tool_calls: [],
           intents: [],
-          workingMemory: {
-            session_id: DEFAULT_SESSION_ID,
-            turn_counter: 1,
-            current_focus: "Atlas",
-            hot_entities: ["Atlas"],
-            pending_intents: [],
-            pending_social_attribution: null,
-            pending_trait_attribution: null,
-            mood: null,
-            pending_procedural_attempts: [],
-            suppressed: [],
-            mode: "reflective",
-            updated_at: 0,
-          },
+          workingMemory,
         },
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence({
@@ -1973,32 +1911,47 @@ describe("reflector", () => {
   });
 
   it("routes reflector-created open questions through identity events", async () => {
-    const harness = await createOfflineTestHarness();
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+              {
+                question: "What uncertainty remains about Atlas?",
+                urgency: 0.6,
+                related_episode_ids: [],
+                related_semantic_node_ids: [],
+              },
+            ],
+          ),
+        ],
+      }),
+    });
     cleanup.push(harness.cleanup);
 
     const audienceEntityId = harness.entityRepository.resolve("Bob");
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-7",
       identityService: harness.identityService,
+    });
+    const workingMemory = createWorkingMemoryFixture({
+      current_focus: "Atlas",
+      hot_entities: ["Atlas"],
+      mode: "reflective",
     });
 
     await reflector.reflect(
       {
         userMessage: "Why is Atlas still failing?",
-        workingMemory: {
-          session_id: DEFAULT_SESSION_ID,
-          turn_counter: 1,
-          current_focus: "Atlas",
-          hot_entities: ["Atlas"],
-          pending_intents: [],
-          pending_social_attribution: null,
-          pending_trait_attribution: null,
-          mood: null,
-          pending_procedural_attempts: [],
-          suppressed: [],
-          mode: "reflective",
-          updated_at: 0,
-        },
+        workingMemory,
         selfSnapshot: {
           values: [],
           goals: [],
@@ -2024,20 +1977,7 @@ describe("reflector", () => {
           response: "I still need to compare more evidence.",
           tool_calls: [],
           intents: [],
-          workingMemory: {
-            session_id: DEFAULT_SESSION_ID,
-            turn_counter: 1,
-            current_focus: "Atlas",
-            hot_entities: ["Atlas"],
-            pending_intents: [],
-            pending_social_attribution: null,
-            pending_trait_attribution: null,
-            mood: null,
-            pending_procedural_attempts: [],
-            suppressed: [],
-            mode: "reflective",
-            updated_at: 0,
-          },
+          workingMemory,
         },
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence({
@@ -2077,8 +2017,12 @@ describe("reflector", () => {
     ]);
   });
 
-  it("does not add an open question when low relevance score has high retrieval confidence", async () => {
-    const harness = await createOfflineTestHarness();
+  it("does not add an open question when reflection output omits open_questions", async () => {
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [createReflectionResponse()],
+      }),
+    });
     cleanup.push(harness.cleanup);
 
     const episode = await harness.episodicRepository.insert(
@@ -2090,26 +2034,21 @@ describe("reflector", () => {
     );
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-7",
+      identityService: harness.identityService,
     });
     const retrieved = createRetrievedEpisode(episode, 0.1);
+    const workingMemory = createWorkingMemoryFixture({
+      current_focus: "Atlas",
+      hot_entities: ["Atlas"],
+      mode: "reflective",
+    });
 
     await reflector.reflect(
       {
         userMessage: "Why is Atlas still failing?",
-        workingMemory: {
-          session_id: DEFAULT_SESSION_ID,
-          turn_counter: 1,
-          current_focus: "Atlas",
-          hot_entities: ["Atlas"],
-          pending_intents: [],
-          pending_social_attribution: null,
-          pending_trait_attribution: null,
-          mood: null,
-          pending_procedural_attempts: [],
-          suppressed: [],
-          mode: "reflective",
-          updated_at: 0,
-        },
+        workingMemory,
         selfSnapshot: {
           values: [],
           goals: [],
@@ -2135,25 +2074,14 @@ describe("reflector", () => {
           response: "The rollback gap explains the failure.",
           tool_calls: [],
           intents: [],
-          workingMemory: {
-            session_id: DEFAULT_SESSION_ID,
-            turn_counter: 1,
-            current_focus: "Atlas",
-            hot_entities: ["Atlas"],
-            pending_intents: [],
-            pending_social_attribution: null,
-            pending_trait_attribution: null,
-            mood: null,
-            pending_procedural_attempts: [],
-            suppressed: [],
-            mode: "reflective",
-            updated_at: 0,
-          },
+          workingMemory,
         },
         retrievedEpisodes: [retrieved],
         retrievalConfidence: createRetrievalConfidence({
-          overall: 0.82,
-          evidenceStrength: 0.82,
+          overall: 0.2,
+          evidenceStrength: 0.2,
+          coverage: 0.2,
+          sampleSize: 1,
         }),
         suppressionSet: new SuppressionSet(1),
       },
@@ -2164,82 +2092,30 @@ describe("reflector", () => {
   });
 
   it("logs and continues when the reflection open-question hook fails", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    const clock = new FixedClock(1_000);
-    const store = new LanceDbStore({
-      uri: join(tempDir, "lancedb"),
-    });
-    const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: [...episodicMigrations, ...selfMigrations, ...retrievalMigrations],
-    });
-    const table = await store.openTable({
-      name: "episodes",
-      schema: createEpisodesTableSchema(4),
-    });
-    const episodicRepository = new EpisodicRepository({
-      table,
-      db,
-      clock,
-    });
-    const goalsRepository = new GoalsRepository({
-      db,
-      clock,
-    });
-    const traitsRepository = new TraitsRepository({
-      db,
-      clock,
-    });
-    const openQuestionsRepository = new OpenQuestionsRepository({
-      db,
-      clock,
-    });
-    const writer = new StreamWriter({
-      dataDir: tempDir,
-      sessionId: DEFAULT_SESSION_ID,
-      clock,
-    });
-
-    cleanup.push(async () => {
-      writer.close();
-      db.close();
-      await store.close();
-      rmSync(tempDir, { recursive: true, force: true });
-    });
-
-    const episode = await episodicRepository.insert({
-      id: "ep_dddddddddddddddd" as never,
-      title: "Atlas unknowns",
-      narrative: "Atlas remains uncertain.",
-      participants: ["Atlas"],
-      location: null,
-      start_time: 0,
-      end_time: 1,
-      source_stream_ids: ["strm_dddddddddddddddd" as never],
-      significance: 0.4,
-      tags: ["atlas"],
-      confidence: 0.4,
-      lineage: {
-        derived_from: [],
-        supersedes: [],
-      },
-      emotional_arc: null,
-      embedding: Float32Array.from([1, 0, 0, 0]),
-      created_at: 0,
-      updated_at: 0,
-    });
-    const retrieved: RetrievedEpisode = {
-      episode,
-      score: 0.2,
-      scoreBreakdown: createRetrievalScoreFixture({
-        similarity: 0.2,
-        decayedSalience: 0.2,
-        heat: 0.1,
-        goalRelevance: 0,
-        timeRelevance: 0,
-        suppressionPenalty: 0,
+    const harness = await createOfflineTestHarness({
+      llmClient: new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+              {
+                question: "What uncertainty remains about Atlas?",
+                urgency: 0.6,
+                related_episode_ids: [],
+                related_semantic_node_ids: [],
+              },
+            ],
+          ),
+        ],
       }),
-      citationChain: [],
-    };
+    });
+    cleanup.push(harness.cleanup);
+
     const brokenIdentityService = {
       addOpenQuestion() {
         throw new Error("hook exploded");
@@ -2252,30 +2128,24 @@ describe("reflector", () => {
       },
     };
     const reflector = new Reflector({
-      clock,
-      episodicRepository,
-      goalsRepository,
-      traitsRepository,
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-7",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
       identityService: brokenIdentityService,
+    });
+    const workingMemory = createWorkingMemoryFixture({
+      current_focus: "Atlas",
+      hot_entities: ["Atlas"],
+      mode: "reflective",
     });
 
     const reflected = await reflector.reflect(
       {
         userMessage: "Why is Atlas still failing?",
-        workingMemory: {
-          session_id: DEFAULT_SESSION_ID,
-          turn_counter: 1,
-          current_focus: "Atlas",
-          hot_entities: ["Atlas"],
-          pending_intents: [],
-          pending_social_attribution: null,
-          pending_trait_attribution: null,
-          mood: null,
-          pending_procedural_attempts: [],
-          suppressed: [],
-          mode: "reflective",
-          updated_at: 0,
-        },
+        workingMemory,
         selfSnapshot: {
           values: [],
           goals: [],
@@ -2292,7 +2162,7 @@ describe("reflector", () => {
             stop_reason: "end_turn",
           },
           decision_reason: "low confidence",
-          retrievedEpisodes: [retrieved],
+          retrievedEpisodes: [],
           referencedEpisodeIds: null,
           intents: [],
           thoughtsPersisted: false,
@@ -2301,22 +2171,9 @@ describe("reflector", () => {
           response: "I still need to compare more evidence.",
           tool_calls: [],
           intents: [],
-          workingMemory: {
-            session_id: DEFAULT_SESSION_ID,
-            turn_counter: 1,
-            current_focus: "Atlas",
-            hot_entities: ["Atlas"],
-            pending_intents: [],
-            pending_social_attribution: null,
-            pending_trait_attribution: null,
-            mood: null,
-            pending_procedural_attempts: [],
-            suppressed: [],
-            mode: "reflective",
-            updated_at: 0,
-          },
+          workingMemory,
         },
-        retrievedEpisodes: [retrieved],
+        retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence({
           overall: 0.2,
           evidenceStrength: 0.2,
@@ -2325,11 +2182,11 @@ describe("reflector", () => {
         }),
         suppressionSet: new SuppressionSet(1),
       },
-      writer,
+      harness.streamWriter,
     );
 
     const entries = new StreamReader({
-      dataDir: tempDir,
+      dataDir: harness.tempDir,
       sessionId: DEFAULT_SESSION_ID,
     }).tail(1);
 

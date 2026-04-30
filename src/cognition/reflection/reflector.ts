@@ -11,13 +11,13 @@ import {
 } from "../../executive/types.js";
 import { GoalsRepository, TraitsRepository, type GoalRecord } from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
-import type { ReviewQueueRepository } from "../../memory/semantic/index.js";
+import { semanticNodeIdSchema, type ReviewQueueRepository } from "../../memory/semantic/index.js";
 import { ProceduralEvidenceRepository, SkillRepository } from "../../memory/procedural/index.js";
 import {
   appendInternalFailureEvent,
   appendOpenQuestionHookFailureEvent,
 } from "../../memory/self/review-open-question-hook.js";
-import { EpisodicRepository } from "../../memory/episodic/index.js";
+import { EpisodicRepository, episodeIdSchema } from "../../memory/episodic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { EntityId, EpisodeId, GoalId, SkillId, StreamEntryId } from "../../util/ids.js";
 import { z } from "zod";
@@ -48,9 +48,6 @@ export type ReflectionContext = {
 
 const SURFACED_TTL_TURNS = 4;
 const NOISE_TTL_TURNS = 2;
-// RetrievalConfidence is calibrated epistemic confidence, not the relevance
-// ranking score. Keep this aligned with the S1/S2 low-confidence route.
-const OPEN_QUESTION_CONFIDENCE_THRESHOLD = 0.45;
 const REFLECTION_TOOL_NAME = "EmitTurnReflection";
 const DEFAULT_REFLECTION_MAX_TOKENS = 768;
 
@@ -73,6 +70,13 @@ const proposedExecutiveStepSchema = z.object({
   kind: executiveStepKindSchema,
   due_at: z.number().finite().nullable().optional(),
   rationale: z.string().min(1),
+});
+
+const reflectionOpenQuestionSchema = z.object({
+  question: z.string().min(1),
+  urgency: z.number().min(0).max(1),
+  related_episode_ids: z.array(episodeIdSchema),
+  related_semantic_node_ids: z.array(semanticNodeIdSchema),
 });
 
 const strictReflectionOutputSchema = z.object({
@@ -144,6 +148,13 @@ const strictReflectionOutputSchema = z.object({
       "Small next-step proposals for the selected executive goal when it has no open step after this turn.",
     )
     .default([]),
+  open_questions: z
+    .array(reflectionOpenQuestionSchema)
+    .max(5)
+    .describe(
+      "Durable unresolved questions from this completed turn that should be remembered in self-memory. Emit zero items unless the turn reveals a real question worth revisiting. Write the question in the user's language and attach only related ids present in the reflection input.",
+    )
+    .default([]),
 });
 
 const reflectionOutputParseSchema = strictReflectionOutputSchema.extend({
@@ -157,7 +168,7 @@ type RawReflectionOutput = z.infer<typeof reflectionOutputParseSchema>;
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
   description:
-    "Emit structured post-turn reflection. Mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for prior pending intents resolved by the completed turn, and executive step outcomes/proposals only when the turn directly supports them.",
+    "Emit structured post-turn reflection. Mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for prior pending intents resolved by the completed turn, executive step outcomes/proposals only when the turn directly supports them, and open_questions only for durable unresolved questions worth remembering.",
   inputSchema: toToolInputSchema(strictReflectionOutputSchema),
 };
 
@@ -169,6 +180,7 @@ function emptyReflectionOutput(): ReflectionOutput {
     intent_updates: [],
     step_outcomes: [],
     proposed_steps: [],
+    open_questions: [],
   };
 }
 
@@ -183,21 +195,6 @@ function buildReflectionProvenance(retrievedEpisodes: readonly RetrievedEpisode[
         kind: "online" as const,
         process: "reflector",
       };
-}
-
-function buildReflectionQuestion(userMessage: string, entities: readonly string[]): string {
-  const anchor = entities
-    .map((entity) => entity.trim())
-    .filter((entity) => entity.length > 0)
-    .slice(0, 2)
-    .join(" and ");
-  const prompt = userMessage.trim().replace(/\s+/g, " ");
-
-  if (anchor.length > 0) {
-    return `What am I missing about ${anchor} in this situation: ${prompt}?`;
-  }
-
-  return `What am I missing here: ${prompt}?`;
 }
 
 function buildIdentityPatchReviewRefs(
@@ -454,39 +451,7 @@ export class Reflector {
       }
     }
 
-    if (
-      context.deliberationResult.path === "system_2" &&
-      context.retrievalConfidence.overall < OPEN_QUESTION_CONFIDENCE_THRESHOLD
-    ) {
-      try {
-        const relatedEpisodeIds =
-          reflectionProvenance.kind === "episodes" ? reflectionProvenance.episode_ids : [];
-
-        const openQuestionInput = {
-          question: buildReflectionQuestion(
-            context.userMessage,
-            context.workingMemory.hot_entities,
-          ),
-          urgency: 0.45,
-          audience_entity_id: context.audienceEntityId ?? null,
-          related_episode_ids: relatedEpisodeIds,
-          provenance: reflectionProvenance,
-          source: "reflection",
-        } satisfies Parameters<IdentityService["addOpenQuestion"]>[0];
-
-        if (this.options.identityService === undefined) {
-          await appendOpenQuestionHookFailureEvent(
-            streamWriter,
-            "reflection_open_question",
-            new Error("identity_service_unavailable"),
-          );
-        } else {
-          this.options.identityService.addOpenQuestion(openQuestionInput);
-        }
-      } catch (error) {
-        await appendOpenQuestionHookFailureEvent(streamWriter, "reflection_open_question", error);
-      }
-    }
+    await this.applyReflectionOpenQuestions(context, reflectionOutput.open_questions, streamWriter);
 
     context.suppressionSet.tickTurn();
 
@@ -958,6 +923,62 @@ export class Reflector {
     }
   }
 
+  private async applyReflectionOpenQuestions(
+    context: ReflectionContext,
+    proposals: readonly ReflectionOutput["open_questions"][number][],
+    streamWriter: StreamWriter,
+  ): Promise<void> {
+    if (proposals.length === 0) {
+      return;
+    }
+
+    const identityService = this.options.identityService;
+
+    if (identityService === undefined) {
+      await appendOpenQuestionHookFailureEvent(
+        streamWriter,
+        "reflection_open_question",
+        new Error("identity_service_unavailable"),
+      );
+      return;
+    }
+
+    for (const proposal of proposals) {
+      const question = proposal.question.trim();
+
+      if (question.length === 0) {
+        continue;
+      }
+
+      const relatedEpisodeIds = [...new Set(proposal.related_episode_ids)];
+      const relatedSemanticNodeIds = [...new Set(proposal.related_semantic_node_ids)];
+      const provenance =
+        relatedEpisodeIds.length > 0
+          ? {
+              kind: "episodes" as const,
+              episode_ids: relatedEpisodeIds,
+            }
+          : {
+              kind: "online" as const,
+              process: "reflector",
+            };
+
+      try {
+        identityService.addOpenQuestion({
+          question,
+          urgency: proposal.urgency,
+          audience_entity_id: context.audienceEntityId ?? null,
+          related_episode_ids: relatedEpisodeIds,
+          related_semantic_node_ids: relatedSemanticNodeIds,
+          provenance,
+          source: "reflection",
+        });
+      } catch (error) {
+        await appendOpenQuestionHookFailureEvent(streamWriter, "reflection_open_question", error);
+      }
+    }
+  }
+
   private async parseExecutiveReflectionItems(
     raw: RawReflectionOutput,
     streamWriter: StreamWriter,
@@ -1056,6 +1077,7 @@ export class Reflector {
         "Emit trait_demonstrations only for traits actually shown by the completed assistant turn. Do not map from cognitive mode labels.",
         "Use strength_delta 0.01-0.1 for grounded trait demonstrations, and omit weak or generic traits.",
         "If pending_intents are present, mark only prior pending intents completed or abandoned when the current user message and agent response give clear evidence. Otherwise omit them.",
+        "For open_questions, emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. Preserve the user's language in the question text.",
       ].join("\n"),
       messages: [
         {
@@ -1063,6 +1085,7 @@ export class Reflector {
           content: JSON.stringify({
             user_message: context.userMessage,
             agent_response: context.actionResult.response,
+            retrieval_confidence: context.retrievalConfidence,
             active_goals: context.selfSnapshot.goals.map((goal) => ({
               goal_id: goal.id,
               description: goal.description,

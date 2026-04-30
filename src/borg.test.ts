@@ -106,7 +106,14 @@ function createTraitReflectionResponse(input: {
   };
 }
 
-function createEmptyReflectionResponse() {
+function createEmptyReflectionResponse(
+  openQuestions: Array<{
+    question: string;
+    urgency: number;
+    related_episode_ids: string[];
+    related_semantic_node_ids: string[];
+  }> = [],
+) {
   return {
     text: "",
     input_tokens: 4,
@@ -121,6 +128,7 @@ function createEmptyReflectionResponse() {
           procedural_outcomes: [],
           trait_demonstrations: [],
           intent_updates: [],
+          open_questions: openQuestions,
         },
       },
     ],
@@ -2379,7 +2387,14 @@ describe("Borg", () => {
             stop_reason: "end_turn",
             tool_calls: [],
           },
-          createEmptyReflectionResponse(),
+          createEmptyReflectionResponse([
+            {
+              question: "What uncertainty remains about Atlas?",
+              urgency: 0.6,
+              related_episode_ids: [],
+              related_semantic_node_ids: [],
+            },
+          ]),
         ],
       }),
     });
