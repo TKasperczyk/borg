@@ -112,7 +112,6 @@ export type ReviewQueueRepositoryOptions = {
   commitmentRepository?: CommitmentRepository;
   identityService?: IdentityService;
   identityEventRepository?: IdentityEventRepository;
-  applyCorrection?: (item: ReviewQueueItem) => Promise<void> | void;
   handlers?: ReviewQueueHandlerRegistry;
   onEnqueue?: (item: ReviewQueueItem, input: ReviewQueueInsertInput) => void | Promise<void>;
   onEnqueueError?: (
@@ -338,7 +337,6 @@ export type ReviewHandlerContext = {
   commitmentRepository?: CommitmentRepository;
   identityService?: IdentityService;
   identityEventRepository?: IdentityEventRepository;
-  applyCorrection?: (item: ReviewQueueItem) => Promise<void> | void;
 };
 
 export type ReviewApplyingStateSpec<TRefs, TState> = {
@@ -686,7 +684,6 @@ export class ReviewQueueRepository {
       commitmentRepository: this.options.commitmentRepository,
       identityService: this.options.identityService,
       identityEventRepository: this.options.identityEventRepository,
-      applyCorrection: this.options.applyCorrection,
     };
   }
 
@@ -1470,6 +1467,10 @@ export class ReviewQueueRepository {
       return this.resolveWithRegisteredHandler(handler, item, resolution);
     }
 
+    // INTERNAL SCAFFOLDING (will be deleted after all kinds are extracted):
+    // The fallback below dispatches to the monolithic apply methods for kinds
+    // not yet migrated to handlers. Do NOT add new kinds here -- write a
+    // ReviewQueueHandler instead. See /tmp/borg-review-queue-split-plan.md.
     if (item.kind === "correction") {
       throw new SemanticError("No correction applier configured for review queue", {
         code: "REVIEW_QUEUE_CORRECTION_UNSUPPORTED",

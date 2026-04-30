@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { autonomyMigrations } from "../autonomy/index.js";
+import { CorrectionService } from "../correction/index.js";
 import type { AffectiveSignal } from "../memory/affective/index.js";
 import { DEFAULT_CONFIG, type Config } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
@@ -55,9 +56,11 @@ import {
   SemanticGraph,
   SemanticEdgeRepository,
   SemanticNodeRepository,
+  createCorrectionReviewHandler,
   createSkillSplitReviewQueueHandler,
   createSemanticNodesTableSchema,
   semanticMigrations,
+  type ReviewQueueItem,
   type SemanticEdge,
   type SemanticNode,
 } from "../memory/semantic/index.js";
@@ -408,6 +411,7 @@ export async function createOfflineTestHarness(
   });
   const pendingHookLogs = new Set<Promise<void>>();
   const registry = new ReverserRegistry();
+  let applyCorrectionReview: ((item: ReviewQueueItem) => Promise<void>) | undefined;
   const semanticNodeRepository = new SemanticNodeRepository({
     table: semanticNodesTable,
     db,
@@ -520,6 +524,17 @@ export async function createOfflineTestHarness(
       pendingHookLogs.add(promise);
     },
   });
+  reviewQueueRepository.registerHandler(
+    createCorrectionReviewHandler({
+      applyCorrection: (item) => {
+        if (applyCorrectionReview === undefined) {
+          throw new Error("Correction service not initialized");
+        }
+
+        return applyCorrectionReview(item);
+      },
+    }),
+  );
   const skillRepository = new SkillRepository({
     table: skillsTable,
     db,
@@ -561,6 +576,27 @@ export async function createOfflineTestHarness(
     clock,
     semanticUnderReviewMultiplier: config.retrieval.semantic.underReviewMultiplier,
   });
+  const correctionService = new CorrectionService({
+    config,
+    db,
+    clock,
+    retrievalPipeline,
+    episodicRepository,
+    semanticNodeRepository,
+    semanticEdgeRepository,
+    semanticGraph,
+    valuesRepository,
+    goalsRepository,
+    traitsRepository,
+    openQuestionsRepository,
+    socialRepository,
+    entityRepository,
+    commitmentRepository,
+    reviewQueueRepository,
+    identityService,
+    identityEventRepository,
+  });
+  applyCorrectionReview = (item) => correctionService.applyCorrectionReview(item);
   const flushHookLogs = async () => {
     await reviewQueueRepository.flushEnqueueHooks();
     await Promise.all([...pendingHookLogs]);

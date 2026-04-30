@@ -1115,6 +1115,102 @@ describe("review queue", () => {
     );
   });
 
+  it("resolves harness correction rows through the registered correction handler", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(11_500),
+    });
+    cleanup.push(harness.cleanup);
+
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture({
+        title: "Correction target episode",
+        narrative: "Original narrative.",
+        created_at: 11_000,
+        updated_at: 11_000,
+      }),
+    );
+    const correction = harness.reviewQueueRepository.enqueue({
+      kind: "correction",
+      refs: {
+        target_type: "episode",
+        target_id: episode.id,
+        patch: {
+          narrative: "Corrected narrative.",
+        },
+        proposed_provenance: {
+          kind: "manual",
+        },
+      },
+      reason: "user corrected the episode narrative",
+    });
+
+    const resolved = await harness.reviewQueueRepository.resolve(correction.id, "accept");
+
+    expect(resolved?.resolution).toBe("accept");
+    expect(await harness.episodicRepository.get(episode.id)).toEqual(
+      expect.objectContaining({
+        narrative: "Corrected narrative.",
+      }),
+    );
+    expect(
+      harness.identityEventRepository.list({
+        recordType: "episode",
+        recordId: episode.id,
+        limit: 10,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        action: "correction_apply",
+        review_item_id: correction.id,
+      }),
+    ]);
+  });
+
+  it("only allows manual dismiss for belief revision reviews", async () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...semanticMigrations],
+    });
+    const reviewQueue = new ReviewQueueRepository({
+      db,
+      clock: new FixedClock(11_750),
+    });
+    const refs = {
+      target_type: "semantic_node",
+      target_id: "semn_aaaaaaaaaaaaaaaa",
+      invalidated_edge_id: "seme_aaaaaaaaaaaaaaaa",
+      dependency_path_edge_ids: ["seme_aaaaaaaaaaaaaaaa"],
+      surviving_support_edge_ids: [],
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+      audience_entity_id: null,
+    };
+
+    try {
+      const dismissedItem = reviewQueue.enqueue({
+        kind: "belief_revision",
+        refs,
+        reason: "support chain collapsed",
+      });
+      const dismissed = await reviewQueue.resolve(dismissedItem.id, "dismiss");
+
+      expect(dismissed?.resolution).toBe("dismiss");
+
+      for (const decision of ["keep", "weaken", "archive_node", "invalidate_edge"] as const) {
+        const item = reviewQueue.enqueue({
+          kind: "belief_revision",
+          refs,
+          reason: "support chain collapsed",
+        });
+
+        await expect(reviewQueue.resolve(item.id, decision)).rejects.toMatchObject({
+          name: "SemanticError",
+          code: "REVIEW_QUEUE_RESOLUTION_INVALID",
+        });
+      }
+    } finally {
+      db.close();
+    }
+  });
+
   it("rejects incompatible review decisions and allows valid pairings", async () => {
     const db = openDatabase(":memory:", {
       migrations: [...semanticMigrations],
