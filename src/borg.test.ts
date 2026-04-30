@@ -1673,7 +1673,6 @@ describe("Borg", () => {
       const pendingTrait = borg.workmem.load().pending_trait_attribution;
       expect(pendingTrait).toMatchObject({
         trait_label: "engaged",
-        source_episode_ids: [],
         audience_entity_id: null,
       });
       expect(pendingTrait?.source_stream_entry_ids).toHaveLength(2);
@@ -3324,12 +3323,11 @@ describe("Borg", () => {
 
       expect(borg.self.traits.list()).toEqual([]);
       // Sprint 56: trait evidence is the demonstrating turn's stream
-      // entries; the legacy episode_ids field is empty until the offline
-      // extraction completes (disabled here via liveExtraction:false).
+      // entries. With extraction disabled here via liveExtraction:false,
+      // those stream entries do not resolve yet.
       const pendingTraitFirst = borg.workmem.load().pending_trait_attribution;
       expect(pendingTraitFirst).toMatchObject({
         trait_label: "warm",
-        source_episode_ids: [],
         turn_completed_ts: 1_000,
         audience_entity_id: null,
       });
@@ -3348,7 +3346,6 @@ describe("Borg", () => {
       expect(borg.self.traits.list()).toEqual([]);
       expect(borg.workmem.load().pending_trait_attribution).toMatchObject({
         trait_label: "warm",
-        source_episode_ids: [],
       });
     } finally {
       await borg.close();

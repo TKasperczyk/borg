@@ -110,7 +110,7 @@ describe("goal followup due trigger", () => {
 
     watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default" as never, {
       lastTs: clock.now(),
-      lastEntryId: null,
+      lastEntryId: "watermark",
     });
     expect(await trigger.scan()).toEqual([]);
 

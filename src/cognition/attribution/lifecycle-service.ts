@@ -44,17 +44,15 @@ export class AttributionLifecycleService {
   private async resolveTraitEvidenceEpisodes(
     attribution: PendingTraitAttribution,
   ): Promise<EpisodeId[]> {
-    if (attribution.source_stream_entry_ids.length > 0) {
-      const resolved = await this.options.episodicRepository.findBySourceStreamIdsContaining(
-        attribution.source_stream_entry_ids,
-      );
+    const resolved = await this.options.episodicRepository.findBySourceStreamIdsContaining(
+      attribution.source_stream_entry_ids,
+    );
 
-      if (resolved !== null) {
-        return [resolved.id];
-      }
+    if (resolved !== null) {
+      return [resolved.id];
     }
 
-    return [...attribution.source_episode_ids];
+    return [];
   }
 
   async settle(input: AttributionLifecycleInput): Promise<AttributionLifecycleResult> {
@@ -118,7 +116,6 @@ export class AttributionLifecycleService {
             pending_audience_entity_id: pendingTraitAttribution.audience_entity_id,
             current_audience_entity_id: input.audienceEntityId,
             turn_completed_ts: pendingTraitAttribution.turn_completed_ts,
-            source_episode_ids: pendingTraitAttribution.source_episode_ids,
             source_stream_entry_ids: pendingTraitAttribution.source_stream_entry_ids,
           },
         });

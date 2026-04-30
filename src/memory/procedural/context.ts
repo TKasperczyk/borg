@@ -91,50 +91,9 @@ export function deriveProceduralContextKey(input: {
   )}`;
 }
 
-export function deriveLegacyProceduralContextKey(input: {
-  problem_kind: ProceduralContextProblemKind;
-  domain_tags: readonly string[];
-  audience_scope: ProceduralContextAudienceScope;
-}): string {
-  const domainTags = canonicalizeDomainTags(input.domain_tags);
-
-  return `${input.problem_kind}:${domainTags.join(",")}:${input.audience_scope}`;
-}
-
-export function parseLegacyProceduralContextKey(key: string): {
-  problem_kind: ProceduralContextProblemKind;
-  domain_tags: string[];
-  audience_scope: ProceduralContextAudienceScope;
-} | null {
-  const parts = key.split(":");
-
-  if (parts.length !== 3) {
-    return null;
-  }
-
-  const problemKind = proceduralContextProblemKindSchema.safeParse(parts[0]);
-  const audienceScope = proceduralContextAudienceScopeSchema.safeParse(parts[2]);
-
-  if (!problemKind.success || !audienceScope.success) {
-    return null;
-  }
-
-  return {
-    problem_kind: problemKind.data,
-    domain_tags: parts[1] === "" ? [] : canonicalizeDomainTags(parts[1]?.split(",") ?? []),
-    audience_scope: audienceScope.data,
-  };
-}
-
-export function deriveProceduralContextKeyAliases(context: ProceduralContext): string[] {
-  return [
-    deriveLegacyProceduralContextKey({
-      problem_kind: context.problem_kind,
-      domain_tags: context.domain_tags,
-      audience_scope: context.audience_scope,
-    }),
-  ];
-}
+export const proceduralContextKeySchema = z.string().regex(/^v2:[0-9a-f]{40}$/u, {
+  message: "Invalid procedural context key",
+});
 
 export const proceduralContextMetadataSchema = proceduralContextMetadataBaseSchema.transform(
   (context) => ({

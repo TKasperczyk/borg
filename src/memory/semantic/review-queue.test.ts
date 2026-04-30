@@ -19,6 +19,7 @@ import {
   enqueueOpenQuestionForReview,
   type ReviewOpenQuestionExtractorLike,
 } from "../self/review-open-question-hook.js";
+import { deriveProceduralContextKey } from "../procedural/index.js";
 import { semanticMigrations } from "./migrations.js";
 import { ReviewQueueRepository } from "./review-queue.js";
 import {
@@ -31,6 +32,17 @@ import {
   createOfflineTestHarness,
   createSemanticNodeFixture,
 } from "../../offline/test-support.js";
+
+const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
+  problem_kind: "code_debugging",
+  domain_tags: ["typescript"],
+  audience_scope: "self",
+});
+const ROADMAP_PLANNING_CONTEXT_KEY = deriveProceduralContextKey({
+  problem_kind: "planning",
+  domain_tags: ["roadmap"],
+  audience_scope: "self",
+});
 
 describe("review queue", () => {
   const cleanup: Array<() => Promise<void>> = [];
@@ -990,7 +1002,7 @@ describe("review queue", () => {
     );
   });
 
-  it("rejects accept on legacy under-specified repair rows and leaves them open", async () => {
+  it("rejects accept on under-specified repair rows and leaves them open", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(9_000),
     });
@@ -1004,23 +1016,23 @@ describe("review queue", () => {
         kind: "manual",
       },
     });
-    const legacyMisattribution = harness.reviewQueueRepository.enqueue({
+    const underSpecifiedMisattribution = harness.reviewQueueRepository.enqueue({
       kind: "misattribution",
       refs: {
         target_type: "episode",
         target_id: episode.id,
       },
-      reason: "legacy row missing patch",
+      reason: "under-specified row missing patch",
     });
-    const legacyTemporalDrift = harness.reviewQueueRepository.enqueue({
+    const underSpecifiedTemporalDrift = harness.reviewQueueRepository.enqueue({
       kind: "temporal_drift",
       refs: {
         target_type: "episode",
         target_id: episode.id,
       },
-      reason: "legacy row missing corrected timestamps",
+      reason: "under-specified row missing corrected timestamps",
     });
-    const legacyIdentityRepair = harness.reviewQueueRepository.enqueue({
+    const underSpecifiedIdentityRepair = harness.reviewQueueRepository.enqueue({
       kind: "identity_inconsistency",
       refs: {
         target_type: "goal",
@@ -1031,23 +1043,23 @@ describe("review queue", () => {
           process: "overseer",
         },
       },
-      reason: "legacy row missing identity patch",
+      reason: "under-specified row missing identity patch",
     });
 
     await expect(
-      harness.reviewQueueRepository.resolve(legacyMisattribution.id, "accept"),
+      harness.reviewQueueRepository.resolve(underSpecifiedMisattribution.id, "accept"),
     ).rejects.toMatchObject({
       name: "SemanticError",
       code: "REVIEW_QUEUE_REPAIR_REQUIRES_STRUCTURED_REFS",
     });
     await expect(
-      harness.reviewQueueRepository.resolve(legacyTemporalDrift.id, "accept"),
+      harness.reviewQueueRepository.resolve(underSpecifiedTemporalDrift.id, "accept"),
     ).rejects.toMatchObject({
       name: "SemanticError",
       code: "REVIEW_QUEUE_REPAIR_REQUIRES_STRUCTURED_REFS",
     });
     await expect(
-      harness.reviewQueueRepository.resolve(legacyIdentityRepair.id, "accept"),
+      harness.reviewQueueRepository.resolve(underSpecifiedIdentityRepair.id, "accept"),
     ).rejects.toMatchObject({
       name: "SemanticError",
       code: "REVIEW_QUEUE_REPAIR_REQUIRES_STRUCTURED_REFS",
@@ -1055,9 +1067,9 @@ describe("review queue", () => {
 
     expect(harness.reviewQueueRepository.getOpen().map((item) => item.id)).toEqual(
       expect.arrayContaining([
-        legacyMisattribution.id,
-        legacyTemporalDrift.id,
-        legacyIdentityRepair.id,
+        underSpecifiedMisattribution.id,
+        underSpecifiedTemporalDrift.id,
+        underSpecifiedIdentityRepair.id,
       ]),
     );
   });
@@ -1073,12 +1085,12 @@ describe("review queue", () => {
       refs: {
         node_ids: ["semn_aaaaaaaaaaaaaaaa"],
       },
-      reason: "legacy row lost one side of the pair",
+      reason: "under-specified row lost one side of the pair",
     });
     const malformedContradiction = harness.reviewQueueRepository.enqueue({
       kind: "contradiction",
       refs: {},
-      reason: "legacy row lost the pair refs",
+      reason: "under-specified row lost the pair refs",
     });
 
     await expect(
@@ -1170,7 +1182,7 @@ describe("review queue", () => {
               context_stats: [
                 {
                   skill_id: "skl_aaaaaaaaaaaaaaaa",
-                  context_key: "code_debugging:typescript:self",
+                  context_key: TYPESCRIPT_DEBUG_CONTEXT_KEY,
                   alpha: 2,
                   beta: 1,
                   attempts: 1,
@@ -1189,7 +1201,7 @@ describe("review queue", () => {
               context_stats: [
                 {
                   skill_id: "skl_aaaaaaaaaaaaaaaa",
-                  context_key: "planning:roadmap:self",
+                  context_key: ROADMAP_PLANNING_CONTEXT_KEY,
                   alpha: 1,
                   beta: 2,
                   attempts: 1,
@@ -1210,7 +1222,7 @@ describe("review queue", () => {
             max_posterior_mean: 0.75,
             buckets: [
               {
-                context_key: "code_debugging:typescript:self",
+                context_key: TYPESCRIPT_DEBUG_CONTEXT_KEY,
                 posterior_mean: 0.75,
                 alpha: 2,
                 beta: 1,
@@ -1221,7 +1233,7 @@ describe("review queue", () => {
                 last_successful: 1_000,
               },
               {
-                context_key: "planning:roadmap:self",
+                context_key: ROADMAP_PLANNING_CONTEXT_KEY,
                 posterior_mean: 0.25,
                 alpha: 1,
                 beta: 2,

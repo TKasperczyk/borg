@@ -150,16 +150,6 @@ function listVectorSyncOutbox(db: ReturnType<typeof openDatabase>) {
   }>;
 }
 
-function runRevisionSubstrateMigration(db: ReturnType<typeof openDatabase>): void {
-  const migration = semanticMigrations.find((item) => item.id === 135);
-
-  if (typeof migration?.up !== "function") {
-    throw new Error("revision substrate migration is missing");
-  }
-
-  migration.up(db);
-}
-
 describe("semantic repositories", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -219,247 +209,6 @@ describe("semantic repositories", () => {
         }),
       ]),
     );
-  });
-
-  it("backfills pre-migration semantic edges with created_at as valid_from", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    const dbPath = join(tempDir, "borg.db");
-    let db: ReturnType<typeof openDatabase> | null = null;
-
-    cleanup.push(async () => {
-      db?.close();
-      rmSync(tempDir, { recursive: true, force: true });
-    });
-
-    db = openDatabase(dbPath, {
-      migrations: semanticMigrations.filter((migration) => migration.id < 133),
-    });
-    const edgeId = createSemanticEdgeId();
-
-    db.prepare(
-      `
-        INSERT INTO semantic_edges (
-          id, from_node_id, to_node_id, relation, confidence, evidence_episode_ids, created_at, last_verified_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-    ).run(
-      edgeId,
-      createSemanticNodeId(),
-      createSemanticNodeId(),
-      "supports",
-      0.7,
-      JSON.stringify(["ep_aaaaaaaaaaaaaaaa"]),
-      250,
-      300,
-    );
-    db.close();
-    db = null;
-
-    db = openDatabase(dbPath, {
-      migrations: semanticMigrations,
-    });
-
-    const row = db
-      .prepare("SELECT valid_from, valid_to FROM semantic_edges WHERE id = ?")
-      .get(edgeId) as { valid_from: number; valid_to: number | null };
-
-    expect(row).toEqual({
-      valid_from: 250,
-      valid_to: null,
-    });
-  });
-
-  it("backfills support-edge belief dependencies during migration", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    const dbPath = join(tempDir, "borg.db");
-    let db: ReturnType<typeof openDatabase> | null = null;
-
-    cleanup.push(async () => {
-      db?.close();
-      rmSync(tempDir, { recursive: true, force: true });
-    });
-
-    db = openDatabase(dbPath, {
-      migrations: semanticMigrations.filter((migration) => migration.id < 135),
-    });
-    const supportEdgeId = createSemanticEdgeId();
-    const evidenceNodeId = createSemanticNodeId();
-    const insightNodeId = createSemanticNodeId();
-
-    db.prepare(
-      `
-        INSERT INTO semantic_edges (
-          id,
-          from_node_id,
-          to_node_id,
-          relation,
-          confidence,
-          evidence_episode_ids,
-          created_at,
-          last_verified_at,
-          valid_from,
-          valid_to,
-          invalidated_at,
-          invalidated_by_edge_id,
-          invalidated_by_review_id,
-          invalidated_by_process,
-          invalidated_reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
-      `,
-    ).run(
-      supportEdgeId,
-      evidenceNodeId,
-      insightNodeId,
-      "supports",
-      0.7,
-      JSON.stringify(["ep_aaaaaaaaaaaaaaaa"]),
-      2_000,
-      2_000,
-      2_000,
-    );
-    db.close();
-    db = null;
-
-    db = openDatabase(dbPath, {
-      migrations: semanticMigrations,
-    });
-
-    const rows = db
-      .prepare(
-        `
-          SELECT target_type, target_id, source_edge_id, dependency_kind, created_at
-          FROM semantic_belief_dependencies
-          WHERE source_edge_id = ?
-        `,
-      )
-      .all(supportEdgeId);
-
-    expect(rows).toEqual([
-      {
-        target_type: "semantic_node",
-        target_id: insightNodeId,
-        source_edge_id: supportEdgeId,
-        dependency_kind: "supports",
-        created_at: 2_000,
-      },
-    ]);
-  });
-
-  it("does not backfill belief dependencies for invalidated support edges", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    const dbPath = join(tempDir, "borg.db");
-    let db: ReturnType<typeof openDatabase> | null = null;
-
-    cleanup.push(async () => {
-      db?.close();
-      rmSync(tempDir, { recursive: true, force: true });
-    });
-
-    db = openDatabase(dbPath, {
-      migrations: semanticMigrations.filter((migration) => migration.id < 135),
-    });
-
-    db.prepare(
-      `
-        INSERT INTO semantic_edges (
-          id,
-          from_node_id,
-          to_node_id,
-          relation,
-          confidence,
-          evidence_episode_ids,
-          created_at,
-          last_verified_at,
-          valid_from,
-          valid_to,
-          invalidated_at,
-          invalidated_by_edge_id,
-          invalidated_by_review_id,
-          invalidated_by_process,
-          invalidated_reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
-      `,
-    ).run(
-      createSemanticEdgeId(),
-      createSemanticNodeId(),
-      createSemanticNodeId(),
-      "supports",
-      0.7,
-      JSON.stringify(["ep_aaaaaaaaaaaaaaaa"]),
-      2_000,
-      2_000,
-      2_000,
-      2_500,
-      2_500,
-      "maintenance",
-      "closed before revision substrate existed",
-    );
-    db.close();
-    db = null;
-
-    db = openDatabase(dbPath, {
-      migrations: semanticMigrations,
-    });
-
-    expect(listBeliefDependencies(db)).toEqual([]);
-  });
-
-  it("backfills support-edge belief dependencies idempotently", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    const dbPath = join(tempDir, "borg.db");
-    let db: ReturnType<typeof openDatabase> | null = null;
-
-    cleanup.push(async () => {
-      db?.close();
-      rmSync(tempDir, { recursive: true, force: true });
-    });
-
-    db = openDatabase(dbPath, {
-      migrations: semanticMigrations.filter((migration) => migration.id < 135),
-    });
-
-    db.prepare(
-      `
-        INSERT INTO semantic_edges (
-          id,
-          from_node_id,
-          to_node_id,
-          relation,
-          confidence,
-          evidence_episode_ids,
-          created_at,
-          last_verified_at,
-          valid_from,
-          valid_to,
-          invalidated_at,
-          invalidated_by_edge_id,
-          invalidated_by_review_id,
-          invalidated_by_process,
-          invalidated_reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
-      `,
-    ).run(
-      createSemanticEdgeId(),
-      createSemanticNodeId(),
-      createSemanticNodeId(),
-      "supports",
-      0.7,
-      JSON.stringify(["ep_aaaaaaaaaaaaaaaa"]),
-      2_000,
-      2_000,
-      2_000,
-    );
-    db.close();
-    db = null;
-
-    db = openDatabase(dbPath, {
-      migrations: semanticMigrations,
-    });
-
-    runRevisionSubstrateMigration(db);
-    runRevisionSubstrateMigration(db);
-
-    expect(listBeliefDependencies(db)).toHaveLength(1);
   });
 
   it("supports semantic node CRUD and vector search", async () => {
@@ -842,22 +591,22 @@ describe("semantic repositories", () => {
     });
 
     const archived = await fixture.nodeRepository.insert({
-      ...buildNode(createSemanticNodeId(), "Legacy Atlas"),
-      aliases: ["atlas legacy"],
+      ...buildNode(createSemanticNodeId(), "Archived Atlas"),
+      aliases: ["atlas archived"],
       archived: true,
     });
     const active = await fixture.nodeRepository.insert({
-      ...buildNode(createSemanticNodeId(), "Legacy Atlas"),
-      aliases: ["atlas legacy"],
+      ...buildNode(createSemanticNodeId(), "Archived Atlas"),
+      aliases: ["atlas archived"],
       archived: false,
     });
 
     expect(await fixture.nodeRepository.getMany([archived.id, active.id])).toEqual([null, active]);
-    expect(await fixture.nodeRepository.findByExactLabelOrAlias("Legacy Atlas", 3)).toEqual([
+    expect(await fixture.nodeRepository.findByExactLabelOrAlias("Archived Atlas", 3)).toEqual([
       expect.objectContaining({ id: active.id }),
     ]);
     expect(
-      await fixture.nodeRepository.findByExactLabelOrAlias("atlas legacy", 3, {
+      await fixture.nodeRepository.findByExactLabelOrAlias("atlas archived", 3, {
         includeArchived: true,
       }),
     ).toEqual(

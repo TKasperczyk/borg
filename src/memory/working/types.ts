@@ -72,14 +72,12 @@ export const pendingSocialAttributionSchema = z.object({
 
 export const pendingTraitAttributionSchema = z.object({
   trait_label: z.string().min(1),
-  strength_delta: z.number().min(0).max(0.2).default(0.05),
+  strength_delta: z.number().min(0).max(0.2),
   // Sprint 56: trait demonstration is evidenced by the assistant turn
   // that actually displayed it -- captured here as the user_msg/agent_msg
   // stream entries from the demonstrating turn. The orchestrator resolves
-  // these to the extracted episode at consumption time. The legacy
-  // source_episode_ids field stays nullable for older persisted state.
-  source_stream_entry_ids: z.array(workingStreamEntryIdSchema).default([]),
-  source_episode_ids: z.array(workingEpisodeIdSchema).default([]),
+  // these to the extracted episode at consumption time.
+  source_stream_entry_ids: z.array(workingStreamEntryIdSchema).min(1),
   turn_completed_ts: z.number().finite(),
   audience_entity_id: workingEntityIdSchema.nullable(),
 });
@@ -110,7 +108,7 @@ export const stopUntilSubstantiveContentSchema = z.object({
 });
 
 export const discourseStateSchema = z.object({
-  stop_until_substantive_content: stopUntilSubstantiveContentSchema.nullable().default(null),
+  stop_until_substantive_content: stopUntilSubstantiveContentSchema.nullable(),
 });
 
 // Sprint 53: pending procedural attempts are now a bounded list, not one
@@ -125,90 +123,17 @@ const workingMemoryObjectSchema = z.object({
   turn_counter: z.number().int().nonnegative(),
   hot_entities: z.array(z.string().min(1)),
   pending_intents: z.array(intentRecordSchema),
-  pending_social_attribution: pendingSocialAttributionSchema.nullable().default(null),
-  pending_trait_attribution: pendingTraitAttributionSchema.nullable().default(null),
-  suppressed: z.array(suppressedEntrySchema).default([]),
-  mood: affectiveSignalSchema.nullable().default(null),
-  pending_procedural_attempts: z.array(pendingProceduralAttemptSchema).default([]),
-  discourse_state: discourseStateSchema.optional(),
+  pending_social_attribution: pendingSocialAttributionSchema.nullable(),
+  pending_trait_attribution: pendingTraitAttributionSchema.nullable(),
+  suppressed: z.array(suppressedEntrySchema),
+  mood: affectiveSignalSchema.nullable(),
+  pending_procedural_attempts: z.array(pendingProceduralAttemptSchema),
+  discourse_state: discourseStateSchema,
   mode: cognitiveModeSchema.nullable(),
   updated_at: z.number().finite(),
-});
+}).strict();
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function migrateLegacyDiscourseState(record: Record<string, unknown>): Record<string, unknown> {
-  const discourseState = record.discourse_state;
-
-  if (!isPlainRecord(discourseState)) {
-    return record;
-  }
-
-  const stopState = discourseState.stop_until_substantive_content;
-
-  if (!isPlainRecord(stopState) || stopState.provenance !== "validator") {
-    return record;
-  }
-
-  return {
-    ...record,
-    discourse_state: {
-      ...discourseState,
-      stop_until_substantive_content: {
-        ...stopState,
-        provenance: "no_output_tool",
-      },
-    },
-  };
-}
-
-// Backward-compat preprocess: legacy persisted files may have a singular
-// `pending_procedural_attempt: T | null` (Sprint 53 moved to a list),
-// `current_focus` (now derived from `hot_entities` at prompt render time),
-// or the now-removed `last_selected_skill_*` fields (Sprint 54 dropped them
-// as unused). Sprint no_output also retired the persisted `validator`
-// discourse provenance; map it to `no_output_tool` on read. Drop the dead
-// fields and migrate legacy slots before validation.
-export const workingMemorySchema = z.preprocess((input) => {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) {
-    return input;
-  }
-
-  const record = input as Record<string, unknown>;
-  const {
-    pending_procedural_attempt: legacyAttempt,
-    current_focus: _legacyCurrentFocus,
-    last_selected_skill_id: _legacySkillId,
-    last_selected_skill_turn: _legacySkillTurn,
-    ...rest
-  } = record;
-  const withDiscourseState =
-    "discourse_state" in rest
-      ? rest
-      : {
-          ...rest,
-          discourse_state: {
-            stop_until_substantive_content: null,
-          },
-        };
-
-  const migrated = migrateLegacyDiscourseState(withDiscourseState);
-
-  if ("pending_procedural_attempts" in migrated) {
-    return migrated;
-  }
-
-  if (legacyAttempt === undefined) {
-    return migrated;
-  }
-
-  return {
-    ...migrated,
-    pending_procedural_attempts: legacyAttempt === null ? [] : [legacyAttempt],
-  };
-}, workingMemoryObjectSchema);
+export const workingMemorySchema = workingMemoryObjectSchema;
 
 export type WorkingMemory = z.infer<typeof workingMemorySchema>;
 export type PendingSocialAttribution = z.infer<typeof pendingSocialAttributionSchema>;

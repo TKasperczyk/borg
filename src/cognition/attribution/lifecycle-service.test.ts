@@ -170,7 +170,6 @@ describe("AttributionLifecycleService", () => {
       trait_label: "patient",
       strength_delta: 0.05,
       source_stream_entry_ids: [streamEntryId],
-      source_episode_ids: [episodeId],
       turn_completed_ts: 1_500,
       audience_entity_id: otherEntityId,
     };
@@ -198,7 +197,6 @@ describe("AttributionLifecycleService", () => {
           pending_audience_entity_id: otherEntityId,
           current_audience_entity_id: entityId,
           turn_completed_ts: 1_500,
-          source_episode_ids: [episodeId],
           source_stream_entry_ids: [streamEntryId],
         },
       },
@@ -225,7 +223,6 @@ describe("AttributionLifecycleService", () => {
       trait_label: "patient",
       strength_delta: 0.05,
       source_stream_entry_ids: [streamEntryId],
-      source_episode_ids: [],
       turn_completed_ts: 1_500,
       audience_entity_id: entityId,
     };
@@ -267,7 +264,6 @@ describe("AttributionLifecycleService", () => {
       trait_label: "patient",
       strength_delta: 0.05,
       source_stream_entry_ids: [streamEntryId],
-      source_episode_ids: [],
       turn_completed_ts: 1_500,
       audience_entity_id: entityId,
     };

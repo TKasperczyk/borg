@@ -129,7 +129,6 @@ const configFileSchema = z
             splitCooldownDays: z.number().positive().optional(),
             splitClaimStaleSec: z.number().int().positive().optional(),
             maxSplitParseFailures: z.number().int().positive().optional(),
-            skillSplitDryRun: z.boolean().optional(),
             budget: z.number().int().positive().optional(),
           })
           .partial()
@@ -399,7 +398,6 @@ export const configSchema = z.object({
       splitCooldownDays: z.number().positive(),
       splitClaimStaleSec: z.number().int().positive(),
       maxSplitParseFailures: z.number().int().positive(),
-      skillSplitDryRun: z.boolean(),
       budget: z.number().int().positive(),
     }),
     curator: z.object({
@@ -609,8 +607,6 @@ export const DEFAULT_CONFIG: Config = {
       splitCooldownDays: 7,
       splitClaimStaleSec: 1_800,
       maxSplitParseFailures: 3,
-      // Legacy/deprecated: split proposals now always go through the review queue.
-      skillSplitDryRun: true,
       budget: 4_000,
     },
     curator: {
@@ -1102,10 +1098,6 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           ) ??
           fileConfig.offline?.proceduralSynthesizer?.maxSplitParseFailures ??
           DEFAULT_CONFIG.offline.proceduralSynthesizer.maxSplitParseFailures,
-        skillSplitDryRun:
-          readOptionalEnvBoolean(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SKILL_SPLIT_DRY_RUN") ??
-          fileConfig.offline?.proceduralSynthesizer?.skillSplitDryRun ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.skillSplitDryRun,
         budget:
           readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_BUDGET") ??
           fileConfig.offline?.proceduralSynthesizer?.budget ??

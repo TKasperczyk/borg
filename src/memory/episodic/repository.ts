@@ -1635,31 +1635,12 @@ export class EpisodicRepository {
     sourceStreamIds: ReadonlyArray<Episode["source_stream_ids"][number]>,
   ): Promise<Episode | null> {
     const fingerprint = buildSourceFingerprint(sourceStreamIds);
-    const byFingerprint = await this.table.list({
+    const rows = await this.table.list({
       where: `source_fingerprint = ${quoteSqlString(fingerprint)}`,
       limit: 1,
     });
-    const fingerprintMatch = byFingerprint[0];
 
-    if (fingerprintMatch !== undefined) {
-      return fromEpisodeRow(fingerprintMatch);
-    }
-
-    const legacyRows = await this.table.list();
-
-    for (const row of legacyRows) {
-      if (row.source_fingerprint !== null && row.source_fingerprint !== undefined) {
-        continue;
-      }
-
-      const episode = fromEpisodeRow(row);
-
-      if (buildSourceFingerprint(episode.source_stream_ids) === fingerprint) {
-        return episode;
-      }
-    }
-
-    return null;
+    return rows[0] === undefined ? null : fromEpisodeRow(rows[0]);
   }
 
   async findBySourceStreamIdsContaining(

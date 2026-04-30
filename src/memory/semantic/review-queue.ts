@@ -485,10 +485,10 @@ function parseEvidenceProvenance(refs: Record<string, unknown>): Provenance | nu
   };
 }
 
-function throwLegacyRepairRefsError(kind: ReviewKind): never {
-  // Accept must fail loudly for legacy under-specified repair rows; silently resolving them
+function throwUnderSpecifiedRepairRefsError(kind: ReviewKind): never {
+  // Accept must fail loudly for under-specified repair rows; silently resolving them
   // would recreate the exact epistemic theater Sprint 14 was meant to remove.
-  throw new SemanticError("cannot apply accept on legacy review row -- structured patch required", {
+  throw new SemanticError("cannot apply accept on review row -- structured patch required", {
     code: "REVIEW_QUEUE_REPAIR_REQUIRES_STRUCTURED_REFS",
     cause: { kind },
   });
@@ -1591,13 +1591,13 @@ export class ReviewQueueRepository {
     const parsed = misattributionRefsSchema.safeParse(item.refs);
 
     if (!parsed.success) {
-      throwLegacyRepairRefsError(item.kind);
+      throwUnderSpecifiedRepairRefsError(item.kind);
     }
 
     const refs = parsed.data;
 
     if (Object.keys(refs.patch).length === 0) {
-      throwLegacyRepairRefsError(item.kind);
+      throwUnderSpecifiedRepairRefsError(item.kind);
     }
 
     if (refs.target_type === "episode") {
@@ -1651,7 +1651,7 @@ export class ReviewQueueRepository {
     const parsed = temporalDriftRefsSchema.safeParse(item.refs);
 
     if (!parsed.success) {
-      throwLegacyRepairRefsError(item.kind);
+      throwUnderSpecifiedRepairRefsError(item.kind);
     }
 
     const refs = parsed.data;
@@ -1678,7 +1678,7 @@ export class ReviewQueueRepository {
         refs.corrected_end_time === undefined &&
         refs.patch_description === undefined
       ) {
-        throwLegacyRepairRefsError(item.kind);
+        throwUnderSpecifiedRepairRefsError(item.kind);
       }
 
       const patch = episodePatchSchema.parse({
@@ -1690,7 +1690,7 @@ export class ReviewQueueRepository {
       });
 
       if (Object.keys(patch).length === 0) {
-        throwLegacyRepairRefsError(item.kind);
+        throwUnderSpecifiedRepairRefsError(item.kind);
       }
 
       const updated = await this.options.episodicRepository.update(refs.target_id, patch);
@@ -1711,7 +1711,7 @@ export class ReviewQueueRepository {
     }
 
     if (refs.patch_description === undefined) {
-      throwLegacyRepairRefsError(item.kind);
+      throwUnderSpecifiedRepairRefsError(item.kind);
     }
 
     const updated = await this.options.semanticNodeRepository.update(refs.target_id, {
@@ -1748,7 +1748,7 @@ export class ReviewQueueRepository {
     const repairOpResult = identityRepairOpSchema.safeParse(item.refs.repair_op);
 
     if (!targetTypeResult.success || !repairOpResult.success) {
-      throwLegacyRepairRefsError(item.kind);
+      throwUnderSpecifiedRepairRefsError(item.kind);
     }
 
     const targetType = targetTypeResult.data;
@@ -1764,7 +1764,7 @@ export class ReviewQueueRepository {
 
         if (repairOp === "reinforce") {
           if (evidenceProvenance === null) {
-            throwLegacyRepairRefsError(item.kind);
+            throwUnderSpecifiedRepairRefsError(item.kind);
           }
 
           if (this.options.valuesRepository === undefined) {
@@ -1782,7 +1782,7 @@ export class ReviewQueueRepository {
 
         if (repairOp === "contradict") {
           if (evidenceProvenance === null) {
-            throwLegacyRepairRefsError(item.kind);
+            throwUnderSpecifiedRepairRefsError(item.kind);
           }
 
           if (this.options.valuesRepository === undefined) {
@@ -1815,7 +1815,7 @@ export class ReviewQueueRepository {
           Array.isArray(item.refs.patch) ||
           Object.keys(item.refs.patch as Record<string, unknown>).length === 0
         ) {
-          throwLegacyRepairRefsError(item.kind);
+          throwUnderSpecifiedRepairRefsError(item.kind);
         }
 
         const result = this.options.identityService.updateValue(
@@ -1841,7 +1841,7 @@ export class ReviewQueueRepository {
 
         if (repairOp === "reinforce") {
           if (evidenceProvenance === null) {
-            throwLegacyRepairRefsError(item.kind);
+            throwUnderSpecifiedRepairRefsError(item.kind);
           }
 
           if (this.options.traitsRepository === undefined) {
@@ -1872,7 +1872,7 @@ export class ReviewQueueRepository {
 
         if (repairOp === "contradict") {
           if (evidenceProvenance === null) {
-            throwLegacyRepairRefsError(item.kind);
+            throwUnderSpecifiedRepairRefsError(item.kind);
           }
 
           if (this.options.traitsRepository === undefined) {
@@ -1913,7 +1913,7 @@ export class ReviewQueueRepository {
           Array.isArray(item.refs.patch) ||
           Object.keys(item.refs.patch as Record<string, unknown>).length === 0
         ) {
-          throwLegacyRepairRefsError(item.kind);
+          throwUnderSpecifiedRepairRefsError(item.kind);
         }
 
         const result = this.options.identityService.updateTrait(
@@ -1959,7 +1959,7 @@ export class ReviewQueueRepository {
           Array.isArray(item.refs.patch) ||
           Object.keys(item.refs.patch as Record<string, unknown>).length === 0
         ) {
-          throwLegacyRepairRefsError(item.kind);
+          throwUnderSpecifiedRepairRefsError(item.kind);
         }
 
         const result = this.options.identityService.updateCommitment(
@@ -2008,7 +2008,7 @@ export class ReviewQueueRepository {
           Array.isArray(item.refs.patch) ||
           Object.keys(item.refs.patch as Record<string, unknown>).length === 0
         ) {
-          throwLegacyRepairRefsError(item.kind);
+          throwUnderSpecifiedRepairRefsError(item.kind);
         }
 
         const result = this.options.identityService.updateGoal(
@@ -2054,7 +2054,7 @@ export class ReviewQueueRepository {
           Array.isArray(item.refs.patch) ||
           Object.keys(item.refs.patch as Record<string, unknown>).length === 0
         ) {
-          throwLegacyRepairRefsError(item.kind);
+          throwUnderSpecifiedRepairRefsError(item.kind);
         }
 
         const applyPeriodPatch = () => {

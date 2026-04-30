@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { Borg, DEFAULT_SESSION_ID, FakeLLMClient } from "../../index.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
+import { deriveProceduralContextKey } from "../../memory/procedural/index.js";
 import { SemanticGraph } from "../../memory/semantic/index.js";
 import {
   createEpisodeFixture,
@@ -26,6 +27,12 @@ import {
 } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
+
+const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
+  problem_kind: "code_debugging",
+  domain_tags: ["typescript"],
+  audience_scope: "self",
+});
 
 async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
   return Borg.open({
@@ -794,7 +801,7 @@ describe("internal tools", () => {
             ? [
                 {
                   skill_id: skill.id,
-                  context_key: "code_debugging:typescript:self",
+                  context_key: TYPESCRIPT_DEBUG_CONTEXT_KEY,
                   alpha: 3,
                   beta: 1,
                   attempts: 2,
@@ -823,7 +830,7 @@ describe("internal tools", () => {
       );
       expect(result.context_stats_by_skill_id?.[skill.id]).toEqual([
         expect.objectContaining({
-          context_key: "code_debugging:typescript:self",
+          context_key: TYPESCRIPT_DEBUG_CONTEXT_KEY,
           attempts: 2,
         }),
       ]);

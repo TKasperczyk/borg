@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -34,7 +34,6 @@ describe("working memory store", () => {
       hot_entities: [],
       pending_intents: [],
     });
-    expect(initial).not.toHaveProperty("current_focus");
 
     store.save({
       ...initial,
@@ -52,7 +51,6 @@ describe("working memory store", () => {
       turn_counter: 2,
       hot_entities: ["Atlas"],
     });
-    expect(reloaded).not.toHaveProperty("current_focus");
 
     store.clear(DEFAULT_SESSION_ID);
     expect(store.load(DEFAULT_SESSION_ID).turn_counter).toBe(0);
@@ -108,85 +106,6 @@ describe("working memory store", () => {
     });
 
     expect(firstStore.load(DEFAULT_SESSION_ID).turn_counter).toBe(7);
-  });
-
-  it("loads legacy validator discourse provenance as no_output_tool", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
-    const workingDir = join(tempDir, "working");
-    mkdirSync(workingDir, { recursive: true });
-    writeFileSync(
-      join(workingDir, `${DEFAULT_SESSION_ID}.json`),
-      JSON.stringify({
-        session_id: DEFAULT_SESSION_ID,
-        turn_counter: 9,
-        hot_entities: [],
-        pending_intents: [],
-        pending_social_attribution: null,
-        pending_trait_attribution: null,
-        suppressed: [],
-        mood: null,
-        pending_procedural_attempts: [],
-        discourse_state: {
-          stop_until_substantive_content: {
-            provenance: "validator",
-            source_stream_entry_id: "strm_aaaaaaaaaaaaaaaa",
-            reason: "Output validator suppressed generation: output_validator.",
-            since_turn: 7,
-          },
-        },
-        mode: null,
-        updated_at: 400,
-      }),
-    );
-    const store = new WorkingMemoryStore({
-      dataDir: tempDir,
-      clock: new FixedClock(100),
-    });
-
-    const loaded = store.load(DEFAULT_SESSION_ID);
-
-    expect(loaded.discourse_state?.stop_until_substantive_content).toEqual({
-      provenance: "no_output_tool",
-      source_stream_entry_id: "strm_aaaaaaaaaaaaaaaa",
-      reason: "Output validator suppressed generation: output_validator.",
-      since_turn: 7,
-    });
-  });
-
-  it("drops legacy current_focus on load", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
-    const workingDir = join(tempDir, "working");
-    mkdirSync(workingDir, { recursive: true });
-    writeFileSync(
-      join(workingDir, `${DEFAULT_SESSION_ID}.json`),
-      JSON.stringify({
-        session_id: DEFAULT_SESSION_ID,
-        turn_counter: 4,
-        current_focus: "first 80 chars of an old turn",
-        hot_entities: ["Atlas"],
-        pending_intents: [],
-        pending_social_attribution: null,
-        pending_trait_attribution: null,
-        suppressed: [],
-        mood: null,
-        pending_procedural_attempts: [],
-        mode: "problem_solving",
-        updated_at: 500,
-      }),
-    );
-
-    const loaded = new WorkingMemoryStore({
-      dataDir: tempDir,
-      clock: new FixedClock(100),
-    }).load(DEFAULT_SESSION_ID);
-
-    expect(loaded).toMatchObject({
-      turn_counter: 4,
-      hot_entities: ["Atlas"],
-    });
-    expect(loaded).not.toHaveProperty("current_focus");
   });
 
   it("caps pending intents to the most recent unique next actions", () => {

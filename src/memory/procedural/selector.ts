@@ -1,6 +1,5 @@
 import { sampleBeta } from "./bayes.js";
 import {
-  deriveProceduralContextKeyAliases,
   proceduralContextSchema,
   type ProceduralContext,
 } from "./context.js";
@@ -91,7 +90,7 @@ export class SkillSelector {
     > = proceduralContext === null || this.options.contextStatsRepository === undefined
       ? new Map<SkillRecord["id"], NonNullable<SkillSelectionCandidate["contextStats"]>>()
       : this.options.contextStatsRepository.batchGetContextStats(
-          [proceduralContext.context_key, ...deriveProceduralContextKeyAliases(proceduralContext)],
+          proceduralContext.context_key,
           eligibleCandidates.map((candidate) => candidate.skill.id),
         );
 

@@ -50,38 +50,6 @@ export const commitmentMigrations: Migration[] = [
       if (!tableHasColumn(db, "commitments", "provenance_process")) {
         db.exec("ALTER TABLE commitments ADD COLUMN provenance_process TEXT");
       }
-
-      const rows = db
-        .prepare(
-          `
-            SELECT id, source_episode_ids
-            FROM commitments
-            ORDER BY created_at ASC, id ASC
-          `,
-        )
-        .all() as Array<Record<string, unknown>>;
-      const update = db.prepare(
-        `
-          UPDATE commitments
-          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = NULL
-          WHERE id = ?
-        `,
-      );
-
-      for (const row of rows) {
-        const parsed =
-          typeof row.source_episode_ids === "string"
-            ? (JSON.parse(row.source_episode_ids) as unknown)
-            : [];
-        const episodeIds = Array.isArray(parsed)
-          ? parsed.filter((value): value is string => typeof value === "string" && value.length > 0)
-          : [];
-        update.run(
-          episodeIds.length > 0 ? "episodes" : "system",
-          JSON.stringify(episodeIds),
-          row.id,
-        );
-      }
     },
   },
   {

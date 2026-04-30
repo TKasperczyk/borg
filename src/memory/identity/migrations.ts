@@ -52,37 +52,6 @@ export const identityMigrations = [
           ts INTEGER NOT NULL
         );
 
-        INSERT INTO identity_events__next (
-          id,
-          record_type,
-          record_id,
-          action,
-          old_value_json,
-          new_value_json,
-          reason,
-          provenance_kind,
-          provenance_episode_ids,
-          provenance_process,
-          review_item_id,
-          overwrite_without_review,
-          ts
-        )
-        SELECT
-          id,
-          record_type,
-          record_id,
-          action,
-          old_value_json,
-          new_value_json,
-          reason,
-          provenance_kind,
-          provenance_episode_ids,
-          provenance_process,
-          review_item_id,
-          overwrite_without_review,
-          ts
-        FROM identity_events;
-
         DROP TABLE identity_events;
         ALTER TABLE identity_events__next RENAME TO identity_events;
 

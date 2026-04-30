@@ -27,7 +27,7 @@ describe("stream", () => {
     }
   });
 
-  function legacyTailFromDisk(streamPath: string, n: number) {
+  function referenceTailFromDisk(streamPath: string, n: number) {
     if (n <= 0) {
       return [];
     }
@@ -49,7 +49,7 @@ describe("stream", () => {
           entries.push(parsed.data);
         }
       } catch {
-        // Legacy behavior ignored unreadable lines while searching for more.
+        // Keep scanning for valid entries after unreadable lines.
       }
     }
 
@@ -178,7 +178,7 @@ describe("stream", () => {
     }
   });
 
-  it("matches the legacy full-scan tail behavior on small files", async () => {
+  it("matches the full-scan tail reference on small files", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
 
@@ -207,7 +207,7 @@ describe("stream", () => {
       },
     });
 
-    expect(reader.tail(3)).toEqual(legacyTailFromDisk(streamPath, 3));
+    expect(reader.tail(3)).toEqual(referenceTailFromDisk(streamPath, 3));
   });
 
   it("tails the last entries from a very large synthetic stream", () => {

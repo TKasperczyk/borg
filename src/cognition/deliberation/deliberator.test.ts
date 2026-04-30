@@ -143,6 +143,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -202,6 +205,9 @@ describe("deliberator", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -288,6 +294,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -379,6 +388,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "reflective",
         updated_at: 0,
@@ -491,6 +503,9 @@ describe("deliberator", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "reflective",
             updated_at: 0,
@@ -598,6 +613,9 @@ describe("deliberator", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "reflective",
             updated_at: 0,
@@ -677,6 +695,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -765,6 +786,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -819,6 +843,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -872,6 +899,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -947,6 +977,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -1019,6 +1052,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -1085,6 +1121,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "reflective",
         updated_at: 0,
@@ -1285,6 +1324,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -1398,6 +1440,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "reflective",
         updated_at: 0,
@@ -1518,6 +1563,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -1578,6 +1626,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -1669,6 +1720,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "reflective",
         updated_at: 0,
@@ -1744,6 +1798,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "reflective",
         updated_at: 0,
@@ -1816,6 +1873,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "reflective",
         updated_at: 0,
@@ -1892,6 +1952,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -2010,6 +2073,9 @@ describe("deliberator", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "reflective",
           updated_at: 0,
@@ -2161,6 +2227,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "reflective",
         updated_at: 0,
@@ -2306,6 +2375,9 @@ describe("deliberator", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -2389,6 +2461,9 @@ describe("deliberator", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -2460,6 +2535,9 @@ describe("deliberator", () => {
         pending_trait_attribution: null,
         mood: null,
         pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
         suppressed: [],
         mode: "problem_solving",
         updated_at: 0,
@@ -2546,6 +2624,9 @@ describe("deliberator", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,

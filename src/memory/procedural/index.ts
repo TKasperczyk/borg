@@ -20,8 +20,8 @@ export {
 } from "./repository.js";
 export {
   deriveProceduralContextKey,
-  parseLegacyProceduralContextKey,
   proceduralContextAudienceScopeSchema,
+  proceduralContextKeySchema,
   proceduralContextMetadataSchema,
   proceduralContextProblemKindSchema,
   proceduralContextSchema,

@@ -36,8 +36,6 @@ export type Provenance = z.infer<typeof provenanceSchema>;
 export type ProvenanceKind = z.infer<typeof provenanceKindSchema>;
 
 export type StoredProvenance = {
-  // SQL columns stay nullable for migration compatibility; repositories
-  // enforce provenance on all production writes.
   provenance_kind: ProvenanceKind;
   provenance_episode_ids: string;
   provenance_process: string | null;

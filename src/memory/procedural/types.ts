@@ -15,6 +15,7 @@ import {
 import {
   proceduralContextMetadataSchema,
   proceduralContextSchema,
+  proceduralContextKeySchema,
   type ProceduralContext,
   type ProceduralContextMetadata,
 } from "./context.js";
@@ -111,7 +112,7 @@ export type ProceduralEvidenceRecord = z.infer<typeof proceduralEvidenceSchema>;
 
 export const skillContextStatsSchema = z.object({
   skill_id: skillIdSchema,
-  context_key: z.string().min(1),
+  context_key: proceduralContextKeySchema,
   procedural_context: proceduralContextMetadataSchema.nullable().optional(),
   alpha: z.number().positive(),
   beta: z.number().positive(),

@@ -1279,7 +1279,7 @@ describe("AutonomyScheduler", () => {
               (event) =>
                 watermark === null ||
                 event.sortTs > watermark.lastTs ||
-                (event.sortTs === watermark.lastTs && event.id > (watermark.lastEntryId ?? "")),
+                (event.sortTs === watermark.lastTs && event.id > watermark.lastEntryId),
             );
           },
           buildTurn(event) {

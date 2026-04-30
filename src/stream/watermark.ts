@@ -11,7 +11,7 @@ export const streamWatermarkMigrations: Migration[] = [
         process_name TEXT NOT NULL,
         session_id TEXT NOT NULL,
         last_ts INTEGER NOT NULL,
-        last_entry_id TEXT,
+        last_entry_id TEXT NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (process_name, session_id)
       )
@@ -23,7 +23,7 @@ export type StreamWatermark = {
   processName: string;
   sessionId: SessionId;
   lastTs: number;
-  lastEntryId: string | null;
+  lastEntryId: string;
   updatedAt: number;
 };
 
@@ -31,7 +31,7 @@ type WatermarkRow = {
   process_name: string;
   session_id: string;
   last_ts: number;
-  last_entry_id: string | null;
+  last_entry_id: string;
   updated_at: number;
 };
 
@@ -80,7 +80,7 @@ export class StreamWatermarkRepository {
   set(
     processName: string,
     sessionId: SessionId,
-    input: { lastTs: number; lastEntryId: string | null },
+    input: { lastTs: number; lastEntryId: string },
   ): StreamWatermark {
     const nowMs = this.clock.now();
     this.db

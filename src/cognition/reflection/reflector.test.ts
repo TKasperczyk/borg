@@ -235,6 +235,9 @@ function createPendingProceduralReflectionContext() {
     suppressed: [],
     mood: null,
     pending_procedural_attempts: [pendingAttempt],
+    discourse_state: {
+      stop_until_substantive_content: null,
+    },
     mode: "problem_solving" as const,
     updated_at: 0,
   };
@@ -362,6 +365,9 @@ function createExecutiveReflectionContext(input: {
     suppressed: [],
     mood: null,
     pending_procedural_attempts: [],
+    discourse_state: {
+      stop_until_substantive_content: null,
+    },
     mode: "problem_solving" as const,
     updated_at: 0,
   };
@@ -1143,6 +1149,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -1181,6 +1190,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -1253,6 +1265,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -1291,6 +1306,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -1420,6 +1438,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -1458,6 +1479,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -1735,6 +1759,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -1773,6 +1800,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -2516,6 +2546,9 @@ describe("reflector", () => {
                 audience_entity_id: null,
               },
             ],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -2563,6 +2596,9 @@ describe("reflector", () => {
                   audience_entity_id: null,
                 },
               ],
+              discourse_state: {
+                stop_until_substantive_content: null,
+              },
               mode: "problem_solving",
               updated_at: 0,
             },
@@ -2680,6 +2716,9 @@ describe("reflector", () => {
           suppressed: [],
           mood: null,
           pending_procedural_attempts: [pendingAttempt],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -2718,6 +2757,9 @@ describe("reflector", () => {
             suppressed: [],
             mood: null,
             pending_procedural_attempts: [pendingAttempt],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -2782,6 +2824,9 @@ describe("reflector", () => {
               audience_entity_id: null,
             },
           ],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -2829,6 +2874,9 @@ describe("reflector", () => {
                 audience_entity_id: null,
               },
             ],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -2915,6 +2963,9 @@ describe("reflector", () => {
               audience_entity_id: null,
             },
           ],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           mode: "problem_solving",
           updated_at: 0,
         },
@@ -2962,6 +3013,9 @@ describe("reflector", () => {
                 audience_entity_id: null,
               },
             ],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -3032,6 +3086,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -3070,6 +3127,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -3152,6 +3212,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -3190,6 +3253,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -3212,7 +3278,6 @@ describe("reflector", () => {
       trait_label: "engaged",
       strength_delta: 0.07,
       source_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"],
-      source_episode_ids: [],
     });
   });
 
@@ -3265,6 +3330,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -3303,6 +3371,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -3371,6 +3442,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "problem_solving",
           updated_at: 0,
@@ -3409,6 +3483,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "problem_solving",
             updated_at: 0,
@@ -3428,7 +3505,6 @@ describe("reflector", () => {
       trait_label: "focused",
       strength_delta: 0.04,
       source_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa"],
-      source_episode_ids: [],
     });
   });
 
@@ -3462,6 +3538,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "reflective",
           updated_at: 0,
@@ -3500,6 +3579,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "reflective",
             updated_at: 0,
@@ -3585,6 +3667,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "reflective",
           updated_at: 0,
@@ -3623,6 +3708,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "reflective",
             updated_at: 0,
@@ -3644,7 +3732,6 @@ describe("reflector", () => {
       trait_label: "patient",
       strength_delta: 0.06,
       source_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa", "strm_bbbbbbbbbbbbbbbb"],
-      source_episode_ids: [],
       audience_entity_id: null,
     });
   });
@@ -3721,6 +3808,9 @@ describe("reflector", () => {
           pending_trait_attribution: null,
           mood: null,
           pending_procedural_attempts: [],
+          discourse_state: {
+            stop_until_substantive_content: null,
+          },
           suppressed: [],
           mode: "reflective",
           updated_at: 0,
@@ -3759,6 +3849,9 @@ describe("reflector", () => {
             pending_trait_attribution: null,
             mood: null,
             pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             suppressed: [],
             mode: "reflective",
             updated_at: 0,

@@ -16,7 +16,6 @@ import {
 import {
   proceduralEvidenceIdSchema,
   proceduralEvidenceSchema,
-  parseLegacyProceduralContextKey,
   skillContextStatsSchema,
   skillIdSchema,
   skillSchema,
@@ -315,7 +314,7 @@ function resolveContextMetadata(stats: SkillContextStatsRecord): ProceduralConte
     return stats.procedural_context;
   }
 
-  return parseLegacyProceduralContextKey(stats.context_key);
+  return null;
 }
 
 function sketchContextStats(stats: SkillContextStatsRecord): string {

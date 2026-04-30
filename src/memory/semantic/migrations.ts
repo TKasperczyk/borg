@@ -75,42 +75,6 @@ export const semanticMigrations: Migration[] = [
     `,
   },
   {
-    id: 131,
-    name: "backfill-review-queue-proposed-provenance",
-    up: (db) => {
-      const rows = db.prepare("SELECT id, refs FROM review_queue ORDER BY id ASC").all() as Array<{
-        id: number;
-        refs: string | null;
-      }>;
-      const update = db.prepare("UPDATE review_queue SET refs = ? WHERE id = ?");
-
-      for (const row of rows) {
-        let refs: Record<string, unknown>;
-
-        try {
-          const parsed = JSON.parse(row.refs ?? "{}") as unknown;
-          refs =
-            parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-              ? (parsed as Record<string, unknown>)
-              : {};
-        } catch {
-          refs = {};
-        }
-
-        if (refs.proposed_provenance !== undefined) {
-          continue;
-        }
-
-        refs.proposed_provenance =
-          refs.provenance ??
-          ({
-            kind: "manual",
-          } satisfies { kind: "manual" });
-        update.run(JSON.stringify(refs), row.id);
-      }
-    },
-  },
-  {
     id: 132,
     name: "semantic_nodes_domain",
     up: (db) => {
@@ -162,92 +126,11 @@ export const semanticMigrations: Migration[] = [
           invalidated_reason TEXT NULL
         );
 
-        INSERT INTO semantic_edges__next (
-          id,
-          from_node_id,
-          to_node_id,
-          relation,
-          confidence,
-          evidence_episode_ids,
-          created_at,
-          last_verified_at,
-          valid_from,
-          valid_to,
-          invalidated_at,
-          invalidated_by_edge_id,
-          invalidated_by_review_id,
-          invalidated_by_process,
-          invalidated_reason
-        )
-        SELECT
-          id,
-          from_node_id,
-          to_node_id,
-          relation,
-          confidence,
-          evidence_episode_ids,
-          created_at,
-          last_verified_at,
-          created_at,
-          NULL,
-          NULL,
-          NULL,
-          NULL,
-          NULL,
-          NULL
-        FROM semantic_edges;
-
         DROP TABLE semantic_edges;
         ALTER TABLE semantic_edges__next RENAME TO semantic_edges;
       `);
 
       createSemanticEdgeValidityIndexes(db);
-    },
-  },
-  {
-    id: 134,
-    name: "supports_edge_direction_flip",
-    up: (db) => {
-      if (!tableExists(db, "semantic_edges")) {
-        return;
-      }
-
-      // Sprint 52: supports edges were previously created as
-      // `insight --supports--> target`, which is backwards from the
-      // natural reading "X is evidence for Y". Retrieval walks supports
-      // OUT, so a query that matches the original target node could not
-      // surface the new insight. Flip existing supports edges so
-      // `from --supports--> to` reads as "from is evidence supporting to".
-      //
-      // Done row-by-row with a reverse-edge check to avoid violating the
-      // partial unique index on (from, to, relation) WHERE valid_to IS NULL.
-      const openSupports = db
-        .prepare(
-          "SELECT id, from_node_id, to_node_id FROM semantic_edges WHERE relation = 'supports' AND valid_to IS NULL",
-        )
-        .all() as Array<{ id: string; from_node_id: string; to_node_id: string }>;
-      const reverseOpenStmt = db.prepare(
-        "SELECT id FROM semantic_edges WHERE relation = 'supports' AND valid_to IS NULL AND from_node_id = ? AND to_node_id = ?",
-      );
-      const updateStmt = db.prepare(
-        "UPDATE semantic_edges SET from_node_id = ?, to_node_id = ? WHERE id = ?",
-      );
-
-      for (const edge of openSupports) {
-        const conflict = reverseOpenStmt.get(edge.to_node_id, edge.from_node_id) as
-          | { id: string }
-          | undefined;
-
-        if (conflict !== undefined && conflict.id !== edge.id) {
-          continue;
-        }
-
-        updateStmt.run(edge.to_node_id, edge.from_node_id, edge.id);
-      }
-
-      db.exec(
-        "UPDATE semantic_edges SET from_node_id = to_node_id, to_node_id = from_node_id WHERE relation = 'supports' AND valid_to IS NOT NULL",
-      );
     },
   },
   {
@@ -298,22 +181,6 @@ export const semanticMigrations: Migration[] = [
           );
         END;
 
-        INSERT OR IGNORE INTO semantic_belief_dependencies (
-          target_type,
-          target_id,
-          source_edge_id,
-          dependency_kind,
-          created_at
-        )
-        SELECT
-          'semantic_node',
-          to_node_id,
-          id,
-          'supports',
-          created_at
-        FROM semantic_edges
-        WHERE relation = 'supports'
-          AND valid_to IS NULL;
       `);
     },
   },

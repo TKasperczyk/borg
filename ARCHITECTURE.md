@@ -505,7 +505,6 @@ cannot flatter itself into a warm relationship by speaking warmly.
 {
   session_id,
   turn_counter,
-  current_focus: string?,
   hot_entities: string[],       // capped at 32, normalized at save time
   pending_intents: [{ description, next_action }],   // capped at 16
   pending_social_attribution: {
@@ -516,7 +515,6 @@ cannot flatter itself into a warm relationship by speaking warmly.
   pending_trait_attribution: {
     trait_label, strength_delta,
     source_stream_entry_ids: StreamEntryId[],
-    source_episode_ids: EpisodeId[],
     turn_completed_ts, audience_entity_id,
   }?,
   pending_procedural_attempts: [{
@@ -528,6 +526,11 @@ cannot flatter itself into a warm relationship by speaking warmly.
   }],                         // capped at 5; TTL 8 turns
   suppressed: [{ id, reason, until_turn }],
   mood: { valence, arousal, dominant_emotion }?,
+  discourse_state: {
+    stop_until_substantive_content: {
+      provenance, source_stream_entry_id?, reason, since_turn,
+    } | null,
+  },
   mode: "problem_solving" | "relational" | "reflective" | "idle" | null,
   updated_at,
 }
@@ -653,8 +656,8 @@ band.
   `tool.skills.list`) or write via `tool.openQuestions.create`
   mid-turn, with `tool_call`/`tool_result` entries appended to the
   stream in order. Caps: 5 iterations, 3 tool calls per iteration. The
-  loop's source files live under `src/cognition/action/` for legacy
-  reasons; orchestration of the call sits in deliberation.
+  tool loop implementation lives under `src/cognition/action/`;
+  orchestration of the call sits in deliberation.
 
 **Commitment check** (between Deliberation and Action)
 - A `CommitmentChecker` runs as a post-hoc judge over the finalizer's

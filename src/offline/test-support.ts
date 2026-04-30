@@ -692,6 +692,9 @@ export function createWorkingMemoryFixture(overrides: Partial<WorkingMemory> = {
     suppressed: overrides.suppressed ?? [],
     mood: overrides.mood ?? null,
     pending_procedural_attempts: overrides.pending_procedural_attempts ?? [],
+    discourse_state: overrides.discourse_state ?? {
+      stop_until_substantive_content: null,
+    },
     mode: overrides.mode ?? "problem_solving",
     updated_at: overrides.updated_at ?? 0,
   };

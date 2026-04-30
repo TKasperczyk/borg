@@ -73,7 +73,6 @@ describe("TurnOpeningPersistence", () => {
       trait_label: "careful",
       strength_delta: 0.05,
       source_stream_entry_ids: [userEntryId],
-      source_episode_ids: [],
       turn_completed_ts: 900,
       audience_entity_id: entityId,
     };

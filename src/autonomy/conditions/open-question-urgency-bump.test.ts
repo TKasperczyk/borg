@@ -55,7 +55,7 @@ describe("open question urgency bump condition", () => {
 
     watermarkRepository.set(firstScan[0]!.watermarkProcessName, "default" as never, {
       lastTs: clock.now(),
-      lastEntryId: null,
+      lastEntryId: "watermark",
     });
     expect(await condition.scan()).toEqual([]);
 

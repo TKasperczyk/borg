@@ -1,60 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
-import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
-import {
-  createTraitId,
-  parseEntityId,
-  parseEpisodeId,
-  parseSemanticNodeId,
-} from "../../util/ids.js";
-
-import { buildOpenQuestionDedupeKey } from "./open-questions.js";
-
-function parseStoredIdArray(value: unknown): string[] {
-  if (typeof value !== "string") {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === "string")
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function getRecentDistinctEpisodeIds(
-  rows: Array<{ ts: number; provenance_episode_ids: unknown }>,
-  limit: number,
-): string[] {
-  const latestEpisodeTs = new Map<string, number>();
-
-  for (const row of rows) {
-    for (const episodeId of parseStoredIdArray(row.provenance_episode_ids)) {
-      const ts = Number(row.ts);
-      const currentTs = latestEpisodeTs.get(episodeId) ?? Number.NEGATIVE_INFINITY;
-      if (ts > currentTs) {
-        latestEpisodeTs.set(episodeId, ts);
-      }
-    }
-  }
-
-  return [...latestEpisodeTs.entries()]
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .slice(0, limit)
-    .map(([episodeId]) => episodeId);
-}
-
-const CONFIDENCE_ALPHA = 2;
-const CONFIDENCE_BETA = 1;
-
-function computeEvidenceConfidence(supportCount: number, contradictionCount: number): number {
-  return (
-    (CONFIDENCE_ALPHA + supportCount) /
-    (CONFIDENCE_ALPHA + CONFIDENCE_BETA + supportCount + contradictionCount)
-  );
-}
+import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const selfMigrations = [
   {
@@ -163,33 +108,6 @@ export const selfMigrations = [
         db.exec("ALTER TABLE open_questions ADD COLUMN dedupe_key TEXT");
       }
 
-      const rows = db
-        .prepare(
-          `
-            SELECT id, question, related_episode_ids, related_semantic_node_ids, created_at
-            FROM open_questions
-            ORDER BY created_at ASC, id ASC
-          `,
-        )
-        .all() as Array<Record<string, unknown>>;
-      const seenKeys = new Set<string>();
-      const updateStatement = db.prepare("UPDATE open_questions SET dedupe_key = ? WHERE id = ?");
-
-      for (const row of rows) {
-        const baseKey = buildOpenQuestionDedupeKey({
-          question: String(row.question ?? ""),
-          relatedEpisodeIds: parseStoredIdArray(row.related_episode_ids).map((id) =>
-            parseEpisodeId(id),
-          ),
-          relatedSemanticNodeIds: parseStoredIdArray(row.related_semantic_node_ids).map((id) =>
-            parseSemanticNodeId(id),
-          ),
-        });
-        const dedupeKey = seenKeys.has(baseKey) ? `${baseKey}|legacy:${String(row.id)}` : baseKey;
-        seenKeys.add(dedupeKey);
-        updateStatement.run(dedupeKey, row.id);
-      }
-
       db.exec(`
         CREATE UNIQUE INDEX IF NOT EXISTS idx_open_questions_dedupe_key
           ON open_questions (dedupe_key)
@@ -219,7 +137,7 @@ export const selfMigrations = [
         DROP INDEX IF EXISTS idx_autobiographical_periods_end;
         DROP INDEX IF EXISTS autobiographical_single_open;
 
-        ALTER TABLE autobiographical_periods RENAME TO autobiographical_periods_legacy;
+        ALTER TABLE autobiographical_periods RENAME TO autobiographical_periods_old;
 
         CREATE TABLE autobiographical_periods (
           id TEXT PRIMARY KEY,
@@ -265,7 +183,7 @@ export const selfMigrations = [
       }
 
       db.exec(`
-        DROP TABLE autobiographical_periods_legacy;
+        DROP TABLE autobiographical_periods_old;
 
         CREATE INDEX IF NOT EXISTS idx_autobiographical_periods_start
           ON autobiographical_periods (start_ts DESC);
@@ -348,106 +266,6 @@ export const selfMigrations = [
           ON traits (id)
           WHERE id IS NOT NULL;
       `);
-
-      const valueRows = db
-        .prepare(
-          `
-            SELECT id
-            FROM "values"
-            ORDER BY created_at ASC, id ASC
-          `,
-        )
-        .all() as Array<{ id: string }>;
-      const valueSourcesStatement = db.prepare(
-        `
-          SELECT episode_id
-          FROM value_sources
-          WHERE value_id = ?
-          ORDER BY episode_id ASC
-        `,
-      );
-      const updateValueStatement = db.prepare(
-        `
-          UPDATE "values"
-          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = NULL
-          WHERE id = ?
-        `,
-      );
-
-      for (const row of valueRows) {
-        const sources = (valueSourcesStatement.all(row.id) as Array<{ episode_id: string }>).map(
-          (entry) => entry.episode_id,
-        );
-        updateValueStatement.run(
-          sources.length > 0 ? "episodes" : "system",
-          JSON.stringify(sources),
-          row.id,
-        );
-      }
-
-      db.exec(`
-        UPDATE goals
-        SET provenance_kind = COALESCE(provenance_kind, 'system'),
-            provenance_episode_ids = COALESCE(provenance_episode_ids, '[]'),
-            provenance_process = NULL;
-
-        UPDATE autobiographical_periods
-        SET provenance_kind = COALESCE(provenance_kind, 'system'),
-            provenance_episode_ids = COALESCE(provenance_episode_ids, '[]'),
-            provenance_process = NULL;
-      `);
-
-      const openQuestionRows = db
-        .prepare(
-          `
-            SELECT id, related_episode_ids
-            FROM open_questions
-            ORDER BY created_at ASC, id ASC
-          `,
-        )
-        .all() as Array<Record<string, unknown>>;
-      const updateOpenQuestionStatement = db.prepare(
-        `
-          UPDATE open_questions
-          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = NULL
-          WHERE id = ?
-        `,
-      );
-
-      for (const row of openQuestionRows) {
-        const relatedEpisodeIds = parseStoredIdArray(row.related_episode_ids).filter(
-          (value) => value.length > 0,
-        );
-        updateOpenQuestionStatement.run(
-          relatedEpisodeIds.length > 0 ? "episodes" : "system",
-          JSON.stringify(relatedEpisodeIds),
-          row.id,
-        );
-      }
-
-      const traitRows = db
-        .prepare(
-          `
-            SELECT label
-            FROM traits
-            ORDER BY label ASC
-          `,
-        )
-        .all() as Array<{ label: string }>;
-      const updateTraitStatement = db.prepare(
-        `
-          UPDATE traits
-          SET id = COALESCE(id, ?),
-              provenance_kind = COALESCE(provenance_kind, 'system'),
-              provenance_episode_ids = COALESCE(provenance_episode_ids, '[]'),
-              provenance_process = NULL
-          WHERE label = ?
-        `,
-      );
-
-      for (const row of traitRows) {
-        updateTraitStatement.run(createTraitId(), row.label);
-      }
     },
   },
   {
@@ -481,135 +299,6 @@ export const selfMigrations = [
         CREATE INDEX IF NOT EXISTS idx_value_reinforcement_events_value_ts
           ON value_reinforcement_events (value_id, ts DESC, id DESC);
       `);
-
-      const valueRows = db
-        .prepare(
-          `
-            SELECT id, created_at, last_affirmed, provenance_kind
-            FROM "values"
-            ORDER BY created_at ASC, id ASC
-          `,
-        )
-        .all() as Array<Record<string, unknown>>;
-      const valueSourcesStatement = db.prepare(
-        `
-          SELECT episode_id
-          FROM value_sources
-          WHERE value_id = ?
-          ORDER BY episode_id ASC
-        `,
-      );
-      const existingValueEventCount = Number(
-        (
-          db.prepare("SELECT COUNT(*) AS count FROM value_reinforcement_events").get() as {
-            count: number;
-          }
-        ).count,
-      );
-      const insertValueEvent = db.prepare(
-        `
-          INSERT INTO value_reinforcement_events (
-            value_id, ts, provenance_kind, provenance_episode_ids, provenance_process
-          ) VALUES (?, ?, ?, ?, NULL)
-        `,
-      );
-      const updateValueState = db.prepare(
-        `
-          UPDATE "values"
-          SET state = ?, established_at = ?
-          WHERE id = ?
-        `,
-      );
-
-      if (existingValueEventCount === 0) {
-        for (const row of valueRows) {
-          const episodeIds = (
-            valueSourcesStatement.all(row.id) as Array<{ episode_id: string }>
-          ).map((entry) => entry.episode_id);
-
-          for (const episodeId of episodeIds) {
-            insertValueEvent.run(
-              row.id,
-              Number(row.created_at),
-              "episodes",
-              JSON.stringify([episodeId]),
-            );
-          }
-        }
-      }
-
-      for (const row of valueRows) {
-        const storedKind = String(row.provenance_kind ?? "system");
-        const sourceEpisodeIds = (
-          valueSourcesStatement.all(row.id) as Array<{ episode_id: string }>
-        ).map((entry) => entry.episode_id);
-        const distinctEpisodeCount = new Set(sourceEpisodeIds).size;
-        const establishedAt =
-          Number(row.last_affirmed ?? row.created_at ?? 0) || Number(row.created_at ?? 0);
-
-        if (storedKind === "manual" || storedKind === "system") {
-          updateValueState.run("established", establishedAt, row.id);
-          continue;
-        }
-
-        updateValueState.run(
-          distinctEpisodeCount >= 3 ? "established" : "candidate",
-          distinctEpisodeCount >= 3 ? Number(row.created_at) : null,
-          row.id,
-        );
-      }
-
-      const traitRows = db
-        .prepare(
-          `
-            SELECT id
-            FROM traits
-            ORDER BY label ASC
-          `,
-        )
-        .all() as Array<{ id: string }>;
-      const traitEventRowsStatement = db.prepare(
-        `
-          SELECT ts, provenance_kind, provenance_episode_ids
-          FROM trait_reinforcement_events
-          WHERE trait_id = ?
-          ORDER BY ts ASC, id ASC
-        `,
-      );
-      const updateTraitState = db.prepare(
-        `
-          UPDATE traits
-          SET state = ?, established_at = ?
-          WHERE id = ?
-        `,
-      );
-
-      for (const row of traitRows) {
-        const events = traitEventRowsStatement.all(row.id) as Array<Record<string, unknown>>;
-        const seenEpisodes = new Set<string>();
-        let establishedAt: number | null = null;
-
-        for (const event of events) {
-          if (event.provenance_kind !== "episodes") {
-            continue;
-          }
-
-          for (const episodeId of parseStoredIdArray(event.provenance_episode_ids)) {
-            seenEpisodes.add(episodeId);
-          }
-
-          if (seenEpisodes.size >= 5) {
-            establishedAt = Number(event.ts);
-            break;
-          }
-        }
-
-        updateTraitState.run(
-          establishedAt === null ? "candidate" : "established",
-          establishedAt,
-          row.id,
-        );
-      }
     },
   },
   {
@@ -678,92 +367,6 @@ export const selfMigrations = [
         CREATE INDEX IF NOT EXISTS idx_trait_contradiction_events_trait_ts
           ON trait_contradiction_events (trait_id, ts DESC, id DESC);
       `);
-
-      const valueRows = db
-        .prepare(
-          `
-            SELECT id, state
-            FROM "values"
-            ORDER BY created_at ASC, id ASC
-          `,
-        )
-        .all() as Array<{ id: string; state: string | null }>;
-      const valueSupportRows = db.prepare(
-        `
-          SELECT ts, provenance_episode_ids
-          FROM value_reinforcement_events
-          WHERE value_id = ? AND provenance_kind = 'episodes'
-          ORDER BY ts DESC, id DESC
-        `,
-      );
-      const updateValueEvidence = db.prepare(
-        `
-          UPDATE "values"
-          SET confidence = ?, last_tested_at = ?, last_contradicted_at = NULL,
-              support_count = ?, contradiction_count = 0, evidence_episode_ids = ?
-          WHERE id = ?
-        `,
-      );
-
-      for (const row of valueRows) {
-        const supportRows = valueSupportRows.all(row.id) as Array<{
-          ts: number;
-          provenance_episode_ids: unknown;
-        }>;
-        const supportCount = supportRows.length;
-        const lastTestedAt = supportCount === 0 ? null : Number(supportRows[0]?.ts ?? 0);
-        const confidence = computeEvidenceConfidence(supportCount, 0);
-        updateValueEvidence.run(
-          confidence,
-          lastTestedAt,
-          supportCount,
-          JSON.stringify(getRecentDistinctEpisodeIds(supportRows, 3)),
-          row.id,
-        );
-      }
-
-      const traitRows = db
-        .prepare(
-          `
-            SELECT id, state
-            FROM traits
-            ORDER BY label ASC
-          `,
-        )
-        .all() as Array<{ id: string; state: string | null }>;
-      const traitSupportRows = db.prepare(
-        `
-          SELECT ts, provenance_episode_ids
-          FROM trait_reinforcement_events
-          WHERE trait_id = ? AND provenance_kind = 'episodes'
-          ORDER BY ts DESC, id DESC
-        `,
-      );
-      const updateTraitEvidence = db.prepare(
-        `
-          UPDATE traits
-          SET confidence = ?, last_tested_at = ?, last_contradicted_at = NULL,
-              support_count = ?, contradiction_count = 0, evidence_episode_ids = ?
-          WHERE id = ?
-        `,
-      );
-
-      for (const row of traitRows) {
-        const supportRows = traitSupportRows.all(row.id) as Array<{
-          ts: number;
-          provenance_episode_ids: unknown;
-        }>;
-        const supportCount = supportRows.length;
-        const lastTestedAt = supportCount === 0 ? null : Number(supportRows[0]?.ts ?? 0);
-        const confidence = computeEvidenceConfidence(supportCount, 0);
-        updateTraitEvidence.run(
-          confidence,
-          lastTestedAt,
-          supportCount,
-          JSON.stringify(getRecentDistinctEpisodeIds(supportRows, 3)),
-          row.id,
-        );
-      }
     },
   },
   {
@@ -852,24 +455,6 @@ export const selfMigrations = [
       if (!tableHasColumn(db, "goals", "last_progress_ts")) {
         db.exec("ALTER TABLE goals ADD COLUMN last_progress_ts INTEGER");
       }
-
-      if (!tableExists(db, "identity_events")) {
-        return;
-      }
-
-      db.exec(`
-        UPDATE goals
-        SET last_progress_ts = (
-          SELECT MAX(ts)
-          FROM identity_events
-          WHERE record_type = 'goal'
-            AND record_id = goals.id
-            AND action IN ('update_progress', 'update')
-            AND COALESCE(json_extract(old_value_json, '$.progress_notes'), '__null__')
-              != COALESCE(json_extract(new_value_json, '$.progress_notes'), '__null__')
-        )
-        WHERE last_progress_ts IS NULL;
-      `);
     },
   },
   {
@@ -886,56 +471,6 @@ export const selfMigrations = [
 
       if (!tableHasColumn(db, "growth_markers", "provenance_process")) {
         db.exec("ALTER TABLE growth_markers ADD COLUMN provenance_process TEXT");
-      }
-
-      const rows = db
-        .prepare(
-          `
-            SELECT id, evidence_episode_ids, source_process, provenance_kind
-            FROM growth_markers
-            ORDER BY created_at ASC, id ASC
-          `,
-        )
-        .all() as Array<Record<string, unknown>>;
-      const updateGrowthMarkerProvenance = db.prepare(
-        `
-          UPDATE growth_markers
-          SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, source_process = ?
-          WHERE id = ?
-        `,
-      );
-
-      for (const row of rows) {
-        if (typeof row.provenance_kind === "string" && row.provenance_kind.length > 0) {
-          continue;
-        }
-
-        const evidenceEpisodeIds = parseStoredIdArray(row.evidence_episode_ids).filter(
-          (value) => value.length > 0,
-        );
-        const sourceProcess =
-          typeof row.source_process === "string" && row.source_process.trim().length > 0
-            ? row.source_process.trim()
-            : null;
-
-        if (evidenceEpisodeIds.length > 0) {
-          updateGrowthMarkerProvenance.run(
-            "episodes",
-            JSON.stringify(evidenceEpisodeIds),
-            null,
-            sourceProcess ?? "growth-marker-detector",
-            row.id,
-          );
-          continue;
-        }
-
-        updateGrowthMarkerProvenance.run(
-          "offline",
-          "[]",
-          sourceProcess ?? "growth-marker-detector",
-          sourceProcess ?? "growth-marker-detector",
-          row.id,
-        );
       }
     },
   },
@@ -1181,63 +716,6 @@ export const selfMigrations = [
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_open_questions_audience_status_urgency
           ON open_questions (audience_entity_id, status, urgency DESC, last_touched DESC);
-      `);
-    },
-  },
-  {
-    id: 267,
-    name: "backfill-open-question-dedupe-v2",
-    up: (db) => {
-      if (!tableExists(db, "open_questions") || !tableHasColumn(db, "open_questions", "dedupe_key")) {
-        return;
-      }
-
-      const hasAudienceColumn = tableHasColumn(db, "open_questions", "audience_entity_id");
-      const rows = db
-        .prepare(
-          `
-            SELECT id, question, related_episode_ids, related_semantic_node_ids${
-              hasAudienceColumn ? ", audience_entity_id" : ""
-            }, created_at
-            FROM open_questions
-            ORDER BY created_at ASC, id ASC
-          `,
-        )
-        .all() as Array<Record<string, unknown>>;
-      const seenKeys = new Set<string>();
-      const updates: Array<{ id: unknown; dedupeKey: string }> = [];
-
-      for (const row of rows) {
-        const baseKey = buildOpenQuestionDedupeKey({
-          question: String(row.question ?? ""),
-          relatedEpisodeIds: parseStoredIdArray(row.related_episode_ids).map((id) =>
-            parseEpisodeId(id),
-          ),
-          relatedSemanticNodeIds: parseStoredIdArray(row.related_semantic_node_ids).map((id) =>
-            parseSemanticNodeId(id),
-          ),
-          audienceEntityId:
-            typeof row.audience_entity_id === "string" ? parseEntityId(row.audience_entity_id) : null,
-        });
-        const dedupeKey = seenKeys.has(baseKey) ? `${baseKey}|collision:${String(row.id)}` : baseKey;
-        seenKeys.add(dedupeKey);
-        updates.push({
-          id: row.id,
-          dedupeKey,
-        });
-      }
-
-      db.exec("DROP INDEX IF EXISTS idx_open_questions_dedupe_key");
-      const updateStatement = db.prepare("UPDATE open_questions SET dedupe_key = ? WHERE id = ?");
-
-      for (const update of updates) {
-        updateStatement.run(update.dedupeKey, update.id);
-      }
-
-      db.exec(`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_open_questions_dedupe_key
-          ON open_questions (dedupe_key)
-          WHERE dedupe_key IS NOT NULL
       `);
     },
   },

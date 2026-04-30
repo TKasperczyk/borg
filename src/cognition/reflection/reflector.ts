@@ -505,7 +505,6 @@ export class Reflector {
           trait_label: traitDemonstration.trait_label,
           strength_delta: traitDemonstration.strength_delta,
           source_stream_entry_ids: [...traitEvidenceStreamIds],
-          source_episode_ids: [],
           turn_completed_ts: this.clock.now(),
           audience_entity_id: context.audienceEntityId ?? null,
         },

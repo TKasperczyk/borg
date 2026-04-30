@@ -1,11 +1,25 @@
 import { describe, expect, it } from "vitest";
 
 import { createSkillId, type SkillId } from "../../util/ids.js";
-import type { SkillContextStatsRecord, SkillRecord } from "../../memory/procedural/index.js";
+import {
+  deriveProceduralContextKey,
+  type SkillContextStatsRecord,
+  type SkillRecord,
+} from "../../memory/procedural/index.js";
 import { createSkillFixture } from "../test-support.js";
 import { detectDivergentSkillSplits } from "./split-detector.js";
 
 const NOW_MS = 10 * 24 * 60 * 60 * 1_000;
+const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
+  problem_kind: "code_debugging",
+  domain_tags: ["typescript"],
+  audience_scope: "self",
+});
+const ROADMAP_PLANNING_CONTEXT_KEY = deriveProceduralContextKey({
+  problem_kind: "planning",
+  domain_tags: ["roadmap"],
+  audience_scope: "self",
+});
 
 function makeSkill(overrides: Partial<SkillRecord> = {}): SkillRecord {
   return createSkillFixture({
@@ -60,7 +74,7 @@ describe("detectDivergentSkillSplits", () => {
 
     expect(
       detect(skill, [
-        makeStats(skill.id, "code_debugging:typescript:self", {
+        makeStats(skill.id, TYPESCRIPT_DEBUG_CONTEXT_KEY, {
           alpha: 6,
           beta: 1,
           attempts: 5,
@@ -74,12 +88,12 @@ describe("detectDivergentSkillSplits", () => {
 
     expect(
       detect(skill, [
-        makeStats(skill.id, "code_debugging:typescript:self", {
+        makeStats(skill.id, TYPESCRIPT_DEBUG_CONTEXT_KEY, {
           alpha: 6,
           beta: 4,
           attempts: 8,
         }),
-        makeStats(skill.id, "planning:roadmap:self", {
+        makeStats(skill.id, ROADMAP_PLANNING_CONTEXT_KEY, {
           alpha: 5,
           beta: 5,
           attempts: 8,
@@ -93,12 +107,12 @@ describe("detectDivergentSkillSplits", () => {
 
     expect(
       detect(skill, [
-        makeStats(skill.id, "code_debugging:typescript:self", {
+        makeStats(skill.id, TYPESCRIPT_DEBUG_CONTEXT_KEY, {
           alpha: 5,
           beta: 1,
           attempts: 4,
         }),
-        makeStats(skill.id, "planning:roadmap:self", {
+        makeStats(skill.id, ROADMAP_PLANNING_CONTEXT_KEY, {
           alpha: 1,
           beta: 5,
           attempts: 4,
@@ -110,12 +124,12 @@ describe("detectDivergentSkillSplits", () => {
   it("flags divergent buckets with sufficient attempts", () => {
     const skill = makeSkill();
     const candidates = detect(skill, [
-      makeStats(skill.id, "code_debugging:typescript:self", {
+      makeStats(skill.id, TYPESCRIPT_DEBUG_CONTEXT_KEY, {
         alpha: 6,
         beta: 1,
         attempts: 5,
       }),
-      makeStats(skill.id, "planning:roadmap:self", {
+      makeStats(skill.id, ROADMAP_PLANNING_CONTEXT_KEY, {
         alpha: 1,
         beta: 6,
         attempts: 5,
@@ -134,12 +148,12 @@ describe("detectDivergentSkillSplits", () => {
 
     expect(
       detect(skill, [
-        makeStats(skill.id, "code_debugging:typescript:self", {
+        makeStats(skill.id, TYPESCRIPT_DEBUG_CONTEXT_KEY, {
           alpha: 6,
           beta: 1,
           attempts: 5,
         }),
-        makeStats(skill.id, "planning:roadmap:self", {
+        makeStats(skill.id, ROADMAP_PLANNING_CONTEXT_KEY, {
           alpha: 1,
           beta: 6,
           attempts: 5,
@@ -155,12 +169,12 @@ describe("detectDivergentSkillSplits", () => {
 
     expect(
       detect(skill, [
-        makeStats(skill.id, "code_debugging:typescript:self", {
+        makeStats(skill.id, TYPESCRIPT_DEBUG_CONTEXT_KEY, {
           alpha: 6,
           beta: 1,
           attempts: 5,
         }),
-        makeStats(skill.id, "planning:roadmap:self", {
+        makeStats(skill.id, ROADMAP_PLANNING_CONTEXT_KEY, {
           alpha: 1,
           beta: 6,
           attempts: 5,
@@ -176,12 +190,12 @@ describe("detectDivergentSkillSplits", () => {
 
     expect(
       detect(skill, [
-        makeStats(skill.id, "code_debugging:typescript:self", {
+        makeStats(skill.id, TYPESCRIPT_DEBUG_CONTEXT_KEY, {
           alpha: 6,
           beta: 1,
           attempts: 5,
         }),
-        makeStats(skill.id, "planning:roadmap:self", {
+        makeStats(skill.id, ROADMAP_PLANNING_CONTEXT_KEY, {
           alpha: 1,
           beta: 6,
           attempts: 5,
@@ -198,12 +212,12 @@ describe("detectDivergentSkillSplits", () => {
 
     expect(
       detect(skill, [
-        makeStats(skill.id, "code_debugging:typescript:self", {
+        makeStats(skill.id, TYPESCRIPT_DEBUG_CONTEXT_KEY, {
           alpha: 6,
           beta: 1,
           attempts: 5,
         }),
-        makeStats(skill.id, "planning:roadmap:self", {
+        makeStats(skill.id, ROADMAP_PLANNING_CONTEXT_KEY, {
           alpha: 1,
           beta: 6,
           attempts: 5,

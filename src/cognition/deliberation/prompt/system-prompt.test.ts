@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
+import { deriveProceduralContextKey } from "../../../memory/procedural/index.js";
 import type {
   SkillContextStatsRecord,
   SkillRecord,
@@ -24,6 +25,11 @@ const PROMPT_OPTIONS = {
   retrievalContextBudget: 1_000,
   semanticContextBudget: 1_000,
 };
+const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
+  problem_kind: "code_debugging",
+  domain_tags: ["typescript"],
+  audience_scope: "self",
+});
 
 function makeContext(overrides: Partial<DeliberationContext> = {}): DeliberationContext {
   return {
@@ -54,6 +60,9 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
         dominant_emotion: null,
       },
       pending_procedural_attempts: [],
+      discourse_state: {
+        stop_until_substantive_content: null,
+      },
       mode: "problem_solving",
       updated_at: NOW_MS,
     },
@@ -292,7 +301,7 @@ describe("buildBaseSystemPrompt", () => {
     const selectedSkill = makeSelection(selected, [
       makeCandidate(selected, 0.82, 0.67, [0.4, 0.9], 0.9, {
         skill_id: selected.id,
-        context_key: "code_debugging:typescript:self",
+        context_key: TYPESCRIPT_DEBUG_CONTEXT_KEY,
         alpha: 3,
         beta: 4,
         attempts: 5,
@@ -309,7 +318,7 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(block).toContain("posterior_mean=0.67 global_n=5");
     expect(block).toContain(
-      'context_mean=0.43 context_attempts=5 context="code_debugging:typescript:self"',
+      `context_mean=0.43 context_attempts=5 context="${TYPESCRIPT_DEBUG_CONTEXT_KEY}"`,
     );
   });
 

@@ -65,9 +65,9 @@ describe("StreamWatermarkRepository", () => {
     const otherSession = createSessionId();
 
     try {
-      repo.set("episodic-extractor", DEFAULT_SESSION_ID, { lastTs: 100, lastEntryId: null });
-      repo.set("episodic-extractor", otherSession, { lastTs: 200, lastEntryId: null });
-      repo.set("semantic-extractor", DEFAULT_SESSION_ID, { lastTs: 300, lastEntryId: null });
+      repo.set("episodic-extractor", DEFAULT_SESSION_ID, { lastTs: 100, lastEntryId: "watermark" });
+      repo.set("episodic-extractor", otherSession, { lastTs: 200, lastEntryId: "watermark" });
+      repo.set("semantic-extractor", DEFAULT_SESSION_ID, { lastTs: 300, lastEntryId: "watermark" });
 
       expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)?.lastTs).toBe(100);
       expect(repo.get("episodic-extractor", otherSession)?.lastTs).toBe(200);
@@ -81,7 +81,7 @@ describe("StreamWatermarkRepository", () => {
     const { repo, close } = openRepo();
 
     try {
-      repo.set("episodic-extractor", DEFAULT_SESSION_ID, { lastTs: 100, lastEntryId: null });
+      repo.set("episodic-extractor", DEFAULT_SESSION_ID, { lastTs: 100, lastEntryId: "watermark" });
       expect(repo.get("episodic-extractor", DEFAULT_SESSION_ID)).not.toBeNull();
 
       repo.reset("episodic-extractor", DEFAULT_SESSION_ID);

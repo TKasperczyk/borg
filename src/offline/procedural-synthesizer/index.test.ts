@@ -28,6 +28,27 @@ import {
 import { ProceduralSynthesizerProcess } from "./index.js";
 import { createSkillSplitReviewHandler } from "./skill-split-review.js";
 
+const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
+  problem_kind: "code_debugging",
+  domain_tags: ["typescript"],
+  audience_scope: "self",
+});
+const ROADMAP_PLANNING_CONTEXT_KEY = deriveProceduralContextKey({
+  problem_kind: "planning",
+  domain_tags: ["roadmap"],
+  audience_scope: "self",
+});
+const SQLITE_RESEARCH_CONTEXT_KEY = deriveProceduralContextKey({
+  problem_kind: "research",
+  domain_tags: ["sqlite"],
+  audience_scope: "self",
+});
+const TYPESCRIPT_DEBUG_KNOWN_OTHER_CONTEXT_KEY = deriveProceduralContextKey({
+  problem_kind: "code_debugging",
+  domain_tags: ["typescript"],
+  audience_scope: "known_other",
+});
+
 function proceduralConfig(overrides: Partial<typeof DEFAULT_CONFIG.offline.proceduralSynthesizer>) {
   return {
     offline: {
@@ -220,7 +241,7 @@ async function addSkillWithContextStats(
   const contextRows = (
     input.contexts ?? [
       {
-        contextKey: "code_debugging:typescript:self",
+        contextKey: TYPESCRIPT_DEBUG_CONTEXT_KEY,
         alpha: 6,
         beta: 1,
         attempts: 5,
@@ -228,7 +249,7 @@ async function addSkillWithContextStats(
         failures: 0,
       },
       {
-        contextKey: "planning:roadmap:self",
+        contextKey: ROADMAP_PLANNING_CONTEXT_KEY,
         alpha: 4,
         beta: 1,
         attempts: 3,
@@ -598,12 +619,12 @@ describe("ProceduralSynthesizerProcess", () => {
             {
               applies_when: "TypeScript debugging comparison",
               approach: "Compare the compiler failure with the last passing TypeScript state.",
-              target_contexts: ["code_debugging:typescript:self"],
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
             },
             {
               applies_when: "Roadmap planning comparison",
               approach: "Compare the roadmap against the current goal list.",
-              target_contexts: ["planning:roadmap:self"],
+              target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
             },
           ],
         }),
@@ -633,7 +654,7 @@ describe("ProceduralSynthesizerProcess", () => {
             approach: "Compare the compiler failure with the last passing TypeScript state.",
             context_stats: [
               expect.objectContaining({
-                context_key: "code_debugging:typescript:self",
+                context_key: TYPESCRIPT_DEBUG_CONTEXT_KEY,
               }),
             ],
           }),
@@ -641,7 +662,7 @@ describe("ProceduralSynthesizerProcess", () => {
             label: "Roadmap planning comparison",
             context_stats: [
               expect.objectContaining({
-                context_key: "planning:roadmap:self",
+                context_key: ROADMAP_PLANNING_CONTEXT_KEY,
               }),
             ],
           }),
@@ -692,14 +713,14 @@ describe("ProceduralSynthesizerProcess", () => {
     expect(harness.skillRepository.listContextStatsForSkill(skill.id)).toEqual([]);
     expect(harness.skillRepository.listContextStatsForSkill(newSkills[0]!.id)).toEqual([
       expect.objectContaining({
-        context_key: "code_debugging:typescript:self",
+        context_key: TYPESCRIPT_DEBUG_CONTEXT_KEY,
         alpha: 6,
         beta: 1,
       }),
     ]);
     expect(harness.skillRepository.listContextStatsForSkill(newSkills[1]!.id)).toEqual([
       expect.objectContaining({
-        context_key: "planning:roadmap:self",
+        context_key: ROADMAP_PLANNING_CONTEXT_KEY,
         alpha: 4,
         beta: 1,
       }),
@@ -782,7 +803,6 @@ describe("ProceduralSynthesizerProcess", () => {
       configOverrides: proceduralConfig({
         minContextAttemptsForSplit: 3,
         minDivergenceForSplit: 0.01,
-        skillSplitDryRun: false,
       }),
       llmClient: llm,
     });
@@ -873,7 +893,6 @@ describe("ProceduralSynthesizerProcess", () => {
         minDivergenceForSplit: 0.01,
         splitCooldownDays: 0.000001,
         maxSplitParseFailures: 3,
-        skillSplitDryRun: false,
       }),
       llmClient: llm,
     });
@@ -923,12 +942,12 @@ describe("ProceduralSynthesizerProcess", () => {
             {
               applies_when: "TypeScript debugging comparison",
               approach: "Compare the compiler failure with the last passing TypeScript state.",
-              target_contexts: ["code_debugging:typescript:self"],
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
             },
             {
               applies_when: "Roadmap planning comparison",
               approach: "Compare the roadmap against the current goal list.",
-              target_contexts: ["planning:roadmap:self"],
+              target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
             },
           ],
         }),
@@ -938,14 +957,13 @@ describe("ProceduralSynthesizerProcess", () => {
       configOverrides: proceduralConfig({
         minContextAttemptsForSplit: 3,
         minDivergenceForSplit: 0.01,
-        skillSplitDryRun: false,
       }),
       llmClient: llm,
     });
     const { skill } = await addSkillWithContextStats(harness, {
       contexts: [
         {
-          contextKey: "code_debugging:typescript:self",
+          contextKey: TYPESCRIPT_DEBUG_CONTEXT_KEY,
           alpha: 6,
           beta: 1,
           attempts: 5,
@@ -953,7 +971,7 @@ describe("ProceduralSynthesizerProcess", () => {
           failures: 0,
         },
         {
-          contextKey: "planning:roadmap:self",
+          contextKey: ROADMAP_PLANNING_CONTEXT_KEY,
           alpha: 5,
           beta: 2,
           attempts: 5,
@@ -961,7 +979,7 @@ describe("ProceduralSynthesizerProcess", () => {
           failures: 1,
         },
         {
-          contextKey: "research:sqlite:self",
+          contextKey: SQLITE_RESEARCH_CONTEXT_KEY,
           alpha: 1,
           beta: 6,
           attempts: 5,
@@ -1004,12 +1022,12 @@ describe("ProceduralSynthesizerProcess", () => {
             {
               applies_when: "TypeScript debugging comparison",
               approach: "Compare the compiler failure with the last passing TypeScript state.",
-              target_contexts: ["code_debugging:typescript:self"],
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
             },
             {
               applies_when: "Roadmap planning comparison",
               approach: "Compare the roadmap against the current goal list.",
-              target_contexts: ["planning:roadmap:self"],
+              target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
             },
           ],
         }),
@@ -1099,12 +1117,12 @@ describe("ProceduralSynthesizerProcess", () => {
             {
               applies_when: "TypeScript debugging comparison",
               approach: "Compare the compiler failure with the last passing TypeScript state.",
-              target_contexts: ["code_debugging:typescript:self"],
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
             },
             {
               applies_when: "Roadmap planning comparison",
               approach: "Compare the roadmap against the current goal list.",
-              target_contexts: ["planning:roadmap:self"],
+              target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
             },
           ],
         }),
@@ -1129,12 +1147,12 @@ describe("ProceduralSynthesizerProcess", () => {
         {
           applies_when: "Manual TypeScript split",
           approach: "Manual debug approach.",
-          target_contexts: ["code_debugging:typescript:self"],
+          target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
         },
         {
           applies_when: "Manual roadmap split",
           approach: "Manual roadmap approach.",
-          target_contexts: ["planning:roadmap:self"],
+          target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
         },
       ],
       supersededAt: harness.clock.now(),
@@ -1165,12 +1183,12 @@ describe("ProceduralSynthesizerProcess", () => {
             {
               applies_when: "TypeScript debugging comparison",
               approach: "Compare the compiler failure with the last passing TypeScript state.",
-              target_contexts: ["code_debugging:typescript:self"],
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
             },
             {
               applies_when: "Roadmap planning comparison",
               approach: "Compare the roadmap against the current goal list.",
-              target_contexts: ["planning:roadmap:self"],
+              target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
             },
           ],
         }),
@@ -1180,7 +1198,6 @@ describe("ProceduralSynthesizerProcess", () => {
       configOverrides: proceduralConfig({
         minContextAttemptsForSplit: 3,
         minDivergenceForSplit: 0.01,
-        skillSplitDryRun: false,
       }),
       llmClient: llm,
     });
@@ -1214,12 +1231,12 @@ describe("ProceduralSynthesizerProcess", () => {
             {
               applies_when: "TypeScript debugging comparison",
               approach: "Compare the compiler failure with the last passing TypeScript state.",
-              target_contexts: ["code_debugging:typescript:self"],
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
             },
             {
               applies_when: "Roadmap planning comparison",
               approach: "Compare the roadmap against the current goal list.",
-              target_contexts: ["planning:roadmap:self"],
+              target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
             },
           ],
         }),
@@ -1229,7 +1246,6 @@ describe("ProceduralSynthesizerProcess", () => {
       configOverrides: proceduralConfig({
         minContextAttemptsForSplit: 3,
         minDivergenceForSplit: 0.01,
-        skillSplitDryRun: false,
       }),
       llmClient: llm,
     });
@@ -1255,7 +1271,7 @@ describe("ProceduralSynthesizerProcess", () => {
     harness.skillRepository.restoreContextStats([
       {
         skill_id: skill.id,
-        context_key: "code_debugging:typescript:self",
+        context_key: TYPESCRIPT_DEBUG_CONTEXT_KEY,
         alpha: 6,
         beta: 1,
         attempts: 5,
@@ -1267,7 +1283,7 @@ describe("ProceduralSynthesizerProcess", () => {
       },
       {
         skill_id: skill.id,
-        context_key: "planning:roadmap:self",
+        context_key: ROADMAP_PLANNING_CONTEXT_KEY,
         alpha: 1,
         beta: 6,
         attempts: 5,
@@ -1312,12 +1328,12 @@ describe("ProceduralSynthesizerProcess", () => {
             {
               applies_when: "TypeScript debugging comparison",
               approach: "Compare the compiler failure with the last passing TypeScript state.",
-              target_contexts: ["code_debugging:typescript:self"],
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
             },
             {
               applies_when: "Roadmap planning comparison",
               approach: "Compare the roadmap against the current goal list.",
-              target_contexts: ["planning:roadmap:self"],
+              target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
             },
           ],
         }),
@@ -1327,7 +1343,6 @@ describe("ProceduralSynthesizerProcess", () => {
       configOverrides: proceduralConfig({
         minContextAttemptsForSplit: 3,
         minDivergenceForSplit: 0.01,
-        skillSplitDryRun: false,
       }),
       llmClient: llm,
     });
@@ -1381,12 +1396,12 @@ describe("ProceduralSynthesizerProcess", () => {
             {
               applies_when: "Self TypeScript debugging comparison",
               approach: "Compare the self-scoped compiler failure with the last passing state.",
-              target_contexts: ["code_debugging:typescript:self"],
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
             },
             {
               applies_when: "Known-audience TypeScript debugging comparison",
               approach: "Compare the audience-scoped compiler failure with their known baseline.",
-              target_contexts: ["code_debugging:typescript:known_other"],
+              target_contexts: [TYPESCRIPT_DEBUG_KNOWN_OTHER_CONTEXT_KEY],
             },
           ],
         }),
@@ -1396,14 +1411,13 @@ describe("ProceduralSynthesizerProcess", () => {
       configOverrides: proceduralConfig({
         minContextAttemptsForSplit: 5,
         minDivergenceForSplit: 0.3,
-        skillSplitDryRun: false,
       }),
       llmClient: llm,
     });
     const { skill } = await addSkillWithContextStats(harness, {
       contexts: [
         {
-          contextKey: "code_debugging:typescript:self",
+          contextKey: TYPESCRIPT_DEBUG_CONTEXT_KEY,
           alpha: 6,
           beta: 1,
           attempts: 5,
@@ -1411,7 +1425,7 @@ describe("ProceduralSynthesizerProcess", () => {
           failures: 0,
         },
         {
-          contextKey: "code_debugging:typescript:known_other",
+          contextKey: TYPESCRIPT_DEBUG_KNOWN_OTHER_CONTEXT_KEY,
           alpha: 1,
           beta: 6,
           attempts: 5,
@@ -1435,12 +1449,12 @@ describe("ProceduralSynthesizerProcess", () => {
     expect(newSkills).toHaveLength(2);
     expect(harness.skillRepository.listContextStatsForSkill(newSkills[0]!.id)).toEqual([
       expect.objectContaining({
-        context_key: "code_debugging:typescript:self",
+        context_key: TYPESCRIPT_DEBUG_CONTEXT_KEY,
       }),
     ]);
     expect(harness.skillRepository.listContextStatsForSkill(newSkills[1]!.id)).toEqual([
       expect.objectContaining({
-        context_key: "code_debugging:typescript:known_other",
+        context_key: TYPESCRIPT_DEBUG_KNOWN_OTHER_CONTEXT_KEY,
       }),
     ]);
   });
@@ -1538,12 +1552,12 @@ describe("ProceduralSynthesizerProcess", () => {
             {
               applies_when: "TypeScript debugging comparison",
               approach: "Compare the compiler failure with the last passing TypeScript state.",
-              target_contexts: ["code_debugging:typescript:self"],
+              target_contexts: [TYPESCRIPT_DEBUG_CONTEXT_KEY],
             },
             {
               applies_when: "Roadmap planning comparison",
               approach: "Compare the roadmap against the current goal list.",
-              target_contexts: ["planning:roadmap:self"],
+              target_contexts: [ROADMAP_PLANNING_CONTEXT_KEY],
             },
           ],
         }),
@@ -1553,7 +1567,6 @@ describe("ProceduralSynthesizerProcess", () => {
       configOverrides: proceduralConfig({
         minContextAttemptsForSplit: 3,
         minDivergenceForSplit: 0.01,
-        skillSplitDryRun: false,
       }),
       llmClient: llm,
     });
@@ -1863,6 +1876,9 @@ describe("ProceduralSynthesizerProcess", () => {
                 audience_entity_id: null,
               },
             ],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
             mode: "problem_solving",
             updated_at: 0,
           },
@@ -1910,6 +1926,9 @@ describe("ProceduralSynthesizerProcess", () => {
                   audience_entity_id: null,
                 },
               ],
+              discourse_state: {
+                stop_until_substantive_content: null,
+              },
               mode: "problem_solving",
               updated_at: 0,
             },

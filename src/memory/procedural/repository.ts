@@ -23,6 +23,7 @@ import {
 import { computeBetaStats, type BetaStats } from "./bayes.js";
 import {
   proceduralContextMetadataSchema,
+  proceduralContextKeySchema,
   proceduralContextSchema,
   type ProceduralContext,
   type ProceduralContextMetadata,
@@ -300,13 +301,16 @@ function skillContextStatsFromRow(row: Record<string, unknown>): SkillContextSta
 function assertContextKey(contextKey: string): string {
   const trimmed = contextKey.trim();
 
-  if (trimmed.length === 0) {
+  const parsed = proceduralContextKeySchema.safeParse(trimmed);
+
+  if (!parsed.success) {
     throw new StorageError("Context key must not be empty", {
+      cause: parsed.error,
       code: "SKILL_CONTEXT_KEY_INVALID",
     });
   }
 
-  return trimmed;
+  return parsed.data;
 }
 
 function recordContextOutcomeInTransaction(
@@ -1288,14 +1292,12 @@ export class ProceduralContextStatsRepository {
   }
 
   batchGetContextStats(
-    contextKey: string | readonly string[],
+    contextKey: string,
     skillIds: readonly SkillId[],
   ): Map<SkillId, SkillContextStatsRecord> {
-    const contextKeys = (Array.isArray(contextKey) ? contextKey : [contextKey])
-      .map((value) => assertContextKey(value))
-      .filter((value, index, values) => values.indexOf(value) === index);
+    const parsedContextKey = assertContextKey(contextKey);
 
-    if (skillIds.length === 0 || contextKeys.length === 0) {
+    if (skillIds.length === 0) {
       return new Map();
     }
 
@@ -1304,12 +1306,12 @@ export class ProceduralContextStatsRepository {
         `
           SELECT *
           FROM skill_context_stats
-          WHERE context_key IN (${contextKeys.map(() => "?").join(", ")})
+          WHERE context_key = ?
             AND skill_id IN (${skillIds.map(() => "?").join(", ")})
           ORDER BY updated_at DESC
         `,
       )
-      .all(...contextKeys, ...skillIds) as Record<string, unknown>[];
+      .all(parsedContextKey, ...skillIds) as Record<string, unknown>[];
     const result = new Map<SkillId, SkillContextStatsRecord>();
 
     for (const row of rows) {

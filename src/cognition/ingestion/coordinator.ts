@@ -11,13 +11,6 @@ import type { SessionId } from "../../util/ids.js";
 
 const EPISODIC_PROCESS_NAME = "episodic-extractor";
 
-export type LegacyFallbackNotice = {
-  processName: typeof EPISODIC_PROCESS_NAME;
-  sessionId: SessionId;
-  sinceTs: number;
-  message: string;
-};
-
 function isFileMissingError(error: unknown): boolean {
   if (error instanceof BorgError && error.cause !== undefined) {
     return isFileMissingError(error.cause);
@@ -51,12 +44,6 @@ export type StreamIngestionCoordinatorOptions = {
    * surface to the user). Pass a hook to log or rethrow.
    */
   onError?: (error: unknown, sessionId: SessionId) => void | Promise<void>;
-  /**
-   * Called when resuming from a legacy watermark that has a timestamp but no
-   * entry id. Defaults to console.warn so the fallback is observable without
-   * polluting the stream.
-   */
-  onLegacyFallback?: (notice: LegacyFallbackNotice) => void | Promise<void>;
 };
 
 export type IngestionResult = {
@@ -86,9 +73,7 @@ export type PreTurnCatchUpOptions = {
 };
 
 type ResumeOptions = {
-  sinceTs?: number;
   sinceCursor?: StreamCursor;
-  usedLegacyFallback: boolean;
 };
 
 type ResolvedIngestOptions = {
@@ -360,43 +345,15 @@ export class StreamIngestionCoordinator {
     const watermark = this.options.watermarkRepository.get(EPISODIC_PROCESS_NAME, sessionId);
 
     if (watermark === null) {
-      return {
-        usedLegacyFallback: false,
-      };
-    }
-
-    const lastEntryId = watermark.lastEntryId;
-
-    if (lastEntryId === null) {
-      return {
-        sinceTs: watermark.lastTs + 1,
-        usedLegacyFallback: true,
-      };
+      return {};
     }
 
     return {
       sinceCursor: {
         ts: watermark.lastTs,
-        entryId: lastEntryId as StreamCursor["entryId"],
+        entryId: watermark.lastEntryId as StreamCursor["entryId"],
       },
-      usedLegacyFallback: false,
     };
-  }
-
-  private async reportLegacyFallback(sessionId: SessionId, sinceTs: number): Promise<void> {
-    const notice: LegacyFallbackNotice = {
-      processName: EPISODIC_PROCESS_NAME,
-      sessionId,
-      sinceTs,
-      message: `legacy watermark fallback used for ${EPISODIC_PROCESS_NAME}; lastEntryId missing, resumed with sinceTs=${sinceTs}`,
-    };
-    const reporter =
-      this.options.onLegacyFallback ??
-      ((fallbackNotice: LegacyFallbackNotice) => {
-        console.warn(fallbackNotice.message);
-      });
-
-    await reporter(notice);
   }
 
   private async readEntriesPastWatermark(
@@ -412,7 +369,6 @@ export class StreamIngestionCoordinator {
 
     try {
       for await (const entry of reader.iterate({
-        sinceTs: resumeOptions.sinceTs,
         sinceCursor: resumeOptions.sinceCursor,
         ...(limit === undefined ? {} : { limit }),
       })) {
@@ -449,32 +405,24 @@ export class StreamIngestionCoordinator {
     }
 
     try {
-      if (resumeOptions.usedLegacyFallback && resumeOptions.sinceTs !== undefined) {
-        try {
-          await this.reportLegacyFallback(sessionId, resumeOptions.sinceTs);
-        } catch {
-          // Best-effort observability only.
-        }
+      const lastProcessedEntry = newEntries.at(-1);
+
+      if (lastProcessedEntry === undefined) {
+        return { ran: false, processedEntries: 0 };
       }
 
-      const lastProcessedEntry = newEntries.at(-1);
       const extractionResult = await this.options.extractor.extractFromStream({
         session: sessionId,
-        sinceTs: resumeOptions.sinceTs,
         sinceCursor: resumeOptions.sinceCursor,
-        ...(lastProcessedEntry === undefined
-          ? {}
-          : {
-              untilCursor: {
-                ts: lastProcessedEntry.timestamp,
-                entryId: lastProcessedEntry.id,
-              },
-            }),
+        untilCursor: {
+          ts: lastProcessedEntry.timestamp,
+          entryId: lastProcessedEntry.id,
+        },
       });
 
       this.options.watermarkRepository.set(EPISODIC_PROCESS_NAME, sessionId, {
         lastTs: lastProcessedEntry?.timestamp ?? 0,
-        lastEntryId: lastProcessedEntry?.id ?? null,
+        lastEntryId: lastProcessedEntry.id,
       });
 
       return {

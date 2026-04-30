@@ -24,13 +24,13 @@ describe("identity migrations", () => {
     const dbPath = join(tempDir, "identity.db");
     tempDirs.push(tempDir);
 
-    const legacyDb = openDatabase(dbPath, {
+    const initialDb = openDatabase(dbPath, {
       migrations: identityMigrations.filter((migration) => migration.id < 251),
     });
 
     try {
       new IdentityEventRepository({
-        db: legacyDb,
+        db: initialDb,
         clock: new FixedClock(1_000),
       }).record({
         record_type: "goal",
@@ -41,7 +41,7 @@ describe("identity migrations", () => {
         },
       });
     } finally {
-      legacyDb.close();
+      initialDb.close();
     }
 
     const db = openDatabase(dbPath, {

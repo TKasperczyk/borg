@@ -8,7 +8,6 @@ import {
 import { createEpisodeId, createProceduralEvidenceId, createSkillId } from "../../util/ids.js";
 
 import {
-  deriveLegacyProceduralContextKey,
   deriveProceduralContextKey,
   proceduralContextSchema,
 } from "./context.js";
@@ -246,41 +245,6 @@ describe("SkillRepository", () => {
     ]);
     expect(contexts[0]?.domain_tags).toEqual(["typescript", "deployment"]);
     expect(contexts[2]?.domain_tags).toEqual(["typescript"]);
-  });
-
-  it("reads legacy context stats aliases during the v2 transition", async () => {
-    harness = await createOfflineTestHarness();
-    const episode = createEpisodeFixture();
-    await harness.episodicRepository.insert(episode);
-    const skill = await harness.skillRepository.add({
-      applies_when: "TypeScript deployment debugging",
-      approach: "Inspect deployment logs and tsc output.",
-      sourceEpisodes: [episode.id],
-    });
-    const context = proceduralContextSchema.parse({
-      problem_kind: "code_debugging",
-      domain_tags: ["typescript", "deployment"],
-      audience_scope: "self",
-      context_key: "ignored",
-    });
-    const legacyContextKey = deriveLegacyProceduralContextKey(context);
-
-    harness.proceduralContextStatsRepository.recordContextOutcome({
-      skillId: skill.id,
-      contextKey: legacyContextKey,
-      success: true,
-      ts: 1_000,
-    });
-
-    const selection = await new SkillSelector({
-      repository: harness.skillRepository,
-      contextStatsRepository: harness.proceduralContextStatsRepository,
-      sampler: () => 0.5,
-    }).select("TypeScript deployment debugging", {
-      proceduralContext: context,
-    });
-
-    expect(selection?.evaluatedCandidates[0]?.contextStats?.context_key).toBe(legacyContextKey);
   });
 
   it("records global-only outcomes when no procedural context is present", async () => {
@@ -927,7 +891,7 @@ describe("SkillRepository", () => {
         evidenceId,
         JSON.stringify(pendingAttempt),
         "success",
-        "Legacy row without procedural context.",
+        "Stored row without procedural context.",
         "[]",
         1_000,
       );
