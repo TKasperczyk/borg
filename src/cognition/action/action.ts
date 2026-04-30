@@ -1,6 +1,7 @@
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { PendingTurnEmission } from "../generation/types.js";
 import type { IntentRecord } from "../types.js";
+import type { PendingActionJudge } from "./pending-action-judge.js";
 import type { ToolLoopCallRecord } from "./tool-loop.js";
 
 // Commits the action outcome -- the commitment-checked response, the tool
@@ -15,6 +16,8 @@ export type ActionContext = {
   toolCalls: ToolLoopCallRecord[];
   intents: readonly IntentRecord[];
   workingMemory: WorkingMemory;
+  pendingActionJudge?: PendingActionJudge;
+  onPendingActionRejected?: (event: PendingActionRejection) => void | Promise<void>;
 };
 
 export type ActionResult = {
@@ -26,25 +29,80 @@ export type ActionResult = {
   workingMemory: WorkingMemory;
 };
 
+export type PendingActionRejection = {
+  record: IntentRecord;
+  reason: string;
+  confidence: number;
+  degraded: boolean;
+};
+
+async function notifyRejected(
+  context: Pick<ActionContext, "onPendingActionRejected">,
+  event: PendingActionRejection,
+): Promise<void> {
+  try {
+    await context.onPendingActionRejected?.(event);
+  } catch {
+    // Best-effort observability only.
+  }
+}
+
+async function filterPendingActions(context: ActionContext): Promise<IntentRecord[]> {
+  const accepted: IntentRecord[] = [];
+
+  for (const record of context.intents) {
+    if (record.next_action === null || record.next_action.trim().length === 0) {
+      await notifyRejected(context, {
+        record,
+        reason: "missing_next_action",
+        confidence: 1,
+        degraded: false,
+      });
+      continue;
+    }
+
+    if (context.pendingActionJudge === undefined) {
+      accepted.push(record);
+      continue;
+    }
+
+    const judgment = await context.pendingActionJudge.judge(record);
+
+    if (judgment.accepted) {
+      accepted.push(record);
+      continue;
+    }
+
+    await notifyRejected(context, {
+      record,
+      reason: judgment.reason,
+      confidence: judgment.confidence,
+      degraded: judgment.degraded,
+    });
+  }
+
+  return accepted;
+}
+
 export async function performAction(context: ActionContext): Promise<ActionResult> {
   const emission = context.emission ?? {
     kind: "message",
     content: context.response,
   };
   const emitted = emission.kind === "message";
-  const intents = [...context.intents];
+  const pendingActions = emitted ? await filterPendingActions(context) : [];
 
   return {
     response: emitted ? emission.content : "",
     emitted,
     emission,
     tool_calls: [...context.toolCalls],
-    intents: emitted ? intents : [],
+    intents: pendingActions,
     workingMemory: {
       ...context.workingMemory,
-      pending_intents: emitted
-        ? [...context.workingMemory.pending_intents, ...intents]
-        : [...context.workingMemory.pending_intents],
+      pending_actions: emitted
+        ? [...context.workingMemory.pending_actions, ...pendingActions]
+        : [...context.workingMemory.pending_actions],
     },
   };
 }

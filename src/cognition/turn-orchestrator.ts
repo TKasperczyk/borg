@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "../config/index.js";
 import { SuppressionSet } from "./attention/index.js";
 import { AttributionLifecycleService } from "./attribution/lifecycle-service.js";
-import { performAction, type ToolLoopCallRecord } from "./action/index.js";
+import {
+  LLMPendingActionJudge,
+  performAction,
+  type PendingActionRejection,
+  type ToolLoopCallRecord,
+} from "./action/index.js";
 import { formatAutonomyTriggerContext, type AutonomyTriggerContext } from "./autonomy-trigger.js";
 import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
@@ -54,7 +59,7 @@ import {
   type GoalId,
   type SessionId,
 } from "../util/ids.js";
-import { NOOP_TRACER, type TurnTracer } from "./tracing/tracer.js";
+import { NOOP_TRACER, toTraceJsonValue, type TurnTracer } from "./tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
 import { SessionLock } from "./session-lock.js";
 import type {
@@ -875,6 +880,28 @@ export class TurnOrchestrator {
                 kind: "message",
                 content: deliberation.response,
               });
+        const pendingActionJudge = new LLMPendingActionJudge({
+          llmClient,
+          model: this.options.config.anthropic.models.background,
+        });
+        const onPendingActionRejected = (event: PendingActionRejection) => {
+          if (!this.tracer.enabled) {
+            return;
+          }
+
+          this.tracer.emit("working_memory_degraded", {
+            turnId,
+            subsystem: "pending_actions",
+            reason: event.reason,
+            confidence: event.confidence,
+            degraded: event.degraded,
+            ...(this.tracer.includePayloads
+              ? {
+                  record: toTraceJsonValue(event.record),
+                }
+              : {}),
+          });
+        };
         const actionResult =
           deliberationEmission.kind === "suppressed"
             ? await performAction({
@@ -904,6 +931,8 @@ export class TurnOrchestrator {
                   toolCalls: deliberation.tool_calls,
                   intents: deliberation.intents,
                   workingMemory,
+                  pendingActionJudge,
+                  onPendingActionRejected,
                 });
               })();
         const actionEmission: PendingTurnEmission = actionResult.emission ?? {
@@ -1119,7 +1148,7 @@ export class TurnOrchestrator {
               pending_social: nextPendingSocialAttribution !== null,
               pending_trait: reflectedWorkingMemory.pending_trait_attribution !== null,
               pending_procedural: nextPendingProceduralAttempts.length > 0,
-              pending_intents: reflectedWorkingMemory.pending_intents.length,
+              pending_actions: reflectedWorkingMemory.pending_actions.length,
             },
           });
         }

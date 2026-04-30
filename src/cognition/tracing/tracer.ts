@@ -9,6 +9,7 @@ export type TurnTraceEventName =
   | "perception_started"
   | "perception_completed"
   | "perception_classifier_degraded"
+  | "working_memory_degraded"
   | "recency_compiled"
   | "retrieval_degraded"
   | "retrieval_started"

@@ -133,7 +133,7 @@ const strictReflectionOutputSchema = z.object({
       }),
     )
     .describe(
-      "Prior pending_intents resolved by this completed turn. Include only exact prior intents with clear evidence, marked completed or abandoned.",
+      "Prior pending actions resolved by this completed turn. Include only exact prior actions with clear evidence, marked completed or abandoned.",
     )
     .default([]),
   step_outcomes: z
@@ -162,7 +162,7 @@ type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema>;
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
   description:
-    "Emit structured post-turn reflection. Mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for prior pending intents resolved by the completed turn, executive step outcomes/proposals only when the turn directly supports them, and open_questions only for durable unresolved questions worth remembering.",
+    "Emit structured post-turn reflection. Mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for prior pending actions resolved by the completed turn, executive step outcomes/proposals only when the turn directly supports them, and open_questions only for durable unresolved questions worth remembering.",
   inputSchema: toToolInputSchema(strictReflectionOutputSchema),
 };
 
@@ -226,10 +226,10 @@ function intentKey(intent: IntentRecord): string {
 }
 
 function selectResolvedIntentKeys(
-  pendingIntents: readonly IntentRecord[],
+  pendingActions: readonly IntentRecord[],
   updates: readonly ReflectionOutput["intent_updates"][number][],
 ): Set<string> {
-  const pendingKeys = new Set(pendingIntents.map((intent) => intentKey(intent)));
+  const pendingKeys = new Set(pendingActions.map((intent) => intentKey(intent)));
   const resolved = new Set<string>();
 
   for (const update of updates) {
@@ -469,14 +469,14 @@ export class Reflector {
     }
 
     const resolvedIntentKeys = selectResolvedIntentKeys(
-      context.workingMemory.pending_intents,
+      context.workingMemory.pending_actions,
       intentUpdates,
     );
 
     if (resolvedIntentKeys.size > 0) {
       nextWorkingMemory = {
         ...nextWorkingMemory,
-        pending_intents: nextWorkingMemory.pending_intents.filter(
+        pending_actions: nextWorkingMemory.pending_actions.filter(
           (intent) => !resolvedIntentKeys.has(intentKey(intent)),
         ),
       };
@@ -992,7 +992,7 @@ export class Reflector {
 
   private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
     const pendingProceduralAttempts = context.workingMemory.pending_procedural_attempts ?? [];
-    const pendingIntents = context.workingMemory.pending_intents;
+    const pendingActions = context.workingMemory.pending_actions;
     const referencedEpisodeIds = selectReferencedRetrievedEpisodeIds(
       context.deliberationResult,
       context.retrievedEpisodes,
@@ -1008,7 +1008,7 @@ export class Reflector {
     const hasReflectionWork =
       context.selfSnapshot.goals.length > 0 ||
       pendingProceduralAttempts.length > 0 ||
-      pendingIntents.length > 0 ||
+      pendingActions.length > 0 ||
       referencedEpisodeIds.length > 0 ||
       hasExecutiveWork ||
       hasUserVisibleTurnPayload;
@@ -1038,7 +1038,7 @@ export class Reflector {
         "Do not infer procedural success or failure from the assistant response, confidence, phrasing, or intentions.",
         "Emit trait_demonstrations only for traits actually shown by the completed assistant turn. Do not map from cognitive mode labels.",
         "Use strength_delta 0.01-0.1 for grounded trait demonstrations, and omit weak or generic traits.",
-        "If pending_intents are present, mark only prior pending intents completed or abandoned when the current user message and agent response give clear evidence. Otherwise omit them.",
+        "If pending_actions are present, mark only prior pending actions completed or abandoned when the current user message and agent response give clear evidence. Otherwise omit them.",
         "For open_questions, emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. Preserve the user's language in the question text.",
       ].join("\n"),
       messages: [
@@ -1056,7 +1056,7 @@ export class Reflector {
             executive_focus: executiveFocusForReflection,
             origin: context.origin ?? "user",
             pending_procedural_attempts: pendingProceduralAttempts,
-            pending_intents: pendingIntents,
+            pending_actions: pendingActions,
             referenced_episodes: referencedEpisodeIds.map((episodeId) => {
               const result = context.retrievedEpisodes.find(
                 (item) => item.episode.id === episodeId,

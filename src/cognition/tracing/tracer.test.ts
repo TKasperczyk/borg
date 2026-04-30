@@ -134,10 +134,16 @@ describe("TurnTracer", () => {
       subsystem: "open_questions",
       reason: "embedding_unavailable",
     });
+    tracer.emit("working_memory_degraded", {
+      turnId: "turn_degraded",
+      subsystem: "pending_actions",
+      reason: "non_action",
+    });
 
     expect(readTraceEvents(tracePath).map((event) => event.event)).toEqual([
       "perception_classifier_degraded",
       "retrieval_degraded",
+      "working_memory_degraded",
     ]);
   });
 

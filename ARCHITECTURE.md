@@ -506,7 +506,7 @@ cannot flatter itself into a warm relationship by speaking warmly.
   session_id,
   turn_counter,
   hot_entities: string[],       // capped at 32, normalized at save time
-  pending_intents: [{ description, next_action }],   // capped at 16
+  pending_actions: [{ description, next_action }],   // capped at 16
   pending_social_attribution: {
     entity_id, interaction_id,
     agent_response_summary: string?,
@@ -544,7 +544,7 @@ is determined by the user's reaction on the NEXT user turn, not by
 the agent's own output. Procedural attempts are also lagged: a
 problem-solving turn records an attempted approach, then later user
 feedback grades it. Working memory is persisted per session:
-`hot_entities` and `pending_intents` are normalized and capped on save,
+`hot_entities` and `pending_actions` are normalized and capped on save,
 while `pending_procedural_attempts` cap and TTL are enforced by
 `PendingProceduralAttemptTracker` between turns.
 
@@ -670,10 +670,10 @@ band.
   `src/cognition/action/action.ts`). Takes the commitment-checked
   response, the finalizer's tool-call records, and the structured
   `intent` records from the S2 `EmitTurnPlan` output, and commits them
-  into the `ActionResult` shape that Reflection consumes. Carries the
-  intents into `working.pending_intents`. S1 turns produce no intents;
-  Action never infers them from response prose -- that invariant is
-  test-pinned.
+  into the `ActionResult` shape that Reflection consumes. Carries only
+  action-shaped operational follow-ups into `working.pending_actions`.
+  S1 turns produce no intents; Action never infers them from response
+  prose -- that invariant is test-pinned.
 - The orchestrator -- not the Action stage -- is what appends the
   resulting response to the stream as an `agent_msg` entry.
 
@@ -687,9 +687,9 @@ band.
   in working memory so the NEXT user turn's affective signal becomes
   the evidence (Sprint 15/24). Trait evidence is anchored to the
   demonstrating turn's stream entry IDs and resolved to episodes later.
-- Mark prior `pending_intents` completed or abandoned only when the
+- Mark prior `pending_actions` completed or abandoned only when the
   structured reflection pass sees clear evidence in a later completed
-  turn; unresolved intents persist and are rendered in working state.
+  turn; unresolved actions persist and are rendered in working state.
 - Close the executive step loop: structured reflection may mark the
   selected goal's durable step `doing` / `done` / `blocked` /
   `abandoned`, or propose a small next step when that selected goal has

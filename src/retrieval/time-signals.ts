@@ -1,4 +1,4 @@
-/* Time-signal helpers for retrieval scoring and strict range filtering. */
+/* Time-signal helpers for retrieval scoring and explicit range filtering. */
 import type { TemporalCue } from "../cognition/types.js";
 import type { Episode } from "../memory/episodic/types.js";
 
@@ -41,7 +41,7 @@ export function resolveTimeSignals(options: TimeSignalOptions): ResolvedTimeSign
 
   return {
     scoringRange: effectiveRange,
-    strictFilterRange: options.strictTimeRange === true ? effectiveRange : null,
+    strictFilterRange: options.strictTimeRange === true ? explicitRange : null,
   };
 }
 

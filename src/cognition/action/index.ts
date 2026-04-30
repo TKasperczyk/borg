@@ -1,4 +1,15 @@
-export { performAction, type ActionContext, type ActionResult } from "./action.js";
+export {
+  performAction,
+  type ActionContext,
+  type ActionResult,
+  type PendingActionRejection,
+} from "./action.js";
+export {
+  LLMPendingActionJudge,
+  type LLMPendingActionJudgeOptions,
+  type PendingActionJudge,
+  type PendingActionJudgment,
+} from "./pending-action-judge.js";
 export {
   executeToolLoop,
   type ExecuteToolLoopOptions,

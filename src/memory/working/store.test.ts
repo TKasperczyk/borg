@@ -33,7 +33,7 @@ describe("working memory store", () => {
       session_id: DEFAULT_SESSION_ID,
       turn_counter: 0,
       hot_entities: [],
-      pending_intents: [],
+      pending_actions: [],
     });
 
     store.save({
@@ -128,7 +128,7 @@ describe("working memory store", () => {
     expect(firstStore.load(DEFAULT_SESSION_ID).turn_counter).toBe(7);
   });
 
-  it("caps pending intents to the most recent unique next actions", () => {
+  it("caps pending actions to the most recent unique next actions", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
 
@@ -140,7 +140,7 @@ describe("working memory store", () => {
 
     const saved = store.save({
       ...initial,
-      pending_intents: Array.from({ length: 20 }, (_, index) => ({
+      pending_actions: Array.from({ length: 20 }, (_, index) => ({
         description: `Intent ${index}`,
         next_action: `action-${index}`,
       })).concat([
@@ -152,8 +152,8 @@ describe("working memory store", () => {
       updated_at: 200,
     });
 
-    expect(saved.pending_intents).toHaveLength(16);
-    expect(saved.pending_intents.map((intent) => intent.next_action)).toEqual([
+    expect(saved.pending_actions).toHaveLength(16);
+    expect(saved.pending_actions.map((intent) => intent.next_action)).toEqual([
       "action-4",
       "action-5",
       "action-6",

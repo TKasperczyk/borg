@@ -50,7 +50,7 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
       session_id: DEFAULT_SESSION_ID,
       turn_counter: 3,
       hot_entities: ["rollout"],
-      pending_intents: [],
+      pending_actions: [],
       pending_social_attribution: null,
       pending_trait_attribution: null,
       suppressed: [],
@@ -167,12 +167,12 @@ function extractBlock(prompt: string, tag: string): string {
 }
 
 describe("buildBaseSystemPrompt", () => {
-  it("renders pending intents in working state", () => {
+  it("renders pending actions in working state", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
         workingMemory: {
           ...makeContext().workingMemory,
-          pending_intents: [
+          pending_actions: [
             {
               description: "Check the Atlas rollout after tests finish",
               next_action: "review deploy status",
@@ -184,8 +184,15 @@ describe("buildBaseSystemPrompt", () => {
     );
     const block = extractBlock(prompt, "borg_working_state");
 
-    expect(block).toContain("Pending intents:");
+    expect(block).toContain("<pending_actions>");
+    expect(block).toContain(
+      "These are unresolved operational follow-ups, not facts about the user.",
+    );
+    expect(block).toContain(
+      "Do not treat them as authoritative claims about identity, relationships, or biography.",
+    );
     expect(block).toContain("- Check the Atlas rollout after tests finish -> review deploy status");
+    expect(block).toContain("</pending_actions>");
   });
 
   it("renders pending procedural attempts in working state so cognition can see them", () => {

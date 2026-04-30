@@ -13,27 +13,27 @@ export type WorkingMemoryStoreOptions = {
   clock?: Clock;
 };
 
-const PENDING_INTENTS_LIMIT = 16;
+const PENDING_ACTIONS_LIMIT = 16;
 const HOT_ENTITIES_LIMIT = 32;
 
 function cloneWorkingMemory(state: WorkingMemory): WorkingMemory {
   return structuredClone(state) as WorkingMemory;
 }
 
-function normalizePendingIntents(
-  intents: WorkingMemory["pending_intents"],
-): WorkingMemory["pending_intents"] {
-  const deduped: WorkingMemory["pending_intents"] = [];
+function normalizePendingActions(
+  actions: WorkingMemory["pending_actions"],
+): WorkingMemory["pending_actions"] {
+  const deduped: WorkingMemory["pending_actions"] = [];
   const seenNextActions = new Set<string>();
 
-  for (let index = intents.length - 1; index >= 0; index -= 1) {
-    const intent = intents[index];
+  for (let index = actions.length - 1; index >= 0; index -= 1) {
+    const action = actions[index];
 
-    if (intent === undefined) {
+    if (action === undefined) {
       continue;
     }
 
-    const nextAction = intent.next_action?.trim().toLowerCase();
+    const nextAction = action.next_action?.trim().toLowerCase();
 
     if (nextAction !== undefined && nextAction.length > 0) {
       if (seenNextActions.has(nextAction)) {
@@ -43,9 +43,9 @@ function normalizePendingIntents(
       seenNextActions.add(nextAction);
     }
 
-    deduped.push(intent);
+    deduped.push(action);
 
-    if (deduped.length >= PENDING_INTENTS_LIMIT) {
+    if (deduped.length >= PENDING_ACTIONS_LIMIT) {
       break;
     }
   }
@@ -85,7 +85,7 @@ function normalizeWorkingMemory(state: WorkingMemory): WorkingMemory {
   return {
     ...state,
     hot_entities: normalizeHotEntities(state.hot_entities),
-    pending_intents: normalizePendingIntents(state.pending_intents),
+    pending_actions: normalizePendingActions(state.pending_actions),
   };
 }
 

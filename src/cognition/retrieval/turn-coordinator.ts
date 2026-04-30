@@ -217,7 +217,7 @@ export class TurnRetrievalCoordinator {
       activeValues,
       ...(input.scoringFeatures === undefined ? {} : { scoringFeatures: input.scoringFeatures }),
       temporalCue: input.perception.temporalCue,
-      strictTimeRange: input.perception.temporalCue !== null,
+      strictTimeRange: false,
       moodState: retrievalMood,
       audienceProfile: input.audienceProfile,
       audienceTerms: input.isSelfAudience

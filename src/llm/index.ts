@@ -1077,6 +1077,10 @@ function isStopCommitmentFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "generation-stop-commitment";
 }
 
+function isPendingActionJudgeFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "pending-action-judge";
+}
+
 function isProceduralContextResponse(response: FakeLLMResponse | undefined): boolean {
   if (response === undefined || typeof response === "function" || typeof response !== "object") {
     return false;
@@ -1109,6 +1113,24 @@ function isStopCommitmentResponse(response: FakeLLMResponse | undefined): boolea
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "EmitStopCommitmentClassification",
+    );
+  }
+
+  return false;
+}
+
+function isPendingActionJudgeResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "ClassifyPendingAction");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "ClassifyPendingAction",
     );
   }
 
@@ -1155,6 +1177,26 @@ function defaultStopCommitmentResponse(): LLMCompleteResult {
   };
 }
 
+function defaultPendingActionJudgeResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_pending_action_judge",
+        name: "ClassifyPendingAction",
+        input: {
+          classification: "action",
+          reason: "Accepted by test fallback.",
+          confidence: 1,
+        },
+      },
+    ],
+  };
+}
+
 export class FakeLLMClient implements LLMClient {
   private readonly usageSink?: TokenUsageSink;
   readonly requests: LLMCompleteOptions[] = [];
@@ -1185,6 +1227,14 @@ export class FakeLLMClient implements LLMClient {
 
     if (isProceduralContextFallbackRequest(options) && !isProceduralContextResponse(response)) {
       return defaultProceduralContextResponse();
+    }
+
+    if (
+      isPendingActionJudgeFallbackRequest(options) &&
+      typeof response !== "function" &&
+      !isPendingActionJudgeResponse(response)
+    ) {
+      return defaultPendingActionJudgeResponse();
     }
 
     this.responses.shift();

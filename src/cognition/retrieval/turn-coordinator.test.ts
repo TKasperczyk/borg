@@ -287,6 +287,11 @@ describe("TurnRetrievalCoordinator", () => {
       aliases: ["Al"],
       created_at: 100,
     };
+    const temporalCue = {
+      label: "next week",
+      sinceTs: 10_000,
+      untilTs: 20_000,
+    };
 
     const result = await coordinator.coordinate({
       sessionId: DEFAULT_SESSION_ID,
@@ -298,7 +303,10 @@ describe("TurnRetrievalCoordinator", () => {
       audienceEntityId,
       audienceEntity,
       audienceProfile: makeAudienceProfile(),
-      perception: makePerception("problem_solving"),
+      perception: {
+        ...makePerception("problem_solving"),
+        temporalCue,
+      },
       workingMemory,
       selfSnapshot: makeSelfSnapshot(),
       scoringFeatures,
@@ -334,6 +342,8 @@ describe("TurnRetrievalCoordinator", () => {
         moodState: currentMood,
         scoringFeatures,
         suppressionSet,
+        temporalCue,
+        strictTimeRange: false,
         includeOpenQuestions: false,
         traceTurnId: "turn-1",
       }),

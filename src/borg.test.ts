@@ -1656,7 +1656,7 @@ describe("Borg", () => {
       expect(result.retrievedEpisodeIds).toEqual(["ep_aaaaaaaaaaaaaaaa"]);
       expect(result.intents).toEqual([expectedIntent]);
       expect(borg.workmem.load().turn_counter).toBe(1);
-      expect(borg.workmem.load().pending_intents).toEqual([expectedIntent]);
+      expect(borg.workmem.load().pending_actions).toEqual([expectedIntent]);
       expect(borg.self.goals.list({ status: "active" })[0]?.id).toBe(goal.id);
       expect(borg.self.goals.list({ status: "active" })[0]?.progress_notes).toContain(
         "Reran the Atlas release stabilization plan.",

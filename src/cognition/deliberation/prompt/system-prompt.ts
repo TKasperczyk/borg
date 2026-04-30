@@ -356,15 +356,20 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
     }`,
   ];
 
-  if (workingMemory.pending_intents.length > 0) {
-    lines.push("Pending intents:");
-    for (const intent of workingMemory.pending_intents.slice(0, 8)) {
+  if (workingMemory.pending_actions.length > 0) {
+    lines.push(
+      "<pending_actions>",
+      "These are unresolved operational follow-ups, not facts about the user.",
+      "Do not treat them as authoritative claims about identity, relationships, or biography.",
+    );
+    for (const action of workingMemory.pending_actions.slice(0, 8)) {
       lines.push(
-        `- ${intent.description.trim()}${
-          intent.next_action === null ? "" : ` -> ${intent.next_action.trim()}`
+        `- ${action.description.trim()}${
+          action.next_action === null ? "" : ` -> ${action.next_action.trim()}`
         }`,
       );
     }
+    lines.push("</pending_actions>");
   }
 
   const pendingAttempts = workingMemory.pending_procedural_attempts ?? [];

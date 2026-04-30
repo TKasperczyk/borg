@@ -11,6 +11,8 @@ import { FixedClock } from "../util/clock.js";
 import { mergeCandidates } from "./episodic-candidates.js";
 
 const QUERY = "architecture";
+const MAYA_CORRECTION_QUERY =
+  "my partner's not Maya. Also, Thursday's design review is next week.";
 const NOW_MS = 10_000_000_000;
 
 function defaultWeights() {
@@ -39,7 +41,12 @@ function searchWeights(
 async function createHarness(): Promise<OfflineTestHarness> {
   return createOfflineTestHarness({
     clock: new FixedClock(NOW_MS),
-    embeddingClient: new TestEmbeddingClient(new Map([[QUERY, [1, 0, 0, 0]]])),
+    embeddingClient: new TestEmbeddingClient(
+      new Map([
+        [QUERY, [1, 0, 0, 0]],
+        [MAYA_CORRECTION_QUERY, [0, 1, 0, 0]],
+      ]),
+    ),
   });
 }
 
@@ -389,7 +396,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     ).toBe(true);
   });
 
-  it("hard-filters cue-only searches when strictTimeRange is enabled", async () => {
+  it("keeps cue-only searches as scoring boosts even when strictTimeRange is enabled", async () => {
     harness = await createHarness();
     await insertHotVectorDecoys(harness, 12, {
       start_time: 900_000,
@@ -425,8 +432,63 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       }),
     });
 
-    expect(results).toHaveLength(1);
-    expect(results[0]?.episode.id).toBe(inRange.id);
+    expect(results).toHaveLength(10);
+    expect(results.some((item) => item.episode.id === inRange.id)).toBe(true);
+    expect(results.some((item) => item.episode.start_time > 170_000)).toBe(true);
+  });
+
+  it("returns older Maya evidence despite a next-week temporal cue", async () => {
+    harness = await createHarness();
+    const nextWeekStart = NOW_MS + 5 * 24 * 60 * 60 * 1_000;
+    const nextWeekEnd = nextWeekStart + 7 * 24 * 60 * 60 * 1_000;
+    const mayaEpisode = createEpisodeFixture(
+      {
+        title: "Prior Maya partner correction context",
+        narrative: "Earlier turns repeatedly associated the user's partner with Maya.",
+        participants: ["Maya"],
+        tags: ["Maya", "relationship"],
+        significance: 1,
+        created_at: 1_000,
+        updated_at: 1_000,
+        start_time: 1_000,
+        end_time: 2_000,
+      },
+      [0, 1, 0, 0],
+    );
+    const designReviewEpisode = createEpisodeFixture(
+      {
+        title: "Thursday design review",
+        narrative: "The design review is scheduled for Thursday next week.",
+        participants: ["design"],
+        tags: ["review"],
+        significance: 0.8,
+        created_at: NOW_MS,
+        updated_at: NOW_MS,
+        start_time: nextWeekStart + 3 * 24 * 60 * 60 * 1_000,
+        end_time: nextWeekStart + 3 * 24 * 60 * 60 * 1_000 + 60 * 60 * 1_000,
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(mayaEpisode);
+    await harness.episodicRepository.insert(designReviewEpisode);
+
+    const results = await harness.retrievalPipeline.search(MAYA_CORRECTION_QUERY, {
+      limit: 5,
+      temporalCue: {
+        label: "next week",
+        sinceTs: nextWeekStart,
+        untilTs: nextWeekEnd,
+      },
+      strictTimeRange: true,
+      attentionWeights: searchWeights({
+        semantic: 0.75,
+        time: 0.2,
+        heat: 0,
+        entity: 0,
+      }),
+    });
+
+    expect(results.map((item) => item.episode.id)).toContain(mayaEpisode.id);
   });
 
   it("keeps cue-only searches as scoring boosts when strictTimeRange is disabled", async () => {
@@ -525,7 +587,7 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     expect(results[0]?.episode.id).toBe(explicit.id);
   });
 
-  it("returns empty results instead of widening when a strict cue range matches nothing", async () => {
+  it("does not empty results when a strict cue range matches nothing", async () => {
     harness = await createHarness();
     await insertHotVectorDecoys(harness, 12, {
       start_time: 900_000,
@@ -547,7 +609,8 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       }),
     });
 
-    expect(results).toEqual([]);
+    expect(results).toHaveLength(3);
+    expect(results.every((item) => item.episode.start_time > 170_000)).toBe(true);
   });
 
   it("avoids visible-corpus scans across indexed generators", async () => {

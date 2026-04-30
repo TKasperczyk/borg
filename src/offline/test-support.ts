@@ -727,7 +727,7 @@ export function createWorkingMemoryFixture(overrides: Partial<WorkingMemory> = {
     session_id: overrides.session_id ?? DEFAULT_SESSION_ID,
     turn_counter: overrides.turn_counter ?? 1,
     hot_entities: overrides.hot_entities ?? [],
-    pending_intents: overrides.pending_intents ?? [],
+    pending_actions: overrides.pending_actions ?? [],
     pending_social_attribution: overrides.pending_social_attribution ?? null,
     pending_trait_attribution: overrides.pending_trait_attribution ?? null,
     suppressed: overrides.suppressed ?? [],
