@@ -105,7 +105,24 @@ export const proceduralContextMetadataSchema = proceduralContextMetadataBaseSche
 export const proceduralContextSchema = z
   .object({
     ...proceduralContextMetadataBaseSchema.shape,
-    context_key: z.string().min(1),
+    context_key: proceduralContextKeySchema,
+  })
+  .strict()
+  .superRefine((context, ctx) => {
+    const domainTags = canonicalizeDomainTags(context.domain_tags);
+    const expectedContextKey = deriveProceduralContextKey({
+      problem_kind: context.problem_kind,
+      domain_tags: domainTags,
+      audience_scope: context.audience_scope,
+    });
+
+    if (context.context_key !== expectedContextKey) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["context_key"],
+        message: "Procedural context key does not match metadata",
+      });
+    }
   })
   .transform((context) => {
     const domainTags = canonicalizeDomainTags(context.domain_tags);

@@ -1,5 +1,6 @@
 import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
 import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
+import { StorageError } from "../../util/errors.js";
 
 function createSemanticEdgeValidityIndexes(db: SqliteDatabase): void {
   db.exec(`
@@ -105,6 +106,18 @@ export const semanticMigrations: Migration[] = [
       if (hasValidityColumns) {
         createSemanticEdgeValidityIndexes(db);
         return;
+      }
+
+      const oldRowCount = (
+        db.prepare("SELECT COUNT(*) as count FROM semantic_edges").get() as { count: number }
+      ).count;
+      if (oldRowCount > 0) {
+        throw new StorageError(
+          `semantic_edges table has ${oldRowCount} rows. Migration 133 cannot evolve the schema while preserving data; wipe the local data dir and re-run.`,
+          {
+            code: "SEMANTIC_EDGES_MIGRATION_REQUIRES_FRESH_DATABASE",
+          },
+        );
       }
 
       db.exec(`

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ActionResult } from "../action/index.js";
 import type { PerceptionResult } from "../types.js";
 import {
+  deriveProceduralContextKey,
   proceduralContextSchema,
   type SkillSelectionResult,
 } from "../../memory/procedural/index.js";
@@ -19,6 +20,13 @@ const userEntryId = "strm_abcdefghijklmnop" as StreamEntryId;
 const agentEntryId = "strm_bcdefghijklmnopa" as StreamEntryId;
 const audienceEntityId = "ent_abcdefghijklmnop" as EntityId;
 const skillId = "skl_abcdefghijklmnop" as SkillId;
+
+function parseProceduralContext(input: Parameters<typeof deriveProceduralContextKey>[0]) {
+  return proceduralContextSchema.parse({
+    ...input,
+    context_key: deriveProceduralContextKey(input),
+  });
+}
 
 function makePerception(mode: PerceptionResult["mode"]): PerceptionResult {
   return {
@@ -136,11 +144,10 @@ describe("PendingProceduralAttemptTracker", () => {
   });
 
   it("persists derived procedural context on new attempts", () => {
-    const proceduralContext = proceduralContextSchema.parse({
+    const proceduralContext = parseProceduralContext({
       problem_kind: "code_debugging",
       domain_tags: ["TypeScript"],
       audience_scope: "self",
-      context_key: "ignored",
     });
     const result = new PendingProceduralAttemptTracker().update({
       isUserTurn: true,

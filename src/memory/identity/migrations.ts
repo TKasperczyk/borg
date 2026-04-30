@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { StorageError } from "../../util/errors.js";
 
 export const identityMigrations = [
   {
@@ -33,6 +34,18 @@ export const identityMigrations = [
     id: 251,
     name: "allow-online-identity-event-provenance",
     up: (db) => {
+      const oldRowCount = (
+        db.prepare("SELECT COUNT(*) as count FROM identity_events").get() as { count: number }
+      ).count;
+      if (oldRowCount > 0) {
+        throw new StorageError(
+          `identity_events table has ${oldRowCount} rows. Migration 251 cannot evolve the schema while preserving data; wipe the local data dir and re-run.`,
+          {
+            code: "IDENTITY_EVENTS_MIGRATION_REQUIRES_FRESH_DATABASE",
+          },
+        );
+      }
+
       db.exec(`
         CREATE TABLE identity_events__next (
           id INTEGER PRIMARY KEY AUTOINCREMENT,

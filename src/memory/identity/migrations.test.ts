@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { StorageError } from "../../util/errors.js";
 
 import { identityMigrations } from "./migrations.js";
 import { IdentityEventRepository } from "./repository.js";
@@ -19,7 +20,7 @@ describe("identity migrations", () => {
     }
   });
 
-  it("upgrades identity event provenance checks to allow online writes", () => {
+  it("upgrades an empty identity event table to allow online writes", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const dbPath = join(tempDir, "identity.db");
     tempDirs.push(tempDir);
@@ -27,22 +28,7 @@ describe("identity migrations", () => {
     const initialDb = openDatabase(dbPath, {
       migrations: identityMigrations.filter((migration) => migration.id < 251),
     });
-
-    try {
-      new IdentityEventRepository({
-        db: initialDb,
-        clock: new FixedClock(1_000),
-      }).record({
-        record_type: "goal",
-        record_id: "goal_aaaaaaaaaaaaaaaa",
-        action: "create",
-        provenance: {
-          kind: "manual",
-        },
-      });
-    } finally {
-      initialDb.close();
-    }
+    initialDb.close();
 
     const db = openDatabase(dbPath, {
       migrations: identityMigrations,
@@ -73,6 +59,50 @@ describe("identity migrations", () => {
           }),
         ]),
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("fails migration 251 loudly when identity events already exist", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const dbPath = join(tempDir, "identity.db");
+    tempDirs.push(tempDir);
+
+    const db = openDatabase(dbPath, {
+      migrations: identityMigrations.filter((migration) => migration.id < 251),
+    });
+
+    try {
+      new IdentityEventRepository({
+        db,
+        clock: new FixedClock(1_000),
+      }).record({
+        record_type: "goal",
+        record_id: "goal_aaaaaaaaaaaaaaaa",
+        action: "create",
+        provenance: {
+          kind: "manual",
+        },
+      });
+
+      const migration = identityMigrations.find((item) => item.id === 251);
+      if (migration === undefined || typeof migration.up !== "function") {
+        throw new Error("Migration 251 fixture is not callable");
+      }
+
+      let thrown: unknown;
+      try {
+        migration.up(db);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(StorageError);
+      expect((thrown as StorageError).code).toBe(
+        "IDENTITY_EVENTS_MIGRATION_REQUIRES_FRESH_DATABASE",
+      );
+      expect((thrown as StorageError).message).toContain("identity_events table has 1 rows");
     } finally {
       db.close();
     }

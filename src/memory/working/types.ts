@@ -33,7 +33,7 @@ export const suppressedEntrySchema = z.object({
   id: z.string().min(1),
   reason: z.string().min(1),
   until_turn: z.number().int().nonnegative(),
-});
+}).strict();
 
 export const workingSkillIdSchema = z
   .string()
@@ -68,7 +68,7 @@ export const pendingSocialAttributionSchema = z.object({
   interaction_id: z.number().int().positive(),
   agent_response_summary: z.string().min(1).nullable(),
   turn_completed_ts: z.number().finite(),
-});
+}).strict();
 
 export const pendingTraitAttributionSchema = z.object({
   trait_label: z.string().min(1),
@@ -80,7 +80,7 @@ export const pendingTraitAttributionSchema = z.object({
   source_stream_entry_ids: z.array(workingStreamEntryIdSchema).min(1),
   turn_completed_ts: z.number().finite(),
   audience_entity_id: workingEntityIdSchema.nullable(),
-});
+}).strict();
 
 export const pendingProceduralAttemptSchema = z.object({
   problem_text: z.string().min(1),
@@ -90,7 +90,7 @@ export const pendingProceduralAttemptSchema = z.object({
   turn_counter: z.number().int().nonnegative(),
   audience_entity_id: workingEntityIdSchema.nullable(),
   procedural_context: proceduralContextSchema.nullable().optional(),
-});
+}).strict();
 
 export const discourseStopProvenanceSchema = z.enum([
   "generation_gate",
@@ -105,11 +105,11 @@ export const stopUntilSubstantiveContentSchema = z.object({
   source_stream_entry_id: workingStreamEntryIdSchema.optional(),
   reason: z.string().min(1),
   since_turn: z.number().int().nonnegative(),
-});
+}).strict();
 
 export const discourseStateSchema = z.object({
   stop_until_substantive_content: stopUntilSubstantiveContentSchema.nullable(),
-});
+}).strict();
 
 // Sprint 53: pending procedural attempts are now a bounded list, not one
 // slot. Multi-step debugging or delayed-feedback work needs to track each

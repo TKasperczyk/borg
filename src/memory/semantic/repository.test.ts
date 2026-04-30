@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { StorageError } from "../../util/errors.js";
 import {
   createSemanticEdgeId,
   createSemanticNodeId,
@@ -209,6 +210,60 @@ describe("semantic repositories", () => {
         }),
       ]),
     );
+  });
+
+  it("fails migration 133 loudly when a pre-validity semantic edge table has rows", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations.filter((migration) => migration.id < 133),
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    db.prepare(
+      `
+        INSERT INTO semantic_edges (
+          id,
+          from_node_id,
+          to_node_id,
+          relation,
+          confidence,
+          evidence_episode_ids,
+          created_at,
+          last_verified_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      createSemanticEdgeId(),
+      createSemanticNodeId(),
+      createSemanticNodeId(),
+      "supports",
+      0.7,
+      JSON.stringify(["ep_aaaaaaaaaaaaaaaa"]),
+      1_000,
+      1_000,
+    );
+
+    const migration = semanticMigrations.find((item) => item.id === 133);
+    if (migration === undefined || typeof migration.up !== "function") {
+      throw new Error("Migration 133 fixture is not callable");
+    }
+
+    let thrown: unknown;
+    try {
+      migration.up(db);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(StorageError);
+    expect((thrown as StorageError).code).toBe(
+      "SEMANTIC_EDGES_MIGRATION_REQUIRES_FRESH_DATABASE",
+    );
+    expect((thrown as StorageError).message).toContain("semantic_edges table has 1 rows");
   });
 
   it("supports semantic node CRUD and vector search", async () => {

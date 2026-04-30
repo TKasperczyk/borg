@@ -1,6 +1,7 @@
 import { SystemClock, type Clock } from "../util/clock.js";
 import type { Migration, SqliteDatabase } from "../storage/sqlite/index.js";
 import type { SessionId } from "../util/ids.js";
+import { StorageError } from "../util/errors.js";
 
 export const streamWatermarkMigrations: Migration[] = [
   {
@@ -31,7 +32,7 @@ type WatermarkRow = {
   process_name: string;
   session_id: string;
   last_ts: number;
-  last_entry_id: string;
+  last_entry_id: string | null;
   updated_at: number;
 };
 
@@ -66,6 +67,19 @@ export class StreamWatermarkRepository {
 
     if (row === undefined) {
       return null;
+    }
+
+    if (
+      row.last_entry_id === null ||
+      typeof row.last_entry_id !== "string" ||
+      row.last_entry_id.length === 0
+    ) {
+      throw new StorageError(
+        `Stream watermark has invalid last_entry_id (${row.last_entry_id}); fail loudly per strict-cursor contract.`,
+        {
+          code: "STREAM_WATERMARK_INVALID_CURSOR",
+        },
+      );
     }
 
     return {

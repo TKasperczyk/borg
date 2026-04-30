@@ -13,6 +13,13 @@ import {
 } from "./context.js";
 import { SkillSelector } from "./selector.js";
 
+function parseProceduralContext(input: Parameters<typeof deriveProceduralContextKey>[0]) {
+  return proceduralContextSchema.parse({
+    ...input,
+    context_key: deriveProceduralContextKey(input),
+  });
+}
+
 describe("SkillRepository", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;
 
@@ -218,23 +225,20 @@ describe("SkillRepository", () => {
 
   it("derives v2 context keys from stable structured context", () => {
     const contexts = [
-      proceduralContextSchema.parse({
+      parseProceduralContext({
         problem_kind: "code_debugging",
         domain_tags: ["typescript", "deployment"],
         audience_scope: "self",
-        context_key: "ignored",
       }),
-      proceduralContextSchema.parse({
+      parseProceduralContext({
         problem_kind: "code_debugging",
         domain_tags: ["TypeScript", "deployment", "typescript"],
         audience_scope: "self",
-        context_key: "ignored",
       }),
-      proceduralContextSchema.parse({
+      parseProceduralContext({
         problem_kind: "code_debugging",
         domain_tags: ["typescript"],
         audience_scope: "self",
-        context_key: "ignored",
       }),
     ];
 
@@ -277,11 +281,10 @@ describe("SkillRepository", () => {
       approach: "Reduce the generic to a smaller reproduction.",
       sourceEpisodes: [episode.id],
     });
-    const proceduralContext = proceduralContextSchema.parse({
+    const proceduralContext = parseProceduralContext({
       problem_kind: "code_debugging",
       domain_tags: ["TypeScript"],
       audience_scope: "self",
-      context_key: "ignored",
     });
 
     const updated = harness.skillRepository.recordOutcome(
@@ -557,11 +560,10 @@ describe("SkillRepository", () => {
       priorAlpha: 7,
       priorBeta: 3,
     });
-    const proceduralContext = proceduralContextSchema.parse({
+    const proceduralContext = parseProceduralContext({
       problem_kind: "code_debugging",
       domain_tags: ["Atlas"],
       audience_scope: "self",
-      context_key: "ignored",
     });
     const samplerCalls: Array<[number, number]> = [];
     const selector = new SkillSelector({
@@ -666,11 +668,10 @@ describe("SkillRepository", () => {
       approach: "Use the context-specific deployment fix.",
       sourceEpisodes: [episode.id],
     });
-    const proceduralContext = proceduralContextSchema.parse({
+    const proceduralContext = parseProceduralContext({
       problem_kind: "code_debugging",
       domain_tags: ["Atlas"],
       audience_scope: "self",
-      context_key: "ignored",
     });
 
     for (let index = 0; index < 20; index += 1) {
@@ -716,11 +717,10 @@ describe("SkillRepository", () => {
   it("does not leave context stats behind when a contextual global outcome fails", async () => {
     harness = await createOfflineTestHarness();
     const missingSkillId = createSkillId();
-    const proceduralContext = proceduralContextSchema.parse({
+    const proceduralContext = parseProceduralContext({
       problem_kind: "planning",
       domain_tags: ["roadmap"],
       audience_scope: "known_other",
-      context_key: "ignored",
     });
 
     expect(() =>
@@ -743,11 +743,10 @@ describe("SkillRepository", () => {
       approach: "Reduce the generic to a smaller reproduction.",
       sourceEpisodes: [episode.id],
     });
-    const proceduralContext = proceduralContextSchema.parse({
+    const proceduralContext = parseProceduralContext({
       problem_kind: "code_debugging",
       domain_tags: ["TypeScript"],
       audience_scope: "self",
-      context_key: "ignored",
     });
 
     harness.db.exec(`
@@ -833,11 +832,10 @@ describe("SkillRepository", () => {
 
   it("persists procedural context on procedural evidence", async () => {
     harness = await createOfflineTestHarness();
-    const proceduralContext = proceduralContextSchema.parse({
+    const proceduralContext = parseProceduralContext({
       problem_kind: "code_debugging",
       domain_tags: ["TypeScript"],
       audience_scope: "self",
-      context_key: "ignored",
     });
     const pendingAttempt = {
       problem_text: "Fix the flaky Atlas deploy.",

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { openDatabase } from "../storage/sqlite/index.js";
 import { ManualClock } from "../util/clock.js";
+import { StorageError } from "../util/errors.js";
 import { createSessionId, DEFAULT_SESSION_ID } from "../util/ids.js";
 
 import { streamWatermarkMigrations, StreamWatermarkRepository } from "./watermark.js";
@@ -57,6 +58,46 @@ describe("StreamWatermarkRepository", () => {
       expect(fetched?.lastEntryId).toBe("strm_bbbbbbbbbbbbbbbb");
     } finally {
       close();
+    }
+  });
+
+  it("fails loudly when a persisted watermark has no cursor entry id", () => {
+    const db = openDatabase(":memory:");
+    const repo = new StreamWatermarkRepository({ db, clock: new ManualClock(1_000) });
+
+    try {
+      db.exec(`
+        CREATE TABLE stream_watermarks (
+          process_name TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          last_ts INTEGER NOT NULL,
+          last_entry_id TEXT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (process_name, session_id)
+        )
+      `);
+      db.prepare(
+        `INSERT INTO stream_watermarks (
+          process_name,
+          session_id,
+          last_ts,
+          last_entry_id,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?)`,
+      ).run("episodic-extractor", DEFAULT_SESSION_ID, 123, null, 1_000);
+
+      let thrown: unknown;
+      try {
+        repo.get("episodic-extractor", DEFAULT_SESSION_ID);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(StorageError);
+      expect((thrown as StorageError).code).toBe("STREAM_WATERMARK_INVALID_CURSOR");
+      expect((thrown as StorageError).message).toContain("invalid last_entry_id (null)");
+    } finally {
+      db.close();
     }
   });
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  deriveProceduralContextKey,
   proceduralContextProblemKindSchema,
   proceduralContextSchema,
   type ProceduralContext,
@@ -148,11 +149,14 @@ export class ProceduralContextExtractor {
         return this.degraded("low_confidence");
       }
 
-      const context = proceduralContextSchema.parse({
+      const contextInput = {
         problem_kind: extracted.problem_kind,
         domain_tags: extracted.domain_tags,
         audience_scope: audienceScope,
-        context_key: "v2:pending",
+      };
+      const context = proceduralContextSchema.parse({
+        ...contextInput,
+        context_key: deriveProceduralContextKey(contextInput),
       });
 
       if (

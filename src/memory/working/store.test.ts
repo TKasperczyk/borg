@@ -8,6 +8,7 @@ import { FixedClock } from "../../util/clock.js";
 import { WorkingMemoryError } from "../../util/errors.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { WorkingMemoryStore } from "./store.js";
+import { createWorkingMemory, workingMemorySchema } from "./types.js";
 
 describe("working memory store", () => {
   const tempDirs: string[] = [];
@@ -83,6 +84,25 @@ describe("working memory store", () => {
     expect(store.load(DEFAULT_SESSION_ID).turn_counter).toBe(0);
 
     writeSpy.mockRestore();
+  });
+
+  it("rejects obsolete extra fields in nested persisted shapes", () => {
+    const parsed = workingMemorySchema.safeParse({
+      ...createWorkingMemory(DEFAULT_SESSION_ID, 100),
+      pending_trait_attribution: {
+        trait_label: "careful",
+        strength_delta: 0.1,
+        source_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa"],
+        source_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+        turn_completed_ts: 100,
+        audience_entity_id: null,
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.path.join("."))).toContain(
+      "pending_trait_attribution",
+    );
   });
 
   it("reloads persisted state on every load instead of returning stale cache", () => {
