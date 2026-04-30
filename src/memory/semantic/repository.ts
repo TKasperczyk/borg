@@ -86,7 +86,7 @@ const SEMANTIC_VECTOR_CODEC = {
   errorCode: "SEMANTIC_ROW_INVALID",
   createError: (message, options) => new SemanticError(message, options),
 } satisfies Float32ArrayCodecOptions;
-const DEFAULT_VECTOR_SYNC_OUTBOX_LIMIT = 50;
+const DEFAULT_VECTOR_SYNC_OUTBOX_LIMIT = 64;
 const DEFAULT_CONFIDENCE_ADJUSTMENT_REASON = "semantic_node_confidence_adjustment";
 
 function assertPositiveLimit(limit: number | undefined, label: string, fallback: number): number {
@@ -325,7 +325,18 @@ type SemanticNodeVectorSyncOutboxRow = {
   node_id: string;
   reason: string;
   attempts: number;
+  generation: number;
 };
+
+type SemanticNodeVectorSyncOutcome =
+  | {
+      kind: "synced";
+    }
+  | {
+      kind: "source_missing";
+      message: string;
+      code: string;
+    };
 
 export class SemanticNodeRepository {
   private readonly clock: Clock;
@@ -366,11 +377,12 @@ export class SemanticNodeRepository {
       .prepare(
         `
           INSERT INTO semantic_node_vector_sync_outbox (
-            node_id, reason, created_at, attempts, last_attempt_at, last_error
-          ) VALUES (?, ?, ?, 0, NULL, NULL)
+            node_id, reason, created_at, generation, attempts, last_attempt_at, last_error
+          ) VALUES (?, ?, ?, 1, 0, NULL, NULL)
           ON CONFLICT(node_id) DO UPDATE SET
             reason = excluded.reason,
             created_at = excluded.created_at,
+            generation = semantic_node_vector_sync_outbox.generation + 1,
             attempts = 0,
             last_attempt_at = NULL,
             last_error = NULL
@@ -417,10 +429,10 @@ export class SemanticNodeRepository {
       return this.db
         .prepare(
           `
-            SELECT id, node_id, reason, attempts
+            SELECT id, node_id, reason, attempts, generation
             FROM semantic_node_vector_sync_outbox
             WHERE node_id IN (${placeholders})
-            ORDER BY created_at ASC, id ASC
+            ORDER BY CASE WHEN attempts = 0 THEN 0 ELSE 1 END, created_at ASC, id ASC
             LIMIT ?
           `,
         )
@@ -430,37 +442,61 @@ export class SemanticNodeRepository {
     return this.db
       .prepare(
         `
-          SELECT id, node_id, reason, attempts
+          SELECT id, node_id, reason, attempts, generation
           FROM semantic_node_vector_sync_outbox
-          ORDER BY created_at ASC, id ASC
+          ORDER BY CASE WHEN attempts = 0 THEN 0 ELSE 1 END, created_at ASC, id ASC
           LIMIT ?
         `,
       )
       .all(options.limit) as SemanticNodeVectorSyncOutboxRow[];
   }
 
-  private recordVectorSyncFailure(row: SemanticNodeVectorSyncOutboxRow, error: unknown): void {
-    this.db
+  private recordVectorSyncFailure(row: SemanticNodeVectorSyncOutboxRow, error: unknown): boolean {
+    const result = this.db
       .prepare(
         `
           UPDATE semantic_node_vector_sync_outbox
           SET attempts = attempts + 1,
               last_attempt_at = ?,
               last_error = ?
-          WHERE id = ?
+          WHERE id = ? AND generation = ?
         `,
       )
-      .run(this.clock.now(), errorMessage(error), row.id);
+      .run(this.clock.now(), errorMessage(error), row.id, row.generation);
+
+    return result.changes === 1;
   }
 
-  private async syncVectorOutboxRow(row: SemanticNodeVectorSyncOutboxRow): Promise<void> {
+  private deleteVectorSyncOutboxRow(row: SemanticNodeVectorSyncOutboxRow): boolean {
+    const result = this.db
+      .prepare("DELETE FROM semantic_node_vector_sync_outbox WHERE id = ? AND generation = ?")
+      .run(row.id, row.generation);
+
+    return result.changes === 1;
+  }
+
+  private async syncVectorOutboxRow(
+    row: SemanticNodeVectorSyncOutboxRow,
+  ): Promise<SemanticNodeVectorSyncOutcome> {
     const nodeId = parseSemanticNodeId(row.node_id);
     const sqlRow = this.getSqlNodeRow(nodeId);
 
     if (sqlRow === null) {
-      throw new SemanticError(`Cannot sync missing semantic node ${nodeId} to LanceDB`, {
+      try {
+        await this.table.remove(`id = ${quoteSqlString(nodeId)}`);
+      } catch (error) {
+        return {
+          kind: "source_missing",
+          message: `Semantic node ${nodeId} is missing in SQLite; cleared pending vector sync after LanceDB cleanup failed: ${errorMessage(error)}`,
+          code: "SEMANTIC_NODE_VECTOR_SYNC_SOURCE_MISSING",
+        };
+      }
+
+      return {
+        kind: "source_missing",
+        message: `Semantic node ${nodeId} is missing in SQLite; cleared pending vector sync`,
         code: "SEMANTIC_NODE_VECTOR_SYNC_SOURCE_MISSING",
-      });
+      };
     }
 
     const vectorRows = await this.table.list({
@@ -484,6 +520,10 @@ export class SemanticNodeRepository {
     await this.table.upsert([nodeToRow(next)], {
       on: "id",
     });
+
+    return {
+      kind: "synced",
+    };
   }
 
   private upsertSqlRow(node: SemanticNode): void {
@@ -697,11 +737,29 @@ export class SemanticNodeRepository {
       const nodeId = parseSemanticNodeId(row.node_id);
 
       try {
-        await this.syncVectorOutboxRow(row);
-        this.db.prepare("DELETE FROM semantic_node_vector_sync_outbox WHERE id = ?").run(row.id);
+        const outcome = await this.syncVectorOutboxRow(row);
+        const deleted = this.deleteVectorSyncOutboxRow(row);
+
+        if (!deleted) {
+          continue;
+        }
+
+        if (outcome.kind === "source_missing") {
+          failed.push({
+            outboxId: row.id,
+            nodeId,
+            message: outcome.message,
+            code: outcome.code,
+          });
+          continue;
+        }
+
         synced += 1;
       } catch (error) {
-        this.recordVectorSyncFailure(row, error);
+        if (!this.recordVectorSyncFailure(row, error)) {
+          continue;
+        }
+
         failed.push({
           outboxId: row.id,
           nodeId,
@@ -940,6 +998,7 @@ export class SemanticNodeRepository {
     try {
       const apply = this.db.transaction(() => {
         this.db.prepare("DELETE FROM semantic_nodes WHERE id = ?").run(id);
+        this.db.prepare("DELETE FROM semantic_node_vector_sync_outbox WHERE node_id = ?").run(id);
         this.db
           .prepare("DELETE FROM semantic_edges WHERE from_node_id = ? OR to_node_id = ?")
           .run(id, id);

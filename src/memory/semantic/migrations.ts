@@ -347,6 +347,7 @@ export const semanticMigrations: Migration[] = [
         node_id TEXT NOT NULL,
         reason TEXT NOT NULL,
         created_at INTEGER NOT NULL,
+        generation INTEGER NOT NULL DEFAULT 1,
         attempts INTEGER NOT NULL DEFAULT 0,
         last_attempt_at INTEGER NULL,
         last_error TEXT NULL,
@@ -356,5 +357,21 @@ export const semanticMigrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS semantic_node_vector_sync_outbox_created_idx
         ON semantic_node_vector_sync_outbox(created_at, id);
     `,
+  },
+  {
+    id: 138,
+    name: "semantic_node_vector_sync_outbox_generation",
+    up: (db) => {
+      if (
+        !tableExists(db, "semantic_node_vector_sync_outbox") ||
+        tableHasColumn(db, "semantic_node_vector_sync_outbox", "generation")
+      ) {
+        return;
+      }
+
+      db.prepare(
+        "ALTER TABLE semantic_node_vector_sync_outbox ADD COLUMN generation INTEGER NOT NULL DEFAULT 1",
+      ).run();
+    },
   },
 ];

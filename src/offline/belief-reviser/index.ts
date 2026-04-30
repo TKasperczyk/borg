@@ -934,11 +934,23 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       failureCode: string;
     },
   ): Promise<void> {
+    const nodeIds =
+      input.nodeIds === undefined ? undefined : [...new Set(input.nodeIds.map((id) => id))];
+
     try {
       const result = await ctx.semanticNodeRepository.syncPendingVectorUpdates({
-        nodeIds: input.nodeIds,
+        nodeIds,
+        limit: nodeIds === undefined || nodeIds.length === 0 ? undefined : nodeIds.length,
       });
       this.recordSemanticNodeVectorSyncFailures(result.failed, errors, input.failureCode);
+
+      if (result.pending > 0) {
+        errors.push({
+          process: this.name,
+          message: `${result.pending} semantic node vector sync outbox row(s) remain pending after drain`,
+          code: "belief_reviser_semantic_node_vector_sync_pending",
+        });
+      }
     } catch (error) {
       errors.push({
         process: this.name,

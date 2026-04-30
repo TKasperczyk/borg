@@ -172,6 +172,14 @@ function invalidationEvents(harness: OfflineTestHarness) {
     .all() as Array<{ edge_id: string; processed_at: number | null }>;
 }
 
+function vectorSyncOutboxCount(harness: OfflineTestHarness): number {
+  return (
+    harness.db.prepare("SELECT COUNT(*) AS count FROM semantic_node_vector_sync_outbox").get() as {
+      count: number;
+    }
+  ).count;
+}
+
 describe("belief reviser process", () => {
   it("enqueues a belief_revision review for an invalidated support target", async () => {
     const harness = await createOfflineTestHarness({
@@ -231,6 +239,78 @@ describe("belief reviser process", () => {
           processed_at: 2_000,
         },
       ]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("drains all confidence drops for a max-size belief revision event", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const anchor = await insertNode(harness, "Batch anchor", [1, 0, 0, 0]);
+      const root = await insertNode(harness, "Batch root", [0, 1, 0, 0]);
+      const support = addEdge(harness, anchor, root);
+      const targets = [root];
+
+      for (let index = 0; index < 63; index += 1) {
+        const child = await insertNode(harness, `Batch child ${index}`, [0, 0, 1, 0]);
+        addEdge(harness, root, child);
+        targets.push(child);
+      }
+
+      harness.semanticEdgeRepository.invalidateEdge(support.id, {
+        at: 2_000,
+        by_process: "manual",
+      });
+
+      const result = await runBeliefReviser(harness);
+      const updatedTargets = await Promise.all(
+        targets.map((target) => harness.semanticNodeRepository.get(target.id)),
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(openBeliefRevisionItems(harness)).toHaveLength(64);
+      expect(
+        result.changes.filter((change) => change.action === "drop_semantic_node_confidence"),
+      ).toHaveLength(64);
+      expect(vectorSyncOutboxCount(harness)).toBe(0);
+      expect(updatedTargets.every((target) => target?.confidence === 0.25)).toBe(true);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("reports and clears pending vector sync when the sqlite source row is gone", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(2_000),
+    });
+
+    try {
+      const target = await insertNode(harness, "Missing source pending", [0, 1, 0, 0]);
+      const adjust = harness.db.transaction(() =>
+        harness.semanticNodeRepository.adjustConfidenceTransactional({
+          id: target.id,
+          updatedAt: 2_000,
+          reason: "missing_source_pending",
+          adjust: () => 0.4,
+        }),
+      );
+      adjust();
+      harness.db.prepare("DELETE FROM semantic_nodes WHERE id = ?").run(target.id);
+
+      const result = await runBeliefReviser(harness);
+
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          code: "belief_reviser_pending_vector_sync_failed",
+          message: expect.stringContaining("SEMANTIC_NODE_VECTOR_SYNC_SOURCE_MISSING"),
+        }),
+      ]);
+      expect(vectorSyncOutboxCount(harness)).toBe(0);
+      expect(await harness.semanticNodeRepository.get(target.id)).toBeNull();
     } finally {
       await harness.cleanup();
     }

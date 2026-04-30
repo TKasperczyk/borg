@@ -135,7 +135,7 @@ function listVectorSyncOutbox(db: ReturnType<typeof openDatabase>) {
   return db
     .prepare(
       `
-        SELECT node_id, reason, attempts, last_attempt_at, last_error
+        SELECT node_id, reason, generation, attempts, last_attempt_at, last_error
         FROM semantic_node_vector_sync_outbox
         ORDER BY id ASC
       `,
@@ -143,6 +143,7 @@ function listVectorSyncOutbox(db: ReturnType<typeof openDatabase>) {
     .all() as Array<{
     node_id: string;
     reason: string;
+    generation: number;
     attempts: number;
     last_attempt_at: number | null;
     last_error: string | null;
@@ -616,6 +617,155 @@ describe("semantic repositories", () => {
     });
     expect((await fixture.nodeRepository.get(inserted.id))?.confidence).toBeCloseTo(0.4);
     expect(listVectorSyncOutbox(fixture.db)).toHaveLength(0);
+  });
+
+  it("does not let an in-flight vector sync delete a newer pending generation", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const inserted = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Concurrent confidence"),
+    );
+    const firstAdjust = fixture.db.transaction(() =>
+      fixture.nodeRepository.adjustConfidenceTransactional({
+        id: inserted.id,
+        updatedAt: 2_000,
+        reason: "first_generation",
+        adjust: () => 0.4,
+      }),
+    );
+    firstAdjust();
+
+    const originalUpsert = fixture.table.upsert.bind(fixture.table);
+    let concurrentAdjustmentApplied = false;
+    const tableSpy = vi.spyOn(fixture.table, "upsert").mockImplementation(async (rows, options) => {
+      if (!concurrentAdjustmentApplied) {
+        concurrentAdjustmentApplied = true;
+        const secondAdjust = fixture.db.transaction(() =>
+          fixture.nodeRepository.adjustConfidenceTransactional({
+            id: inserted.id,
+            updatedAt: 3_000,
+            reason: "second_generation",
+            adjust: () => 0.2,
+          }),
+        );
+        secondAdjust();
+      }
+
+      return originalUpsert(rows, options);
+    });
+
+    const firstSync = await fixture.nodeRepository.syncPendingVectorUpdates({
+      nodeIds: [inserted.id],
+      limit: 1,
+    });
+
+    expect(firstSync).toEqual({
+      synced: 0,
+      failed: [],
+      pending: 1,
+    });
+    expect((await fixture.nodeRepository.get(inserted.id))?.confidence).toBeCloseTo(0.4);
+    expect(listVectorSyncOutbox(fixture.db)).toEqual([
+      expect.objectContaining({
+        node_id: inserted.id,
+        reason: "second_generation",
+        generation: 2,
+        attempts: 0,
+      }),
+    ]);
+
+    tableSpy.mockRestore();
+
+    await expect(
+      fixture.nodeRepository.syncPendingVectorUpdates({
+        nodeIds: [inserted.id],
+        limit: 1,
+      }),
+    ).resolves.toEqual({
+      synced: 1,
+      failed: [],
+      pending: 0,
+    });
+    expect((await fixture.nodeRepository.get(inserted.id))?.confidence).toBeCloseTo(0.2);
+    expect(listVectorSyncOutbox(fixture.db)).toHaveLength(0);
+  });
+
+  it("clears vector sync work when the sqlite source row is already gone", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const inserted = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Missing source confidence"),
+    );
+    const adjust = fixture.db.transaction(() =>
+      fixture.nodeRepository.adjustConfidenceTransactional({
+        id: inserted.id,
+        updatedAt: 2_000,
+        reason: "missing_source",
+        adjust: () => 0.4,
+      }),
+    );
+    adjust();
+    fixture.db.prepare("DELETE FROM semantic_nodes WHERE id = ?").run(inserted.id);
+
+    const result = await fixture.nodeRepository.syncPendingVectorUpdates({
+      nodeIds: [inserted.id],
+      limit: 1,
+    });
+
+    expect(result).toEqual({
+      synced: 0,
+      failed: [
+        expect.objectContaining({
+          nodeId: inserted.id,
+          code: "SEMANTIC_NODE_VECTOR_SYNC_SOURCE_MISSING",
+          message: expect.stringContaining("missing in SQLite"),
+        }),
+      ],
+      pending: 0,
+    });
+    expect(await fixture.nodeRepository.get(inserted.id)).toBeNull();
+    expect(listVectorSyncOutbox(fixture.db)).toHaveLength(0);
+  });
+
+  it("removes pending vector sync work when deleting a semantic node", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const inserted = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Deleted pending confidence"),
+    );
+    const adjust = fixture.db.transaction(() =>
+      fixture.nodeRepository.adjustConfidenceTransactional({
+        id: inserted.id,
+        updatedAt: 2_000,
+        reason: "delete_cleanup",
+        adjust: () => 0.4,
+      }),
+    );
+    adjust();
+    expect(listVectorSyncOutbox(fixture.db)).toHaveLength(1);
+
+    await expect(fixture.nodeRepository.delete(inserted.id)).resolves.toBe(true);
+
+    expect(listVectorSyncOutbox(fixture.db)).toHaveLength(0);
+    expect(await fixture.nodeRepository.get(inserted.id)).toBeNull();
   });
 
   it("canonicalizes the final stored domain on update even when the patch omits domain", async () => {
