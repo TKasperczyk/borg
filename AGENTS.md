@@ -32,6 +32,71 @@ processes, and retrieval pipeline.
 - **Tests:** Vitest.
 - **Build:** tsup.
 
+## Architectural invariant: LLM-first interpretation
+
+Borg may use deterministic code to **move already-known source handles
+around**. Borg may not use deterministic code to **interpret language**.
+
+This rule applies to `src/cognition/`, `src/retrieval/`, `src/memory/`,
+`src/offline/`, and `src/simulator/overseer*` whenever code is inferring:
+
+- entities, topics, relationships, facts
+- intent, salience, memory relevance
+- topic continuity, corrections, belief changes
+- user / audience identity
+
+Interpretation goes through LLMs.
+
+### Prohibited in semantic / interpretive paths
+
+- regex over user-authored text
+- `.includes()` / `.indexOf()` / `.startsWith()` / `.endsWith()` for matching
+- string splits or tokenization on user content
+- capitalization heuristics (`\p{Lu}`, `[A-Z]`, `toUpperCase`)
+- wordlists / `Set`s of phrase patterns
+- hardcoded topic / entity / relationship labels
+- n-grams, token-shape inference for entity extraction
+- hand-rolled topic-fingerprinting or change-detection logic
+- substring or lexical matching that decides whether two records
+  "are about the same thing"
+
+### Acceptable -- mechanical parsing only
+
+Regex and structural code are fine for non-interpretive parsing:
+
+- ID validation: `/^ep_[a-z0-9]+$/.test(episodeId)`
+- config / env value validation
+- machine-generated tags
+- log line splitting
+- migration helpers
+- test snapshot normalization
+- protocol-level formatting
+
+The test: are you parsing **machine-generated structure** (allowed) or
+trying to decide **what the user meant** (forbidden)?
+
+### Why
+
+Every language-specific heuristic embeds assumptions that fail across user
+populations. A regex like `/[A-Z][a-z]+/` extracts English-style names but
+misses Chinese names. A wordlist like `{"thanks", "thank you"}` catches
+English gratitude but not French, Spanish, Japanese. The
+`pnpm heuristics:guard` CI catches known patterns, but it is reactive --
+new variants slip through.
+
+LLM interpretation handles every language with the same code. The latency
+cost is acceptable under our OAuth subscription. Failure modes are
+explicit (degrade-with-observability via `onDegraded` hooks) rather than
+silent wrong answers for half the user population.
+
+The Maya gaslight scenario surfaced this concretely: perception's LLM-only
+entity extractor missed "Maya" in a multi-topic message, and Borg
+capitulated. The fix was a second LLM call (recall expansion) that emits
+explicit `named_terms`, plus a deterministic union with the perception
+output -- moving already-LLM-identified handles around, not interpreting
+language deterministically. Reaching for regex would have just shifted the
+bug from English to non-English users.
+
 ## Conventions
 
 ### File layout
