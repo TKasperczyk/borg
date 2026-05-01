@@ -13,7 +13,7 @@ import { buildDialogueMessages, toContentBlockMessages } from "./dialogue.js";
 import { NO_OUTPUT_FINALIZER_TOOL_NAME, runFinalizer } from "./finalizer.js";
 import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
-import { summarizeRetrievedEpisodes } from "./prompt/retrieval.js";
+import { summarizeRetrievedEvidence } from "./prompt/retrieval.js";
 import { renderTaggedPromptBlock } from "./prompt/sections.js";
 import { buildBaseSystemPrompt } from "./prompt/system-prompt.js";
 import { runS2Planner } from "./s2-planner.js";
@@ -274,14 +274,19 @@ export class Deliberator {
     const secondaryRetrieval =
       verificationQuery.length > 0 && context.reRetrieve !== undefined
         ? await context.reRetrieve(verificationQuery, { limit: 3 })
-        : [];
+        : null;
 
     const additionalRetrievalBlock = renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
       {
         tag: "borg_additional_retrieval",
-        content: summarizeRetrievedEpisodes(
+        content: summarizeRetrievedEvidence(
           "Additional retrieval",
-          secondaryRetrieval,
+          {
+            evidence: secondaryRetrieval?.evidence ?? [],
+            episodes: secondaryRetrieval?.episodes ?? [],
+            semantic: secondaryRetrieval?.semantic ?? null,
+            openQuestions: secondaryRetrieval?.open_questions ?? [],
+          },
           retrievalContextBudget,
         ),
       },
@@ -319,7 +324,7 @@ export class Deliberator {
       decision_reason: decision.reason,
       retrievedEpisodes: dedupeRetrievedEpisodes([
         ...context.retrievalResult,
-        ...secondaryRetrieval,
+        ...(secondaryRetrieval?.episodes ?? []),
       ]),
       referencedEpisodeIds: plan?.referenced_episode_ids ?? null,
       intents: plan === null ? [] : [...plan.intents],

@@ -17,6 +17,7 @@ import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
   EvidenceItem,
+  RetrievedContext,
   RetrievalConfidence,
   RetrievedEpisode,
   RetrievedSemantic,
@@ -111,7 +112,7 @@ export type DeliberationContext = {
     stakes?: TurnStakes;
     maxThinkingTokens?: number;
   };
-  reRetrieve?: (query: string, options?: RetrievalSearchOptions) => Promise<RetrievedEpisode[]>;
+  reRetrieve?: (query: string, options?: RetrievalSearchOptions) => Promise<RetrievedContext>;
 };
 
 export type DeliberationUsage = {

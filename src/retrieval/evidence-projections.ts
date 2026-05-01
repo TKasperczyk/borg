@@ -3,6 +3,7 @@ import type { OpenQuestion } from "../memory/self/index.js";
 import type { EpisodeSearchCandidate } from "../memory/episodic/types.js";
 import type { SemanticNode } from "../memory/semantic/types.js";
 import type { StreamEntry } from "../stream/index.js";
+import { RetrievalError } from "../util/errors.js";
 import type { SemanticEdgeId, SemanticNodeId } from "../util/ids.js";
 
 import { applyMmr } from "./mmr.js";
@@ -35,18 +36,26 @@ export function projectEpisodes(
   },
 ): EpisodeProjection {
   const candidates = pool.items
-    .filter((item) => item.source === "episode" && item.provenance?.episodeId !== undefined)
-    .flatMap((evidence) => {
+    .filter((item) => item.source === "episode")
+    .map((evidence) => {
+      if (evidence.provenance?.episodeId === undefined) {
+        throw missingProjectionSource(
+          `Episode evidence ${evidence.id} is missing episode provenance`,
+        );
+      }
+
       const source = sourcesByEvidenceId.get(evidence.id);
 
-      return source === undefined
-        ? []
-        : [
-            {
-              evidence,
-              source,
-            },
-          ];
+      if (source === undefined) {
+        throw missingProjectionSource(
+          `Episode evidence ${evidence.id} references ${evidence.provenance!.episodeId}, but no projection source was hydrated`,
+        );
+      }
+
+      return {
+        evidence,
+        source,
+      };
     });
 
   const selected = applyMmr(
@@ -90,16 +99,26 @@ export function projectSemantic(
   const edgeOrder = new Map<string, number>();
 
   pool.items.forEach((item, index) => {
-    if (item.source === "semantic_node" && item.provenance?.nodeId !== undefined) {
+    if (item.source === "semantic_node") {
+      if (item.provenance?.nodeId === undefined) {
+        throw missingProjectionSource(
+          `Semantic-node evidence ${item.id} is missing node provenance`,
+        );
+      }
+
       setFirstOrder(nodeOrder, item.provenance.nodeId, index);
     }
 
     if (item.source === "semantic_edge") {
       const key = semanticEdgeEvidenceKey(item);
 
-      if (key !== null) {
-        setFirstOrder(edgeOrder, key, index);
+      if (key === null) {
+        throw missingProjectionSource(
+          `Semantic-edge evidence ${item.id} is missing edge or node provenance`,
+        );
       }
+
+      setFirstOrder(edgeOrder, key, index);
     }
   });
 
@@ -107,6 +126,7 @@ export function projectSemantic(
     semantic.matched_nodes.filter((node) => nodeOrder.has(node.id)),
     (node) => nodeOrder.get(node.id),
   );
+  assertSemanticNodesHydrated(nodeOrder, semantic.matched_nodes);
   const supportHits = orderSemanticHitsByEvidence(
     semantic.support_hits.filter((hit) => semanticHitHasEvidence(hit, edgeOrder)),
     edgeOrder,
@@ -123,6 +143,12 @@ export function projectSemantic(
     semantic.category_hits.filter((hit) => semanticHitHasEvidence(hit, edgeOrder)),
     edgeOrder,
   );
+  assertSemanticEdgesHydrated(edgeOrder, [
+    ...semantic.support_hits,
+    ...semantic.causal_hits,
+    ...semantic.contradiction_hits,
+    ...semantic.category_hits,
+  ]);
 
   return {
     as_of: semantic.as_of,
@@ -144,11 +170,29 @@ export function projectOpenQuestions(
 ): OpenQuestion[] {
   return pool.items
     .filter((item) => item.source === "open_question")
-    .flatMap((item) => {
+    .map((item) => {
+      if (item.provenance?.openQuestionId === undefined) {
+        throw missingProjectionSource(
+          `Open-question evidence ${item.id} is missing open-question provenance`,
+        );
+      }
+
       const question = questionsByEvidenceId.get(item.id);
 
-      return question === undefined ? [] : [question];
+      if (question === undefined) {
+        throw missingProjectionSource(
+          `Open-question evidence ${item.id} references ${item.provenance!.openQuestionId}, but no question was hydrated`,
+        );
+      }
+
+      return question;
     });
+}
+
+function missingProjectionSource(message: string): RetrievalError {
+  return new RetrievalError(message, {
+    code: "BORG_RETRIEVAL_PROJECTION_INVARIANT",
+  });
 }
 
 function projectContextNodes(
@@ -169,6 +213,60 @@ function orderSemanticHitsByEvidence(
 
 function orderByEvidence<T>(items: readonly T[], order: (item: T) => number | undefined): T[] {
   return [...items].sort((left, right) => (order(left) ?? Infinity) - (order(right) ?? Infinity));
+}
+
+function assertSemanticNodesHydrated(
+  nodeOrder: ReadonlyMap<SemanticNodeId, number>,
+  nodes: readonly SemanticNode[],
+): void {
+  const hydratedNodeIds = new Set(nodes.map((node) => node.id));
+
+  for (const nodeId of nodeOrder.keys()) {
+    if (!hydratedNodeIds.has(nodeId)) {
+      throw missingProjectionSource(
+        `Semantic-node evidence references ${nodeId}, but no semantic node was hydrated`,
+      );
+    }
+  }
+}
+
+function assertSemanticEdgesHydrated(
+  edgeOrder: ReadonlyMap<string, number>,
+  hits: readonly RetrievedSemanticHit[],
+): void {
+  const hydratedKeys = new Set(hits.map((hit) => semanticHitEvidenceKey(hit)));
+
+  for (const key of edgeOrder.keys()) {
+    if (hydratedKeys.has(key)) {
+      continue;
+    }
+
+    throw missingProjectionSource(
+      `Semantic-edge evidence references ${describeSemanticEdgeKey(key)}, but no semantic hit was hydrated`,
+    );
+  }
+}
+
+function semanticHitEvidenceKey(hit: RetrievedSemanticHit): string {
+  const edge = hit.edgePath.at(-1);
+
+  if (edge !== undefined) {
+    return semanticEdgeKey(edge.id);
+  }
+
+  return semanticEdgeNodeFallbackKey(hit.node.id);
+}
+
+function describeSemanticEdgeKey(key: string): string {
+  if (key.startsWith("edge:")) {
+    return key.slice("edge:".length);
+  }
+
+  if (key.startsWith("node:")) {
+    return key.slice("node:".length);
+  }
+
+  return key;
 }
 
 function setFirstOrder<T>(order: Map<T, number>, key: T, index: number): void {

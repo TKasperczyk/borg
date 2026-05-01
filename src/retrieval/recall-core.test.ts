@@ -72,6 +72,19 @@ function createProjectionEmbeddingClient() {
   );
 }
 
+function createStructuralEmbeddingClient() {
+  return new TestEmbeddingClient(
+    new Map([
+      ["Atlas", [1, 0, 0, 0]],
+      ["Atlas dedupe", [1, 0, 0, 0]],
+      ["Atlas semantic shape", [1, 0, 0, 0]],
+      ["Atlas open questions", [1, 0, 0, 0]],
+      ["Atlas MMR drop", [1, 0, 0, 0]],
+      ["recent memory", [0, 0, 1, 0]],
+    ]),
+  );
+}
+
 function createCommitmentEmbeddingClient(vectors: ReadonlyMap<string, readonly number[]>) {
   return new TestEmbeddingClient(vectors);
 }
@@ -164,6 +177,54 @@ describe("Recall Core", () => {
         }),
       ]),
     );
+  });
+
+  it("unions perception entities when recall expansion succeeds with no named terms", async () => {
+    const llmClient = new FakeLLMClient({
+      responses: [recallExpansion({ named_terms: [] })],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createEmbeddingClient(),
+      llmClient,
+    });
+    const { mayaEpisode } = await insertMayaAndDesignReview(harness);
+
+    const result = await harness.retrievalPipeline.searchWithContext(MAYA_TURN, {
+      limit: 5,
+      entityTerms: ["Maya"],
+    });
+
+    expect(result.episodes.map((item) => item.episode.id)).toContain(mayaEpisode.id);
+    expect(
+      result.recall_intents.find(
+        (intent) => intent.kind === "known_term" && intent.terms[0] === "Maya",
+      )?.source,
+    ).toBe("perception-entities");
+  });
+
+  it("dedupes known terms with LLM expansion source precedence", async () => {
+    const llmClient = new FakeLLMClient({
+      responses: [recallExpansion({ named_terms: ["Maya"] })],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createEmbeddingClient(),
+      llmClient,
+    });
+    await insertMayaAndDesignReview(harness);
+
+    const result = await harness.retrievalPipeline.searchWithContext(MAYA_TURN, {
+      limit: 5,
+      entityTerms: ["Maya"],
+      audienceTerms: ["Maya"],
+    });
+    const mayaIntents = result.recall_intents.filter(
+      (intent) => intent.kind === "known_term" && intent.terms[0] === "Maya",
+    );
+
+    expect(mayaIntents).toHaveLength(1);
+    expect(mayaIntents[0]?.source).toBe("llm-expansion");
   });
 
   it("falls back to perception entities when recall expansion fails", async () => {
@@ -542,6 +603,227 @@ describe("Recall Core", () => {
       expect(openQuestionEvidenceIds.has(openQuestion.id)).toBe(true);
     }
     expect(semanticEdgeEvidenceIds.has(supportEdge.id)).toBe(true);
+  });
+
+  it("projects a multi-intent deduped episode once in episodes and evidence", async () => {
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createStructuralEmbeddingClient(),
+      llmClient: throwingRecallExpansion(),
+    });
+    const episode = createEpisodeFixture(
+      {
+        title: "Atlas dedupe episode",
+        narrative: "Atlas should be found by both vector and known-term recall.",
+        participants: ["Atlas"],
+        tags: ["Atlas"],
+        significance: 1,
+        created_at: NOW_MS,
+        updated_at: NOW_MS,
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(episode);
+
+    const result = await harness.retrievalPipeline.searchWithContext("Atlas dedupe", {
+      limit: 5,
+      entityTerms: ["Atlas"],
+    });
+    const projected = result.episodes.filter((item) => item.episode.id === episode.id);
+    const evidence = result.evidence.filter(
+      (item) => item.source === "episode" && item.provenance?.episodeId === episode.id,
+    );
+
+    expect(projected).toHaveLength(1);
+    expect(evidence).toHaveLength(1);
+  });
+
+  it("projects semantic node and edge evidence with matching provenance", async () => {
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createStructuralEmbeddingClient(),
+      llmClient: throwingRecallExpansion(),
+    });
+    const episode = createEpisodeFixture(
+      {
+        title: "Atlas semantic source",
+        narrative: "Atlas semantic retrieval has a support edge.",
+        participants: ["Atlas"],
+        tags: ["Atlas"],
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(episode);
+    const atlas = await harness.semanticNodeRepository.insert({
+      id: "semn_cccccccccccccccc" as never,
+      kind: "entity",
+      label: "Atlas",
+      description: "Atlas semantic shape root",
+      aliases: [],
+      confidence: 0.9,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const support = await harness.semanticNodeRepository.insert({
+      id: "semn_dddddddddddddddd" as never,
+      kind: "proposition",
+      label: "Atlas has edge support",
+      description: "A support node reached through the graph should project from evidence.",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: atlas.id,
+      to_node_id: support.id,
+      relation: "supports",
+      confidence: 0.85,
+      evidence_episode_ids: [episode.id],
+      created_at: 1,
+      last_verified_at: 1,
+    });
+
+    const result = await harness.retrievalPipeline.searchWithContext("Atlas semantic shape", {
+      limit: 3,
+      entityTerms: ["Atlas"],
+      graphWalkDepth: 1,
+      maxGraphNodes: 4,
+    });
+    const evidenceNodeIds = result.evidence
+      .filter((item) => item.source === "semantic_node")
+      .map((item) => item.provenance?.nodeId);
+    const evidenceEdgeIds = result.evidence
+      .filter((item) => item.source === "semantic_edge")
+      .map((item) => item.provenance?.edgeId);
+    const projectedNodeIds = new Set(result.semantic.matched_nodes.map((node) => node.id));
+    const projectedEdgeIds = new Set(
+      result.semantic.support_hits.map((hit) => hit.edgePath.at(-1)?.id),
+    );
+
+    expect(evidenceNodeIds).toContain(atlas.id);
+    expect(evidenceEdgeIds).toContain(edge.id);
+    expect(projectedNodeIds.has(atlas.id)).toBe(true);
+    expect(projectedEdgeIds.has(edge.id)).toBe(true);
+  });
+
+  it("projects multiple matched open questions from the evidence pool", async () => {
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createStructuralEmbeddingClient(),
+      llmClient: throwingRecallExpansion(),
+    });
+    const episode = createEpisodeFixture(
+      {
+        title: "Atlas question source",
+        narrative: "Atlas has unresolved reflective questions.",
+        participants: ["Atlas"],
+        tags: ["Atlas"],
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(episode);
+    const atlas = await harness.semanticNodeRepository.insert({
+      id: "semn_eeeeeeeeeeeeeeee" as never,
+      kind: "entity",
+      label: "Atlas",
+      description: "Atlas open-question root",
+      aliases: [],
+      confidence: 0.9,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const first = harness.openQuestionsRepository.add({
+      question: "What Atlas invariant needs monitoring?",
+      urgency: 0.8,
+      related_semantic_node_ids: [atlas.id],
+      source: "reflection",
+    });
+    const second = harness.openQuestionsRepository.add({
+      question: "Which Atlas projection could drift next?",
+      urgency: 0.7,
+      related_semantic_node_ids: [atlas.id],
+      source: "reflection",
+    });
+
+    const result = await harness.retrievalPipeline.searchWithContext("Atlas open questions", {
+      limit: 3,
+      entityTerms: ["Atlas"],
+      includeOpenQuestions: true,
+      openQuestionsLimit: 3,
+    });
+    const projectedIds = result.open_questions.map((question) => question.id);
+    const evidenceIds = result.evidence
+      .filter((item) => item.source === "open_question")
+      .map((item) => item.provenance?.openQuestionId);
+
+    expect(projectedIds).toEqual(expect.arrayContaining([first.id, second.id]));
+    expect(evidenceIds).toEqual(expect.arrayContaining([first.id, second.id]));
+  });
+
+  it("keeps MMR-dropped episode evidence in the evidence pool", async () => {
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createStructuralEmbeddingClient(),
+      llmClient: throwingRecallExpansion(),
+    });
+    const primary = createEpisodeFixture(
+      {
+        title: "Atlas primary MMR episode",
+        narrative: "The higher-scoring Atlas episode should be projected.",
+        participants: ["Atlas"],
+        tags: ["Atlas"],
+        significance: 1,
+        created_at: NOW_MS,
+        updated_at: NOW_MS,
+      },
+      [1, 0, 0, 0],
+    );
+    const secondary = createEpisodeFixture(
+      {
+        title: "Atlas secondary MMR episode",
+        narrative: "The lower-scoring Atlas episode should remain evidence even if unprojected.",
+        participants: ["Atlas"],
+        tags: ["Atlas"],
+        significance: 0.2,
+        created_at: NOW_MS - 100_000,
+        updated_at: NOW_MS - 100_000,
+      },
+      [0.8, 0.2, 0, 0],
+    );
+    await harness.episodicRepository.insert(primary);
+    await harness.episodicRepository.insert(secondary);
+
+    const result = await harness.retrievalPipeline.searchWithContext("Atlas MMR drop", {
+      limit: 1,
+      entityTerms: ["Atlas"],
+    });
+    const candidateIds = [primary.id, secondary.id];
+    const projectedIds = new Set(result.episodes.map((item) => item.episode.id));
+    const evidenceIds = result.evidence
+      .filter((item) => item.source === "episode")
+      .map((item) => item.provenance?.episodeId);
+    const droppedIds = candidateIds.filter((id) => !projectedIds.has(id));
+
+    expect(result.episodes).toHaveLength(1);
+    expect(evidenceIds).toEqual(expect.arrayContaining(candidateIds));
+    expect(droppedIds).toHaveLength(1);
+    expect(evidenceIds).toContain(droppedIds[0]);
   });
 
   it("does not add a bolt-on factual-challenge, Maya-specific, or correction-only lane", () => {

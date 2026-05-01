@@ -67,6 +67,12 @@ export class LLMError extends BorgError {
   }
 }
 
+export class RetrievalError extends BorgError {
+  constructor(message: string, options: BorgTypedErrorOptions = {}) {
+    super(options.code ?? "BORG_RETRIEVAL_ERROR", message, options);
+  }
+}
+
 export class StorageError extends BorgError {
   constructor(message: string, options: BorgTypedErrorOptions = {}) {
     super(options.code ?? "BORG_STORAGE_ERROR", message, options);

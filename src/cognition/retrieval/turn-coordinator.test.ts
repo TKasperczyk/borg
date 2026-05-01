@@ -156,11 +156,30 @@ function makeAudienceProfile(): SocialProfile {
 function makeRetrievedContext(): RetrievedContext {
   return {
     episodes: [],
-    semantic: {},
+    semantic: {
+      supports: [],
+      contradicts: [],
+      categories: [],
+      matched_node_ids: [],
+      matched_nodes: [],
+      support_hits: [],
+      causal_hits: [],
+      contradiction_hits: [],
+      category_hits: [],
+    },
     open_questions: [],
+    evidence: [],
+    recall_intents: [],
     contradiction_present: false,
-    confidence: {},
-  } as unknown as RetrievedContext;
+    confidence: {
+      overall: 0,
+      evidenceStrength: 0,
+      coverage: 0,
+      sourceDiversity: 0,
+      contradictionPresent: false,
+      sampleSize: 0,
+    },
+  };
 }
 
 describe("TurnRetrievalCoordinator", () => {
@@ -196,7 +215,6 @@ describe("TurnRetrievalCoordinator", () => {
     ];
     const retrieval = makeRetrievedContext();
     const searchWithContext = vi.fn(async () => retrieval);
-    const search = vi.fn(async () => []);
     const selectedSkill: SkillSelectionResult = {
       skill: {
         id: "skl_aaaaaaaaaaaaaaaa" as never,
@@ -259,7 +277,6 @@ describe("TurnRetrievalCoordinator", () => {
       },
       retrievalPipeline: {
         searchWithContext,
-        search,
       },
       skillSelector: {
         select,
@@ -351,12 +368,14 @@ describe("TurnRetrievalCoordinator", () => {
       }),
     );
 
-    await result.reRetrieve("verify", {
+    const secondaryRetrieval = await result.reRetrieve("verify", {
       limit: 3,
       strictTimeRange: false,
     });
 
-    expect(search).toHaveBeenCalledWith(
+    expect(secondaryRetrieval).toBe(retrieval);
+    expect(searchWithContext).toHaveBeenNthCalledWith(
+      2,
       "verify",
       expect.objectContaining({
         audienceEntityId,
@@ -391,7 +410,6 @@ describe("TurnRetrievalCoordinator", () => {
       },
       retrievalPipeline: {
         searchWithContext,
-        search: vi.fn(async () => []),
       },
       skillSelector: {
         select,
@@ -449,7 +467,6 @@ describe("TurnRetrievalCoordinator", () => {
       },
       retrievalPipeline: {
         searchWithContext,
-        search: vi.fn(async () => []),
       },
       skillSelector: {
         select: vi.fn(async () => null),

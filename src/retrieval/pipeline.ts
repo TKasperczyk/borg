@@ -167,6 +167,7 @@ type OpenQuestionEvidenceCandidate = {
 };
 
 const DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD = 0.3;
+const RETRIEVAL_FANOUT_CONCURRENCY = 5;
 
 export class RetrievalPipeline {
   private readonly clock: Clock;
@@ -379,20 +380,19 @@ export class RetrievalPipeline {
 
     intents.push(...expansion.facetIntents);
 
-    const knownTerms: Array<{ term: string; source: RecallIntent["source"] }> = expansion.succeeded
-      ? expansion.namedTerms.map((term) => ({ term, source: "llm-expansion" }))
-      : [
-          ...(options.entityTerms ?? []).map((term) => ({
-            term,
-            source: "perception-entities" as const,
-          })),
-          ...(options.audienceTerms ?? []).map((term) => ({
-            term,
-            source: "audience-aliases" as const,
-          })),
-        ];
+    const knownTerms = dedupeTermInputs([
+      ...expansion.namedTerms.map((term) => ({ term, source: "llm-expansion" as const })),
+      ...(options.entityTerms ?? []).map((term) => ({
+        term,
+        source: "perception-entities" as const,
+      })),
+      ...(options.audienceTerms ?? []).map((term) => ({
+        term,
+        source: "audience-aliases" as const,
+      })),
+    ]);
 
-    for (const [index, item] of dedupeTermInputs(knownTerms).entries()) {
+    for (const [index, item] of knownTerms.entries()) {
       intents.push({
         id: `recall_known_term_${index}`,
         kind: "known_term",
@@ -638,45 +638,43 @@ export class RetrievalPipeline {
     options: RetrievalSearchOptions,
   ): Promise<SemanticEvidenceCandidate[]> {
     const relevantIntents = intents.filter((intent) => isSemanticIntentKind(intent.kind));
-    const results: SemanticEvidenceCandidate[] = [];
 
-    for (const intent of relevantIntents) {
-      try {
-        const intentVector = await this.options.embeddingClient.embed(intent.query);
-        const semantic = await resolveSemanticContext(
-          intent.query,
-          {
-            ...options,
-            queryVector: intentVector,
-            exactTerms: intent.kind === "known_term" ? intent.terms : [],
-            underReviewMultiplier:
-              options.underReviewMultiplier ?? this.options.semanticUnderReviewMultiplier,
-          },
-          {
-            embeddingClient: this.options.embeddingClient,
-            episodicRepository: this.options.episodicRepository,
-            semanticNodeRepository: this.options.semanticNodeRepository,
-            semanticGraph: this.options.semanticGraph,
-            reviewQueueRepository: this.options.reviewQueueRepository,
-          },
-        );
+    const results = await mapWithConcurrency(
+      relevantIntents,
+      RETRIEVAL_FANOUT_CONCURRENCY,
+      async (intent): Promise<SemanticEvidenceCandidate | null> => {
+        try {
+          const intentVector = await this.options.embeddingClient.embed(intent.query);
+          const semantic = await resolveSemanticContext(
+            intent.query,
+            {
+              ...options,
+              queryVector: intentVector,
+              exactTerms: intent.kind === "known_term" ? intent.terms : [],
+              underReviewMultiplier:
+                options.underReviewMultiplier ?? this.options.semanticUnderReviewMultiplier,
+            },
+            {
+              embeddingClient: this.options.embeddingClient,
+              episodicRepository: this.options.episodicRepository,
+              semanticNodeRepository: this.options.semanticNodeRepository,
+              semanticGraph: this.options.semanticGraph,
+              reviewQueueRepository: this.options.reviewQueueRepository,
+            },
+          );
 
-        results.push({
-          intent,
-          semantic,
-        });
-      } catch (error) {
-        if (this.tracer.enabled && options.traceTurnId !== undefined) {
-          this.tracer.emit("retrieval_degraded", {
-            turnId: options.traceTurnId,
-            subsystem: "semantic",
-            reason: error instanceof Error ? error.message : String(error),
-          });
+          return {
+            intent,
+            semantic,
+          };
+        } catch (error) {
+          this.emitRetrievalDegraded(options, "semantic", error);
+          return null;
         }
-      }
-    }
+      },
+    );
 
-    return results;
+    return results.filter((item): item is SemanticEvidenceCandidate => item !== null);
   }
 
   private async collectOpenQuestions(
@@ -691,25 +689,35 @@ export class RetrievalPipeline {
     );
     const byId = new Map<string, OpenQuestionEvidenceCandidate>();
 
-    for (const intent of relevantIntents) {
-      const questions = await this.retrieveOpenQuestionsForQuery(intent.query, {
-        relatedSemanticNodeIds: semantic.matchedNodeIds,
-        audienceEntityId: options.audienceEntityId ?? null,
-        limit: options.openQuestionsLimit,
-        traceTurnId: options.traceTurnId,
-      });
+    const results = await mapWithConcurrency(
+      relevantIntents,
+      RETRIEVAL_FANOUT_CONCURRENCY,
+      async (intent): Promise<OpenQuestionEvidenceCandidate[]> => {
+        try {
+          const questions = await this.retrieveOpenQuestionsForQuery(intent.query, {
+            relatedSemanticNodeIds: semantic.matchedNodeIds,
+            audienceEntityId: options.audienceEntityId ?? null,
+            limit: options.openQuestionsLimit,
+            traceTurnId: options.traceTurnId,
+          });
 
-      for (const question of questions) {
-        const score = question.urgency + intent.priority / 100;
-        const current = byId.get(question.id);
-
-        if (current === undefined || score > current.score) {
-          byId.set(question.id, {
+          return questions.map((question) => ({
             intent,
             question,
-            score,
-          });
+            score: question.urgency + intent.priority / 100,
+          }));
+        } catch (error) {
+          this.emitRetrievalDegraded(options, "open_questions", error);
+          return [];
         }
+      },
+    );
+
+    for (const item of results.flat()) {
+      const current = byId.get(item.question.id);
+
+      if (current === undefined || item.score > current.score) {
+        byId.set(item.question.id, item);
       }
     }
 
@@ -719,6 +727,20 @@ export class RetrievalPipeline {
         right.question.urgency - left.question.urgency ||
         right.question.last_touched - left.question.last_touched,
     );
+  }
+
+  private emitRetrievalDegraded(
+    options: RetrievalSearchOptions,
+    subsystem: string,
+    error: unknown,
+  ): void {
+    if (this.tracer.enabled && options.traceTurnId !== undefined) {
+      this.tracer.emit("retrieval_degraded", {
+        turnId: options.traceTurnId,
+        subsystem,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async collectCommitmentEvidence(
@@ -991,6 +1013,22 @@ function dedupeStrings(values: readonly string[]): string[] {
   );
 }
 
+function termSourcePrecedence(source: RecallIntent["source"]): number {
+  if (source === "llm-expansion") {
+    return 3;
+  }
+
+  if (source === "perception-entities") {
+    return 2;
+  }
+
+  if (source === "audience-aliases") {
+    return 1;
+  }
+
+  return 0;
+}
+
 function dedupeTermInputs<T extends { term: string; source: RecallIntent["source"] }>(
   values: readonly T[],
 ): T[] {
@@ -1005,7 +1043,12 @@ function dedupeTermInputs<T extends { term: string; source: RecallIntent["source
 
     const key = normalizeTermKey(term);
 
-    if (!byKey.has(key)) {
+    const existing = byKey.get(key);
+
+    if (
+      existing === undefined ||
+      termSourcePrecedence(value.source) > termSourcePrecedence(existing.source)
+    ) {
       byKey.set(key, {
         ...value,
         term,
@@ -1035,6 +1078,24 @@ function mergeRawEpisodeCandidates(
   }
 
   return [...byId.values()];
+}
+
+async function mapWithConcurrency<T, U>(
+  items: readonly T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<U>,
+): Promise<U[]> {
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  const results: U[] = [];
+
+  for (let start = 0; start < items.length; start += normalizedLimit) {
+    const batch = items.slice(start, start + normalizedLimit);
+    results.push(
+      ...(await Promise.all(batch.map((item, index) => mapper(item, start + index)))),
+    );
+  }
+
+  return results;
 }
 
 function isSemanticIntentKind(kind: RecallIntentKind): boolean {

@@ -4,6 +4,7 @@ import type { OpenQuestion } from "../memory/self/index.js";
 import type { EpisodeSearchCandidate, EpisodeStats } from "../memory/episodic/types.js";
 import type { SemanticEdge, SemanticNode } from "../memory/semantic/types.js";
 import { createEpisodeFixture } from "../offline/test-support.js";
+import { RetrievalError } from "../util/errors.js";
 import type { EpisodeId, OpenQuestionId, SemanticEdgeId, SemanticNodeId } from "../util/ids.js";
 
 import type { EvidenceItem, EvidencePool, RecallIntent } from "./recall-types.js";
@@ -120,7 +121,95 @@ describe("EvidencePool compatibility projections", () => {
     expect(semantic.supports.map((node) => node.id)).toEqual([keptSupport.id]);
     expect(questions.map((question) => question.id)).toEqual([keptQuestion.id]);
   });
+
+  it("throws when episode evidence is missing its hydrated projection source", () => {
+    const episode = createEpisodeFixture({
+      id: "ep_aaaaaaaaaaaaaaaa" as EpisodeId,
+      title: "Missing hydration",
+    });
+    const pool: EvidencePool = {
+      intents: [intent],
+      items: [
+        evidence("evidence_episode_missing", "episode", {
+          episodeId: episode.id,
+        }),
+      ],
+    };
+
+    expect(() =>
+      projectEpisodes(pool, new Map(), {
+        limit: 5,
+        mmrLambda: 0.7,
+      }),
+    ).toThrow(RetrievalError);
+  });
+
+  it("throws when semantic evidence is missing hydrated nodes or hits", () => {
+    const node = semanticNode("semn_aaaaaaaaaaaaaaaa" as SemanticNodeId, "Missing node");
+    const support = semanticNode("semn_bbbbbbbbbbbbbbbb" as SemanticNodeId, "Missing support");
+    const edge = semanticEdge("seme_aaaaaaaaaaaaaaaa" as SemanticEdgeId, node.id, support.id);
+
+    expect(() =>
+      projectSemantic(
+        {
+          intents: [intent],
+          items: [
+            evidence("evidence_semantic_node_missing", "semantic_node", { nodeId: node.id }),
+          ],
+        },
+        emptySemantic(),
+      ),
+    ).toThrow(RetrievalError);
+
+    expect(() =>
+      projectSemantic(
+        {
+          intents: [intent],
+          items: [
+            evidence("evidence_semantic_edge_missing", "semantic_edge", { edgeId: edge.id }),
+          ],
+        },
+        {
+          ...emptySemantic(),
+          matched_node_ids: [node.id],
+          matched_nodes: [node],
+        },
+      ),
+    ).toThrow(RetrievalError);
+  });
+
+  it("throws when open-question evidence is missing its hydrated question", () => {
+    const question = openQuestion(
+      "oq_aaaaaaaaaaaaaaaa" as OpenQuestionId,
+      "Missing question?",
+    );
+    const pool: EvidencePool = {
+      intents: [intent],
+      items: [
+        evidence("evidence_open_question_missing", "open_question", {
+          openQuestionId: question.id,
+        }),
+      ],
+    };
+
+    expect(() => projectOpenQuestions(pool, new Map())).toThrow(RetrievalError);
+  });
 });
+
+function emptySemantic(): RetrievedSemantic {
+  return {
+    as_of: null,
+    supports: [],
+    contradicts: [],
+    categories: [],
+    matched_node_ids: [],
+    matched_nodes: [],
+    support_hits: [],
+    causal_hits: [],
+    contradiction_hits: [],
+    category_hits: [],
+  };
+}
 
 function episodeSource(episode: ReturnType<typeof createEpisodeFixture>, score: number) {
   return {

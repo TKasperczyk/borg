@@ -238,6 +238,7 @@ export {
   EmbeddingError,
   LLMError,
   ProvenanceError,
+  RetrievalError,
   SemanticError,
   SessionBusyError,
   StorageError,

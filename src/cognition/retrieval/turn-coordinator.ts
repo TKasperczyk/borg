@@ -15,7 +15,6 @@ import type { SocialProfile } from "../../memory/social/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
   RetrievedContext,
-  RetrievedEpisode,
   RetrievalPipeline,
   RetrievalSearchOptions,
 } from "../../retrieval/index.js";
@@ -68,7 +67,7 @@ export type TurnRetrievalCoordinatorOptions = {
   commitmentRepository: Pick<CommitmentRepository, "getApplicable">;
   reviewQueueRepository: Pick<ReviewQueueRepository, "list">;
   moodRepository: Pick<MoodRepository, "current" | "history">;
-  retrievalPipeline: Pick<RetrievalPipeline, "searchWithContext" | "search">;
+  retrievalPipeline: Pick<RetrievalPipeline, "searchWithContext">;
   skillSelector: Pick<SkillSelector, "select">;
   clock: Clock;
   tracer?: TurnTracer;
@@ -106,7 +105,7 @@ export type TurnRetrievalCoordinatorResult = {
   proceduralContext: ProceduralContext | null;
   selectedSkill: SkillSelectionResult | null;
   retrievalOptions: RetrievalSearchOptions;
-  reRetrieve: (query: string, overrides?: RetrievalSearchOptions) => Promise<RetrievedEpisode[]>;
+  reRetrieve: (query: string, overrides?: RetrievalSearchOptions) => Promise<RetrievedContext>;
 };
 
 export class TurnRetrievalCoordinator {
@@ -244,7 +243,7 @@ export class TurnRetrievalCoordinator {
       selectedSkill,
       retrievalOptions,
       reRetrieve: (query, overrides = {}) =>
-        this.options.retrievalPipeline.search(query, {
+        this.options.retrievalPipeline.searchWithContext(query, {
           ...retrievalOptions,
           ...overrides,
         }),
