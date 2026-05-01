@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BorgTransport } from "./borg-transport.js";
 import { recallScenario } from "./scenarios/recall.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("BorgTransport", () => {
   it("opens a mock Borg, runs a traced turn, and reads the trace summary", async () => {
@@ -49,6 +53,25 @@ describe("BorgTransport", () => {
     } finally {
       await disabledTransport.close();
       await enabledTransport.close();
+    }
+  });
+
+  it("passes an explicit audience through to Borg turns", async () => {
+    const transport = new BorgTransport({
+      runId: "transport-audience-test",
+      scenario: recallScenario,
+      mock: true,
+    });
+
+    try {
+      await transport.open();
+      const turnSpy = vi.spyOn(transport.getBorg(), "turn");
+
+      await transport.chat("What's my dog's name?", { audience: "Tom" });
+
+      expect(turnSpy.mock.calls[0]?.[0].audience).toBe("Tom");
+    } finally {
+      await transport.close();
     }
   });
 });

@@ -43,7 +43,10 @@ import {
 import { retrieveOpenQuestionsForQuery as retrieveOpenQuestionsForQueryFromRepository } from "./open-questions.js";
 import { RawStreamAdapter } from "./raw-stream-adapter.js";
 import {
+  DEFAULT_RECALL_STATE_MAX_ACTIVE_HANDLES,
+  DEFAULT_RECALL_STATE_MAX_WARM_EVIDENCE_RENDERED,
   DEFAULT_RECALL_STATE_TTL_TURNS,
+  DEFAULT_RECALL_STATE_WARM_SUPPRESSION_TURNS,
   createEmptyRecallState,
   deriveRecallEvidenceHandle,
   normalizeRecallEvidenceHandle,
@@ -117,6 +120,9 @@ export type RetrievalPipelineOptions = {
   semanticUnderReviewMultiplier?: number;
   commitmentEvidenceSimilarityThreshold?: number;
   recallStateTtlTurns?: number;
+  recallStateWarmSuppressionTurns?: number;
+  recallStateMaxActiveHandles?: number;
+  recallStateMaxWarmEvidenceRendered?: number;
 };
 
 export type RetrievalSearchOptions = EpisodeSearchOptions & {
@@ -195,6 +201,12 @@ type RecallStateTurnContext = {
   state: RecallState;
   scopeKey: string;
   turn: number;
+};
+
+type WarmRecallCandidate = {
+  key: string;
+  handle: RecallEvidenceHandle;
+  stateHandle: RecallStateHandle;
 };
 
 const DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD = 0.3;
@@ -441,19 +453,14 @@ export class RetrievalPipeline {
     nowMs: number,
   ): Promise<EvidenceItem[]> {
     const evidence: EvidenceItem[] = [];
+    const candidates = selectWarmRecallCandidates(
+      context.state.activeHandles,
+      context.state,
+      context.turn,
+      this.maxWarmEvidenceRendered(),
+    );
 
-    for (const stateHandle of context.state.activeHandles) {
-      const handle = normalizeRecallEvidenceHandle(stateHandle.handle);
-      const key = recallEvidenceHandleKey(handle);
-
-      if (stateHandle.expiresAfterTurn < context.turn) {
-        continue;
-      }
-
-      if (isRecallHandleSuppressed(context.state, key, context.turn)) {
-        continue;
-      }
-
+    for (const { handle, stateHandle } of candidates) {
       const item = await this.rehydrateRecallHandle(handle, stateHandle, options, nowMs);
 
       if (item !== null) {
@@ -770,8 +777,7 @@ export class RetrievalPipeline {
   ): RecallState {
     const ttlTurns = context.state.ttlTurns;
     const freshHandles = collectEvidenceHandles(input.freshEvidence);
-    const warmHandles = collectEvidenceHandles(input.warmRecallEvidence);
-    const seenHandles = new Map([...warmHandles, ...freshHandles]);
+    const warmRecallHandles = collectEvidenceHandles(input.warmRecallEvidence);
     const renderedHandleKeys = new Set(collectEvidenceHandles(input.renderedEvidence).keys());
     const existingByKey = new Map(
       context.state.activeHandles.map((stateHandle) => [
@@ -780,30 +786,42 @@ export class RetrievalPipeline {
       ]),
     );
     const nextHandles = new Map<string, RecallStateHandle>();
+    const nextSuppressedHandles = pruneSuppressedRecallHandles(
+      context.state.suppressedHandles,
+      context.turn,
+    );
 
     for (const [key, stateHandle] of existingByKey) {
       if (stateHandle.expiresAfterTurn < context.turn) {
         continue;
       }
 
-      const seenHandle = seenHandles.get(key);
+      const freshHandle = freshHandles.get(key);
 
-      if (seenHandle === undefined) {
-        nextHandles.set(key, stateHandle);
+      if (freshHandle !== undefined) {
+        delete nextSuppressedHandles[key];
+        nextHandles.set(key, {
+          ...stateHandle,
+          handle: freshHandle,
+          lastSeenTurn: context.turn,
+          lastRenderedTurn: renderedHandleKeys.has(key)
+            ? context.turn
+            : stateHandle.lastRenderedTurn,
+          expiresAfterTurn: context.turn + ttlTurns,
+          reinforcementCount: stateHandle.reinforcementCount + 1,
+        });
         continue;
       }
 
       nextHandles.set(key, {
         ...stateHandle,
-        handle: seenHandle,
-        lastSeenTurn: context.turn,
         lastRenderedTurn: renderedHandleKeys.has(key) ? context.turn : stateHandle.lastRenderedTurn,
-        expiresAfterTurn: context.turn + ttlTurns,
-        reinforcementCount: stateHandle.reinforcementCount + 1,
       });
     }
 
     for (const [key, handle] of freshHandles) {
+      delete nextSuppressedHandles[key];
+
       if (nextHandles.has(key)) {
         continue;
       }
@@ -818,19 +836,52 @@ export class RetrievalPipeline {
       });
     }
 
+    const warmSuppressionTurns = this.warmSuppressionTurns();
+
+    if (warmSuppressionTurns > 0) {
+      for (const key of renderedHandleKeys) {
+        if (freshHandles.has(key) || !warmRecallHandles.has(key) || !nextHandles.has(key)) {
+          continue;
+        }
+
+        nextSuppressedHandles[key] = context.turn + warmSuppressionTurns;
+      }
+    }
+
+    const activeHandles = capRecallStateHandles(
+      [...nextHandles.values()],
+      this.maxActiveHandles(),
+    ).sort(compareRecallStateHandles);
+
     return {
       scopeKey: context.scopeKey,
-      activeHandles: [...nextHandles.entries()]
-        .map(([, stateHandle]) => stateHandle)
-        .sort(compareRecallStateHandles),
-      suppressedHandles: pruneSuppressedRecallHandles(
-        context.state.suppressedHandles,
-        context.turn,
-      ),
+      activeHandles,
+      suppressedHandles: nextSuppressedHandles,
       lastRefreshTurn: context.turn,
       updatedAt: input.nowMs,
       ttlTurns,
     };
+  }
+
+  private warmSuppressionTurns(): number {
+    return normalizeRecallStateBound(
+      this.options.recallStateWarmSuppressionTurns,
+      DEFAULT_RECALL_STATE_WARM_SUPPRESSION_TURNS,
+    );
+  }
+
+  private maxActiveHandles(): number {
+    return normalizeRecallStateBound(
+      this.options.recallStateMaxActiveHandles,
+      DEFAULT_RECALL_STATE_MAX_ACTIVE_HANDLES,
+    );
+  }
+
+  private maxWarmEvidenceRendered(): number {
+    return normalizeRecallStateBound(
+      this.options.recallStateMaxWarmEvidenceRendered,
+      DEFAULT_RECALL_STATE_MAX_WARM_EVIDENCE_RENDERED,
+    );
   }
 
   private async buildRecallIntents(
@@ -1466,6 +1517,36 @@ function isRecallHandleSuppressed(state: RecallState, key: string, turn: number)
   return (state.suppressedHandles[key] ?? -1) >= turn;
 }
 
+function selectWarmRecallCandidates(
+  activeHandles: readonly RecallStateHandle[],
+  state: RecallState,
+  turn: number,
+  limit: number,
+): WarmRecallCandidate[] {
+  if (limit <= 0) {
+    return [];
+  }
+
+  const candidates: WarmRecallCandidate[] = [];
+
+  for (const stateHandle of activeHandles) {
+    const handle = normalizeRecallEvidenceHandle(stateHandle.handle);
+    const key = recallEvidenceHandleKey(handle);
+
+    if (stateHandle.expiresAfterTurn < turn) {
+      continue;
+    }
+
+    if (isRecallHandleSuppressed(state, key, turn)) {
+      continue;
+    }
+
+    candidates.push({ key, handle, stateHandle });
+  }
+
+  return candidates.sort(compareWarmRecallCandidates).slice(0, limit);
+}
+
 function collectEvidenceHandles(
   evidence: readonly EvidenceItem[],
 ): Map<string, RecallEvidenceHandle> {
@@ -1497,6 +1578,45 @@ function compareRecallStateHandles(left: RecallStateHandle, right: RecallStateHa
   );
 }
 
+function compareWarmRecallCandidates(
+  left: WarmRecallCandidate,
+  right: WarmRecallCandidate,
+): number {
+  return (
+    right.stateHandle.reinforcementCount - left.stateHandle.reinforcementCount ||
+    compareNullableTurnAscending(
+      left.stateHandle.lastRenderedTurn,
+      right.stateHandle.lastRenderedTurn,
+    ) ||
+    left.stateHandle.firstSeenTurn - right.stateHandle.firstSeenTurn ||
+    left.key.localeCompare(right.key)
+  );
+}
+
+function compareNullableTurnAscending(left: number | null, right: number | null): number {
+  return (left ?? -1) - (right ?? -1);
+}
+
+function capRecallStateHandles(
+  handles: readonly RecallStateHandle[],
+  limit: number,
+): RecallStateHandle[] {
+  if (limit <= 0) {
+    return [];
+  }
+
+  if (handles.length <= limit) {
+    return [...handles];
+  }
+
+  return [...handles]
+    .sort(
+      (left, right) =>
+        right.firstSeenTurn - left.firstSeenTurn || compareRecallStateHandles(left, right),
+    )
+    .slice(0, limit);
+}
+
 function pruneSuppressedRecallHandles(
   suppressedHandles: RecallState["suppressedHandles"],
   turn: number,
@@ -1504,6 +1624,16 @@ function pruneSuppressedRecallHandles(
   return Object.fromEntries(
     Object.entries(suppressedHandles).filter(([, expiresAfterTurn]) => expiresAfterTurn >= turn),
   );
+}
+
+function normalizeRecallStateBound(value: number | undefined, fallback: number): number {
+  const raw = value ?? fallback;
+
+  if (!Number.isFinite(raw)) {
+    return fallback;
+  }
+
+  return Math.max(0, Math.floor(raw));
 }
 
 function warmRecallScore(stateHandle: RecallStateHandle): number {

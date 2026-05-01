@@ -6,7 +6,10 @@ export type {
   RecallIntent,
 } from "./recall-types.js";
 export {
+  DEFAULT_RECALL_STATE_MAX_ACTIVE_HANDLES,
+  DEFAULT_RECALL_STATE_MAX_WARM_EVIDENCE_RENDERED,
   DEFAULT_RECALL_STATE_TTL_TURNS,
+  DEFAULT_RECALL_STATE_WARM_SUPPRESSION_TURNS,
   RecallStateRepository,
   createEmptyRecallState,
   deriveRecallEvidenceHandle,

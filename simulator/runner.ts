@@ -179,7 +179,9 @@ export class SimulatorRunner {
         emitted: boolean;
       }> => {
         const message = await persona.nextTurn(lastBorgResponse);
-        const result = await transport.chat(message);
+        const result = await transport.chat(message, {
+          audience: this.options.persona.displayName,
+        });
         return { turnId: result.turnId, response: result.response, emitted: result.emitted };
       };
 

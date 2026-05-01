@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../src/index.js";
 import { MaintenanceScheduler, type MaintenanceTickResult } from "../src/offline/scheduler.js";
+import { BorgTransport } from "../assessor/borg-transport.js";
 import { runSimulation } from "./runner.js";
 import { tomPersona } from "./personas/tom.js";
 
@@ -92,6 +93,26 @@ describe("SimulatorRunner", () => {
 
     expect(tickSpy).toHaveBeenCalledTimes(2);
     expect(tickSpy.mock.calls.map(([cadence]) => cadence)).toEqual(["light", "light"]);
+  });
+
+  it("passes the persona display name as the stable Borg audience", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const chatSpy = vi.spyOn(BorgTransport.prototype, "chat");
+    spyMaintenanceTick();
+
+    await runSimulation({
+      runId: "sim-runner-audience-test",
+      persona: tomPersona,
+      totalTurns: 2,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+
+    expect(chatSpy.mock.calls.map(([, options]) => options?.audience)).toEqual(["Tom", "Tom"]);
   });
 
   it("stops self-play when Borg suppresses a turn", async () => {

@@ -570,7 +570,10 @@ export class BorgTransport {
     }
   }
 
-  async chat(message: string, options: { sessionId?: string } = {}): Promise<ChatWithBorgResult> {
+  async chat(
+    message: string,
+    options: { sessionId?: string; audience?: string } = {},
+  ): Promise<ChatWithBorgResult> {
     if (this.borg === undefined) {
       throw new Error("BorgTransport.open() must be called before chat()");
     }
@@ -582,6 +585,7 @@ export class BorgTransport {
     const result = await this.borg.turn({
       userMessage: message,
       stakes: DEFAULT_BORG_STAKES,
+      ...(options.audience === undefined ? {} : { audience: options.audience }),
       ...(sessionId === undefined ? {} : { sessionId }),
     });
     const events = readTraceEvents(this.tracePath);

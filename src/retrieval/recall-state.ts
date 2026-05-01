@@ -21,6 +21,9 @@ import { serializeJsonValue } from "../util/json-value.js";
 import type { EvidenceItem, RecallEvidenceHandle } from "./recall-types.js";
 
 export const DEFAULT_RECALL_STATE_TTL_TURNS = 6;
+export const DEFAULT_RECALL_STATE_WARM_SUPPRESSION_TURNS = 2;
+export const DEFAULT_RECALL_STATE_MAX_ACTIVE_HANDLES = 24;
+export const DEFAULT_RECALL_STATE_MAX_WARM_EVIDENCE_RENDERED = 4;
 
 const streamEntryIdSchema = z
   .string()
