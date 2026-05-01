@@ -62,6 +62,16 @@ function createEmbeddingClient() {
   );
 }
 
+function createProjectionEmbeddingClient() {
+  return new TestEmbeddingClient(
+    new Map([
+      ["Atlas projection", [1, 0, 0, 0]],
+      ["Atlas", [1, 0, 0, 0]],
+      ["recent memory", [0, 0, 1, 0]],
+    ]),
+  );
+}
+
 async function insertMayaAndDesignReview(harness: OfflineTestHarness) {
   const nextWeekStart = NOW_MS + 5 * 24 * 60 * 60 * 1_000;
   const nextWeekEnd = nextWeekStart + 7 * 24 * 60 * 60 * 1_000;
@@ -267,6 +277,120 @@ describe("Recall Core", () => {
         }),
       ]),
     );
+  });
+
+  it("projects legacy fields from the ranked evidence pool", async () => {
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createProjectionEmbeddingClient(),
+      llmClient: throwingRecallExpansion(),
+    });
+    const entry = await harness.streamWriter.append({
+      kind: "user_msg",
+      content: "Atlas projection source",
+    });
+    const episode = createEpisodeFixture(
+      {
+        title: "Atlas projection episode",
+        narrative: "The Atlas projection needs evidence-backed retrieval.",
+        participants: ["Atlas"],
+        tags: ["Atlas"],
+        source_stream_ids: [entry.id],
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(episode);
+    const atlas = await harness.semanticNodeRepository.insert({
+      id: "semn_aaaaaaaaaaaaaaaa" as never,
+      kind: "entity",
+      label: "Atlas",
+      description: "Atlas projection root",
+      aliases: [],
+      confidence: 0.9,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([1, 0, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const support = await harness.semanticNodeRepository.insert({
+      id: "semn_bbbbbbbbbbbbbbbb" as never,
+      kind: "proposition",
+      label: "Projection is evidence-backed",
+      description: "Projection should hydrate compatibility fields from evidence.",
+      aliases: [],
+      confidence: 0.8,
+      source_episode_ids: [episode.id],
+      created_at: 1,
+      updated_at: 1,
+      last_verified_at: 1,
+      embedding: Float32Array.from([0, 1, 0, 0]),
+      archived: false,
+      superseded_by: null,
+    });
+    const supportEdge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: atlas.id,
+      to_node_id: support.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: [episode.id],
+      created_at: 1,
+      last_verified_at: 1,
+    });
+    const question = harness.openQuestionsRepository.add({
+      question: "Why does Atlas projection need evidence pool invariants?",
+      urgency: 0.9,
+      related_semantic_node_ids: [atlas.id],
+      source: "reflection",
+    });
+
+    const result = await harness.retrievalPipeline.searchWithContext("Atlas projection", {
+      limit: 3,
+      entityTerms: ["Atlas"],
+      includeOpenQuestions: true,
+      graphWalkDepth: 1,
+      maxGraphNodes: 4,
+    });
+    const episodeEvidenceIds = new Set(
+      result.evidence
+        .filter((item) => item.source === "episode")
+        .map((item) => item.provenance?.episodeId),
+    );
+    const semanticNodeEvidenceIds = new Set(
+      result.evidence
+        .filter((item) => item.source === "semantic_node")
+        .map((item) => item.provenance?.nodeId),
+    );
+    const semanticEdgeEvidenceIds = new Set(
+      result.evidence
+        .filter((item) => item.source === "semantic_edge")
+        .map((item) => item.provenance?.edgeId),
+    );
+    const openQuestionEvidenceIds = new Set(
+      result.evidence
+        .filter((item) => item.source === "open_question")
+        .map((item) => item.provenance?.openQuestionId),
+    );
+
+    expect(result.episodes.length).toBeGreaterThan(0);
+    expect(result.semantic.matched_nodes.length).toBeGreaterThan(0);
+    expect(result.semantic.support_hits.length).toBeGreaterThan(0);
+    expect(result.open_questions).toEqual([expect.objectContaining({ id: question.id })]);
+    for (const item of result.episodes) {
+      expect(episodeEvidenceIds.has(item.episode.id)).toBe(true);
+    }
+    for (const node of result.semantic.matched_nodes) {
+      expect(semanticNodeEvidenceIds.has(node.id)).toBe(true);
+    }
+    for (const hit of result.semantic.support_hits) {
+      expect(semanticEdgeEvidenceIds.has(hit.edgePath.at(-1)?.id)).toBe(true);
+    }
+    for (const openQuestion of result.open_questions) {
+      expect(openQuestionEvidenceIds.has(openQuestion.id)).toBe(true);
+    }
+    expect(semanticEdgeEvidenceIds.has(supportEdge.id)).toBe(true);
   });
 
   it("does not add a bolt-on factual-challenge, Maya-specific, or correction-only lane", () => {

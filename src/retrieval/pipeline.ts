@@ -30,11 +30,16 @@ import type { JsonValue } from "../util/json-value.js";
 import { CitationResolver, type CitationResolverOptions } from "./citations.js";
 import { assembleRetrievedContext, type RetrievedContext } from "./context-assembly.js";
 import { rankEvidenceItems } from "./evidence-pool.js";
-import { applyMmr } from "./mmr.js";
+import {
+  projectEpisodes,
+  projectOpenQuestions,
+  projectSemantic,
+  type EpisodeProjectionSource,
+} from "./evidence-projections.js";
 import { retrieveOpenQuestionsForQuery as retrieveOpenQuestionsForQueryFromRepository } from "./open-questions.js";
 import { RawStreamAdapter } from "./raw-stream-adapter.js";
 import { DEFAULT_RECALL_EXPANSION_MODEL, expandRecall } from "./recall-expansion.js";
-import type { EvidenceItem, RecallIntent, RecallIntentKind } from "./recall-types.js";
+import type { EvidenceItem, EvidencePool, RecallIntent, RecallIntentKind } from "./recall-types.js";
 import {
   buildRetrievedEpisode,
   clamp,
@@ -255,75 +260,81 @@ export class RetrievalPipeline {
       nowMs,
       limit,
     );
-    const selectedEpisodeCandidates = this.selectEpisodeEvidenceCandidates(
-      episodeCandidates,
-      limit,
-      options,
-    );
     const citationResolver = this.createCitationResolver();
     const citationEntries = await citationResolver.resolveCitationEntries(
-      selectedEpisodeCandidates.flatMap((item) => item.candidate.episode.source_stream_ids),
+      episodeCandidates.flatMap((item) => item.candidate.episode.source_stream_ids),
     );
     const semanticRetrievals = await this.collectSemanticRetrievals(intents, options);
     const semantic = mergeSemanticRetrievals(semanticRetrievals.map((item) => item.semantic));
     const openQuestions = await this.collectOpenQuestions(intents, semantic, options);
-    const results: RetrievedEpisode[] = [];
-
-    for (const item of selectedEpisodeCandidates) {
-      const citationChain = citationResolver.resolveCitationChainFromMap(
-        item.candidate.episode.source_stream_ids,
-        citationEntries,
-        options.traceTurnId,
-      );
-      const result = buildRetrievedEpisode(
-        item.candidate,
-        item.score.decayedSalience,
-        item.score.heat,
-        item.score.goalRelevance,
-        item.score.valueAlignment,
-        item.score.timeRelevance,
-        item.score.moodBoost,
-        item.score.socialRelevance,
-        item.score.entityRelevance,
-        item.score.suppressionPenalty,
-        clamp(item.score.score, 0, 1),
-        citationChain,
-      );
-
-      this.options.episodicRepository.recordRetrieval(
-        item.candidate.episode.id,
-        nowMs,
-        result.score,
-      );
-      results.push(result);
-    }
-
-    const episodeEvidence = episodeCandidates.map((item) => episodeCandidateToEvidence(item));
+    const episodeEvidenceSources = episodeCandidates.map((item) => ({
+      evidence: episodeCandidateToEvidence(item),
+      item,
+    }));
+    const episodeEvidence = episodeEvidenceSources.map((item) => item.evidence);
     const semanticEvidence = semanticRetrievals.flatMap((item) =>
       semanticRetrievalToEvidence(item.semantic, item.intent),
     );
-    const openQuestionEvidence = openQuestions.flatMap((item) =>
-      openQuestionToEvidence(item.question, item.intent, item.score),
-    );
+    const openQuestionEvidenceSources = openQuestions.map((item) => ({
+      evidence: openQuestionToEvidence(item.question, item.intent, item.score),
+      item,
+    }));
+    const openQuestionEvidence = openQuestionEvidenceSources.map((item) => item.evidence);
     const commitmentEvidence = this.collectCommitmentEvidence(intents, options);
     const rawStreamEvidence = [
-      ...streamEntriesToEvidence(citationEntries, selectedEpisodeCandidates),
+      ...streamEntriesToEvidence(citationEntries, episodeCandidates),
       ...this.collectRecentRawStreamEvidence(intents),
     ];
-    const evidence = rankEvidenceItems([
-      ...episodeEvidence,
-      ...semanticEvidence,
-      ...openQuestionEvidence,
-      ...commitmentEvidence,
-      ...rawStreamEvidence,
-    ]);
+    const evidencePool: EvidencePool = {
+      intents,
+      items: rankEvidenceItems([
+        ...episodeEvidence,
+        ...semanticEvidence,
+        ...openQuestionEvidence,
+        ...commitmentEvidence,
+        ...rawStreamEvidence,
+      ]),
+    };
+    const episodeProjectionSources = new Map<string, EpisodeProjectionSource>(
+      episodeEvidenceSources.map(({ evidence, item }) => [
+        evidence.id,
+        {
+          candidate: item.candidate,
+          score: item.score,
+          citationChain: () =>
+            citationResolver.resolveCitationChainFromMap(
+              item.candidate.episode.source_stream_ids,
+              citationEntries,
+              options.traceTurnId,
+            ),
+        },
+      ]),
+    );
+    const episodeProjection = projectEpisodes(evidencePool, episodeProjectionSources, {
+      limit,
+      mmrLambda: options.mmrLambda ?? this.mmrLambda,
+    });
+    const semanticProjection = projectSemantic(evidencePool, toRetrievedSemantic(semantic));
+    const openQuestionProjection = projectOpenQuestions(
+      evidencePool,
+      new Map(
+        openQuestionEvidenceSources.map(({ evidence, item }) => [evidence.id, item.question]),
+      ),
+    );
+
+    for (const result of episodeProjection.episodes) {
+      this.options.episodicRepository.recordRetrieval(result.episode.id, nowMs, result.score);
+    }
+
     const context = assembleRetrievedContext({
-      episodes: results,
-      semantic: toRetrievedSemantic(semantic),
-      openQuestions: openQuestions.map((item) => item.question),
-      evidence,
+      episodes: episodeProjection.episodes,
+      semantic: semanticProjection,
+      openQuestions: openQuestionProjection,
+      evidence: evidencePool.items,
       recallIntents: intents,
-      contradictionPresent: semantic.contradictionPresent,
+      contradictionPresent:
+        semanticProjection.contradiction_hits.length > 0 ||
+        semanticProjection.contradicts.length > 0,
       nowMs,
       expectedCount: limit,
     });
@@ -616,49 +627,6 @@ export class RetrievalPipeline {
       ...score,
       score: clamp(score.score + exactBoost + recencyBoost, 0, 1),
     };
-  }
-
-  private selectEpisodeEvidenceCandidates(
-    candidates: readonly EpisodeEvidenceCandidate[],
-    limit: number,
-    options: RetrievalSearchOptions,
-  ): EpisodeEvidenceCandidate[] {
-    const bestByEpisodeId = new Map<EpisodeId, EpisodeEvidenceCandidate>();
-
-    for (const candidate of candidates) {
-      const current = bestByEpisodeId.get(candidate.candidate.episode.id);
-
-      if (
-        current === undefined ||
-        candidate.score.score > current.score.score ||
-        (candidate.score.score === current.score.score &&
-          candidate.candidate.episode.updated_at > current.candidate.episode.updated_at)
-      ) {
-        bestByEpisodeId.set(candidate.candidate.episode.id, candidate);
-      }
-    }
-
-    const preMmrLimit = Math.max(limit * 4, 24);
-    const trimmed = [...bestByEpisodeId.values()]
-      .sort(
-        (left, right) =>
-          right.score.score - left.score.score ||
-          right.candidate.similarity - left.candidate.similarity ||
-          right.candidate.episode.updated_at - left.candidate.episode.updated_at,
-      )
-      .slice(0, preMmrLimit);
-
-    return applyMmr(
-      trimmed.map((item) => ({
-        item,
-        vector: item.candidate.episode.embedding,
-        relevanceScore: item.score.score,
-      })),
-      {
-        limit,
-        lambda: options.mmrLambda ?? this.mmrLambda,
-      },
-    ).map((choice) => choice.item);
   }
 
   private async collectSemanticRetrievals(
