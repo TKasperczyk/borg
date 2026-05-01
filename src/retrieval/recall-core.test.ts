@@ -10,7 +10,7 @@ import {
   TestEmbeddingClient,
   type OfflineTestHarness,
 } from "../offline/test-support.js";
-import { FixedClock } from "../util/clock.js";
+import { FixedClock, ManualClock } from "../util/clock.js";
 
 const NOW_MS = 10_000_000_000;
 const MAYA_TURN = "my partner's not Maya. Also, Thursday's design review is next week.";
@@ -70,6 +70,10 @@ function createProjectionEmbeddingClient() {
       ["recent memory", [0, 0, 1, 0]],
     ]),
   );
+}
+
+function createCommitmentEmbeddingClient(vectors: ReadonlyMap<string, readonly number[]>) {
+  return new TestEmbeddingClient(vectors);
 }
 
 async function insertMayaAndDesignReview(harness: OfflineTestHarness) {
@@ -277,6 +281,153 @@ describe("Recall Core", () => {
         }),
       ]),
     );
+  });
+
+  it("emits commitment evidence only for embedding-matched commitments", async () => {
+    const commitmentQuery = "Atlas confidentiality boundary";
+    const matchingDirective = "Do not discuss Atlas private deployment details with Sam.";
+    const unrelatedDirective = "Send Alice the weekly deployment summary.";
+    const llmClient = new FakeLLMClient({
+      responses: [
+        recallExpansion({
+          facets: [{ kind: "commitment", query: commitmentQuery, priority: 1 }],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createCommitmentEmbeddingClient(
+        new Map([
+          [commitmentQuery, [1, 0, 0, 0]],
+          [matchingDirective, [1, 0, 0, 0]],
+          [unrelatedDirective, [0, 1, 0, 0]],
+        ]),
+      ),
+      llmClient,
+    });
+    const matching = harness.commitmentRepository.add({
+      type: "boundary",
+      directive: matchingDirective,
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    const unrelated = harness.commitmentRepository.add({
+      type: "promise",
+      directive: unrelatedDirective,
+      priority: 9,
+      provenance: { kind: "manual" },
+    });
+
+    const result = await harness.retrievalPipeline.searchWithContext(
+      "Can we talk about Atlas confidentiality?",
+      { limit: 3 },
+    );
+    const commitmentIds = result.evidence
+      .filter((item) => item.source === "commitment")
+      .map((item) => item.provenance?.commitmentId);
+
+    expect(commitmentIds).toEqual([matching.id]);
+    expect(commitmentIds).not.toContain(unrelated.id);
+  });
+
+  it("emits no commitment evidence when a commitment intent has no embedding match", async () => {
+    const commitmentQuery = "public launch-date promise";
+    const firstDirective = "Do not discuss Atlas private deployment details with Sam.";
+    const secondDirective = "Keep Sam planning details scoped to Sam.";
+    const llmClient = new FakeLLMClient({
+      responses: [
+        recallExpansion({
+          facets: [{ kind: "commitment", query: commitmentQuery, priority: 1 }],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createCommitmentEmbeddingClient(
+        new Map([
+          [commitmentQuery, [1, 0, 0, 0]],
+          [firstDirective, [0, 1, 0, 0]],
+          [secondDirective, [0, 0, 1, 0]],
+        ]),
+      ),
+      llmClient,
+    });
+    harness.commitmentRepository.add({
+      type: "boundary",
+      directive: firstDirective,
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    harness.commitmentRepository.add({
+      type: "rule",
+      directive: secondDirective,
+      priority: 7,
+      provenance: { kind: "manual" },
+    });
+
+    const result = await harness.retrievalPipeline.searchWithContext("What can we promise?", {
+      limit: 3,
+    });
+
+    expect(result.evidence.filter((item) => item.source === "commitment")).toEqual([]);
+  });
+
+  it("does not use substring matching for commitment evidence", () => {
+    const retrievalSource = readFileSync(
+      join(process.cwd(), "src", "retrieval", "pipeline.ts"),
+      "utf8",
+    );
+
+    expect(retrievalSource).not.toContain("matchedCommitmentTerms");
+    expect(retrievalSource).not.toMatch(/directive[\s\S]{0,200}\.indexOf\s*\(/);
+  });
+
+  it("ranks matched episode evidence above recent raw stream tail context", async () => {
+    const clock = new ManualClock(NOW_MS - 10_000);
+    harness = await createOfflineTestHarness({
+      clock,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["Atlas", [1, 0, 0, 0]],
+          ["recent memory", [0, 1, 0, 0]],
+        ]),
+      ),
+      llmClient: throwingRecallExpansion(),
+    });
+    const episode = createEpisodeFixture(
+      {
+        title: "Atlas source-backed memory",
+        narrative: "Atlas has a known-term episode that should outrank raw recency tail.",
+        participants: ["Atlas"],
+        tags: ["Atlas"],
+        significance: 1,
+        created_at: NOW_MS - 1_000_000,
+        updated_at: NOW_MS - 1_000_000,
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(episode);
+    clock.set(NOW_MS);
+    const recent = await harness.streamWriter.append({
+      kind: "user_msg",
+      content: "Unrelated recent chatter",
+    });
+
+    const result = await harness.retrievalPipeline.searchWithContext("Atlas", {
+      limit: 3,
+      entityTerms: ["Atlas"],
+    });
+    const episodeEvidenceIndex = result.evidence.findIndex(
+      (item) => item.source === "episode" && item.provenance?.episodeId === episode.id,
+    );
+    const recentTailIndex = result.evidence.findIndex(
+      (item) =>
+        item.source === "recent_raw_stream" && item.provenance?.streamIds?.includes(recent.id),
+    );
+
+    expect(episodeEvidenceIndex).toBeGreaterThanOrEqual(0);
+    expect(recentTailIndex).toBeGreaterThanOrEqual(0);
+    expect(episodeEvidenceIndex).toBeLessThan(recentTailIndex);
   });
 
   it("projects legacy fields from the ranked evidence pool", async () => {

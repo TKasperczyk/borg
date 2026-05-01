@@ -29,6 +29,7 @@ import type { JsonValue } from "../util/json-value.js";
 
 import { CitationResolver, type CitationResolverOptions } from "./citations.js";
 import { assembleRetrievedContext, type RetrievedContext } from "./context-assembly.js";
+import { cosineSimilarity } from "./embedding-similarity.js";
 import { rankEvidenceItems } from "./evidence-pool.js";
 import {
   projectEpisodes,
@@ -92,6 +93,7 @@ export type RetrievalPipelineOptions = {
   mmrLambda?: number;
   decayOptions?: Omit<DecayOptions, "nowMs">;
   semanticUnderReviewMultiplier?: number;
+  commitmentEvidenceSimilarityThreshold?: number;
 };
 
 export type RetrievalSearchOptions = EpisodeSearchOptions & {
@@ -163,6 +165,8 @@ type OpenQuestionEvidenceCandidate = {
   question: OpenQuestion;
   score: number;
 };
+
+const DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD = 0.3;
 
 export class RetrievalPipeline {
   private readonly clock: Clock;
@@ -280,7 +284,7 @@ export class RetrievalPipeline {
       item,
     }));
     const openQuestionEvidence = openQuestionEvidenceSources.map((item) => item.evidence);
-    const commitmentEvidence = this.collectCommitmentEvidence(intents, options);
+    const commitmentEvidence = await this.collectCommitmentEvidence(intents, options);
     const rawStreamEvidence = [
       ...streamEntriesToEvidence(citationEntries, episodeCandidates),
       ...this.collectRecentRawStreamEvidence(intents),
@@ -717,11 +721,19 @@ export class RetrievalPipeline {
     );
   }
 
-  private collectCommitmentEvidence(
+  private async collectCommitmentEvidence(
     intents: readonly RecallIntent[],
     options: RetrievalSearchOptions,
-  ): EvidenceItem[] {
+  ): Promise<EvidenceItem[]> {
     if (this.options.commitmentRepository === undefined) {
+      return [];
+    }
+
+    const relevantIntents = intents.filter(
+      (intent) => intent.kind === "commitment" || intent.kind === "known_term",
+    );
+
+    if (relevantIntents.length === 0) {
       return [];
     }
 
@@ -730,21 +742,41 @@ export class RetrievalPipeline {
       audience: options.audienceEntityId ?? null,
       nowMs: this.clock.now(),
     });
+
+    if (activeCommitments.length === 0) {
+      return [];
+    }
+
+    const intentVectors = await this.options.embeddingClient.embedBatch(
+      relevantIntents.map((intent) => intent.query),
+    );
+    const commitmentVectors = await this.options.embeddingClient.embedBatch(
+      activeCommitments.map((commitment) => commitment.directive),
+    );
+    const threshold =
+      this.options.commitmentEvidenceSimilarityThreshold ??
+      DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD;
     const evidence: EvidenceItem[] = [];
 
-    for (const intent of intents) {
-      if (intent.kind !== "commitment" && intent.kind !== "known_term") {
+    for (const [intentIndex, intent] of relevantIntents.entries()) {
+      const intentVector = intentVectors[intentIndex];
+
+      if (intentVector === undefined) {
         continue;
       }
 
-      for (const commitment of activeCommitments) {
-        const matchedTerms = matchedCommitmentTerms(commitment, intent);
+      for (const [commitmentIndex, commitment] of activeCommitments.entries()) {
+        const commitmentVector = commitmentVectors[commitmentIndex];
 
-        if (intent.kind !== "commitment" && matchedTerms.length === 0) {
+        if (commitmentVector === undefined) {
           continue;
         }
 
-        evidence.push(commitmentToEvidence(commitment, intent, matchedTerms));
+        const similarity = cosineSimilarity(intentVector, commitmentVector);
+
+        if (similarity >= threshold) {
+          evidence.push(commitmentToEvidence(commitment, intent, similarity));
+        }
       }
     }
 
@@ -763,7 +795,9 @@ export class RetrievalPipeline {
       entryIndex: this.options.entryIndex,
     });
 
-    return adapter.recent({ limit: 3 }).map((entry) => streamEntryToEvidence(entry, recentIntent));
+    return adapter
+      .recent({ limit: 3 })
+      .map((entry) => streamEntryToEvidence(entry, recentIntent, "recent_raw_stream"));
   }
 
   async getEpisode(
@@ -1217,10 +1251,14 @@ function streamEntriesToEvidence(
     .map((entry) => streamEntryToEvidence(entry, intentByStreamId.get(entry.id)!));
 }
 
-function streamEntryToEvidence(entry: StreamEntry, intent: RecallIntent): EvidenceItem {
+function streamEntryToEvidence(
+  entry: StreamEntry,
+  intent: RecallIntent,
+  source: "raw_stream" | "recent_raw_stream" = "raw_stream",
+): EvidenceItem {
   return {
     id: `evidence_raw_stream_${entry.id}_${intent.id}`,
-    source: "raw_stream",
+    source,
     text: streamEntryContentToText(entry),
     provenance: {
       streamIds: [entry.id],
@@ -1243,22 +1281,12 @@ function streamEntryContentToText(entry: StreamEntry): string {
   return JSON.stringify(entry.content ?? null);
 }
 
-function matchedCommitmentTerms(commitment: CommitmentRecord, intent: RecallIntent): string[] {
-  if (intent.terms.length === 0) {
-    return [];
-  }
-
-  const directive = commitment.directive.toLowerCase();
-
-  return intent.terms.filter((term) => directive.indexOf(normalizeTermKey(term)) >= 0);
-}
-
 function commitmentToEvidence(
   commitment: CommitmentRecord,
   intent: RecallIntent,
-  matchedTerms: readonly string[],
+  similarity: number,
 ): EvidenceItem {
-  const lexical = matchedTerms.length > 0 ? 1 : intent.kind === "commitment" ? 0.25 : 0;
+  const vector = clamp(similarity, 0, 1);
 
   return {
     id: `evidence_commitment_${commitment.id}_${intent.id}`,
@@ -1268,11 +1296,10 @@ function commitmentToEvidence(
       commitmentId: commitment.id,
     },
     recallIntentId: intent.id,
-    matchedTerms: [...matchedTerms],
-    score: clamp(commitment.priority / 10 + lexical * 0.4, 0, 1),
+    matchedTerms: [],
+    score: clamp(commitment.priority / 10 + vector * 0.4, 0, 1),
     scoreBreakdown: {
-      lexical,
-      exactTerm: matchedTerms.length > 0 ? 1 : undefined,
+      vector,
     },
   };
 }

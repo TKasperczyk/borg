@@ -46,6 +46,7 @@ export type RecallIntent = {
 
 export type EvidenceSource =
   | "raw_stream"
+  | "recent_raw_stream"
   | "episode"
   | "semantic_node"
   | "semantic_edge"

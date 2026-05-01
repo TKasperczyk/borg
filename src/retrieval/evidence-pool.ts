@@ -76,5 +76,9 @@ function evidenceTruthRank(item: EvidenceItem): number {
     return 20;
   }
 
+  if (item.source === "recent_raw_stream") {
+    return 5;
+  }
+
   return 10;
 }
