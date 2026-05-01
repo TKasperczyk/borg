@@ -145,7 +145,7 @@ function sanitizeMessages(messages: readonly MessageParam[]): MessageParam[] {
   });
 }
 
-function initialPrompt(persona: Persona): string {
+function initialPrompt(persona: Persona, gapContext: string | null): string {
   const facts =
     persona.seedFacts === undefined || persona.seedFacts.length === 0
       ? ""
@@ -153,7 +153,12 @@ function initialPrompt(persona: Persona): string {
           .map((fact) => `- ${fact}`)
           .join("\n")}`;
 
-  return `Open the conversation. You may seed any of the listed facts naturally.${facts}`;
+  const opener =
+    gapContext === null
+      ? "Open the conversation. You may seed any of the listed facts naturally."
+      : `${gapContext} You're starting a new conversation now -- pick a different topic, a different mood, a different time of day than the last one. You may seed any of the listed facts naturally.`;
+
+  return `${opener}${facts}`;
 }
 
 export class PersonaSession {
@@ -166,6 +171,7 @@ export class PersonaSession {
   private readonly env: NodeJS.ProcessEnv;
   private readonly messages: MessageParam[] = [];
   private mockIndex = 0;
+  private nextSessionGap: string | null = null;
 
   constructor(options: PersonaSessionOptions) {
     this.persona = options.persona;
@@ -175,6 +181,11 @@ export class PersonaSession {
     this.systemPrefix = options.systemPrefix ?? [];
     this.model = options.model ?? PERSONA_MODEL;
     this.env = options.env ?? process.env;
+  }
+
+  startNewSession(gapContext: string): void {
+    this.messages.length = 0;
+    this.nextSessionGap = gapContext;
   }
 
   async nextTurn(borgPreviousResponse: string | null): Promise<string> {
@@ -201,8 +212,11 @@ export class PersonaSession {
     const trimmedBorgResponse = borgPreviousResponse?.trim() ?? "";
     const baseUserMessage =
       this.messages.length === 0 || trimmedBorgResponse.length === 0
-        ? initialPrompt(this.persona)
+        ? initialPrompt(this.persona, this.nextSessionGap)
         : trimmedBorgResponse;
+    if (this.messages.length === 0) {
+      this.nextSessionGap = null;
+    }
 
     // Build the candidate request messages without committing to
     // history yet -- if the call fails or returns empty, we retry with

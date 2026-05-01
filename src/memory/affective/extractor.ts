@@ -16,10 +16,33 @@ import {
 
 const AFFECTIVE_FALLBACK_TOOL_NAME = "EmitAffectiveSignal";
 const affectiveFallbackSchema = z.object({
-  valence: z.number().min(-1).max(1),
-  arousal: z.number().min(0).max(1),
-  dominant_emotion: dominantEmotionSchema.nullable(),
+  valence: z
+    .number()
+    .min(-1)
+    .max(1)
+    .describe(
+      "Affective valence from the speaker's perspective. -1 = highly unpleasant, 0 = neutral, 1 = highly pleasant. Required. If the text is genuinely flat or you are unsure, emit 0.",
+    ),
+  arousal: z
+    .number()
+    .min(0)
+    .max(1)
+    .describe(
+      "Affective arousal from the speaker's perspective. 0 = calm/inert, 1 = highly activated/agitated. Required. If the text is genuinely flat or you are unsure, emit 0.1.",
+    ),
+  dominant_emotion: dominantEmotionSchema
+    .nullable()
+    .describe(
+      'Best-fit dominant emotion category for the speaker, or null when no single category fits. Allowed: "joy", "sadness", "fear", "anger", "surprise", "curiosity", "neutral", or null.',
+    ),
 });
+const AFFECTIVE_SYSTEM_PROMPT = [
+  "Infer the dominant affective signal of the supplied text from the speaker's perspective.",
+  "",
+  'The speaker is the author of "text". Use "recent_history" (the speaker\'s prior turns) only to disambiguate the current text -- do not echo earlier signals if the current text has shifted.',
+  "",
+  "You MUST emit valence, arousal, and dominant_emotion. Never omit fields. If the text is genuinely flat or you are uncertain, emit valence=0, arousal=0.1, dominant_emotion=\"neutral\".",
+].join("\n");
 const DEFAULT_MAX_LLM_FALLBACK_CALLS = 1;
 export const AFFECTIVE_FALLBACK_TOOL = {
   name: AFFECTIVE_FALLBACK_TOOL_NAME,
@@ -94,7 +117,7 @@ export class AffectiveExtractor {
     try {
       const response = await this.options.llmClient.complete({
         model: this.options.model,
-        system: "Infer a grounded affective signal from text.",
+        system: AFFECTIVE_SYSTEM_PROMPT,
         messages: [
           {
             role: "user",

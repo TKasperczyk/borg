@@ -7,7 +7,24 @@ import type { BorgOpenOptions, MaintenanceCadence, ReviewQueueItem } from "../sr
 import { MetricsCapture } from "./metrics.js";
 import { PersonaSession } from "./persona.js";
 import { runOverseer, type RunOverseerOptions } from "./overseer.js";
-import type { MetricsRow, OverseerVerdict, Persona, SimulatorRunReport } from "./types.js";
+import type {
+  MetricsRow,
+  OverseerVerdict,
+  Persona,
+  SimulatorRunReport,
+  SimulatorSessionRecord,
+} from "./types.js";
+
+const SESSION_GAP_DESCRIPTIONS: readonly string[] = [
+  "It's the next morning. You're at your desk with coffee.",
+  "It's the next evening. You're back on the couch after dinner.",
+  "Two days have passed; it's a Saturday afternoon.",
+  "It's late at night a few days later; you can't sleep.",
+  "It's the following weekend; the kitchen still smells like breakfast.",
+  "A week has gone by. It's a quiet weekday lunch break.",
+];
+
+const MAX_SESSIONS_DEFAULT = 12;
 
 export type SimulatorRunnerOptions = {
   runId: string;
@@ -16,6 +33,7 @@ export type SimulatorRunnerOptions = {
   metricsPath: string;
   checkEvery: number;
   maintenanceEvery?: number;
+  maxSessions?: number;
   keep?: boolean;
   mock?: boolean;
   env?: NodeJS.ProcessEnv;
@@ -156,7 +174,13 @@ export class SimulatorRunner {
     let lastBorgResponse: string | null = null;
     let finalMetrics: MetricsRow | undefined;
     let resultState: SimulatorRunReport["resultState"] = "completed";
-    let stoppedTurn: number | undefined;
+    const sessions: SimulatorSessionRecord[] = [];
+    let currentSessionStartTurn = 1;
+    const maxSessions = this.options.maxSessions ?? MAX_SESSIONS_DEFAULT;
+
+    if (!Number.isInteger(maxSessions) || maxSessions <= 0) {
+      throw new Error("maxSessions must be a positive integer");
+    }
 
     try {
       await transport.open();
@@ -224,9 +248,31 @@ export class SimulatorRunner {
         finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn);
 
         if (!success.emitted) {
-          resultState = "stopped_by_suppression";
-          stoppedTurn = turn;
-          break;
+          // Borg suppressed -- in a real product this means the user
+          // walked away. Treat it the same way: close out this session,
+          // run a heavy maintenance pass (the "time gap" is when offline
+          // work would actually fire in production), and rotate the
+          // persona to a fresh session so the run keeps going.
+          sessions.push({
+            sessionIndex: sessions.length,
+            startedAtTurn: currentSessionStartTurn,
+            endedAtTurn: turn,
+            endReason: "suppression",
+          });
+
+          if (sessions.length >= maxSessions) {
+            resultState = "max_sessions_reached";
+            break;
+          }
+
+          await runMaintenanceTick(transport, turn, "heavy");
+          const gap =
+            SESSION_GAP_DESCRIPTIONS[sessions.length % SESSION_GAP_DESCRIPTIONS.length] ??
+            SESSION_GAP_DESCRIPTIONS[0]!;
+          persona.startNewSession(gap);
+          lastBorgResponse = null;
+          currentSessionStartTurn = turn + 1;
+          continue;
         }
 
         lastBorgResponse = success.response;
@@ -261,12 +307,24 @@ export class SimulatorRunner {
         throw new Error("Simulator completed without metrics");
       }
 
+      if (
+        resultState === "completed" &&
+        finalMetrics.turn_counter >= currentSessionStartTurn
+      ) {
+        sessions.push({
+          sessionIndex: sessions.length,
+          startedAtTurn: currentSessionStartTurn,
+          endedAtTurn: finalMetrics.turn_counter,
+          endReason: "run_complete",
+        });
+      }
+
       return {
         runId: this.options.runId,
         persona: this.options.persona.key,
         totalTurns: this.options.totalTurns,
         resultState,
-        ...(stoppedTurn === undefined ? {} : { stoppedTurn }),
+        sessions,
         overseerCheckpoints,
         turnFailures: this.turnFailures,
         finalMetrics,
@@ -289,7 +347,8 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     "",
     `Persona: ${report.persona}`,
     `Turns: ${report.totalTurns}`,
-    `Result: ${report.resultState}${report.stoppedTurn === undefined ? "" : ` at turn ${report.stoppedTurn}`}`,
+    `Result: ${report.resultState}`,
+    `Sessions: ${report.sessions.length}`,
     `Duration: ${Math.round(report.durationMs)}ms`,
     "",
     "## Final Metrics",
@@ -303,6 +362,16 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,
     "",
   ];
+
+  if (report.sessions.length > 0) {
+    lines.push("## Sessions", "");
+    for (const session of report.sessions) {
+      lines.push(
+        `- Session ${session.sessionIndex} (turns ${session.startedAtTurn}-${session.endedAtTurn}): ended via ${session.endReason}`,
+      );
+    }
+    lines.push("");
+  }
 
   lines.push("## Overseer Checkpoints", "");
 

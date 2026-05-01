@@ -33,14 +33,21 @@ export type OverseerVerdict = {
   recommendation: string;
 };
 
-export type SimulatorResultState = "completed" | "stopped_by_suppression";
+export type SimulatorResultState = "completed" | "max_sessions_reached";
+
+export type SimulatorSessionRecord = {
+  sessionIndex: number;
+  startedAtTurn: number;
+  endedAtTurn: number;
+  endReason: "suppression" | "run_complete";
+};
 
 export type SimulatorRunReport = {
   runId: string;
   persona: string;
   totalTurns: number;
   resultState: SimulatorResultState;
-  stoppedTurn?: number;
+  sessions: SimulatorSessionRecord[];
   overseerCheckpoints: OverseerVerdict[];
   turnFailures: Array<{ turn: number; error: string }>;
   finalMetrics: MetricsRow;

@@ -115,7 +115,7 @@ describe("SimulatorRunner", () => {
     expect(chatSpy.mock.calls.map(([, options]) => options?.audience)).toEqual(["Tom", "Tom"]);
   });
 
-  it("stops self-play when Borg suppresses a turn", async () => {
+  it("rotates sessions when Borg suppresses a turn and stops at maxSessions", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
     spyMaintenanceTick();
@@ -124,6 +124,7 @@ describe("SimulatorRunner", () => {
       persona: tomPersona,
       totalTurns: 5,
       checkEvery: 999,
+      maxSessions: 1,
       metricsPath,
       dataDir: join(dir, "data"),
       tracePath: join(dir, "trace.jsonl"),
@@ -171,8 +172,14 @@ describe("SimulatorRunner", () => {
       .split(/\r?\n/)
       .map((line) => JSON.parse(line) as { turn_counter: number });
 
-    expect(report.resultState).toBe("stopped_by_suppression");
-    expect(report.stoppedTurn).toBe(1);
+    expect(report.resultState).toBe("max_sessions_reached");
+    expect(report.sessions).toHaveLength(1);
+    expect(report.sessions[0]).toMatchObject({
+      sessionIndex: 0,
+      startedAtTurn: 1,
+      endedAtTurn: 1,
+      endReason: "suppression",
+    });
     expect(metricsRows).toHaveLength(1);
     expect(metricsRows[0]?.turn_counter).toBe(1);
   });
