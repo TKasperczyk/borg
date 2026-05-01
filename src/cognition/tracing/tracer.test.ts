@@ -310,6 +310,8 @@ describe("TurnTracer", () => {
       "perception_classifier_degraded",
       "perception_completed",
       "retrieval_started",
+      "llm_call_started",
+      "llm_call_response",
       "retrieval_completed",
       "path_selected",
       "llm_call_started",

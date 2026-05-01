@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import { FakeLLMClient, type LLMCompleteResult } from "../llm/index.js";
 import {
   createEpisodeFixture,
@@ -11,6 +12,8 @@ import {
   type OfflineTestHarness,
 } from "../offline/test-support.js";
 import { FixedClock, ManualClock } from "../util/clock.js";
+import { RetrievalPipeline } from "./pipeline.js";
+import { expandRecall } from "./recall-expansion.js";
 
 const NOW_MS = 10_000_000_000;
 const MAYA_TURN = "my partner's not Maya. Also, Thursday's design review is next week.";
@@ -87,6 +90,35 @@ function createStructuralEmbeddingClient() {
 
 function createCommitmentEmbeddingClient(vectors: ReadonlyMap<string, readonly number[]>) {
   return new TestEmbeddingClient(vectors);
+}
+
+function createTracer() {
+  const emit = vi.fn<TurnTracer["emit"]>();
+
+  return {
+    enabled: true,
+    includePayloads: false,
+    emit,
+  } satisfies TurnTracer & { emit: typeof emit };
+}
+
+function createTracedRetrievalPipeline(harness: OfflineTestHarness, tracer: TurnTracer) {
+  return new RetrievalPipeline({
+    embeddingClient: harness.embeddingClient,
+    llmClient: harness.llmClient,
+    recallExpansionModel: harness.config.anthropic.models.recallExpansion,
+    episodicRepository: harness.episodicRepository,
+    semanticNodeRepository: harness.semanticNodeRepository,
+    semanticGraph: harness.semanticGraph,
+    reviewQueueRepository: harness.reviewQueueRepository,
+    openQuestionsRepository: harness.openQuestionsRepository,
+    entityRepository: harness.entityRepository,
+    commitmentRepository: harness.commitmentRepository,
+    dataDir: harness.tempDir,
+    clock: harness.clock,
+    tracer,
+    semanticUnderReviewMultiplier: harness.config.retrieval.semantic.underReviewMultiplier,
+  });
 }
 
 async function insertMayaAndDesignReview(harness: OfflineTestHarness) {
@@ -177,6 +209,149 @@ describe("Recall Core", () => {
         }),
       ]),
     );
+  });
+
+  it("accepts sixteen recall expansion named terms and rejects more than sixteen", async () => {
+    const namedTerms = Array.from({ length: 16 }, (_, index) => `Term ${index + 1}`);
+    const acceptedClient = new FakeLLMClient({
+      responses: [recallExpansion({ named_terms: namedTerms })],
+    });
+
+    await expect(
+      expandRecall({
+        llmClient: acceptedClient,
+        model: "test-recall-expansion",
+        userMessage: "Remember these entity-rich project references.",
+      }),
+    ).resolves.toEqual({
+      facets: [],
+      named_terms: namedTerms,
+    });
+
+    const rejectedClient = new FakeLLMClient({
+      responses: [recallExpansion({ named_terms: [...namedTerms, "Term 17"] })],
+    });
+
+    await expect(
+      expandRecall({
+        llmClient: rejectedClient,
+        model: "test-recall-expansion",
+        userMessage: "Remember these entity-rich project references.",
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("traces recall expansion LLM calls on success", async () => {
+    const tracer = createTracer();
+    const llmClient = new FakeLLMClient({
+      responses: [recallExpansion({ named_terms: ["Maya"] })],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createEmbeddingClient(),
+      llmClient,
+    });
+    const pipeline = createTracedRetrievalPipeline(harness, tracer);
+
+    await pipeline.searchWithContext(MAYA_TURN, {
+      limit: 3,
+      traceTurnId: "turn-recall-expansion",
+    });
+
+    expect(tracer.emit).toHaveBeenCalledWith("llm_call_started", {
+      turnId: "turn-recall-expansion",
+      label: "recall_expansion",
+      model: harness.config.anthropic.models.recallExpansion,
+      promptCharCount: expect.any(Number),
+      toolSchemas: expect.any(Array),
+    });
+    expect(tracer.emit).toHaveBeenCalledWith("llm_call_response", {
+      turnId: "turn-recall-expansion",
+      label: "recall_expansion",
+      responseShape: {
+        textLength: 0,
+        toolUseBlocks: [
+          {
+            id: "toolu_recall_expansion",
+            name: "EmitRecallExpansion",
+          },
+        ],
+      },
+      stopReason: "tool_use",
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+      },
+    });
+  });
+
+  it("traces recall expansion LLM responses before schema parse failures degrade retrieval", async () => {
+    const tracer = createTracer();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        recallExpansion({
+          named_terms: Array.from({ length: 17 }, (_, index) => `Term ${index + 1}`),
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createEmbeddingClient(),
+      llmClient,
+    });
+    const pipeline = createTracedRetrievalPipeline(harness, tracer);
+
+    await pipeline.searchWithContext(MAYA_TURN, {
+      limit: 3,
+      entityTerms: ["Maya"],
+      traceTurnId: "turn-recall-expansion-parse-failure",
+    });
+
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "llm_call_response",
+      expect.objectContaining({
+        turnId: "turn-recall-expansion-parse-failure",
+        label: "recall_expansion",
+        stopReason: "tool_use",
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+        },
+      }),
+    );
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "retrieval_degraded",
+      expect.objectContaining({
+        turnId: "turn-recall-expansion-parse-failure",
+        subsystem: "recall_expansion",
+      }),
+    );
+  });
+
+  it("traces recall expansion transport failures as LLM responses", async () => {
+    const tracer = createTracer();
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createEmbeddingClient(),
+      llmClient: throwingRecallExpansion(),
+    });
+    const pipeline = createTracedRetrievalPipeline(harness, tracer);
+
+    await pipeline.searchWithContext(MAYA_TURN, {
+      limit: 3,
+      entityTerms: ["Maya"],
+      traceTurnId: "turn-recall-expansion-transport-failure",
+    });
+
+    expect(tracer.emit).toHaveBeenCalledWith("llm_call_response", {
+      turnId: "turn-recall-expansion-transport-failure",
+      label: "recall_expansion",
+      responseShape: {
+        error: "recall expansion unavailable",
+      },
+      stopReason: null,
+      usage: null,
+    });
   });
 
   it("unions perception entities when recall expansion succeeds with no named terms", async () => {

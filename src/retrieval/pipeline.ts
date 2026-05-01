@@ -447,6 +447,8 @@ export class RetrievalPipeline {
         llmClient: this.options.llmClient,
         model: this.options.recallExpansionModel ?? DEFAULT_RECALL_EXPANSION_MODEL,
         userMessage: query,
+        tracer: this.tracer,
+        turnId: options.traceTurnId,
       });
       const namedTerms = dedupeStrings(expansion.named_terms);
       const facetIntents = expansion.facets.map((facet, index): RecallIntent => {
