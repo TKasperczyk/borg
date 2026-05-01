@@ -44,6 +44,7 @@ import { retrieveOpenQuestionsForQuery as retrieveOpenQuestionsForQueryFromRepos
 import { RawStreamAdapter } from "./raw-stream-adapter.js";
 import {
   DEFAULT_RECALL_STATE_MAX_ACTIVE_HANDLES,
+  DEFAULT_RECALL_STATE_MAX_NEW_HANDLES_PER_TURN,
   DEFAULT_RECALL_STATE_MAX_WARM_EVIDENCE_RENDERED,
   DEFAULT_RECALL_STATE_TTL_TURNS,
   DEFAULT_RECALL_STATE_WARM_SUPPRESSION_TURNS,
@@ -122,6 +123,7 @@ export type RetrievalPipelineOptions = {
   recallStateTtlTurns?: number;
   recallStateWarmSuppressionTurns?: number;
   recallStateMaxActiveHandles?: number;
+  recallStateMaxNewHandlesPerTurn?: number;
   recallStateMaxWarmEvidenceRendered?: number;
 };
 
@@ -796,44 +798,49 @@ export class RetrievalPipeline {
         continue;
       }
 
-      const freshHandle = freshHandles.get(key);
-
-      if (freshHandle !== undefined) {
-        delete nextSuppressedHandles[key];
-        nextHandles.set(key, {
-          ...stateHandle,
-          handle: freshHandle,
-          lastSeenTurn: context.turn,
-          lastRenderedTurn: renderedHandleKeys.has(key)
-            ? context.turn
-            : stateHandle.lastRenderedTurn,
-          expiresAfterTurn: context.turn + ttlTurns,
-          reinforcementCount: stateHandle.reinforcementCount + 1,
-        });
-        continue;
-      }
-
       nextHandles.set(key, {
         ...stateHandle,
         lastRenderedTurn: renderedHandleKeys.has(key) ? context.turn : stateHandle.lastRenderedTurn,
       });
     }
 
-    for (const [key, handle] of freshHandles) {
+    for (const key of freshHandles.keys()) {
       delete nextSuppressedHandles[key];
+    }
 
-      if (nextHandles.has(key)) {
+    for (const [key, freshHandle] of freshHandles) {
+      const stateHandle = nextHandles.get(key);
+
+      if (stateHandle === undefined) {
         continue;
       }
 
       nextHandles.set(key, {
-        handle,
-        firstSeenTurn: context.turn,
+        ...stateHandle,
+        handle: freshHandle,
         lastSeenTurn: context.turn,
-        lastRenderedTurn: renderedHandleKeys.has(key) ? context.turn : null,
+        lastRenderedTurn: renderedHandleKeys.has(key) ? context.turn : stateHandle.lastRenderedTurn,
         expiresAfterTurn: context.turn + ttlTurns,
-        reinforcementCount: 1,
+        reinforcementCount: stateHandle.reinforcementCount + 1,
       });
+    }
+
+    const newFreshHandles = [...freshHandles].filter(([key]) => !nextHandles.has(key));
+    const admittedNewHandles = rankFreshAdmissions(newFreshHandles).slice(
+      0,
+      this.maxNewHandlesPerTurn(),
+    );
+
+    for (const [key, handle] of admittedNewHandles) {
+      nextHandles.set(
+        key,
+        createRecallStateHandle({
+          handle,
+          turn: context.turn,
+          ttlTurns,
+          rendered: renderedHandleKeys.has(key),
+        }),
+      );
     }
 
     const warmSuppressionTurns = this.warmSuppressionTurns();
@@ -851,7 +858,7 @@ export class RetrievalPipeline {
     const activeHandles = capRecallStateHandles(
       [...nextHandles.values()],
       this.maxActiveHandles(),
-    ).sort(compareRecallStateHandles);
+    ).sort(compareRecallStateRetentionPriority);
 
     return {
       scopeKey: context.scopeKey,
@@ -874,6 +881,13 @@ export class RetrievalPipeline {
     return normalizeRecallStateBound(
       this.options.recallStateMaxActiveHandles,
       DEFAULT_RECALL_STATE_MAX_ACTIVE_HANDLES,
+    );
+  }
+
+  private maxNewHandlesPerTurn(): number {
+    return normalizeRecallStateBound(
+      this.options.recallStateMaxNewHandlesPerTurn,
+      DEFAULT_RECALL_STATE_MAX_NEW_HANDLES_PER_TURN,
     );
   }
 
@@ -1570,14 +1584,6 @@ function collectEvidenceHandles(
   return handles;
 }
 
-function compareRecallStateHandles(left: RecallStateHandle, right: RecallStateHandle): number {
-  return (
-    right.lastSeenTurn - left.lastSeenTurn ||
-    (right.lastRenderedTurn ?? -1) - (left.lastRenderedTurn ?? -1) ||
-    recallEvidenceHandleKey(left.handle).localeCompare(recallEvidenceHandleKey(right.handle))
-  );
-}
-
 function compareWarmRecallCandidates(
   left: WarmRecallCandidate,
   right: WarmRecallCandidate,
@@ -1589,12 +1595,84 @@ function compareWarmRecallCandidates(
       right.stateHandle.lastRenderedTurn,
     ) ||
     left.stateHandle.firstSeenTurn - right.stateHandle.firstSeenTurn ||
-    left.key.localeCompare(right.key)
+    compareStableText(left.key, right.key)
   );
 }
 
 function compareNullableTurnAscending(left: number | null, right: number | null): number {
   return (left ?? -1) - (right ?? -1);
+}
+
+function createRecallStateHandle(input: {
+  handle: RecallEvidenceHandle;
+  turn: number;
+  ttlTurns: number;
+  rendered: boolean;
+}): RecallStateHandle {
+  return {
+    handle: input.handle,
+    firstSeenTurn: input.turn,
+    lastSeenTurn: input.turn,
+    lastRenderedTurn: input.rendered ? input.turn : null,
+    expiresAfterTurn: input.turn + input.ttlTurns,
+    reinforcementCount: 1,
+  };
+}
+
+function rankFreshAdmissions(
+  handles: readonly [string, RecallEvidenceHandle][],
+): [string, RecallEvidenceHandle][] {
+  return [...handles].sort(
+    (left, right) =>
+      sourceRetentionRank(right[1]) - sourceRetentionRank(left[1]) ||
+      compareStableText(left[0], right[0]),
+  );
+}
+
+function compareRecallStateRetentionPriority(
+  left: RecallStateHandle,
+  right: RecallStateHandle,
+): number {
+  return (
+    right.reinforcementCount - left.reinforcementCount ||
+    right.lastSeenTurn - left.lastSeenTurn ||
+    right.expiresAfterTurn - left.expiresAfterTurn ||
+    sourceRetentionRank(right.handle) - sourceRetentionRank(left.handle) ||
+    left.firstSeenTurn - right.firstSeenTurn ||
+    compareStableText(recallEvidenceHandleKey(left.handle), recallEvidenceHandleKey(right.handle))
+  );
+}
+
+function sourceRetentionRank(handle: RecallEvidenceHandle): number {
+  if (handle.source === "episode") {
+    return 6;
+  }
+
+  if (handle.source === "raw_stream") {
+    return handle.parentEpisodeId === undefined ? 1 : 5;
+  }
+
+  if (handle.source === "commitment") {
+    return 4;
+  }
+
+  if (handle.source === "open_question") {
+    return 3;
+  }
+
+  return 2;
+}
+
+function compareStableText(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+
+  if (left > right) {
+    return 1;
+  }
+
+  return 0;
 }
 
 function capRecallStateHandles(
@@ -1609,12 +1687,7 @@ function capRecallStateHandles(
     return [...handles];
   }
 
-  return [...handles]
-    .sort(
-      (left, right) =>
-        right.firstSeenTurn - left.firstSeenTurn || compareRecallStateHandles(left, right),
-    )
-    .slice(0, limit);
+  return [...handles].sort(compareRecallStateRetentionPriority).slice(0, limit);
 }
 
 function pruneSuppressedRecallHandles(

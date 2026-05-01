@@ -11,12 +11,18 @@ import { createWorkingMemory, workingMemorySchema } from "../memory/working/inde
 import { FixedClock } from "../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
+  createCommitmentId,
   createEntityId,
   createEpisodeId,
+  createOpenQuestionId,
+  createSemanticEdgeId,
+  createSemanticNodeId,
+  createStreamEntryId,
   type SessionId,
 } from "../util/ids.js";
 
 import type { RecallStateHandle } from "./recall-state.js";
+import { RetrievalPipeline } from "./pipeline.js";
 
 const NOW_MS = 10_000;
 const DISTRACTOR_COUNT = 16;
@@ -169,6 +175,64 @@ function seedRawStreamHandle(input: {
   });
 }
 
+function createStateHandle(
+  handle: RecallStateHandle["handle"],
+  overrides: Partial<Omit<RecallStateHandle, "handle">> = {},
+): RecallStateHandle {
+  return {
+    handle,
+    firstSeenTurn: overrides.firstSeenTurn ?? 1,
+    lastSeenTurn: overrides.lastSeenTurn ?? 1,
+    lastRenderedTurn: overrides.lastRenderedTurn ?? null,
+    expiresAfterTurn: overrides.expiresAfterTurn ?? 100,
+    reinforcementCount: overrides.reinforcementCount ?? 1,
+  };
+}
+
+async function insertMatchingEpisodes(input: {
+  harness: OfflineTestHarness;
+  count: number;
+  prefix: string;
+  ids?: readonly ReturnType<typeof createEpisodeId>[];
+}) {
+  const episodes = [];
+
+  for (let index = 0; index < input.count; index += 1) {
+    const episode = createEpisodeFixture(
+      {
+        ...(input.ids?.[index] === undefined ? {} : { id: input.ids[index] }),
+        title: `${input.prefix} ${index}`,
+        narrative: `${input.prefix} ${index} should be eligible as fresh recall evidence.`,
+        participants: [input.prefix],
+        tags: [input.prefix],
+        significance: 1,
+        created_at: 30_000 + index,
+        updated_at: 30_000 + index,
+      },
+      [1, 0, 0, 0],
+    );
+
+    await input.harness.episodicRepository.insert(episode);
+    episodes.push(episode);
+  }
+
+  return episodes;
+}
+
+function episodeHandleIds(
+  handles: readonly RecallStateHandle[],
+): Set<ReturnType<typeof createEpisodeId>> {
+  const ids = new Set<ReturnType<typeof createEpisodeId>>();
+
+  for (const item of handles) {
+    if (item.handle.source === "episode") {
+      ids.add(item.handle.episodeId);
+    }
+  }
+
+  return ids;
+}
+
 describe("retrieval recall_state", () => {
   let harness: OfflineTestHarness | undefined;
 
@@ -236,7 +300,15 @@ describe("retrieval recall_state", () => {
     const serialized = JSON.stringify(state);
 
     expect(keys).not.toEqual(
-      expect.arrayContaining(["text", "summary", "description", "content", "belief", "claim"]),
+      expect.arrayContaining([
+        "id",
+        "text",
+        "summary",
+        "description",
+        "content",
+        "belief",
+        "claim",
+      ]),
     );
     expect(serialized).not.toContain("Atlas serialized title");
     expect(serialized).not.toContain("Atlas serialized narrative");
@@ -470,46 +542,271 @@ describe("retrieval recall_state", () => {
     ).toBe(true);
   });
 
-  it("caps active recall handles by dropping the oldest first-seen entries", async () => {
+  it("preserves reinforced handles under cap pressure from broad fresh evidence", async () => {
     harness = await createHarness();
     const sessionId = testSessionId();
-    const activeHandles = Array.from({ length: 30 }, (_, index): RecallStateHandle => {
-      const turn = index + 1;
-
-      return {
-        handle: {
+    const reinforcedEpisodeId = createEpisodeId();
+    const activeHandles = [
+      createStateHandle(
+        {
+          source: "episode",
+          episodeId: reinforcedEpisodeId,
+        },
+        {
+          reinforcementCount: 10,
+        },
+      ),
+      ...Array.from({ length: 23 }, () =>
+        createStateHandle({
           source: "episode",
           episodeId: createEpisodeId(),
-        },
-        firstSeenTurn: turn,
-        lastSeenTurn: turn,
-        lastRenderedTurn: null,
-        expiresAfterTurn: 100,
-        reinforcementCount: 1,
-      };
-    });
+        }),
+      ),
+    ];
     seedRecallHandles({
       harness,
       scopeKey: sessionId,
       activeHandles,
-      lastRefreshTurn: 30,
+      lastRefreshTurn: 1,
       ttlTurns: 100,
     });
+    await insertMatchingEpisodes({
+      harness,
+      count: 30,
+      prefix: "Fresh cap pressure",
+    });
 
-    await harness.retrievalPipeline.searchWithContext("nothing relevant", {
+    await harness.retrievalPipeline.searchWithContext("Atlas current", {
       sessionId,
-      turnCounter: 31,
+      turnCounter: 2,
+      limit: 15,
+      minSimilarity: 0.99,
+    });
+
+    const state = harness.recallStateRepository.load(sessionId);
+
+    expect(state?.activeHandles).toHaveLength(24);
+    expect(
+      state?.activeHandles.some(
+        (item) => item.handle.source === "episode" && item.handle.episodeId === reinforcedEpisodeId,
+      ),
+    ).toBe(true);
+  });
+
+  it("bounds brand-new fresh handle admission per turn", async () => {
+    harness = await createHarness();
+    const sessionId = testSessionId();
+    await insertMatchingEpisodes({
+      harness,
+      count: 30,
+      prefix: "Fresh admission",
+    });
+
+    await harness.retrievalPipeline.searchWithContext("Atlas current", {
+      sessionId,
+      turnCounter: 1,
+      limit: 15,
+      minSimilarity: 0.99,
+    });
+
+    const state = harness.recallStateRepository.load(sessionId);
+
+    expect(state?.activeHandles).toHaveLength(6);
+  });
+
+  it("reinforces a fresh duplicate in a full pool without consuming a new admission slot", async () => {
+    harness = await createHarness();
+    const sessionId = testSessionId();
+    const duplicateEpisodeId = createEpisodeId();
+    const activeHandles = [
+      createStateHandle({
+        source: "episode",
+        episodeId: duplicateEpisodeId,
+      }),
+      ...Array.from({ length: 23 }, () =>
+        createStateHandle({
+          source: "episode",
+          episodeId: createEpisodeId(),
+        }),
+      ),
+    ];
+    seedRecallHandles({
+      harness,
+      scopeKey: sessionId,
+      activeHandles,
+      lastRefreshTurn: 1,
+      ttlTurns: 6,
+    });
+    await insertMatchingEpisodes({
+      harness,
+      count: 1,
+      prefix: "Fresh duplicate",
+      ids: [duplicateEpisodeId],
+    });
+    const newEpisodes = await insertMatchingEpisodes({
+      harness,
+      count: 10,
+      prefix: "Fresh duplicate admission",
+    });
+    const newEpisodeIds = new Set(newEpisodes.map((episode) => episode.id));
+
+    await harness.retrievalPipeline.searchWithContext("Atlas current", {
+      sessionId,
+      turnCounter: 2,
+      limit: 6,
+      minSimilarity: 0.99,
+    });
+
+    const state = harness.recallStateRepository.load(sessionId);
+    const duplicate = state?.activeHandles.find(
+      (item) => item.handle.source === "episode" && item.handle.episodeId === duplicateEpisodeId,
+    );
+    const admittedNewCount = [...episodeHandleIds(state?.activeHandles ?? [])].filter((episodeId) =>
+      newEpisodeIds.has(episodeId),
+    ).length;
+
+    expect(state?.activeHandles).toHaveLength(24);
+    expect(duplicate?.reinforcementCount).toBe(2);
+    expect(duplicate?.expiresAfterTurn).toBe(8);
+    expect(admittedNewCount).toBe(6);
+  });
+
+  it("prunes expired handles before cap and bounded admission", async () => {
+    harness = await createHarness();
+    const sessionId = testSessionId();
+    const expiredEpisodeIds = Array.from({ length: 10 }, () => createEpisodeId());
+    const activeHandles = [
+      ...expiredEpisodeIds.map((episodeId) =>
+        createStateHandle(
+          {
+            source: "episode",
+            episodeId,
+          },
+          {
+            expiresAfterTurn: 2,
+          },
+        ),
+      ),
+      ...Array.from({ length: 14 }, () =>
+        createStateHandle({
+          source: "episode",
+          episodeId: createEpisodeId(),
+        }),
+      ),
+    ];
+    seedRecallHandles({
+      harness,
+      scopeKey: sessionId,
+      activeHandles,
+      lastRefreshTurn: 2,
+      ttlTurns: 6,
+    });
+    const freshEpisodes = await insertMatchingEpisodes({
+      harness,
+      count: 8,
+      prefix: "Fresh after expiry",
+    });
+    const freshEpisodeIds = new Set(freshEpisodes.map((episode) => episode.id));
+
+    await harness.retrievalPipeline.searchWithContext("Atlas current", {
+      sessionId,
+      turnCounter: 3,
+      limit: 4,
+      minSimilarity: 0.99,
+    });
+
+    const state = harness.recallStateRepository.load(sessionId);
+    const activeEpisodeIds = episodeHandleIds(state?.activeHandles ?? []);
+
+    expect(state?.activeHandles.length).toBeLessThanOrEqual(24);
+    expect(state?.activeHandles).toHaveLength(20);
+    for (const episodeId of expiredEpisodeIds) {
+      expect(activeEpisodeIds.has(episodeId)).toBe(false);
+    }
+    expect(
+      [...activeEpisodeIds].filter((episodeId) => freshEpisodeIds.has(episodeId)),
+    ).toHaveLength(6);
+  });
+
+  it("uses source retention rank when otherwise equal handles exceed the cap", async () => {
+    harness = await createHarness();
+    const sessionId = testSessionId();
+    const parentEpisodeId = createEpisodeId();
+    seedRecallHandles({
+      harness,
+      scopeKey: sessionId,
+      activeHandles: [
+        createStateHandle({
+          source: "raw_stream",
+          streamIds: [createStreamEntryId()],
+        }),
+        createStateHandle({
+          source: "semantic_node",
+          nodeId: createSemanticNodeId(),
+        }),
+        createStateHandle({
+          source: "semantic_edge",
+          edgeId: createSemanticEdgeId(),
+        }),
+        createStateHandle({
+          source: "open_question",
+          openQuestionId: createOpenQuestionId(),
+        }),
+        createStateHandle({
+          source: "commitment",
+          commitmentId: createCommitmentId(),
+        }),
+        createStateHandle({
+          source: "raw_stream",
+          streamIds: [createStreamEntryId()],
+          parentEpisodeId,
+        }),
+        createStateHandle({
+          source: "episode",
+          episodeId: createEpisodeId(),
+        }),
+      ],
+      lastRefreshTurn: 1,
+      ttlTurns: 100,
+    });
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: harness.embeddingClient,
+      episodicRepository: harness.episodicRepository,
+      recallStateRepository: harness.recallStateRepository,
+      dataDir: harness.tempDir,
+      clock: harness.clock,
+      recallStateMaxActiveHandles: 6,
+      recallStateMaxNewHandlesPerTurn: 0,
+    });
+
+    await pipeline.searchWithContext("quiet turn", {
+      sessionId,
+      turnCounter: 2,
       limit: 1,
     });
 
     const state = harness.recallStateRepository.load(sessionId);
-    const firstSeenTurns = [...(state?.activeHandles ?? [])]
-      .map((item) => item.firstSeenTurn)
-      .sort((left, right) => left - right);
+    const sources = (state?.activeHandles ?? []).map((item) => {
+      if (item.handle.source !== "raw_stream") {
+        return item.handle.source;
+      }
 
-    expect(state?.activeHandles).toHaveLength(24);
-    expect(firstSeenTurns[0]).toBe(7);
-    expect(firstSeenTurns.at(-1)).toBe(30);
+      return item.handle.parentEpisodeId === undefined ? "raw_stream" : "raw_stream:parent";
+    });
+
+    expect(sources).toEqual([
+      "episode",
+      "raw_stream:parent",
+      "commitment",
+      "open_question",
+      "semantic_edge",
+      "semantic_node",
+    ]);
+    expect(
+      state?.activeHandles.some(
+        (item) => item.handle.source === "raw_stream" && item.handle.parentEpisodeId === undefined,
+      ),
+    ).toBe(false);
   });
 
   it("limits warm evidence rendered per turn by reinforcement then oldest render", async () => {
