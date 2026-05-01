@@ -16,15 +16,18 @@ import type {
 import type { DecayOptions } from "../memory/episodic/decay.js";
 import type { OpenQuestion, OpenQuestionsRepository, ValueRecord } from "../memory/self/index.js";
 import type { SemanticGraph } from "../memory/semantic/graph.js";
-import type { SemanticNodeRepository } from "../memory/semantic/repository.js";
+import type {
+  SemanticEdgeRepository,
+  SemanticNodeRepository,
+} from "../memory/semantic/repository.js";
 import type { ReviewQueueRepository } from "../memory/semantic/review-queue.js";
-import type { SemanticNode } from "../memory/semantic/types.js";
+import type { SemanticEdge, SemanticNode } from "../memory/semantic/types.js";
 import type { SocialProfile } from "../memory/social/index.js";
 import type { StreamEntry, StreamEntryIndexRepository } from "../stream/index.js";
 import { NOOP_TRACER, type TurnTracer } from "../cognition/tracing/tracer.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
-import type { EntityId, EpisodeId } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, type EntityId, type EpisodeId, type SessionId } from "../util/ids.js";
 import type { JsonValue } from "../util/json-value.js";
 
 import { CitationResolver, type CitationResolverOptions } from "./citations.js";
@@ -39,8 +42,24 @@ import {
 } from "./evidence-projections.js";
 import { retrieveOpenQuestionsForQuery as retrieveOpenQuestionsForQueryFromRepository } from "./open-questions.js";
 import { RawStreamAdapter } from "./raw-stream-adapter.js";
+import {
+  DEFAULT_RECALL_STATE_TTL_TURNS,
+  createEmptyRecallState,
+  deriveRecallEvidenceHandle,
+  normalizeRecallEvidenceHandle,
+  recallEvidenceHandleKey,
+  type RecallState,
+  type RecallStateHandle,
+  type RecallStateRepository,
+} from "./recall-state.js";
 import { DEFAULT_RECALL_EXPANSION_MODEL, expandRecall } from "./recall-expansion.js";
-import type { EvidenceItem, EvidencePool, RecallIntent, RecallIntentKind } from "./recall-types.js";
+import type {
+  EvidenceItem,
+  EvidencePool,
+  RecallEvidenceHandle,
+  RecallIntent,
+  RecallIntentKind,
+} from "./recall-types.js";
 import {
   buildRetrievedEpisode,
   clamp,
@@ -58,6 +77,7 @@ import {
   type RetrievalScoringFeatures,
 } from "./scoring-features.js";
 import {
+  isSemanticNodeVisibleToAudience,
   resolveSemanticContext,
   toRetrievedSemantic,
   type ResolvedSemanticRetrieval,
@@ -82,11 +102,13 @@ export type RetrievalPipelineOptions = {
   dataDir: string;
   entryIndex?: StreamEntryIndexRepository;
   semanticNodeRepository?: SemanticNodeRepository;
+  semanticEdgeRepository?: Pick<SemanticEdgeRepository, "getEdge">;
   semanticGraph?: SemanticGraph;
   reviewQueueRepository?: Pick<ReviewQueueRepository, "listOpenBeliefRevisionsByTarget">;
   openQuestionsRepository?: OpenQuestionsRepository;
   entityRepository?: Pick<EntityRepository, "findByName">;
-  commitmentRepository?: Pick<CommitmentRepository, "list">;
+  commitmentRepository?: Pick<CommitmentRepository, "get" | "list">;
+  recallStateRepository?: Pick<RecallStateRepository, "load" | "save">;
   clock?: Clock;
   tracer?: TurnTracer;
   scoreWeights?: ScoreWeights;
@@ -94,6 +116,7 @@ export type RetrievalPipelineOptions = {
   decayOptions?: Omit<DecayOptions, "nowMs">;
   semanticUnderReviewMultiplier?: number;
   commitmentEvidenceSimilarityThreshold?: number;
+  recallStateTtlTurns?: number;
 };
 
 export type RetrievalSearchOptions = EpisodeSearchOptions & {
@@ -119,6 +142,8 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   audienceProfile?: SocialProfile | null;
   audienceTerms?: readonly string[];
   entityTerms?: readonly string[];
+  sessionId?: SessionId;
+  turnCounter?: number;
   traceTurnId?: string;
 };
 
@@ -166,8 +191,15 @@ type OpenQuestionEvidenceCandidate = {
   score: number;
 };
 
+type RecallStateTurnContext = {
+  state: RecallState;
+  scopeKey: string;
+  turn: number;
+};
+
 const DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD = 0.3;
 const RETRIEVAL_FANOUT_CONCURRENCY = 5;
+const WARM_RECALL_INTENT_ID = "warm_recall";
 
 export class RetrievalPipeline {
   private readonly clock: Clock;
@@ -231,6 +263,11 @@ export class RetrievalPipeline {
 
     const nowMs = this.clock.now();
     const limit = Math.max(1, options.limit ?? 5);
+    const recallStateContext = this.loadRecallStateContext(options, nowMs);
+    const warmRecallEvidence =
+      recallStateContext === null
+        ? []
+        : await this.rehydrateRecallStateEvidence(recallStateContext, options, nowMs);
     let scoringFeatures = options.scoringFeatures;
 
     if (scoringFeatures === undefined) {
@@ -290,15 +327,16 @@ export class RetrievalPipeline {
       ...streamEntriesToEvidence(citationEntries, episodeCandidates),
       ...this.collectRecentRawStreamEvidence(intents),
     ];
+    const freshEvidence = [
+      ...episodeEvidence,
+      ...semanticEvidence,
+      ...openQuestionEvidence,
+      ...commitmentEvidence,
+      ...rawStreamEvidence,
+    ];
     const evidencePool: EvidencePool = {
       intents,
-      items: rankEvidenceItems([
-        ...episodeEvidence,
-        ...semanticEvidence,
-        ...openQuestionEvidence,
-        ...commitmentEvidence,
-        ...rawStreamEvidence,
-      ]),
+      items: rankEvidenceItems([...freshEvidence, ...warmRecallEvidence]),
     };
     const episodeProjectionSources = new Map<string, EpisodeProjectionSource>(
       episodeEvidenceSources.map(({ evidence, item }) => [
@@ -344,6 +382,17 @@ export class RetrievalPipeline {
       expectedCount: limit,
     });
 
+    if (recallStateContext !== null) {
+      this.options.recallStateRepository?.save(
+        this.refreshRecallState(recallStateContext, {
+          freshEvidence,
+          warmRecallEvidence,
+          renderedEvidence: evidencePool.items,
+          nowMs,
+        }),
+      );
+    }
+
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval_completed", {
         turnId: options.traceTurnId,
@@ -360,6 +409,428 @@ export class RetrievalPipeline {
   async search(query: string, options: RetrievalSearchOptions = {}): Promise<RetrievedEpisode[]> {
     const result = await this.searchWithContext(query, options);
     return result.episodes;
+  }
+
+  private loadRecallStateContext(
+    options: RetrievalSearchOptions,
+    nowMs: number,
+  ): RecallStateTurnContext | null {
+    if (this.options.recallStateRepository === undefined) {
+      return null;
+    }
+
+    const scopeKey = recallStateScopeKey(options);
+    const loaded =
+      this.options.recallStateRepository.load(scopeKey) ??
+      createEmptyRecallState({
+        scopeKey,
+        nowMs,
+        ttlTurns: this.options.recallStateTtlTurns ?? DEFAULT_RECALL_STATE_TTL_TURNS,
+      });
+
+    return {
+      state: loaded,
+      scopeKey,
+      turn: resolveRecallStateTurn(loaded, options.turnCounter),
+    };
+  }
+
+  private async rehydrateRecallStateEvidence(
+    context: RecallStateTurnContext,
+    options: RetrievalSearchOptions,
+    nowMs: number,
+  ): Promise<EvidenceItem[]> {
+    const evidence: EvidenceItem[] = [];
+
+    for (const stateHandle of context.state.activeHandles) {
+      const handle = normalizeRecallEvidenceHandle(stateHandle.handle);
+      const key = recallEvidenceHandleKey(handle);
+
+      if (stateHandle.expiresAfterTurn < context.turn) {
+        continue;
+      }
+
+      if (isRecallHandleSuppressed(context.state, key, context.turn)) {
+        continue;
+      }
+
+      const item = await this.rehydrateRecallHandle(handle, stateHandle, options, nowMs);
+
+      if (item !== null) {
+        evidence.push(item);
+      }
+    }
+
+    return evidence;
+  }
+
+  private async rehydrateRecallHandle(
+    handle: RecallEvidenceHandle,
+    stateHandle: RecallStateHandle,
+    options: RetrievalSearchOptions,
+    nowMs: number,
+  ): Promise<EvidenceItem | null> {
+    if (handle.source === "episode") {
+      return this.rehydrateEpisodeHandle(handle, stateHandle, options);
+    }
+
+    if (handle.source === "raw_stream") {
+      return this.rehydrateRawStreamHandle(handle, stateHandle, options);
+    }
+
+    if (handle.source === "semantic_node") {
+      return this.rehydrateSemanticNodeHandle(handle, stateHandle, options);
+    }
+
+    if (handle.source === "semantic_edge") {
+      return this.rehydrateSemanticEdgeHandle(handle, stateHandle, options);
+    }
+
+    if (handle.source === "commitment") {
+      return this.rehydrateCommitmentHandle(handle, stateHandle, options, nowMs);
+    }
+
+    return this.rehydrateOpenQuestionHandle(handle, stateHandle, options);
+  }
+
+  private async rehydrateEpisodeHandle(
+    handle: Extract<RecallEvidenceHandle, { source: "episode" }>,
+    stateHandle: RecallStateHandle,
+    options: RetrievalSearchOptions,
+  ): Promise<EvidenceItem | null> {
+    const episode = await this.options.episodicRepository.get(handle.episodeId);
+
+    if (episode === null) {
+      return null;
+    }
+
+    if (
+      !isEpisodeVisibleToAudience(episode, options.audienceEntityId, {
+        crossAudience: options.crossAudience,
+      })
+    ) {
+      return null;
+    }
+
+    return {
+      id: `warm_recall_episode_${episode.id}`,
+      source: "warm_recall",
+      text: `${episode.title}: ${episode.narrative}`,
+      provenance: {
+        episodeId: episode.id,
+        streamIds: [...episode.source_stream_ids],
+      },
+      recallIntentId: WARM_RECALL_INTENT_ID,
+      matchedTerms: [],
+      score: warmRecallScore(stateHandle),
+      scoreBreakdown: {
+        provenance: 1,
+        recency: computeRecencyEvidenceScore(episode.updated_at),
+      },
+    };
+  }
+
+  private async rehydrateRawStreamHandle(
+    handle: Extract<RecallEvidenceHandle, { source: "raw_stream" }>,
+    stateHandle: RecallStateHandle,
+    options: RetrievalSearchOptions,
+  ): Promise<EvidenceItem | null> {
+    if (handle.parentEpisodeId !== undefined) {
+      const parent = await this.options.episodicRepository.get(handle.parentEpisodeId);
+
+      if (
+        parent === null ||
+        !isEpisodeVisibleToAudience(parent, options.audienceEntityId, {
+          crossAudience: options.crossAudience,
+        })
+      ) {
+        return null;
+      }
+    }
+
+    const adapter = new RawStreamAdapter({
+      dataDir: this.options.dataDir,
+      entryIndex: this.options.entryIndex,
+    });
+    const entries = await adapter.resolveSourceIds(handle.streamIds);
+    const orderedEntries = handle.streamIds
+      .map((streamId) => entries.get(streamId))
+      .filter((entry): entry is StreamEntry => entry !== undefined);
+
+    if (orderedEntries.length === 0) {
+      return null;
+    }
+
+    return {
+      id: `warm_recall_raw_stream_${handle.streamIds.join("_")}`,
+      source: "warm_recall",
+      text: orderedEntries.map((entry) => streamEntryContentToText(entry)).join("\n"),
+      provenance: {
+        streamIds: [...handle.streamIds],
+        ...(handle.parentEpisodeId === undefined
+          ? {}
+          : { parentEpisodeId: handle.parentEpisodeId }),
+      },
+      recallIntentId: WARM_RECALL_INTENT_ID,
+      matchedTerms: [],
+      score: warmRecallScore(stateHandle),
+      scoreBreakdown: {
+        provenance: 1,
+      },
+    };
+  }
+
+  private async rehydrateSemanticNodeHandle(
+    handle: Extract<RecallEvidenceHandle, { source: "semantic_node" }>,
+    stateHandle: RecallStateHandle,
+    options: RetrievalSearchOptions,
+  ): Promise<EvidenceItem | null> {
+    const node = await this.options.semanticNodeRepository?.get(handle.nodeId);
+
+    if (node === undefined || node === null || node.archived) {
+      return null;
+    }
+
+    if (
+      !(await isSemanticNodeVisibleToAudience(node, options, {
+        episodicRepository: this.options.episodicRepository,
+      }))
+    ) {
+      return null;
+    }
+
+    return {
+      id: `warm_recall_semantic_node_${node.id}`,
+      source: "warm_recall",
+      text: `${node.label}: ${node.description}`,
+      provenance: {
+        nodeId: node.id,
+      },
+      recallIntentId: WARM_RECALL_INTENT_ID,
+      matchedTerms: [],
+      score: warmRecallScore(stateHandle),
+      scoreBreakdown: {
+        provenance: 1,
+      },
+    };
+  }
+
+  private async rehydrateSemanticEdgeHandle(
+    handle: Extract<RecallEvidenceHandle, { source: "semantic_edge" }>,
+    stateHandle: RecallStateHandle,
+    options: RetrievalSearchOptions,
+  ): Promise<EvidenceItem | null> {
+    const edge = this.options.semanticEdgeRepository?.getEdge(handle.edgeId);
+
+    if (
+      edge === undefined ||
+      edge === null ||
+      edge.valid_to !== null ||
+      edge.invalidated_at !== null
+    ) {
+      return null;
+    }
+
+    const nodeId = handle.nodeId ?? edge.to_node_id;
+    const node = await this.options.semanticNodeRepository?.get(nodeId);
+
+    if (node === undefined || node === null || node.archived) {
+      return null;
+    }
+
+    if (!(await this.isSemanticEdgeVisibleToAudience(edge, node, options))) {
+      return null;
+    }
+
+    return {
+      id: `warm_recall_semantic_edge_${edge.id}`,
+      source: "warm_recall",
+      text: `${node.label}: ${node.description}`,
+      provenance: {
+        edgeId: edge.id,
+        nodeId: node.id,
+      },
+      recallIntentId: WARM_RECALL_INTENT_ID,
+      matchedTerms: [],
+      score: warmRecallScore(stateHandle),
+      scoreBreakdown: {
+        provenance: 1,
+      },
+    };
+  }
+
+  private async isSemanticEdgeVisibleToAudience(
+    edge: SemanticEdge,
+    node: SemanticNode,
+    options: RetrievalSearchOptions,
+  ): Promise<boolean> {
+    if (
+      !(await isSemanticNodeVisibleToAudience(node, options, {
+        episodicRepository: this.options.episodicRepository,
+      }))
+    ) {
+      return false;
+    }
+
+    if (options.crossAudience === true) {
+      return true;
+    }
+
+    const evidenceEpisodes = await this.options.episodicRepository.getMany(
+      edge.evidence_episode_ids,
+    );
+    const visibleEpisodeIds = new Set(
+      evidenceEpisodes
+        .filter((episode) => isEpisodeVisibleToAudience(episode, options.audienceEntityId))
+        .map((episode) => episode.id),
+    );
+
+    return edge.evidence_episode_ids.every((episodeId) => visibleEpisodeIds.has(episodeId));
+  }
+
+  private rehydrateCommitmentHandle(
+    handle: Extract<RecallEvidenceHandle, { source: "commitment" }>,
+    stateHandle: RecallStateHandle,
+    options: RetrievalSearchOptions,
+    nowMs: number,
+  ): EvidenceItem | null {
+    const commitment = this.options.commitmentRepository?.get(handle.commitmentId);
+
+    if (commitment === undefined || commitment === null) {
+      return null;
+    }
+
+    const activeVisible = this.options.commitmentRepository
+      ?.list({
+        activeOnly: true,
+        audience: options.audienceEntityId ?? null,
+        nowMs,
+      })
+      .some((item) => item.id === commitment.id);
+
+    if (activeVisible !== true) {
+      return null;
+    }
+
+    return {
+      id: `warm_recall_commitment_${commitment.id}`,
+      source: "warm_recall",
+      text: `${commitment.type}: ${commitment.directive}`,
+      provenance: {
+        commitmentId: commitment.id,
+      },
+      recallIntentId: WARM_RECALL_INTENT_ID,
+      matchedTerms: [],
+      score: warmRecallScore(stateHandle),
+      scoreBreakdown: {
+        provenance: 1,
+      },
+    };
+  }
+
+  private rehydrateOpenQuestionHandle(
+    handle: Extract<RecallEvidenceHandle, { source: "open_question" }>,
+    stateHandle: RecallStateHandle,
+    options: RetrievalSearchOptions,
+  ): EvidenceItem | null {
+    const question = this.options.openQuestionsRepository?.get(handle.openQuestionId);
+
+    if (question === undefined || question === null || question.status !== "open") {
+      return null;
+    }
+
+    if (!isOpenQuestionVisibleToAudience(question, options.audienceEntityId)) {
+      return null;
+    }
+
+    return {
+      id: `warm_recall_open_question_${question.id}`,
+      source: "warm_recall",
+      text: question.question,
+      provenance: {
+        openQuestionId: question.id,
+      },
+      recallIntentId: WARM_RECALL_INTENT_ID,
+      matchedTerms: [],
+      score: warmRecallScore(stateHandle),
+      scoreBreakdown: {
+        provenance: 1,
+      },
+    };
+  }
+
+  private refreshRecallState(
+    context: RecallStateTurnContext,
+    input: {
+      freshEvidence: readonly EvidenceItem[];
+      warmRecallEvidence: readonly EvidenceItem[];
+      renderedEvidence: readonly EvidenceItem[];
+      nowMs: number;
+    },
+  ): RecallState {
+    const ttlTurns = context.state.ttlTurns;
+    const freshHandles = collectEvidenceHandles(input.freshEvidence);
+    const warmHandles = collectEvidenceHandles(input.warmRecallEvidence);
+    const seenHandles = new Map([...warmHandles, ...freshHandles]);
+    const renderedHandleKeys = new Set(collectEvidenceHandles(input.renderedEvidence).keys());
+    const existingByKey = new Map(
+      context.state.activeHandles.map((stateHandle) => [
+        recallEvidenceHandleKey(stateHandle.handle),
+        stateHandle,
+      ]),
+    );
+    const nextHandles = new Map<string, RecallStateHandle>();
+
+    for (const [key, stateHandle] of existingByKey) {
+      if (stateHandle.expiresAfterTurn < context.turn) {
+        continue;
+      }
+
+      const seenHandle = seenHandles.get(key);
+
+      if (seenHandle === undefined) {
+        nextHandles.set(key, stateHandle);
+        continue;
+      }
+
+      nextHandles.set(key, {
+        ...stateHandle,
+        handle: seenHandle,
+        lastSeenTurn: context.turn,
+        lastRenderedTurn: renderedHandleKeys.has(key) ? context.turn : stateHandle.lastRenderedTurn,
+        expiresAfterTurn: context.turn + ttlTurns,
+        reinforcementCount: stateHandle.reinforcementCount + 1,
+      });
+    }
+
+    for (const [key, handle] of freshHandles) {
+      if (nextHandles.has(key)) {
+        continue;
+      }
+
+      nextHandles.set(key, {
+        handle,
+        firstSeenTurn: context.turn,
+        lastSeenTurn: context.turn,
+        lastRenderedTurn: renderedHandleKeys.has(key) ? context.turn : null,
+        expiresAfterTurn: context.turn + ttlTurns,
+        reinforcementCount: 1,
+      });
+    }
+
+    return {
+      scopeKey: context.scopeKey,
+      activeHandles: [...nextHandles.entries()]
+        .map(([, stateHandle]) => stateHandle)
+        .sort(compareRecallStateHandles),
+      suppressedHandles: pruneSuppressedRecallHandles(
+        context.state.suppressedHandles,
+        context.turn,
+      ),
+      lastRefreshTurn: context.turn,
+      updatedAt: input.nowMs,
+      ttlTurns,
+    };
   }
 
   private async buildRecallIntents(
@@ -977,6 +1448,79 @@ function countSemanticHits(semantic: RetrievedSemantic): number {
   );
 }
 
+function recallStateScopeKey(options: RetrievalSearchOptions): string {
+  return options.audienceEntityId ?? options.sessionId ?? DEFAULT_SESSION_ID;
+}
+
+function resolveRecallStateTurn(state: RecallState, requestedTurn: number | undefined): number {
+  const nextStateTurn = state.lastRefreshTurn + 1;
+
+  if (requestedTurn === undefined) {
+    return nextStateTurn;
+  }
+
+  return Math.max(nextStateTurn, Math.max(0, Math.floor(requestedTurn)));
+}
+
+function isRecallHandleSuppressed(state: RecallState, key: string, turn: number): boolean {
+  return (state.suppressedHandles[key] ?? -1) >= turn;
+}
+
+function collectEvidenceHandles(
+  evidence: readonly EvidenceItem[],
+): Map<string, RecallEvidenceHandle> {
+  const handles = new Map<string, RecallEvidenceHandle>();
+
+  for (const item of evidence) {
+    const handle = deriveRecallEvidenceHandle(item);
+
+    if (handle === null) {
+      continue;
+    }
+
+    const normalized = normalizeRecallEvidenceHandle(handle);
+    const key = recallEvidenceHandleKey(normalized);
+
+    if (!handles.has(key)) {
+      handles.set(key, normalized);
+    }
+  }
+
+  return handles;
+}
+
+function compareRecallStateHandles(left: RecallStateHandle, right: RecallStateHandle): number {
+  return (
+    right.lastSeenTurn - left.lastSeenTurn ||
+    (right.lastRenderedTurn ?? -1) - (left.lastRenderedTurn ?? -1) ||
+    recallEvidenceHandleKey(left.handle).localeCompare(recallEvidenceHandleKey(right.handle))
+  );
+}
+
+function pruneSuppressedRecallHandles(
+  suppressedHandles: RecallState["suppressedHandles"],
+  turn: number,
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(suppressedHandles).filter(([, expiresAfterTurn]) => expiresAfterTurn >= turn),
+  );
+}
+
+function warmRecallScore(stateHandle: RecallStateHandle): number {
+  return clamp(0.12 + Math.min(0.18, stateHandle.reinforcementCount * 0.03), 0, 0.3);
+}
+
+function isOpenQuestionVisibleToAudience(
+  question: OpenQuestion,
+  audienceEntityId: EntityId | null | undefined,
+): boolean {
+  if (audienceEntityId === null || audienceEntityId === undefined) {
+    return question.audience_entity_id === null;
+  }
+
+  return question.audience_entity_id === null || question.audience_entity_id === audienceEntityId;
+}
+
 function isUnscriptedFakeRecallExpansion(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -1092,9 +1636,7 @@ async function mapWithConcurrency<T, U>(
 
   for (let start = 0; start < items.length; start += normalizedLimit) {
     const batch = items.slice(start, start + normalizedLimit);
-    results.push(
-      ...(await Promise.all(batch.map((item, index) => mapper(item, start + index)))),
-    );
+    results.push(...(await Promise.all(batch.map((item, index) => mapper(item, start + index)))));
   }
 
   return results;
@@ -1302,22 +1844,31 @@ function streamEntriesToEvidence(
   episodeCandidates: readonly EpisodeEvidenceCandidate[],
 ): EvidenceItem[] {
   const intentByStreamId = new Map<string, RecallIntent>();
+  const parentEpisodeIdByStreamId = new Map<string, EpisodeId>();
 
   for (const candidate of episodeCandidates) {
     for (const streamId of candidate.candidate.episode.source_stream_ids) {
       intentByStreamId.set(streamId, candidate.intent);
+      parentEpisodeIdByStreamId.set(streamId, candidate.candidate.episode.id);
     }
   }
 
   return [...entries.values()]
     .filter((entry) => intentByStreamId.has(entry.id))
-    .map((entry) => streamEntryToEvidence(entry, intentByStreamId.get(entry.id)!));
+    .map((entry) =>
+      streamEntryToEvidence(entry, intentByStreamId.get(entry.id)!, "raw_stream", {
+        parentEpisodeId: parentEpisodeIdByStreamId.get(entry.id),
+      }),
+    );
 }
 
 function streamEntryToEvidence(
   entry: StreamEntry,
   intent: RecallIntent,
   source: "raw_stream" | "recent_raw_stream" = "raw_stream",
+  options: {
+    parentEpisodeId?: EpisodeId;
+  } = {},
 ): EvidenceItem {
   return {
     id: `evidence_raw_stream_${entry.id}_${intent.id}`,
@@ -1325,6 +1876,9 @@ function streamEntryToEvidence(
     text: streamEntryContentToText(entry),
     provenance: {
       streamIds: [entry.id],
+      ...(options.parentEpisodeId === undefined
+        ? {}
+        : { parentEpisodeId: options.parentEpisodeId }),
     },
     recallIntentId: intent.id,
     matchedTerms: [],

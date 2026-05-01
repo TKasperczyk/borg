@@ -52,10 +52,20 @@ export type EvidenceSource =
   | "semantic_edge"
   | "commitment"
   | "open_question"
-  | "working_state";
+  | "working_state"
+  | "warm_recall";
+
+export type RecallEvidenceHandle =
+  | { source: "episode"; episodeId: EpisodeId }
+  | { source: "raw_stream"; streamIds: StreamEntryId[]; parentEpisodeId?: EpisodeId }
+  | { source: "semantic_node"; nodeId: SemanticNodeId }
+  | { source: "semantic_edge"; edgeId: SemanticEdgeId; nodeId?: SemanticNodeId }
+  | { source: "commitment"; commitmentId: CommitmentId }
+  | { source: "open_question"; openQuestionId: OpenQuestionId };
 
 export type EvidenceProvenance = {
   streamIds?: StreamEntryId[];
+  parentEpisodeId?: EpisodeId;
   episodeId?: EpisodeId;
   nodeId?: SemanticNodeId;
   edgeId?: SemanticEdgeId;

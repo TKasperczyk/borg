@@ -66,7 +66,11 @@ import {
   type SemanticNode,
 } from "../memory/semantic/index.js";
 import { SocialRepository, socialMigrations } from "../memory/social/index.js";
-import { retrievalMigrations, type RetrievedEpisode } from "../retrieval/index.js";
+import {
+  RecallStateRepository,
+  retrievalMigrations,
+  type RetrievedEpisode,
+} from "../retrieval/index.js";
 import { RetrievalPipeline } from "../retrieval/index.js";
 import {
   StreamEntryIndexRepository,
@@ -314,6 +318,7 @@ export type OfflineTestHarness = {
   semanticEdgeRepository: SemanticEdgeRepository;
   semanticGraph: SemanticGraph;
   semanticBeliefDependencyRepository: SemanticBeliefDependencyRepository;
+  recallStateRepository: RecallStateRepository;
   reviewQueueRepository: ReviewQueueRepository;
   identityEventRepository: IdentityEventRepository;
   identityService: IdentityService;
@@ -441,6 +446,10 @@ export async function createOfflineTestHarness(
   const semanticGraph = new SemanticGraph({
     nodeRepository: semanticNodeRepository,
     edgeRepository: semanticEdgeRepository,
+  });
+  const recallStateRepository = new RecallStateRepository({
+    db,
+    clock,
   });
   const identityEventRepository = new IdentityEventRepository({
     db,
@@ -571,11 +580,13 @@ export async function createOfflineTestHarness(
     recallExpansionModel: config.anthropic.models.recallExpansion,
     episodicRepository,
     semanticNodeRepository,
+    semanticEdgeRepository,
     semanticGraph,
     reviewQueueRepository,
     openQuestionsRepository,
     entityRepository,
     commitmentRepository,
+    recallStateRepository,
     dataDir: tempDir,
     entryIndex,
     clock,
@@ -619,6 +630,7 @@ export async function createOfflineTestHarness(
     semanticEdgeRepository,
     semanticGraph,
     semanticBeliefDependencyRepository,
+    recallStateRepository,
     reviewQueueRepository,
     identityEventRepository,
     identityService,

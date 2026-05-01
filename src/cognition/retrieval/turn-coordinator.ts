@@ -186,6 +186,8 @@ export class TurnRetrievalCoordinator {
       entityTerms: input.perception.entities,
       suppressionSet: input.suppressionSet,
       includeOpenQuestions: input.perception.mode === "reflective",
+      sessionId: input.sessionId,
+      turnCounter: input.workingMemory.turn_counter,
       traceTurnId: input.turnId,
     };
     const retrieval = await this.options.retrievalPipeline.searchWithContext(

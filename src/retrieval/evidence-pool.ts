@@ -80,5 +80,9 @@ function evidenceTruthRank(item: EvidenceItem): number {
     return 5;
   }
 
+  if (item.source === "warm_recall") {
+    return 3;
+  }
+
   return 10;
 }

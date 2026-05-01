@@ -47,7 +47,7 @@ import {
 } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore } from "../memory/working/index.js";
-import { RetrievalPipeline } from "../retrieval/index.js";
+import { RecallStateRepository, RetrievalPipeline } from "../retrieval/index.js";
 import type { LanceDbTable } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import { StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
@@ -337,17 +337,23 @@ export async function buildBorgRepositories(
     contextStatsRepository: proceduralContextStatsRepository,
     minSimilarity: config.procedural.skillSelectionMinSimilarity,
   });
+  const recallStateRepository = new RecallStateRepository({
+    db: sqlite,
+    clock,
+  });
   const retrievalPipeline = new RetrievalPipeline({
     embeddingClient,
     llmClient: options.llmClient,
     recallExpansionModel: config.anthropic.models.recallExpansion,
     episodicRepository,
     semanticNodeRepository,
+    semanticEdgeRepository,
     semanticGraph,
     reviewQueueRepository: createdReviewQueueRepository,
     openQuestionsRepository,
     entityRepository,
     commitmentRepository,
+    recallStateRepository,
     dataDir: config.dataDir,
     entryIndex,
     clock,

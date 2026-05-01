@@ -19,4 +19,20 @@ export const retrievalMigrations = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "retrieval_recall_state",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE recall_state (
+          scope_key TEXT PRIMARY KEY,
+          state_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS recall_state_updated_at_idx
+          ON recall_state (updated_at);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

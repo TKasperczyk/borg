@@ -1,5 +1,22 @@
 export { retrievalMigrations } from "./migrations.js";
-export type { EvidenceItem, EvidencePool, RecallIntent } from "./recall-types.js";
+export type {
+  EvidenceItem,
+  EvidencePool,
+  RecallEvidenceHandle,
+  RecallIntent,
+} from "./recall-types.js";
+export {
+  DEFAULT_RECALL_STATE_TTL_TURNS,
+  RecallStateRepository,
+  createEmptyRecallState,
+  deriveRecallEvidenceHandle,
+  recallEvidenceHandleKey,
+  recallEvidenceHandleSchema,
+  recallStateHandleSchema,
+  recallStateSchema,
+  type RecallState,
+  type RecallStateHandle,
+} from "./recall-state.js";
 export {
   computeRetrievalConfidence,
   type ComputeRetrievalConfidenceInput,
