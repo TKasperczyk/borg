@@ -181,6 +181,55 @@ describe("commitment repository", () => {
     }
   });
 
+  it("keeps restricted-audience commitments isolated bidirectionally", () => {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
+    });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({
+      db,
+      clock,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const alice = entities.resolve("Alice");
+      const bob = entities.resolve("Bob");
+      const aliceOnly = commitments.add({
+        type: "rule",
+        directive: "Use Alice's preferred response constraints.",
+        priority: 8,
+        restrictedAudience: alice,
+        provenance: manualProvenance,
+      });
+      const bobOnly = commitments.add({
+        type: "rule",
+        directive: "Use Bob's preferred response constraints.",
+        priority: 7,
+        restrictedAudience: bob,
+        provenance: manualProvenance,
+      });
+
+      expect(
+        commitments.getApplicable({
+          audience: alice,
+          nowMs: 1_000,
+        }),
+      ).toEqual([aliceOnly]);
+      expect(
+        commitments.getApplicable({
+          audience: bob,
+          nowMs: 1_000,
+        }),
+      ).toEqual([bobOnly]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("stores optional source stream entry ids for online commitments", () => {
     const db = openDatabase(":memory:", {
       migrations: composeMigrations(commitmentMigrations, identityMigrations),

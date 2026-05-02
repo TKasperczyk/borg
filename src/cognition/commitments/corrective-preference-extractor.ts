@@ -3,12 +3,15 @@ import { z } from "zod";
 import {
   type LLMClient,
   type LLMCompleteResult,
+  type LLMMessage,
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
 import { commitmentIdSchema, commitmentTypeSchema } from "../../memory/commitments/index.js";
+import type { JsonValue } from "../../util/json-value.js";
 import type { CommitmentId, EntityId } from "../../util/ids.js";
 import type { RecencyMessage } from "../recency/index.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.8;
 const CORRECTIVE_PREFERENCE_TOOL_NAME = "EmitCorrectivePreference";
@@ -64,6 +67,14 @@ const CORRECTIVE_PREFERENCE_TOOL = {
   inputSchema: toToolInputSchema(correctivePreferenceSchema),
 } satisfies LLMToolDefinition;
 
+const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
+  "Classify whether the user is making a durable correction to Borg's future response behavior.",
+  "Return corrective_preference only when the user is directing Borg to change how it should answer in future turns, such as a recurring style, boundary, interaction rule, or response pattern.",
+  "Return none for ordinary task requests, emotional disclosure, venting, disagreement, one-turn instructions, or discussion about a behavior without asking Borg to adopt a lasting change.",
+  "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
+  "When uncertain, return none. The directive must be enforceable by a later response checker without needing to remember the current phrasing.",
+].join("\n");
+
 type CorrectivePreferenceToolInput = z.infer<typeof correctivePreferenceSchema>;
 
 class MissingCorrectivePreferenceToolCallError extends Error {}
@@ -86,6 +97,8 @@ export type CorrectivePreferenceExtractorDegradedReason =
 export type CorrectivePreferenceExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
+  tracer?: TurnTracer;
+  turnId?: string;
   onDegraded?: (
     reason: CorrectivePreferenceExtractorDegradedReason,
     error?: unknown,
@@ -150,6 +163,114 @@ function parseResponse(result: LLMCompleteResult): CorrectivePreferenceCandidate
   return toCandidate(parsed.data);
 }
 
+function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInput): LLMMessage[] {
+  return [
+    {
+      role: "user",
+      content: JSON.stringify({
+        current_user_message: input.userMessage,
+        recent_history: input.recentHistory.slice(-8).map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+        audience_entity_id: input.audienceEntityId,
+        active_commitments: input.activeCommitments.map((commitment) => ({
+          id: commitment.id,
+          type: commitment.type,
+          directive: commitment.directive,
+          priority: commitment.priority,
+        })),
+      }),
+    },
+  ];
+}
+
+function summarizeCorrectivePreferenceResponseShape(response: LLMCompleteResult): JsonValue {
+  return {
+    textLength: response.text.length,
+    toolUseBlocks: response.tool_calls.map((call) => ({
+      id: call.id,
+      name: call.name,
+    })),
+  };
+}
+
+function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
+  return (
+    systemPrompt.length +
+    messages.reduce((sum, message) => sum + message.role.length + message.content.length, 0)
+  );
+}
+
+function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
+  return tools.map((tool) => ({
+    name: tool.name,
+    propertyCount:
+      tool.inputSchema.properties === undefined
+        ? 0
+        : Object.keys(tool.inputSchema.properties).length,
+    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
+  }));
+}
+
+function traceLlmCallStarted(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  model: string;
+  messages: readonly LLMMessage[];
+  tools: readonly LLMToolDefinition[];
+}): void {
+  if (options.tracer?.enabled === true && options.turnId !== undefined) {
+    options.tracer.emit("llm_call_started", {
+      turnId: options.turnId,
+      label: "corrective_preference_extractor",
+      model: options.model,
+      promptCharCount: countCompletePromptChars(
+        CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
+        options.messages,
+      ),
+      toolSchemas: summarizeToolSchemas(options.tools),
+    });
+  }
+}
+
+function traceLlmCallResponse(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  response: LLMCompleteResult;
+}): void {
+  if (options.tracer?.enabled === true && options.turnId !== undefined) {
+    options.tracer.emit("llm_call_response", {
+      turnId: options.turnId,
+      label: "corrective_preference_extractor",
+      responseShape: summarizeCorrectivePreferenceResponseShape(options.response),
+      stopReason: options.response.stop_reason,
+      usage: {
+        inputTokens: options.response.input_tokens,
+        outputTokens: options.response.output_tokens,
+      },
+    });
+  }
+}
+
+function traceLlmCallError(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  error: unknown;
+}): void {
+  if (options.tracer?.enabled === true && options.turnId !== undefined) {
+    options.tracer.emit("llm_call_response", {
+      turnId: options.turnId,
+      label: "corrective_preference_extractor",
+      responseShape: {
+        error: options.error instanceof Error ? options.error.message : String(options.error),
+      },
+      stopReason: null,
+      usage: null,
+    });
+  }
+}
+
 export class CorrectivePreferenceExtractor {
   constructor(private readonly options: CorrectivePreferenceExtractorOptions = {}) {}
 
@@ -173,42 +294,47 @@ export class CorrectivePreferenceExtractor {
       return this.degraded("llm_unavailable");
     }
 
+    const messages = buildCorrectivePreferenceMessages(input);
+    const tools = [CORRECTIVE_PREFERENCE_TOOL];
+
+    traceLlmCallStarted({
+      tracer: this.options.tracer,
+      turnId: this.options.turnId,
+      model: this.options.model,
+      messages,
+      tools,
+    });
+
+    let response: LLMCompleteResult;
+
     try {
-      return parseResponse(
-        await this.options.llmClient.complete({
-          model: this.options.model,
-          system: [
-            "Classify whether the user is making a durable correction to Borg's future response behavior.",
-            "Return corrective_preference only when the user is directing Borg to change how it should answer in future turns, such as a recurring style, boundary, interaction rule, or response pattern.",
-            "Return none for ordinary task requests, emotional disclosure, venting, disagreement, one-turn instructions, or discussion about a behavior without asking Borg to adopt a lasting change.",
-            "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
-            "When uncertain, return none. The directive must be enforceable by a later response checker without needing to remember the current phrasing.",
-          ].join("\n"),
-          messages: [
-            {
-              role: "user",
-              content: JSON.stringify({
-                current_user_message: input.userMessage,
-                recent_history: input.recentHistory.slice(-8).map((message) => ({
-                  role: message.role,
-                  content: message.content,
-                })),
-                audience_entity_id: input.audienceEntityId,
-                active_commitments: input.activeCommitments.map((commitment) => ({
-                  id: commitment.id,
-                  type: commitment.type,
-                  directive: commitment.directive,
-                  priority: commitment.priority,
-                })),
-              }),
-            },
-          ],
-          tools: [CORRECTIVE_PREFERENCE_TOOL],
-          tool_choice: { type: "tool", name: CORRECTIVE_PREFERENCE_TOOL_NAME },
-          max_tokens: 512,
-          budget: "corrective-preference-extractor",
-        }),
-      );
+      response = await this.options.llmClient.complete({
+        model: this.options.model,
+        system: CORRECTIVE_PREFERENCE_SYSTEM_PROMPT,
+        messages,
+        tools,
+        tool_choice: { type: "tool", name: CORRECTIVE_PREFERENCE_TOOL_NAME },
+        max_tokens: 512,
+        budget: "corrective-preference-extractor",
+      });
+    } catch (error) {
+      traceLlmCallError({
+        tracer: this.options.tracer,
+        turnId: this.options.turnId,
+        error,
+      });
+
+      return this.degraded("llm_failed", error);
+    }
+
+    traceLlmCallResponse({
+      tracer: this.options.tracer,
+      turnId: this.options.turnId,
+      response,
+    });
+
+    try {
+      return parseResponse(response);
     } catch (error) {
       return this.degraded(
         error instanceof MissingCorrectivePreferenceToolCallError

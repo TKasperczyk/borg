@@ -668,6 +668,8 @@ export class TurnOrchestrator {
         const correctivePreferenceExtractor = new CorrectivePreferenceExtractor({
           llmClient,
           model: this.options.config.anthropic.models.recallExpansion,
+          tracer: this.tracer,
+          turnId,
           onDegraded: (reason, error) => {
             if (!this.tracer.enabled) {
               return;

@@ -56,6 +56,16 @@ const guards: readonly Guard[] = [
     pattern: "\\.(includes|indexOf|startsWith|endsWith)\\s*\\(",
     paths: ["src/cognition/commitments"],
   },
+  {
+    name: "commitment extractor regex literal marker",
+    pattern: "(^|[=(:,\\[{!&|?;]|return\\s+)\\s*/[^/\\n]+/[dgimsuvy]*",
+    paths: ["src/cognition/commitments"],
+  },
+  {
+    name: "commitment extractor capitalization heuristic marker",
+    pattern: "\\[A-Z\\]|\\\\p\\{Lu\\}|toUpperCase\\s*\\(|isUpperCase\\s*\\(",
+    paths: ["src/cognition/commitments"],
+  },
 ];
 
 function rg(pattern: string, paths: readonly string[]): string {

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
 import { createEntityId } from "../../util/ids.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import { CorrectivePreferenceExtractor } from "./corrective-preference-extractor.js";
 
 function correctivePreferenceResponse(input: {
@@ -73,6 +74,71 @@ describe("CorrectivePreferenceExtractor", () => {
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
       name: "EmitCorrectivePreference",
+    });
+  });
+
+  it("traces corrective preference extractor LLM calls on success", async () => {
+    const emit = vi.fn();
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit,
+    } satisfies TurnTracer;
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "preference",
+          directive: "Do not add ritual closing lines when the conversation is still open.",
+          priority: 8,
+          reason: "The user corrected recurring future response behavior.",
+          confidence: 0.9,
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn-corrective-preference",
+    });
+
+    await expect(
+      extractor.extract({
+        userMessage: "You keep doing those closers. Stop that.",
+        recentHistory: [],
+        audienceEntityId: createEntityId(),
+        activeCommitments: [],
+      }),
+    ).resolves.toMatchObject({
+      type: "preference",
+      directive: "Do not add ritual closing lines when the conversation is still open.",
+    });
+
+    expect(emit).toHaveBeenCalledWith("llm_call_started", {
+      turnId: "turn-corrective-preference",
+      label: "corrective_preference_extractor",
+      model: "haiku",
+      promptCharCount: expect.any(Number),
+      toolSchemas: expect.any(Array),
+    });
+    expect(emit).toHaveBeenCalledWith("llm_call_response", {
+      turnId: "turn-corrective-preference",
+      label: "corrective_preference_extractor",
+      responseShape: {
+        textLength: 0,
+        toolUseBlocks: [
+          {
+            id: "toolu_corrective_preference",
+            name: "EmitCorrectivePreference",
+          },
+        ],
+      },
+      stopReason: "tool_use",
+      usage: {
+        inputTokens: 4,
+        outputTokens: 2,
+      },
     });
   });
 
@@ -152,12 +218,18 @@ describe("CorrectivePreferenceExtractor", () => {
       "utf8",
     );
 
-    expect(source.match(/\.includes\s*\(/gu)).toBeNull();
-    expect(source.match(/\.indexOf\s*\(/gu)).toBeNull();
-    expect(source.match(/\.startsWith\s*\(/gu)).toBeNull();
-    expect(source.match(/\.endsWith\s*\(/gu)).toBeNull();
-    expect(source.match(/new Set\s*\(/gu)).toBeNull();
-    expect(source.match(/new RegExp\s*\(/gu)).toBeNull();
-    expect(source.match(/toUpperCase\s*\(/gu)).toBeNull();
+    const forbiddenFragments = [
+      [".", "includes", "("],
+      [".", "index", "Of", "("],
+      [".", "starts", "With", "("],
+      [".", "ends", "With", "("],
+      ["new ", "Set", "("],
+      ["new ", "Reg", "Exp", "("],
+      ["to", "Upper", "Case", "("],
+    ];
+
+    for (const fragment of forbiddenFragments) {
+      expect(source).not.toContain(fragment.join(""));
+    }
   });
 });
