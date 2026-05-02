@@ -27,7 +27,13 @@ import type { StreamEntry, StreamEntryIndexRepository } from "../stream/index.js
 import { NOOP_TRACER, type TurnTracer } from "../cognition/tracing/tracer.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
-import { DEFAULT_SESSION_ID, type EntityId, type EpisodeId, type SessionId } from "../util/ids.js";
+import {
+  DEFAULT_SESSION_ID,
+  type EntityId,
+  type EpisodeId,
+  type SessionId,
+  type StreamEntryId,
+} from "../util/ids.js";
 import type { JsonValue } from "../util/json-value.js";
 
 import { CitationResolver, type CitationResolverOptions } from "./citations.js";
@@ -1358,6 +1364,11 @@ export class RetrievalPipeline {
     return adapter
       .recent({ limit: 3 })
       .map((entry) => streamEntryToEvidence(entry, recentIntent, "recent_raw_stream"));
+  }
+
+  async resolveSourceEntries(ids: readonly StreamEntryId[]): Promise<Map<string, StreamEntry>> {
+    const citationResolver = this.createCitationResolver();
+    return citationResolver.resolveCitationEntries(ids);
   }
 
   async getEpisode(

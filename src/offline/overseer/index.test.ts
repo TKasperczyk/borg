@@ -5,7 +5,7 @@ import { FakeLLMClient } from "../../llm/index.js";
 import type { ReviewOpenQuestionExtractorLike } from "../../memory/self/index.js";
 import { StreamReader } from "../../stream/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
-import { createMaintenanceRunId } from "../../util/ids.js";
+import { createEntityId, createMaintenanceRunId, createStreamEntryId } from "../../util/ids.js";
 
 import {
   createEpisodeFixture,
@@ -15,6 +15,7 @@ import {
 import { OverseerProcess } from "./index.js";
 
 const OVERSEER_TOOL_NAME = "EmitOverseerFlags";
+type OfflineHarness = Awaited<ReturnType<typeof createOfflineTestHarness>>;
 
 function createOverseerResponse(flags: unknown[], inputTokens = 12, outputTokens = 8) {
   return {
@@ -32,6 +33,51 @@ function createOverseerResponse(flags: unknown[], inputTokens = 12, outputTokens
   };
 }
 
+function supportedMisattributionFlag(
+  citedStreamIds: readonly string[],
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    kind: "misattribution",
+    reason: "The target memory attribution is unsupported by its cited source.",
+    confidence: 0.8,
+    patch: {
+      participants: ["team", "Maya"],
+    },
+    source_assessment: "supports_flag",
+    cited_stream_ids: [...citedStreamIds],
+    ...overrides,
+  };
+}
+
+async function appendSourceEntry(
+  harness: OfflineHarness,
+  content: string,
+  kind: "user_msg" | "agent_msg" = "user_msg",
+) {
+  return harness.streamWriter.append({
+    kind,
+    content,
+  });
+}
+
+function requestPrompt(llm: FakeLLMClient, index = 0): string {
+  const content = llm.requests[index]?.messages[0]?.content;
+  return typeof content === "string" ? content : JSON.stringify(content);
+}
+
+function maxChecksConfig(maxChecksPerRun = 1) {
+  return {
+    offline: {
+      ...DEFAULT_CONFIG.offline,
+      overseer: {
+        ...DEFAULT_CONFIG.offline.overseer,
+        maxChecksPerRun,
+      },
+    },
+  };
+}
+
 describe("overseer process", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
@@ -43,17 +89,7 @@ describe("overseer process", () => {
 
   it("flags misattribution-like issues and can revert the audit item", async () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
-    const llm = new FakeLLMClient({
-      responses: [
-        createOverseerResponse([
-          {
-            kind: "misattribution",
-            reason: "The narrative mentions Alex, but Alex is missing from participants.",
-            confidence: 0.8,
-          },
-        ]),
-      ],
-    });
+    const llm = new FakeLLMClient();
     const reviewOpenQuestionExtractor: ReviewOpenQuestionExtractorLike = {
       async extract(_item, context) {
         return {
@@ -79,12 +115,25 @@ describe("overseer process", () => {
     });
     cleanup.push(harness.cleanup);
 
+    const sourceEntry = await appendSourceEntry(harness, "Alex led the meeting.");
+    llm.pushResponse(
+      createOverseerResponse([
+        supportedMisattributionFlag([sourceEntry.id], {
+          reason: "The narrative mentions Alex, but Alex is missing from participants.",
+          patch: {
+            participants: ["team", "Alex"],
+          },
+        }),
+      ]),
+    );
+
     await harness.episodicRepository.insert(
       createEpisodeFixture(
         {
           title: "Misattributed meeting",
           narrative: "Alex led the meeting, but the participants only mention the team.",
           participants: ["team"],
+          source_stream_ids: [sourceEntry.id],
           created_at: nowMs - 1_000,
           updated_at: nowMs - 1_000,
         },
@@ -166,6 +215,478 @@ describe("overseer process", () => {
 
     expect(result.changes).toEqual([]);
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+  });
+
+  it("includes raw source entries for episode targets", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [createOverseerResponse([])],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const userSource = await appendSourceEntry(harness, "Maya is my partner.");
+    const agentSource = await appendSourceEntry(
+      harness,
+      "I will remember Maya as your partner.",
+      "agent_msg",
+    );
+    await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Maya partner source",
+          narrative: "The user said Maya is their partner.",
+          participants: ["user", "Maya"],
+          source_stream_ids: [userSource.id, agentSource.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.run(harness.createContext(), {
+      dryRun: true,
+    });
+
+    const prompt = requestPrompt(llm);
+    expect(prompt).toContain(`stream_id=${userSource.id}`);
+    expect(prompt).toContain(`stream_id=${agentSource.id}`);
+    expect(prompt).toContain("kind=user_msg");
+    expect(prompt).toContain("kind=agent_msg");
+    expect(prompt).toContain("Maya is my partner.");
+  });
+
+  it("includes raw source entries for semantic node targets", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [createOverseerResponse([])],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const source = await appendSourceEntry(harness, "The user said Maya is my partner.");
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Maya source episode",
+          narrative: "Maya was identified by the user.",
+          source_stream_ids: [source.id],
+          created_at: nowMs - 3_000,
+          updated_at: nowMs - 3_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Maya is the user's partner",
+          description: "Maya is the user's partner.",
+          source_episode_ids: [episode.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+          last_verified_at: nowMs - 1_000,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.run(harness.createContext(), {
+      dryRun: true,
+    });
+
+    const prompt = requestPrompt(llm);
+    expect(prompt).toContain(`source_episode_ids: ${episode.id}`);
+    expect(prompt).toContain(`stream_id=${source.id}`);
+    expect(prompt).toContain("The user said Maya is my partner.");
+  });
+
+  it("includes raw source entries for semantic edge targets", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [createOverseerResponse([])],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const source = await appendSourceEntry(harness, "Maya supports the user's household planning.");
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Maya edge evidence",
+          narrative: "Maya supports household planning.",
+          source_stream_ids: [source.id],
+          created_at: nowMs - 4_000,
+          updated_at: nowMs - 4_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const first = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Maya",
+          description: "Maya.",
+          source_episode_ids: [episode.id],
+          created_at: nowMs - 3_000,
+          updated_at: nowMs - 3_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const second = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Household planning",
+          description: "Household planning.",
+          source_episode_ids: [episode.id],
+          created_at: nowMs - 2_000,
+          updated_at: nowMs - 2_000,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: first.id,
+      to_node_id: second.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: [episode.id],
+      created_at: nowMs - 1_000,
+      last_verified_at: nowMs - 1_000,
+      valid_from: nowMs - 1_000,
+    });
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.run(harness.createContext(), {
+      dryRun: true,
+    });
+
+    const prompt = requestPrompt(llm);
+    expect(prompt).toContain(`target_id: ${edge.id}`);
+    expect(prompt).toContain(`stream_id=${source.id}`);
+    expect(prompt).toContain("Maya supports the user's household planning.");
+  });
+
+  it("marks missing stream source IDs as provenance-insufficient in the prompt", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [createOverseerResponse([])],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const missingStreamId = createStreamEntryId();
+    await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Missing source episode",
+          source_stream_ids: [missingStreamId],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.run(harness.createContext(), {
+      dryRun: true,
+    });
+
+    const prompt = requestPrompt(llm);
+    expect(prompt).toContain("PROVENANCE-INSUFFICIENT missing source_stream_ids");
+    expect(prompt).toContain(missingStreamId);
+  });
+
+  it("resolves audience-private source episodes for audit grounding", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [createOverseerResponse([])],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const source = await appendSourceEntry(harness, "Private audience source names Maya.");
+    const privateEpisode = await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Private source episode",
+          narrative: "Private source names Maya.",
+          source_stream_ids: [source.id],
+          audience_entity_id: createEntityId(),
+          shared: false,
+          created_at: nowMs - 3_000,
+          updated_at: nowMs - 3_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Maya private source",
+          description: "Maya is grounded by private audience evidence.",
+          source_episode_ids: [privateEpisode.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+          last_verified_at: nowMs - 1_000,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.run(harness.createContext(), {
+      dryRun: true,
+    });
+
+    const prompt = requestPrompt(llm);
+    expect(prompt).toContain(`source_episode_ids: ${privateEpisode.id}`);
+    expect(prompt).toContain(`stream_id=${source.id}`);
+    expect(prompt).toContain("Private audience source names Maya.");
+  });
+
+  it("suppresses Maya misattribution flags when source entries contradict the flag", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const source = await appendSourceEntry(harness, "Maya is my partner.");
+    llm.pushResponse(
+      createOverseerResponse([
+        supportedMisattributionFlag([source.id], {
+          reason: "Borg fabricated Maya.",
+          source_assessment: "contradicts_flag",
+        }),
+      ]),
+    );
+    await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Maya source",
+          narrative: "The user said Maya is their partner.",
+          source_stream_ids: [source.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const ctx = harness.createContext();
+    const plan = await process.plan(ctx, {});
+    await process.apply(ctx, plan);
+
+    expect(plan.items).toEqual([]);
+    expect(plan.suppressed_flags).toEqual([
+      expect.objectContaining({
+        reason: "SOURCE-CONTRADICTS",
+        cited_ids: [source.id],
+      }),
+    ]);
+    expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+  });
+
+  it("suppresses misattribution flags without cited stream IDs", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const source = await appendSourceEntry(harness, "Maya is my partner.");
+    llm.pushResponse(
+      createOverseerResponse([
+        supportedMisattributionFlag([], {
+          reason: "Misattribution without citations.",
+        }),
+      ]),
+    );
+    await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Maya source",
+          source_stream_ids: [source.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const ctx = harness.createContext();
+    const plan = await process.plan(ctx, {});
+    await process.apply(ctx, plan);
+
+    expect(plan.items).toEqual([]);
+    expect(plan.suppressed_flags).toEqual([
+      expect.objectContaining({
+        reason: "PROVENANCE-INSUFFICIENT",
+        cited_ids: [],
+      }),
+    ]);
+    expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+  });
+
+  it("suppresses misattribution flags with citations outside the target source bundle", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const source = await appendSourceEntry(harness, "Maya is my partner.");
+    const invalidCitation = createStreamEntryId();
+    llm.pushResponse(
+      createOverseerResponse([
+        supportedMisattributionFlag([invalidCitation], {
+          reason: "Misattribution with unrelated citation.",
+        }),
+      ]),
+    );
+    await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Maya source",
+          source_stream_ids: [source.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const ctx = harness.createContext();
+    const plan = await process.plan(ctx, {});
+    await process.apply(ctx, plan);
+
+    expect(plan.items).toEqual([]);
+    expect(plan.suppressed_flags).toEqual([
+      expect.objectContaining({
+        reason: "INVALID-CITATION",
+        cited_ids: [invalidCitation],
+      }),
+    ]);
+    expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+  });
+
+  it("creates misattribution reviews only when cited source entries support the flag", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const source = await appendSourceEntry(
+      harness,
+      "The user said Riley, not Maya, is my partner.",
+    );
+    llm.pushResponse(
+      createOverseerResponse([
+        supportedMisattributionFlag([source.id], {
+          reason: "The target names Maya, but the source supports Riley.",
+          patch: {
+            participants: ["user", "Riley"],
+            narrative: "The user said Riley is their partner.",
+          },
+        }),
+      ]),
+    );
+    await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Partner source",
+          narrative: "The target incorrectly names Maya.",
+          participants: ["user", "Maya"],
+          source_stream_ids: [source.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const ctx = harness.createContext();
+    const plan = await process.plan(ctx, {});
+    await process.apply(ctx, plan);
+
+    expect(plan.suppressed_flags).toEqual([]);
+    expect(plan.items).toHaveLength(1);
+    expect(harness.reviewQueueRepository.getOpen()[0]).toMatchObject({
+      kind: "misattribution",
+      refs: {
+        evidence_stream_ids: [source.id],
+      },
+    });
   });
 
   it("queues temporal drift reviews for semantic edges without mutating them", async () => {
@@ -271,7 +792,7 @@ describe("overseer process", () => {
         createOverseerResponse(
           [
             {
-              kind: "misattribution",
+              kind: "temporal_drift",
               reason: "First target issue.",
               confidence: 0.8,
             },
@@ -385,7 +906,7 @@ describe("overseer process", () => {
       responses: [
         createOverseerResponse([
           {
-            kind: "misattribution",
+            kind: "temporal_drift",
             reason: "Recent target issue.",
             confidence: 0.8,
           },
@@ -441,17 +962,7 @@ describe("overseer process", () => {
 
   it("continues and logs when the review-to-open-question hook fails", async () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
-    const llm = new FakeLLMClient({
-      responses: [
-        createOverseerResponse([
-          {
-            kind: "misattribution",
-            reason: "The narrative mentions Alex, but Alex is missing from participants.",
-            confidence: 0.8,
-          },
-        ]),
-      ],
-    });
+    const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(nowMs),
       llmClient: llm,
@@ -469,12 +980,25 @@ describe("overseer process", () => {
     };
 
     try {
+      const sourceEntry = await appendSourceEntry(harness, "Alex led the meeting.");
+      llm.pushResponse(
+        createOverseerResponse([
+          supportedMisattributionFlag([sourceEntry.id], {
+            reason: "The narrative mentions Alex, but Alex is missing from participants.",
+            patch: {
+              participants: ["team", "Alex"],
+            },
+          }),
+        ]),
+      );
+
       await harness.episodicRepository.insert(
         createEpisodeFixture(
           {
             title: "Misattributed meeting",
             narrative: "Alex led the meeting, but the participants only mention the team.",
             participants: ["team"],
+            source_stream_ids: [sourceEntry.id],
             created_at: nowMs - 1_000,
             updated_at: nowMs - 1_000,
           },

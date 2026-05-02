@@ -14,6 +14,7 @@ import {
   type SemanticEdge,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
+import { streamEntryIdSchema } from "../../stream/index.js";
 import { BudgetExceededError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
@@ -25,11 +26,22 @@ import type {
   OfflineProcessError,
   OfflineResult,
 } from "../types.js";
+import {
+  renderSourceBundleForPrompt,
+  resolveTargetSourceBundle,
+  type OverseerSourceBundle,
+} from "./source-grounding.js";
 
 const overseerFlagKindSchema = z.enum([
   reviewKindSchema.enum.misattribution,
   reviewKindSchema.enum.temporal_drift,
   reviewKindSchema.enum.identity_inconsistency,
+]);
+
+const sourceAssessmentSchema = z.enum([
+  "supports_flag",
+  "contradicts_flag",
+  "provenance_insufficient",
 ]);
 
 const reviewFlagSchema = z.object({
@@ -48,7 +60,12 @@ const reviewFlagSchema = z.object({
   evidence_episode_ids: z.array(z.string().min(1)).optional(),
   suggested_valid_to: z.number().finite().optional(),
   by_edge_id: semanticEdgeIdSchema.optional(),
+  source_assessment: sourceAssessmentSchema.optional(),
+  cited_stream_ids: z.array(streamEntryIdSchema).optional(),
+  provenance_note: z.string().min(1).optional(),
 });
+
+type ReviewFlag = z.infer<typeof reviewFlagSchema>;
 
 const overseerResponseSchema = z.object({
   flags: z.array(reviewFlagSchema),
@@ -78,6 +95,9 @@ const overseerPlanItemBaseSchema = z.object({
   evidence_episode_ids: z.array(z.string().min(1)).optional(),
   suggested_valid_to: z.number().finite().optional(),
   by_edge_id: semanticEdgeIdSchema.optional(),
+  source_assessment: sourceAssessmentSchema.optional(),
+  cited_stream_ids: z.array(streamEntryIdSchema).optional(),
+  provenance_note: z.string().min(1).optional(),
 });
 
 const overseerPlanItemSchema = z
@@ -97,9 +117,22 @@ const overseerPlanItemSchema = z
   ])
   .and(overseerPlanItemBaseSchema);
 
+const suppressedFlagReasonSchema = z.enum([
+  "PROVENANCE-INSUFFICIENT",
+  "INVALID-CITATION",
+  "SOURCE-CONTRADICTS",
+]);
+
+const suppressedOverseerFlagSchema = z.object({
+  flag: reviewFlagSchema,
+  reason: suppressedFlagReasonSchema,
+  cited_ids: z.array(streamEntryIdSchema),
+});
+
 export const overseerPlanSchema = z.object({
   process: z.literal("overseer"),
   items: z.array(overseerPlanItemSchema),
+  suppressed_flags: z.array(suppressedOverseerFlagSchema).default([]),
   errors: z
     .array(
       z.object({
@@ -181,7 +214,11 @@ function summarizeSelfState(ctx: OfflineContext): string {
   ].join("\n");
 }
 
-function buildPrompt(target: OverseerTarget, ctx: OfflineContext): string {
+function buildPrompt(
+  target: OverseerTarget,
+  ctx: OfflineContext,
+  sourceBundle: OverseerSourceBundle,
+): string {
   const serializedTarget =
     target.type === "episode"
       ? {
@@ -240,7 +277,8 @@ function buildPrompt(target: OverseerTarget, ctx: OfflineContext): string {
   return [
     "Check the memory item for misattribution, temporal drift, and identity inconsistency.",
     "If you flag an issue, include the concrete repair payload needed to fix it.",
-    "For misattribution, provide patch fields that directly correct the target memory.",
+    "For misattribution, use only the resolved source entries below. Include cited_stream_ids from those entries, source_assessment, and patch fields that directly correct the target memory.",
+    "Set source_assessment to supports_flag only when the cited source entries support the flag, contradicts_flag when they refute the flag, and provenance_insufficient when the provided source entries are missing or inadequate.",
     "For temporal drift, provide corrected timestamps and/or a replacement description.",
     "For semantic_edge temporal drift or identity inconsistency, provide suggested_valid_to and optional by_edge_id; only flag edges that should be reviewed for closure.",
     "For identity inconsistency, target a specific value, goal, trait, commitment, or autobiographical period by id and propose reinforce, contradict, or patch.",
@@ -248,6 +286,8 @@ function buildPrompt(target: OverseerTarget, ctx: OfflineContext): string {
     summarizeSelfState(ctx),
     "Memory item:",
     JSON.stringify(serializedTarget),
+    "Raw source entries:",
+    renderSourceBundleForPrompt(sourceBundle),
   ].join("\n\n");
 }
 
@@ -319,6 +359,11 @@ function buildChange(item: OverseerPlan["items"][number]): OfflineChange {
         ? {}
         : { suggested_valid_to: item.suggested_valid_to }),
       ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
+      ...(item.source_assessment === undefined
+        ? {}
+        : { source_assessment: item.source_assessment }),
+      ...(item.cited_stream_ids === undefined ? {} : { cited_stream_ids: item.cited_stream_ids }),
+      ...(item.provenance_note === undefined ? {} : { provenance_note: item.provenance_note }),
       ...(item.repair_target_type === undefined
         ? {}
         : {
@@ -328,6 +373,51 @@ function buildChange(item: OverseerPlan["items"][number]): OfflineChange {
           }),
     },
   };
+}
+
+type SuppressedOverseerFlag = z.infer<typeof suppressedOverseerFlagSchema>;
+
+function suppressFlag(
+  flag: ReviewFlag,
+  reason: z.infer<typeof suppressedFlagReasonSchema>,
+  citedIds: readonly z.infer<typeof streamEntryIdSchema>[],
+): SuppressedOverseerFlag {
+  return {
+    flag,
+    reason,
+    cited_ids: [...citedIds],
+  };
+}
+
+function gateMisattributionFlag(
+  flag: ReviewFlag,
+  sourceBundle: OverseerSourceBundle,
+): SuppressedOverseerFlag | null {
+  const citedIds = flag.cited_stream_ids ?? [];
+
+  if (citedIds.length === 0) {
+    return suppressFlag(flag, "PROVENANCE-INSUFFICIENT", citedIds);
+  }
+
+  const validSourceIds = new Set(sourceBundle.entries.map((source) => source.entry.id));
+  const invalidCitations = citedIds.filter((streamId) => !validSourceIds.has(streamId));
+
+  if (invalidCitations.length > 0) {
+    return suppressFlag(flag, "INVALID-CITATION", citedIds);
+  }
+
+  if (flag.source_assessment === "contradicts_flag") {
+    return suppressFlag(flag, "SOURCE-CONTRADICTS", citedIds);
+  }
+
+  if (
+    flag.source_assessment === undefined ||
+    flag.source_assessment === "provenance_insufficient"
+  ) {
+    return suppressFlag(flag, "PROVENANCE-INSUFFICIENT", citedIds);
+  }
+
+  return null;
 }
 
 export type OverseerProcessOptions = {
@@ -351,6 +441,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
   async plan(ctx: OfflineContext, opts: { budget?: number } = {}): Promise<OverseerPlan> {
     const errors: OfflineProcessError[] = [];
     const items: OverseerPlan["items"] = [];
+    const suppressedFlags: OverseerPlan["suppressed_flags"] = [];
     const budget = opts.budget ?? ctx.config.offline.overseer.budget;
     const sinceTs = computeSinceTimestamp(ctx);
     const targets = (await collectTargets(ctx))
@@ -366,6 +457,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
 
         for (const target of targets) {
           try {
+            const sourceBundle = await resolveTargetSourceBundle(target, ctx);
             const flags = parseFlags(
               await llmClient.complete({
                 model: ctx.config.anthropic.models.background,
@@ -374,7 +466,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                 messages: [
                   {
                     role: "user",
-                    content: buildPrompt(target, ctx),
+                    content: buildPrompt(target, ctx, sourceBundle),
                   },
                 ],
                 tools: [OVERSEER_TOOL],
@@ -385,6 +477,15 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
             ).flags.filter((flag) => flag.confidence >= 0.5);
 
             for (const flag of flags) {
+              if (flag.kind === "misattribution") {
+                const suppression = gateMisattributionFlag(flag, sourceBundle);
+
+                if (suppression !== null) {
+                  suppressedFlags.push(suppression);
+                  continue;
+                }
+              }
+
               if (target.type === "semantic_edge" && flag.kind === "misattribution") {
                 continue;
               }
@@ -407,6 +508,15 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   ? {}
                   : { suggested_valid_to: flag.suggested_valid_to }),
                 ...(flag.by_edge_id === undefined ? {} : { by_edge_id: flag.by_edge_id }),
+                ...(flag.source_assessment === undefined
+                  ? {}
+                  : { source_assessment: flag.source_assessment }),
+                ...(flag.cited_stream_ids === undefined
+                  ? {}
+                  : { cited_stream_ids: flag.cited_stream_ids }),
+                ...(flag.provenance_note === undefined
+                  ? {}
+                  : { provenance_note: flag.provenance_note }),
                 ...(flag.repair_target_type === undefined
                   ? {}
                   : {
@@ -467,6 +577,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
     return overseerPlanSchema.parse({
       process: this.name,
       items,
+      suppressed_flags: suppressedFlags,
       errors,
       tokens_used: tokensUsed,
       budget_exhausted: budgetExhausted,
@@ -528,6 +639,9 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                 target_type: item.target_type,
                 target_id: item.target_id,
                 ...(item.patch === undefined ? {} : { patch: item.patch }),
+                ...(item.cited_stream_ids === undefined
+                  ? {}
+                  : { evidence_stream_ids: item.cited_stream_ids }),
                 proposed_provenance: proposedProvenance,
               }
             : item.kind === "temporal_drift"

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { provenanceSchema } from "../../common/provenance.js";
 import { episodeIdSchema, episodePatchSchema } from "../../episodic/index.js";
+import { streamEntryIdSchema } from "../../../stream/index.js";
 import { SemanticError } from "../../../util/errors.js";
 import { semanticNodeIdSchema } from "../types.js";
 import {
@@ -46,6 +47,7 @@ export const misattributionReviewRefsSchema = z.discriminatedUnion("target_type"
       target_type: z.literal("episode"),
       target_id: episodeIdSchema,
       patch: misattributionEpisodePatchSchema,
+      evidence_stream_ids: z.array(streamEntryIdSchema).optional(),
       proposed_provenance: provenanceSchema.optional(),
     })
     .strict(),
@@ -54,6 +56,7 @@ export const misattributionReviewRefsSchema = z.discriminatedUnion("target_type"
       target_type: z.literal("semantic_node"),
       target_id: semanticNodeIdSchema,
       patch: semanticNodeMisattributionPatchSchema,
+      evidence_stream_ids: z.array(streamEntryIdSchema).optional(),
       proposed_provenance: provenanceSchema.optional(),
     })
     .strict(),

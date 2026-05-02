@@ -1,6 +1,6 @@
-import { rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import {
   Borg,
@@ -27,6 +27,7 @@ import {
   type GoalId,
   type SessionId,
 } from "../src/util/ids.js";
+import { getStreamDirectory, StreamReader, type StreamEntry } from "../src/stream/index.js";
 import { createEvalBorg, type CreateEvalBorgOptions } from "../eval/support/create-eval-borg.js";
 
 import { latestTurnId, readTraceEvents, summarizeTraceFile } from "./trace-reader.js";
@@ -240,6 +241,51 @@ function completeWithTool(call: LLMToolCall): LLMCompleteResult {
     stop_reason: "tool_use",
     tool_calls: [call],
   };
+}
+
+function readTranscriptSessionIds(dataDir: string): SessionId[] {
+  const streamDir = getStreamDirectory(dataDir);
+
+  if (!existsSync(streamDir)) {
+    return [];
+  }
+
+  const sessionIds: SessionId[] = [];
+
+  for (const filename of readdirSync(streamDir)) {
+    if (!filename.endsWith(".jsonl")) {
+      continue;
+    }
+
+    try {
+      sessionIds.push(parseSessionId(basename(filename, ".jsonl")));
+    } catch {
+      continue;
+    }
+  }
+
+  return sessionIds;
+}
+
+export async function readStreamTranscript(dataDir: string): Promise<StreamEntry[]> {
+  const entries: StreamEntry[] = [];
+
+  for (const sessionId of readTranscriptSessionIds(dataDir)) {
+    const reader = new StreamReader({
+      dataDir,
+      sessionId,
+    });
+
+    for await (const entry of reader.iterate({
+      kinds: ["user_msg", "agent_msg"],
+    })) {
+      entries.push(entry);
+    }
+  }
+
+  return entries.sort(
+    (left, right) => left.timestamp - right.timestamp || left.id.localeCompare(right.id),
+  );
 }
 
 function extractGoalId(text: string): string | null {
@@ -640,6 +686,10 @@ export class BorgTransport {
     }
 
     return this.borg.stream.tail(limit);
+  }
+
+  async readTranscript(): Promise<StreamEntry[]> {
+    return readStreamTranscript(this.dataDir);
   }
 
   getSeededGoal(key: string): GoalRecord | null {

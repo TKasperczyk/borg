@@ -2,6 +2,7 @@ export {
   DEFAULT_SESSION_ID,
   STREAM_ENTRY_KINDS,
   streamEntryInputSchema,
+  streamEntryIdSchema,
   streamEntryKindSchema,
   streamEntrySchema,
   type SessionId,

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { FixedClock } from "../../../util/clock.js";
+import { createStreamEntryId } from "../../../util/ids.js";
 import type { ReviewHandlerContext, ReviewQueueItem } from "../review-queue.js";
 import {
   createMisattributionReviewQueueHandler,
@@ -29,6 +30,7 @@ function ctxWith(input: Partial<ReviewHandlerContext>): ReviewHandlerContext {
 
 describe("misattribution review handler", () => {
   it("accepts episode attribution patches", async () => {
+    const evidenceStreamId = createStreamEntryId();
     const refs = misattributionReviewRefsSchema.parse({
       target_type: "episode",
       target_id: "ep_aaaaaaaaaaaaaaaa",
@@ -37,6 +39,7 @@ describe("misattribution review handler", () => {
         narrative: "Alex led the review.",
         tags: ["review", "alex"],
       },
+      evidence_stream_ids: [evidenceStreamId],
       proposed_provenance: {
         kind: "offline",
         process: "overseer",
