@@ -114,6 +114,29 @@ describe("simulator overseer", () => {
     expect(prompt).toContain("Maya is my partner.");
   });
 
+  it("renders long transcript entries without truncating text after 500 characters", async () => {
+    const longPrefix = "x".repeat(800);
+    const longEntry = streamEntry({
+      kind: "user_msg",
+      content: `${longPrefix}Maya is still the critical detail.`,
+      timestamp: 1,
+    });
+    const requests: CapturedRequest[] = [];
+
+    await runOverseer({
+      transport: transportFor([longEntry]),
+      metricsPath: "/tmp/borg-overseer-test-long-transcript.jsonl",
+      turnCounter: 1,
+      totalTurns: 1,
+      client: createClient(requests),
+    });
+
+    const prompt = String(requests[0]?.messages[0]?.content ?? "");
+
+    expect(longPrefix).toHaveLength(800);
+    expect(prompt).toContain("Maya is still the critical detail.");
+  });
+
   it("does not call streamTail when building the checkpoint prompt", async () => {
     let streamTailCalled = false;
     const requests: CapturedRequest[] = [];

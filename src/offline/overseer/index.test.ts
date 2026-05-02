@@ -593,11 +593,21 @@ describe("overseer process", () => {
     });
     cleanup.push(harness.cleanup);
 
-    const source = await appendSourceEntry(harness, "Maya is my partner.");
-    const invalidCitation = createStreamEntryId();
+    const targetSourceOne = await appendSourceEntry(harness, "Maya is my partner.");
+    const targetSourceTwo = await appendSourceEntry(
+      harness,
+      "I will remember Maya as your partner.",
+      "agent_msg",
+    );
+    const unrelatedSourceOne = await appendSourceEntry(harness, "Riley led the workshop.");
+    const unrelatedSourceTwo = await appendSourceEntry(
+      harness,
+      "I will remember Riley led the workshop.",
+      "agent_msg",
+    );
     llm.pushResponse(
       createOverseerResponse([
-        supportedMisattributionFlag([invalidCitation], {
+        supportedMisattributionFlag([unrelatedSourceOne.id], {
           reason: "Misattribution with unrelated citation.",
         }),
       ]),
@@ -605,8 +615,19 @@ describe("overseer process", () => {
     await harness.episodicRepository.insert(
       createEpisodeFixture(
         {
+          title: "Unrelated Riley source",
+          source_stream_ids: [unrelatedSourceOne.id, unrelatedSourceTwo.id],
+          created_at: nowMs - 2_000,
+          updated_at: nowMs - 2_000,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
           title: "Maya source",
-          source_stream_ids: [source.id],
+          source_stream_ids: [targetSourceOne.id, targetSourceTwo.id],
           created_at: nowMs - 1_000,
           updated_at: nowMs - 1_000,
         },
@@ -626,7 +647,12 @@ describe("overseer process", () => {
     expect(plan.suppressed_flags).toEqual([
       expect.objectContaining({
         reason: "INVALID-CITATION",
-        cited_ids: [invalidCitation],
+        cited_ids: [unrelatedSourceOne.id],
+        flag: expect.objectContaining({
+          reason: "Misattribution with unrelated citation.",
+          source_assessment: "supports_flag",
+          cited_stream_ids: [unrelatedSourceOne.id],
+        }),
       }),
     ]);
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
