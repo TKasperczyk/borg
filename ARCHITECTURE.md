@@ -59,12 +59,14 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 6. **Forgetting is a feature.** Decay + win-rate modulation + affect-weighted decay. Unbounded growth kills performance and coherence.
 7. **Honest uncertainty beats false confidence.** Every claim carries confidence + source-type; every retrieval exposes its evidence chain.
 8. **Maintenance is auditable and reversible by default.** Dry-run, review queue, rollback. The narrow exceptions (transient observability prunes such as `prune_retrieval_log`) are still audited via `no_reverser` rows.
-9. **LLM-by-default for classification.** Cognitive classifiers (mode,
-   entities, affect, temporal cues, contradiction, goal progress,
-   procedural outcomes, trait evidence, identity-relevant judgments) run
-   as LLM-mediated tool calls by default. Heuristic implementations exist
-   as fallbacks for offline or test environments. Cost is not a design
-   constraint at the OAuth scale borg targets.
+9. **LLM-first interpretation.** Deterministic code may move
+   already-known source handles around, but it may not interpret language
+   in semantic paths. Entities, topics, relationships, facts, intent,
+   salience, memory relevance, corrections, belief changes, and audience
+   identity go through LLM-mediated interpretation; structural parsing is
+   reserved for machine-shaped data such as IDs, config, migrations, and
+   protocol formatting. `AGENTS.md` is the operational invariant for this
+   rule (`AGENTS.md:35`, `AGENTS.md:40`, `AGENTS.md:63`).
 10. **Operationally bounded autonomy.** Autonomous action still accounts
     for tokens, compute, latency, and rate limits so runs remain observable
     and schedulable; this is not a mandate to avoid useful LLM calls.
@@ -81,8 +83,8 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 │  ┌─────────────────────────────────────────────────────────────────┐    │
 │  │                    COGNITIVE LOOP                               │    │
 │  │                                                                 │    │
-│  │  Perception → Exec Focus → Attention → Deliberation             │    │
-│  │       → Action → Reflection                                     │    │
+│  │  Perception → Opening Hooks → Exec Focus → Retrieval            │    │
+│  │       → Deliberation → Commitment Check → Action → Reflection   │    │
 │  │       ▲                                              │          │    │
 │  │       └──────────────── feedback ────────────────────┘          │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
@@ -111,7 +113,7 @@ Design synthesis drawing on `claude-memory`, `kira-runtime`, and `kira-memory`, 
 │  │  │  COMMITMENTS │  │    SOCIAL    │  │    WORKING           │  │    │
 │  │  │ (per-audience│  │ (per-person: │  │  (current focus,     │  │    │
 │  │  │  promises,   │  │  trust,      │  │   hot entities,      │  │    │
-│  │  │  boundaries) │  │  norms,      │  │   pending intents)   │  │    │
+│  │  │  boundaries) │  │  norms,      │  │   pending actions)   │  │    │
 │  │  │              │  │  history)    │  │                      │  │    │
 │  │  └──────────────┘  └──────────────┘  └──────────────────────┘  │    │
 │  └─────────────────────────────────────────────────────────────────┘    │
@@ -372,7 +374,10 @@ repositories together with `memory/commitments` (because commitments
 are also identity-bearing) and routes writes through `IdentityGuard`
 and `IdentityEventRepository` so an "I changed my mind" pass cannot
 silently overwrite established state. They are not two memory bands;
-they are data and the audit/guard layer over that data.
+they are data and the audit/guard layer over that data. The current
+creation/closure surfaces used by cognition include `addGoal`,
+`addCommitment`, and `resolveOpenQuestion` (`src/memory/identity/service.ts:220`,
+`src/memory/identity/service.ts:235`, `src/memory/identity/service.ts:795`).
 
 ```typescript
 // Values + Traits share a state machine: candidate → established
@@ -403,6 +408,8 @@ GoalRecord {
   parent_goal_id?, status,
   progress_notes, last_progress_ts,
   created_at, target_at?,
+  audience_entity_id: EntityId | null,
+  source_stream_entry_ids?: StreamEntryId[],
   provenance,
 }
 
@@ -448,6 +455,24 @@ memory into *identity-that-evolves*. `known_strengths` /
 `known_weaknesses` / `known_blind_spots` were proposed in early design
 notes but never implemented; they're not part of the actual Self band.
 
+Goals are audience-scoped self memory, not just global aspirations:
+`GoalsRepository.list({ visibleToAudienceEntityId })` returns global
+goals plus goals scoped to that audience, while self/global calls see
+only global goals (`src/memory/self/types.ts:96`,
+`src/memory/self/goals-repository.ts:32`,
+`src/memory/self/goals-repository.ts:191`). Online goal promotion runs
+after corrective-preference extraction on user turns, uses the
+`recallExpansion` model slot, and writes through `IdentityService.addGoal`
+with the user stream entry as optional source evidence
+(`src/cognition/goals/goal-promotion-extractor.ts:98`,
+`src/cognition/goals/goal-promotion-extractor.ts:319`,
+`src/cognition/turn-orchestrator.ts:865`,
+`src/cognition/turn-orchestrator.ts:498`). The extractor may also emit
+an initial executive step; that step is stored in `executive_steps`,
+not on `GoalRecord` (`src/cognition/goals/goal-promotion-extractor.ts:21`,
+`src/cognition/turn-orchestrator.ts:540`,
+`src/executive/types.ts:36`).
+
 ### 7. Commitments
 
 ```typescript
@@ -457,6 +482,7 @@ notes but never implemented; they're not part of the actual Self band.
   priority,
   made_to_entity?, restricted_audience?, about_entity?,
   provenance,
+  source_stream_entry_ids?: StreamEntryId[],
   created_at,
   expires_at?, expired_at?,
   revoked_at?, revoked_reason?, revoke_provenance?,
@@ -469,6 +495,23 @@ the prompt before speaking AND checked post-hoc by `CommitmentChecker`
 (LLM-judge + optional rewrite). Both pre-prompt awareness and post-hoc
 detection exist; revision-on-violation is detection-then-rewrite, not
 in-flight blocking.
+
+Commitment creation now routes through the identity guard via
+`IdentityService.addCommitment`, and records may carry direct stream
+source anchors in addition to provenance (`src/memory/commitments/types.ts:54`,
+`src/memory/commitments/repository.ts:323`,
+`src/memory/identity/service.ts:235`). The online corrective-preference
+extractor is a Haiku-slot (`recallExpansion`) semantic classifier for
+user-named durable response-pattern corrections; it rejects ordinary
+one-turn instructions, requires high confidence, persists audience-scoped
+preference/rule/boundary commitments, and adds the new commitment to
+the same turn's applicable-commitment set before the normal commitment
+guard runs (`src/cognition/commitments/corrective-preference-extractor.ts:16`,
+`src/cognition/commitments/corrective-preference-extractor.ts:70`,
+`src/cognition/turn-orchestrator.ts:792`,
+`src/cognition/turn-orchestrator.ts:828`,
+`src/cognition/turn-orchestrator.ts:1112`,
+`src/cognition/turn-orchestrator.ts:1221`).
 
 ### 8. Social
 
@@ -548,21 +591,38 @@ feedback grades it. Working memory is persisted per session:
 while `pending_procedural_attempts` cap and TTL are enforced by
 `PendingProceduralAttemptTracker` between turns.
 
+The working-memory field is `pending_actions`, and only action-shaped
+planner follow-ups are persisted there. Action never infers follow-ups
+from response prose; it accepts S2 planner intents only when they have a
+non-empty `next_action` and the optional LLM judge classifies them as
+operational actions, rejecting belief or identity mutations instead
+(`src/memory/working/types.ts:121`, `src/cognition/action/action.ts:7`,
+`src/cognition/action/action.ts:50`,
+`src/cognition/action/pending-action-judge.ts:57`).
+
 ---
 
 ## Part 5: Core Processes
 
 ### 5.1 Cognitive loop
 
-Per-turn: **Perception → Executive Focus → Attention → Deliberation → Action → Reflection**.
+Per-turn: **Perception → Opening persistence → corrective preference
+extraction → goal promotion → Executive Focus → Attention/Retrieval →
+Deliberation → Commitment check → Action → Reflection**.
 Implementation plumbing is split behind `TurnOrchestrator`:
 `PerceptionGateway`, `TurnOpeningPersistence`,
 `AttributionLifecycleService`, `TurnRetrievalCoordinator`,
+`CorrectivePreferenceExtractor`, `GoalPromotionExtractor`,
 `CommitmentGuardRunner`, and `PendingProceduralAttemptTracker` own the
-per-turn substeps. `Reflector` receives its repositories through the
-`createReflector` factory / constructor wiring instead of per-call
-`ReflectionContext`. The split is operational, not a new architectural
-band.
+per-turn substeps (`src/cognition/turn-orchestrator.ts:775`,
+`src/cognition/turn-orchestrator.ts:792`,
+`src/cognition/turn-orchestrator.ts:865`,
+`src/cognition/turn-orchestrator.ts:1091`,
+`src/cognition/turn-orchestrator.ts:1221`,
+`src/cognition/turn-orchestrator.ts:1397`). `Reflector` receives its
+repositories through the `createReflector` factory / constructor wiring
+instead of per-call `ReflectionContext`. The split is operational, not a
+new architectural band.
 
 **Perception** (LLM-aided classification)
 - Run background-model tool calls in parallel for mode, entities,
@@ -576,6 +636,25 @@ band.
   signal quality over minimizing LLM calls.
 - Heuristic paths remain as fallbacks when LLM clients are unavailable
   (for example missing config or fake/offline tests).
+
+**Opening interpretation hooks** (LLM-mediated, before retrieval)
+- Corrective preference extraction checks whether the current turn asks
+  Borg to adopt a durable response behavior correction; accepted
+  candidates are persisted as audience-scoped commitments and are
+  available to the same turn's guard (`src/cognition/turn-orchestrator.ts:792`,
+  `src/cognition/turn-orchestrator.ts:828`,
+  `src/cognition/turn-orchestrator.ts:1112`).
+- Goal promotion runs on user turns after corrective preference
+  extraction. It promotes only goals Borg has an ongoing role in, writes
+  them through identity governance, and may create one initial executive
+  step (`src/cognition/goals/goal-promotion-extractor.ts:98`,
+  `src/cognition/turn-orchestrator.ts:865`,
+  `src/cognition/turn-orchestrator.ts:498`).
+- Recall expansion is the first retrieval step, not a perception field:
+  retrieval calls the Haiku-slot expansion tool, receives semantic
+  facets plus `named_terms`, and then builds `RecallIntent[]` for the
+  evidence fan-out (`src/retrieval/recall-expansion.ts:51`,
+  `src/retrieval/pipeline.ts:907`, `src/retrieval/pipeline.ts:975`).
 
 **Executive Focus** (fast, deterministic)
 - After perception and audience-scoped self snapshot construction,
@@ -613,7 +692,7 @@ band.
     − w_supp   * suppression_penalty(memory, state.suppressed_ids)
 ```
 - Weights tunable per mode (`computeWeights(mode)` in
-  `src/cognition/attention/weights.ts`). `value_alignment` and
+  `src/cognition/attention/weights.ts:24`). `value_alignment` and
   `entity_relevance` were added in later sprints to reduce off-topic
   pulls when held values or salient entities should bias retrieval.
 - When executive focus selects a goal, retrieval receives that goal as
@@ -630,7 +709,7 @@ band.
   (distinct participant-sets), and a contradiction penalty into one
   `overall` number. Evidence strength gates: weak evidence cannot be
   lifted over the S1/S2 threshold by high coverage or diversity.
-  See `src/retrieval/confidence.ts`.
+  See `src/retrieval/confidence.ts:133`.
 - Direct path (System 1): high retrieval confidence + low stakes →
   go straight to the finalizer (the tool-use loop described below).
 - Planned path (System 2): low confidence OR high stakes OR
@@ -650,7 +729,7 @@ band.
   certain it speaks (internal signal -- not a user-facing percentage).
 - **Finalizer (the tool-use loop).** The response call runs as an
   Anthropic tool-use loop (`executeToolLoop`, wrapped by `runFinalizer`
-  in `src/cognition/deliberation/finalizer.ts`): the model can read
+  in `src/cognition/deliberation/finalizer.ts:42`): the model can read
   internal tools (`tool.episodic.search`, `tool.semantic.walk`,
   `tool.commitments.list`, `tool.identityEvents.list`,
   `tool.skills.list`) or write via `tool.openQuestions.create`
@@ -667,7 +746,7 @@ band.
 
 **Action**
 - A small bookkeeping stage (`performAction` in
-  `src/cognition/action/action.ts`). Takes the commitment-checked
+  `src/cognition/action/action.ts:87`). Takes the commitment-checked
   response, the finalizer's tool-call records, and the structured
   `intent` records from the S2 `EmitTurnPlan` output, and commits them
   into the `ActionResult` shape that Reflection consumes. Carries only
@@ -752,10 +831,22 @@ true, … }` so the operator still has a trail.
   active skills and, by default, logs dry-run `skill_split_proposal`
   internal events; applying split proposals marks the old skill
   superseded rather than deleting it.
-- **Overseer** -- QA pass over recent episodes and semantic nodes;
-  LLM-flag `misattribution`, `temporal_drift`, or
-  `identity_inconsistency` items above a confidence threshold and
-  enqueue review items with structured repair payloads.
+- **Overseer** -- QA pass over recent episodes, semantic nodes, and
+  semantic edges; for each target it resolves the target's provenance
+  down to raw stream snippets before asking the background LLM to flag
+  `misattribution`, `temporal_drift`, or `identity_inconsistency`
+  (`src/offline/overseer/index.ts:294`,
+  `src/offline/overseer/source-grounding.ts:120`,
+  `src/retrieval/pipeline.ts:1369`). Misattribution is source-gated:
+  a flag must cite stream IDs from the resolved source bundle, declare
+  `source_assessment`, and survive the provenance gate. The gate
+  suppresses no/insufficient provenance, invalid citations, and flags
+  contradicted by the source; only cited `supports_flag` survives to a
+  review item (`src/offline/overseer/index.ts:41`,
+  `src/offline/overseer/index.ts:392`). Review refs carry the cited
+  raw evidence as `evidence_stream_ids` for the review handler
+  (`src/offline/overseer/index.ts:637`,
+  `src/memory/semantic/review-handlers/misattribution.ts:50`).
 - **Self-narrator** -- pass candidate episodes to the LLM so it can
   identify thematic clusters and grounded growth observations, write
   growth markers when evidence supports them, and manage
@@ -772,8 +863,17 @@ true, … }` so the operator still has a trail.
 Every `apply()` run emits a `dream_report` stream entry summarizing
 runs / changes / tokens / errors.
 
+The simulator overseer is separate from the offline overseer process.
+It audits full conversation transcripts across all stream sessions by
+calling `BorgTransport.readTranscript()`, which iterates `user_msg` and
+`agent_msg` entries for every session log; the prompt embeds that full
+transcript rather than a fixed stream tail or per-entry character slice
+(`assessor/borg-transport.ts:270`, `assessor/borg-transport.ts:691`,
+`simulator/overseer.ts:181`, `simulator/overseer.ts:197`,
+`simulator/overseer.ts:219`).
+
 **Scheduling.** `MaintenanceScheduler`
-(`src/offline/scheduler.ts`) runs maintenance on two cadences,
+(`src/offline/scheduler.ts:47`) runs maintenance on two cadences,
 independent of the autonomy scheduler (cognition wakes ≠ housekeeping):
 
 - **Light** (default 4h): consolidator + curator -- low-risk,
@@ -827,69 +927,154 @@ becomes due or stale.
 ### 5.3 Retrieval pipeline
 
 ```
-query  +  perception (mode, entities, time_cue, audience)
- ↓                            ← mode determined upstream in perception,
-                                not in retrieval
-parallel candidate generation (RetrievalPipeline.searchWithContext):
-  ├─ episodic candidates (5 generators):
-  │     vector match
-  │     time-range match (strict if temporalCue present)
-  │     audience-scoped match
-  │     entity-mention match
-  │     recent / heat
-  ├─ semantic match: label/alias exact → vector fallback → graph walk
-  │     (supports OUT; causes/prevents OUT; contradicts BOTH;
-  │      is_a OUT; default depth 2; archived nodes excluded;
-  │      open belief-revision nodes downranked, not dropped)
-  └─ open-question match
+query + perception/audience/working state
  ↓
-score with mode-conditioned attention weights
-   (9 components: see Part 5.1 attention formula;
-    selected executive goal may act as primary-goal bias)
+RecallIntent[] construction
+  ├─ raw_text from the current turn
+  ├─ LLM recall expansion facets: topic, relationship,
+  │  commitment, open_question
+  ├─ known_term intents from LLM named_terms, perception
+  │  entities, and audience aliases
+  ├─ time intent from the temporal cue
+  └─ recent intent
  ↓
-MMR diversification  (configurable lambda)
+evidence fan-out
+  ├─ episodic adapter: vector, known-term participant/tag,
+  │  time-range, recent/heat
+  ├─ raw-stream adapter: source entries for retrieved episodes
+  │  plus recent raw stream tail
+  ├─ semantic adapter: exact/vector match + graph walk
+  ├─ commitment adapter: active visible commitments by embedding
+  ├─ open-question adapter: visible open questions
+  └─ warm-recall adapter: source handles rehydrated from recall_state
  ↓
-citation resolution  (stream_entry_index O(1) lookup, fallback scan)
+EvidencePool rank + dedupe by provenance and source truth rank
+ ↓
+projections: episodes (MMR), semantic, open_questions
  ↓
 confidence aggregation (epistemic, separate from relevance scoring)
  ↓
-RetrievedContext { episodes, semantic, open_questions,
-                   contradiction_present, confidence }
+RetrievedContext { episodes, semantic, open_questions, evidence,
+                   recall_intents, contradiction_present, confidence }
 ```
 
-Critical innovation: **graph walk during retrieval**. If a query hits
-concept C, also surface supporting insights, causal neighbors,
-contradictions, and categories so the agent sees the whole evidential
-picture.
+The public facade is still `RetrievalPipeline.searchWithContext`, but
+the architecture is no longer a single-query candidate generator. The
+method builds a ranked `EvidencePool` and then projects that pool into
+the public `RetrievedContext` shape (`src/retrieval/pipeline.ts:272`,
+`src/retrieval/pipeline.ts:317`, `src/retrieval/pipeline.ts:357`,
+`src/retrieval/context-assembly.ts:9`). The recall intent kinds are
+explicitly typed as `raw_text`, `known_term`, `topic`, `relationship`,
+`time`, `recent`, `commitment`, and `open_question`
+(`src/retrieval/recall-types.ts:10`). Intent construction always starts
+with the raw turn, adds LLM expansion facets and named terms, unions in
+already-identified perception/audience terms, then appends time and
+recent intents (`src/retrieval/pipeline.ts:907`,
+`src/retrieval/pipeline.ts:921`, `src/retrieval/pipeline.ts:925`,
+`src/retrieval/pipeline.ts:948`, `src/retrieval/pipeline.ts:963`).
 
-Notes vs. an earlier sketch of this pipeline:
-- Procedural skill selection lives outside this pipeline
-  (`SkillSelector`, called by deliberator separately).
-- Commitment retrieval also happens outside this pipeline -- the
-  deliberator pulls commitments directly when assembling the prompt
-  trust-lane.
-- Per-result scores are exposed via `scoreBreakdown` (blended
-  relevance, used for ranking). Epistemic confidence is aggregated
-  separately as `RetrievalConfidence` (see `src/retrieval/confidence.ts`)
-  and fed into S1/S2 path selection + the deliberation prompt.
-- If executive focus selected a goal, `primaryGoalDescription` boosts
-  that goal's retrieval relevance without removing the other active
-  goals from prompt context or self memory.
-- Token-budget truncation happens at the LLM-call boundary in the
-  deliberator, not inside the retrieval pipeline.
+Recall expansion is the only component allowed to identify new candidate
+terms from the user message at this stage. It emits at most four semantic
+facets and sixteen `named_terms`, using the `recallExpansion` model slot
+(`src/retrieval/recall-expansion.ts:21`,
+`src/retrieval/recall-expansion.ts:33`,
+`src/retrieval/recall-expansion.ts:51`,
+`src/borg/repositories.ts:344`). Deterministic code then dedupes those
+LLM-identified handles with perception entities and audience aliases; it
+does not perform new language interpretation (`src/retrieval/pipeline.ts:925`,
+`src/retrieval/pipeline.ts:1762`).
+
+Evidence adapters are facet-local. Episodic retrieval chooses vector,
+known-term, time-range, or recent/heat paths based on each intent
+(`src/retrieval/pipeline.ts:1035`, `src/retrieval/pipeline.ts:1068`).
+Semantic retrieval runs only for semantic intent kinds and resolves exact
+terms/vector matches into graph-walk context (`src/retrieval/pipeline.ts:1180`,
+`src/retrieval/pipeline.ts:1859`). Commitment evidence is now inside the
+EvidencePool as embedding matches against active audience-visible
+commitments, while applicable commitments are still collected directly
+for the prompt trust lane (`src/retrieval/pipeline.ts:1290`,
+`src/cognition/retrieval/turn-coordinator.ts:118`). Open questions are
+retrieved through their own adapter, and raw stream evidence is produced
+only from source IDs or recency (`src/retrieval/pipeline.ts:1224`,
+`src/retrieval/raw-stream-adapter.ts:25`,
+`src/retrieval/raw-stream-adapter.ts:29`).
+
+Evidence ranking encodes the truth hierarchy before projections. Raw
+stream evidence ranks highest; episode evidence with source IDs ranks
+above uncited episodes; commitments/open questions rank above semantic
+nodes/edges; `working_state` would rank above recent raw stream; and
+warm recall is intentionally near the floor so it cannot overpower fresh
+evidence (`src/retrieval/evidence-pool.ts:52`,
+`src/retrieval/evidence-pool.ts:60`). The pool dedupes by provenance
+rather than by generated evidence IDs (`src/retrieval/evidence-pool.ts:7`,
+`src/retrieval/evidence-pool.ts:22`). Episodes, semantic context, and
+open questions are then projected from the pool; episode projection still
+applies MMR, and semantic/open-question projections preserve evidence
+order (`src/retrieval/evidence-projections.ts:30`,
+`src/retrieval/evidence-projections.ts:94`,
+`src/retrieval/evidence-projections.ts:167`).
+
+Cross-turn recall is owned by retrieval through SQLite `recall_state`.
+The scope key is audience-first (`audienceEntityId ?? sessionId ??
+DEFAULT_SESSION_ID`), so audience-specific recall stays isolated while
+same-audience sessions can stay warm (`src/retrieval/recall-state.ts:121`,
+`src/retrieval/pipeline.ts:434`, `src/retrieval/pipeline.ts:1527`).
+State stores `RecallEvidenceHandle`s -- episode IDs, raw stream IDs,
+semantic IDs, commitment IDs, and open-question IDs -- not transient
+`EvidenceItem.id` strings (`src/retrieval/recall-types.ts:58`,
+`src/retrieval/recall-state.ts:238`). On each turn retrieval rehydrates
+eligible warm handles, merges them with fresh evidence, admits only a
+bounded number of new handles, suppresses warm handles that just rendered
+so they cannot self-renew, and caps active handles by retention priority
+(`src/retrieval/pipeline.ts:458`, `src/retrieval/pipeline.ts:777`,
+`src/retrieval/pipeline.ts:834`, `src/retrieval/pipeline.ts:852`,
+`src/retrieval/pipeline.ts:864`). The tunable bounds are pipeline
+options with defaults: `maxActiveHandles = 24`, `maxNewHandlesPerTurn =
+6`, `maxWarmEvidenceRendered = 4`, and `warmSuppressionTurns = 2`
+(`src/retrieval/pipeline.ts:107`, `src/retrieval/recall-state.ts:23`).
+
+Temporal retrieval is facet-local. A temporal cue creates a `time`
+intent, time-range candidate search runs only for that intent, and
+episode scoring receives a time range only for candidates produced by
+the time intent; other facets are not globally filtered by time
+(`src/retrieval/pipeline.ts:948`, `src/retrieval/pipeline.ts:1107`,
+`src/retrieval/pipeline.ts:1158`, `src/retrieval/scoring.ts:264`).
+
+Procedural skill selection remains outside this pipeline
+(`SkillSelector`, called by the turn retrieval coordinator after memory
+retrieval), and token-budget truncation still happens at the LLM-call
+boundary in deliberation (`src/cognition/retrieval/turn-coordinator.ts:229`,
+`src/cognition/deliberation/deliberator.ts:128`,
+`src/cognition/deliberation/finalizer.ts:42`). Per-result scores are
+exposed through `scoreBreakdown` for ranking, while
+`RetrievalConfidence` remains the epistemic aggregate used by S1/S2
+routing and prompt calibration (`src/retrieval/context-assembly.ts:29`,
+`src/cognition/deliberation/deliberator.ts:123`).
 
 ---
 
 ### 5.4 Configuration overview
 
-Key runtime knobs live in `src/config/index.ts`. Executive focus adds
+Key runtime knobs live in the config schema/defaults
+(`src/config/index.ts:12`, `src/config/index.ts:531`). Executive focus uses
 `executive.goalFocusThreshold` (default `0.45`), the minimum score an
 active goal must clear before Borg renders `<borg_executive_focus>` or
-applies primary-goal retrieval bias. Autonomous executive wakes are
-controlled by `autonomy.executiveFocus.enabled` (default `false`),
-`autonomy.executiveFocus.stalenessSec` (default `86400`), and
-`autonomy.executiveFocus.dueLeadSec` (default `0`). The per-goal wake
-cooldown is `autonomy.executiveFocus.wakeCooldownSec` (default `3600`).
+applies primary-goal retrieval bias (`src/config/index.ts:374`,
+`src/config/index.ts:580`). Autonomous executive wakes are enabled by
+default alongside autonomy, with `stalenessSec = 86400`,
+`dueLeadSec = 0`, and `wakeCooldownSec = 3600`
+(`src/config/index.ts:679`, `src/config/index.ts:690`). The model
+slots are separate: cognition/background/extraction default to Opus 4.7,
+while `anthropic.models.recallExpansion` defaults to Haiku for small
+structured fanout/classifier work (`src/config/index.ts:555`).
+
+The recall-state bounds are not exposed as file-config keys today; they
+are `RetrievalPipelineOptions` knobs with defaults in the retrieval
+module (`src/retrieval/pipeline.ts:129`,
+`src/retrieval/recall-state.ts:23`). That matches the current
+composition root, which constructs `RecallStateRepository` and passes it
+into `RetrievalPipeline` without additional config-file plumbing
+(`src/borg/repositories.ts:340`, `src/borg/repositories.ts:344`).
 
 ---
 
@@ -905,7 +1090,8 @@ status annotated.
    `contradicts`, and `is_a` up to depth 2.
 2. **Bayesian procedural memory.** Skills as Beta(α, β) posteriors,
    Thompson sampling for selection. Implemented in
-   `src/memory/procedural/bayes.ts` + `selector.ts`.
+   `src/memory/procedural/bayes.ts:236` +
+   `src/memory/procedural/selector.ts:50`.
 3. **Autobiographical arc + growth markers.** Explicit timeline-of-
    self. Implemented in `self/autobiographical.ts` +
    `self/growth-markers.ts`; `Self-narrator` manages period rollover.
@@ -915,16 +1101,22 @@ status annotated.
 5. **Mode-conditioned retrieval weights.** Same store, different
    attention. Implemented: `computeWeights(mode)` varies all 9 weight
    components per mode.
+6. **Intent-fanout recall with source-handle warm state.** Implemented:
+   retrieval expands a turn into `RecallIntent[]`, ranks an
+   `EvidencePool`, projects public context from that pool, and persists
+   stable `RecallEvidenceHandle`s in audience-keyed `recall_state`
+   (`src/retrieval/recall-types.ts:36`, `src/retrieval/pipeline.ts:317`,
+   `src/retrieval/recall-state.ts:112`).
 
 ### High value, high implementation risk
 
-6. **Dream cycle with insight generation.** Implemented:
+7. **Dream cycle with insight generation.** Implemented:
    `Reflector` gates by `minSupport`, caps confidence via
    `ceilingConfidence`, enqueues new_insight review items.
-7. **Multi-band affective state + mood-congruent retrieval.**
+8. **Multi-band affective state + mood-congruent retrieval.**
    Implemented: mood state with half-life decay + mood history,
    `w_mood` component in the attention formula.
-8. **Provenance-first confidence propagation.** Provenance is
+9. **Provenance-first confidence propagation.** Provenance is
    mandatory on every identity-bearing write; confidence is
    per-band (Bayesian for traits/values, direct float for semantic
    nodes/edges, Beta-derived for skills). Retrieval aggregates
@@ -937,11 +1129,11 @@ status annotated.
 
 ### Moderate value, low implementation risk
 
-9. **Reason-tagged suppression list.** Implemented in
+10. **Reason-tagged suppression list.** Implemented in
    `SuppressionSet` (working memory); reasons stored + TTL applied.
-10. **Budget accounting per process.** Implemented: `BudgetTracker`
-    in `src/offline/budget.ts`; throws on cap exceeded.
-11. **Reversible maintenance.** Implemented: audit log with reversal
+11. **Budget accounting per process.** Implemented: `BudgetTracker`
+    in `src/offline/budget.ts:12`; throws on cap exceeded.
+12. **Reversible maintenance.** Implemented: audit log with reversal
     payloads + dry-run mode on every offline process. A small set of
     destructive prunes over transient observability data (e.g.
     `prune_retrieval_log`) record `reversal: { no_reverser: true, … }`
@@ -949,16 +1141,37 @@ status annotated.
 
 ### Speculative / not implemented
 
-12. Inter-agent shared memory tier. Not implemented.
-13. "Negative" memories -- things to avoid. Not implemented
+13. Inter-agent shared memory tier. Not implemented.
+14. "Negative" memories -- things to avoid. Not implemented
     (contradictions on semantic nodes are the nearest equivalent).
-14. Embodied/peripheral perception channel. Not implemented.
+15. Embodied/peripheral perception channel. Not implemented.
 
 ---
 
 ## Part 7: Honest Tradeoffs & Pushback
 
-**LLM call budget.** borg runs under OAuth subscription (shared Claude Code credentials), not per-token API billing, so the original "cheap-model the background" pressure is gone. The cognition, extraction, and background slots default to Opus 4.7. Dream cycles, mood extractions, affective re-ranking, reflection passes, and overseer checks all run on the best model available. Recall expansion has a separate `recallExpansion` slot that defaults to Haiku because it is a small structured fanout task, not background reasoning. The slots are separate in config so a deployment CAN downshift individual lanes if it ever needs to (e.g., hitting rate limits, or switching off subscription), but the default is quality for reasoning-heavy work and fast structured recall expansion.
+**LLM call budget.** borg runs under OAuth subscription (shared Claude
+Code credentials), not per-token API billing, so the original
+"cheap-model the background" pressure is gone. The cognition,
+extraction, and background slots default to Opus 4.7, while
+`recallExpansion` defaults to Haiku because it is small structured fanout
+and classifier work (`src/config/index.ts:555`). A normal user turn may
+make three recallExpansion-slot calls before the main response: recall
+expansion inside retrieval, corrective-preference extraction, and
+goal-promotion extraction (`src/retrieval/pipeline.ts:975`,
+`src/cognition/turn-orchestrator.ts:797`,
+`src/cognition/turn-orchestrator.ts:868`). Reflection's
+`EmitTurnReflection`, the pending-action judge, generation gate,
+perception classifiers, and offline overseer all use the background
+slot by current wiring, not the recallExpansion slot
+(`src/borg/turn-setup.ts:87`, `src/cognition/reflection/reflector.ts:1025`,
+`src/cognition/turn-orchestrator.ts:1189`,
+`src/cognition/turn-orchestrator.ts:905`,
+`src/cognition/perception/gateway.ts:78`,
+`src/offline/overseer/index.ts:456`). The slots remain separate so a
+deployment can downshift individual lanes if rate limits or hosting
+constraints require it, but the default is quality for reasoning-heavy
+work and fast structured recall expansion.
 
 **Schema rigidity.** Multiple memory bands means multiple schemas, retrieval paths, and migration stories. Start with **Stream + Episodic + Semantic + Self**, get those solid, then add the rest.
 
