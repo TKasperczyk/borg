@@ -46,4 +46,14 @@ export const commitmentMigrations = [
       `);
     },
   },
+  {
+    id: 2,
+    name: "commitment_source_stream_entry_ids",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE commitments
+          ADD COLUMN source_stream_entry_ids TEXT NULL;
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

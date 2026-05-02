@@ -20,6 +20,7 @@ export {
   commitmentTypeSchema,
   entityIdSchema,
   entityRecordSchema,
+  streamEntryIdSchema,
   type CommitmentApplicableOptions,
   type CommitmentListOptions,
   type CommitmentPatch,

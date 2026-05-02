@@ -287,6 +287,9 @@ export type BorgIdentityFacade = {
   updateTrait: (
     ...args: Parameters<IdentityService["updateTrait"]>
   ) => ReturnType<IdentityService["updateTrait"]>;
+  addCommitment: (
+    ...args: Parameters<IdentityService["addCommitment"]>
+  ) => ReturnType<IdentityService["addCommitment"]>;
   updateCommitment: (
     ...args: Parameters<IdentityService["updateCommitment"]>
   ) => ReturnType<IdentityService["updateCommitment"]>;

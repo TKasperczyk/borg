@@ -44,12 +44,17 @@ const guards: readonly Guard[] = [
     name: "generation English wordlist or role-label regex marker",
     pattern:
       "(?i)(const\\s+\\w+\\s*=\\s*\\[[^\\n\\]]*\\b(?:stop|stopping|responding|generate|output|human|assistant|user)\\b[^\\n\\]]*\\b(?:stop|stopping|responding|generate|output|human|assistant|user)\\b|/[^\\n/]*\\(\\?:[^\\n/]*\\b(?:human|assistant|user)\\b[^\\n/]*\\b(?:human|assistant|user)\\b[^\\n/]*\\))",
-    paths: ["src/cognition/generation"],
+    paths: ["src/cognition/generation", "src/cognition/commitments"],
   },
   {
     name: "generation English Set wordlist marker",
     pattern: "new Set\\s*\\(\\s*\\[",
-    paths: ["src/cognition/generation"],
+    paths: ["src/cognition/generation", "src/cognition/commitments"],
+  },
+  {
+    name: "commitment extractor substring semantic matching",
+    pattern: "\\.(includes|indexOf|startsWith|endsWith)\\s*\\(",
+    paths: ["src/cognition/commitments"],
   },
 ];
 

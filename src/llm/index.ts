@@ -1081,6 +1081,10 @@ function isPendingActionJudgeFallbackRequest(options: LLMCompleteOptions): boole
   return options.budget === "pending-action-judge";
 }
 
+function isCorrectivePreferenceFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "corrective-preference-extractor";
+}
+
 function isRecallExpansionFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "recall-expansion";
 }
@@ -1135,6 +1139,24 @@ function isPendingActionJudgeResponse(response: FakeLLMResponse | undefined): bo
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "ClassifyPendingAction",
+    );
+  }
+
+  return false;
+}
+
+function isCorrectivePreferenceResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "EmitCorrectivePreference");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "EmitCorrectivePreference",
     );
   }
 
@@ -1219,6 +1241,30 @@ function defaultPendingActionJudgeResponse(): LLMCompleteResult {
   };
 }
 
+function defaultCorrectivePreferenceResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_corrective_preference",
+        name: "EmitCorrectivePreference",
+        input: {
+          classification: "none",
+          type: null,
+          directive: null,
+          priority: null,
+          reason: "No durable correction detected.",
+          confidence: 0,
+          supersedes_commitment_id: null,
+        },
+      },
+    ],
+  };
+}
+
 export class FakeLLMClient implements LLMClient {
   private readonly usageSink?: TokenUsageSink;
   readonly requests: LLMCompleteOptions[] = [];
@@ -1265,6 +1311,13 @@ export class FakeLLMClient implements LLMClient {
       !isPendingActionJudgeResponse(response)
     ) {
       return defaultPendingActionJudgeResponse();
+    }
+
+    if (
+      isCorrectivePreferenceFallbackRequest(options) &&
+      !isCorrectivePreferenceResponse(response)
+    ) {
+      return defaultCorrectivePreferenceResponse();
     }
 
     this.responses.shift();

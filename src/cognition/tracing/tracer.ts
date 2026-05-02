@@ -28,6 +28,7 @@ export type TurnTraceEventName =
   | "citation_unresolved"
   | "tool_call_dispatched"
   | "tool_call_completed"
+  | "commitment_extractor_degraded"
   | "commitment_check"
   | "reflection_emitted";
 

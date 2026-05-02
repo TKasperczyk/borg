@@ -4,8 +4,10 @@ import { provenanceSchema, type Provenance } from "../common/provenance.js";
 import {
   commitmentIdHelpers,
   entityIdHelpers,
+  streamEntryIdHelpers,
   type CommitmentId,
   type EntityId,
+  type StreamEntryId,
 } from "../../util/ids.js";
 
 export const COMMITMENT_TYPES = ["promise", "boundary", "rule", "preference"] as const;
@@ -23,6 +25,13 @@ export const commitmentIdSchema = z
     message: "Invalid commitment id",
   })
   .transform((value) => value as CommitmentId);
+
+export const streamEntryIdSchema = z
+  .string()
+  .refine((value) => streamEntryIdHelpers.is(value), {
+    message: "Invalid stream entry id",
+  })
+  .transform((value) => value as StreamEntryId);
 
 export const commitmentTypeSchema = z.enum(COMMITMENT_TYPES);
 
@@ -42,6 +51,7 @@ export const commitmentSchema = z.object({
   restricted_audience: entityIdSchema.nullable(),
   about_entity: entityIdSchema.nullable(),
   provenance: provenanceSchema,
+  source_stream_entry_ids: z.array(streamEntryIdSchema).min(1).optional(),
   created_at: z.number().finite(),
   expires_at: z.number().finite().nullable(),
   expired_at: z.number().finite().nullable(),

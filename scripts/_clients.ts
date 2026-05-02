@@ -120,6 +120,10 @@ export class ScriptedDebugLLM implements LLMClient {
   private readonly inner = new FakeLLMClient();
 
   async complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
+    if (options.budget === "corrective-preference-extractor") {
+      return this.respond(options);
+    }
+
     this.inner.pushResponse(() => this.respond(options));
     return this.inner.complete(options);
   }
@@ -133,6 +137,18 @@ export class ScriptedDebugLLM implements LLMClient {
     const system = options.system ?? "";
     const userPrompt = options.messages.map((message) => message.content).join("\n\n");
     const prompt = `${system}\n\n${userPrompt}`;
+
+    if (options.budget === "corrective-preference-extractor") {
+      return buildToolResult(options, {
+        classification: "none",
+        type: null,
+        directive: null,
+        priority: null,
+        reason: "No durable correction detected in the scripted debug prompt.",
+        confidence: 0,
+        supersedes_commitment_id: null,
+      });
+    }
 
     if (/You extract episodic memories from a stream chunk\./i.test(prompt)) {
       const streamIds = extractStreamIds(prompt);

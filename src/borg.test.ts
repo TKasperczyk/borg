@@ -2181,7 +2181,12 @@ describe("Borg", () => {
       });
 
       expect(result.response).toBe("I can't share Atlas details with Sam.");
-      expect(llm.requests.map((request) => request.model)).toEqual([
+      const nonCorrectiveRequests = llm.requests.filter(
+        (request) => request.budget !== "corrective-preference-extractor",
+      );
+      expect(llm.requests.some((request) => request.budget === "corrective-preference-extractor"))
+        .toBe(true);
+      expect(nonCorrectiveRequests.map((request) => request.model)).toEqual([
         "haiku",
         "sonnet",
         "haiku",
@@ -2190,12 +2195,12 @@ describe("Borg", () => {
         "haiku",
         "haiku",
       ]);
-      expect(llm.requests[0]?.budget).toBe("procedural-context");
-      expect(llm.requests[2]?.budget).toBe("commitment-judge");
-      expect(llm.requests[3]?.budget).toBe("commitment-revision");
-      expect(llm.requests[4]?.budget).toBe("commitment-judge");
-      expect(llm.requests[5]?.budget).toBe("generation-stop-commitment");
-      expect(llm.requests[6]?.budget).toBe("reflection");
+      expect(nonCorrectiveRequests[0]?.budget).toBe("procedural-context");
+      expect(nonCorrectiveRequests[2]?.budget).toBe("commitment-judge");
+      expect(nonCorrectiveRequests[3]?.budget).toBe("commitment-revision");
+      expect(nonCorrectiveRequests[4]?.budget).toBe("commitment-judge");
+      expect(nonCorrectiveRequests[5]?.budget).toBe("generation-stop-commitment");
+      expect(nonCorrectiveRequests[6]?.budget).toBe("reflection");
     } finally {
       await borg.close();
     }

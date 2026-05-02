@@ -232,6 +232,21 @@ export class IdentityService {
     return this.options.goalsRepository.add(input);
   }
 
+  addCommitment(input: Parameters<CommitmentRepository["add"]>[0]): CommitmentRecord {
+    const decision = this.guard.evaluateChange({
+      current: null,
+      provenance: input.provenance,
+    });
+
+    if (!decision.allowed) {
+      throw new StorageError("Commitment creation unexpectedly required review", {
+        code: "IDENTITY_GUARD_CREATE_REJECTED",
+      });
+    }
+
+    return this.options.commitmentRepository.add(input);
+  }
+
   addPeriod(
     input: Parameters<AutobiographicalRepository["upsertPeriod"]>[0],
   ): AutobiographicalPeriod {

@@ -8,6 +8,7 @@ import {
   parseEntityId,
   type CommitmentId,
   type EntityId,
+  type StreamEntryId,
 } from "../../util/ids.js";
 import { parseJsonArray, type JsonArrayCodecOptions } from "../../storage/codecs.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
@@ -57,6 +58,14 @@ function mapEntityRow(row: Record<string, unknown>): EntityRecord {
 }
 
 function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
+  const sourceStreamEntryIds =
+    row.source_stream_entry_ids === null || row.source_stream_entry_ids === undefined
+      ? undefined
+      : parseJsonArray<StreamEntryId>(
+          String(row.source_stream_entry_ids),
+          "source_stream_entry_ids",
+          COMMITMENT_JSON_ARRAY_CODEC,
+        );
   const parsed = commitmentSchema.safeParse({
     id: row.id,
     type: row.type,
@@ -79,6 +88,9 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
       provenance_episode_ids: row.provenance_episode_ids,
       provenance_process: row.provenance_process,
     }),
+    ...(sourceStreamEntryIds === undefined || sourceStreamEntryIds.length === 0
+      ? {}
+      : { source_stream_entry_ids: sourceStreamEntryIds }),
     created_at: Number(row.created_at),
     expires_at:
       row.expires_at === null || row.expires_at === undefined ? null : Number(row.expires_at),
@@ -317,6 +329,7 @@ export class CommitmentRepository {
     restrictedAudience?: EntityId | null;
     aboutEntity?: EntityId | null;
     provenance: CommitmentRecord["provenance"];
+    sourceStreamEntryIds?: readonly StreamEntryId[];
     createdAt?: number;
     expiresAt?: number | null;
   }): CommitmentRecord {
@@ -338,6 +351,9 @@ export class CommitmentRepository {
       restricted_audience: input.restrictedAudience ?? null,
       about_entity: input.aboutEntity ?? null,
       provenance: provenanceSchema.parse(input.provenance),
+      ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
+        ? {}
+        : { source_stream_entry_ids: [...input.sourceStreamEntryIds] }),
       created_at: createdAt,
       expires_at: expiresAt,
       expired_at: expiresAt !== null && expiresAt <= createdAt ? expiresAt : null,
@@ -355,10 +371,10 @@ export class CommitmentRepository {
             INSERT INTO commitments (
               id, type, directive, priority, made_to_entity, restricted_audience, about_entity,
               source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
-              created_at, expires_at, expired_at, revoked_at, revoked_reason,
+              source_stream_entry_ids, created_at, expires_at, expired_at, revoked_at, revoked_reason,
               revoke_provenance_kind, revoke_provenance_episode_ids, revoke_provenance_process,
               superseded_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -375,6 +391,9 @@ export class CommitmentRepository {
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
+          record.source_stream_entry_ids === undefined
+            ? null
+            : serializeJsonValue(record.source_stream_entry_ids),
           record.created_at,
           record.expires_at,
           record.expired_at,
@@ -572,7 +591,7 @@ export class CommitmentRepository {
             UPDATE commitments
             SET type = ?, directive = ?, priority = ?, made_to_entity = ?, restricted_audience = ?,
                 about_entity = ?, source_episode_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
-                provenance_process = ?, expires_at = ?, expired_at = ?, revoked_at = ?, revoked_reason = ?,
+                provenance_process = ?, source_stream_entry_ids = ?, expires_at = ?, expired_at = ?, revoked_at = ?, revoked_reason = ?,
                 revoke_provenance_kind = ?, revoke_provenance_episode_ids = ?, revoke_provenance_process = ?,
                 superseded_by = ?
             WHERE id = ?
@@ -591,6 +610,9 @@ export class CommitmentRepository {
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
+          next.source_stream_entry_ids === undefined
+            ? null
+            : serializeJsonValue(next.source_stream_entry_ids),
           next.expires_at,
           next.expired_at,
           next.revoked_at,

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
-import { createEpisodeId } from "../../util/ids.js";
+import { createEpisodeId, createStreamEntryId } from "../../util/ids.js";
 import { commitmentMigrations, CommitmentRepository } from "../commitments/index.js";
 import {
   AutobiographicalRepository,
@@ -170,6 +170,45 @@ describe("identity service", () => {
           }),
         ]),
       );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("creates commitments through identity governance", () => {
+    const harness = createHarness(new FixedClock(1_000));
+
+    try {
+      const streamEntryId = createStreamEntryId();
+      const commitment = harness.identity.addCommitment({
+        type: "preference",
+        directive: "Apply user-named response corrections in later turns.",
+        priority: 8,
+        restrictedAudience: null,
+        provenance: {
+          kind: "online",
+          process: "corrective-preference-extractor",
+        },
+        sourceStreamEntryIds: [streamEntryId],
+      });
+
+      expect(harness.commitmentRepository.get(commitment.id)).toMatchObject({
+        id: commitment.id,
+        source_stream_entry_ids: [streamEntryId],
+      });
+      expect(
+        harness.identityEvents.list({
+          recordType: "commitment",
+          recordId: commitment.id,
+        }),
+      ).toEqual([
+        expect.objectContaining({
+          action: "create",
+          new_value: expect.objectContaining({
+            source_stream_entry_ids: [streamEntryId],
+          }),
+        }),
+      ]);
     } finally {
       harness.db.close();
     }

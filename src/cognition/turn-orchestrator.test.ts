@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Borg, FakeLLMClient, ManualClock, type LLMCompleteOptions } from "../index.js";
 import type { BorgDependencies } from "../borg/types.js";
@@ -190,6 +190,55 @@ function createCommitmentJudgeResponse(
   };
 }
 
+function createCorrectivePreferenceResponse(input: {
+  classification: "corrective_preference" | "none";
+  type?: "preference" | "rule" | "boundary" | null;
+  directive?: string | null;
+  priority?: number | null;
+  reason?: string;
+  confidence?: number;
+}) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_corrective_preference",
+        name: "EmitCorrectivePreference",
+        input: {
+          classification: input.classification,
+          type: input.type ?? null,
+          directive: input.directive ?? null,
+          priority: input.priority ?? null,
+          reason: input.reason ?? "The current user turn corrected future response behavior.",
+          confidence: input.confidence ?? 0.9,
+          supersedes_commitment_id: null,
+        },
+      },
+    ],
+  };
+}
+
+function createDynamicCommitmentJudgeResponse(reason: string) {
+  return (options: LLMCompleteOptions) => {
+    const content = String(options.messages[0]?.content ?? "");
+    const commitmentId = content.match(/id=(cmt_[a-z0-9]+)/u)?.[1];
+
+    if (commitmentId === undefined) {
+      throw new Error("Commitment id missing from judge prompt");
+    }
+
+    return createCommitmentJudgeResponse([
+      {
+        commitment_id: commitmentId,
+        reason,
+      },
+    ]);
+  };
+}
+
 function createStepReflectionResponse(input: {
   stepOutcomes?: Array<{
     step_id: string;
@@ -266,6 +315,14 @@ function systemText(request: LLMCompleteOptions | undefined): string {
   }
 
   return system?.map((block) => block.text).join("\n") ?? "";
+}
+
+function firstFinalizerRequest(
+  requests: readonly LLMCompleteOptions[],
+): LLMCompleteOptions | undefined {
+  return requests.find(
+    (request) => request.budget === "cognition-system-1" || request.budget === "cognition-system-2",
+  );
 }
 
 describe("TurnOrchestrator self snapshot audience visibility", () => {
@@ -456,7 +513,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       });
 
       const allRequestText = llm.requests.map((request) => JSON.stringify(request)).join("\n");
-      const finalizerSystem = systemText(llm.requests[0]);
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
 
       expect(finalizerSystem).toContain("public-value");
       expect(finalizerSystem).toContain("mixed-visible-value");
@@ -744,7 +801,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         stakes: "low",
       });
 
-      const finalizerSystem = systemText(llm.requests[0]);
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
       const blockStart = finalizerSystem.indexOf("<borg_executive_focus>");
       const blockEnd = finalizerSystem.indexOf("</borg_executive_focus>");
       const executiveBlock = finalizerSystem.slice(blockStart, blockEnd);
@@ -824,7 +881,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         stakes: "low",
       });
 
-      const finalizerSystem = systemText(llm.requests[0]);
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
       const blockStart = finalizerSystem.indexOf("<borg_executive_focus>");
       const blockEnd = finalizerSystem.indexOf("</borg_executive_focus>");
       const executiveBlock = finalizerSystem.slice(blockStart, blockEnd);
@@ -1131,6 +1188,194 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         source_stream_entry_id: suppressionEntry?.id,
         since_turn: 1,
       });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("persists user corrective preferences through identity with audience and stream source", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_175_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "preference",
+          directive: "Do not add ritual closing lines when the conversation is open.",
+          priority: 8,
+          reason: "The user named a future response pattern to stop.",
+          confidence: 0.9,
+        }),
+        "I will adjust that pattern.",
+        createCommitmentJudgeResponse([]),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "entityRepository" | "identityService">;
+    };
+    const addCommitmentSpy = vi.spyOn(internal.deps.identityService, "addCommitment");
+
+    try {
+      await borg.turn({
+        userMessage: "You keep doing those little closing lines. Stop that.",
+        audience: "Sam",
+      });
+
+      const userEntry = borg.stream.tail(10).find((entry) => entry.kind === "user_msg");
+      const samEntityId = internal.deps.entityRepository.findByName("Sam");
+      const addInput = addCommitmentSpy.mock.calls[0]?.[0];
+      const commitments = borg.commitments.list({
+        activeOnly: true,
+        audience: "Sam",
+      });
+
+      expect(addInput).toMatchObject({
+        type: "preference",
+        directive: "Do not add ritual closing lines when the conversation is open.",
+        priority: 8,
+        restrictedAudience: samEntityId,
+        sourceStreamEntryIds: [userEntry?.id],
+      });
+      expect(commitments).toEqual([
+        expect.objectContaining({
+          restricted_audience: samEntityId,
+          source_stream_entry_ids: [userEntry?.id],
+        }),
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("enforces a corrective preference on the same turn by rewriting a violation", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_176_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "preference",
+          directive: "Do not add ritual closing lines when the conversation is open.",
+          priority: 8,
+          reason: "The user named a future response pattern to stop.",
+          confidence: 0.9,
+        }),
+        "Sleep well.",
+        createDynamicCommitmentJudgeResponse("The response repeats the corrected closing pattern."),
+        "I will leave it there.",
+        createCommitmentJudgeResponse([]),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const result = await borg.turn({
+        userMessage: "You keep doing those little closing lines. Stop that.",
+        audience: "Sam",
+      });
+
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("I will leave it there.");
+      expect(llm.requests.map((request) => request.budget)).toContain("commitment-revision");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("suppresses pure corrective-preference violations when revision still violates", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_177_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "preference",
+          directive: "Do not add ritual closing lines when the conversation is open.",
+          priority: 8,
+          reason: "The user named a future response pattern to stop.",
+          confidence: 0.9,
+        }),
+        "Sleep well.",
+        createDynamicCommitmentJudgeResponse("The response repeats the corrected closing pattern."),
+        "Sleep well.",
+        createDynamicCommitmentJudgeResponse("The revision still repeats the corrected pattern."),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const result = await borg.turn({
+        userMessage: "You keep doing those little closing lines. Stop that.",
+        audience: "Sam",
+      });
+      const suppressionEntry = borg.stream
+        .tail(10)
+        .find((entry) => entry.kind === "agent_suppressed");
+
+      expect(result.emitted).toBe(false);
+      expect(result.response).toBe("");
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "commitment_revision_failed",
+      });
+      expect(suppressionEntry?.content).toMatchObject({
+        reason: "commitment_revision_failed",
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("loads durable corrective commitments on later turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_178_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "preference",
+          directive: "Do not add ritual closing lines when the conversation is open.",
+          priority: 8,
+          reason: "The user named a future response pattern to stop.",
+          confidence: 0.9,
+        }),
+        "I will adjust that pattern.",
+        createCommitmentJudgeResponse([]),
+        createEmptyReflectionResponse(),
+        "Sleep well.",
+        createDynamicCommitmentJudgeResponse(
+          "The later response repeats the durable corrected pattern.",
+        ),
+        "I will stop here.",
+        createCommitmentJudgeResponse([]),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      await borg.turn({
+        userMessage: "You keep doing those little closing lines. Stop that.",
+        audience: "Sam",
+      });
+      clock.advance(5_000);
+
+      const result = await borg.turn({
+        userMessage: "Continue with the actual topic.",
+        audience: "Sam",
+      });
+
+      expect(result.response).toBe("I will stop here.");
+      expect(llm.requests.filter((request) => request.budget === "commitment-judge")).toHaveLength(
+        3,
+      );
     } finally {
       await borg.close();
     }

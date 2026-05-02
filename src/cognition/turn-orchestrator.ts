@@ -10,6 +10,10 @@ import {
   type ToolLoopCallRecord,
 } from "./action/index.js";
 import { formatAutonomyTriggerContext, type AutonomyTriggerContext } from "./autonomy-trigger.js";
+import {
+  CorrectivePreferenceExtractor,
+  type CorrectivePreferenceCandidate,
+} from "./commitments/corrective-preference-extractor.js";
 import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
 import { detectAffectiveSignal } from "./perception/affective-signal.js";
@@ -32,8 +36,14 @@ import {
 import type { LLMClient } from "../llm/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
-import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
+import {
+  commitmentSchema,
+  CommitmentRepository,
+  EntityRepository,
+  type CommitmentRecord,
+} from "../memory/commitments/index.js";
 import { SkillSelector } from "../memory/procedural/index.js";
+import type { IdentityService } from "../memory/identity/index.js";
 import {
   appendInternalFailureEvent,
   AutobiographicalRepository,
@@ -53,6 +63,7 @@ import { SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
+  createCommitmentId,
   goalIdHelpers,
   type EntityId,
   type EpisodeId,
@@ -172,6 +183,54 @@ function isSelfRecordVisible(
   return episodeIds.some((episodeId) => visibleEpisodeIds.has(episodeId));
 }
 
+function buildCorrectivePreferenceCommitment(input: {
+  candidate: CorrectivePreferenceCandidate;
+  audienceEntityId: EntityId | null;
+  sourceStreamEntryIds?: CommitmentRecord["source_stream_entry_ids"];
+  nowMs: number;
+}): CommitmentRecord {
+  return commitmentSchema.parse({
+    id: createCommitmentId(),
+    type: input.candidate.type,
+    directive: input.candidate.directive,
+    priority: input.candidate.priority,
+    made_to_entity: null,
+    restricted_audience: input.audienceEntityId,
+    about_entity: null,
+    provenance: {
+      kind: "online",
+      process: "corrective-preference-extractor",
+    },
+    ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
+      ? {}
+      : { source_stream_entry_ids: input.sourceStreamEntryIds }),
+    created_at: input.nowMs,
+    expires_at: null,
+    expired_at: null,
+    revoked_at: null,
+    revoked_reason: null,
+    revoke_provenance: null,
+    superseded_by: null,
+  });
+}
+
+function appendCommitmentIfMissing(
+  commitments: readonly CommitmentRecord[],
+  commitment: CommitmentRecord | null,
+): CommitmentRecord[] {
+  if (commitment === null) {
+    return [...commitments];
+  }
+
+  if (commitments.some((existing) => existing.id === commitment.id)) {
+    return [...commitments];
+  }
+
+  return [...commitments, commitment].sort(
+    (left, right) => right.priority - left.priority || left.created_at - right.created_at,
+  );
+}
+
 export type TurnInput = {
   userMessage: string;
   audience?: string;
@@ -216,6 +275,7 @@ export type TurnOrchestratorOptions = {
   skillSelector: SkillSelector;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  identityService: IdentityService;
   reviewQueueRepository: ReviewQueueRepository;
   workingMemoryStore: WorkingMemoryStore;
   llmFactory: () => LLMClient;
@@ -600,6 +660,77 @@ export class TurnOrchestrator {
         const persistedPerceptionEntry = openingPersistence.persistedPerceptionEntry;
         workingMemory = openingPersistence.workingMemory;
 
+        let correctiveCommitment: CommitmentRecord | null = null;
+        const activeCommitmentsForExtractor = this.options.commitmentRepository.getApplicable({
+          audience: audienceEntityId,
+          nowMs: this.clock.now(),
+        });
+        const correctivePreferenceExtractor = new CorrectivePreferenceExtractor({
+          llmClient,
+          model: this.options.config.anthropic.models.recallExpansion,
+          onDegraded: (reason, error) => {
+            if (!this.tracer.enabled) {
+              return;
+            }
+
+            this.tracer.emit("commitment_extractor_degraded", {
+              turnId,
+              reason,
+              ...(this.tracer.includePayloads && error !== undefined
+                ? { error: error instanceof Error ? error.message : String(error) }
+                : {}),
+            });
+          },
+        });
+        const correctiveCandidate = await correctivePreferenceExtractor.extract({
+          userMessage: input.userMessage,
+          recentHistory: recencyWindow.messages,
+          audienceEntityId,
+          activeCommitments: activeCommitmentsForExtractor.map((commitment) => ({
+            id: commitment.id,
+            type: commitment.type,
+            directive: commitment.directive,
+            priority: commitment.priority,
+          })),
+        });
+
+        if (correctiveCandidate !== null) {
+          const inMemoryCommitment = buildCorrectivePreferenceCommitment({
+            candidate: correctiveCandidate,
+            audienceEntityId,
+            sourceStreamEntryIds:
+              persistedUserEntryId === undefined ? undefined : [persistedUserEntryId],
+            nowMs: this.clock.now(),
+          });
+
+          correctiveCommitment = inMemoryCommitment;
+
+          try {
+            correctiveCommitment = this.options.identityService.addCommitment({
+              id: inMemoryCommitment.id,
+              type: inMemoryCommitment.type,
+              directive: inMemoryCommitment.directive,
+              priority: inMemoryCommitment.priority,
+              madeToEntity: inMemoryCommitment.made_to_entity,
+              restrictedAudience: inMemoryCommitment.restricted_audience,
+              aboutEntity: inMemoryCommitment.about_entity,
+              provenance: inMemoryCommitment.provenance,
+              sourceStreamEntryIds: inMemoryCommitment.source_stream_entry_ids,
+              createdAt: inMemoryCommitment.created_at,
+              expiresAt: inMemoryCommitment.expires_at,
+            });
+          } catch (error) {
+            await this.appendHookFailureEvent(
+              streamWriter,
+              "corrective_preference_commitment_persist",
+              error,
+              {
+                commitmentId: inMemoryCommitment.id,
+              },
+            );
+          }
+        }
+
         const generationGate = new GenerationGate({
           llmClient,
           embeddingClient: this.options.embeddingClient,
@@ -807,7 +938,10 @@ export class TurnOrchestrator {
           llmClient,
           proceduralContextModel: this.options.config.anthropic.models.background,
         });
-        const applicableCommitments = retrievalContext.applicableCommitments;
+        const applicableCommitments = appendCommitmentIfMissing(
+          retrievalContext.applicableCommitments,
+          correctiveCommitment,
+        );
         const pendingCorrections = retrievalContext.pendingCorrections;
         const affectiveTrajectory = retrievalContext.affectiveTrajectory;
         const retrieval = retrievalContext.retrieval;

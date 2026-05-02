@@ -37,6 +37,13 @@ export {
   type GenerationGateStructuralSignals,
 } from "./generation/generation-gate.js";
 export {
+  CorrectivePreferenceExtractor,
+  type CorrectivePreferenceCandidate,
+  type CorrectivePreferenceExtractorDegradedReason,
+  type CorrectivePreferenceExtractorOptions,
+  type ExtractCorrectivePreferenceInput,
+} from "./commitments/corrective-preference-extractor.js";
+export {
   StopCommitmentExtractor,
   type ExtractStopCommitmentInput,
   type StopCommitmentExtraction,

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
+import { createStreamEntryId } from "../../util/ids.js";
 import { identityMigrations, IdentityEventRepository } from "../identity/index.js";
 import { commitmentMigrations } from "./migrations.js";
 import { CommitmentRepository, EntityRepository } from "./repository.js";
@@ -127,6 +128,84 @@ describe("commitment repository", () => {
           nowMs: 1_000,
         }),
       ).toEqual([restricted, publicCommitment]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not apply restricted-audience commitments to other audiences", () => {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
+    });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({
+      db,
+      clock,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const alice = entities.resolve("Alice");
+      const bob = entities.resolve("Bob");
+      const aliceOnly = commitments.add({
+        type: "rule",
+        directive: "Use Alice's preferred response constraints.",
+        priority: 8,
+        restrictedAudience: alice,
+        provenance: manualProvenance,
+      });
+      const publicCommitment = commitments.add({
+        type: "preference",
+        directive: "Keep responses grounded.",
+        priority: 4,
+        provenance: manualProvenance,
+      });
+
+      expect(
+        commitments.getApplicable({
+          audience: alice,
+          nowMs: 1_000,
+        }),
+      ).toEqual([aliceOnly, publicCommitment]);
+      expect(
+        commitments.getApplicable({
+          audience: bob,
+          nowMs: 1_000,
+        }),
+      ).toEqual([publicCommitment]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("stores optional source stream entry ids for online commitments", () => {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
+    });
+    const clock = new FixedClock(1_000);
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const streamEntryId = createStreamEntryId();
+      const commitment = commitments.add({
+        type: "preference",
+        directive: "Preserve response-pattern corrections.",
+        priority: 7,
+        provenance: {
+          kind: "online",
+          process: "corrective-preference-extractor",
+        },
+        sourceStreamEntryIds: [streamEntryId],
+      });
+
+      expect(commitment.source_stream_entry_ids).toEqual([streamEntryId]);
+      expect(commitments.get(commitment.id)?.source_stream_entry_ids).toEqual([streamEntryId]);
     } finally {
       db.close();
     }

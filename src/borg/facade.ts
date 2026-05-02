@@ -351,7 +351,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     commitments: {
       add: (input) =>
-        deps.commitmentRepository.add({
+        deps.identityService.addCommitment({
           type: input.type,
           directive: input.directive,
           priority: input.priority,
@@ -388,6 +388,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       updateValue: (...args) => deps.identityService.updateValue(...args),
       updateGoal: (...args) => deps.identityService.updateGoal(...args),
       updateTrait: (...args) => deps.identityService.updateTrait(...args),
+      addCommitment: (...args) => deps.identityService.addCommitment(...args),
       updateCommitment: (...args) => deps.identityService.updateCommitment(...args),
       updatePeriod: (...args) => deps.identityService.updatePeriod(...args),
       updateGrowthMarker: (...args) => deps.identityService.updateGrowthMarker(...args),
