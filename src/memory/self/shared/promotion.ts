@@ -67,6 +67,7 @@ export function resolveValueInitialState(
     case "system":
     case "offline":
     case "online":
+    case "online_reflector":
       return {
         state: "candidate",
         established_at: null,

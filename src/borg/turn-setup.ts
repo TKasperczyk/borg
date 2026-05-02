@@ -20,6 +20,7 @@ import type {
   AutobiographicalRepository,
   GoalsRepository,
   GrowthMarkersRepository,
+  OpenQuestionsRepository,
   TraitsRepository,
   ValuesRepository,
 } from "../memory/self/index.js";
@@ -47,6 +48,7 @@ export type BuildTurnOrchestratorOptions = {
   traitsRepository: TraitsRepository;
   autobiographicalRepository: AutobiographicalRepository;
   growthMarkersRepository: GrowthMarkersRepository;
+  openQuestionsRepository: OpenQuestionsRepository;
   executiveStepsRepository: ExecutiveStepsRepository;
   moodRepository: MoodRepository;
   socialRepository: SocialRepository;
@@ -78,6 +80,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     traitsRepository: options.traitsRepository,
     autobiographicalRepository: options.autobiographicalRepository,
     growthMarkersRepository: options.growthMarkersRepository,
+    openQuestionsRepository: options.openQuestionsRepository,
     executiveStepsRepository: options.executiveStepsRepository,
     moodRepository: options.moodRepository,
     socialRepository: options.socialRepository,
@@ -94,9 +97,11 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
         traitsRepository: options.traitsRepository,
         executiveStepsRepository: options.executiveStepsRepository,
         identityService: options.identityService,
+        openQuestionsRepository: options.openQuestionsRepository,
         reviewQueueRepository: options.reviewQueueRepository,
         skillRepository: options.skillRepository,
         proceduralEvidenceRepository: options.proceduralEvidenceRepository,
+        tracer: options.tracer,
       }),
     toolDispatcher: options.toolDispatcher,
     sessionLock: options.sessionLock,

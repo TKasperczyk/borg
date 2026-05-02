@@ -61,7 +61,8 @@ const ruminatorPlanItemSchema = z.discriminatedUnion("action", [
     action: z.literal("resolve"),
     question_id: openQuestionIdSchema,
     previous: openQuestionSchema,
-    resolution_episode_id: episodeIdSchema,
+    resolution_evidence_episode_ids: z.array(episodeIdSchema).min(1),
+    resolution_evidence_stream_entry_ids: z.array(z.never()).default([]),
     resolution_note: z.string().min(1),
     growth_marker: serializableGrowthMarkerSchema.nullable(),
   }),
@@ -138,7 +139,7 @@ function buildChange(item: RuminatorPlan["items"][number]): OfflineChange {
       action: "resolve",
       targets: {
         question_id: item.question_id,
-        resolution_episode_id: item.resolution_episode_id,
+        resolution_evidence_episode_ids: item.resolution_evidence_episode_ids,
       },
       preview: {
         note: item.resolution_note,
@@ -272,7 +273,8 @@ async function planResolution(
     action: "resolve",
     question_id: question.id,
     previous: question,
-    resolution_episode_id: strongEvidence.episode.id,
+    resolution_evidence_episode_ids: [strongEvidence.episode.id],
+    resolution_evidence_stream_entry_ids: [],
     resolution_note: response.resolution_note.trim(),
     growth_marker: growthMarker,
   };
@@ -461,13 +463,20 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
 
         if (
           current.status !== "resolved" ||
-          current.resolution_episode_id !== item.resolution_episode_id ||
+          current.resolution_evidence_episode_ids.length !==
+            item.resolution_evidence_episode_ids.length ||
+          current.resolution_evidence_episode_ids.some(
+            (episodeId, index) => episodeId !== item.resolution_evidence_episode_ids[index],
+          ) ||
+          current.resolution_evidence_stream_entry_ids.length !==
+            item.resolution_evidence_stream_entry_ids.length ||
           current.resolution_note !== item.resolution_note
         ) {
           ctx.identityService.resolveOpenQuestion(
             item.question_id,
             {
-              resolution_episode_id: item.resolution_episode_id,
+              resolution_evidence_episode_ids: item.resolution_evidence_episode_ids,
+              resolution_evidence_stream_entry_ids: item.resolution_evidence_stream_entry_ids,
               resolution_note: item.resolution_note,
             },
             processProvenance,
@@ -483,7 +492,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           action: "resolve",
           targets: {
             question_id: item.question_id,
-            resolution_episode_id: item.resolution_episode_id,
+            resolution_evidence_episode_ids: item.resolution_evidence_episode_ids,
           },
           reversal: {
             previous: item.previous,

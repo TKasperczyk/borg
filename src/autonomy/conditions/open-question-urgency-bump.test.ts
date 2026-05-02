@@ -36,7 +36,9 @@ describe("open question urgency bump condition", () => {
       source: "user",
     });
     harness.openQuestionsRepository.resolve(resolved.id, {
-      resolution_episode_id: "ep_aaaaaaaaaaaaaaaa" as never,
+      resolution_evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+      resolution_evidence_stream_entry_ids: [],
+      resolution_note: "Already shipped.",
     });
     const condition = createOpenQuestionUrgencyBumpCondition({
       openQuestionsRepository: harness.openQuestionsRepository,

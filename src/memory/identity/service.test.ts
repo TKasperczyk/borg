@@ -877,7 +877,9 @@ describe("identity service", () => {
         harness.identity.resolveOpenQuestion(
           question.id,
           {
-            resolution_episode_id: createEpisodeId(),
+            resolution_evidence_episode_ids: [createEpisodeId()],
+            resolution_evidence_stream_entry_ids: [],
+            resolution_note: "Resolved from episode evidence.",
           },
           {
             kind: "system",
@@ -1118,7 +1120,9 @@ describe("identity service", () => {
         harness.identity.resolveOpenQuestion(
           resolveQuestion.id,
           {
-            resolution_episode_id: createEpisodeId(),
+            resolution_evidence_episode_ids: [createEpisodeId()],
+            resolution_evidence_stream_entry_ids: [],
+            resolution_note: "Resolved from episode evidence.",
           },
           provenance,
           {

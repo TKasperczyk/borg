@@ -153,9 +153,7 @@ describe("EvidencePool compatibility projections", () => {
       projectSemantic(
         {
           intents: [intent],
-          items: [
-            evidence("evidence_semantic_node_missing", "semantic_node", { nodeId: node.id }),
-          ],
+          items: [evidence("evidence_semantic_node_missing", "semantic_node", { nodeId: node.id })],
         },
         emptySemantic(),
       ),
@@ -165,9 +163,7 @@ describe("EvidencePool compatibility projections", () => {
       projectSemantic(
         {
           intents: [intent],
-          items: [
-            evidence("evidence_semantic_edge_missing", "semantic_edge", { edgeId: edge.id }),
-          ],
+          items: [evidence("evidence_semantic_edge_missing", "semantic_edge", { edgeId: edge.id })],
         },
         {
           ...emptySemantic(),
@@ -179,10 +175,7 @@ describe("EvidencePool compatibility projections", () => {
   });
 
   it("throws when open-question evidence is missing its hydrated question", () => {
-    const question = openQuestion(
-      "oq_aaaaaaaaaaaaaaaa" as OpenQuestionId,
-      "Missing question?",
-    );
+    const question = openQuestion("oq_aaaaaaaaaaaaaaaa" as OpenQuestionId, "Missing question?");
     const pool: EvidencePool = {
       intents: [intent],
       items: [
@@ -313,7 +306,8 @@ function openQuestion(id: OpenQuestionId, question: string): OpenQuestion {
     source: "reflection",
     created_at: 1,
     last_touched: 1,
-    resolution_episode_id: null,
+    resolution_evidence_episode_ids: [],
+    resolution_evidence_stream_entry_ids: [],
     resolution_note: null,
     resolved_at: null,
     abandoned_reason: null,

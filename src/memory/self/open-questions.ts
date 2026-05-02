@@ -23,8 +23,10 @@ import {
   entityIdHelpers,
   openQuestionIdHelpers,
   parseOpenQuestionId,
+  streamEntryIdHelpers,
   type EntityId,
   type OpenQuestionId,
+  type StreamEntryId,
 } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { episodeIdSchema } from "../episodic/types.js";
@@ -62,6 +64,13 @@ export const openQuestionAudienceEntityIdSchema = z
 export const openQuestionStatusSchema = z.enum(OPEN_QUESTION_STATUSES);
 export const openQuestionSourceSchema = z.enum(OPEN_QUESTION_SOURCES);
 
+export const openQuestionResolutionStreamEntryIdSchema = z
+  .string()
+  .refine((value) => streamEntryIdHelpers.is(value), {
+    message: "Invalid open question resolution stream entry id",
+  })
+  .transform((value) => value as StreamEntryId);
+
 export const openQuestionSchema = z
   .object({
     id: openQuestionIdSchema,
@@ -75,7 +84,8 @@ export const openQuestionSchema = z
     source: openQuestionSourceSchema,
     created_at: z.number().finite(),
     last_touched: z.number().finite(),
-    resolution_episode_id: episodeIdSchema.nullable(),
+    resolution_evidence_episode_ids: z.array(episodeIdSchema),
+    resolution_evidence_stream_entry_ids: z.array(openQuestionResolutionStreamEntryIdSchema),
     resolution_note: z.string().nullable(),
     resolved_at: z.number().finite().nullable(),
     abandoned_reason: z.string().nullable(),
@@ -91,6 +101,16 @@ export const openQuestionSchema = z
         "Open question requires related_episode_ids, related_semantic_node_ids, or explicit provenance",
       path: ["provenance"],
     },
+  )
+  .refine(
+    (value) =>
+      value.status !== "resolved" ||
+      value.resolution_evidence_episode_ids.length > 0 ||
+      value.resolution_evidence_stream_entry_ids.length > 0,
+    {
+      message: "Resolved open question requires episode or stream evidence",
+      path: ["resolution_evidence_episode_ids"],
+    },
   );
 
 export const openQuestionPatchSchema = z.object({
@@ -103,7 +123,10 @@ export const openQuestionPatchSchema = z.object({
   provenance: provenanceSchema.nullable().optional(),
   source: openQuestionSourceSchema.optional(),
   last_touched: z.number().finite().optional(),
-  resolution_episode_id: episodeIdSchema.nullable().optional(),
+  resolution_evidence_episode_ids: z.array(episodeIdSchema).optional(),
+  resolution_evidence_stream_entry_ids: z
+    .array(openQuestionResolutionStreamEntryIdSchema)
+    .optional(),
   resolution_note: z.string().nullable().optional(),
   resolved_at: z.number().finite().nullable().optional(),
   abandoned_reason: z.string().nullable().optional(),
@@ -319,10 +342,16 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
     source: row.source,
     created_at: Number(row.created_at),
     last_touched: Number(row.last_touched),
-    resolution_episode_id:
-      row.resolution_episode_id === null || row.resolution_episode_id === undefined
-        ? null
-        : row.resolution_episode_id,
+    resolution_evidence_episode_ids: parseIdArray(
+      String(row.resolution_evidence_episode_ids ?? "[]"),
+      episodeIdSchema,
+      "open question resolution_evidence_episode_ids",
+    ),
+    resolution_evidence_stream_entry_ids: parseIdArray(
+      String(row.resolution_evidence_stream_entry_ids ?? "[]"),
+      openQuestionResolutionStreamEntryIdSchema,
+      "open question resolution_evidence_stream_entry_ids",
+    ),
     resolution_note:
       row.resolution_note === null || row.resolution_note === undefined
         ? null
@@ -665,7 +694,8 @@ export class OpenQuestionsRepository {
       source: input.source,
       created_at: input.created_at ?? nowMs,
       last_touched: input.last_touched ?? nowMs,
-      resolution_episode_id: null,
+      resolution_evidence_episode_ids: [],
+      resolution_evidence_stream_entry_ids: [],
       resolution_note: null,
       resolved_at: null,
       abandoned_reason: null,
@@ -691,9 +721,10 @@ export class OpenQuestionsRepository {
           INSERT INTO open_questions (
             id, question, dedupe_key, urgency, status, audience_entity_id, related_episode_ids,
             related_semantic_node_ids, provenance_kind, provenance_episode_ids,
-            provenance_process, source, created_at, last_touched, resolution_episode_id,
-            resolution_note, resolved_at, abandoned_reason, abandoned_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            provenance_process, source, created_at, last_touched, resolution_evidence_episode_ids,
+            resolution_evidence_stream_entry_ids, resolution_note, resolved_at, abandoned_reason,
+            abandoned_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -711,7 +742,8 @@ export class OpenQuestionsRepository {
         question.source,
         question.created_at,
         question.last_touched,
-        question.resolution_episode_id,
+        serializeJsonValue(question.resolution_evidence_episode_ids),
+        serializeJsonValue(question.resolution_evidence_stream_entry_ids),
         question.resolution_note,
         question.resolved_at,
         question.abandoned_reason,
@@ -811,8 +843,9 @@ export class OpenQuestionsRepository {
           SET question = ?, urgency = ?, status = ?, audience_entity_id = ?,
               related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
               provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
-              resolution_episode_id = ?, resolution_note = ?, resolved_at = ?,
-              abandoned_reason = ?, abandoned_at = ?, dedupe_key = ?
+              resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
+              resolution_note = ?, resolved_at = ?, abandoned_reason = ?, abandoned_at = ?,
+              dedupe_key = ?
           WHERE id = ?
         `,
       )
@@ -828,7 +861,8 @@ export class OpenQuestionsRepository {
         storedProvenance?.provenance_process ?? null,
         next.source,
         next.last_touched,
-        next.resolution_episode_id,
+        serializeJsonValue(next.resolution_evidence_episode_ids),
+        serializeJsonValue(next.resolution_evidence_stream_entry_ids),
         next.resolution_note,
         next.resolved_at,
         next.abandoned_reason,
@@ -876,8 +910,11 @@ export class OpenQuestionsRepository {
   resolve(
     id: OpenQuestionId,
     input: {
-      resolution_episode_id: z.infer<typeof episodeIdSchema>;
-      resolution_note?: string | null;
+      resolution_evidence_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
+      resolution_evidence_stream_entry_ids?: readonly z.infer<
+        typeof openQuestionResolutionStreamEntryIdSchema
+      >[];
+      resolution_note: string;
     },
   ): OpenQuestion {
     const existing = this.get(id);
@@ -894,23 +931,46 @@ export class OpenQuestionsRepository {
       });
     }
 
+    const resolutionEvidenceEpisodeIds = [...new Set(input.resolution_evidence_episode_ids ?? [])];
+    const resolutionEvidenceStreamEntryIds = [
+      ...new Set(input.resolution_evidence_stream_entry_ids ?? []),
+    ];
+
+    if (
+      resolutionEvidenceEpisodeIds.length === 0 &&
+      resolutionEvidenceStreamEntryIds.length === 0
+    ) {
+      throw new StorageError("Open question resolution requires episode or stream evidence", {
+        code: "OPEN_QUESTION_RESOLUTION_EVIDENCE_REQUIRED",
+      });
+    }
+
     const resolvedAt = this.clock.now();
     this.db
       .prepare(
         `
           UPDATE open_questions
-          SET status = 'resolved', resolution_episode_id = ?, resolution_note = ?, resolved_at = ?,
+          SET status = 'resolved', resolution_evidence_episode_ids = ?,
+              resolution_evidence_stream_entry_ids = ?, resolution_note = ?, resolved_at = ?,
               abandoned_reason = NULL, abandoned_at = NULL, last_touched = ?
           WHERE id = ?
         `,
       )
-      .run(input.resolution_episode_id, input.resolution_note ?? null, resolvedAt, resolvedAt, id);
+      .run(
+        serializeJsonValue(resolutionEvidenceEpisodeIds),
+        serializeJsonValue(resolutionEvidenceStreamEntryIds),
+        input.resolution_note,
+        resolvedAt,
+        resolvedAt,
+        id,
+      );
 
     const resolved: OpenQuestion = {
       ...existing,
       status: "resolved",
-      resolution_episode_id: input.resolution_episode_id,
-      resolution_note: input.resolution_note ?? null,
+      resolution_evidence_episode_ids: resolutionEvidenceEpisodeIds,
+      resolution_evidence_stream_entry_ids: resolutionEvidenceStreamEntryIds,
+      resolution_note: input.resolution_note,
       resolved_at: resolvedAt,
       abandoned_reason: null,
       abandoned_at: null,
@@ -945,8 +1005,8 @@ export class OpenQuestionsRepository {
         `
           UPDATE open_questions
           SET status = 'abandoned', abandoned_reason = ?, abandoned_at = ?,
-              resolution_episode_id = NULL, resolution_note = NULL, resolved_at = NULL,
-              last_touched = ?
+              resolution_evidence_episode_ids = '[]', resolution_evidence_stream_entry_ids = '[]',
+              resolution_note = NULL, resolved_at = NULL, last_touched = ?
           WHERE id = ?
         `,
       )
@@ -955,7 +1015,8 @@ export class OpenQuestionsRepository {
     const abandoned: OpenQuestion = {
       ...existing,
       status: "abandoned",
-      resolution_episode_id: null,
+      resolution_evidence_episode_ids: [],
+      resolution_evidence_stream_entry_ids: [],
       resolution_note: null,
       resolved_at: null,
       abandoned_reason: reason,
@@ -1041,8 +1102,10 @@ export class OpenQuestionsRepository {
       .prepare(
         `
           UPDATE open_questions
-          SET status = 'open', urgency = ?, last_touched = ?, resolution_episode_id = NULL,
-              resolution_note = NULL, resolved_at = NULL, abandoned_reason = NULL, abandoned_at = NULL
+          SET status = 'open', urgency = ?, last_touched = ?,
+              resolution_evidence_episode_ids = '[]',
+              resolution_evidence_stream_entry_ids = '[]', resolution_note = NULL,
+              resolved_at = NULL, abandoned_reason = NULL, abandoned_at = NULL
           WHERE id = ?
         `,
       )
@@ -1053,7 +1116,8 @@ export class OpenQuestionsRepository {
       status: "open",
       urgency: nextUrgency,
       last_touched: nowMs,
-      resolution_episode_id: null,
+      resolution_evidence_episode_ids: [],
+      resolution_evidence_stream_entry_ids: [],
       resolution_note: null,
       resolved_at: null,
       abandoned_reason: null,

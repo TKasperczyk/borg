@@ -50,6 +50,7 @@ function mapRow(row: Record<string, unknown>): IdentityEvent {
     provenance: parseStoredProvenance({
       provenance_kind: row.provenance_kind,
       provenance_episode_ids: row.provenance_episode_ids,
+      provenance_stream_entry_ids: row.provenance_stream_entry_ids,
       provenance_process: row.provenance_process,
     }),
     review_item_id:
@@ -110,9 +111,9 @@ export class IdentityEventRepository {
         `
           INSERT INTO identity_events (
             record_type, record_id, action, old_value_json, new_value_json, reason,
-            provenance_kind, provenance_episode_ids, provenance_process, review_item_id,
-            overwrite_without_review, ts
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            provenance_kind, provenance_episode_ids, provenance_stream_entry_ids,
+            provenance_process, review_item_id, overwrite_without_review, ts
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -124,6 +125,7 @@ export class IdentityEventRepository {
         input.reason ?? null,
         storedProvenance.provenance_kind,
         storedProvenance.provenance_episode_ids,
+        storedProvenance.provenance_stream_entry_ids ?? "[]",
         storedProvenance.provenance_process,
         input.review_item_id ?? null,
         input.overwrite_without_review === true ? 1 : 0,

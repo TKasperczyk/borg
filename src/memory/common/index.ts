@@ -4,6 +4,7 @@ export {
   isEpisodeProvenance,
   parseStoredProvenance,
   parseStoredProvenanceEpisodeIds,
+  parseStoredProvenanceStreamEntryIds,
   provenanceKindSchema,
   provenanceSchema,
   summarizeProvenanceForPrompt,

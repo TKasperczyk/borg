@@ -5,7 +5,11 @@ import { FakeLLMClient } from "../../llm/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
 
-import { createEpisodeFixture, createOfflineTestHarness, TestEmbeddingClient } from "../test-support.js";
+import {
+  createEpisodeFixture,
+  createOfflineTestHarness,
+  TestEmbeddingClient,
+} from "../test-support.js";
 import { RuminatorProcess } from "./index.js";
 
 const RUMINATOR_TOOL_NAME = "EmitRuminatorDecisions";
@@ -92,7 +96,8 @@ describe("RuminatorProcess", () => {
       expect(plan.items[0]).toMatchObject({
         action: "resolve",
         question_id: question.id,
-        resolution_episode_id: episode.id,
+        resolution_evidence_episode_ids: [episode.id],
+        resolution_evidence_stream_entry_ids: [],
       });
       expect(
         plan.items[0]?.action === "resolve" ? plan.items[0].growth_marker?.confidence : 0,
@@ -102,6 +107,10 @@ describe("RuminatorProcess", () => {
       await process.apply(harness.createContext(), plan);
 
       expect(harness.openQuestionsRepository.get(question.id)?.status).toBe("resolved");
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        resolution_evidence_episode_ids: [episode.id],
+        resolution_evidence_stream_entry_ids: [],
+      });
       expect(harness.growthMarkersRepository.list()).toHaveLength(1);
       expect(harness.identityEventRepository.list({ recordType: "open_question" })).toEqual(
         expect.arrayContaining([
@@ -357,7 +366,7 @@ describe("RuminatorProcess", () => {
       expect(plan.items[0]).toMatchObject({
         action: "resolve",
         question_id: question.id,
-        resolution_episode_id: publicEpisode.id,
+        resolution_evidence_episode_ids: [publicEpisode.id],
       });
       expect(llm.requests[0]?.messages[0]?.content).toContain("Public planning resolution");
       expect(llm.requests[0]?.messages[0]?.content).not.toContain("Sam private planning");

@@ -130,6 +130,7 @@ export async function openBorgDependencies(
       traitsRepository: repositories.traitsRepository,
       autobiographicalRepository: repositories.autobiographicalRepository,
       growthMarkersRepository: repositories.growthMarkersRepository,
+      openQuestionsRepository: repositories.openQuestionsRepository,
       executiveStepsRepository: repositories.executiveStepsRepository,
       moodRepository: repositories.moodRepository,
       socialRepository: repositories.socialRepository,

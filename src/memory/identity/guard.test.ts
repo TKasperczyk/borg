@@ -111,4 +111,54 @@ describe("IdentityGuard", () => {
       requires_review: true,
     });
   });
+
+  it("allows only evidence-backed online reflector open-question resolutions", () => {
+    const current = {
+      state: "established" as const,
+    };
+
+    expect(
+      guard.evaluateChange({
+        current,
+        provenance: {
+          kind: "online_reflector",
+          evidence_episode_ids: [],
+          evidence_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+        },
+        changeKind: "open_question_resolution",
+      }),
+    ).toEqual({
+      allowed: true,
+      requires_review: false,
+    });
+
+    expect(
+      guard.evaluateChange({
+        current,
+        provenance: {
+          kind: "online_reflector",
+          evidence_episode_ids: [],
+          evidence_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+        },
+      }),
+    ).toEqual({
+      allowed: false,
+      requires_review: true,
+    });
+
+    expect(
+      guard.evaluateChange({
+        current,
+        provenance: {
+          kind: "online_reflector",
+          evidence_episode_ids: [],
+          evidence_stream_entry_ids: [],
+        },
+        changeKind: "open_question_resolution",
+      }),
+    ).toEqual({
+      allowed: false,
+      requires_review: true,
+    });
+  });
 });

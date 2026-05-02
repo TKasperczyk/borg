@@ -1,6 +1,6 @@
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
-import { StreamWriter } from "../../stream/index.js";
+import { StreamWriter, streamEntryIdSchema } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { ExecutiveFocus, ExecutiveStepsRepository } from "../../executive/index.js";
 import {
@@ -9,7 +9,14 @@ import {
   executiveStepKindSchema,
   executiveStepStatusSchema,
 } from "../../executive/types.js";
-import { GoalsRepository, TraitsRepository, type GoalRecord } from "../../memory/self/index.js";
+import {
+  GoalsRepository,
+  TraitsRepository,
+  openQuestionIdSchema,
+  type GoalRecord,
+  type OpenQuestion,
+  type OpenQuestionsRepository,
+} from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import type { ReviewQueueRepository } from "../../memory/semantic/index.js";
 import { ProceduralEvidenceRepository, SkillRepository } from "../../memory/procedural/index.js";
@@ -27,7 +34,9 @@ import type { ActionResult } from "../action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import { SuppressionSet } from "../attention/index.js";
 import { intentRecordSchema, type IntentRecord, type PerceptionResult } from "../types.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 export type ReflectionContext = {
+  turnId?: string;
   origin?: "user" | "autonomous";
   userMessage: string;
   perception?: PerceptionResult;
@@ -40,6 +49,7 @@ export type ReflectionContext = {
   executiveFocus?: ExecutiveFocus | null;
   selectedSkillId?: SkillId | null;
   audienceEntityId?: EntityId | null;
+  activeOpenQuestions?: readonly OpenQuestion[];
   suppressionSet: SuppressionSet;
   // Sprint 56: stream entries persisted by the just-completed turn
   // (user_msg + agent_msg). Used as evidence for trait demonstrations
@@ -77,6 +87,13 @@ const reflectionOpenQuestionSchema = z.object({
   question: z.string().min(1),
   urgency: z.number().min(0).max(1),
   related_episode_ids: z.array(episodeIdSchema),
+});
+
+const resolvedOpenQuestionSchema = z.object({
+  question_id: openQuestionIdSchema,
+  resolution_note: z.string().min(1),
+  evidence_episode_ids: z.array(episodeIdSchema).default([]),
+  evidence_stream_entry_ids: z.array(streamEntryIdSchema).default([]),
 });
 
 const strictReflectionOutputSchema = z.object({
@@ -155,6 +172,13 @@ const strictReflectionOutputSchema = z.object({
       "Durable unresolved questions from this completed turn that should be remembered in self-memory. Emit zero items unless the turn reveals a real question worth revisiting. Write the question in the user's language and attach only related episode ids present in the reflection input.",
     )
     .default([]),
+  resolved_open_questions: z
+    .array(resolvedOpenQuestionSchema)
+    .max(5)
+    .describe(
+      "Previously active open questions clearly answered by the completed turn. Use only question ids and evidence ids supplied in the reflection input, and include episode or stream evidence.",
+    )
+    .default([]),
 });
 
 type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema>;
@@ -162,7 +186,7 @@ type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema>;
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
   description:
-    "Emit structured post-turn reflection. Mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for prior pending actions resolved by the completed turn, executive step outcomes/proposals only when the turn directly supports them, and open_questions only for durable unresolved questions worth remembering.",
+    "Emit structured post-turn reflection. Mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for prior pending actions resolved by the completed turn, executive step outcomes/proposals only when the turn directly supports them, open_questions only for durable unresolved questions worth remembering, and resolved_open_questions only for active questions clearly answered by supplied evidence.",
   inputSchema: toToolInputSchema(strictReflectionOutputSchema),
 };
 
@@ -175,6 +199,7 @@ function emptyReflectionOutput(): ReflectionOutput {
     step_outcomes: [],
     proposed_steps: [],
     open_questions: [],
+    resolved_open_questions: [],
   };
 }
 
@@ -278,6 +303,17 @@ function isClosingExecutiveStepStatus(
   return status === "done" || status === "blocked" || status === "abandoned";
 }
 
+function isOpenQuestionVisibleToReflectionAudience(
+  question: OpenQuestion,
+  audienceEntityId: EntityId | null | undefined,
+): boolean {
+  if (audienceEntityId === null || audienceEntityId === undefined) {
+    return question.audience_entity_id === null;
+  }
+
+  return question.audience_entity_id === null || question.audience_entity_id === audienceEntityId;
+}
+
 function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | undefined) {
   if (focus?.selected_goal === null || focus?.selected_goal === undefined) {
     return null;
@@ -314,12 +350,14 @@ export type ReflectorOptions = {
   traitsRepository: TraitsRepository;
   identityService?: Pick<
     IdentityService,
-    "updateGoal" | "updateGoalProgressFromReflection" | "addOpenQuestion"
+    "updateGoal" | "updateGoalProgressFromReflection" | "addOpenQuestion" | "resolveOpenQuestion"
   >;
+  openQuestionsRepository?: Pick<OpenQuestionsRepository, "get">;
   reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
   skillRepository?: SkillRepository;
   proceduralEvidenceRepository?: ProceduralEvidenceRepository;
   executiveStepsRepository?: ExecutiveStepsRepository;
+  tracer?: TurnTracer;
 };
 
 export class Reflector {
@@ -423,6 +461,8 @@ export class Reflector {
       context.retrievedEpisodes,
     );
     const referencedEpisodeIdSet = new Set(referencedEpisodeIds);
+
+    await this.applyResolvedOpenQuestions(context, reflectionOutput.resolved_open_questions);
 
     for (const result of context.retrievedEpisodes) {
       const used = referencedEpisodeIdSet.has(result.episode.id);
@@ -921,6 +961,157 @@ export class Reflector {
     }
   }
 
+  private emitOpenQuestionResolutionDegraded(
+    context: ReflectionContext,
+    details: Record<string, unknown>,
+  ): void {
+    const tracer = this.options.tracer;
+
+    if (tracer?.enabled !== true || context.turnId === undefined) {
+      return;
+    }
+
+    tracer.emit("open_question_resolution_degraded", {
+      turnId: context.turnId,
+      ...details,
+    });
+  }
+
+  private async applyResolvedOpenQuestions(
+    context: ReflectionContext,
+    resolutions: readonly ReflectionOutput["resolved_open_questions"][number][],
+  ): Promise<void> {
+    if (resolutions.length === 0) {
+      return;
+    }
+
+    const identityService = this.options.identityService;
+    const openQuestionsRepository = this.options.openQuestionsRepository;
+
+    if (identityService === undefined || openQuestionsRepository === undefined) {
+      for (const resolution of resolutions) {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          reason: "repository_unavailable",
+          question_id: resolution.question_id,
+        });
+      }
+      return;
+    }
+
+    const activeById = new Map(
+      (context.activeOpenQuestions ?? []).map((question) => [question.id, question]),
+    );
+    const allowedEpisodeIds = new Set(context.retrievedEpisodes.map((result) => result.episode.id));
+    const allowedStreamEntryIds = new Set(context.currentTurnStreamEntryIds ?? []);
+
+    for (const resolution of resolutions) {
+      const activeQuestion = activeById.get(resolution.question_id);
+
+      if (activeQuestion === undefined) {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          reason: "unknown_question",
+          question_id: resolution.question_id,
+        });
+        continue;
+      }
+
+      if (!isOpenQuestionVisibleToReflectionAudience(activeQuestion, context.audienceEntityId)) {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          reason: "audience_mismatch",
+          question_id: resolution.question_id,
+          audience_entity_id: context.audienceEntityId ?? null,
+        });
+        continue;
+      }
+
+      const evidenceEpisodeIds = [...new Set(resolution.evidence_episode_ids)];
+      const evidenceStreamEntryIds = [...new Set(resolution.evidence_stream_entry_ids)];
+
+      if (evidenceEpisodeIds.length === 0 && evidenceStreamEntryIds.length === 0) {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          reason: "no_evidence",
+          question_id: resolution.question_id,
+        });
+        continue;
+      }
+
+      const unknownEpisodeId = evidenceEpisodeIds.find(
+        (episodeId) => !allowedEpisodeIds.has(episodeId),
+      );
+
+      if (unknownEpisodeId !== undefined) {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          reason: "unknown_episode",
+          question_id: resolution.question_id,
+          evidence_episode_id: unknownEpisodeId,
+        });
+        continue;
+      }
+
+      const unknownStreamEntryId = evidenceStreamEntryIds.find(
+        (streamEntryId) => !allowedStreamEntryIds.has(streamEntryId),
+      );
+
+      if (unknownStreamEntryId !== undefined) {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          reason: "unknown_stream",
+          question_id: resolution.question_id,
+          evidence_stream_entry_id: unknownStreamEntryId,
+        });
+        continue;
+      }
+
+      const current = openQuestionsRepository.get(activeQuestion.id);
+
+      if (current?.status !== "open") {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          reason: "not_open",
+          question_id: resolution.question_id,
+          status: current?.status ?? null,
+        });
+        continue;
+      }
+
+      if (!isOpenQuestionVisibleToReflectionAudience(current, context.audienceEntityId)) {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          reason: "audience_mismatch",
+          question_id: resolution.question_id,
+          audience_entity_id: context.audienceEntityId ?? null,
+        });
+        continue;
+      }
+
+      try {
+        const result = identityService.resolveOpenQuestion(
+          activeQuestion.id,
+          {
+            resolution_evidence_episode_ids: evidenceEpisodeIds,
+            resolution_evidence_stream_entry_ids: evidenceStreamEntryIds,
+            resolution_note: resolution.resolution_note.trim(),
+          },
+          {
+            kind: "online_reflector",
+            evidence_episode_ids: evidenceEpisodeIds,
+            evidence_stream_entry_ids: evidenceStreamEntryIds,
+          },
+        );
+
+        if (result.status === "requires_review") {
+          this.emitOpenQuestionResolutionDegraded(context, {
+            reason: "guard_rejected",
+            question_id: resolution.question_id,
+          });
+        }
+      } catch (error) {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          reason: "resolution_failed",
+          question_id: resolution.question_id,
+          error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        });
+      }
+    }
+  }
+
   private async applyReflectionOpenQuestions(
     context: ReflectionContext,
     proposals: readonly ReflectionOutput["open_questions"][number][],
@@ -1005,11 +1196,13 @@ export class Reflector {
       context.executiveFocus,
     );
     const hasExecutiveWork = executiveFocusForReflection !== null;
+    const activeOpenQuestions = context.activeOpenQuestions ?? [];
     const hasReflectionWork =
       context.selfSnapshot.goals.length > 0 ||
       pendingProceduralAttempts.length > 0 ||
       pendingActions.length > 0 ||
       referencedEpisodeIds.length > 0 ||
+      activeOpenQuestions.length > 0 ||
       hasExecutiveWork ||
       hasUserVisibleTurnPayload;
 
@@ -1040,6 +1233,7 @@ export class Reflector {
         "Use strength_delta 0.01-0.1 for grounded trait demonstrations, and omit weak or generic traits.",
         "If pending_actions are present, mark only prior pending actions completed or abandoned when the current user message and agent response give clear evidence. Otherwise omit them.",
         "For open_questions, emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. Preserve the user's language in the question text.",
+        "For resolved_open_questions, resolve only active open questions that the just-completed turn clearly answered. Do not speculate. Cite evidence_episode_ids only from available_evidence_episodes, and evidence_stream_entry_ids only from current_turn_stream_entry_ids. Use question_id only from active_open_questions, and include at least one evidence id.",
       ].join("\n"),
       messages: [
         {
@@ -1057,6 +1251,20 @@ export class Reflector {
             origin: context.origin ?? "user",
             pending_procedural_attempts: pendingProceduralAttempts,
             pending_actions: pendingActions,
+            active_open_questions: activeOpenQuestions.map((question) => ({
+              id: question.id,
+              question: question.question,
+              urgency: question.urgency,
+              related_episode_ids: question.related_episode_ids,
+              related_semantic_node_ids: question.related_semantic_node_ids,
+              audience_entity_id: question.audience_entity_id,
+            })),
+            current_turn_stream_entry_ids: context.currentTurnStreamEntryIds ?? [],
+            available_evidence_episodes: context.retrievedEpisodes.map((result) => ({
+              id: result.episode.id,
+              title: result.episode.title,
+              narrative: result.episode.narrative,
+            })),
             referenced_episodes: referencedEpisodeIds.map((episodeId) => {
               const result = context.retrievedEpisodes.find(
                 (item) => item.episode.id === episodeId,

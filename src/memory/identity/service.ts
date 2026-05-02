@@ -810,6 +810,7 @@ export class IdentityService {
       current: openQuestionGuardState(current),
       provenance,
       throughReview: options.throughReview,
+      changeKind: "open_question_resolution",
     });
 
     if (!decision.allowed) {

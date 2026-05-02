@@ -56,6 +56,7 @@ import {
   TraitsRepository,
   ValuesRepository,
   type GoalRecord,
+  type OpenQuestionsRepository,
 } from "../memory/self/index.js";
 import { ReviewQueueRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
@@ -282,6 +283,7 @@ export type TurnOrchestratorOptions = {
   commitmentRepository: CommitmentRepository;
   identityService: IdentityService;
   reviewQueueRepository: ReviewQueueRepository;
+  openQuestionsRepository: OpenQuestionsRepository;
   workingMemoryStore: WorkingMemoryStore;
   llmFactory: () => LLMClient;
   createReflector: (llmClient: LLMClient) => Reflector;
@@ -1395,8 +1397,14 @@ export class TurnOrchestrator {
           }
         }
         const reflector = this.options.createReflector(llmClient);
+        const activeOpenQuestions = this.options.openQuestionsRepository.list({
+          status: "open",
+          visibleToAudienceEntityId: audienceEntityId,
+          limit: 20,
+        });
         const reflectedWorkingMemory = await reflector.reflect(
           {
+            turnId,
             origin: input.origin ?? "user",
             userMessage: input.userMessage,
             perception,
@@ -1412,6 +1420,7 @@ export class TurnOrchestrator {
             executiveFocus: executiveFocusWithStep,
             selectedSkillId: selectedSkill?.skill.id ?? null,
             audienceEntityId,
+            activeOpenQuestions,
             suppressionSet,
             currentTurnStreamEntryIds:
               persistedUserEntryId === undefined

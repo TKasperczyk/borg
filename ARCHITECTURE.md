@@ -445,7 +445,8 @@ OpenQuestion {
   source: "user" | "reflection" | "contradiction" | "ruminator"
       | "overseer" | "autonomy" | "deliberator",
   created_at, last_touched,
-  resolution_episode_id?, resolution_note?, resolved_at?,
+  resolution_evidence_episode_ids, resolution_evidence_stream_entry_ids,
+  resolution_note?, resolved_at?,
   abandoned_reason?, abandoned_at?,
 }
 ```

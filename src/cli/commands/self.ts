@@ -301,7 +301,7 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
     .option("--min-urgency <value>", "Minimum urgency", {
       type: [Number],
     })
-    .option("--episode <id>", "Resolution episode id")
+    .option("--episode <id>", "Resolution evidence episode id")
     .option("--note <text>", "Resolution note")
     .option("--reason <text>", "Abandon reason")
     .action(
@@ -351,10 +351,11 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
               borg.self.openQuestions.resolve(
                 questionId,
                 {
-                  resolution_episode_id: resolveEpisodeId(commandOptions.episode),
+                  resolution_evidence_episode_ids: [resolveEpisodeId(commandOptions.episode)],
+                  resolution_evidence_stream_entry_ids: [],
                   resolution_note:
                     commandOptions.note === undefined
-                      ? null
+                      ? "Resolved manually from the supplied episode evidence."
                       : parseRequiredText(commandOptions.note, "--note"),
                 },
                 {

@@ -8,11 +8,7 @@ function tableExists(db: SqliteDatabase, tableName: string): boolean {
   return row !== undefined;
 }
 
-function columnExists(
-  db: SqliteDatabase,
-  tableName: string,
-  columnName: string,
-): boolean {
+function columnExists(db: SqliteDatabase, tableName: string, columnName: string): boolean {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
 
   return rows.some((row) => row.name === columnName);
@@ -161,7 +157,8 @@ export const selfMigrations = [
           ),
           created_at INTEGER NOT NULL,
           last_touched INTEGER NOT NULL,
-          resolution_episode_id TEXT,
+          resolution_evidence_episode_ids TEXT NOT NULL DEFAULT '[]',
+          resolution_evidence_stream_entry_ids TEXT NOT NULL DEFAULT '[]',
           resolution_note TEXT,
           resolved_at INTEGER,
           abandoned_reason TEXT,
@@ -238,6 +235,89 @@ export const selfMigrations = [
 
         CREATE INDEX IF NOT EXISTS idx_trait_contradiction_events_trait_ts
           ON trait_contradiction_events (trait_id, ts DESC, id DESC);
+      `);
+    },
+  },
+  {
+    id: 3,
+    name: "open_question_resolution_evidence_arrays",
+    up: (db) => {
+      if (!tableExists(db, "open_questions")) {
+        return;
+      }
+
+      if (
+        !columnExists(db, "open_questions", "resolution_episode_id") &&
+        columnExists(db, "open_questions", "resolution_evidence_episode_ids") &&
+        columnExists(db, "open_questions", "resolution_evidence_stream_entry_ids")
+      ) {
+        return;
+      }
+
+      db.exec(`
+        ALTER TABLE open_questions
+          RENAME TO open_questions_before_resolution_evidence_arrays;
+
+        CREATE TABLE open_questions (
+          id TEXT PRIMARY KEY,
+          question TEXT NOT NULL,
+          urgency REAL NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'abandoned')),
+          related_episode_ids TEXT NOT NULL,
+          related_semantic_node_ids TEXT NOT NULL,
+          source TEXT NOT NULL CHECK (
+            source IN (
+              'user',
+              'reflection',
+              'contradiction',
+              'ruminator',
+              'overseer',
+              'autonomy',
+              'deliberator'
+            )
+          ),
+          created_at INTEGER NOT NULL,
+          last_touched INTEGER NOT NULL,
+          resolution_evidence_episode_ids TEXT NOT NULL DEFAULT '[]',
+          resolution_evidence_stream_entry_ids TEXT NOT NULL DEFAULT '[]',
+          resolution_note TEXT,
+          resolved_at INTEGER,
+          abandoned_reason TEXT,
+          abandoned_at INTEGER,
+          dedupe_key TEXT,
+          provenance_kind TEXT,
+          provenance_episode_ids TEXT,
+          provenance_process TEXT,
+          audience_entity_id TEXT
+        );
+
+        INSERT INTO open_questions (
+          id, question, urgency, status, related_episode_ids, related_semantic_node_ids,
+          source, created_at, last_touched, resolution_evidence_episode_ids,
+          resolution_evidence_stream_entry_ids, resolution_note, resolved_at, abandoned_reason,
+          abandoned_at, dedupe_key, provenance_kind, provenance_episode_ids, provenance_process,
+          audience_entity_id
+        )
+        SELECT
+          id, question, urgency, status, related_episode_ids, related_semantic_node_ids,
+          source, created_at, last_touched,
+          CASE
+            WHEN resolution_episode_id IS NULL THEN '[]'
+            ELSE json_array(resolution_episode_id)
+          END,
+          '[]',
+          resolution_note, resolved_at, abandoned_reason, abandoned_at, dedupe_key,
+          provenance_kind, provenance_episode_ids, provenance_process, audience_entity_id
+        FROM open_questions_before_resolution_evidence_arrays;
+
+        DROP TABLE open_questions_before_resolution_evidence_arrays;
+
+        CREATE INDEX IF NOT EXISTS idx_open_questions_status_urgency
+          ON open_questions (status, urgency DESC, last_touched DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_open_questions_dedupe_key
+          ON open_questions (dedupe_key);
+        CREATE INDEX IF NOT EXISTS idx_open_questions_audience_status_urgency
+          ON open_questions (audience_entity_id, status, urgency DESC, last_touched DESC);
       `);
     },
   },

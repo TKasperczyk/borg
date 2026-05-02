@@ -14,6 +14,7 @@ export class IdentityGuard {
     current: IdentityGuardState | null;
     provenance: Provenance;
     throughReview?: boolean;
+    changeKind?: "open_question_resolution";
   }): IdentityGuardDecision {
     if (input.current === null) {
       return {
@@ -37,6 +38,18 @@ export class IdentityGuard {
     }
 
     if (isEpisodeProvenance(input.provenance)) {
+      return {
+        allowed: true,
+        requires_review: false,
+      };
+    }
+
+    if (
+      input.changeKind === "open_question_resolution" &&
+      input.provenance.kind === "online_reflector" &&
+      (input.provenance.evidence_episode_ids.length > 0 ||
+        input.provenance.evidence_stream_entry_ids.length > 0)
+    ) {
       return {
         allowed: true,
         requires_review: false,

@@ -24,6 +24,7 @@ import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, createExecutiveStepId, createStreamEntryId } from "../../util/ids.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -68,6 +69,12 @@ function createReflectionResponse(
     urgency: number;
     related_episode_ids: string[];
   }> = [],
+  resolvedOpenQuestions: Array<{
+    question_id: string;
+    resolution_note: string;
+    evidence_episode_ids: string[];
+    evidence_stream_entry_ids: string[];
+  }> = [],
 ) {
   return {
     text: "",
@@ -94,10 +101,21 @@ function createReflectionResponse(
           step_outcomes: stepOutcomes,
           proposed_steps: proposedSteps,
           open_questions: openQuestions,
+          resolved_open_questions: resolvedOpenQuestions,
         },
       },
     ],
   };
+}
+
+class CaptureTracer implements TurnTracer {
+  readonly enabled = true;
+  readonly includePayloads = true;
+  readonly events: Array<{ event: TurnTraceEventName; data: TurnTraceData }> = [];
+
+  emit(event: TurnTraceEventName, data: TurnTraceData): void {
+    this.events.push({ event, data });
+  }
 }
 
 function createRawReflectionResponse(input: Record<string, unknown>) {
@@ -2120,6 +2138,407 @@ describe("reflector", () => {
     ]);
   });
 
+  it("resolves active open questions with retrieved episode evidence", async () => {
+    const episode = createEpisodeFixture({
+      id: "ep_aaaaaaaaaaaaaaaa" as never,
+      title: "Atlas rollback answer",
+      narrative: "Atlas stabilized after rollback rehearsal.",
+    });
+    const retrieved = createRetrievedEpisode(episode);
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+
+    const q1 = harness.openQuestionsRepository.add({
+      question: "Why did Atlas recover?",
+      urgency: 0.8,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    const q2 = harness.openQuestionsRepository.add({
+      question: "What remains unclear about Atlas?",
+      urgency: 0.7,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    llm.pushResponse(
+      createReflectionResponse(
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            question_id: q1.id,
+            resolution_note: "Atlas recovered after rollback rehearsal.",
+            evidence_episode_ids: [episode.id],
+            evidence_stream_entry_ids: [],
+          },
+        ],
+      ),
+    );
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: llm,
+      model: "claude-opus-4-7",
+      identityService: harness.identityService,
+      openQuestionsRepository: harness.openQuestionsRepository,
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext({
+          retrievedEpisodes: [retrieved],
+          referencedEpisodeIds: [episode.id],
+          response: "Atlas recovered after rollback rehearsal.",
+        }),
+        activeOpenQuestions: [q1, q2],
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.openQuestionsRepository.get(q1.id)).toMatchObject({
+      status: "resolved",
+      resolution_evidence_episode_ids: [episode.id],
+      resolution_evidence_stream_entry_ids: [],
+      resolution_note: "Atlas recovered after rollback rehearsal.",
+    });
+    expect(harness.openQuestionsRepository.get(q2.id)?.status).toBe("open");
+    expect(
+      harness.identityEventRepository.list({
+        recordType: "open_question",
+        recordId: q1.id,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        action: "resolve",
+        provenance: {
+          kind: "online_reflector",
+          evidence_episode_ids: [episode.id],
+          evidence_stream_entry_ids: [],
+        },
+      }),
+    ]);
+  });
+
+  it("resolves active open questions with current-turn stream evidence only", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const streamEntryId = "strm_aaaaaaaaaaaaaaaa" as never;
+    const question = harness.openQuestionsRepository.add({
+      question: "What did this turn clarify?",
+      urgency: 0.8,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    llm.pushResponse(
+      createReflectionResponse(
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            question_id: question.id,
+            resolution_note: "The current turn clarified the answer.",
+            evidence_episode_ids: [],
+            evidence_stream_entry_ids: [streamEntryId],
+          },
+        ],
+      ),
+    );
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: llm,
+      model: "claude-opus-4-7",
+      identityService: harness.identityService,
+      openQuestionsRepository: harness.openQuestionsRepository,
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext({
+          response: "The current turn clarified the answer.",
+        }),
+        activeOpenQuestions: [question],
+        currentTurnStreamEntryIds: [streamEntryId],
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+      status: "resolved",
+      resolution_evidence_episode_ids: [],
+      resolution_evidence_stream_entry_ids: [streamEntryId],
+    });
+  });
+
+  it.each([
+    {
+      name: "source-less",
+      reason: "no_evidence",
+      active: true,
+      evidence_episode_ids: [],
+      evidence_stream_entry_ids: [],
+    },
+    {
+      name: "unknown question",
+      reason: "unknown_question",
+      active: false,
+      evidence_episode_ids: [],
+      evidence_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa"],
+    },
+    {
+      name: "hallucinated episode id",
+      reason: "unknown_episode",
+      active: true,
+      evidence_episode_ids: ["ep_bbbbbbbbbbbbbbbb"],
+      evidence_stream_entry_ids: [],
+    },
+    {
+      name: "hallucinated stream id",
+      reason: "unknown_stream",
+      active: true,
+      evidence_episode_ids: [],
+      evidence_stream_entry_ids: ["strm_bbbbbbbbbbbbbbbb"],
+    },
+  ])(
+    "rejects $name open-question resolutions with a degraded trace event",
+    async ({ reason, active, evidence_episode_ids, evidence_stream_entry_ids }) => {
+      const tracer = new CaptureTracer();
+      const llm = new FakeLLMClient();
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+      });
+      cleanup.push(harness.cleanup);
+      const question = harness.openQuestionsRepository.add({
+        question: "What resolution should be validated?",
+        urgency: 0.8,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      llm.pushResponse(
+        createReflectionResponse(
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [
+            {
+              question_id: question.id,
+              resolution_note: "Validation should decide whether this closes.",
+              evidence_episode_ids,
+              evidence_stream_entry_ids,
+            },
+          ],
+        ),
+      );
+      const reflector = createHarnessReflector(harness, {
+        clock: harness.clock,
+        llmClient: llm,
+        model: "claude-opus-4-7",
+        identityService: harness.identityService,
+        openQuestionsRepository: harness.openQuestionsRepository,
+        tracer,
+      });
+
+      await reflector.reflect(
+        {
+          ...createOpenQuestionReflectionContext(),
+          turnId: "turn_resolution_validation",
+          activeOpenQuestions: active ? [question] : [],
+          currentTurnStreamEntryIds: ["strm_aaaaaaaaaaaaaaaa" as never],
+        },
+        harness.streamWriter,
+      );
+
+      expect(harness.openQuestionsRepository.get(question.id)?.status).toBe("open");
+      expect(tracer.events).toEqual(
+        expect.arrayContaining([
+          {
+            event: "open_question_resolution_degraded",
+            data: expect.objectContaining({
+              turnId: "turn_resolution_validation",
+              reason,
+              question_id: question.id,
+            }),
+          },
+        ]),
+      );
+    },
+  );
+
+  it("rejects audience-isolated open-question resolutions outside the active list", async () => {
+    const tracer = new CaptureTracer();
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const alice = harness.entityRepository.resolve("Alice");
+    const bob = harness.entityRepository.resolve("Bob");
+    const streamEntryId = "strm_aaaaaaaaaaaaaaaa" as never;
+    const privateQuestion = harness.openQuestionsRepository.add({
+      question: "What should Alice know privately?",
+      urgency: 0.8,
+      audience_entity_id: alice,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    const activeForBob = harness.openQuestionsRepository.list({
+      status: "open",
+      visibleToAudienceEntityId: bob,
+      limit: 20,
+    });
+
+    expect(activeForBob.map((question) => question.id)).not.toContain(privateQuestion.id);
+    llm.pushResponse(
+      createReflectionResponse(
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            question_id: privateQuestion.id,
+            resolution_note: "This should not cross audience scope.",
+            evidence_episode_ids: [],
+            evidence_stream_entry_ids: [streamEntryId],
+          },
+        ],
+      ),
+    );
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: llm,
+      model: "claude-opus-4-7",
+      identityService: harness.identityService,
+      openQuestionsRepository: harness.openQuestionsRepository,
+      tracer,
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext(),
+        turnId: "turn_audience_isolation",
+        audienceEntityId: bob,
+        activeOpenQuestions: activeForBob,
+        currentTurnStreamEntryIds: [streamEntryId],
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.openQuestionsRepository.get(privateQuestion.id)?.status).toBe("open");
+    expect(tracer.events).toEqual(
+      expect.arrayContaining([
+        {
+          event: "open_question_resolution_degraded",
+          data: expect.objectContaining({
+            reason: "unknown_question",
+            question_id: privateQuestion.id,
+          }),
+        },
+      ]),
+    );
+  });
+
+  it("skips already resolved open questions when a stale active list is replayed", async () => {
+    const tracer = new CaptureTracer();
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const streamEntryId = "strm_aaaaaaaaaaaaaaaa" as never;
+    const question = harness.openQuestionsRepository.add({
+      question: "What was already resolved?",
+      urgency: 0.8,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    harness.openQuestionsRepository.resolve(question.id, {
+      resolution_evidence_episode_ids: [],
+      resolution_evidence_stream_entry_ids: [streamEntryId],
+      resolution_note: "Resolved before reflection replay.",
+    });
+    llm.pushResponse(
+      createReflectionResponse(
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            question_id: question.id,
+            resolution_note: "A second resolution should be ignored.",
+            evidence_episode_ids: [],
+            evidence_stream_entry_ids: [streamEntryId],
+          },
+        ],
+      ),
+    );
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: llm,
+      model: "claude-opus-4-7",
+      identityService: harness.identityService,
+      openQuestionsRepository: harness.openQuestionsRepository,
+      tracer,
+    });
+
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext(),
+        turnId: "turn_resolution_idempotency",
+        activeOpenQuestions: [question],
+        currentTurnStreamEntryIds: [streamEntryId],
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+      status: "resolved",
+      resolution_note: "Resolved before reflection replay.",
+    });
+    expect(
+      harness.identityEventRepository.list({
+        recordType: "open_question",
+        recordId: question.id,
+      }),
+    ).toEqual([]);
+    expect(tracer.events).toEqual(
+      expect.arrayContaining([
+        {
+          event: "open_question_resolution_degraded",
+          data: expect.objectContaining({
+            reason: "not_open",
+            question_id: question.id,
+          }),
+        },
+      ]),
+    );
+  });
+
   it("does not add an open question when reflection output has an empty open_questions array", async () => {
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({
@@ -2392,6 +2811,9 @@ describe("reflector", () => {
       },
       updateGoalProgressFromReflection() {
         throw new Error("unexpected goal progress update");
+      },
+      resolveOpenQuestion() {
+        throw new Error("unexpected open question resolution");
       },
     };
     const reflector = new Reflector({

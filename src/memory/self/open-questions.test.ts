@@ -9,7 +9,12 @@ import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
-import { createEntityId, createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
+import {
+  createEntityId,
+  createEpisodeId,
+  createSemanticNodeId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 
 import { selfMigrations } from "./migrations.js";
 import { OpenQuestionsRepository, createOpenQuestionsTableSchema } from "./open-questions.js";
@@ -119,7 +124,8 @@ describe("OpenQuestionsRepository", () => {
 
     const touched = repository.touch(first.id, 12_000);
     const resolved = repository.resolve(first.id, {
-      resolution_episode_id: episodeId,
+      resolution_evidence_episode_ids: [episodeId],
+      resolution_evidence_stream_entry_ids: [],
       resolution_note: "Atlas completed the rollout.",
     });
     const bumped = repository.bumpUrgency(first.id, -0.2);
@@ -271,14 +277,17 @@ describe("OpenQuestionsRepository", () => {
     });
 
     repository.resolve(resolvedQuestion.id, {
-      resolution_episode_id: episodeId,
+      resolution_evidence_episode_ids: [episodeId],
+      resolution_evidence_stream_entry_ids: [],
       resolution_note: "Atlas stabilized after the rollback rehearsal.",
     });
     repository.abandon(abandonedQuestion.id, "No longer relevant");
 
     expect(() =>
       repository.resolve(resolvedQuestion.id, {
-        resolution_episode_id: episodeId,
+        resolution_evidence_episode_ids: [episodeId],
+        resolution_evidence_stream_entry_ids: [],
+        resolution_note: "Second resolution.",
       }),
     ).toThrow(/OPEN_QUESTION_INVALID_TRANSITION|Cannot resolve/);
     expect(() => repository.abandon(resolvedQuestion.id, "Too late")).toThrow(
@@ -286,7 +295,9 @@ describe("OpenQuestionsRepository", () => {
     );
     expect(() =>
       repository.resolve(abandonedQuestion.id, {
-        resolution_episode_id: episodeId,
+        resolution_evidence_episode_ids: [episodeId],
+        resolution_evidence_stream_entry_ids: [],
+        resolution_note: "Too late.",
       }),
     ).toThrow(/OPEN_QUESTION_INVALID_TRANSITION|Cannot resolve/);
     expect(() => repository.abandon(abandonedQuestion.id, "Still stale")).toThrow(
@@ -294,6 +305,190 @@ describe("OpenQuestionsRepository", () => {
     );
 
     db.close();
+  });
+
+  it("stores stream-evidence-only resolutions and rejects source-less resolutions", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const streamEntryId = createStreamEntryId();
+
+    try {
+      const question = repository.add({
+        question: "What did the current turn settle?",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const sourceLessQuestion = repository.add({
+        question: "What still has no evidence?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const resolved = repository.resolve(question.id, {
+        resolution_evidence_episode_ids: [],
+        resolution_evidence_stream_entry_ids: [streamEntryId],
+        resolution_note: "The current turn supplied the answer.",
+      });
+
+      expect(resolved).toMatchObject({
+        status: "resolved",
+        resolution_evidence_episode_ids: [],
+        resolution_evidence_stream_entry_ids: [streamEntryId],
+        resolution_note: "The current turn supplied the answer.",
+      });
+      expect(repository.get(question.id)?.resolution_evidence_stream_entry_ids).toEqual([
+        streamEntryId,
+      ]);
+      expect(() =>
+        repository.resolve(sourceLessQuestion.id, {
+          resolution_evidence_episode_ids: [],
+          resolution_evidence_stream_entry_ids: [],
+          resolution_note: "No evidence.",
+        }),
+      ).toThrow(/OPEN_QUESTION_RESOLUTION_EVIDENCE_REQUIRED|requires episode or stream evidence/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates legacy resolution_episode_id into resolution evidence arrays", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-open-questions-migration-"));
+    const dbPath = join(tempDir, "borg.db");
+    const oldDb = openDatabase(dbPath);
+
+    try {
+      oldDb.exec(`
+        INSERT INTO _migrations (id, name, applied_at)
+          VALUES (1, 'self_initial_schema', 1), (2, 'goal_audience_and_source_stream_ids', 1);
+
+        CREATE TABLE open_questions (
+          id TEXT PRIMARY KEY,
+          question TEXT NOT NULL,
+          urgency REAL NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'abandoned')),
+          related_episode_ids TEXT NOT NULL,
+          related_semantic_node_ids TEXT NOT NULL,
+          source TEXT NOT NULL CHECK (
+            source IN (
+              'user',
+              'reflection',
+              'contradiction',
+              'ruminator',
+              'overseer',
+              'autonomy',
+              'deliberator'
+            )
+          ),
+          created_at INTEGER NOT NULL,
+          last_touched INTEGER NOT NULL,
+          resolution_episode_id TEXT,
+          resolution_note TEXT,
+          resolved_at INTEGER,
+          abandoned_reason TEXT,
+          abandoned_at INTEGER,
+          dedupe_key TEXT,
+          provenance_kind TEXT,
+          provenance_episode_ids TEXT,
+          provenance_process TEXT,
+          audience_entity_id TEXT
+        );
+      `);
+      oldDb
+        .prepare(
+          `
+            INSERT INTO open_questions (
+              id, question, urgency, status, related_episode_ids, related_semantic_node_ids,
+              source, created_at, last_touched, resolution_episode_id, resolution_note,
+              resolved_at, abandoned_reason, abandoned_at, dedupe_key, provenance_kind,
+              provenance_episode_ids, provenance_process, audience_entity_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          "oq_aaaaaaaaaaaaaaaa",
+          "What resolved?",
+          0.8,
+          "resolved",
+          "[]",
+          "[]",
+          "reflection",
+          1,
+          2,
+          "ep_aaaaaaaaaaaaaaaa",
+          "Resolved before migration.",
+          3,
+          null,
+          null,
+          "legacy:resolved",
+          "manual",
+          "[]",
+          null,
+          null,
+        );
+      oldDb
+        .prepare(
+          `
+            INSERT INTO open_questions (
+              id, question, urgency, status, related_episode_ids, related_semantic_node_ids,
+              source, created_at, last_touched, resolution_episode_id, resolution_note,
+              resolved_at, abandoned_reason, abandoned_at, dedupe_key, provenance_kind,
+              provenance_episode_ids, provenance_process, audience_entity_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          "oq_bbbbbbbbbbbbbbbb",
+          "What remains open?",
+          0.4,
+          "open",
+          "[]",
+          "[]",
+          "reflection",
+          1,
+          2,
+          null,
+          null,
+          null,
+          null,
+          null,
+          "legacy:open",
+          "manual",
+          "[]",
+          null,
+          null,
+        );
+      oldDb.close();
+
+      const migratedDb = openDatabase(dbPath, {
+        migrations: selfMigrations,
+      });
+      const columns = migratedDb.prepare("PRAGMA table_info(open_questions)").all() as Array<{
+        name: string;
+      }>;
+      const repository = new OpenQuestionsRepository({
+        db: migratedDb,
+      });
+
+      expect(columns.map((column) => column.name)).not.toContain("resolution_episode_id");
+      expect(repository.get("oq_aaaaaaaaaaaaaaaa" as never)).toMatchObject({
+        resolution_evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+        resolution_evidence_stream_entry_ids: [],
+      });
+      expect(repository.get("oq_bbbbbbbbbbbbbbbb" as never)).toMatchObject({
+        resolution_evidence_episode_ids: [],
+        resolution_evidence_stream_entry_ids: [],
+      });
+
+      migratedDb.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("uses the indexed dedupe key beyond the old in-memory scan window", () => {

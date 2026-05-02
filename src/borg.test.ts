@@ -2566,6 +2566,9 @@ describe("Borg", () => {
         updateGoalProgressFromReflection() {
           throw new Error("unexpected goal progress update");
         },
+        resolveOpenQuestion() {
+          throw new Error("unexpected open question resolution");
+        },
       };
       internal.deps.turnOrchestrator.options.createReflector = (llmClient) =>
         new Reflector({

@@ -117,6 +117,23 @@ function createEmptyReflectionResponse() {
   };
 }
 
+function findReflectionRequest(llm: FakeLLMClient): LLMCompleteOptions | undefined {
+  return llm.requests.find((request) => {
+    const toolChoice = request.tool_choice;
+
+    return (
+      typeof toolChoice === "object" &&
+      toolChoice !== null &&
+      "name" in toolChoice &&
+      toolChoice.name === "EmitTurnReflection"
+    );
+  });
+}
+
+function parseReflectionPayload(request: LLMCompleteOptions | undefined): Record<string, unknown> {
+  return JSON.parse(String(request?.messages[0]?.content ?? "{}")) as Record<string, unknown>;
+}
+
 function createStopCommitmentResponse(input: {
   classification: "stop_until_substantive_content" | "none";
   reason?: string;
@@ -967,7 +984,10 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_700_000_000_000);
     const llm = new FakeLLMClient();
-    const borg = await openTestBorg(tempDir, llm, clock);
+    const tracePath = join(tempDir, "turn-trace.jsonl");
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
 
     try {
       const internal = borg as unknown as {
@@ -1032,7 +1052,10 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_700_000_000_000);
     const llm = new FakeLLMClient();
-    const borg = await openTestBorg(tempDir, llm, clock);
+    const tracePath = join(tempDir, "turn-trace.jsonl");
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
 
     try {
       const internal = borg as unknown as {
@@ -1091,6 +1114,158 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           kind: "ask_user",
         },
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("passes at most twenty active open questions to reflection", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_700_000_000_000);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        borg.self.openQuestions.add({
+          question: `Which Atlas follow-up ${index} remains open?`,
+          urgency: 0.5,
+          provenance: {
+            kind: "manual",
+          },
+          source: "user",
+        });
+      }
+
+      llm.pushResponse({
+        text: "I will keep this concise.",
+        input_tokens: 8,
+        output_tokens: 4,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse(createEmptyReflectionResponse());
+
+      await borg.turn({
+        userMessage: "Please keep tracking Atlas follow-ups.",
+        stakes: "low",
+      });
+
+      const payload = parseReflectionPayload(findReflectionRequest(llm));
+      expect(payload.active_open_questions).toHaveLength(20);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("omits resolved open questions from the next turn's active reflection list", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_700_000_000_000);
+    const llm = new FakeLLMClient();
+    const tracePath = join(tempDir, "turn-trace.jsonl");
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+
+    try {
+      const question = borg.self.openQuestions.add({
+        question: "What does the current turn answer?",
+        urgency: 0.8,
+        provenance: {
+          kind: "manual",
+        },
+        source: "reflection",
+      });
+
+      llm.pushResponse({
+        text: "The current turn answers it directly.",
+        input_tokens: 8,
+        output_tokens: 4,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse(
+        createStopCommitmentResponse({
+          classification: "none",
+        }),
+      );
+      llm.pushResponse((request: LLMCompleteOptions) => {
+        const payload = parseReflectionPayload(request);
+        const activeQuestions = payload.active_open_questions as Array<{ id: string }>;
+        const streamEntryIds = payload.current_turn_stream_entry_ids as string[];
+
+        expect(activeQuestions.map((item) => item.id)).toContain(question.id);
+        expect(streamEntryIds.length).toBeGreaterThan(0);
+
+        return {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use" as const,
+          tool_calls: [
+            {
+              id: "toolu_reflection",
+              name: "EmitTurnReflection",
+              input: {
+                advanced_goals: [],
+                procedural_outcomes: [],
+                trait_demonstrations: [],
+                intent_updates: [],
+                resolved_open_questions: [
+                  {
+                    question_id: question.id,
+                    resolution_note: "The current turn answered it directly.",
+                    evidence_episode_ids: [],
+                    evidence_stream_entry_ids: [streamEntryIds[0]!],
+                  },
+                ],
+              },
+            },
+          ],
+        };
+      });
+
+      await borg.turn({
+        userMessage: "This turn answers the open question.",
+        stakes: "low",
+      });
+
+      expect(
+        readTraceEvents(tracePath).filter(
+          (event) => event.event === "open_question_resolution_degraded",
+        ),
+      ).toEqual([]);
+      expect(borg.self.openQuestions.list({ status: "open" }).map((item) => item.id)).not.toContain(
+        question.id,
+      );
+
+      llm.pushResponse({
+        text: "No open question remains in scope.",
+        input_tokens: 8,
+        output_tokens: 4,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse(
+        createStopCommitmentResponse({
+          classification: "none",
+        }),
+      );
+      llm.pushResponse((request: LLMCompleteOptions) => {
+        const payload = parseReflectionPayload(request);
+        const activeQuestions = payload.active_open_questions as Array<{ id: string }>;
+
+        expect(activeQuestions.map((item) => item.id)).not.toContain(question.id);
+
+        return createEmptyReflectionResponse();
+      });
+
+      await borg.turn({
+        userMessage: "Check the next active list.",
+        stakes: "low",
+      });
     } finally {
       await borg.close();
     }
