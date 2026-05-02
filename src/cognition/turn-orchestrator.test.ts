@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +18,12 @@ import {
   type EntityId,
   type EpisodeId,
 } from "../util/ids.js";
+
+type TraceEvent = {
+  event: string;
+  turnId: string;
+  [key: string]: unknown;
+};
 
 class CountingEmbeddingClient extends TestEmbeddingClient {
   readonly embedTexts: string[] = [];
@@ -39,6 +45,7 @@ async function openTestBorg(
   llm: FakeLLMClient,
   clock: ManualClock,
   embeddingClient: EmbeddingClient = new TestEmbeddingClient(),
+  options: { tracerPath?: string; env?: NodeJS.ProcessEnv } = {},
 ) {
   return Borg.open({
     config: createTestConfig({
@@ -70,8 +77,23 @@ async function openTestBorg(
     embeddingDimensions: 4,
     embeddingClient,
     llmClient: llm,
+    env: options.env,
+    tracerPath: options.tracerPath,
     liveExtraction: false,
   });
+}
+
+function readTraceEvents(path: string): TraceEvent[] {
+  const content = readFileSync(path, "utf8").trim();
+
+  if (content.length === 0) {
+    return [];
+  }
+
+  return content
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as TraceEvent);
 }
 
 function createEmptyReflectionResponse() {
@@ -1380,6 +1402,110 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     } finally {
       await borg.close();
     }
+  });
+
+  it("persists at most three promoted goals from a five-candidate extraction", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_176_600);
+    const llm = new FakeLLMClient({
+      responses: [
+        createGoalPromotionResponse([
+          {
+            description: "Help the user track the launch checklist",
+            confidence: 0.95,
+          },
+          {
+            description: "Help the user prepare the investor update",
+            confidence: 0.94,
+          },
+          {
+            description: "Help the user schedule the design review",
+            confidence: 0.93,
+          },
+          {
+            description: "Help the user collect beta feedback",
+            confidence: 0.92,
+          },
+          {
+            description: "Help the user plan the onboarding pass",
+            confidence: 0.91,
+          },
+        ]),
+        "I will keep the active goals focused.",
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "entityRepository" | "identityService">;
+    };
+    const addGoalSpy = vi.spyOn(internal.deps.identityService, "addGoal");
+
+    try {
+      await borg.turn({
+        userMessage: "Keep track of launch, investor, design, beta, and onboarding work.",
+        audience: "Sam",
+      });
+
+      const samEntityId = internal.deps.entityRepository.findByName("Sam");
+      const goals = borg.self.goals.list({
+        status: "active",
+        visibleToAudienceEntityId: samEntityId,
+      });
+
+      expect(addGoalSpy).toHaveBeenCalledTimes(3);
+      expect(goals.map((goal) => goal.description)).toEqual([
+        "Help the user track the launch checklist",
+        "Help the user prepare the investor update",
+        "Help the user schedule the design review",
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("emits a goal promotion degraded trace event when extraction fails", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "goal-promotion-degraded.jsonl");
+    const clock = new ManualClock(1_800_000_176_650);
+    const llm = new FakeLLMClient({
+      responses: [
+        (options: LLMCompleteOptions) => {
+          expect(options.budget).toBe("goal-promotion-extractor");
+          throw new Error("goal promotion transport failed");
+        },
+        "I will continue without promoting a goal.",
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, undefined, {
+      tracerPath: tracePath,
+      env: {
+        BORG_TRACE_PROMPTS: "1",
+      },
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Keep this goal in view for later.",
+        audience: "Sam",
+      });
+    } finally {
+      await borg.close();
+    }
+
+    const degradedEvent = readTraceEvents(tracePath).find(
+      (event) => event.event === "goal_promotion_extractor_degraded",
+    );
+
+    expect(degradedEvent).toMatchObject({
+      event: "goal_promotion_extractor_degraded",
+      reason: "llm_failed",
+      error: "goal promotion transport failed",
+    });
+    expect(degradedEvent?.turnId).toEqual(expect.any(String));
   });
 
   it("does not create a duplicate goal when the extractor points at an existing goal", async () => {
