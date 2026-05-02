@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
-import { createEpisodeId, createStreamEntryId } from "../../util/ids.js";
+import { createEntityId, createEpisodeId, createStreamEntryId } from "../../util/ids.js";
 import { commitmentMigrations, CommitmentRepository } from "../commitments/index.js";
 import {
   AutobiographicalRepository,
@@ -170,6 +170,49 @@ describe("identity service", () => {
           }),
         ]),
       );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("creates goals through identity governance", () => {
+    const harness = createHarness(new FixedClock(1_000));
+
+    try {
+      const audienceEntityId = createEntityId();
+      const streamEntryId = createStreamEntryId();
+      const goal = harness.identity.addGoal({
+        description: "Help track italki shortlist",
+        priority: 8,
+        audienceEntityId,
+        provenance: {
+          kind: "online",
+          process: "goal-promotion-extractor",
+        },
+        sourceStreamEntryIds: [streamEntryId],
+      });
+
+      expect(harness.goalsRepository.get(goal.id)).toMatchObject({
+        id: goal.id,
+        status: "active",
+        audience_entity_id: audienceEntityId,
+        source_stream_entry_ids: [streamEntryId],
+      });
+      expect(
+        harness.identityEvents.list({
+          recordType: "goal",
+          recordId: goal.id,
+        }),
+      ).toEqual([
+        expect.objectContaining({
+          action: "create",
+          old_value: null,
+          new_value: expect.objectContaining({
+            id: goal.id,
+            audience_entity_id: audienceEntityId,
+          }),
+        }),
+      ]);
     } finally {
       harness.db.close();
     }

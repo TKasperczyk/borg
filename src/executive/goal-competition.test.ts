@@ -21,6 +21,7 @@ function goal(
     last_progress_ts: input.last_progress_ts ?? null,
     created_at: input.created_at ?? nowMs,
     target_at: input.target_at ?? null,
+    audience_entity_id: input.audience_entity_id ?? null,
     provenance: input.provenance ?? {
       kind: "system",
     },

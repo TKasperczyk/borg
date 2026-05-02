@@ -311,6 +311,8 @@ describe("TurnTracer", () => {
       "perception_completed",
       "llm_call_started",
       "llm_call_response",
+      "llm_call_started",
+      "llm_call_response",
       "retrieval_started",
       "llm_call_started",
       "llm_call_response",

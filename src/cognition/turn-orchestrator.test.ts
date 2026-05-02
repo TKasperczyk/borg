@@ -13,6 +13,7 @@ import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
 import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
 import {
   createEpisodeId,
+  createGoalId,
   createStreamEntryId,
   type EntityId,
   type EpisodeId,
@@ -215,6 +216,48 @@ function createCorrectivePreferenceResponse(input: {
           reason: input.reason ?? "The current user turn corrected future response behavior.",
           confidence: input.confidence ?? 0.9,
           supersedes_commitment_id: null,
+        },
+      },
+    ],
+  };
+}
+
+function createGoalPromotionResponse(
+  promotions: Array<{
+    description: string;
+    priority?: number;
+    target_at?: number | null;
+    reason?: string;
+    confidence?: number;
+    duplicate_of_goal_id?: string | null;
+    initial_step?: {
+      description: string;
+      kind: "think" | "ask_user" | "research" | "act" | "wait";
+      due_at?: number | null;
+      rationale: string;
+    } | null;
+  }>,
+) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_goal_promotion",
+        name: "EmitGoalPromotion",
+        input: {
+          promotions: promotions.map((promotion) => ({
+            classification: "promote",
+            description: promotion.description,
+            priority: promotion.priority ?? 8,
+            target_at: promotion.target_at ?? null,
+            reason: promotion.reason ?? "The user asked Borg to carry this as an ongoing goal.",
+            confidence: promotion.confidence ?? 0.9,
+            duplicate_of_goal_id: promotion.duplicate_of_goal_id ?? null,
+            initial_step: promotion.initial_step ?? null,
+          })),
         },
       },
     ],
@@ -1245,6 +1288,146 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           source_stream_entry_ids: [userEntry?.id],
         }),
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("promotes user goals through identity with audience, stream source, and initial step", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_176_500);
+    const targetAt = 1_800_100_000_000;
+    const stepDueAt = 1_800_050_000_000;
+    const llm = new FakeLLMClient({
+      responses: [
+        createGoalPromotionResponse([
+          {
+            description: "Help the user keep the Monday postmortem straight",
+            priority: 9,
+            target_at: targetAt,
+            reason: "The user asked Borg to help keep the postmortem organized.",
+            confidence: 0.91,
+            initial_step: {
+              description: "Ask what must be included in the postmortem",
+              kind: "ask_user",
+              due_at: stepDueAt,
+              rationale: "Borg needs the postmortem constraints to help track it.",
+            },
+          },
+        ]),
+        "I will keep the postmortem straight.",
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "entityRepository" | "identityService"> & {
+        executiveStepsRepository: ExecutiveStepsRepository;
+      };
+    };
+    const addGoalSpy = vi.spyOn(internal.deps.identityService, "addGoal");
+
+    try {
+      await borg.turn({
+        userMessage: "Write postmortem Monday, help me keep this straight.",
+        audience: "Sam",
+      });
+
+      const userEntry = borg.stream.tail(10).find((entry) => entry.kind === "user_msg");
+      const samEntityId = internal.deps.entityRepository.findByName("Sam");
+      const addInput = addGoalSpy.mock.calls[0]?.[0];
+      const goals = borg.self.goals.list({
+        status: "active",
+        visibleToAudienceEntityId: samEntityId,
+      });
+      const promotedGoal = goals.find(
+        (goal) => goal.description === "Help the user keep the Monday postmortem straight",
+      );
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+
+      expect(addInput).toMatchObject({
+        description: "Help the user keep the Monday postmortem straight",
+        priority: 9,
+        status: "active",
+        targetAt,
+        audienceEntityId: samEntityId,
+        sourceStreamEntryIds: [userEntry?.id],
+      });
+      expect(promotedGoal).toMatchObject({
+        status: "active",
+        target_at: targetAt,
+        audience_entity_id: samEntityId,
+        source_stream_entry_ids: [userEntry?.id],
+      });
+      expect(promotedGoal).toBeDefined();
+      expect(
+        internal.deps.executiveStepsRepository.list(promotedGoal!.id).map((step) => ({
+          goal_id: step.goal_id,
+          description: step.description,
+          kind: step.kind,
+          due_at: step.due_at,
+        })),
+      ).toEqual([
+        {
+          goal_id: promotedGoal!.id,
+          description: "Ask what must be included in the postmortem",
+          kind: "ask_user",
+          due_at: stepDueAt,
+        },
+      ]);
+      expect(finalizerSystem).toContain("Help the user keep the Monday postmortem straight");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("does not create a duplicate goal when the extractor points at an existing goal", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_176_700);
+    const existingGoalId = createGoalId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createGoalPromotionResponse([
+          {
+            description: "Help the user track their italki shortlist",
+            duplicate_of_goal_id: existingGoalId,
+            confidence: 0.95,
+          },
+        ]),
+        "I will keep it in mind.",
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "entityRepository">;
+    };
+
+    try {
+      const samEntityId = internal.deps.entityRepository.resolve("Sam");
+      const existingGoal = borg.self.goals.add({
+        id: existingGoalId,
+        description: "Help the user track their italki shortlist",
+        priority: 8,
+        audienceEntityId: samEntityId,
+        provenance: {
+          kind: "manual",
+        },
+      });
+
+      await borg.turn({
+        userMessage: "Remind me about italki later.",
+        audience: "Sam",
+      });
+
+      const goals = borg.self.goals.list({
+        status: "active",
+        visibleToAudienceEntityId: samEntityId,
+      });
+
+      expect(goals.map((goal) => goal.id)).toEqual([existingGoal.id]);
     } finally {
       await borg.close();
     }

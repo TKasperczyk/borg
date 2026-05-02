@@ -26,6 +26,11 @@ function parseStoredIdArray(value: unknown): EpisodeId[] {
 }
 
 export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
+  const sourceStreamEntryIds =
+    row.source_stream_entry_ids === null || row.source_stream_entry_ids === undefined
+      ? undefined
+      : parseStoredIdArray(row.source_stream_entry_ids);
+
   return goalSchema.parse({
     id: row.id,
     description: row.description,
@@ -45,6 +50,13 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
         : Number(row.last_progress_ts),
     created_at: Number(row.created_at),
     target_at: row.target_at === null || row.target_at === undefined ? null : Number(row.target_at),
+    audience_entity_id:
+      row.audience_entity_id === null || row.audience_entity_id === undefined
+        ? null
+        : String(row.audience_entity_id),
+    ...(sourceStreamEntryIds === undefined || sourceStreamEntryIds.length === 0
+      ? {}
+      : { source_stream_entry_ids: sourceStreamEntryIds }),
     provenance: parseStoredProvenance({
       provenance_kind: row.provenance_kind,
       provenance_episode_ids: row.provenance_episode_ids,

@@ -150,6 +150,12 @@ export class ScriptedDebugLLM implements LLMClient {
       });
     }
 
+    if (options.budget === "goal-promotion-extractor") {
+      return buildToolResult(options, {
+        promotions: [],
+      });
+    }
+
     if (/You extract episodic memories from a stream chunk\./i.test(prompt)) {
       const streamIds = extractStreamIds(prompt);
       const episodes = [

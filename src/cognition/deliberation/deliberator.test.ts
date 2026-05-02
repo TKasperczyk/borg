@@ -2159,6 +2159,7 @@ describe("deliberator", () => {
               last_progress_ts: null,
               created_at: 0,
               target_at: null,
+              audience_entity_id: null,
               provenance: { kind: "manual" },
             },
           ],

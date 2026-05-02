@@ -29,6 +29,7 @@ export type TurnTraceEventName =
   | "tool_call_dispatched"
   | "tool_call_completed"
   | "commitment_extractor_degraded"
+  | "goal_promotion_extractor_degraded"
   | "commitment_check"
   | "reflection_emitted";
 

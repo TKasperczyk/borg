@@ -1,8 +1,13 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { ProvenanceError } from "../../util/errors.js";
+import { createEntityId, createStreamEntryId } from "../../util/ids.js";
 import { selfMigrations } from "./migrations.js";
 import { GoalsRepository, TraitsRepository, ValuesRepository } from "./repository.js";
 
@@ -115,6 +120,102 @@ describe("self repositories", () => {
       ]);
     } finally {
       db.close();
+    }
+  });
+
+  it("scopes goals by audience and stores source stream anchors", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const goals = new GoalsRepository({
+      db,
+      clock: new FixedClock(100),
+    });
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const streamEntryId = createStreamEntryId();
+
+    try {
+      const globalGoal = goals.add({
+        description: "Keep shared planning visible",
+        priority: 10,
+        provenance: manualProvenance,
+      });
+      const aliceGoal = goals.add({
+        description: "Help Alice track italki options",
+        priority: 9,
+        audienceEntityId: alice,
+        sourceStreamEntryIds: [streamEntryId],
+        provenance: {
+          kind: "online",
+          process: "goal-promotion-extractor",
+        },
+      });
+      const bobGoal = goals.add({
+        description: "Help Bob track posture audit",
+        priority: 8,
+        audienceEntityId: bob,
+        provenance: manualProvenance,
+      });
+
+      expect(goals.get(aliceGoal.id)).toMatchObject({
+        audience_entity_id: alice,
+        source_stream_entry_ids: [streamEntryId],
+      });
+      expect(
+        goals.list({ status: "active", visibleToAudienceEntityId: alice }).map((goal) => goal.id),
+      ).toEqual([globalGoal.id, aliceGoal.id]);
+      expect(
+        goals.list({ status: "active", visibleToAudienceEntityId: bob }).map((goal) => goal.id),
+      ).toEqual([globalGoal.id, bobGoal.id]);
+      expect(
+        goals.list({ status: "active", visibleToAudienceEntityId: null }).map((goal) => goal.id),
+      ).toEqual([globalGoal.id]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("persists audience-scoped active goals across repository reopen", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-self-goals-"));
+    const dbPath = join(tempDir, "borg.db");
+    const audienceEntityId = createEntityId();
+
+    try {
+      const firstDb = openDatabase(dbPath, {
+        migrations: [...selfMigrations],
+      });
+      const firstGoals = new GoalsRepository({
+        db: firstDb,
+        clock: new FixedClock(100),
+      });
+      const goal = firstGoals.add({
+        description: "Help track italki shortlist",
+        priority: 8,
+        audienceEntityId,
+        provenance: manualProvenance,
+      });
+      firstDb.close();
+
+      const secondDb = openDatabase(dbPath, {
+        migrations: [...selfMigrations],
+      });
+      const secondGoals = new GoalsRepository({
+        db: secondDb,
+        clock: new FixedClock(200),
+      });
+
+      try {
+        expect(
+          secondGoals
+            .list({ status: "active", visibleToAudienceEntityId: audienceEntityId })
+            .map((item) => item.id),
+        ).toEqual([goal.id]);
+      } finally {
+        secondDb.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 

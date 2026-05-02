@@ -2182,10 +2182,15 @@ describe("Borg", () => {
 
       expect(result.response).toBe("I can't share Atlas details with Sam.");
       const nonCorrectiveRequests = llm.requests.filter(
-        (request) => request.budget !== "corrective-preference-extractor",
+        (request) =>
+          request.budget !== "corrective-preference-extractor" &&
+          request.budget !== "goal-promotion-extractor",
       );
       expect(llm.requests.some((request) => request.budget === "corrective-preference-extractor"))
         .toBe(true);
+      expect(llm.requests.some((request) => request.budget === "goal-promotion-extractor")).toBe(
+        true,
+      );
       expect(nonCorrectiveRequests.map((request) => request.model)).toEqual([
         "haiku",
         "sonnet",

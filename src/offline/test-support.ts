@@ -834,6 +834,10 @@ export function createGoalFixture(overrides: Partial<GoalRecord> = {}): GoalReco
     last_progress_ts: overrides.last_progress_ts ?? null,
     created_at: nowMs,
     target_at: overrides.target_at ?? null,
+    audience_entity_id: overrides.audience_entity_id ?? null,
+    ...(overrides.source_stream_entry_ids === undefined
+      ? {}
+      : { source_stream_entry_ids: overrides.source_stream_entry_ids }),
     provenance: overrides.provenance ?? {
       kind: "system",
     },

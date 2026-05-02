@@ -44,6 +44,14 @@ export {
   type ExtractCorrectivePreferenceInput,
 } from "./commitments/corrective-preference-extractor.js";
 export {
+  GoalPromotionExtractor,
+  type ExtractGoalPromotionInput,
+  type GoalPromotionCandidate,
+  type GoalPromotionExtractorDegradedReason,
+  type GoalPromotionExtractorOptions,
+  type GoalPromotionInitialStep,
+} from "./goals/goal-promotion-extractor.js";
+export {
   StopCommitmentExtractor,
   type ExtractStopCommitmentInput,
   type StopCommitmentExtraction,

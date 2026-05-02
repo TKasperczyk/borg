@@ -1,12 +1,16 @@
 import { z } from "zod";
 
 import {
+  entityIdHelpers,
   episodeIdHelpers,
   goalIdHelpers,
+  streamEntryIdHelpers,
   traitIdHelpers,
   valueIdHelpers,
+  type EntityId,
   type EpisodeId,
   type GoalId,
+  type StreamEntryId,
   type TraitId,
   type ValueId,
 } from "../../util/ids.js";
@@ -28,6 +32,20 @@ export const goalIdSchema = z
     message: "Invalid goal id",
   })
   .transform((value) => value as GoalId);
+
+export const goalAudienceEntityIdSchema = z
+  .string()
+  .refine((value) => entityIdHelpers.is(value), {
+    message: "Invalid goal audience entity id",
+  })
+  .transform((value) => value as EntityId);
+
+export const goalSourceStreamEntryIdSchema = z
+  .string()
+  .refine((value) => streamEntryIdHelpers.is(value), {
+    message: "Invalid goal source stream entry id",
+  })
+  .transform((value) => value as StreamEntryId);
 
 export const traitIdSchema = z
   .string()
@@ -85,6 +103,8 @@ export const goalSchema = z.object({
   last_progress_ts: z.number().finite().nullable(),
   created_at: z.number().finite(),
   target_at: z.number().finite().nullable(),
+  audience_entity_id: goalAudienceEntityIdSchema.nullable().default(null),
+  source_stream_entry_ids: z.array(goalSourceStreamEntryIdSchema).min(1).optional(),
   provenance: provenanceSchema,
 });
 
@@ -122,6 +142,12 @@ export const goalPatchSchema = goalSchema
   .omit({
     id: true,
     created_at: true,
+    audience_entity_id: true,
+    source_stream_entry_ids: true,
+  })
+  .extend({
+    audience_entity_id: goalAudienceEntityIdSchema.nullable().optional(),
+    source_stream_entry_ids: z.array(goalSourceStreamEntryIdSchema).min(1).optional(),
   })
   .partial()
   .strict();

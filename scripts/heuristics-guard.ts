@@ -41,30 +41,30 @@ const guards: readonly Guard[] = [
     paths: ["src/memory/affective"],
   },
   {
-    name: "generation English wordlist or role-label regex marker",
+    name: "generation/extractor English wordlist or role-label regex marker",
     pattern:
       "(?i)(const\\s+\\w+\\s*=\\s*\\[[^\\n\\]]*\\b(?:stop|stopping|responding|generate|output|human|assistant|user)\\b[^\\n\\]]*\\b(?:stop|stopping|responding|generate|output|human|assistant|user)\\b|/[^\\n/]*\\(\\?:[^\\n/]*\\b(?:human|assistant|user)\\b[^\\n/]*\\b(?:human|assistant|user)\\b[^\\n/]*\\))",
-    paths: ["src/cognition/generation", "src/cognition/commitments"],
+    paths: ["src/cognition/generation", "src/cognition/commitments", "src/cognition/goals"],
   },
   {
-    name: "generation English Set wordlist marker",
+    name: "generation/extractor English Set wordlist marker",
     pattern: "new Set\\s*\\(\\s*\\[",
-    paths: ["src/cognition/generation", "src/cognition/commitments"],
+    paths: ["src/cognition/generation", "src/cognition/commitments", "src/cognition/goals"],
   },
   {
-    name: "commitment extractor substring semantic matching",
+    name: "commitment/goal extractor substring semantic matching",
     pattern: "\\.(includes|indexOf|startsWith|endsWith)\\s*\\(",
-    paths: ["src/cognition/commitments"],
+    paths: ["src/cognition/commitments", "src/cognition/goals"],
   },
   {
-    name: "commitment extractor regex literal marker",
+    name: "commitment/goal extractor regex literal marker",
     pattern: "(^|[=(:,\\[{!&|?;]|return\\s+)\\s*/[^/\\n]+/[dgimsuvy]*",
-    paths: ["src/cognition/commitments"],
+    paths: ["src/cognition/commitments", "src/cognition/goals"],
   },
   {
-    name: "commitment extractor capitalization heuristic marker",
+    name: "commitment/goal extractor capitalization heuristic marker",
     pattern: "\\[A-Z\\]|\\\\p\\{Lu\\}|toUpperCase\\s*\\(|isUpperCase\\s*\\(",
-    paths: ["src/cognition/commitments"],
+    paths: ["src/cognition/commitments", "src/cognition/goals"],
   },
 ];
 

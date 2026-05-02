@@ -127,6 +127,7 @@ function makeSelfSnapshot(): SelfSnapshot {
         last_progress_ts: null,
         created_at: 100,
         target_at: null,
+        audience_entity_id: null,
         provenance: {
           kind: "system",
         },
@@ -484,6 +485,7 @@ describe("TurnRetrievalCoordinator", () => {
       last_progress_ts: null,
       created_at: 200,
       target_at: null,
+      audience_entity_id: null,
       provenance: {
         kind: "system" as const,
       },

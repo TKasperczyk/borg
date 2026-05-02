@@ -4,7 +4,8 @@ import type { ExecutiveStepsRepository } from "../../executive/index.js";
 import { type SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
-import { createGoalId, type GoalId } from "../../util/ids.js";
+import { createGoalId, type EntityId, type GoalId, type StreamEntryId } from "../../util/ids.js";
+import { serializeJsonValue } from "../../util/json-value.js";
 import { toStoredProvenance, type Provenance } from "../common/provenance.js";
 import { type IdentityEventRepository } from "../identity/repository.js";
 
@@ -12,6 +13,7 @@ import { recordIdentityEvent } from "./shared/identity-events.js";
 import { requireProvenance } from "./shared/provenance.js";
 import { mapGoalRow } from "./shared/sql-mapping.js";
 import {
+  goalAudienceEntityIdSchema,
   goalPatchSchema,
   goalSchema,
   goalStatusSchema,
@@ -26,6 +28,17 @@ export type GoalsRepositoryOptions = {
   identityEventRepository?: IdentityEventRepository;
   executiveStepsRepository?: Pick<ExecutiveStepsRepository, "abandonOpenStepsForGoal">;
 };
+
+export type GoalListOptions = {
+  status?: GoalStatus;
+  visibleToAudienceEntityId?: EntityId | null;
+};
+
+const GOAL_SELECT_COLUMNS = `
+  id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
+  created_at, target_at, audience_entity_id, source_stream_entry_ids,
+  provenance_kind, provenance_episode_ids, provenance_process
+`;
 
 export class GoalsRepository {
   private readonly clock: Clock;
@@ -76,9 +89,7 @@ export class GoalsRepository {
     const row = this.db
       .prepare(
         `
-          SELECT id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
-                 created_at, target_at
-              , provenance_kind, provenance_episode_ids, provenance_process
+          SELECT ${GOAL_SELECT_COLUMNS}
           FROM goals
           WHERE id = ?
         `,
@@ -98,6 +109,8 @@ export class GoalsRepository {
     provenance: Provenance;
     createdAt?: number;
     targetAt?: number | null;
+    audienceEntityId?: EntityId | null;
+    sourceStreamEntryIds?: readonly StreamEntryId[];
   }): GoalRecord {
     const parentGoalId = input.parentId ?? null;
 
@@ -126,6 +139,10 @@ export class GoalsRepository {
         progressNotes === null || progressNotes.trim().length === 0 ? null : createdAt,
       created_at: createdAt,
       target_at: input.targetAt ?? null,
+      audience_entity_id: input.audienceEntityId ?? null,
+      ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
+        ? {}
+        : { source_stream_entry_ids: [...input.sourceStreamEntryIds] }),
       provenance,
     });
     const storedProvenance = toStoredProvenance(goal.provenance);
@@ -136,8 +153,9 @@ export class GoalsRepository {
           `
             INSERT INTO goals (
               id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
-              created_at, target_at, provenance_kind, provenance_episode_ids, provenance_process
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              created_at, target_at, audience_entity_id, source_stream_entry_ids,
+              provenance_kind, provenance_episode_ids, provenance_process
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -150,6 +168,10 @@ export class GoalsRepository {
           goal.last_progress_ts,
           goal.created_at,
           goal.target_at,
+          goal.audience_entity_id,
+          goal.source_stream_entry_ids === undefined
+            ? null
+            : serializeJsonValue(goal.source_stream_entry_ids),
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
@@ -166,35 +188,35 @@ export class GoalsRepository {
     });
   }
 
-  list(options: { status?: GoalStatus } = {}): GoalTreeNode[] {
+  list(options: GoalListOptions = {}): GoalTreeNode[] {
+    const filters: string[] = [];
+    const values: unknown[] = [];
+
     if (options.status !== undefined) {
-      goalStatusSchema.parse(options.status);
+      filters.push("status = ?");
+      values.push(goalStatusSchema.parse(options.status));
     }
 
-    const rows = (
-      options.status === undefined
-        ? this.db
-            .prepare(
-              `
-                SELECT id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
-                       created_at, target_at, provenance_kind, provenance_episode_ids, provenance_process
-                FROM goals
-                ORDER BY priority DESC, created_at ASC
-              `,
-            )
-            .all()
-        : this.db
-            .prepare(
-              `
-                SELECT id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
-                       created_at, target_at, provenance_kind, provenance_episode_ids, provenance_process
-                FROM goals
-                WHERE status = ?
-                ORDER BY priority DESC, created_at ASC
-              `,
-            )
-            .all(options.status)
-    ) as Record<string, unknown>[];
+    if (options.visibleToAudienceEntityId !== undefined) {
+      if (options.visibleToAudienceEntityId === null) {
+        filters.push("audience_entity_id IS NULL");
+      } else {
+        filters.push("(audience_entity_id IS NULL OR audience_entity_id = ?)");
+        values.push(goalAudienceEntityIdSchema.parse(options.visibleToAudienceEntityId));
+      }
+    }
+
+    const whereClause = filters.length === 0 ? "" : `WHERE ${filters.join(" AND ")}`;
+    const rows = this.db
+      .prepare(
+        `
+          SELECT ${GOAL_SELECT_COLUMNS}
+          FROM goals
+          ${whereClause}
+          ORDER BY priority DESC, created_at ASC
+        `,
+      )
+      .all(...values) as Record<string, unknown>[];
 
     const nodes: GoalTreeNode[] = rows.map((row) => ({
       ...mapGoalRow(row),
@@ -371,8 +393,8 @@ export class GoalsRepository {
           `
             UPDATE goals
             SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
-                last_progress_ts = ?, target_at = ?, provenance_kind = ?, provenance_episode_ids = ?,
-                provenance_process = ?
+                last_progress_ts = ?, target_at = ?, audience_entity_id = ?, source_stream_entry_ids = ?,
+                provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?
             WHERE id = ?
           `,
         )
@@ -384,6 +406,10 @@ export class GoalsRepository {
           next.progress_notes,
           next.last_progress_ts,
           next.target_at,
+          next.audience_entity_id,
+          next.source_stream_entry_ids === undefined
+            ? null
+            : serializeJsonValue(next.source_stream_entry_ids),
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,

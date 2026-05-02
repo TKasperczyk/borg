@@ -53,6 +53,7 @@ export {
   GoalsRepository,
   TraitsRepository,
   ValuesRepository,
+  type GoalListOptions,
   type GoalsRepositoryOptions,
   type TraitsRepositoryOptions,
   type ValuesRepositoryOptions,
@@ -72,9 +73,11 @@ export {
   type ReviewOpenQuestionExtractorOptions,
 } from "./review-open-question-extractor.js";
 export {
+  goalAudienceEntityIdSchema,
   goalIdSchema,
   goalPatchSchema,
   goalSchema,
+  goalSourceStreamEntryIdSchema,
   goalStatusSchema,
   traitIdSchema,
   traitPatchSchema,

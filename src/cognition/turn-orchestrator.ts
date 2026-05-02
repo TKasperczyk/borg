@@ -16,6 +16,10 @@ import {
 } from "./commitments/corrective-preference-extractor.js";
 import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
+import {
+  GoalPromotionExtractor,
+  type GoalPromotionCandidate,
+} from "./goals/goal-promotion-extractor.js";
 import { detectAffectiveSignal } from "./perception/affective-signal.js";
 import { PerceptionGateway } from "./perception/gateway.js";
 import { TurnOpeningPersistence } from "./persistence/turn-opening.js";
@@ -69,6 +73,7 @@ import {
   type EpisodeId,
   type GoalId,
   type SessionId,
+  type StreamEntryId,
 } from "../util/ids.js";
 import { NOOP_TRACER, toTraceJsonValue, type TurnTracer } from "./tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "./types.js";
@@ -380,19 +385,43 @@ export class TurnOrchestrator {
 
   private async buildSelfSnapshot(audienceEntityId: EntityId | null): Promise<SelfSnapshot> {
     const values = this.options.valuesRepository.list();
-    const goals = flattenGoals(this.options.goalsRepository.list({ status: "active" }));
+    const goals = flattenGoals(
+      this.options.goalsRepository.list({
+        status: "active",
+        visibleToAudienceEntityId: audienceEntityId,
+      }),
+    );
     const traits = this.options.traitsRepository.list();
     const currentPeriod = this.options.autobiographicalRepository?.currentPeriod() ?? null;
     const recentGrowthMarkers = this.options.growthMarkersRepository?.list({ limit: 3 }) ?? [];
-    const scopedRecords: ProvenanceScopedSelfRecord[] = [
-      ...values,
-      ...goals,
-      ...traits,
-      ...(currentPeriod === null ? [] : [currentPeriod]),
-      ...recentGrowthMarkers,
-    ];
+    const visibleRecords = await this.filterSelfRecordsVisibleToAudience(
+      [
+        ...values,
+        ...goals,
+        ...traits,
+        ...(currentPeriod === null ? [] : [currentPeriod]),
+        ...recentGrowthMarkers,
+      ],
+      audienceEntityId,
+    );
+    const visibleIds = new Set(visibleRecords.map((record) => record.id));
+
+    return {
+      values: values.filter((value) => visibleIds.has(value.id)),
+      goals: goals.filter((goal) => visibleIds.has(goal.id)),
+      traits: traits.filter((trait) => visibleIds.has(trait.id)),
+      currentPeriod:
+        currentPeriod === null || visibleIds.has(currentPeriod.id) ? currentPeriod : null,
+      recentGrowthMarkers: recentGrowthMarkers.filter((marker) => visibleIds.has(marker.id)),
+    };
+  }
+
+  private async filterSelfRecordsVisibleToAudience<T extends ProvenanceScopedSelfRecord>(
+    records: readonly T[],
+    audienceEntityId: EntityId | null,
+  ): Promise<T[]> {
     const evidenceEpisodeIds = [
-      ...new Set(scopedRecords.flatMap((record) => getSelfRecordEvidenceEpisodeIds(record))),
+      ...new Set(records.flatMap((record) => getSelfRecordEvidenceEpisodeIds(record))),
     ];
     const evidenceEpisodes = await this.options.episodicRepository.getMany(evidenceEpisodeIds);
     const visibleEpisodeIds = new Set(
@@ -400,16 +429,21 @@ export class TurnOrchestrator {
         .filter((episode) => isEpisodeVisibleToAudience(episode, audienceEntityId))
         .map((episode) => episode.id),
     );
-    const filterVisible = <T extends ProvenanceScopedSelfRecord>(record: T): boolean =>
-      isSelfRecordVisible(record, visibleEpisodeIds);
 
-    return {
-      values: values.filter(filterVisible),
-      goals: goals.filter(filterVisible),
-      traits: traits.filter(filterVisible),
-      currentPeriod: currentPeriod === null || filterVisible(currentPeriod) ? currentPeriod : null,
-      recentGrowthMarkers: recentGrowthMarkers.filter(filterVisible),
-    };
+    return records.filter((record) => isSelfRecordVisible(record, visibleEpisodeIds));
+  }
+
+  private async listActiveGoalsVisibleToAudience(
+    audienceEntityId: EntityId | null,
+  ): Promise<GoalRecord[]> {
+    const goals = flattenGoals(
+      this.options.goalsRepository.list({
+        status: "active",
+        visibleToAudienceEntityId: audienceEntityId,
+      }),
+    );
+
+    return this.filterSelfRecordsVisibleToAudience(goals, audienceEntityId);
   }
 
   private async appendFailureEvent(
@@ -439,6 +473,101 @@ export class TurnOrchestrator {
     details?: Record<string, unknown>,
   ): Promise<void> {
     await appendInternalFailureEvent(streamWriter, hook, error, details);
+  }
+
+  private emitGoalPromotionDegraded(input: {
+    turnId: string;
+    reason: string;
+    error?: unknown;
+    details?: Record<string, unknown>;
+  }): void {
+    if (!this.tracer.enabled) {
+      return;
+    }
+
+    this.tracer.emit("goal_promotion_extractor_degraded", {
+      turnId: input.turnId,
+      reason: input.reason,
+      ...(input.details ?? {}),
+      ...(this.tracer.includePayloads && input.error !== undefined
+        ? { error: input.error instanceof Error ? input.error.message : String(input.error) }
+        : {}),
+    });
+  }
+
+  private async persistGoalPromotions(input: {
+    candidates: readonly GoalPromotionCandidate[];
+    audienceEntityId: EntityId | null;
+    persistedUserEntryId?: StreamEntryId;
+    streamWriter: StreamWriter;
+    turnId: string;
+  }): Promise<void> {
+    const provenance = {
+      kind: "online" as const,
+      process: "goal-promotion-extractor",
+    };
+    const sourceStreamEntryIds =
+      input.persistedUserEntryId === undefined ? undefined : [input.persistedUserEntryId];
+
+    for (const candidate of input.candidates) {
+      let goal: GoalRecord;
+
+      try {
+        goal = this.options.identityService.addGoal({
+          description: candidate.description,
+          priority: candidate.priority,
+          status: "active",
+          targetAt: candidate.target_at,
+          audienceEntityId: input.audienceEntityId,
+          provenance,
+          sourceStreamEntryIds,
+        });
+      } catch (error) {
+        this.emitGoalPromotionDegraded({
+          turnId: input.turnId,
+          reason: "goal_persist_failed",
+          error,
+          details: {
+            description: candidate.description,
+          },
+        });
+        await this.appendHookFailureEvent(input.streamWriter, "goal_promotion_goal_persist", error, {
+          description: candidate.description,
+        });
+        continue;
+      }
+
+      if (candidate.initial_step === null) {
+        continue;
+      }
+
+      try {
+        this.options.executiveStepsRepository.add({
+          goalId: goal.id,
+          description: candidate.initial_step.description,
+          kind: candidate.initial_step.kind,
+          dueAt: candidate.initial_step.due_at,
+          provenance,
+        });
+      } catch (error) {
+        this.emitGoalPromotionDegraded({
+          turnId: input.turnId,
+          reason: "initial_step_persist_failed",
+          error,
+          details: {
+            goalId: goal.id,
+          },
+        });
+        await this.appendHookFailureEvent(
+          input.streamWriter,
+          "goal_promotion_initial_step_persist",
+          error,
+          {
+            goalId: goal.id,
+          },
+        );
+      }
+    }
   }
 
   private async appendSuppressionMarker(input: {
@@ -730,6 +859,46 @@ export class TurnOrchestrator {
                 commitmentId: inMemoryCommitment.id,
               },
             );
+          }
+        }
+
+        if (isUserTurn) {
+          const activeGoalsForPromotion =
+            await this.listActiveGoalsVisibleToAudience(audienceEntityId);
+          const goalPromotionExtractor = new GoalPromotionExtractor({
+            llmClient,
+            model: this.options.config.anthropic.models.recallExpansion,
+            tracer: this.tracer,
+            turnId,
+            onDegraded: (reason, error) => {
+              this.emitGoalPromotionDegraded({
+                turnId,
+                reason,
+                error,
+              });
+            },
+          });
+          const goalPromotionCandidates = await goalPromotionExtractor.extract({
+            userMessage: input.userMessage,
+            recentHistory: recencyWindow.messages,
+            audienceEntityId,
+            temporalCue: perception.temporalCue,
+            activeGoals: activeGoalsForPromotion.map((goal) => ({
+              id: goal.id,
+              description: goal.description,
+              priority: goal.priority,
+              target_at: goal.target_at,
+            })),
+          });
+
+          if (goalPromotionCandidates.length > 0) {
+            await this.persistGoalPromotions({
+              candidates: goalPromotionCandidates,
+              audienceEntityId,
+              persistedUserEntryId,
+              streamWriter,
+              turnId,
+            });
           }
         }
 

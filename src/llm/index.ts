@@ -1085,6 +1085,10 @@ function isCorrectivePreferenceFallbackRequest(options: LLMCompleteOptions): boo
   return options.budget === "corrective-preference-extractor";
 }
 
+function isGoalPromotionFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "goal-promotion-extractor";
+}
+
 function isRecallExpansionFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "recall-expansion";
 }
@@ -1157,6 +1161,24 @@ function isCorrectivePreferenceResponse(response: FakeLLMResponse | undefined): 
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "EmitCorrectivePreference",
+    );
+  }
+
+  return false;
+}
+
+function isGoalPromotionResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "EmitGoalPromotion");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "EmitGoalPromotion",
     );
   }
 
@@ -1265,6 +1287,24 @@ function defaultCorrectivePreferenceResponse(): LLMCompleteResult {
   };
 }
 
+function defaultGoalPromotionResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_goal_promotion",
+        name: "EmitGoalPromotion",
+        input: {
+          promotions: [],
+        },
+      },
+    ],
+  };
+}
+
 export class FakeLLMClient implements LLMClient {
   private readonly usageSink?: TokenUsageSink;
   readonly requests: LLMCompleteOptions[] = [];
@@ -1318,6 +1358,14 @@ export class FakeLLMClient implements LLMClient {
       !isCorrectivePreferenceResponse(response)
     ) {
       return defaultCorrectivePreferenceResponse();
+    }
+
+    if (
+      isGoalPromotionFallbackRequest(options) &&
+      typeof response !== "function" &&
+      !isGoalPromotionResponse(response)
+    ) {
+      return defaultGoalPromotionResponse();
     }
 
     this.responses.shift();

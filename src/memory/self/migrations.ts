@@ -1,4 +1,22 @@
-import type { Migration } from "../../storage/sqlite/index.js";
+import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
+
+function tableExists(db: SqliteDatabase, tableName: string): boolean {
+  const row = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName) as { name: string } | undefined;
+
+  return row !== undefined;
+}
+
+function columnExists(
+  db: SqliteDatabase,
+  tableName: string,
+  columnName: string,
+): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+
+  return rows.some((row) => row.name === columnName);
+}
 
 export const selfMigrations = [
   {
@@ -46,8 +64,13 @@ export const selfMigrations = [
           provenance_episode_ids TEXT,
           provenance_process TEXT,
           last_progress_ts INTEGER,
+          audience_entity_id TEXT,
+          source_stream_entry_ids TEXT,
           FOREIGN KEY (parent_goal_id) REFERENCES goals(id) ON DELETE SET NULL
         );
+
+        CREATE INDEX IF NOT EXISTS idx_goals_audience_status_priority
+          ON goals (audience_entity_id, status, priority DESC, created_at ASC);
 
         CREATE TABLE traits (
           label TEXT PRIMARY KEY,
@@ -215,6 +238,34 @@ export const selfMigrations = [
 
         CREATE INDEX IF NOT EXISTS idx_trait_contradiction_events_trait_ts
           ON trait_contradiction_events (trait_id, ts DESC, id DESC);
+      `);
+    },
+  },
+  {
+    id: 2,
+    name: "goal_audience_and_source_stream_ids",
+    up: (db) => {
+      if (!tableExists(db, "goals")) {
+        return;
+      }
+
+      if (!columnExists(db, "goals", "audience_entity_id")) {
+        db.exec(`
+          ALTER TABLE goals
+            ADD COLUMN audience_entity_id TEXT;
+        `);
+      }
+
+      if (!columnExists(db, "goals", "source_stream_entry_ids")) {
+        db.exec(`
+          ALTER TABLE goals
+            ADD COLUMN source_stream_entry_ids TEXT NULL;
+        `);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_goals_audience_status_priority
+          ON goals (audience_entity_id, status, priority DESC, created_at ASC);
       `);
     },
   },
