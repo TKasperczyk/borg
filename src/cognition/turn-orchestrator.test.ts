@@ -242,6 +242,7 @@ function createClaimAuditResponse(
     cited_stream_entry_ids?: string[];
     cited_episode_ids?: string[];
     cited_commitment_ids?: string[];
+    cited_action_ids?: string[];
     quoted_evidence_text?: string | null;
   }>,
 ) {
@@ -261,6 +262,7 @@ function createClaimAuditResponse(
             cited_stream_entry_ids: claim.cited_stream_entry_ids ?? [],
             cited_episode_ids: claim.cited_episode_ids ?? [],
             cited_commitment_ids: claim.cited_commitment_ids ?? [],
+            cited_action_ids: claim.cited_action_ids ?? [],
             quoted_evidence_text: claim.quoted_evidence_text ?? null,
           })),
         },

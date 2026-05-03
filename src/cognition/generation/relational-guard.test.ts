@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
 import {
+  createActionId,
   createCommitmentId,
   createEntityId,
   createEpisodeId,
@@ -49,6 +50,7 @@ function makeClaim(
     cited_stream_entry_ids: overrides.cited_stream_entry_ids ?? [],
     cited_episode_ids: overrides.cited_episode_ids ?? [],
     cited_commitment_ids: overrides.cited_commitment_ids ?? [],
+    cited_action_ids: overrides.cited_action_ids ?? [],
     quoted_evidence_text: overrides.quoted_evidence_text ?? null,
     subject_entity_id: overrides.subject_entity_id ?? null,
     slot_key: overrides.slot_key ?? null,
@@ -87,6 +89,7 @@ function baseEvidence(
     active_commitments: [],
     corrective_preferences: [],
     relational_slots: [],
+    recent_completed_actions: [],
     ...overrides,
   };
 }
@@ -186,6 +189,80 @@ describe("validateRelationalClaims", () => {
     expect(summary.unsupported[0]?.reason).toContain("your partner");
   });
 
+  it("rejects relational identity claims without slot metadata when constrained slots exist", () => {
+    const userEntry = streamEvidence({
+      content: "My partner is Sarah.",
+    });
+    const subject = createEntityId();
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "relational_identity",
+          asserted: "Sarah is your partner",
+          cited_stream_entry_ids: [userEntry.entry_id],
+          subject_entity_id: null,
+          slot_key: null,
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [userEntry],
+        relational_slots: [
+          {
+            slot_id: createRelationalSlotId(),
+            subject_entity_id: subject,
+            slot_key: "partner.name",
+            value: "Sarah",
+            state: "quarantined",
+            alternate_values: [{ value: "Maya" }, { value: "Clara" }],
+            neutral_phrase: "your partner",
+          },
+        ],
+      }),
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toBe(
+      "relational identity claim must specify slot when constrained slots exist for the cited entity",
+    );
+  });
+
+  it("rejects concrete relational identity claims for contested slots even when value matches", () => {
+    const userEntry = streamEvidence({
+      content: "My partner is Sarah.",
+    });
+    const subject = createEntityId();
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "relational_identity",
+          asserted: "Sarah is your partner",
+          cited_stream_entry_ids: [userEntry.entry_id],
+          subject_entity_id: subject,
+          slot_key: "partner.name",
+          relational_slot_value: "Sarah",
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [userEntry],
+        relational_slots: [
+          {
+            slot_id: createRelationalSlotId(),
+            subject_entity_id: subject,
+            slot_key: "partner.name",
+            value: "Sarah",
+            state: "contested",
+            alternate_values: [{ value: "Maya" }],
+            neutral_phrase: "your partner",
+          },
+        ],
+      }),
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("contested");
+    expect(summary.unsupported[0]?.reason).toContain("your partner");
+  });
+
   it("accepts callbacks with prior current-session stream evidence and exact quotes", () => {
     const userEntry = streamEvidence({
       ts: 1_000,
@@ -273,13 +350,50 @@ describe("validateRelationalClaims", () => {
     expect(summary.unsupported[0]?.reason).toContain("outside the current session");
   });
 
-  it("passes the pre-ActionRecord action-completion minimum when any cited evidence exists", () => {
+  it("allows session-scoped claims to cite the current user message but keeps callbacks prior-only", () => {
+    const currentEntryId = createStreamEntryId();
+    const evidence = baseEvidence({
+      current_user_message: {
+        text: "I just said the invoice is done.",
+        stream_entry_id: currentEntryId,
+        ts: 2_000,
+      },
+    });
+    const sessionScoped = validate(
+      [
+        makeClaim({
+          kind: "session_scoped",
+          asserted: "You just said the invoice is done.",
+          cited_stream_entry_ids: [currentEntryId],
+        }),
+      ],
+      evidence,
+    );
+    const callback = validate(
+      [
+        makeClaim({
+          kind: "callback",
+          asserted: "You said earlier that the invoice is done.",
+          cited_stream_entry_ids: [currentEntryId],
+        }),
+      ],
+      evidence,
+    );
+
+    expect(sessionScoped.unsupported).toEqual([]);
+    expect(callback.unsupported).toHaveLength(1);
+    expect(callback.unsupported[0]?.reason).toContain("not before");
+  });
+
+  it("rejects action completion claims without matching completed action evidence", () => {
     const commitmentId = createCommitmentId();
+    const actionId = createActionId();
     const summary = validate(
       [
         makeClaim({
           kind: "action_completion",
           asserted: "You booked the iTalki trial.",
+          cited_action_ids: [actionId],
           cited_commitment_ids: [commitmentId],
         }),
       ],
@@ -289,6 +403,32 @@ describe("validateRelationalClaims", () => {
             commitment_id: commitmentId,
             source_entry_id: createStreamEntryId(),
             summary: "User said they will book an iTalki trial this week.",
+          },
+        ],
+      }),
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("no cited completed action record");
+  });
+
+  it("accepts action completion claims with matching completed action evidence", () => {
+    const actionId = createActionId();
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "action_completion",
+          asserted: "You booked the iTalki trial.",
+          cited_action_ids: [actionId],
+        }),
+      ],
+      baseEvidence({
+        recent_completed_actions: [
+          {
+            action_id: actionId,
+            description: "Booked the iTalki trial.",
+            audience_entity_id: null,
+            completed_at: 2_000,
           },
         ],
       }),
@@ -341,7 +481,7 @@ describe("validateRelationalClaims", () => {
     expect(unsupported.unsupported[0]?.reason).toContain("no corrective preference evidence");
   });
 
-  it("accepts episode evidence for action completion and rejects missing quote text on stream evidence", () => {
+  it("rejects stream and episode evidence as action completion fallback", () => {
     const episodeId = createEpisodeId();
     const streamEntry = streamEvidence({
       ts: 1_000,
@@ -379,8 +519,8 @@ describe("validateRelationalClaims", () => {
       }),
     );
 
-    expect(episodeBacked.unsupported).toEqual([]);
-    expect(quoteMismatch.unsupported[0]?.reason).toContain("verbatim");
+    expect(episodeBacked.unsupported[0]?.reason).toContain("no cited completed action record");
+    expect(quoteMismatch.unsupported[0]?.reason).toContain("no cited completed action record");
   });
 });
 

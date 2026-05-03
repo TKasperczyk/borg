@@ -212,6 +212,14 @@ export class RelationalSlotRepository {
     return this.options.db;
   }
 
+  private runSlotWrite<T>(callback: () => T): T {
+    if (this.db.raw.inTransaction) {
+      return callback();
+    }
+
+    return this.db.transaction(callback).immediate();
+  }
+
   private upsert(slot: RelationalSlot): void {
     this.db
       .prepare(
@@ -315,67 +323,70 @@ export class RelationalSlotRepository {
       asserted_value: assertion.asserted_value.trim(),
       source_stream_entry_ids: uniqueStreamEntryIds(assertion.source_stream_entry_ids),
     });
-    const current = this.findBySubjectAndKey(parsed.subject_entity_id, parsed.slot_key);
-    const nowMs = this.clock.now();
 
-    if (current === null) {
-      const slot = relationalSlotSchema.parse({
-        id: createRelationalSlotId(),
-        subject_entity_id: parsed.subject_entity_id,
-        slot_key: parsed.slot_key,
-        value: parsed.asserted_value,
-        state: "established",
-        evidence_stream_entry_ids: parsed.source_stream_entry_ids,
-        contradicted_by_stream_entry_ids: [],
-        alternate_values: [],
-        created_at: nowMs,
-        updated_at: nowMs,
-      });
+    return this.runSlotWrite(() => {
+      const current = this.findBySubjectAndKey(parsed.subject_entity_id, parsed.slot_key);
+      const nowMs = this.clock.now();
 
-      this.upsert(slot);
-      return buildResult(null, slot);
-    }
+      if (current === null) {
+        const slot = relationalSlotSchema.parse({
+          id: createRelationalSlotId(),
+          subject_entity_id: parsed.subject_entity_id,
+          slot_key: parsed.slot_key,
+          value: parsed.asserted_value,
+          state: "established",
+          evidence_stream_entry_ids: parsed.source_stream_entry_ids,
+          contradicted_by_stream_entry_ids: [],
+          alternate_values: [],
+          created_at: nowMs,
+          updated_at: nowMs,
+        });
 
-    let next = current;
+        this.upsert(slot);
+        return buildResult(null, slot);
+      }
 
-    if (parsed.asserted_value === current.value) {
-      next = relationalSlotSchema.parse({
-        ...current,
-        evidence_stream_entry_ids: uniqueStreamEntryIds([
-          ...current.evidence_stream_entry_ids,
-          ...parsed.source_stream_entry_ids,
-        ]),
-        updated_at: nowMs,
-      });
-    } else {
-      const alternateValues = addAlternateValue(
-        current.alternate_values,
-        parsed.asserted_value,
-        parsed.source_stream_entry_ids,
-      );
-      const candidate = relationalSlotSchema.parse({
-        ...current,
-        state:
-          current.state === "established"
-            ? "contested"
-            : current.state === "revoked"
-              ? "established"
-              : current.state,
-        alternate_values: alternateValues,
-        contradicted_by_stream_entry_ids: uniqueStreamEntryIds([
-          ...current.contradicted_by_stream_entry_ids,
-          ...parsed.source_stream_entry_ids,
-        ]),
-        updated_at: nowMs,
-      });
-      next = relationalSlotSchema.parse({
-        ...candidate,
-        state: distinctValueCount(candidate) >= 3 ? "quarantined" : candidate.state,
-      });
-    }
+      let next = current;
 
-    this.upsert(next);
-    return buildResult(current, next);
+      if (parsed.asserted_value === current.value) {
+        next = relationalSlotSchema.parse({
+          ...current,
+          evidence_stream_entry_ids: uniqueStreamEntryIds([
+            ...current.evidence_stream_entry_ids,
+            ...parsed.source_stream_entry_ids,
+          ]),
+          updated_at: nowMs,
+        });
+      } else {
+        const alternateValues = addAlternateValue(
+          current.alternate_values,
+          parsed.asserted_value,
+          parsed.source_stream_entry_ids,
+        );
+        const candidate = relationalSlotSchema.parse({
+          ...current,
+          state:
+            current.state === "established"
+              ? "contested"
+              : current.state === "revoked"
+                ? "established"
+                : current.state,
+          alternate_values: alternateValues,
+          contradicted_by_stream_entry_ids: uniqueStreamEntryIds([
+            ...current.contradicted_by_stream_entry_ids,
+            ...parsed.source_stream_entry_ids,
+          ]),
+          updated_at: nowMs,
+        });
+        next = relationalSlotSchema.parse({
+          ...candidate,
+          state: distinctValueCount(candidate) >= 3 ? "quarantined" : candidate.state,
+        });
+      }
+
+      this.upsert(next);
+      return buildResult(current, next);
+    });
   }
 
   applyNegation(negation: RelationalSlotNegation): RelationalSlotApplyResult | null {
@@ -385,28 +396,31 @@ export class RelationalSlotRepository {
       rejected_value: negation.rejected_value?.trim() ?? null,
       source_stream_entry_ids: uniqueStreamEntryIds(negation.source_stream_entry_ids),
     });
-    const current = this.findBySubjectAndKey(parsed.subject_entity_id, parsed.slot_key);
 
-    if (current === null) {
-      return null;
-    }
+    return this.runSlotWrite(() => {
+      const current = this.findBySubjectAndKey(parsed.subject_entity_id, parsed.slot_key);
 
-    if (parsed.rejected_value !== null && !hasKnownValue(current, parsed.rejected_value)) {
-      return null;
-    }
+      if (current === null) {
+        return null;
+      }
 
-    const next = relationalSlotSchema.parse({
-      ...current,
-      state: containsState(RELATIONAL_SLOT_STATES, current.state) ? "quarantined" : current.state,
-      contradicted_by_stream_entry_ids: uniqueStreamEntryIds([
-        ...current.contradicted_by_stream_entry_ids,
-        ...parsed.source_stream_entry_ids,
-      ]),
-      updated_at: this.clock.now(),
+      if (parsed.rejected_value !== null && !hasKnownValue(current, parsed.rejected_value)) {
+        return null;
+      }
+
+      const next = relationalSlotSchema.parse({
+        ...current,
+        state: containsState(RELATIONAL_SLOT_STATES, current.state) ? "quarantined" : current.state,
+        contradicted_by_stream_entry_ids: uniqueStreamEntryIds([
+          ...current.contradicted_by_stream_entry_ids,
+          ...parsed.source_stream_entry_ids,
+        ]),
+        updated_at: this.clock.now(),
+      });
+
+      this.upsert(next);
+      return buildResult(current, next);
     });
-
-    this.upsert(next);
-    return buildResult(current, next);
   }
 
   setState(id: RelationalSlotId | string, state: RelationalSlotState): RelationalSlot | null {
