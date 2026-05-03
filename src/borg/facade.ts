@@ -208,6 +208,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           llmClient: deps.llmFactory(),
           model: deps.config.anthropic.models.extraction,
           entityRepository: deps.entityRepository,
+          relationalSlotRepository: deps.relationalSlotRepository,
+          workingMemoryStore: deps.workingMemoryStore,
+          defaultUser: deps.config.defaultUser,
           clock: deps.clock,
         });
 

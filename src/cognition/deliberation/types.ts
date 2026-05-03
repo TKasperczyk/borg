@@ -14,6 +14,7 @@ import type {
 } from "../../memory/self/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
+import type { RelationalSlot } from "../../memory/relational-slots/index.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
@@ -80,6 +81,7 @@ export type DeliberationContext = {
   applicableCommitments?: readonly CommitmentRecord[];
   openQuestionsContext?: readonly OpenQuestion[];
   pendingCorrectionsContext?: readonly ReviewQueueItem[];
+  relationalSlots?: readonly RelationalSlot[];
   selectedSkill?: SkillSelectionResult | null;
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;

@@ -276,6 +276,7 @@ function createCorrectivePreferenceResponse(input: {
   priority?: number | null;
   reason?: string;
   confidence?: number;
+  slot_negations?: unknown[];
 }) {
   return {
     text: "",
@@ -294,6 +295,7 @@ function createCorrectivePreferenceResponse(input: {
           reason: input.reason ?? "The current user turn corrected future response behavior.",
           confidence: input.confidence ?? 0.9,
           supersedes_commitment_id: null,
+          slot_negations: input.slot_negations ?? [],
         },
       },
     ],
@@ -1596,6 +1598,76 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           restricted_audience: samEntityId,
           source_stream_entry_ids: [userEntry?.id],
         }),
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("applies corrective slot negations and sanitizes pending actions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_175_500);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<
+        BorgDependencies,
+        "entityRepository" | "relationalSlotRepository" | "workingMemoryStore"
+      >;
+    };
+
+    try {
+      const tom = internal.deps.entityRepository.resolve("Tom");
+      internal.deps.relationalSlotRepository.applyAssertion({
+        subject_entity_id: tom,
+        slot_key: "partner.name",
+        asserted_value: "Sarah",
+        source_stream_entry_ids: [createStreamEntryId()],
+      });
+      const workingMemory = internal.deps.workingMemoryStore.load("default" as never);
+      internal.deps.workingMemoryStore.save({
+        ...workingMemory,
+        pending_actions: [
+          {
+            description: "Track whether Tom raises the planning comment with Sarah directly",
+            next_action: "Ask Sarah if Tom brings it up",
+          },
+        ],
+        updated_at: clock.now(),
+      });
+      llm.pushResponse(
+        createCorrectivePreferenceResponse({
+          classification: "none",
+          reason: "The user rejected a stored relational name.",
+          confidence: 0.95,
+          slot_negations: [
+            {
+              subject_entity_id: tom,
+              slot_key: "partner.name",
+              rejected_value: "Sarah",
+              source_stream_entry_ids: [createStreamEntryId()],
+              confidence: 0.95,
+            },
+          ],
+        }),
+      );
+      llm.pushResponse("I will avoid using that name.");
+      llm.pushResponse(createEmptyReflectionResponse());
+
+      await borg.turn({
+        userMessage: "Her name is not Sarah.",
+      });
+
+      const slot = internal.deps.relationalSlotRepository.findBySubjectAndKey(tom, "partner.name");
+      const nextWorkingMemory = internal.deps.workingMemoryStore.load("default" as never);
+
+      expect(slot?.state).toBe("quarantined");
+      expect(nextWorkingMemory.pending_actions).toEqual([
+        {
+          description: "Track whether Tom raises the planning comment with your partner directly",
+          next_action: "Ask your partner if Tom brings it up",
+        },
       ]);
     } finally {
       await borg.close();

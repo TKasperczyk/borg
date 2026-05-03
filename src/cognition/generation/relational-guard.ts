@@ -8,9 +8,17 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
+import type { RelationalSlot } from "../../memory/relational-slots/index.js";
+import { neutralPhraseForSlotKey } from "../../memory/relational-slots/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import type { StreamEntry, StreamEntryKind } from "../../stream/index.js";
-import type { CommitmentId, EpisodeId, StreamEntryId } from "../../util/ids.js";
+import type {
+  CommitmentId,
+  EntityId,
+  EpisodeId,
+  RelationalSlotId,
+  StreamEntryId,
+} from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { PendingTurnEmission } from "./types.js";
 
@@ -34,6 +42,9 @@ const relationalClaimSchema = z
     cited_episode_ids: z.array(z.string().min(1)),
     cited_commitment_ids: z.array(z.string().min(1)),
     quoted_evidence_text: z.string().min(1).nullable(),
+    subject_entity_id: z.string().min(1).nullable().default(null),
+    slot_key: z.string().min(1).nullable().default(null),
+    relational_slot_value: z.string().min(1).nullable().default(null),
   })
   .strict();
 
@@ -60,6 +71,7 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "- self_correction: assertions that Borg or the assistant corrected itself, was corrected by the user, or already fixed a prior mistake.",
   "Return an empty claims array when the response contains none of these claims.",
   "For every extracted claim, cite only evidence IDs present in the supplied evidence manifest.",
+  "For relational_identity claims, also populate subject_entity_id, slot_key, and relational_slot_value when the claim maps to a supplied relational slot.",
   "Do not infer support yourself beyond selecting cited handles. The validator will check handles deterministically.",
 ].join("\n");
 
@@ -100,12 +112,23 @@ export type RelationalGuardCorrectivePreferenceEvidence = {
   source_entry_id: StreamEntryId;
 };
 
+export type RelationalGuardSlotEvidence = {
+  slot_id: RelationalSlotId;
+  subject_entity_id: EntityId;
+  slot_key: string;
+  value: string;
+  state: "established" | "contested" | "quarantined" | "revoked";
+  alternate_values: readonly { value: string }[];
+  neutral_phrase: string;
+};
+
 export type RelationalGuardEvidenceManifest = {
   current_user_message: RelationalGuardCurrentUserMessage | null;
   current_session_stream_entries: readonly RelationalGuardStreamEvidence[];
   retrieved_episodes: readonly RelationalGuardEpisodeEvidence[];
   active_commitments: readonly RelationalGuardCommitmentEvidence[];
   corrective_preferences: readonly RelationalGuardCorrectivePreferenceEvidence[];
+  relational_slots: readonly RelationalGuardSlotEvidence[];
 };
 
 export type RelationalClaimAuditClaim = z.infer<typeof relationalClaimSchema>;
@@ -238,6 +261,22 @@ export function correctivePreferencesFromCommitments(
   return preferences;
 }
 
+export function relationalSlotToRelationalGuardEvidence(
+  slot: RelationalSlot,
+): RelationalGuardSlotEvidence {
+  return {
+    slot_id: slot.id,
+    subject_entity_id: slot.subject_entity_id,
+    slot_key: slot.slot_key,
+    value: slot.value,
+    state: slot.state,
+    alternate_values: slot.alternate_values.map((alternate) => ({
+      value: alternate.value,
+    })),
+    neutral_phrase: neutralPhraseForSlotKey(slot.slot_key),
+  };
+}
+
 function manifestForPrompt(evidence: RelationalGuardEvidenceManifest): unknown {
   return {
     current_user_message:
@@ -257,6 +296,7 @@ function manifestForPrompt(evidence: RelationalGuardEvidenceManifest): unknown {
     retrieved_episodes: evidence.retrieved_episodes,
     active_commitments: evidence.active_commitments,
     corrective_preferences: evidence.corrective_preferences,
+    relational_slots: evidence.relational_slots,
   };
 }
 
@@ -322,16 +362,24 @@ function buildStreamEvidenceIndex(
   return entries;
 }
 
-function buildEpisodeEvidenceIndex(
-  evidence: RelationalGuardEvidenceManifest,
-): Set<string> {
+function buildEpisodeEvidenceIndex(evidence: RelationalGuardEvidenceManifest): Set<string> {
   return new Set(evidence.retrieved_episodes.map((episode) => episode.episode_id));
 }
 
-function buildCommitmentEvidenceIndex(
-  evidence: RelationalGuardEvidenceManifest,
-): Set<string> {
+function buildCommitmentEvidenceIndex(evidence: RelationalGuardEvidenceManifest): Set<string> {
   return new Set(evidence.active_commitments.map((commitment) => commitment.commitment_id));
+}
+
+function buildRelationalSlotIndex(
+  evidence: RelationalGuardEvidenceManifest,
+): Map<string, RelationalGuardSlotEvidence> {
+  const slots = new Map<string, RelationalGuardSlotEvidence>();
+
+  for (const slot of evidence.relational_slots) {
+    slots.set(`${slot.subject_entity_id}:${slot.slot_key}`, slot);
+  }
+
+  return slots;
 }
 
 function streamIdsExistInCurrentSession(input: {
@@ -426,6 +474,7 @@ function validateCallbackScope(input: {
 function validateRelationalIdentityClaim(input: {
   claim: RelationalClaimAuditClaim;
   streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
+  relationalSlots: ReadonlyMap<string, RelationalGuardSlotEvidence>;
   currentSessionId: string;
 }): string | null {
   if (input.claim.cited_stream_entry_ids.length === 0) {
@@ -444,6 +493,29 @@ function validateRelationalIdentityClaim(input: {
 
   if (resolved.some((entry) => entry.kind !== "user_msg")) {
     return "relational identity claim cites non-user evidence";
+  }
+
+  const subjectEntityId = input.claim.subject_entity_id;
+  const slotKey = input.claim.slot_key;
+
+  if (subjectEntityId !== null && slotKey !== null) {
+    const slot = input.relationalSlots.get(`${subjectEntityId}:${slotKey}`);
+
+    if (slot?.state === "quarantined") {
+      return `relational slot ${slot.slot_key} is quarantined; use ${slot.neutral_phrase}`;
+    }
+
+    if (slot?.state === "contested") {
+      const assertedValue = input.claim.relational_slot_value;
+
+      if (assertedValue === null) {
+        return `relational slot ${slot.slot_key} is contested and the asserted value was not isolated`;
+      }
+
+      if (assertedValue.trim() !== slot.value) {
+        return `relational slot ${slot.slot_key} is contested for ${assertedValue}`;
+      }
+    }
   }
 
   return null;
@@ -514,6 +586,7 @@ export function validateRelationalClaims(input: {
   const streamEntries = buildStreamEvidenceIndex(input.evidence);
   const episodes = buildEpisodeEvidenceIndex(input.evidence);
   const commitments = buildCommitmentEvidenceIndex(input.evidence);
+  const relationalSlots = buildRelationalSlotIndex(input.evidence);
   const correctivePreferences = new Set(
     input.evidence.corrective_preferences.map((preference) => preference.source_entry_id),
   );
@@ -525,6 +598,7 @@ export function validateRelationalClaims(input: {
         reason = validateRelationalIdentityClaim({
           claim,
           streamEntries,
+          relationalSlots,
           currentSessionId: input.currentSessionId,
         });
         break;
@@ -717,9 +791,7 @@ export class RelationalClaimGuard {
     }
 
     if (
-      firstValidation.unsupported.some(
-        (validation) => validation.claim.kind === "self_correction",
-      )
+      firstValidation.unsupported.some((validation) => validation.claim.kind === "self_correction")
     ) {
       const suppressionReason = "relational_guard_self_correction";
 

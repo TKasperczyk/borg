@@ -147,6 +147,16 @@ export {
   type ActionState,
 } from "./memory/actions/index.js";
 export {
+  RELATIONAL_SLOT_STATES,
+  RelationalSlotRepository,
+  type RelationalSlot,
+  type RelationalSlotAlternateValue,
+  type RelationalSlotAssertion,
+  type RelationalSlotNegation,
+  type RelationalSlotRepositoryOptions,
+  type RelationalSlotState,
+} from "./memory/relational-slots/index.js";
+export {
   EPISODE_TIERS,
   type Episode,
   type EpisodeListOptions,

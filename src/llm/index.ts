@@ -1303,6 +1303,7 @@ function defaultCorrectivePreferenceResponse(): LLMCompleteResult {
           reason: "No durable correction detected.",
           confidence: 0,
           supersedes_commitment_id: null,
+          slot_negations: [],
         },
       },
     ],

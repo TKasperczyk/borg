@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
-import { createEntityId } from "../../util/ids.js";
+import { createEntityId, createStreamEntryId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { CorrectivePreferenceExtractor } from "./corrective-preference-extractor.js";
 
@@ -13,6 +13,7 @@ function correctivePreferenceResponse(input: {
   priority?: number | null;
   reason?: string;
   confidence?: number;
+  slot_negations?: unknown[];
 }): LLMCompleteResult {
   return {
     text: "",
@@ -31,6 +32,7 @@ function correctivePreferenceResponse(input: {
           reason: input.reason ?? "Classification reason.",
           confidence: input.confidence ?? 0.9,
           supersedes_commitment_id: null,
+          slot_negations: input.slot_negations ?? [],
         },
       },
     ],
@@ -165,6 +167,62 @@ describe("CorrectivePreferenceExtractor", () => {
         activeCommitments: [],
       }),
     ).resolves.toBeNull();
+  });
+
+  it("returns slot negations separately from durable corrective preferences", async () => {
+    const subject = createEntityId();
+    const streamEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        correctivePreferenceResponse({
+          classification: "none",
+          reason: "The user rejected a stored relational value, not future style.",
+          confidence: 0.95,
+          slot_negations: [
+            {
+              subject_entity_id: subject,
+              slot_key: "partner.name",
+              rejected_value: "Sarah",
+              source_stream_entry_ids: [streamEntryId],
+              confidence: 0.92,
+            },
+          ],
+        }),
+      ],
+    });
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    const result = await extractor.extractWithSlotNegations({
+      userMessage: "Her name is not Sarah.",
+      currentUserStreamEntryId: streamEntryId,
+      recentHistory: [],
+      audienceEntityId: null,
+      activeCommitments: [],
+      relationalSlots: [
+        {
+          subject_entity_id: subject,
+          slot_key: "partner.name",
+          value: "Sarah",
+          state: "established",
+          alternate_values: [],
+        },
+      ],
+    });
+
+    expect(result.preference).toBeNull();
+    expect(result.slot_negations).toEqual([
+      {
+        subject_entity_id: subject,
+        slot_key: "partner.name",
+        rejected_value: "Sarah",
+        source_stream_entry_ids: [streamEntryId],
+        confidence: 0.92,
+      },
+    ]);
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain("relational_slots");
   });
 
   it("returns null for low-confidence corrective classifications", async () => {

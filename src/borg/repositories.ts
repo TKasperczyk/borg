@@ -17,6 +17,7 @@ import {
   SkillRepository,
   SkillSelector,
 } from "../memory/procedural/index.js";
+import { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import {
   AutobiographicalRepository,
   GoalsRepository,
@@ -86,6 +87,7 @@ export type BorgRepositorySetup = Pick<
   | "skillRepository"
   | "proceduralContextStatsRepository"
   | "proceduralEvidenceRepository"
+  | "relationalSlotRepository"
   | "skillSelector"
   | "retrievalPipeline"
   | "workingMemoryStore"
@@ -341,6 +343,10 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
+  const relationalSlotRepository = new RelationalSlotRepository({
+    db: sqlite,
+    clock,
+  });
   const skillSelector = new SkillSelector({
     repository: skillRepository,
     contextStatsRepository: proceduralContextStatsRepository,
@@ -421,6 +427,7 @@ export async function buildBorgRepositories(
     skillRepository,
     proceduralContextStatsRepository,
     proceduralEvidenceRepository,
+    relationalSlotRepository,
     skillSelector,
     retrievalPipeline,
     workingMemoryStore,

@@ -9,12 +9,42 @@ import {
 } from "../../llm/index.js";
 import { commitmentIdSchema, commitmentTypeSchema } from "../../memory/commitments/index.js";
 import type { JsonValue } from "../../util/json-value.js";
-import type { CommitmentId, EntityId } from "../../util/ids.js";
+import {
+  entityIdHelpers,
+  streamEntryIdHelpers,
+  type CommitmentId,
+  type EntityId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.8;
 const CORRECTIVE_PREFERENCE_TOOL_NAME = "EmitCorrectivePreference";
+
+const correctivePreferenceEntityIdSchema = z
+  .string()
+  .refine((value) => entityIdHelpers.is(value), {
+    message: "Invalid corrective preference entity id",
+  })
+  .transform((value) => value as EntityId);
+
+const correctivePreferenceStreamEntryIdSchema = z
+  .string()
+  .refine((value) => streamEntryIdHelpers.is(value), {
+    message: "Invalid corrective preference stream entry id",
+  })
+  .transform((value) => value as StreamEntryId);
+
+const slotNegationSchema = z
+  .object({
+    subject_entity_id: correctivePreferenceEntityIdSchema,
+    slot_key: z.string().min(1),
+    rejected_value: z.string().min(1).nullable(),
+    source_stream_entry_ids: z.array(correctivePreferenceStreamEntryIdSchema).min(1),
+    confidence: z.number().min(0).max(1),
+  })
+  .strict();
 
 const correctivePreferenceSchema = z
   .object({
@@ -57,6 +87,12 @@ const correctivePreferenceSchema = z
       .describe(
         "Existing commitment id this correction replaces or tightens, if one was clearly selected from the supplied active commitments.",
       ),
+    slot_negations: z
+      .array(slotNegationSchema)
+      .default([])
+      .describe(
+        "Relational slot values the current user turn rejects. Emit only when the user rejects a supplied relational slot, and cite the current user stream entry id.",
+      ),
   })
   .strict();
 
@@ -71,6 +107,8 @@ const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
   "Classify whether the user is making a durable correction to Borg's future response behavior.",
   "Return corrective_preference only when the user is directing Borg to change how it should answer in future turns, such as a recurring style, boundary, interaction rule, or response pattern.",
   "Return none for ordinary task requests, emotional disclosure, venting, disagreement, one-turn instructions, or discussion about a behavior without asking Borg to adopt a lasting change.",
+  "Separately, fill slot_negations when the user rejects a supplied relational slot value, even if classification is none.",
+  "For slot_negations, select subject_entity_id and slot_key only from supplied relational_slots and cite only the current_user_stream_entry_id.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
   "When uncertain, return none. The directive must be enforceable by a later response checker without needing to remember the current phrasing.",
 ].join("\n");
@@ -86,6 +124,19 @@ export type CorrectivePreferenceCandidate = {
   reason: string;
   confidence: number;
   supersedes_commitment_id?: CommitmentId | null;
+};
+
+export type CorrectivePreferenceSlotNegation = {
+  subject_entity_id: EntityId;
+  slot_key: string;
+  rejected_value: string | null;
+  source_stream_entry_ids: StreamEntryId[];
+  confidence: number;
+};
+
+export type CorrectivePreferenceExtractionResult = {
+  preference: CorrectivePreferenceCandidate | null;
+  slot_negations: CorrectivePreferenceSlotNegation[];
 };
 
 export type CorrectivePreferenceExtractorDegradedReason =
@@ -107,6 +158,7 @@ export type CorrectivePreferenceExtractorOptions = {
 
 export type ExtractCorrectivePreferenceInput = {
   userMessage: string;
+  currentUserStreamEntryId?: StreamEntryId | null;
   recentHistory: readonly RecencyMessage[];
   audienceEntityId: EntityId | null;
   activeCommitments: readonly {
@@ -114,6 +166,13 @@ export type ExtractCorrectivePreferenceInput = {
     type: string;
     directive: string;
     priority: number;
+  }[];
+  relationalSlots?: readonly {
+    subject_entity_id: EntityId;
+    slot_key: string;
+    value: string;
+    state: string;
+    alternate_values: readonly { value: string }[];
   }[];
 };
 
@@ -143,7 +202,38 @@ function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreference
   };
 }
 
-function parseResponse(result: LLMCompleteResult): CorrectivePreferenceCandidate | null {
+function slotNegationsFromInput(
+  input: CorrectivePreferenceToolInput,
+): CorrectivePreferenceSlotNegation[] {
+  const slotNegations: CorrectivePreferenceSlotNegation[] = [];
+
+  for (const negation of input.slot_negations) {
+    if (negation.confidence < CONFIDENCE_THRESHOLD) {
+      continue;
+    }
+
+    slotNegations.push({
+      subject_entity_id: negation.subject_entity_id,
+      slot_key: negation.slot_key.trim(),
+      rejected_value: negation.rejected_value === null ? null : negation.rejected_value.trim(),
+      source_stream_entry_ids: [...negation.source_stream_entry_ids],
+      confidence: negation.confidence,
+    });
+  }
+
+  return slotNegations;
+}
+
+function toExtractionResult(
+  input: CorrectivePreferenceToolInput,
+): CorrectivePreferenceExtractionResult {
+  return {
+    preference: toCandidate(input),
+    slot_negations: slotNegationsFromInput(input),
+  };
+}
+
+function parseResponse(result: LLMCompleteResult): CorrectivePreferenceExtractionResult {
   const call = result.tool_calls.find(
     (toolCall) => toolCall.name === CORRECTIVE_PREFERENCE_TOOL_NAME,
   );
@@ -160,7 +250,7 @@ function parseResponse(result: LLMCompleteResult): CorrectivePreferenceCandidate
     throw parsed.error;
   }
 
-  return toCandidate(parsed.data);
+  return toExtractionResult(parsed.data);
 }
 
 function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInput): LLMMessage[] {
@@ -169,6 +259,7 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
       role: "user",
       content: JSON.stringify({
         current_user_message: input.userMessage,
+        current_user_stream_entry_id: input.currentUserStreamEntryId ?? null,
         recent_history: input.recentHistory.slice(-8).map((message) => ({
           role: message.role,
           content: message.content,
@@ -179,6 +270,15 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
           type: commitment.type,
           directive: commitment.directive,
           priority: commitment.priority,
+        })),
+        relational_slots: (input.relationalSlots ?? []).map((slot) => ({
+          subject_entity_id: slot.subject_entity_id,
+          slot_key: slot.slot_key,
+          value: slot.value,
+          state: slot.state,
+          alternate_values: slot.alternate_values.map((alternate) => ({
+            value: alternate.value,
+          })),
         })),
       }),
     },
@@ -287,11 +387,16 @@ export class CorrectivePreferenceExtractor {
     return null;
   }
 
-  async extract(
+  async extractWithSlotNegations(
     input: ExtractCorrectivePreferenceInput,
-  ): Promise<CorrectivePreferenceCandidate | null> {
+  ): Promise<CorrectivePreferenceExtractionResult> {
     if (this.options.llmClient === undefined || this.options.model === undefined) {
-      return this.degraded("llm_unavailable");
+      return (
+        (await this.degraded("llm_unavailable")) ?? {
+          preference: null,
+          slot_negations: [],
+        }
+      );
     }
 
     const messages = buildCorrectivePreferenceMessages(input);
@@ -324,7 +429,12 @@ export class CorrectivePreferenceExtractor {
         error,
       });
 
-      return this.degraded("llm_failed", error);
+      return (
+        (await this.degraded("llm_failed", error)) ?? {
+          preference: null,
+          slot_negations: [],
+        }
+      );
     }
 
     traceLlmCallResponse({
@@ -336,7 +446,7 @@ export class CorrectivePreferenceExtractor {
     try {
       return parseResponse(response);
     } catch (error) {
-      return this.degraded(
+      await this.degraded(
         error instanceof MissingCorrectivePreferenceToolCallError
           ? "missing_tool_call"
           : error instanceof z.ZodError
@@ -344,7 +454,19 @@ export class CorrectivePreferenceExtractor {
             : "llm_failed",
         error,
       );
+      return {
+        preference: null,
+        slot_negations: [],
+      };
     }
+  }
+
+  async extract(
+    input: ExtractCorrectivePreferenceInput,
+  ): Promise<CorrectivePreferenceCandidate | null> {
+    const result = await this.extractWithSlotNegations(input);
+
+    return result.preference;
   }
 }
 

@@ -13,6 +13,7 @@ import { formatAutonomyTriggerContext, type AutonomyTriggerContext } from "./aut
 import {
   CorrectivePreferenceExtractor,
   type CorrectivePreferenceCandidate,
+  type CorrectivePreferenceSlotNegation,
 } from "./commitments/corrective-preference-extractor.js";
 import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
@@ -48,6 +49,7 @@ import {
   type CommitmentRecord,
 } from "../memory/commitments/index.js";
 import { SkillSelector } from "../memory/procedural/index.js";
+import { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import {
   appendInternalFailureEvent,
@@ -94,6 +96,7 @@ import {
   RelationalClaimGuard,
   commitmentToRelationalGuardEvidence,
   correctivePreferencesFromCommitments,
+  relationalSlotToRelationalGuardEvidence,
   retrievedEpisodeToRelationalGuardEvidence,
   streamEntryToRelationalGuardEvidence,
   type RelationalGuardCurrentUserMessage,
@@ -290,6 +293,7 @@ export type TurnOrchestratorOptions = {
   actionRepository: ActionRepository;
   socialRepository: SocialRepository;
   skillSelector: SkillSelector;
+  relationalSlotRepository: RelationalSlotRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   identityService: IdentityService;
@@ -589,6 +593,52 @@ export class TurnOrchestrator {
     }
   }
 
+  private relationalSlotsForCorrectionExtractor() {
+    return this.options.relationalSlotRepository.list({ limit: 32 }).map((slot) => ({
+      subject_entity_id: slot.subject_entity_id,
+      slot_key: slot.slot_key,
+      value: slot.value,
+      state: slot.state,
+      alternate_values: slot.alternate_values.map((alternate) => ({
+        value: alternate.value,
+      })),
+    }));
+  }
+
+  private async applyCorrectiveSlotNegations(input: {
+    negations: readonly CorrectivePreferenceSlotNegation[];
+    persistedUserEntryId?: StreamEntryId;
+    sessionId: SessionId;
+    streamWriter: StreamWriter;
+  }): Promise<void> {
+    if (input.persistedUserEntryId === undefined) {
+      return;
+    }
+
+    for (const negation of input.negations) {
+      try {
+        const result = this.options.relationalSlotRepository.applyNegation({
+          subject_entity_id: negation.subject_entity_id,
+          slot_key: negation.slot_key,
+          rejected_value: negation.rejected_value,
+          source_stream_entry_ids: [input.persistedUserEntryId],
+        });
+
+        if (result?.constrained === true) {
+          this.options.workingMemoryStore.sanitizePendingActionsForRelationalSlot({
+            sessionId: input.sessionId,
+            values: result.values_to_neutralize,
+            neutralPhrase: result.neutral_phrase,
+          });
+        }
+      } catch (error) {
+        await this.appendHookFailureEvent(input.streamWriter, "relational_slot_negation", error, {
+          slotKey: negation.slot_key,
+        });
+      }
+    }
+  }
+
   private async appendSuppressionMarker(input: {
     streamWriter: StreamWriter;
     reason: Extract<PendingTurnEmission, { kind: "suppressed" }>["reason"];
@@ -776,6 +826,9 @@ export class TurnOrchestrator {
         retrieved_episodes: input.retrievedEpisodes.map(retrievedEpisodeToRelationalGuardEvidence),
         active_commitments: input.activeCommitments.map(commitmentToRelationalGuardEvidence),
         corrective_preferences: correctivePreferencesFromCommitments(input.activeCommitments),
+        relational_slots: this.options.relationalSlotRepository
+          .list({ limit: 64 })
+          .map(relationalSlotToRelationalGuardEvidence),
       },
     });
 
@@ -920,8 +973,9 @@ export class TurnOrchestrator {
             });
           },
         });
-        const correctiveCandidate = await correctivePreferenceExtractor.extract({
+        const correctiveExtraction = await correctivePreferenceExtractor.extractWithSlotNegations({
           userMessage: input.userMessage,
+          currentUserStreamEntryId: persistedUserEntryId ?? null,
           recentHistory: recencyWindow.messages,
           audienceEntityId,
           activeCommitments: activeCommitmentsForExtractor.map((commitment) => ({
@@ -930,7 +984,9 @@ export class TurnOrchestrator {
             directive: commitment.directive,
             priority: commitment.priority,
           })),
+          relationalSlots: this.relationalSlotsForCorrectionExtractor(),
         });
+        const correctiveCandidate = correctiveExtraction.preference;
 
         if (correctiveCandidate !== null) {
           const inMemoryCommitment = buildCorrectivePreferenceCommitment({
@@ -968,6 +1024,14 @@ export class TurnOrchestrator {
             );
           }
         }
+
+        await this.applyCorrectiveSlotNegations({
+          negations: correctiveExtraction.slot_negations,
+          persistedUserEntryId,
+          sessionId,
+          streamWriter,
+        });
+        workingMemory = this.options.workingMemoryStore.load(sessionId);
 
         if (isUserTurn) {
           const activeGoalsForPromotion =
@@ -1231,6 +1295,9 @@ export class TurnOrchestrator {
         const retrievedSemantic = retrievalContext.retrievedSemantic;
         const proceduralContext = retrievalContext.proceduralContext;
         const selectedSkill = retrievalContext.selectedSkill;
+        const relationalSlots = this.options.relationalSlotRepository.listConstrained({
+          limit: 24,
+        });
         const deliberator = new Deliberator({
           llmClient,
           toolDispatcher: this.options.toolDispatcher,
@@ -1257,6 +1324,7 @@ export class TurnOrchestrator {
             applicableCommitments,
             openQuestionsContext: retrieval.open_questions,
             pendingCorrectionsContext: pendingCorrections,
+            relationalSlots,
             selectedSkill,
             entityRepository: this.options.entityRepository,
             workingMemory,

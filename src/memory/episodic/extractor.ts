@@ -16,9 +16,12 @@ import { StreamReader, type StreamCursor, type StreamEntry } from "../../stream/
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
 import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
+import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { normalizeEpisodeAccess } from "./access.js";
 import { EpisodicRepository } from "./repository.js";
 import { type Episode } from "./types.js";
+import type { RelationalSlotRepository } from "../relational-slots/index.js";
+import type { WorkingMemoryStore } from "../working/index.js";
 
 import { z } from "zod";
 
@@ -34,11 +37,28 @@ const extractorCandidateSchema = z.object({
   significance: z.number().min(0).max(1),
 });
 
+const relationalSlotUpdateCandidateSchema = z
+  .object({
+    subject_entity_id: z.string().min(1),
+    slot_key: z.string().min(1),
+    asserted_value: z.string().min(1),
+    source_stream_entry_ids: z.array(z.string().min(1)).min(1),
+  })
+  .strict();
+
 const extractorResponseSchema = z.object({
   episodes: z.array(extractorCandidateSchema),
+  relational_slot_updates: z.array(relationalSlotUpdateCandidateSchema).default([]),
 });
 
 type ExtractorCandidate = z.infer<typeof extractorCandidateSchema>;
+type RelationalSlotUpdateCandidate = z.infer<typeof relationalSlotUpdateCandidateSchema>;
+type ExtractorResponse = z.infer<typeof extractorResponseSchema>;
+type RelationalSlotSubject = {
+  entity_id: EntityId;
+  label: string;
+  source: "default_user" | "audience";
+};
 const EXTRACT_EPISODES_TOOL_NAME = "EmitEpisodeCandidates";
 const EPISODIC_SOURCE_STREAM_KINDS = ["user_msg", "agent_msg"] as const;
 const EPISODIC_CONTEXT_STREAM_KINDS = [
@@ -71,6 +91,9 @@ export type EpisodicExtractorOptions = {
   llmClient: LLMClient;
   model: string;
   entityRepository: EntityRepository;
+  relationalSlotRepository?: RelationalSlotRepository;
+  workingMemoryStore?: Pick<WorkingMemoryStore, "sanitizePendingActionsForRelationalSlot">;
+  defaultUser?: string;
   clock?: Clock;
   chunkTokenLimit?: number;
   maxTokens?: number;
@@ -322,6 +345,7 @@ function buildEmotionalArc(
 function buildExtractorPrompt(
   chunk: readonly StreamEntry[],
   perceptionContextEntries: readonly StreamEntry[],
+  relationalSlotSubjects: readonly RelationalSlotSubject[],
 ): string {
   const lines = chunk.map((entry) =>
     JSON.stringify({
@@ -345,9 +369,21 @@ function buildExtractorPrompt(
     "Perception context is advisory only; NEVER include perception context entries in source_stream_ids.",
     "Narrative should be 2-5 concise sentences.",
     "For each episode, emit emotional_arc directly from the episode text and user signals. Use null only when there is no meaningful affective signal.",
+    "Also emit relational_slot_updates for user-asserted relational attributes whose subject_entity_id appears in the supplied relational slot subject manifest.",
+    "Use relational_slot_updates only for direct user assertions, not assistant statements, guesses, corrections, denials, or uncertainty.",
+    "relational_slot_updates.source_stream_entry_ids MUST reference user_msg ids present in the chunk.",
+    'Use compact slot_key dot paths such as "partner.name", "partner.role", or "dog.name".',
     "Chunk:",
     ...lines,
   ];
+
+  if (relationalSlotSubjects.length > 0) {
+    promptLines.push(
+      "<relational_slot_subjects>",
+      ...relationalSlotSubjects.map((subject) => JSON.stringify(subject)),
+      "</relational_slot_subjects>",
+    );
+  }
 
   if (perceptionLines.length > 0) {
     promptLines.push("<perception_context>", ...perceptionLines, "</perception_context>");
@@ -356,7 +392,7 @@ function buildExtractorPrompt(
   return promptLines.join("\n");
 }
 
-function parseLlmResponse(result: LLMCompleteResult): ExtractorCandidate[] {
+function parseLlmResponse(result: LLMCompleteResult): ExtractorResponse {
   const call = result.tool_calls.find((toolCall) => toolCall.name === EXTRACT_EPISODES_TOOL_NAME);
 
   if (call === undefined) {
@@ -374,7 +410,7 @@ function parseLlmResponse(result: LLMCompleteResult): ExtractorCandidate[] {
     });
   }
 
-  return parsed.data.episodes;
+  return parsed.data;
 }
 
 function sourceEntriesFromCandidate(
@@ -392,6 +428,45 @@ function sourceEntriesFromCandidate(
   }
 
   return entries;
+}
+
+function sourceEntriesFromRelationalSlotUpdate(
+  candidate: RelationalSlotUpdateCandidate,
+  chunkEntriesById: Map<string, StreamEntry>,
+): StreamEntry[] {
+  const entries = candidate.source_stream_entry_ids
+    .map((sourceId) => chunkEntriesById.get(sourceId))
+    .filter((entry): entry is StreamEntry => entry !== undefined);
+
+  if (entries.length !== candidate.source_stream_entry_ids.length) {
+    throw new LLMError("Relational slot update referenced stream ids outside the chunk", {
+      code: "EXTRACTOR_SOURCE_ID_INVALID",
+    });
+  }
+
+  if (entries.some((entry) => entry.kind !== "user_msg")) {
+    throw new LLMError("Relational slot update cited non-user stream evidence", {
+      code: "EXTRACTOR_SOURCE_ID_INVALID",
+    });
+  }
+
+  return entries;
+}
+
+function uniqueRelationalSlotSubjects(
+  subjects: readonly RelationalSlotSubject[],
+): RelationalSlotSubject[] {
+  const unique: RelationalSlotSubject[] = [];
+
+  for (const subject of subjects) {
+    if (unique.some((existing) => existing.entity_id === subject.entity_id)) {
+      continue;
+    }
+
+    unique.push(subject);
+  }
+
+  return unique;
 }
 
 function buildEpisodeFromCandidate(
@@ -468,6 +543,37 @@ export class EpisodicExtractor {
     };
   }
 
+  private relationalSlotSubjectsForChunk(chunk: readonly StreamEntry[]): RelationalSlotSubject[] {
+    if (this.options.relationalSlotRepository === undefined) {
+      return [];
+    }
+
+    const subjects: RelationalSlotSubject[] = [];
+    const defaultUser = this.options.defaultUser?.trim() ?? "user";
+
+    if (defaultUser.length > 0) {
+      subjects.push({
+        entity_id: this.options.entityRepository.resolve(defaultUser),
+        label: defaultUser,
+        source: "default_user",
+      });
+    }
+
+    for (const audience of uniqueStrings(
+      chunk.flatMap((entry) =>
+        entry.audience === undefined || entry.audience.trim().length === 0 ? [] : [entry.audience],
+      ),
+    )) {
+      subjects.push({
+        entity_id: this.options.entityRepository.resolve(audience),
+        label: audience,
+        source: "audience",
+      });
+    }
+
+    return uniqueRelationalSlotSubjects(subjects);
+  }
+
   private async processCandidate(
     candidate: ExtractorCandidate,
     chunkById: Map<string, StreamEntry>,
@@ -502,6 +608,43 @@ export class EpisodicExtractor {
     );
     await this.options.episodicRepository.insert(nextEpisode);
     return "inserted";
+  }
+
+  private processRelationalSlotUpdate(
+    candidate: RelationalSlotUpdateCandidate,
+    chunkById: Map<string, StreamEntry>,
+    validSubjectIds: ReadonlySet<EntityId>,
+    sessionId: SessionId,
+  ): void {
+    const relationalSlotRepository = this.options.relationalSlotRepository;
+
+    if (relationalSlotRepository === undefined) {
+      return;
+    }
+
+    const sourceEntries = sourceEntriesFromRelationalSlotUpdate(candidate, chunkById);
+    const subjectEntityId = candidate.subject_entity_id as EntityId;
+
+    if (!validSubjectIds.has(subjectEntityId)) {
+      throw new LLMError("Relational slot update referenced an unknown subject entity", {
+        code: "EXTRACTOR_SOURCE_ID_INVALID",
+      });
+    }
+
+    const result = relationalSlotRepository.applyAssertion({
+      subject_entity_id: subjectEntityId,
+      slot_key: candidate.slot_key,
+      asserted_value: candidate.asserted_value,
+      source_stream_entry_ids: uniqueStreamEntryIds(sourceEntries) as StreamEntryId[],
+    });
+
+    if (result.constrained) {
+      this.options.workingMemoryStore?.sanitizePendingActionsForRelationalSlot({
+        sessionId,
+        values: result.values_to_neutralize,
+        neutralPhrase: result.neutral_phrase,
+      });
+    }
   }
 
   async extractFromStream(
@@ -554,13 +697,14 @@ export class EpisodicExtractor {
     for (const chunk of chunks) {
       const chunkById = new Map(chunk.map((entry) => [entry.id, entry]));
       const perceptionContextEntries = perceptionContextEntriesForChunk(chunk, contextEntries);
+      const relationalSlotSubjects = this.relationalSlotSubjectsForChunk(chunk);
       const result = await this.options.llmClient.complete({
         model: this.options.model,
         system: "Extract episodic memories grounded only in the provided stream chunk.",
         messages: [
           {
             role: "user",
-            content: buildExtractorPrompt(chunk, perceptionContextEntries),
+            content: buildExtractorPrompt(chunk, perceptionContextEntries, relationalSlotSubjects),
           },
         ],
         tools: [EXTRACT_EPISODES_TOOL],
@@ -568,7 +712,8 @@ export class EpisodicExtractor {
         max_tokens: this.maxTokens,
         budget: "episodic-extraction",
       });
-      const candidates = parseLlmResponse(result);
+      const extracted = parseLlmResponse(result);
+      const candidates = extracted.episodes;
 
       for (const candidate of candidates) {
         const outcome = await this.processCandidate(candidate, chunkById, contextEntries);
@@ -579,6 +724,12 @@ export class EpisodicExtractor {
         }
 
         skipped += 1;
+      }
+
+      const validSubjectIds = new Set(relationalSlotSubjects.map((subject) => subject.entity_id));
+
+      for (const slotUpdate of extracted.relational_slot_updates) {
+        this.processRelationalSlotUpdate(slotUpdate, chunkById, validSubjectIds, session);
       }
     }
 

@@ -6,6 +6,8 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
 import { EpisodicExtractor, type EpisodicRepository } from "../memory/episodic/index.js";
+import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
+import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { StreamWatermarkRepository } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import type { BorgStreamWriterFactory } from "./types.js";
@@ -17,6 +19,8 @@ export type BuildIngestionCoordinatorOptions = {
   embeddingClient: EmbeddingClient;
   lazyLlmClient: LLMClient;
   entityRepository: EntityRepository;
+  relationalSlotRepository: RelationalSlotRepository;
+  workingMemoryStore: WorkingMemoryStore;
   streamWatermarkRepository: StreamWatermarkRepository;
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
@@ -40,6 +44,9 @@ export function buildStreamIngestionCoordinator(
       llmClient: options.lazyLlmClient,
       model: options.config.anthropic.models.extraction,
       entityRepository: options.entityRepository,
+      relationalSlotRepository: options.relationalSlotRepository,
+      workingMemoryStore: options.workingMemoryStore,
+      defaultUser: options.config.defaultUser,
       clock: options.clock,
     }),
     watermarkRepository: options.streamWatermarkRepository,
