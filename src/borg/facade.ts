@@ -285,6 +285,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       history: (...args) => deps.moodRepository.history(...args),
       update: (...args) => deps.moodRepository.update(...args),
     },
+    actions: deps.actionRepository,
     social: {
       getProfile: (entity) =>
         deps.socialRepository.getProfile(deps.entityRepository.resolve(entity)),

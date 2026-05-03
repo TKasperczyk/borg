@@ -8,7 +8,7 @@ import type {
   SkillSelectionCandidate,
   SkillSelectionResult,
 } from "../../../memory/procedural/index.js";
-import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
+import { DEFAULT_SESSION_ID, createActionId, createStreamEntryId } from "../../../util/ids.js";
 import {
   EPISTEMIC_POSTURE_SECTION,
   IDENTITY_POSTURE_SECTION,
@@ -193,6 +193,56 @@ describe("buildBaseSystemPrompt", () => {
     );
     expect(block).toContain("- Check the Atlas rollout after tests finish -> review deploy status");
     expect(block).toContain("</pending_actions>");
+  });
+
+  it("renders pending and completed actions as distinct prompt sections", () => {
+    const pending = "Check the Atlas rollout after tests finish";
+    const completed = "Reviewed the Atlas rollback result";
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          pending_actions: [
+            {
+              description: pending,
+              next_action: "review deploy status",
+            },
+          ],
+        },
+        recentCompletedActions: [
+          {
+            id: createActionId(),
+            description: completed,
+            actor: "borg",
+            audience_entity_id: null,
+            state: "completed",
+            confidence: 0.9,
+            provenance_episode_ids: [],
+            provenance_stream_entry_ids: [createStreamEntryId()],
+            created_at: NOW_MS - 1_000,
+            updated_at: NOW_MS,
+            considering_at: null,
+            committed_at: null,
+            scheduled_at: null,
+            completed_at: NOW_MS,
+            not_done_at: null,
+            unknown_at: null,
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+    const pendingBlock = extractBlock(prompt, "borg_working_state");
+    const completedBlock = extractBlock(prompt, "borg_recent_completed_actions");
+
+    expect(pendingBlock).toContain("<pending_actions>");
+    expect(pendingBlock).toContain(pending);
+    expect(pendingBlock).not.toContain(completed);
+    expect(completedBlock).toContain("Recent completed actions");
+    expect(completedBlock).toContain("things that did happen");
+    expect(completedBlock).toContain("distinct from pending follow-ups");
+    expect(completedBlock).toContain(completed);
+    expect(completedBlock).not.toContain(pending);
   });
 
   it("renders pending procedural attempts in working state so cognition can see them", () => {

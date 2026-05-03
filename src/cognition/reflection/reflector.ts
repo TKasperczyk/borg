@@ -25,8 +25,16 @@ import {
   appendOpenQuestionHookFailureEvent,
 } from "../../memory/self/review-open-question-hook.js";
 import { EpisodicRepository, episodeIdSchema } from "../../memory/episodic/index.js";
+import type { ActionRepository, ActionState } from "../../memory/actions/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
-import type { EntityId, EpisodeId, GoalId, SkillId, StreamEntryId } from "../../util/ids.js";
+import {
+  createActionId,
+  type EntityId,
+  type EpisodeId,
+  type GoalId,
+  type SkillId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 import { LLMError } from "../../util/errors.js";
 import { z } from "zod";
 
@@ -96,6 +104,17 @@ const resolvedOpenQuestionSchema = z.object({
   evidence_stream_entry_ids: z.array(streamEntryIdSchema).default([]),
 });
 
+const reflectionIntentUpdateSchema = intentRecordSchema.extend({
+  actor: z
+    .enum(["user", "borg"])
+    .describe(
+      "Actor responsible for the resolved action: user for user actions, borg for Borg actions.",
+    ),
+  status: z.enum(["completed", "abandoned"]),
+  confidence: z.number().min(0).max(1).default(0.8),
+  evidence: z.string().min(1),
+});
+
 const strictReflectionOutputSchema = z.object({
   advanced_goals: z
     .array(
@@ -143,14 +162,9 @@ const strictReflectionOutputSchema = z.object({
     )
     .default([]),
   intent_updates: z
-    .array(
-      intentRecordSchema.extend({
-        status: z.enum(["completed", "abandoned"]),
-        evidence: z.string().min(1),
-      }),
-    )
+    .array(reflectionIntentUpdateSchema)
     .describe(
-      "Prior pending actions resolved by this completed turn. Include only exact prior actions with clear evidence, marked completed or abandoned.",
+      "Prior pending actions resolved by this completed turn. Include only exact prior actions with clear evidence, marked completed or abandoned, and identify whether the resolved action belonged to the user or Borg.",
     )
     .default([]),
   step_outcomes: z
@@ -268,6 +282,54 @@ function selectResolvedIntentKeys(
   return resolved;
 }
 
+function selectResolvedIntentUpdates(
+  pendingActions: readonly IntentRecord[],
+  updates: readonly ReflectionOutput["intent_updates"][number][],
+): ReflectionOutput["intent_updates"] {
+  const pendingKeys = new Set(pendingActions.map((intent) => intentKey(intent)));
+  const selected: ReflectionOutput["intent_updates"] = [];
+  const selectedKeys = new Set<string>();
+
+  for (const update of updates) {
+    const key = intentKey(update);
+
+    if (!pendingKeys.has(key) || selectedKeys.has(key)) {
+      continue;
+    }
+
+    selected.push(update);
+    selectedKeys.add(key);
+  }
+
+  return selected;
+}
+
+function actionStateFromIntentStatus(
+  status: ReflectionOutput["intent_updates"][number]["status"],
+): ActionState {
+  return status === "completed" ? "completed" : "not_done";
+}
+
+function stateTimestampPatch(
+  state: ActionState,
+  timestamp: number,
+): Partial<Record<string, number>> {
+  switch (state) {
+    case "completed":
+      return { completed_at: timestamp };
+    case "not_done":
+      return { not_done_at: timestamp };
+    case "considering":
+      return { considering_at: timestamp };
+    case "committed_to_do":
+      return { committed_at: timestamp };
+    case "scheduled":
+      return { scheduled_at: timestamp };
+    case "unknown":
+      return { unknown_at: timestamp };
+  }
+}
+
 async function resolveAttemptEpisodeIds(
   context: ReflectionContext,
   episodicRepository: EpisodicRepository,
@@ -357,6 +419,7 @@ export type ReflectorOptions = {
   skillRepository?: SkillRepository;
   proceduralEvidenceRepository?: ProceduralEvidenceRepository;
   executiveStepsRepository?: ExecutiveStepsRepository;
+  actionRepository?: Pick<ActionRepository, "add">;
   tracer?: TurnTracer;
 };
 
@@ -512,6 +575,12 @@ export class Reflector {
       context.workingMemory.pending_actions,
       intentUpdates,
     );
+    const resolvedIntentUpdates = selectResolvedIntentUpdates(
+      context.workingMemory.pending_actions,
+      intentUpdates,
+    );
+
+    await this.persistActionRecords(context, resolvedIntentUpdates, streamWriter);
 
     if (resolvedIntentKeys.size > 0) {
       nextWorkingMemory = {
@@ -776,6 +845,57 @@ export class Reflector {
     }
 
     return autonomouslyClosedStepGoalIds;
+  }
+
+  private async persistActionRecords(
+    context: ReflectionContext,
+    updates: readonly ReflectionOutput["intent_updates"][number][],
+    streamWriter: StreamWriter,
+  ): Promise<void> {
+    const repository = this.options.actionRepository;
+
+    if (repository === undefined || updates.length === 0) {
+      return;
+    }
+
+    const nowMs = this.clock.now();
+    const sourceStreamIds = [...new Set(context.currentTurnStreamEntryIds ?? [])];
+    const currentTurnEpisode =
+      sourceStreamIds.length === 0
+        ? null
+        : await this.options.episodicRepository.findBySourceStreamIdsContaining(sourceStreamIds);
+    const provenanceEpisodeIds = currentTurnEpisode === null ? [] : [currentTurnEpisode.id];
+
+    for (const update of updates) {
+      const state = actionStateFromIntentStatus(update.status);
+
+      try {
+        repository.add({
+          id: createActionId(),
+          description: update.description.trim(),
+          actor: update.actor,
+          audience_entity_id: context.audienceEntityId ?? null,
+          state,
+          confidence: update.confidence,
+          provenance_episode_ids: provenanceEpisodeIds,
+          provenance_stream_entry_ids: sourceStreamIds,
+          created_at: nowMs,
+          updated_at: nowMs,
+          considering_at: null,
+          committed_at: null,
+          scheduled_at: null,
+          completed_at: null,
+          not_done_at: null,
+          unknown_at: null,
+          ...stateTimestampPatch(state, nowMs),
+        });
+      } catch (error) {
+        await appendInternalFailureEvent(streamWriter, "action_record_persist", error, {
+          description: update.description,
+          status: update.status,
+        });
+      }
+    }
   }
 
   private async dropAutonomousCloseAndReplaceProposals(
@@ -1231,7 +1351,7 @@ export class Reflector {
         "Do not infer procedural success or failure from the assistant response, confidence, phrasing, or intentions.",
         "Emit trait_demonstrations only for traits actually shown by the completed assistant turn. Do not map from cognitive mode labels.",
         "Use strength_delta 0.01-0.1 for grounded trait demonstrations, and omit weak or generic traits.",
-        "If pending_actions are present, mark only prior pending actions completed or abandoned when the current user message and agent response give clear evidence. Otherwise omit them.",
+        "If pending_actions are present, mark only prior pending actions completed or abandoned when the current user message and agent response give clear evidence. Set actor=user when the action was for the user to do, and actor=borg when it was for Borg to do. Otherwise omit them.",
         "For open_questions, emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. Preserve the user's language in the question text.",
         "For resolved_open_questions, resolve only active open questions that the just-completed turn clearly answered. Do not speculate. Cite evidence_episode_ids only from available_evidence_episodes, and evidence_stream_entry_ids only from current_turn_stream_entry_ids. Use question_id only from active_open_questions, and include at least one evidence id.",
       ].join("\n"),

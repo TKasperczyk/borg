@@ -4,6 +4,7 @@ import type { AutonomyScheduler, AutonomyWakesRepository } from "../autonomy/ind
 import type { MaintenanceScheduler } from "../offline/index.js";
 import type { CorrectionService } from "../correction/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
+import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository } from "../memory/commitments/index.js";
 import type { Provenance } from "../memory/common/index.js";
 import type { EpisodicRepository, ExtractFromStreamResult } from "../memory/episodic/index.js";
@@ -332,6 +333,7 @@ export type BorgFacades = {
   self: BorgSelfFacade;
   skills: BorgSkillsFacade;
   mood: BorgMoodFacade;
+  actions: ActionRepository;
   social: BorgSocialFacade;
   semantic: BorgSemanticFacade;
   commitments: BorgCommitmentsFacade;

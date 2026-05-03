@@ -40,6 +40,7 @@ import {
 import type { LLMClient } from "../llm/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
+import type { ActionRecord, ActionRepository } from "../memory/actions/index.js";
 import {
   commitmentSchema,
   CommitmentRepository,
@@ -286,6 +287,7 @@ export type TurnOrchestratorOptions = {
   growthMarkersRepository?: GrowthMarkersRepository;
   executiveStepsRepository: ExecutiveStepsRepository;
   moodRepository: MoodRepository;
+  actionRepository: ActionRepository;
   socialRepository: SocialRepository;
   skillSelector: SkillSelector;
   entityRepository: EntityRepository;
@@ -543,9 +545,14 @@ export class TurnOrchestrator {
             description: candidate.description,
           },
         });
-        await this.appendHookFailureEvent(input.streamWriter, "goal_promotion_goal_persist", error, {
-          description: candidate.description,
-        });
+        await this.appendHookFailureEvent(
+          input.streamWriter,
+          "goal_promotion_goal_persist",
+          error,
+          {
+            description: candidate.description,
+          },
+        );
         continue;
       }
 
@@ -773,6 +780,32 @@ export class TurnOrchestrator {
     });
 
     return result.emission;
+  }
+
+  private listRecentCompletedActions(audienceEntityId: EntityId | null): ActionRecord[] {
+    const visibleActions =
+      audienceEntityId === null
+        ? this.options.actionRepository.list({
+            state: "completed",
+            audienceEntityId: null,
+            limit: 8,
+          })
+        : [
+            ...this.options.actionRepository.list({
+              state: "completed",
+              audienceEntityId: null,
+              limit: 8,
+            }),
+            ...this.options.actionRepository.list({
+              state: "completed",
+              audienceEntityId,
+              limit: 8,
+            }),
+          ];
+
+    return visibleActions
+      .sort((left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id))
+      .slice(0, 8);
   }
 
   async run(input: TurnInput): Promise<TurnResult> {
@@ -1227,6 +1260,7 @@ export class TurnOrchestrator {
             selectedSkill,
             entityRepository: this.options.entityRepository,
             workingMemory,
+            recentCompletedActions: this.listRecentCompletedActions(audienceEntityId),
             affectiveTrajectory,
             selfSnapshot,
             executiveFocus: executiveFocusWithStep,

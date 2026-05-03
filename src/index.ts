@@ -138,6 +138,15 @@ export {
   type MoodState,
 } from "./memory/affective/index.js";
 export {
+  ACTION_STATES,
+  ActionRepository,
+  type ActionActor,
+  type ActionRecord,
+  type ActionRecordPatch,
+  type ActionRepositoryOptions,
+  type ActionState,
+} from "./memory/actions/index.js";
+export {
   EPISODE_TIERS,
   type Episode,
   type EpisodeListOptions,

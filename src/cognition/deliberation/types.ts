@@ -2,6 +2,7 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
+import type { ActionRecord } from "../../memory/actions/index.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type {
   AutobiographicalPeriod,
@@ -82,6 +83,7 @@ export type DeliberationContext = {
   selectedSkill?: SkillSelectionResult | null;
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;
+  recentCompletedActions?: readonly ActionRecord[];
   /**
    * Recent affective history for this session, newest first. The current
    * mood snapshot remains in workingMemory; this lane shows prior turns.
