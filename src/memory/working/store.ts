@@ -13,6 +13,12 @@ export type WorkingMemoryStoreOptions = {
   clock?: Clock;
 };
 
+export type RelationalSlotPendingActionSanitization = {
+  sessionId: SessionId;
+  values: readonly string[];
+  neutralPhrase: string;
+};
+
 const PENDING_ACTIONS_LIMIT = 16;
 const HOT_ENTITIES_LIMIT = 32;
 
@@ -89,6 +95,37 @@ function normalizeWorkingMemory(state: WorkingMemory): WorkingMemory {
   };
 }
 
+function uniqueReplacementValues(values: readonly string[], neutralPhrase: string): string[] {
+  const unique: string[] = [];
+  const replacement = neutralPhrase.trim();
+
+  for (const value of values) {
+    const trimmed = value.trim();
+
+    if (trimmed.length === 0 || trimmed === replacement) {
+      continue;
+    }
+
+    if (unique.some((existing) => existing === trimmed)) {
+      continue;
+    }
+
+    unique.push(trimmed);
+  }
+
+  return unique.sort((left, right) => right.length - left.length || left.localeCompare(right));
+}
+
+function replaceKnownValues(text: string, values: readonly string[], replacement: string): string {
+  let next = text;
+
+  for (const value of values) {
+    next = next.split(value).join(replacement);
+  }
+
+  return next;
+}
+
 export class WorkingMemoryStore {
   private readonly clock: Clock;
 
@@ -131,6 +168,47 @@ export class WorkingMemoryStore {
     const next = cloneWorkingMemory(parsed.data);
     this.writePersisted(next);
     return cloneWorkingMemory(next);
+  }
+
+  sanitizePendingActionsForRelationalSlot(
+    input: RelationalSlotPendingActionSanitization,
+  ): WorkingMemory {
+    const replacement = input.neutralPhrase.trim();
+    const values = uniqueReplacementValues(input.values, replacement);
+    const current = this.load(input.sessionId);
+
+    if (replacement.length === 0 || values.length === 0 || current.pending_actions.length === 0) {
+      return current;
+    }
+
+    let changed = false;
+    const pendingActions = current.pending_actions.map((action) => {
+      const description = replaceKnownValues(action.description, values, replacement);
+      const nextAction =
+        action.next_action === null
+          ? null
+          : replaceKnownValues(action.next_action, values, replacement);
+
+      if (description !== action.description || nextAction !== action.next_action) {
+        changed = true;
+      }
+
+      return {
+        ...action,
+        description,
+        next_action: nextAction,
+      };
+    });
+
+    if (!changed) {
+      return current;
+    }
+
+    return this.save({
+      ...current,
+      pending_actions: pendingActions,
+      updated_at: this.clock.now(),
+    });
   }
 
   clear(sessionId: SessionId): void {

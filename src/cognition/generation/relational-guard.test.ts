@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
 import {
   createCommitmentId,
+  createEntityId,
   createEpisodeId,
+  createRelationalSlotId,
   createSessionId,
   createStreamEntryId,
   DEFAULT_SESSION_ID,
@@ -48,6 +50,9 @@ function makeClaim(
     cited_episode_ids: overrides.cited_episode_ids ?? [],
     cited_commitment_ids: overrides.cited_commitment_ids ?? [],
     quoted_evidence_text: overrides.quoted_evidence_text ?? null,
+    subject_entity_id: overrides.subject_entity_id ?? null,
+    slot_key: overrides.slot_key ?? null,
+    relational_slot_value: overrides.relational_slot_value ?? null,
   };
 }
 
@@ -81,6 +86,7 @@ function baseEvidence(
     retrieved_episodes: [],
     active_commitments: [],
     corrective_preferences: [],
+    relational_slots: [],
     ...overrides,
   };
 }
@@ -141,6 +147,43 @@ describe("validateRelationalClaims", () => {
 
     expect(summary.unsupported).toHaveLength(1);
     expect(summary.unsupported[0]?.reason).toContain("current session evidence");
+  });
+
+  it("rejects relational identity claims for quarantined slots despite valid user evidence", () => {
+    const userEntry = streamEvidence({
+      content: "My partner is Sarah.",
+    });
+    const subject = createEntityId();
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "relational_identity",
+          asserted: "Sarah is your partner",
+          cited_stream_entry_ids: [userEntry.entry_id],
+          subject_entity_id: subject,
+          slot_key: "partner.name",
+          relational_slot_value: "Sarah",
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [userEntry],
+        relational_slots: [
+          {
+            slot_id: createRelationalSlotId(),
+            subject_entity_id: subject,
+            slot_key: "partner.name",
+            value: "Sarah",
+            state: "quarantined",
+            alternate_values: [{ value: "Maya" }, { value: "Clara" }],
+            neutral_phrase: "your partner",
+          },
+        ],
+      }),
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("quarantined");
+    expect(summary.unsupported[0]?.reason).toContain("your partner");
   });
 
   it("accepts callbacks with prior current-session stream evidence and exact quotes", () => {

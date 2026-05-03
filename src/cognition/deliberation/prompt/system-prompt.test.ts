@@ -8,7 +8,13 @@ import type {
   SkillSelectionCandidate,
   SkillSelectionResult,
 } from "../../../memory/procedural/index.js";
-import { DEFAULT_SESSION_ID, createActionId, createStreamEntryId } from "../../../util/ids.js";
+import {
+  DEFAULT_SESSION_ID,
+  createActionId,
+  createEntityId,
+  createRelationalSlotId,
+  createStreamEntryId,
+} from "../../../util/ids.js";
 import {
   EPISTEMIC_POSTURE_SECTION,
   IDENTITY_POSTURE_SECTION,
@@ -299,6 +305,72 @@ describe("buildBaseSystemPrompt", () => {
       "Discourse control: stop-until-substantive-content active since turn 7 (provenance: no_output_tool). Minimal input does not require a response.",
     );
     expect(extractBlock(prompt, "borg_working_state")).not.toContain("Discourse control");
+  });
+
+  it("renders contested and quarantined relational slot constraints only", () => {
+    const subject = createEntityId();
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        relationalSlots: [
+          {
+            id: createRelationalSlotId(),
+            subject_entity_id: subject,
+            slot_key: "partner.name",
+            value: "Sarah",
+            state: "established",
+            evidence_stream_entry_ids: [createStreamEntryId()],
+            contradicted_by_stream_entry_ids: [],
+            alternate_values: [],
+            created_at: NOW_MS,
+            updated_at: NOW_MS,
+          },
+          {
+            id: createRelationalSlotId(),
+            subject_entity_id: subject,
+            slot_key: "dog.name",
+            value: "Otto",
+            state: "contested",
+            evidence_stream_entry_ids: [createStreamEntryId()],
+            contradicted_by_stream_entry_ids: [createStreamEntryId()],
+            alternate_values: [
+              {
+                value: "Odo",
+                evidence_stream_entry_ids: [createStreamEntryId()],
+              },
+            ],
+            created_at: NOW_MS,
+            updated_at: NOW_MS,
+          },
+          {
+            id: createRelationalSlotId(),
+            subject_entity_id: subject,
+            slot_key: "partner.role",
+            value: "wife",
+            state: "quarantined",
+            evidence_stream_entry_ids: [createStreamEntryId()],
+            contradicted_by_stream_entry_ids: [createStreamEntryId()],
+            alternate_values: [
+              {
+                value: "girlfriend",
+                evidence_stream_entry_ids: [createStreamEntryId()],
+              },
+            ],
+            created_at: NOW_MS,
+            updated_at: NOW_MS,
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_relational_slot_constraints");
+
+    expect(block).toContain("Relational slot constraints");
+    expect(block).toContain("dog.name: CONTESTED");
+    expect(block).toContain('Use "your dog" or "they"');
+    expect(block).toContain("partner.role: QUARANTINED");
+    expect(block).toContain('Use "your partner" or "they"');
+    expect(block).not.toContain("partner.name: ESTABLISHED");
+    expect(block).not.toContain("Sarah");
   });
 
   it("renders the selected skill first with up to two evaluated alternatives", () => {

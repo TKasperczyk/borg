@@ -19,6 +19,7 @@ import type {
   SkillRepository,
   SkillSelector,
 } from "../memory/procedural/index.js";
+import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -89,6 +90,7 @@ export type BorgDependencies = {
   skillRepository: SkillRepository;
   proceduralContextStatsRepository: ProceduralContextStatsRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
+  relationalSlotRepository: RelationalSlotRepository;
   skillSelector: SkillSelector;
   retrievalPipeline: RetrievalPipeline;
   workingMemoryStore: WorkingMemoryStore;

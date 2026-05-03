@@ -25,6 +25,7 @@ export type SemanticEdgeId = BrandedId<"SemanticEdgeId">;
 export type CommitmentId = BrandedId<"CommitmentId">;
 export type EntityId = BrandedId<"EntityId">;
 export type ActionId = BrandedId<"ActionId">;
+export type RelationalSlotId = BrandedId<"RelationalSlotId">;
 export type SkillId = BrandedId<"SkillId">;
 export type ProceduralEvidenceId = BrandedId<"ProceduralEvidenceId">;
 export type MaintenanceRunId = BrandedId<"MaintenanceRunId">;
@@ -83,6 +84,7 @@ export const semanticEdgeIdHelpers = createIdHelpers<"SemanticEdgeId">("seme");
 export const commitmentIdHelpers = createIdHelpers<"CommitmentId">("cmt");
 export const entityIdHelpers = createIdHelpers<"EntityId">("ent");
 export const actionIdHelpers = createIdHelpers<"ActionId">("act");
+export const relationalSlotIdHelpers = createIdHelpers<"RelationalSlotId">("rslot");
 export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
 export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
   prefix: "procevi_",
@@ -129,6 +131,7 @@ export const createSemanticEdgeId = (): SemanticEdgeId => semanticEdgeIdHelpers.
 export const createCommitmentId = (): CommitmentId => commitmentIdHelpers.create();
 export const createEntityId = (): EntityId => entityIdHelpers.create();
 export const createActionId = (): ActionId => actionIdHelpers.create();
+export const createRelationalSlotId = (): RelationalSlotId => relationalSlotIdHelpers.create();
 export const createSkillId = (): SkillId => skillIdHelpers.create();
 export const createProceduralEvidenceId = (): ProceduralEvidenceId =>
   proceduralEvidenceIdHelpers.create();
@@ -198,6 +201,10 @@ export function parseEntityId(value: string): EntityId {
 
 export function parseActionId(value: string): ActionId {
   return actionIdHelpers.parse(value);
+}
+
+export function parseRelationalSlotId(value: string): RelationalSlotId {
+  return relationalSlotIdHelpers.parse(value);
 }
 
 export function parseSkillId(value: string): SkillId {

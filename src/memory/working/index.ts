@@ -1,4 +1,8 @@
-export { WorkingMemoryStore, type WorkingMemoryStoreOptions } from "./store.js";
+export {
+  WorkingMemoryStore,
+  type RelationalSlotPendingActionSanitization,
+  type WorkingMemoryStoreOptions,
+} from "./store.js";
 export {
   PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS,
   PENDING_PROCEDURAL_ATTEMPTS_LIMIT,

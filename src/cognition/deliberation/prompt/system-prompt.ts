@@ -13,6 +13,10 @@ import type {
   SkillSelectionCandidate,
   SkillSelectionResult,
 } from "../../../memory/procedural/index.js";
+import {
+  neutralPhraseForSlotKey,
+  type RelationalSlot,
+} from "../../../memory/relational-slots/index.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
@@ -137,6 +141,10 @@ export function buildBaseSystemPrompt(
     {
       tag: "borg_discourse_control",
       content: summarizeDiscourseControl(context.workingMemory),
+    },
+    {
+      tag: "borg_relational_slot_constraints",
+      content: summarizeRelationalSlotConstraints(context.relationalSlots ?? []),
     },
   ]);
 
@@ -335,6 +343,29 @@ function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null 
   }
 
   return `Discourse control: stop-until-substantive-content active since turn ${stopState.since_turn} (provenance: ${stopState.provenance}). Minimal input does not require a response.`;
+}
+
+function summarizeRelationalSlotConstraints(slots: readonly RelationalSlot[]): string | null {
+  const constrained = slots.filter(
+    (slot) => slot.state === "contested" || slot.state === "quarantined",
+  );
+
+  if (constrained.length === 0) {
+    return null;
+  }
+
+  return [
+    "Relational slot constraints (do not violate):",
+    ...constrained.slice(0, 12).map((slot) => {
+      const neutral = neutralPhraseForSlotKey(slot.slot_key);
+      const reason =
+        slot.state === "quarantined"
+          ? "conflicting evidence reached quarantine"
+          : "conflicting evidence is contested";
+
+      return `- ${slot.slot_key}: ${slot.state.toUpperCase()} (${reason}). Do not name this relation. Use "${neutral}" or "they". Re-establish only if the user names it in the current message.`;
+    }),
+  ].join("\n");
 }
 
 function summarizeWorkingMemory(workingMemory: WorkingMemory): string {

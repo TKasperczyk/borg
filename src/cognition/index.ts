@@ -39,8 +39,10 @@ export {
 export {
   CorrectivePreferenceExtractor,
   type CorrectivePreferenceCandidate,
+  type CorrectivePreferenceExtractionResult,
   type CorrectivePreferenceExtractorDegradedReason,
   type CorrectivePreferenceExtractorOptions,
+  type CorrectivePreferenceSlotNegation,
   type ExtractCorrectivePreferenceInput,
 } from "./commitments/corrective-preference-extractor.js";
 export {

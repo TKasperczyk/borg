@@ -12,16 +12,19 @@ import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { EmbeddingError, LLMError } from "../../util/errors.js";
+import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
-import { EntityRepository } from "../commitments/index.js";
+import { commitmentMigrations, EntityRepository } from "../commitments/index.js";
+import { RelationalSlotRepository, relationalSlotMigrations } from "../relational-slots/index.js";
 import { selfMigrations } from "../self/migrations.js";
+import { createWorkingMemory, WorkingMemoryStore } from "../working/index.js";
 import { episodicMigrations } from "./migrations.js";
 import { EpisodicExtractor } from "./extractor.js";
 import { EpisodicRepository, createEpisodesTableSchema } from "./repository.js";
 
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
 
-function createEpisodeToolResponse(episodes: unknown[]) {
+function createEpisodeToolResponse(episodes: unknown[], relationalSlotUpdates: unknown[] = []) {
   return {
     text: "",
     input_tokens: 10,
@@ -37,6 +40,7 @@ function createEpisodeToolResponse(episodes: unknown[]) {
               ? { ...episode, location: null }
               : episode,
           ),
+          relational_slot_updates: relationalSlotUpdates,
         },
       },
     ],
@@ -327,6 +331,236 @@ describe("episodic extractor", () => {
     expect(prompt).not.toContain("non-conversational scaffolding");
     expect(listed[0]?.source_stream_ids).toEqual([user.id, agent.id]);
     expect(listed[0]?.source_stream_ids).not.toContain(perception.id);
+  });
+
+  it("applies relational slot updates emitted with episodic extraction", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+        relationalSlotMigrations,
+      ),
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+    const entityRepository = new EntityRepository({
+      db,
+      clock,
+    });
+    const relationalSlotRepository = new RelationalSlotRepository({
+      db,
+      clock,
+    });
+    const tom = entityRepository.resolve("Tom");
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const user = await writer.append({
+      kind: "user_msg",
+      content: "My partner's name is Sarah.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse(
+          [
+            {
+              title: "Tom named his partner",
+              narrative: "Tom said his partner's name is Sarah.",
+              source_stream_ids: [user.id],
+              participants: ["Tom"],
+              tags: ["relationship"],
+              confidence: 0.9,
+              significance: 0.7,
+            },
+          ],
+          [
+            {
+              subject_entity_id: tom,
+              slot_key: "partner.name",
+              asserted_value: "Sarah",
+              source_stream_entry_ids: [user.id],
+            },
+          ],
+        ),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: tempDir,
+      episodicRepository: repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository,
+      relationalSlotRepository,
+      defaultUser: "Tom",
+      clock,
+    });
+
+    const result = await extractor.extractFromStream();
+    const slot = relationalSlotRepository.findBySubjectAndKey(tom, "partner.name");
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(result.inserted).toBe(1);
+    expect(prompt).toContain("<relational_slot_subjects>");
+    expect(prompt).toContain(tom);
+    expect(slot).toMatchObject({
+      subject_entity_id: tom,
+      slot_key: "partner.name",
+      value: "Sarah",
+      state: "established",
+      evidence_stream_entry_ids: [user.id],
+    });
+  });
+
+  it("sanitizes pending actions when relational slot extraction quarantines a value", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const clock = new ManualClock(1_000);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: composeMigrations(
+        episodicMigrations,
+        selfMigrations,
+        retrievalMigrations,
+        commitmentMigrations,
+        relationalSlotMigrations,
+      ),
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock,
+    });
+    const entityRepository = new EntityRepository({
+      db,
+      clock,
+    });
+    const relationalSlotRepository = new RelationalSlotRepository({
+      db,
+      clock,
+    });
+    const workingMemoryStore = new WorkingMemoryStore({
+      dataDir: tempDir,
+      clock,
+    });
+    const tom = entityRepository.resolve("Tom");
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+    });
+
+    cleanup.push(async () => {
+      writer.close();
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    workingMemoryStore.save({
+      ...createWorkingMemory(DEFAULT_SESSION_ID, clock.now()),
+      pending_actions: [
+        {
+          description: "Track whether Tom raises the planning comment with Sarah directly",
+          next_action: "Ask Sarah if Tom brings up the planning comment",
+        },
+      ],
+      updated_at: clock.now(),
+    });
+
+    const sarah = await writer.append({
+      kind: "user_msg",
+      content: "My partner's name is Sarah.",
+    });
+    clock.advance(10);
+    const maya = await writer.append({
+      kind: "user_msg",
+      content: "Actually, my partner's name is Maya.",
+    });
+    clock.advance(10);
+    const clara = await writer.append({
+      kind: "user_msg",
+      content: "No, my partner's name is Clara.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse(
+          [],
+          [
+            {
+              subject_entity_id: tom,
+              slot_key: "partner.name",
+              asserted_value: "Sarah",
+              source_stream_entry_ids: [sarah.id],
+            },
+            {
+              subject_entity_id: tom,
+              slot_key: "partner.name",
+              asserted_value: "Maya",
+              source_stream_entry_ids: [maya.id],
+            },
+            {
+              subject_entity_id: tom,
+              slot_key: "partner.name",
+              asserted_value: "Clara",
+              source_stream_entry_ids: [clara.id],
+            },
+          ],
+        ),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: tempDir,
+      episodicRepository: repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository,
+      relationalSlotRepository,
+      workingMemoryStore,
+      defaultUser: "Tom",
+      clock,
+    });
+
+    await extractor.extractFromStream();
+
+    const slot = relationalSlotRepository.findBySubjectAndKey(tom, "partner.name");
+    const workingMemory = workingMemoryStore.load(DEFAULT_SESSION_ID);
+
+    expect(slot?.state).toBe("quarantined");
+    expect(workingMemory.pending_actions).toEqual([
+      {
+        description: "Track whether Tom raises the planning comment with your partner directly",
+        next_action: "Ask your partner if Tom brings up the planning comment",
+      },
+    ]);
   });
 
   it("passes perception-only entities and mode through LLM-emitted episode fields", async () => {

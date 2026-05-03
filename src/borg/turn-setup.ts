@@ -17,6 +17,7 @@ import type {
   SkillRepository,
   SkillSelector,
 } from "../memory/procedural/index.js";
+import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -56,6 +57,7 @@ export type BuildTurnOrchestratorOptions = {
   socialRepository: SocialRepository;
   skillRepository: SkillRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
+  relationalSlotRepository: RelationalSlotRepository;
   skillSelector: SkillSelector;
   workingMemoryStore: WorkingMemoryStore;
   llmFactory: () => LLMClient;
@@ -88,6 +90,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     actionRepository: options.actionRepository,
     socialRepository: options.socialRepository,
     skillSelector: options.skillSelector,
+    relationalSlotRepository: options.relationalSlotRepository,
     workingMemoryStore: options.workingMemoryStore,
     llmFactory: options.llmFactory,
     createReflector: (llmClient) =>

@@ -172,4 +172,40 @@ describe("working memory store", () => {
       "action-19",
     ]);
   });
+
+  it("rewrites pending actions that mention quarantined relational slot values", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const store = new WorkingMemoryStore({
+      dataDir: tempDir,
+      clock: new FixedClock(500),
+    });
+    const initial = store.load(DEFAULT_SESSION_ID);
+
+    store.save({
+      ...initial,
+      pending_actions: [
+        {
+          description: "Track whether Tom raises the planning comment with Sarah directly",
+          next_action: "Ask Sarah about the planning comment if Tom brings it up",
+        },
+      ],
+      updated_at: 200,
+    });
+
+    const sanitized = store.sanitizePendingActionsForRelationalSlot({
+      sessionId: DEFAULT_SESSION_ID,
+      values: ["Sarah"],
+      neutralPhrase: "your partner",
+    });
+
+    expect(sanitized.pending_actions).toEqual([
+      {
+        description: "Track whether Tom raises the planning comment with your partner directly",
+        next_action: "Ask your partner about the planning comment if Tom brings it up",
+      },
+    ]);
+    expect(sanitized.updated_at).toBe(500);
+  });
 });
