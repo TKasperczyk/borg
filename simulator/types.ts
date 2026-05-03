@@ -1,3 +1,5 @@
+import type { SessionId } from "../src/index.js";
+
 export type Persona = {
   key: string;
   displayName: string;
@@ -37,6 +39,7 @@ export type SimulatorResultState = "completed" | "max_sessions_reached";
 
 export type SimulatorSessionRecord = {
   sessionIndex: number;
+  sessionId: SessionId;
   startedAtTurn: number;
   endedAtTurn: number;
   endReason: "suppression" | "run_complete";

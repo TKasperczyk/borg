@@ -7,6 +7,7 @@ import {
   testSessionId,
   type OfflineTestHarness,
 } from "../offline/test-support.js";
+import { StreamWriter } from "../stream/index.js";
 import { createWorkingMemory, workingMemorySchema } from "../memory/working/index.js";
 import { FixedClock } from "../util/clock.js";
 import {
@@ -900,10 +901,16 @@ describe("retrieval recall_state", () => {
   it("does not persist recent_raw_stream tail evidence", async () => {
     harness = await createHarness();
     const sessionId = testSessionId();
-    const recent = await harness.streamWriter.append({
+    const streamWriter = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId,
+      clock: harness.clock,
+    });
+    const recent = await streamWriter.append({
       kind: "user_msg",
       content: "Recent stream tail only",
     });
+    streamWriter.close();
 
     const result = await harness.retrievalPipeline.searchWithContext("nothing relevant", {
       sessionId,

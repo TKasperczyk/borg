@@ -3,7 +3,7 @@ import {
   type StreamEntry,
   type StreamEntryIndexRepository,
 } from "../stream/index.js";
-import type { StreamEntryId } from "../util/ids.js";
+import type { SessionId, StreamEntryId } from "../util/ids.js";
 
 import { CitationResolver } from "./citations.js";
 
@@ -26,11 +26,15 @@ export class RawStreamAdapter {
     return this.citationResolver.resolveCitationEntries(ids);
   }
 
-  recent(options: { limit?: number } = {}): StreamEntry[] {
+  recent(options: { limit?: number; sessionId?: SessionId } = {}): StreamEntry[] {
     const limit = Math.max(1, options.limit ?? 4);
     const entries: StreamEntry[] = [];
+    const sessionIds =
+      options.sessionId === undefined
+        ? this.citationResolver.listSessionIds()
+        : [options.sessionId];
 
-    for (const sessionId of this.citationResolver.listSessionIds()) {
+    for (const sessionId of sessionIds) {
       const reader = new StreamReader({
         dataDir: this.options.dataDir,
         sessionId,

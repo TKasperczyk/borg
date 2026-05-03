@@ -11,7 +11,9 @@ import {
   TestEmbeddingClient,
   type OfflineTestHarness,
 } from "../offline/test-support.js";
+import { StreamWriter } from "../stream/index.js";
 import { FixedClock, ManualClock } from "../util/clock.js";
+import { createSessionId } from "../util/ids.js";
 import { RetrievalPipeline } from "./pipeline.js";
 import { expandRecall } from "./recall-expansion.js";
 
@@ -664,6 +666,55 @@ describe("Recall Core", () => {
     expect(episodeEvidenceIndex).toBeGreaterThanOrEqual(0);
     expect(recentTailIndex).toBeGreaterThanOrEqual(0);
     expect(episodeEvidenceIndex).toBeLessThan(recentTailIndex);
+  });
+
+  it("does not include prior-session raw stream tail evidence for a fresh session", async () => {
+    const clock = new ManualClock(NOW_MS - 1_000);
+    harness = await createOfflineTestHarness({
+      clock,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["nothing relevant", [0, 1, 0, 0]],
+          ["recent memory", [0, 1, 0, 0]],
+        ]),
+      ),
+      llmClient: throwingRecallExpansion(),
+    });
+    const priorSession = createSessionId();
+    const freshSession = createSessionId();
+    const priorWriter = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: priorSession,
+      clock,
+    });
+    const freshWriter = new StreamWriter({
+      dataDir: harness.tempDir,
+      sessionId: freshSession,
+      clock,
+    });
+
+    const priorEntry = await priorWriter.append({
+      kind: "user_msg",
+      content: "Prior session stream tail",
+    });
+    clock.set(NOW_MS);
+    const freshEntry = await freshWriter.append({
+      kind: "user_msg",
+      content: "Fresh session stream tail",
+    });
+    priorWriter.close();
+    freshWriter.close();
+
+    const result = await harness.retrievalPipeline.searchWithContext("nothing relevant", {
+      sessionId: freshSession,
+      limit: 3,
+    });
+    const recentStreamIds = result.evidence
+      .filter((item) => item.source === "recent_raw_stream")
+      .flatMap((item) => item.provenance?.streamIds ?? []);
+
+    expect(recentStreamIds).toContain(freshEntry.id);
+    expect(recentStreamIds).not.toContain(priorEntry.id);
   });
 
   it("projects legacy fields from the ranked evidence pool", async () => {

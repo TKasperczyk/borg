@@ -1,8 +1,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { Borg } from "../src/index.js";
-import { DEFAULT_SESSION_ID } from "../src/index.js";
+import type { Borg, SessionId } from "../src/index.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
 
@@ -16,6 +15,11 @@ type GoalTreeNodeLike = {
 
 export type MetricsCaptureOptions = {
   tracePath?: string;
+};
+
+export type MetricsCaptureContext = {
+  sessionId: SessionId;
+  sessionIds: readonly SessionId[];
 };
 
 function appendJsonlLine(filePath: string, line: string): void {
@@ -122,13 +126,18 @@ export class MetricsCapture {
     this.tracePath = options.tracePath;
   }
 
-  async capture(borg: Borg, turnId: string, turnCounter: number): Promise<MetricsRow> {
+  async capture(
+    borg: Borg,
+    turnId: string,
+    turnCounter: number,
+    context: MetricsCaptureContext,
+  ): Promise<MetricsRow> {
     const traceRecords =
       this.tracePath === undefined
         ? []
         : readTraceEvents(this.tracePath).filter((record) => record.turnId === turnId);
     const usage = usageForTurn(traceRecords);
-    const mood = borg.mood.current(DEFAULT_SESSION_ID);
+    const mood = borg.mood.current(context.sessionId);
     const episodeResult = await borg.episodic.list({ limit: LARGE_COUNT_LIMIT });
     const semanticNodes = await borg.semantic.nodes.list({ limit: LARGE_COUNT_LIMIT });
     const semanticEdges = borg.semantic.edges.list({ includeInvalid: true });
@@ -145,8 +154,8 @@ export class MetricsCapture {
       limit: LARGE_COUNT_LIMIT,
     });
     const activeGoals = borg.self.goals.list({ status: "active" });
-    const generationSuppressions = borg.stream
-      .tail(LARGE_COUNT_LIMIT)
+    const generationSuppressions = [...new Set(context.sessionIds)]
+      .flatMap((session) => borg.stream.tail(LARGE_COUNT_LIMIT, { session }))
       .filter((entry) => entry.kind === "agent_suppressed").length;
     const row: MetricsRow = {
       ts: Date.now(),
