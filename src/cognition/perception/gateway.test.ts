@@ -22,6 +22,7 @@ function makeConfig(useLlmFallback: boolean): Config {
     anthropic: {
       models: {
         background: "background-model",
+        recallExpansion: "fast-model",
       },
     },
   } as Config;

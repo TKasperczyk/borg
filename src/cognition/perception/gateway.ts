@@ -76,6 +76,10 @@ export class PerceptionGateway {
     const perceiver = new Perceiver({
       llmClient: optionalPerceptionLlm,
       model: this.options.config.anthropic.models.background,
+      // entity_extractor and temporal_cue judge from the current message
+      // alone with bounded extraction rubrics. Run them on the fast slot
+      // (Haiku) instead of background (Opus) to cut perception latency.
+      fastModel: this.options.config.anthropic.models.recallExpansion,
       useLlmFallback: this.options.config.perception.useLlmFallback,
       modeWhenLlmAbsent: this.options.config.perception.modeWhenLlmAbsent,
       affectiveUseLlmFallback: this.options.config.affective.useLlmFallback,

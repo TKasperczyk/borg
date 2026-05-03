@@ -77,6 +77,7 @@ export type TurnRetrievalCoordinatorInput = {
   sessionId: SessionId;
   turnId: string;
   userMessage: string;
+  recentMessages: readonly { role: "user" | "assistant"; content: string }[];
   cognitionInput: string;
   inputAudience?: string;
   isSelfAudience: boolean;
@@ -205,6 +206,7 @@ export class TurnRetrievalCoordinator {
         ? await deriveProceduralContext(
             {
               userMessage: input.userMessage,
+              recentMessages: input.recentMessages,
               perception: input.perception,
               isSelfAudience: input.isSelfAudience,
               audienceEntityId: input.audienceEntityId,

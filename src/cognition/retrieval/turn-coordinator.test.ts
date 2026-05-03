@@ -183,6 +183,13 @@ function makeRetrievedContext(): RetrievedContext {
   };
 }
 
+function parseProceduralPromptPayload(llm: FakeLLMClient): Record<string, unknown> {
+  const request = llm.requests.find((candidate) => candidate.budget === "procedural-context");
+  const content = String(request?.messages[0]?.content ?? "");
+
+  return JSON.parse(content.split("\n").at(-1) ?? "{}") as Record<string, unknown>;
+}
+
 describe("TurnRetrievalCoordinator", () => {
   it("builds retrieval context and preserves reRetrieve override precedence", async () => {
     const high = makeCommitment("cmt_high", 10, 200);
@@ -313,6 +320,7 @@ describe("TurnRetrievalCoordinator", () => {
       sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-1",
       userMessage: "Solve Atlas",
+      recentMessages: [],
       cognitionInput: "Solve Atlas",
       inputAudience: "alice",
       isSelfAudience: false,
@@ -388,6 +396,62 @@ describe("TurnRetrievalCoordinator", () => {
     );
   });
 
+  it("forwards recent messages into procedural extraction", async () => {
+    const llm = new FakeLLMClient();
+    const searchWithContext = vi.fn(async () => makeRetrievedContext());
+    const coordinator = new TurnRetrievalCoordinator({
+      commitmentRepository: {
+        getApplicable: vi.fn(() => []),
+      },
+      reviewQueueRepository: {
+        list: vi.fn(() => []),
+      },
+      moodRepository: {
+        current: vi.fn(() => ({
+          session_id: DEFAULT_SESSION_ID,
+          valence: 0,
+          arousal: 0,
+          updated_at: 2_000,
+          half_life_hours: 24,
+          recent_triggers: [],
+        })),
+        history: vi.fn(() => []),
+      },
+      retrievalPipeline: {
+        searchWithContext,
+      },
+      skillSelector: {
+        select: vi.fn(async () => null),
+      },
+      clock: new ManualClock(2_000),
+    });
+    const recentMessages = [
+      { role: "user" as const, content: "Atlas deployment fails after the TypeScript build." },
+      { role: "assistant" as const, content: "Try isolating the deployment config path." },
+    ];
+
+    await coordinator.coordinate({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-1",
+      userMessage: "yeah, same error",
+      recentMessages,
+      cognitionInput: "yeah, same error",
+      isSelfAudience: true,
+      audienceEntityId: null,
+      audienceEntity: null,
+      audienceProfile: null,
+      perception: makePerception("problem_solving"),
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 1_000),
+      selfSnapshot: makeSelfSnapshot(),
+      suppressionSet: SuppressionSet.fromEntries([], 1),
+      findEntityByName: () => null,
+      llmClient: llm,
+      proceduralContextModel: "haiku",
+    });
+
+    expect(parseProceduralPromptPayload(llm).recent_messages).toEqual(recentMessages);
+  });
+
   it("skips skill selection for non-problem-solving turns", async () => {
     const select = vi.fn();
     const searchWithContext = vi.fn(async () => makeRetrievedContext());
@@ -422,6 +486,7 @@ describe("TurnRetrievalCoordinator", () => {
       sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-1",
       userMessage: "Think about this",
+      recentMessages: [],
       cognitionInput: "Think about this",
       isSelfAudience: true,
       audienceEntityId: null,
@@ -512,6 +577,7 @@ describe("TurnRetrievalCoordinator", () => {
       sessionId: DEFAULT_SESSION_ID,
       turnId: "turn-1",
       userMessage: "Solve Atlas",
+      recentMessages: [],
       cognitionInput: "Solve Atlas",
       isSelfAudience: true,
       audienceEntityId: null,

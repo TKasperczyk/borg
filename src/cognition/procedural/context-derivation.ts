@@ -1,21 +1,12 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { ProceduralContext } from "../../memory/procedural/index.js";
-import type { SocialProfile } from "../../memory/social/index.js";
-import type { EntityId } from "../../util/ids.js";
-import type { PerceptionResult } from "../types.js";
 import {
   ProceduralContextExtractor,
   type ProceduralContextDegradedReason,
+  type ExtractProceduralContextInput,
 } from "./context-extractor.js";
 
-export type DeriveProceduralContextInput = {
-  userMessage: string;
-  perception: Pick<PerceptionResult, "mode" | "entities">;
-  isSelfAudience: boolean;
-  audienceEntityId: EntityId | null;
-  audienceProfile?: SocialProfile | null;
-  inputAudience?: string;
-};
+export type DeriveProceduralContextInput = ExtractProceduralContextInput;
 
 export type DeriveProceduralContextOptions = {
   llmClient?: LLMClient;

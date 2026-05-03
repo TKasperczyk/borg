@@ -46,6 +46,7 @@ export type ProceduralContextExtractorOptions = {
 
 export type ExtractProceduralContextInput = {
   userMessage: string;
+  recentMessages: readonly { role: "user" | "assistant"; content: string }[];
   perception: Pick<PerceptionResult, "mode" | "entities">;
   isSelfAudience: boolean;
   audienceEntityId: EntityId | null;
@@ -86,12 +87,14 @@ function buildPrompt(input: ExtractProceduralContextInput): string {
     "Classify the procedural context for this turn.",
     `Emit your result by calling the ${PROCEDURAL_CONTEXT_TOOL_NAME} tool exactly once.`,
     "Use problem_kind='other' and domain_tags=[] when no grounded procedural context exists.",
+    "Use recent_messages as prior-turn context to disambiguate terse current messages; do not echo prior procedural contexts if the current turn has shifted topic.",
     "Domain tags must be compact canonical slugs across languages, such as typescript, lancedb, deployment, atlas, rust, sqlite, writing, planning.",
     "Use lowercase ASCII slugs when there is a conventional technology, tool, project, or workflow name. Do not emit translations, sentence fragments, generic words, or user-language descriptive phrases.",
     "Prefer specific technologies, tools, project codenames, domains, and workflows. Return at most 8 tags.",
     "Context:",
     JSON.stringify({
       user_message: input.userMessage,
+      recent_messages: input.recentMessages.slice(-10),
       cognitive_mode: input.perception.mode,
       entities: input.perception.entities,
       input_audience: input.inputAudience ?? null,

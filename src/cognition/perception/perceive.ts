@@ -51,7 +51,20 @@ export async function runPerceptionClassifierSafely<T>(input: {
 
 export type PerceiverOptions = {
   llmClient?: LLMClient;
+  /**
+   * Primary perception model. Used for mode_detector and affective_signal,
+   * which need history-aware reasoning. Defaults align with the `background`
+   * config slot (Opus).
+   */
   model?: string;
+  /**
+   * Fast model for current-message-only perception calls (entity_extractor,
+   * temporal_cue). These are bounded extraction tasks with explicit rubrics
+   * and no need for prior turns, so they run on the cheaper/faster slot
+   * (recallExpansion / Haiku). Falls back to `model` when unset, which keeps
+   * the Perceiver functional in tests that wire a single fake LLM.
+   */
+  fastModel?: string;
   useLlmFallback?: boolean;
   affectiveUseLlmFallback?: boolean;
   /**
@@ -83,6 +96,7 @@ export class Perceiver {
   private readonly modeDetector: ModeDetector;
   private readonly llmClient?: LLMClient;
   private readonly model?: string;
+  private readonly fastModel?: string;
   private readonly affectiveUseLlmFallback: boolean;
   private readonly temporalCueUseLlmFallback: boolean;
   private readonly detectAffectiveSignal: typeof detectAffectiveSignal;
@@ -96,6 +110,7 @@ export class Perceiver {
     this.clock = options.clock ?? new SystemClock();
     this.llmClient = options.llmClient;
     this.model = options.model;
+    this.fastModel = options.fastModel ?? options.model;
     this.affectiveUseLlmFallback = options.affectiveUseLlmFallback ?? true;
     this.temporalCueUseLlmFallback = options.temporalCueUseLlmFallback ?? true;
     this.detectAffectiveSignal = options.detectAffectiveSignal ?? detectAffectiveSignal;
@@ -106,7 +121,7 @@ export class Perceiver {
     this.modeWhenLlmAbsent = options.modeWhenLlmAbsent ?? "idle";
     this.entityExtractor = new EntityExtractor({
       llmClient: options.llmClient,
-      model: options.model,
+      model: this.fastModel,
     });
     this.modeDetector = new ModeDetector({
       llmClient: options.llmClient,
@@ -194,7 +209,7 @@ export class Perceiver {
       // perception so it doesn't add serial latency.
       detectTemporalCue(text, nowMs, {
         llmClient: this.temporalCueUseLlmFallback ? this.llmClient : undefined,
-        model: this.temporalCueUseLlmFallback ? this.model : undefined,
+        model: this.temporalCueUseLlmFallback ? this.fastModel : undefined,
         onDegraded: async (reason, error) => {
           if (this.tracer.enabled && this.turnId !== undefined) {
             this.tracer.emit("perception_classifier_degraded", {

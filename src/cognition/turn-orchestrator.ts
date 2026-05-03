@@ -1094,6 +1094,10 @@ export class TurnOrchestrator {
           sessionId,
           turnId,
           userMessage: input.userMessage,
+          recentMessages: recencyWindow.messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
           cognitionInput,
           inputAudience: input.audience,
           isSelfAudience,

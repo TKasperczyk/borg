@@ -123,7 +123,7 @@ export class AffectiveExtractor {
             role: "user",
             content: JSON.stringify({
               text,
-              recent_history: recentHistory.slice(-3),
+              recent_history: recentHistory.slice(-10),
             }),
           },
         ],

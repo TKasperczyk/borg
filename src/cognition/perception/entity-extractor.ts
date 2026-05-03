@@ -12,7 +12,6 @@ const entityFallbackSchema = z.object({
   entities: z.array(z.string().min(1)),
 });
 const ENTITY_FALLBACK_TOOL_NAME = "EmitEntityExtraction";
-const ENTITY_FALLBACK_MAX_INPUT_CHARS = 2_000;
 export const ENTITY_FALLBACK_TOOL = {
   name: ENTITY_FALLBACK_TOOL_NAME,
   description:
@@ -106,15 +105,10 @@ function sanitizeEntities(values: readonly string[]): string[] {
 export type EntityExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
-  shortTextThreshold?: number;
 };
 
 export class EntityExtractor {
-  private readonly shortTextThreshold: number;
-
-  constructor(private readonly options: EntityExtractorOptions = {}) {
-    this.shortTextThreshold = options.shortTextThreshold ?? 160;
-  }
+  constructor(private readonly options: EntityExtractorOptions = {}) {}
 
   async extractEntities(text: string): Promise<string[]> {
     const normalizedText = text.trim();
@@ -133,17 +127,13 @@ export class EntityExtractor {
     }
 
     try {
-      const fallbackInput =
-        normalizedText.length > this.shortTextThreshold
-          ? normalizedText.slice(0, ENTITY_FALLBACK_MAX_INPUT_CHARS)
-          : normalizedText;
       const response = await this.options.llmClient.complete({
         model: this.options.model,
         system: ENTITY_LLM_SYSTEM_PROMPT,
         messages: [
           {
             role: "user",
-            content: fallbackInput,
+            content: normalizedText,
           },
         ],
         tools: [ENTITY_FALLBACK_TOOL],

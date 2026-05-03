@@ -172,6 +172,7 @@ describe("cross-language cognition smoke", () => {
         sessionId: DEFAULT_SESSION_ID,
         turnId: "turn_chinese_smoke",
         userMessage: chineseTurn,
+        recentMessages: [],
         cognitionInput: chineseTurn,
         isSelfAudience: true,
         audienceEntityId: null,

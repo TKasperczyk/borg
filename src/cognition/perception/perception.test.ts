@@ -209,7 +209,7 @@ describe("perception", () => {
     });
   });
 
-  it("runs the entity fallback for long zero-hit text and truncates the prompt", async () => {
+  it("passes the full message text to the entity LLM without truncation", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -230,14 +230,13 @@ describe("perception", () => {
     const extractor = new EntityExtractor({
       llmClient: llm,
       model: "haiku",
-      shortTextThreshold: 40,
     });
     const longLowercaseText = `${"pgvector qdrant ".repeat(180)}borg memory index drift`;
 
     const entities = await extractor.extractEntities(longLowercaseText);
 
     expect(entities).toEqual(["pgvector", "qdrant"]);
-    expect(String(llm.requests[0]?.messages[0]?.content ?? "").length).toBeLessThanOrEqual(2_000);
+    expect(llm.requests[0]?.messages[0]?.content).toBe(longLowercaseText);
   });
 
   it("returns the LLM entity payload after output sanitization", async () => {
@@ -465,6 +464,43 @@ describe("perception", () => {
         error: expect.any(Error),
       }),
     );
+  });
+
+  it("routes entity_extractor and temporal_cue to fastModel while mode_detector stays on model", async () => {
+    const nowMs = new Date("2026-04-21T12:00:00Z").getTime();
+    const llm = new FakeLLMClient({
+      responses: [
+        entityResponse(["Atlas"]),
+        modeResponse("problem_solving"),
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_temporal",
+              name: "EmitTemporalCue",
+              input: { has_cue: false },
+            },
+          ],
+        },
+      ],
+    });
+    const perceiver = new Perceiver({
+      llmClient: llm,
+      model: "background-opus",
+      fastModel: "haiku-fast",
+      affectiveUseLlmFallback: false,
+      clock: new FixedClock(nowMs),
+    });
+
+    await perceiver.perceive("Plain lower text about Atlas yesterday.");
+
+    const byBudget = new Map(llm.requests.map((request) => [request.budget, request.model]));
+    expect(byBudget.get("perception-entity-fallback")).toBe("haiku-fast");
+    expect(byBudget.get("perception-temporal-cue")).toBe("haiku-fast");
+    expect(byBudget.get("perception-mode-fallback")).toBe("background-opus");
   });
 
   it("extracts a temporal cue via the LLM when one is configured", async () => {

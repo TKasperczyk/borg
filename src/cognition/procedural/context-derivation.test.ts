@@ -70,9 +70,14 @@ describe("deriveProceduralContext", () => {
       ],
     });
 
+    const recentMessages = Array.from({ length: 11 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `prior message ${index}`,
+    }));
     const context = await deriveProceduralContext(
       {
         userMessage: "修复 TypeScript 部署错误。",
+        recentMessages,
         perception: makePerception("problem_solving", ["TypeScript", "Deploy"]),
         isSelfAudience: true,
         audienceEntityId: null,
@@ -93,6 +98,12 @@ describe("deriveProceduralContext", () => {
       type: "tool",
       name: PROCEDURAL_CONTEXT_TOOL_NAME,
     });
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const payload = JSON.parse(prompt.split("\n").at(-1) ?? "{}") as {
+      recent_messages?: unknown;
+    };
+    expect(prompt).toContain("Use recent_messages as prior-turn context");
+    expect(payload.recent_messages).toEqual(recentMessages.slice(-10));
   });
 
   it("derives audience scope from self, known, and unknown audiences", async () => {
@@ -110,6 +121,7 @@ describe("deriveProceduralContext", () => {
       deriveProceduralContext(
         {
           userMessage: "Plan the Atlas roadmap.",
+          recentMessages: [],
           perception: makePerception("problem_solving", ["Atlas"]),
           isSelfAudience: true,
           audienceEntityId: null,
@@ -121,6 +133,7 @@ describe("deriveProceduralContext", () => {
       deriveProceduralContext(
         {
           userMessage: "Plan the Atlas roadmap.",
+          recentMessages: [],
           perception: makePerception("problem_solving", ["Atlas"]),
           isSelfAudience: false,
           audienceEntityId: knownEntityId,
@@ -133,6 +146,7 @@ describe("deriveProceduralContext", () => {
       deriveProceduralContext(
         {
           userMessage: "Plan the Atlas roadmap.",
+          recentMessages: [],
           perception: makePerception("problem_solving", ["Atlas"]),
           isSelfAudience: false,
           audienceEntityId: firstContactEntityId,
@@ -150,6 +164,7 @@ describe("deriveProceduralContext", () => {
       deriveProceduralContext(
         {
           userMessage: "Fix this.",
+          recentMessages: [],
           perception: makePerception("problem_solving"),
           isSelfAudience: false,
           audienceEntityId: null,
@@ -180,6 +195,7 @@ describe("deriveProceduralContext", () => {
       deriveProceduralContext(
         {
           userMessage: "maybe this",
+          recentMessages: [],
           perception: makePerception("problem_solving"),
           isSelfAudience: true,
           audienceEntityId: null,
@@ -191,6 +207,7 @@ describe("deriveProceduralContext", () => {
       deriveProceduralContext(
         {
           userMessage: "",
+          recentMessages: [],
           perception: makePerception("problem_solving"),
           isSelfAudience: false,
           audienceEntityId: null,
@@ -214,6 +231,7 @@ describe("deriveProceduralContext", () => {
     const context = await deriveProceduralContext(
       {
         userMessage: "Fix this TypeScript LanceDB SQLite issue.",
+        recentMessages: [],
         perception: makePerception("problem_solving"),
         isSelfAudience: true,
         audienceEntityId: null,
