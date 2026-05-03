@@ -9,7 +9,11 @@ export type GenerationSuppressionReason =
   | "commitment_revision_failed"
   | "rewrite_unsupported_or_empty"
   | "relational_guard_self_correction"
-  | "relational_guard_rewrite_failed";
+  | "relational_guard_audit_failed"
+  | "relational_guard_rewrite_call_failed"
+  | "relational_guard_rewrite_empty"
+  | "relational_guard_reaudit_failed"
+  | "relational_guard_rewrite_unsupported";
 
 export type PendingTurnEmission =
   | {

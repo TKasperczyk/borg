@@ -36,22 +36,36 @@ export type RelationalClaimKind = (typeof RELATIONAL_CLAIM_KINDS)[number];
 
 const CLAIM_AUDIT_TOOL_NAME = "EmitClaimAudit";
 
-const auditActionIdSchema = z.string().min(1).transform((value) => value as ActionId);
+const auditActionIdSchema = z
+  .string()
+  .min(1)
+  .transform((value) => value as ActionId);
+const callbackScopeSchema = z.enum(["current_turn", "prior_turn"]);
 
 const relationalClaimSchema = z
   .object({
     kind: z.enum(RELATIONAL_CLAIM_KINDS),
     asserted: z.string().min(1),
-    cited_stream_entry_ids: z.array(z.string().min(1)),
-    cited_episode_ids: z.array(z.string().min(1)),
-    cited_commitment_ids: z.array(z.string().min(1)),
-    cited_action_ids: z.array(auditActionIdSchema),
-    quoted_evidence_text: z.string().min(1).nullable(),
+    cited_stream_entry_ids: z.array(z.string().min(1)).default([]),
+    cited_episode_ids: z.array(z.string().min(1)).default([]),
+    cited_commitment_ids: z.array(z.string().min(1)).default([]),
+    cited_action_ids: z.array(auditActionIdSchema).default([]),
+    quoted_evidence_text: z.string().min(1).nullable().default(null),
+    callback_scope: callbackScopeSchema.optional().nullable(),
     subject_entity_id: z.string().min(1).nullable().default(null),
     slot_key: z.string().min(1).nullable().default(null),
     relational_slot_value: z.string().min(1).nullable().default(null),
   })
-  .strict();
+  .strict()
+  .superRefine((claim, context) => {
+    if (claim.kind === "callback" && claim.callback_scope == null) {
+      context.addIssue({
+        code: "custom",
+        path: ["callback_scope"],
+        message: "callback claims must classify callback_scope",
+      });
+    }
+  });
 
 const claimAuditSchema = z
   .object({
@@ -74,6 +88,13 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "- session_scoped: assertions scoped to this conversation, thread, just now, or earlier in this conversation.",
   "- action_completion: assertions that an action has already been completed, booked, sent, filed, done, or carried out.",
   "- self_correction: assertions that Borg or the assistant corrected itself, was corrected by the user, or already fixed a prior mistake.",
+  "For callback claims, you must classify callback_scope:",
+  '- "current_turn": the response attributes something to the just-arrived current user message ("as you said", "you mentioned", "you called it that", "you put it as X" -- where X is in the current message).',
+  '- "prior_turn": the response claims the user said something before the current message ("you said earlier", "we talked about that before", "last time you mentioned", "you previously corrected me").',
+  "When classifying, look at whether the cited material is in the current_user_message or in a prior current_session_stream_entry. If only the current message contains the referenced text, it is current_turn. Otherwise prior_turn.",
+  'Examples: "As you said, the invoice is done" citing current_user_message => callback_scope "current_turn".',
+  'Examples: "You called it the north-star file" citing current_user_message => callback_scope "current_turn".',
+  'Examples: "You said earlier that the invoice was done" citing a prior current_session_stream_entry => callback_scope "prior_turn".',
   "Return an empty claims array when the response contains none of these claims.",
   "For every extracted claim, cite only evidence IDs present in the supplied evidence manifest.",
   "For relational_identity claims, also populate subject_entity_id, slot_key, and relational_slot_value when the claim maps to a supplied relational slot. When relational_slots include contested or quarantined slots for that subject, subject_entity_id and slot_key are required.",
@@ -493,10 +514,16 @@ function validateSessionCitationScope(input: {
       };
     }
 
+    const currentUserMessageId = input.currentUserMessage?.stream_entry_id ?? null;
     const isCurrentUserMessage =
-      input.allowCurrentUserMessage &&
-      input.currentUserMessage?.stream_entry_id !== null &&
-      input.currentUserMessage?.stream_entry_id === entry.entry_id;
+      currentUserMessageId !== null && currentUserMessageId === entry.entry_id;
+
+    if (isCurrentUserMessage && !input.allowCurrentUserMessage) {
+      return {
+        entries: resolved,
+        reason: `cited stream entry ${entry.entry_id} is the current user message; this claim requires prior-only evidence`,
+      };
+    }
 
     if (entry.ts >= input.currentTurnTs && !isCurrentUserMessage) {
       return {
@@ -645,13 +672,18 @@ export function validateRelationalClaims(input: {
         });
         break;
       case "callback":
+        if (claim.callback_scope == null) {
+          reason = "callback claim has no callback_scope";
+          break;
+        }
+
         reason = validateSessionCitationScope({
           claim,
           streamEntries,
           currentUserMessage: input.evidence.current_user_message,
           currentSessionId: input.currentSessionId,
           currentTurnTs: input.currentTurnTs,
-          allowCurrentUserMessage: false,
+          allowCurrentUserMessage: claim.callback_scope === "current_turn",
         }).reason;
         break;
       case "session_scoped":
@@ -789,7 +821,7 @@ export class RelationalClaimGuard {
         evidence: input.evidence,
       });
     } catch {
-      const suppressionReason = "relational_guard_rewrite_failed";
+      const suppressionReason = "relational_guard_audit_failed";
 
       emitTrace({
         tracer: this.options.tracer,
@@ -877,7 +909,7 @@ export class RelationalClaimGuard {
         unsupportedClaims: firstValidation.unsupported,
       });
     } catch {
-      const suppressionReason = "relational_guard_rewrite_failed";
+      const suppressionReason = "relational_guard_rewrite_call_failed";
 
       emitTrace({
         tracer: this.options.tracer,
@@ -902,7 +934,7 @@ export class RelationalClaimGuard {
     }
 
     if (rewritten.length === 0) {
-      const suppressionReason = "relational_guard_rewrite_failed";
+      const suppressionReason = "relational_guard_rewrite_empty";
 
       emitTrace({
         tracer: this.options.tracer,
@@ -934,7 +966,7 @@ export class RelationalClaimGuard {
         evidence: input.evidence,
       });
     } catch {
-      const suppressionReason = "relational_guard_rewrite_failed";
+      const suppressionReason = "relational_guard_reaudit_failed";
 
       emitTrace({
         tracer: this.options.tracer,
@@ -967,7 +999,7 @@ export class RelationalClaimGuard {
     });
 
     if (secondValidation.unsupported.length > 0) {
-      const suppressionReason = "relational_guard_rewrite_failed";
+      const suppressionReason = "relational_guard_rewrite_unsupported";
 
       emitTrace({
         tracer: this.options.tracer,
