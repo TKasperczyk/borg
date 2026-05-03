@@ -1,6 +1,7 @@
 // Assembles the base deliberation system prompt from memory, state, and guidance sections.
 import { formatCommitmentsForPrompt } from "../../../memory/commitments/checker.js";
 import { summarizeProvenanceForPrompt, type Provenance } from "../../../memory/common/index.js";
+import type { ActionRecord } from "../../../memory/actions/index.js";
 import type { ExecutiveFocus } from "../../../executive/index.js";
 import type {
   AutobiographicalPeriod,
@@ -68,6 +69,10 @@ export function buildBaseSystemPrompt(
     {
       tag: "borg_working_state",
       content: summarizeWorkingMemory(context.workingMemory),
+    },
+    {
+      tag: "borg_recent_completed_actions",
+      content: summarizeRecentCompletedActions(context.recentCompletedActions ?? []),
     },
     {
       tag: "borg_affective_trajectory",
@@ -379,6 +384,41 @@ function summarizeWorkingMemory(workingMemory: WorkingMemory): string {
   }
 
   return lines.join("\n");
+}
+
+function summarizeActionProvenance(action: ActionRecord): string {
+  const parts = [
+    action.provenance_episode_ids.length === 0
+      ? null
+      : `episodes=${action.provenance_episode_ids.join(",")}`,
+    action.provenance_stream_entry_ids.length === 0
+      ? null
+      : `streams=${action.provenance_stream_entry_ids.join(",")}`,
+  ].filter((part): part is string => part !== null);
+
+  return parts.length === 0 ? "provenance=unknown" : parts.join(" ");
+}
+
+function summarizeRecentCompletedActions(actions: readonly ActionRecord[]): string | null {
+  const completed = actions
+    .filter((action) => action.state === "completed")
+    .sort((left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id))
+    .slice(0, 8);
+
+  if (completed.length === 0) {
+    return null;
+  }
+
+  return [
+    "Recent completed actions: durable action records for things that did happen, with provenance.",
+    "Treat these as completed action evidence, distinct from pending follow-ups.",
+    ...completed.map((action) => {
+      const completedAt = action.completed_at ?? action.updated_at;
+      return `- ${action.description.trim()} (actor=${action.actor}, completed=${new Date(
+        completedAt,
+      ).toISOString()}, conf=${action.confidence.toFixed(2)}, ${summarizeActionProvenance(action)})`;
+    }),
+  ].join("\n");
 }
 
 function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string | null {

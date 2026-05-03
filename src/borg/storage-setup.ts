@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { autonomyMigrations } from "../autonomy/index.js";
 import { DEFAULT_CONFIG, configSchema, loadConfig, type Config } from "../config/index.js";
 import { executiveMigrations } from "../executive/index.js";
+import { actionMigrations, createActionRecordsTableSchema } from "../memory/actions/index.js";
 import { affectiveMigrations } from "../memory/affective/index.js";
 import { commitmentMigrations } from "../memory/commitments/index.js";
 import { createEpisodesTableSchema, episodicMigrations } from "../memory/episodic/index.js";
@@ -34,6 +35,7 @@ export type BorgLanceTables = {
   semanticNodesTable: LanceDbTable;
   openQuestionsTable: LanceDbTable;
   skillsTable: LanceDbTable;
+  actionRecordsTable: LanceDbTable;
 };
 
 export function resolveBorgConfig(options: {
@@ -159,6 +161,7 @@ function createMigrations(): Migration[] {
     commitmentMigrations,
     socialMigrations,
     proceduralMigrations,
+    actionMigrations,
     offlineMigrations,
     autonomyMigrations,
     streamWatermarkMigrations,
@@ -197,11 +200,16 @@ export async function openBorgLanceTables(options: {
     name: "skills",
     schema: createSkillsTableSchema(options.embeddingDimensions),
   });
+  const actionRecordsTable = await options.lance.openTable({
+    name: "action_records",
+    schema: createActionRecordsTableSchema(options.embeddingDimensions),
+  });
 
   return {
     episodesTable,
     semanticNodesTable,
     openQuestionsTable,
     skillsTable,
+    actionRecordsTable,
   };
 }

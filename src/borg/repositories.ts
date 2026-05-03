@@ -7,6 +7,7 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
+import { ActionRepository } from "../memory/actions/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
@@ -77,6 +78,7 @@ export type BorgRepositorySetup = Pick<
   | "openQuestionsRepository"
   | "executiveStepsRepository"
   | "moodRepository"
+  | "actionRepository"
   | "socialRepository"
   | "entityRepository"
   | "commitmentRepository"
@@ -99,6 +101,7 @@ export type BuildBorgRepositoriesOptions = {
   semanticNodesTable: LanceDbTable;
   openQuestionsTable: LanceDbTable;
   skillsTable: LanceDbTable;
+  actionRecordsTable: LanceDbTable;
   embeddingClient: EmbeddingClient;
   llmClient: LLMClient;
   clock: Clock;
@@ -324,6 +327,12 @@ export async function buildBorgRepositories(
     embeddingClient,
     clock,
   });
+  const actionRepository = new ActionRepository({
+    table: options.actionRecordsTable,
+    db: sqlite,
+    embeddingClient,
+    clock,
+  });
   const proceduralEvidenceRepository = new ProceduralEvidenceRepository({
     db: sqlite,
     clock,
@@ -404,6 +413,7 @@ export async function buildBorgRepositories(
     openQuestionsRepository,
     executiveStepsRepository,
     moodRepository,
+    actionRepository,
     socialRepository,
     entityRepository,
     commitmentRepository,

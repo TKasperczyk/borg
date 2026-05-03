@@ -8,6 +8,7 @@ import type { Config } from "../config/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
+import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
@@ -51,6 +52,7 @@ export type BuildTurnOrchestratorOptions = {
   openQuestionsRepository: OpenQuestionsRepository;
   executiveStepsRepository: ExecutiveStepsRepository;
   moodRepository: MoodRepository;
+  actionRepository: ActionRepository;
   socialRepository: SocialRepository;
   skillRepository: SkillRepository;
   proceduralEvidenceRepository: ProceduralEvidenceRepository;
@@ -83,6 +85,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     openQuestionsRepository: options.openQuestionsRepository,
     executiveStepsRepository: options.executiveStepsRepository,
     moodRepository: options.moodRepository,
+    actionRepository: options.actionRepository,
     socialRepository: options.socialRepository,
     skillSelector: options.skillSelector,
     workingMemoryStore: options.workingMemoryStore,
@@ -96,6 +99,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
         goalsRepository: options.goalsRepository,
         traitsRepository: options.traitsRepository,
         executiveStepsRepository: options.executiveStepsRepository,
+        actionRepository: options.actionRepository,
         identityService: options.identityService,
         openQuestionsRepository: options.openQuestionsRepository,
         reviewQueueRepository: options.reviewQueueRepository,

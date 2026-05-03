@@ -11,6 +11,11 @@ import { executiveMigrations, ExecutiveStepsRepository } from "../executive/inde
 import { FakeLLMClient, type LLMClient } from "../llm/index.js";
 import { MoodRepository, affectiveMigrations } from "../memory/affective/index.js";
 import {
+  ActionRepository,
+  actionMigrations,
+  createActionRecordsTableSchema,
+} from "../memory/actions/index.js";
+import {
   CommitmentRepository,
   EntityRepository,
   commitmentMigrations,
@@ -330,6 +335,7 @@ export type OfflineTestHarness = {
   growthMarkersRepository: GrowthMarkersRepository;
   openQuestionsRepository: OpenQuestionsRepository;
   moodRepository: MoodRepository;
+  actionRepository: ActionRepository;
   socialRepository: SocialRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
@@ -381,6 +387,7 @@ export async function createOfflineTestHarness(
       commitmentMigrations,
       socialMigrations,
       proceduralMigrations,
+      actionMigrations,
       identityMigrations,
       offlineMigrations,
       autonomyMigrations,
@@ -399,6 +406,10 @@ export async function createOfflineTestHarness(
   const skillsTable = await lance.openTable({
     name: "skills",
     schema: createSkillsTableSchema(embeddingDimensions),
+  });
+  const actionRecordsTable = await lance.openTable({
+    name: "action_records",
+    schema: createActionRecordsTableSchema(embeddingDimensions),
   });
   const episodicRepository = new EpisodicRepository({
     table: episodesTable,
@@ -552,6 +563,12 @@ export async function createOfflineTestHarness(
     embeddingClient,
     clock,
   });
+  const actionRepository = new ActionRepository({
+    table: actionRecordsTable,
+    db,
+    embeddingClient,
+    clock,
+  });
   const proceduralEvidenceRepository = new ProceduralEvidenceRepository({
     db,
     clock,
@@ -642,6 +659,7 @@ export async function createOfflineTestHarness(
     growthMarkersRepository,
     openQuestionsRepository,
     moodRepository,
+    actionRepository,
     socialRepository,
     entityRepository,
     commitmentRepository,
@@ -688,6 +706,7 @@ export async function createOfflineTestHarness(
     }),
     cleanup: async () => {
       await flushHookLogs();
+      await actionRepository.waitForPendingEmbeddings();
       streamWriter.close();
       db.close();
       await lance.close();

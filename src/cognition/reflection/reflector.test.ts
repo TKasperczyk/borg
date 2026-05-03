@@ -44,6 +44,7 @@ function createReflectionResponse(
   intentUpdates: Array<{
     description: string;
     next_action: string | null;
+    actor: "user" | "borg";
     status: "completed" | "abandoned";
     evidence: string;
   }> = [],
@@ -173,6 +174,7 @@ function createHarnessReflector(
     episodicRepository: harness.episodicRepository,
     goalsRepository: harness.goalsRepository,
     traitsRepository: harness.traitsRepository,
+    actionRepository: harness.actionRepository,
     ...overrides,
   });
 }
@@ -701,6 +703,7 @@ describe("reflector", () => {
           [
             {
               ...pendingIntent,
+              actor: "borg",
               status: "completed",
               evidence: "Autonomous self-talk claimed the intent was done.",
             },
@@ -1515,7 +1518,7 @@ describe("reflector", () => {
     expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
   });
 
-  it("clears completed and abandoned pending actions from reflection output", async () => {
+  it("clears completed and abandoned pending actions and persists action records", async () => {
     const pendingIntents: Array<{ description: string; next_action: string | null }> = [
       {
         description: "Check the Atlas rollout after tests finish",
@@ -1538,17 +1541,20 @@ describe("reflector", () => {
           [
             {
               ...pendingIntents[0]!,
+              actor: "borg",
               status: "completed",
               evidence: "The response reviewed the deploy status.",
             },
             {
               ...pendingIntents[1]!,
+              actor: "user",
               status: "abandoned",
               evidence: "The user said not to create an incident.",
             },
             {
               description: "Hallucinated intent",
               next_action: null,
+              actor: "borg",
               status: "completed",
               evidence: "Not present in prior pending actions.",
             },
@@ -1572,6 +1578,7 @@ describe("reflector", () => {
       pending_actions: pendingIntents,
       mode: "problem_solving" as const,
     });
+    const currentTurnStreamEntryIds = [createStreamEntryId(), createStreamEntryId()];
 
     const reflected = await reflector.reflect(
       {
@@ -1610,11 +1617,30 @@ describe("reflector", () => {
         retrievedEpisodes: [],
         retrievalConfidence: createRetrievalConfidence(),
         suppressionSet: new SuppressionSet(),
+        currentTurnStreamEntryIds,
       },
       harness.streamWriter,
     );
 
     expect(reflected.pending_actions).toEqual([newIntent]);
+    expect(harness.actionRepository.list({ state: "completed" })).toEqual([
+      expect.objectContaining({
+        description: "Check the Atlas rollout after tests finish",
+        actor: "borg",
+        state: "completed",
+        completed_at: 1_000_000,
+        provenance_stream_entry_ids: currentTurnStreamEntryIds,
+      }),
+    ]);
+    expect(harness.actionRepository.list({ state: "not_done" })).toEqual([
+      expect.objectContaining({
+        description: "Open a new incident if rollout fails",
+        actor: "user",
+        state: "not_done",
+        not_done_at: 1_000_000,
+        provenance_stream_entry_ids: currentTurnStreamEntryIds,
+      }),
+    ]);
     expect(llm.requests[0]?.messages[0]?.content).toContain("pending_actions");
   });
 
