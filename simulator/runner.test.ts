@@ -4,9 +4,9 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient } from "../src/index.js";
+import { FakeLLMClient, type Borg, type SessionId } from "../src/index.js";
 import { MaintenanceScheduler, type MaintenanceTickResult } from "../src/offline/scheduler.js";
-import { BorgTransport } from "../assessor/borg-transport.js";
+import { BorgTransport, type ChatWithBorgResult } from "../assessor/borg-transport.js";
 import { runSimulation } from "./runner.js";
 import { tomPersona } from "./personas/tom.js";
 
@@ -38,6 +38,50 @@ function spyMaintenanceTick() {
         result: null,
       };
     });
+}
+
+function fakeSimulatorBorg(): Borg {
+  return {
+    mood: {
+      current: () => ({ valence: 0, arousal: 0 }),
+    },
+    episodic: {
+      list: async () => ({ items: [] }),
+    },
+    semantic: {
+      nodes: {
+        list: async () => [],
+      },
+      edges: {
+        list: () => [],
+      },
+    },
+    self: {
+      openQuestions: {
+        list: () => [],
+      },
+      goals: {
+        list: () => [],
+      },
+    },
+    stream: {
+      tail: () => [],
+    },
+    maintenance: {
+      scheduler: {
+        tick: async (cadence: string) => ({
+          status: "ok",
+          cadence,
+          ts: Date.now(),
+          processes: [],
+          result: null,
+        }),
+      },
+    },
+    review: {
+      list: () => [],
+    },
+  } as unknown as Borg;
 }
 
 describe("SimulatorRunner", () => {
@@ -113,6 +157,70 @@ describe("SimulatorRunner", () => {
     });
 
     expect(chatSpy.mock.calls.map(([, options]) => options?.audience)).toEqual(["Tom", "Tom"]);
+  });
+
+  it("passes distinct session IDs after suppression rotation and records them", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const chatSessionIds: SessionId[] = [];
+    vi.spyOn(BorgTransport.prototype, "open").mockResolvedValue(undefined);
+    vi.spyOn(BorgTransport.prototype, "close").mockResolvedValue(undefined);
+    vi.spyOn(BorgTransport.prototype, "getBorg").mockReturnValue(fakeSimulatorBorg());
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) => {
+      const sessionId = options.sessionId as SessionId;
+      chatSessionIds.push(sessionId);
+      const emitted = chatSessionIds.length > 1;
+
+      return {
+        response: emitted ? "Second session response" : "",
+        emitted,
+        emission: undefined as never,
+        turnId: `turn-${chatSessionIds.length}`,
+        sessionId,
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+        moodAfter: {
+          valence: 0,
+          arousal: 0,
+        },
+        toolCalls: [],
+      } satisfies ChatWithBorgResult;
+    });
+
+    const report = await runSimulation({
+      runId: "sim-runner-session-id-test",
+      persona: tomPersona,
+      totalTurns: 2,
+      checkEvery: 999,
+      maxSessions: 3,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+
+    expect(chatSessionIds).toHaveLength(2);
+    expect(chatSessionIds[0]).toMatch(/^sess_[a-z0-9]{16}$/);
+    expect(chatSessionIds[1]).toMatch(/^sess_[a-z0-9]{16}$/);
+    expect(chatSessionIds[0]).not.toBe(chatSessionIds[1]);
+    expect(report.sessions).toEqual([
+      {
+        sessionIndex: 0,
+        sessionId: chatSessionIds[0],
+        startedAtTurn: 1,
+        endedAtTurn: 1,
+        endReason: "suppression",
+      },
+      {
+        sessionIndex: 1,
+        sessionId: chatSessionIds[1],
+        startedAtTurn: 2,
+        endedAtTurn: 2,
+        endReason: "run_complete",
+      },
+    ]);
   });
 
   it("rotates sessions when Borg suppresses a turn and stops at maxSessions", async () => {

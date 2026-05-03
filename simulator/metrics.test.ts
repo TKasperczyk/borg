@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { Borg } from "../src/index.js";
+import { createSessionId, type Borg, type SessionId } from "../src/index.js";
 
 import { MetricsCapture } from "./metrics.js";
 import type { MetricsRow } from "./types.js";
@@ -23,13 +23,24 @@ afterEach(() => {
   }
 });
 
-function fakeBorg(counts: { semanticNodes?: number; semanticEdges?: number } = {}): Borg {
+function fakeBorg(
+  counts: {
+    semanticNodes?: number;
+    semanticEdges?: number;
+    suppressedSessions?: readonly SessionId[];
+  } = {},
+  observed: { moodSessions?: SessionId[]; tailSessions?: SessionId[] } = {},
+): Borg {
   const semanticNodeCount = counts.semanticNodes ?? 1;
   const semanticEdgeCount = counts.semanticEdges ?? 2;
+  const suppressedSessions = new Set(counts.suppressedSessions ?? []);
 
   return {
     mood: {
-      current: () => ({ valence: -0.2, arousal: 0.4 }),
+      current: (sessionId: SessionId) => {
+        observed.moodSessions?.push(sessionId);
+        return { valence: -0.2, arousal: 0.4 };
+      },
     },
     episodic: {
       list: async () => ({ items: [{ id: "episode_1" }, { id: "episode_2" }] }),
@@ -53,7 +64,15 @@ function fakeBorg(counts: { semanticNodes?: number; semanticEdges?: number } = {
       },
     },
     stream: {
-      tail: () => [{ kind: "agent_suppressed" }],
+      tail: (_limit: number, options?: { session?: SessionId }) => {
+        if (options?.session !== undefined) {
+          observed.tailSessions?.push(options.session);
+        }
+
+        return options?.session !== undefined && suppressedSessions.has(options.session)
+          ? [{ kind: "agent_suppressed" }]
+          : [];
+      },
     },
   } as unknown as Borg;
 }
@@ -81,8 +100,22 @@ describe("MetricsCapture", () => {
         .join("\n"),
     );
 
+    const sessionId = createSessionId();
+    const otherSessionId = createSessionId();
+    const observed: { moodSessions: SessionId[]; tailSessions: SessionId[] } = {
+      moodSessions: [],
+      tailSessions: [],
+    };
     const capture = new MetricsCapture(metricsPath, { tracePath });
-    const row = await capture.capture(fakeBorg(), "turn-1", 3);
+    const row = await capture.capture(
+      fakeBorg({ suppressedSessions: [otherSessionId] }, observed),
+      "turn-1",
+      3,
+      {
+        sessionId,
+        sessionIds: [sessionId, otherSessionId],
+      },
+    );
     const written = JSON.parse(readFileSync(metricsPath, "utf8").trim()) as MetricsRow;
 
     expect(row.turn_counter).toBe(3);
@@ -98,6 +131,8 @@ describe("MetricsCapture", () => {
     expect(row.deliberation_latency_ms).toBe(60);
     expect(row.borg_input_tokens).toBe(11);
     expect(row.borg_output_tokens).toBe(7);
+    expect(observed.moodSessions).toEqual([sessionId]);
+    expect(observed.tailSessions).toEqual([sessionId, otherSessionId]);
     expect(written).toEqual(row);
   });
 
@@ -105,12 +140,20 @@ describe("MetricsCapture", () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
     const capture = new MetricsCapture(metricsPath);
+    const sessionId = createSessionId();
 
-    await capture.capture(fakeBorg({ semanticNodes: 1, semanticEdges: 2 }), "turn-1", 1);
+    await capture.capture(fakeBorg({ semanticNodes: 1, semanticEdges: 2 }), "turn-1", 1, {
+      sessionId,
+      sessionIds: [sessionId],
+    });
     const row = await capture.capture(
       fakeBorg({ semanticNodes: 4, semanticEdges: 5 }),
       "turn-2",
       2,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+      },
     );
 
     expect(row.semantic_nodes_added_since_last_check).toBe(3);

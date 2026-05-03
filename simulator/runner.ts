@@ -2,7 +2,13 @@ import { performance } from "node:perf_hooks";
 
 import { BorgTransport } from "../assessor/borg-transport.js";
 import type { Scenario } from "../assessor/types.js";
-import type { BorgOpenOptions, MaintenanceCadence, ReviewQueueItem } from "../src/index.js";
+import {
+  createSessionId,
+  type BorgOpenOptions,
+  type MaintenanceCadence,
+  type ReviewQueueItem,
+  type SessionId,
+} from "../src/index.js";
 
 import { MetricsCapture } from "./metrics.js";
 import { PersonaSession } from "./persona.js";
@@ -176,6 +182,8 @@ export class SimulatorRunner {
     let resultState: SimulatorRunReport["resultState"] = "completed";
     const sessions: SimulatorSessionRecord[] = [];
     let currentSessionStartTurn = 1;
+    let currentSessionId: SessionId = createSessionId();
+    const sessionIds: SessionId[] = [currentSessionId];
     const maxSessions = this.options.maxSessions ?? MAX_SESSIONS_DEFAULT;
 
     if (!Number.isInteger(maxSessions) || maxSessions <= 0) {
@@ -205,6 +213,7 @@ export class SimulatorRunner {
         const message = await persona.nextTurn(lastBorgResponse);
         const result = await transport.chat(message, {
           audience: this.options.persona.displayName,
+          sessionId: currentSessionId,
         });
         return { turnId: result.turnId, response: result.response, emitted: result.emitted };
       };
@@ -245,7 +254,10 @@ export class SimulatorRunner {
 
         consecutiveFailures = 0;
 
-        finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn);
+        finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn, {
+          sessionId: currentSessionId,
+          sessionIds,
+        });
 
         if (!success.emitted) {
           // Borg suppressed -- in a real product this means the user
@@ -255,6 +267,7 @@ export class SimulatorRunner {
           // persona to a fresh session so the run keeps going.
           sessions.push({
             sessionIndex: sessions.length,
+            sessionId: currentSessionId,
             startedAtTurn: currentSessionStartTurn,
             endedAtTurn: turn,
             endReason: "suppression",
@@ -272,6 +285,8 @@ export class SimulatorRunner {
           persona.startNewSession(gap);
           lastBorgResponse = null;
           currentSessionStartTurn = turn + 1;
+          currentSessionId = createSessionId();
+          sessionIds.push(currentSessionId);
           continue;
         }
 
@@ -307,12 +322,10 @@ export class SimulatorRunner {
         throw new Error("Simulator completed without metrics");
       }
 
-      if (
-        resultState === "completed" &&
-        finalMetrics.turn_counter >= currentSessionStartTurn
-      ) {
+      if (resultState === "completed" && finalMetrics.turn_counter >= currentSessionStartTurn) {
         sessions.push({
           sessionIndex: sessions.length,
+          sessionId: currentSessionId,
           startedAtTurn: currentSessionStartTurn,
           endedAtTurn: finalMetrics.turn_counter,
           endReason: "run_complete",

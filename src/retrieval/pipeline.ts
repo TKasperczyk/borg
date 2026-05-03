@@ -345,7 +345,7 @@ export class RetrievalPipeline {
     const commitmentEvidence = await this.collectCommitmentEvidence(intents, options);
     const rawStreamEvidence = [
       ...streamEntriesToEvidence(citationEntries, episodeCandidates),
-      ...this.collectRecentRawStreamEvidence(intents),
+      ...this.collectRecentRawStreamEvidence(intents, options),
     ];
     const freshEvidence = [
       ...episodeEvidence,
@@ -1349,7 +1349,10 @@ export class RetrievalPipeline {
     return evidence;
   }
 
-  private collectRecentRawStreamEvidence(intents: readonly RecallIntent[]): EvidenceItem[] {
+  private collectRecentRawStreamEvidence(
+    intents: readonly RecallIntent[],
+    options: RetrievalSearchOptions,
+  ): EvidenceItem[] {
     const recentIntent = intents.find((intent) => intent.kind === "recent");
 
     if (recentIntent === undefined) {
@@ -1362,7 +1365,10 @@ export class RetrievalPipeline {
     });
 
     return adapter
-      .recent({ limit: 3 })
+      .recent({
+        limit: 3,
+        ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+      })
       .map((entry) => streamEntryToEvidence(entry, recentIntent, "recent_raw_stream"));
   }
 
