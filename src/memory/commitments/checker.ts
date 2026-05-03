@@ -18,7 +18,10 @@ export type CommitmentCheckResult = {
   revised: boolean;
   emission:
     | { kind: "message"; content: string }
-    | { kind: "suppressed"; reason: "commitment_revision_failed" };
+    | {
+        kind: "suppressed";
+        reason: "commitment_revision_failed" | "rewrite_unsupported_or_empty";
+      };
 };
 
 export type CommitmentCheckerOptions = {
@@ -266,7 +269,7 @@ export class CommitmentChecker {
     const rewritten = await this.options.llmClient.complete({
       model: this.options.rewriteModel,
       system:
-        "Your previous response violated a commitment. Rewrite it to preserve intent without violating the commitment. Return plain text only.",
+        'Rewrite only to remove or neutralize the commitment violation. Do not introduce any new facts, names, relationship claims, prior-message callbacks ("you said earlier", "we talked about"), action-completion claims ("you booked", "you already did"), or self-correction claims ("I just did the thing", "you corrected me earlier") that were not already present in the original response AND supported by the current user message or supplied evidence. Prefer deletion over explanation. If preserving the response would require unsupported memory claims, return an empty string -- the caller will treat that as suppression. Return plain text only.',
       messages: [
         {
           role: "user",
@@ -285,6 +288,19 @@ export class CommitmentChecker {
       budget: "commitment-revision",
     });
     const revisedResponse = rewritten.text.trim();
+
+    if (revisedResponse.length === 0) {
+      return {
+        passed: true,
+        violations,
+        revised: true,
+        emission: {
+          kind: "suppressed",
+          reason: "rewrite_unsupported_or_empty",
+        },
+      };
+    }
+
     const revisedViolations = await this.detectViolations(
       input.commitments,
       revisedResponse,

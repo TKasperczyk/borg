@@ -1285,13 +1285,18 @@ export class TurnOrchestrator {
             });
           }
 
-          if (actionEmission.reason === "commitment_revision_failed") {
+          if (
+            actionEmission.reason === "commitment_revision_failed" ||
+            actionEmission.reason === "rewrite_unsupported_or_empty"
+          ) {
             suppressedWorkingMemory = this.setDiscourseStopState({
               workingMemory: suppressedWorkingMemory,
               provenance: "commitment_guard",
               sourceStreamEntryId: persistedAgentEntry.id,
               reason:
-                "Commitment guard suppressed this turn because revision still violated an active commitment.",
+                actionEmission.reason === "commitment_revision_failed"
+                  ? "Commitment guard suppressed this turn because revision still violated an active commitment."
+                  : "Commitment guard suppressed this turn because rewrite produced no supported output.",
               turnId,
             });
           }
