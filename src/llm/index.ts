@@ -1089,6 +1089,10 @@ function isGoalPromotionFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "goal-promotion-extractor";
 }
 
+function isRelationalClaimAuditorFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "relational-claim-auditor";
+}
+
 function isRecallExpansionFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "recall-expansion";
 }
@@ -1179,6 +1183,24 @@ function isGoalPromotionResponse(response: FakeLLMResponse | undefined): boolean
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "EmitGoalPromotion",
+    );
+  }
+
+  return false;
+}
+
+function isRelationalClaimAuditResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "EmitClaimAudit");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "EmitClaimAudit",
     );
   }
 
@@ -1305,6 +1327,24 @@ function defaultGoalPromotionResponse(): LLMCompleteResult {
   };
 }
 
+function defaultRelationalClaimAuditResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_relational_claim_audit",
+        name: "EmitClaimAudit",
+        input: {
+          claims: [],
+        },
+      },
+    ],
+  };
+}
+
 export class FakeLLMClient implements LLMClient {
   private readonly usageSink?: TokenUsageSink;
   readonly requests: LLMCompleteOptions[] = [];
@@ -1366,6 +1406,13 @@ export class FakeLLMClient implements LLMClient {
       !isGoalPromotionResponse(response)
     ) {
       return defaultGoalPromotionResponse();
+    }
+
+    if (
+      isRelationalClaimAuditorFallbackRequest(options) &&
+      !isRelationalClaimAuditResponse(response)
+    ) {
+      return defaultRelationalClaimAuditResponse();
     }
 
     this.responses.shift();

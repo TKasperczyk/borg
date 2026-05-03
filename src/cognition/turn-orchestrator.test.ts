@@ -230,6 +230,45 @@ function createCommitmentJudgeResponse(
   };
 }
 
+function createClaimAuditResponse(
+  claims: Array<{
+    kind:
+      | "relational_identity"
+      | "callback"
+      | "session_scoped"
+      | "action_completion"
+      | "self_correction";
+    asserted: string;
+    cited_stream_entry_ids?: string[];
+    cited_episode_ids?: string[];
+    cited_commitment_ids?: string[];
+    quoted_evidence_text?: string | null;
+  }>,
+) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_claim_audit",
+        name: "EmitClaimAudit",
+        input: {
+          claims: claims.map((claim) => ({
+            kind: claim.kind,
+            asserted: claim.asserted,
+            cited_stream_entry_ids: claim.cited_stream_entry_ids ?? [],
+            cited_episode_ids: claim.cited_episode_ids ?? [],
+            cited_commitment_ids: claim.cited_commitment_ids ?? [],
+            quoted_evidence_text: claim.quoted_evidence_text ?? null,
+          })),
+        },
+      },
+    ],
+  };
+}
+
 function createCorrectivePreferenceResponse(input: {
   classification: "corrective_preference" | "none";
   type?: "preference" | "rule" | "boundary" | null;
@@ -1425,6 +1464,79 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       });
       expect(activeStop).toMatchObject({
         provenance: "commitment_guard",
+        source_stream_entry_id: suppressionEntry?.id,
+        since_turn: 1,
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("suppresses when a commitment rewrite fabricates a self-correction", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_160_000);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const commitment = borg.commitments.add({
+        type: "boundary",
+        directive: "Do not call the user's partner Sarah.",
+        priority: 10,
+        provenance: { kind: "manual" },
+      });
+
+      llm.pushResponse({
+        text: "Sarah is your partner, and I can help with that.",
+        input_tokens: 8,
+        output_tokens: 4,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse(
+        createCommitmentJudgeResponse([
+          {
+            commitment_id: commitment.id,
+            reason: "Invents or repeats Sarah as the partner name.",
+          },
+        ]),
+      );
+      llm.pushResponse({
+        text: "I will avoid that name; you corrected me earlier in this conversation.",
+        input_tokens: 8,
+        output_tokens: 4,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+      llm.pushResponse(createCommitmentJudgeResponse([]));
+      llm.pushResponse(
+        createClaimAuditResponse([
+          {
+            kind: "self_correction",
+            asserted: "you corrected me earlier in this conversation",
+          },
+        ]),
+      );
+
+      const result = await borg.turn({
+        userMessage: "Please help me plan dinner.",
+      });
+      const entries = borg.stream.tail(10);
+      const suppressionEntry = entries.find((entry) => entry.kind === "agent_suppressed");
+      const activeStop = borg.workmem.load().discourse_state?.stop_until_substantive_content;
+
+      expect(result.emitted).toBe(false);
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "relational_guard_self_correction",
+      });
+      expect(entries.some((entry) => entry.kind === "agent_msg")).toBe(false);
+      expect(suppressionEntry?.content).toMatchObject({
+        reason: "relational_guard_self_correction",
+      });
+      expect(activeStop).toMatchObject({
+        provenance: "relational_guard",
         source_stream_entry_id: suppressionEntry?.id,
         since_turn: 1,
       });

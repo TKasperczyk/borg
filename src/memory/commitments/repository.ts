@@ -552,6 +552,28 @@ export class CommitmentRepository {
     });
   }
 
+  findByEvidenceStreamEntryId(entryId: StreamEntryId): boolean {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT source_stream_entry_ids
+          FROM commitments
+          WHERE provenance_kind = 'online'
+            AND provenance_process = 'corrective-preference-extractor'
+            AND source_stream_entry_ids IS NOT NULL
+        `,
+      )
+      .all() as Record<string, unknown>[];
+
+    return rows.some((row) =>
+      parseJsonArray<StreamEntryId>(
+        String(row.source_stream_entry_ids ?? "[]"),
+        "source_stream_entry_ids",
+        COMMITMENT_JSON_ARRAY_CODEC,
+      ).includes(entryId),
+    );
+  }
+
   /**
    * @internal Prefer IdentityService.updateCommitment() so episode-backed
    * established records cannot bypass review gating.
