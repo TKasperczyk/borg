@@ -260,6 +260,47 @@ describe("commitment repository", () => {
     }
   });
 
+  it("finds corrective preferences by evidence stream entry id", () => {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
+    });
+    const clock = new FixedClock(1_000);
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const correctiveEntryId = createStreamEntryId();
+      const unrelatedEntryId = createStreamEntryId();
+      commitments.add({
+        type: "preference",
+        directive: "Do not perform corrected behavior.",
+        priority: 7,
+        provenance: {
+          kind: "online",
+          process: "corrective-preference-extractor",
+        },
+        sourceStreamEntryIds: [correctiveEntryId],
+      });
+      commitments.add({
+        type: "preference",
+        directive: "Ordinary online preference.",
+        priority: 5,
+        provenance: {
+          kind: "online",
+          process: "goal-promotion-extractor",
+        },
+        sourceStreamEntryIds: [unrelatedEntryId],
+      });
+
+      expect(commitments.findByEvidenceStreamEntryId(correctiveEntryId)).toBe(true);
+      expect(commitments.findByEvidenceStreamEntryId(unrelatedEntryId)).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
   it("applies commitments made to an entity only for that entity by default", () => {
     const db = openDatabase(":memory:", {
       migrations: composeMigrations(commitmentMigrations, identityMigrations),

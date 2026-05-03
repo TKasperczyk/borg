@@ -30,7 +30,7 @@ import type { ExecutiveFocus, ExecutiveStepsRepository } from "../executive/inde
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
 import type { Reflector } from "./reflection/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
-import type { RetrievalPipeline } from "../retrieval/index.js";
+import type { RetrievalPipeline, RetrievedEpisode } from "../retrieval/index.js";
 import {
   buildSelfScoringFeatureSet,
   selectActiveScoringValues,
@@ -62,7 +62,7 @@ import { ReviewQueueRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import { EpisodicRepository, isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
-import { StreamReader, StreamWriter } from "../stream/index.js";
+import { StreamReader, StreamWriter, type StreamEntry } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import { SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
@@ -89,6 +89,15 @@ import {
   setStopUntilSubstantiveContent,
 } from "./generation/discourse-state.js";
 import { GenerationGate } from "./generation/generation-gate.js";
+import {
+  RelationalClaimGuard,
+  commitmentToRelationalGuardEvidence,
+  correctivePreferencesFromCommitments,
+  retrievedEpisodeToRelationalGuardEvidence,
+  streamEntryToRelationalGuardEvidence,
+  type RelationalGuardCurrentUserMessage,
+  type RelationalGuardStreamEvidence,
+} from "./generation/relational-guard.js";
 import { StopCommitmentExtractor } from "./generation/self-stop-commitment.js";
 
 function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>): GoalRecord[] {
@@ -324,6 +333,7 @@ export class TurnOrchestrator {
   private readonly turnRetrievalCoordinator: TurnRetrievalCoordinator;
   private readonly commitmentGuardRunner: CommitmentGuardRunner;
   private readonly pendingProceduralAttemptTracker: PendingProceduralAttemptTracker;
+  private readonly createStreamReader: (sessionId: SessionId) => StreamReader;
 
   constructor(private readonly options: TurnOrchestratorOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -334,7 +344,7 @@ export class TurnOrchestrator {
       new SessionLock({
         dataDir: options.config.dataDir,
       });
-    const createStreamReader =
+    this.createStreamReader =
       options.createStreamReader ??
       ((sessionId) =>
         new StreamReader({
@@ -348,7 +358,7 @@ export class TurnOrchestrator {
       tracer: this.tracer,
       getAffectiveSignalDetector: () => options.affectiveSignalDetector,
       turnContextCompiler,
-      createStreamReader,
+      createStreamReader: this.createStreamReader,
     });
     this.turnOpeningPersistence = new TurnOpeningPersistence({
       workingMemoryStore: options.workingMemoryStore,
@@ -701,6 +711,68 @@ export class TurnOrchestrator {
     } catch (error) {
       await this.appendHookFailureEvent(streamWriter, "stream_ingestion_pre_turn_catchup", error);
     }
+  }
+
+  private async loadRelationalGuardStreamEvidence(
+    sessionId: SessionId,
+  ): Promise<RelationalGuardStreamEvidence[]> {
+    const reader = this.createStreamReader(sessionId);
+    const entries = new Map<StreamEntryId, RelationalGuardStreamEvidence>();
+
+    for await (const entry of reader.iterate()) {
+      const evidence = streamEntryToRelationalGuardEvidence(entry);
+
+      if (evidence !== null) {
+        entries.set(evidence.entry_id, evidence);
+      }
+    }
+
+    return [...entries.values()];
+  }
+
+  private async runRelationalGuard(input: {
+    llmClient: LLMClient;
+    turnId: string;
+    response: string;
+    userMessage: string;
+    sessionId: SessionId;
+    persistedUserEntry?: StreamEntry;
+    retrievedEpisodes: readonly RetrievedEpisode[];
+    activeCommitments: readonly CommitmentRecord[];
+  }): Promise<PendingTurnEmission> {
+    const currentUserMessage: RelationalGuardCurrentUserMessage | null =
+      input.persistedUserEntry === undefined
+        ? null
+        : {
+            text: input.userMessage,
+            stream_entry_id: input.persistedUserEntry.id,
+            ts: input.persistedUserEntry.timestamp,
+          };
+    const guard = new RelationalClaimGuard({
+      llmClient: input.llmClient,
+      auditModel: this.options.config.anthropic.models.background,
+      rewriteModel: this.options.config.anthropic.models.cognition,
+      tracer: this.tracer,
+      hasCorrectivePreferenceEvidence: (entryId) =>
+        this.options.commitmentRepository.findByEvidenceStreamEntryId(entryId),
+    });
+    const result = await guard.run({
+      turnId: input.turnId,
+      response: input.response,
+      currentSessionId: input.sessionId,
+      currentTurnTs: this.clock.now(),
+      evidence: {
+        current_user_message: currentUserMessage,
+        current_session_stream_entries: await this.loadRelationalGuardStreamEvidence(
+          input.sessionId,
+        ),
+        retrieved_episodes: input.retrievedEpisodes.map(retrievedEpisodeToRelationalGuardEvidence),
+        active_commitments: input.activeCommitments.map(commitmentToRelationalGuardEvidence),
+        corrective_preferences: correctivePreferencesFromCommitments(input.activeCommitments),
+      },
+    });
+
+    return result.emission;
   }
 
   async run(input: TurnInput): Promise<TurnResult> {
@@ -1237,9 +1309,23 @@ export class TurnOrchestrator {
                 });
 
                 const commitmentEmission = commitmentCheck.emission;
+                const guardedEmission =
+                  commitmentEmission.kind === "suppressed"
+                    ? commitmentEmission
+                    : await this.runRelationalGuard({
+                        llmClient,
+                        turnId,
+                        response: commitmentEmission.content,
+                        userMessage: input.userMessage,
+                        sessionId,
+                        persistedUserEntry: persistedUserEntry ?? undefined,
+                        retrievedEpisodes,
+                        activeCommitments: applicableCommitments,
+                      });
+
                 return performAction({
-                  response: commitmentEmission.kind === "message" ? commitmentEmission.content : "",
-                  emission: commitmentEmission,
+                  response: guardedEmission.kind === "message" ? guardedEmission.content : "",
+                  emission: guardedEmission,
                   toolCalls: deliberation.tool_calls,
                   intents: deliberation.intents,
                   workingMemory,
@@ -1297,6 +1383,22 @@ export class TurnOrchestrator {
                 actionEmission.reason === "commitment_revision_failed"
                   ? "Commitment guard suppressed this turn because revision still violated an active commitment."
                   : "Commitment guard suppressed this turn because rewrite produced no supported output.",
+              turnId,
+            });
+          }
+
+          if (
+            actionEmission.reason === "relational_guard_self_correction" ||
+            actionEmission.reason === "relational_guard_rewrite_failed"
+          ) {
+            suppressedWorkingMemory = this.setDiscourseStopState({
+              workingMemory: suppressedWorkingMemory,
+              provenance: "relational_guard",
+              sourceStreamEntryId: persistedAgentEntry.id,
+              reason:
+                actionEmission.reason === "relational_guard_self_correction"
+                  ? "Relational guard suppressed this turn because the response contained an unsupported self-correction claim."
+                  : "Relational guard suppressed this turn because unsupported relational claims remained after one rewrite.",
               turnId,
             });
           }

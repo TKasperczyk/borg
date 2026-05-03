@@ -120,7 +120,10 @@ export class ScriptedDebugLLM implements LLMClient {
   private readonly inner = new FakeLLMClient();
 
   async complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
-    if (options.budget === "corrective-preference-extractor") {
+    if (
+      options.budget === "corrective-preference-extractor" ||
+      options.budget === "relational-claim-auditor"
+    ) {
       return this.respond(options);
     }
 
@@ -153,6 +156,12 @@ export class ScriptedDebugLLM implements LLMClient {
     if (options.budget === "goal-promotion-extractor") {
       return buildToolResult(options, {
         promotions: [],
+      });
+    }
+
+    if (options.budget === "relational-claim-auditor") {
+      return buildToolResult(options, {
+        claims: [],
       });
     }
 

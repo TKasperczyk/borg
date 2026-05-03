@@ -32,6 +32,7 @@ export type TurnTraceEventName =
   | "goal_promotion_extractor_degraded"
   | "open_question_resolution_degraded"
   | "commitment_check"
+  | "relational_claim_guard"
   | "reflection_emitted";
 
 export type TurnTraceData = {

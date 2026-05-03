@@ -7,7 +7,9 @@ export type GenerationSuppressionReason =
   | "no_output_tool"
   | "s2_planner_no_output"
   | "commitment_revision_failed"
-  | "rewrite_unsupported_or_empty";
+  | "rewrite_unsupported_or_empty"
+  | "relational_guard_self_correction"
+  | "relational_guard_rewrite_failed";
 
 export type PendingTurnEmission =
   | {
