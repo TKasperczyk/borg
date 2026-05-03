@@ -9,6 +9,7 @@ import type { BorgDependencies } from "../borg/types.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { SelfSnapshot } from "./deliberation/deliberator.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
+import { RelationalClaimGuard } from "./generation/relational-guard.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
 import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
 import {
@@ -244,6 +245,7 @@ function createClaimAuditResponse(
     cited_commitment_ids?: string[];
     cited_action_ids?: string[];
     quoted_evidence_text?: string | null;
+    callback_scope?: "current_turn" | "prior_turn";
   }>,
 ) {
   return {
@@ -264,6 +266,7 @@ function createClaimAuditResponse(
             cited_commitment_ids: claim.cited_commitment_ids ?? [],
             cited_action_ids: claim.cited_action_ids ?? [],
             quoted_evidence_text: claim.quoted_evidence_text ?? null,
+            ...(claim.callback_scope === undefined ? {} : { callback_scope: claim.callback_scope }),
           })),
         },
       },
@@ -1545,6 +1548,62 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         since_turn: 1,
       });
     } finally {
+      await borg.close();
+    }
+  });
+
+  it("passes the persisted user entry timestamp as the relational guard turn boundary", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    class AutoAdvanceClock extends ManualClock {
+      override now(): number {
+        const value = super.now();
+
+        super.advance(5);
+
+        return value;
+      }
+    }
+    const clock = new AutoAdvanceClock(1_800_000_170_000);
+    const llm = new FakeLLMClient({
+      responses: ["As you said, the invoice is done.", createEmptyReflectionResponse()],
+    });
+    const guardRunSpy = vi
+      .spyOn(RelationalClaimGuard.prototype, "run")
+      .mockImplementation(async (input) => {
+        const currentUserMessage = input.evidence.current_user_message;
+
+        expect(currentUserMessage).toMatchObject({
+          text: "The invoice is done.",
+        });
+        expect(input.currentTurnTs).toBe(currentUserMessage?.ts);
+        expect(clock.now()).toBeGreaterThan(input.currentTurnTs);
+        expect(input.evidence.current_user_message).toMatchObject({
+          text: "The invoice is done.",
+        });
+
+        return {
+          emission: {
+            kind: "message",
+            content: input.response,
+          },
+          claims: [],
+          validations: [],
+          verdict: "passed",
+        };
+      });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const result = await borg.turn({
+        userMessage: "The invoice is done.",
+      });
+
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("As you said, the invoice is done.");
+      expect(guardRunSpy).toHaveBeenCalledOnce();
+    } finally {
+      guardRunSpy.mockRestore();
       await borg.close();
     }
   });

@@ -23,7 +23,7 @@ import {
   validateRelationalClaims,
 } from "./relational-guard.js";
 
-function claimAuditResponse(claims: readonly RelationalClaimAuditClaim[]): LLMCompleteResult {
+function rawClaimAuditResponse(claims: readonly unknown[]): LLMCompleteResult {
   return {
     text: "",
     input_tokens: 1,
@@ -41,6 +41,10 @@ function claimAuditResponse(claims: readonly RelationalClaimAuditClaim[]): LLMCo
   };
 }
 
+function claimAuditResponse(claims: readonly RelationalClaimAuditClaim[]): LLMCompleteResult {
+  return rawClaimAuditResponse(claims);
+}
+
 function makeClaim(
   overrides: Partial<RelationalClaimAuditClaim> & Pick<RelationalClaimAuditClaim, "kind">,
 ): RelationalClaimAuditClaim {
@@ -52,6 +56,8 @@ function makeClaim(
     cited_commitment_ids: overrides.cited_commitment_ids ?? [],
     cited_action_ids: overrides.cited_action_ids ?? [],
     quoted_evidence_text: overrides.quoted_evidence_text ?? null,
+    callback_scope:
+      overrides.callback_scope ?? (overrides.kind === "callback" ? "prior_turn" : null),
     subject_entity_id: overrides.subject_entity_id ?? null,
     slot_key: overrides.slot_key ?? null,
     relational_slot_value: overrides.relational_slot_value ?? null,
@@ -98,12 +104,13 @@ function validate(
   claims: readonly RelationalClaimAuditClaim[],
   evidence: RelationalGuardEvidenceManifest,
   currentSessionId: SessionId = DEFAULT_SESSION_ID,
+  currentTurnTs = 2_000,
 ) {
   return validateRelationalClaims({
     claims,
     evidence,
     currentSessionId,
-    currentTurnTs: 2_000,
+    currentTurnTs,
     hasCorrectivePreferenceEvidence: () => false,
   });
 }
@@ -285,6 +292,59 @@ describe("validateRelationalClaims", () => {
     expect(summary.unsupported).toEqual([]);
   });
 
+  it("accepts current-turn callbacks that cite the current user message", () => {
+    const currentEntryId = createStreamEntryId();
+    const currentTurnTs = 1_995;
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "callback",
+          asserted: "As you said, the invoice is done.",
+          callback_scope: "current_turn",
+          cited_stream_entry_ids: [currentEntryId],
+        }),
+      ],
+      baseEvidence({
+        current_user_message: {
+          text: "The invoice is done.",
+          stream_entry_id: currentEntryId,
+          ts: currentTurnTs,
+        },
+      }),
+      DEFAULT_SESSION_ID,
+      currentTurnTs,
+    );
+
+    expect(summary.unsupported).toEqual([]);
+  });
+
+  it("rejects prior-turn callbacks that cite the current user message", () => {
+    const currentEntryId = createStreamEntryId();
+    const currentTurnTs = 1_995;
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "callback",
+          asserted: "You said earlier that the invoice is done.",
+          callback_scope: "prior_turn",
+          cited_stream_entry_ids: [currentEntryId],
+        }),
+      ],
+      baseEvidence({
+        current_user_message: {
+          text: "The invoice is done.",
+          stream_entry_id: currentEntryId,
+          ts: currentTurnTs,
+        },
+      }),
+      DEFAULT_SESSION_ID,
+      currentTurnTs,
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("prior-only evidence");
+  });
+
   it("rejects callbacks that cite suppressed or non-prior entries", () => {
     const suppressedEntry = streamEvidence({
       kind: "agent_suppressed",
@@ -350,7 +410,7 @@ describe("validateRelationalClaims", () => {
     expect(summary.unsupported[0]?.reason).toContain("outside the current session");
   });
 
-  it("allows session-scoped claims to cite the current user message but keeps callbacks prior-only", () => {
+  it("allows session-scoped claims to cite the current user message but keeps prior-turn callbacks prior-only", () => {
     const currentEntryId = createStreamEntryId();
     const evidence = baseEvidence({
       current_user_message: {
@@ -382,7 +442,7 @@ describe("validateRelationalClaims", () => {
 
     expect(sessionScoped.unsupported).toEqual([]);
     expect(callback.unsupported).toHaveLength(1);
-    expect(callback.unsupported[0]?.reason).toContain("not before");
+    expect(callback.unsupported[0]?.reason).toContain("prior-only evidence");
   });
 
   it("rejects action completion claims without matching completed action evidence", () => {
@@ -481,6 +541,40 @@ describe("validateRelationalClaims", () => {
     expect(unsupported.unsupported[0]?.reason).toContain("no corrective preference evidence");
   });
 
+  it("rejects self-correction claims that cite the current user message", () => {
+    const currentEntryId = createStreamEntryId();
+    const currentTurnTs = 1_995;
+    const correctiveCommitmentId = createCommitmentId();
+    const summary = validateRelationalClaims({
+      claims: [
+        makeClaim({
+          kind: "self_correction",
+          asserted: "You corrected me earlier.",
+          cited_stream_entry_ids: [currentEntryId],
+        }),
+      ],
+      evidence: baseEvidence({
+        current_user_message: {
+          text: "Stop calling it the draft invoice.",
+          stream_entry_id: currentEntryId,
+          ts: currentTurnTs,
+        },
+        corrective_preferences: [
+          {
+            commitment_id: correctiveCommitmentId,
+            source_entry_id: currentEntryId,
+          },
+        ],
+      }),
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs,
+      hasCorrectivePreferenceEvidence: () => true,
+    });
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("prior-only evidence");
+  });
+
   it("rejects stream and episode evidence as action completion fallback", () => {
     const episodeId = createEpisodeId();
     const streamEntry = streamEvidence({
@@ -525,6 +619,81 @@ describe("validateRelationalClaims", () => {
 });
 
 describe("RelationalClaimGuard", () => {
+  it("parses omitted citation arrays and quoted evidence with schema defaults", async () => {
+    const streamEntry = streamEvidence({
+      ts: 1_000,
+      content: "I mentioned the invoice earlier.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        rawClaimAuditResponse([
+          {
+            kind: "callback",
+            asserted: "You mentioned the invoice earlier.",
+            callback_scope: "prior_turn",
+            cited_stream_entry_ids: [streamEntry.entry_id],
+          },
+        ]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-schema-defaults",
+      response: "You mentioned the invoice earlier.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence({
+        current_session_stream_entries: [streamEntry],
+      }),
+    });
+
+    expect(result.verdict).toBe("passed");
+    expect(result.claims[0]).toMatchObject({
+      cited_episode_ids: [],
+      cited_commitment_ids: [],
+      cited_action_ids: [],
+      quoted_evidence_text: null,
+    });
+  });
+
+  it("uses a distinct suppression reason when the initial audit fails", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        rawClaimAuditResponse([
+          {
+            kind: "callback",
+            asserted: "You mentioned the invoice earlier.",
+          },
+        ]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-audit-failed",
+      response: "You mentioned the invoice earlier.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "relational_guard_audit_failed",
+    });
+  });
+
   it("suppresses fabricated self-correction claims without attempting a rewrite", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -618,6 +787,125 @@ describe("RelationalClaimGuard", () => {
     ]);
   });
 
+  it("uses a distinct suppression reason when rewrite returns empty text", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "callback",
+            asserted: "You mentioned that earlier.",
+          }),
+        ]),
+        {
+          text: "   ",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-rewrite-empty",
+      response: "You mentioned that earlier.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "relational_guard_rewrite_empty",
+    });
+  });
+
+  it("uses a distinct suppression reason when the rewrite call fails", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "callback",
+            asserted: "You mentioned that earlier.",
+          }),
+        ]),
+        () => {
+          throw new Error("rewrite transport failed");
+        },
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-rewrite-call-failed",
+      response: "You mentioned that earlier.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "relational_guard_rewrite_call_failed",
+    });
+  });
+
+  it("uses a distinct suppression reason when re-audit fails", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "callback",
+            asserted: "You mentioned that earlier.",
+          }),
+        ]),
+        {
+          text: "Neutralized response.",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        rawClaimAuditResponse([
+          {
+            kind: "callback",
+            asserted: "You mentioned that earlier.",
+          },
+        ]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-reaudit-failed",
+      response: "You mentioned that earlier.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "relational_guard_reaudit_failed",
+    });
+  });
+
   it("suppresses when unsupported claims remain after the single rewrite", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -659,7 +947,7 @@ describe("RelationalClaimGuard", () => {
 
     expect(result.emission).toEqual({
       kind: "suppressed",
-      reason: "relational_guard_rewrite_failed",
+      reason: "relational_guard_rewrite_unsupported",
     });
   });
 });

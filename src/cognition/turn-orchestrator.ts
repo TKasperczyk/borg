@@ -819,7 +819,7 @@ export class TurnOrchestrator {
       turnId: input.turnId,
       response: input.response,
       currentSessionId: input.sessionId,
-      currentTurnTs: this.clock.now(),
+      currentTurnTs: input.persistedUserEntry?.timestamp ?? this.clock.now(),
       evidence: {
         current_user_message: currentUserMessage,
         current_session_stream_entries: await this.loadRelationalGuardStreamEvidence(
@@ -1495,20 +1495,26 @@ export class TurnOrchestrator {
             });
           }
 
-          if (
-            actionEmission.reason === "relational_guard_self_correction" ||
-            actionEmission.reason === "relational_guard_rewrite_failed"
-          ) {
-            suppressedWorkingMemory = this.setDiscourseStopState({
-              workingMemory: suppressedWorkingMemory,
-              provenance: "relational_guard",
-              sourceStreamEntryId: persistedAgentEntry.id,
-              reason:
-                actionEmission.reason === "relational_guard_self_correction"
-                  ? "Relational guard suppressed this turn because the response contained an unsupported self-correction claim."
-                  : "Relational guard suppressed this turn because unsupported relational claims remained after one rewrite.",
-              turnId,
-            });
+          switch (actionEmission.reason) {
+            case "relational_guard_self_correction":
+            case "relational_guard_audit_failed":
+            case "relational_guard_rewrite_call_failed":
+            case "relational_guard_rewrite_empty":
+            case "relational_guard_reaudit_failed":
+            case "relational_guard_rewrite_unsupported":
+              suppressedWorkingMemory = this.setDiscourseStopState({
+                workingMemory: suppressedWorkingMemory,
+                provenance: "relational_guard",
+                sourceStreamEntryId: persistedAgentEntry.id,
+                reason:
+                  actionEmission.reason === "relational_guard_self_correction"
+                    ? "Relational guard suppressed this turn because the response contained an unsupported self-correction claim."
+                    : "Relational guard suppressed this turn because it could not produce a supported relational response.",
+                turnId,
+              });
+              break;
+            default:
+              break;
           }
 
           if (this.tracer.enabled) {
