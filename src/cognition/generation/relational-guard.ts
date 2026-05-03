@@ -7,12 +7,14 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import type { ActionRecord } from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
 import { neutralPhraseForSlotKey } from "../../memory/relational-slots/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import type { StreamEntry, StreamEntryKind } from "../../stream/index.js";
 import type {
+  ActionId,
   CommitmentId,
   EntityId,
   EpisodeId,
@@ -34,6 +36,8 @@ export type RelationalClaimKind = (typeof RELATIONAL_CLAIM_KINDS)[number];
 
 const CLAIM_AUDIT_TOOL_NAME = "EmitClaimAudit";
 
+const auditActionIdSchema = z.string().min(1).transform((value) => value as ActionId);
+
 const relationalClaimSchema = z
   .object({
     kind: z.enum(RELATIONAL_CLAIM_KINDS),
@@ -41,6 +45,7 @@ const relationalClaimSchema = z
     cited_stream_entry_ids: z.array(z.string().min(1)),
     cited_episode_ids: z.array(z.string().min(1)),
     cited_commitment_ids: z.array(z.string().min(1)),
+    cited_action_ids: z.array(auditActionIdSchema),
     quoted_evidence_text: z.string().min(1).nullable(),
     subject_entity_id: z.string().min(1).nullable().default(null),
     slot_key: z.string().min(1).nullable().default(null),
@@ -71,7 +76,8 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "- self_correction: assertions that Borg or the assistant corrected itself, was corrected by the user, or already fixed a prior mistake.",
   "Return an empty claims array when the response contains none of these claims.",
   "For every extracted claim, cite only evidence IDs present in the supplied evidence manifest.",
-  "For relational_identity claims, also populate subject_entity_id, slot_key, and relational_slot_value when the claim maps to a supplied relational slot.",
+  "For relational_identity claims, also populate subject_entity_id, slot_key, and relational_slot_value when the claim maps to a supplied relational slot. When relational_slots include contested or quarantined slots for that subject, subject_entity_id and slot_key are required.",
+  "For action_completion claims, populate cited_action_ids with completed action_id values from recent_completed_actions. Stream, episode, and commitment IDs do not support action_completion claims.",
   "Do not infer support yourself beyond selecting cited handles. The validator will check handles deterministically.",
 ].join("\n");
 
@@ -112,6 +118,13 @@ export type RelationalGuardCorrectivePreferenceEvidence = {
   source_entry_id: StreamEntryId;
 };
 
+export type RelationalGuardActionEvidence = {
+  action_id: ActionId;
+  description: string;
+  audience_entity_id: EntityId | null;
+  completed_at: number;
+};
+
 export type RelationalGuardSlotEvidence = {
   slot_id: RelationalSlotId;
   subject_entity_id: EntityId;
@@ -129,6 +142,7 @@ export type RelationalGuardEvidenceManifest = {
   active_commitments: readonly RelationalGuardCommitmentEvidence[];
   corrective_preferences: readonly RelationalGuardCorrectivePreferenceEvidence[];
   relational_slots: readonly RelationalGuardSlotEvidence[];
+  recent_completed_actions: readonly RelationalGuardActionEvidence[];
 };
 
 export type RelationalClaimAuditClaim = z.infer<typeof relationalClaimSchema>;
@@ -261,6 +275,17 @@ export function correctivePreferencesFromCommitments(
   return preferences;
 }
 
+export function actionRecordToRelationalGuardEvidence(
+  action: ActionRecord,
+): RelationalGuardActionEvidence {
+  return {
+    action_id: action.id,
+    description: action.description,
+    audience_entity_id: action.audience_entity_id,
+    completed_at: action.completed_at ?? action.updated_at,
+  };
+}
+
 export function relationalSlotToRelationalGuardEvidence(
   slot: RelationalSlot,
 ): RelationalGuardSlotEvidence {
@@ -297,6 +322,7 @@ function manifestForPrompt(evidence: RelationalGuardEvidenceManifest): unknown {
     active_commitments: evidence.active_commitments,
     corrective_preferences: evidence.corrective_preferences,
     relational_slots: evidence.relational_slots,
+    recent_completed_actions: evidence.recent_completed_actions,
   };
 }
 
@@ -362,14 +388,6 @@ function buildStreamEvidenceIndex(
   return entries;
 }
 
-function buildEpisodeEvidenceIndex(evidence: RelationalGuardEvidenceManifest): Set<string> {
-  return new Set(evidence.retrieved_episodes.map((episode) => episode.episode_id));
-}
-
-function buildCommitmentEvidenceIndex(evidence: RelationalGuardEvidenceManifest): Set<string> {
-  return new Set(evidence.active_commitments.map((commitment) => commitment.commitment_id));
-}
-
 function buildRelationalSlotIndex(
   evidence: RelationalGuardEvidenceManifest,
 ): Map<string, RelationalGuardSlotEvidence> {
@@ -380,6 +398,22 @@ function buildRelationalSlotIndex(
   }
 
   return slots;
+}
+
+function buildActionEvidenceIndex(
+  evidence: RelationalGuardEvidenceManifest,
+): Map<string, RelationalGuardActionEvidence> {
+  const actions = new Map<string, RelationalGuardActionEvidence>();
+
+  for (const action of evidence.recent_completed_actions) {
+    actions.set(action.action_id, action);
+  }
+
+  return actions;
+}
+
+function isConstrainedSlot(slot: RelationalGuardSlotEvidence): boolean {
+  return slot.state === "contested" || slot.state === "quarantined";
 }
 
 function streamIdsExistInCurrentSession(input: {
@@ -423,11 +457,13 @@ function validateQuotedEvidence(
   return found ? null : "quoted evidence text does not appear verbatim in the cited stream entry";
 }
 
-function validateCallbackScope(input: {
+function validateSessionCitationScope(input: {
   claim: RelationalClaimAuditClaim;
   streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
+  currentUserMessage: RelationalGuardCurrentUserMessage | null;
   currentSessionId: string;
   currentTurnTs: number;
+  allowCurrentUserMessage: boolean;
 }): { entries: RelationalGuardStreamEvidence[]; reason: string | null } {
   if (input.claim.cited_stream_entry_ids.length === 0) {
     return {
@@ -457,7 +493,12 @@ function validateCallbackScope(input: {
       };
     }
 
-    if (entry.ts >= input.currentTurnTs) {
+    const isCurrentUserMessage =
+      input.allowCurrentUserMessage &&
+      input.currentUserMessage?.stream_entry_id !== null &&
+      input.currentUserMessage?.stream_entry_id === entry.entry_id;
+
+    if (entry.ts >= input.currentTurnTs && !isCurrentUserMessage) {
       return {
         entries: resolved,
         reason: `cited stream entry ${entry.entry_id} is not before the current turn`,
@@ -475,6 +516,7 @@ function validateRelationalIdentityClaim(input: {
   claim: RelationalClaimAuditClaim;
   streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
   relationalSlots: ReadonlyMap<string, RelationalGuardSlotEvidence>;
+  constrainedSlots: readonly RelationalGuardSlotEvidence[];
   currentSessionId: string;
 }): string | null {
   if (input.claim.cited_stream_entry_ids.length === 0) {
@@ -497,6 +539,14 @@ function validateRelationalIdentityClaim(input: {
 
   const subjectEntityId = input.claim.subject_entity_id;
   const slotKey = input.claim.slot_key;
+  const hasConstrainedSlotForClaimSubject =
+    subjectEntityId === null
+      ? input.constrainedSlots.length > 0
+      : input.constrainedSlots.some((slot) => slot.subject_entity_id === subjectEntityId);
+
+  if ((subjectEntityId === null || slotKey === null) && hasConstrainedSlotForClaimSubject) {
+    return "relational identity claim must specify slot when constrained slots exist for the cited entity";
+  }
 
   if (subjectEntityId !== null && slotKey !== null) {
     const slot = input.relationalSlots.get(`${subjectEntityId}:${slotKey}`);
@@ -509,12 +559,10 @@ function validateRelationalIdentityClaim(input: {
       const assertedValue = input.claim.relational_slot_value;
 
       if (assertedValue === null) {
-        return `relational slot ${slot.slot_key} is contested and the asserted value was not isolated`;
+        return `relational slot ${slot.slot_key} is contested; use ${slot.neutral_phrase}`;
       }
 
-      if (assertedValue.trim() !== slot.value) {
-        return `relational slot ${slot.slot_key} is contested for ${assertedValue}`;
-      }
+      return `relational slot ${slot.slot_key} is contested for ${assertedValue}; use ${slot.neutral_phrase}`;
     }
   }
 
@@ -523,42 +571,35 @@ function validateRelationalIdentityClaim(input: {
 
 function validateActionCompletionClaim(input: {
   claim: RelationalClaimAuditClaim;
-  streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
-  episodes: ReadonlySet<string>;
-  commitments: ReadonlySet<string>;
+  completedActions: ReadonlyMap<string, RelationalGuardActionEvidence>;
 }): string | null {
-  const citedStreamEntries = input.claim.cited_stream_entry_ids
-    .map((entryId) => input.streamEntries.get(entryId))
-    .filter((entry): entry is RelationalGuardStreamEvidence => entry !== undefined);
-  const hasStreamEvidence = citedStreamEntries.length > 0;
-  const hasEpisodeEvidence = input.claim.cited_episode_ids.some((episodeId) =>
-    input.episodes.has(episodeId),
-  );
-  const hasCommitmentEvidence = input.claim.cited_commitment_ids.some((commitmentId) =>
-    input.commitments.has(commitmentId),
+  const hasCompletedAction = input.claim.cited_action_ids.some((actionId) =>
+    input.completedActions.has(actionId),
   );
 
-  // TODO(6c-4): require a completed ActionRecord for the asserted action once ActionRecord lands.
-  if (!hasStreamEvidence && !hasEpisodeEvidence && !hasCommitmentEvidence) {
-    return "action completion claim has no existing cited evidence handle";
+  if (!hasCompletedAction) {
+    return "action completion claim has no cited completed action record";
   }
 
-  return validateQuotedEvidence(input.claim, citedStreamEntries);
+  return null;
 }
 
 function validateSelfCorrectionClaim(input: {
   claim: RelationalClaimAuditClaim;
   streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
+  currentUserMessage: RelationalGuardCurrentUserMessage | null;
   currentSessionId: string;
   currentTurnTs: number;
   correctivePreferences: ReadonlySet<string>;
   hasCorrectivePreferenceEvidence: (entryId: StreamEntryId) => boolean;
 }): string | null {
-  const callback = validateCallbackScope({
+  const callback = validateSessionCitationScope({
     claim: input.claim,
     streamEntries: input.streamEntries,
+    currentUserMessage: input.currentUserMessage,
     currentSessionId: input.currentSessionId,
     currentTurnTs: input.currentTurnTs,
+    allowCurrentUserMessage: false,
   });
 
   if (callback.reason !== null) {
@@ -584,9 +625,9 @@ export function validateRelationalClaims(input: {
   hasCorrectivePreferenceEvidence: (entryId: StreamEntryId) => boolean;
 }): RelationalClaimValidationSummary {
   const streamEntries = buildStreamEvidenceIndex(input.evidence);
-  const episodes = buildEpisodeEvidenceIndex(input.evidence);
-  const commitments = buildCommitmentEvidenceIndex(input.evidence);
   const relationalSlots = buildRelationalSlotIndex(input.evidence);
+  const constrainedSlots = input.evidence.relational_slots.filter(isConstrainedSlot);
+  const completedActions = buildActionEvidenceIndex(input.evidence);
   const correctivePreferences = new Set(
     input.evidence.corrective_preferences.map((preference) => preference.source_entry_id),
   );
@@ -599,30 +640,41 @@ export function validateRelationalClaims(input: {
           claim,
           streamEntries,
           relationalSlots,
+          constrainedSlots,
           currentSessionId: input.currentSessionId,
         });
         break;
       case "callback":
-      case "session_scoped":
-        reason = validateCallbackScope({
+        reason = validateSessionCitationScope({
           claim,
           streamEntries,
+          currentUserMessage: input.evidence.current_user_message,
           currentSessionId: input.currentSessionId,
           currentTurnTs: input.currentTurnTs,
+          allowCurrentUserMessage: false,
+        }).reason;
+        break;
+      case "session_scoped":
+        reason = validateSessionCitationScope({
+          claim,
+          streamEntries,
+          currentUserMessage: input.evidence.current_user_message,
+          currentSessionId: input.currentSessionId,
+          currentTurnTs: input.currentTurnTs,
+          allowCurrentUserMessage: true,
         }).reason;
         break;
       case "action_completion":
         reason = validateActionCompletionClaim({
           claim,
-          streamEntries,
-          episodes,
-          commitments,
+          completedActions,
         });
         break;
       case "self_correction":
         reason = validateSelfCorrectionClaim({
           claim,
           streamEntries,
+          currentUserMessage: input.evidence.current_user_message,
           currentSessionId: input.currentSessionId,
           currentTurnTs: input.currentTurnTs,
           correctivePreferences,

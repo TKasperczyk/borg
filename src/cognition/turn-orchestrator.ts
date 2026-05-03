@@ -94,6 +94,7 @@ import {
 import { GenerationGate } from "./generation/generation-gate.js";
 import {
   RelationalClaimGuard,
+  actionRecordToRelationalGuardEvidence,
   commitmentToRelationalGuardEvidence,
   correctivePreferencesFromCommitments,
   relationalSlotToRelationalGuardEvidence,
@@ -796,6 +797,7 @@ export class TurnOrchestrator {
     persistedUserEntry?: StreamEntry;
     retrievedEpisodes: readonly RetrievedEpisode[];
     activeCommitments: readonly CommitmentRecord[];
+    audienceEntityId: EntityId | null;
   }): Promise<PendingTurnEmission> {
     const currentUserMessage: RelationalGuardCurrentUserMessage | null =
       input.persistedUserEntry === undefined
@@ -829,6 +831,9 @@ export class TurnOrchestrator {
         relational_slots: this.options.relationalSlotRepository
           .list({ limit: 64 })
           .map(relationalSlotToRelationalGuardEvidence),
+        recent_completed_actions: this.listRecentCompletedActions(input.audienceEntityId).map(
+          actionRecordToRelationalGuardEvidence,
+        ),
       },
     });
 
@@ -1423,6 +1428,7 @@ export class TurnOrchestrator {
                         persistedUserEntry: persistedUserEntry ?? undefined,
                         retrievedEpisodes,
                         activeCommitments: applicableCommitments,
+                        audienceEntityId,
                       });
 
                 return performAction({
