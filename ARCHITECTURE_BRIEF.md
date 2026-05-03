@@ -115,7 +115,7 @@ LLM calls. The shape:
 ```mermaid
 flowchart TD
     A([user input]) --> Z[bounded ingestion catch-up]
-    Z --> B[Perception classifiers<br/>background slot]
+    Z --> B[Perception classifiers<br/>background + recallExpansion slots]
     B --> C[Persist user_msg + perception]
     C --> D[Corrective + goal extractors<br/>recallExpansion slot]
     D --> GG{Generation gate}
@@ -156,15 +156,15 @@ generation and governance calls. Defaults are Opus 4.7 for
 
 | Call | Model slot | When | Purpose |
 |---|---|---|---|
-| `entity_extractor` | background (Opus) | perception, before stream persistence | LLM-extract named entities from user message. Failure returns `[]` (empty fallback, never regex). |
-| `mode_detector` | background (Opus) | perception | Classify conversation mode: `problem_solving` / `relational` / `reflective` / `idle`. Drives attention weights. |
-| `affective_signal` | background (Opus) | perception | Emit `{valence, arousal, dominant_emotion}`. Tool-forced output with explicit defaults if uncertain. |
-| `temporal_cue` | background (Opus) | perception | Resolve relative time references ("next week"). Optional. |
+| `entity_extractor` | recallExpansion (Haiku) | perception, before stream persistence | LLM-extract named entities from user message. Sees only the current message (working memory carries forward `hot_entities`). Failure returns `[]` (empty fallback, never regex). |
+| `mode_detector` | background (Opus) | perception | Classify conversation mode: `problem_solving` / `relational` / `reflective` / `idle`. Drives attention weights. Sees the full recency window (prior turns) for disambiguation. |
+| `affective_signal` | background (Opus) | perception | Emit `{valence, arousal, dominant_emotion}`. Sees the last 10 prior turns. Tool-forced output with explicit defaults if uncertain. |
+| `temporal_cue` | recallExpansion (Haiku) | perception | Resolve relative time references ("next week"). Sees only the current message + clock. Optional. |
 | `corrective_preference_extractor` | recallExpansion (Haiku) | after user/perception persistence, before retrieval | Detects user-named response-pattern corrections ("stop doing those closing lines"). Persists as audience-scoped commitment via `IdentityService.addCommitment`. |
 | `goal_promotion_extractor` | recallExpansion (Haiku) | user turns, before retrieval | Promotes goal-shaped conversation to active goals **only when Borg has an ongoing role** (user asks Borg to track / help / follow up). |
 | `generation_gate` | background (Opus) | before retrieval | May suppress a turn early when discourse state says Borg should stay stopped until the user adds substance. |
 | `recall_expansion` | recallExpansion (Haiku) | inside retrieval | Decomposes the message into up to four facet queries + explicit `named_terms` for known-term lookup. S2 verification can trigger a second retrieval pass. |
-| `procedural_context` | background (Opus) | retrieval, `problem_solving` only | Selects procedural skills / guidance from retrieved skill evidence. |
+| `procedural_context` | background (Opus) | retrieval, `problem_solving` only | Emits `{problem_kind, domain_tags}` to seed skill selection. Sees the last 10 recency entries so terse follow-ups inside an ongoing thread (e.g. "okay, try that") still ground in the active topic. |
 | `s2_planner` | cognition (Opus) | S2 path only | Emits structured `EmitTurnPlan`: uncertainty, verification_steps, tensions, voice_note, intents. |
 | `system_2_finalizer` | cognition (Opus) | S2 path | Generates response with full context + plan + tool loop. Can call internal tools (episodic.search, semantic.walk, etc.) with caps. |
 | `system_1_finalizer` | cognition (Opus) | S1 path | Generates response without planner. Used when retrieval confidence is high and intent is simple. |
@@ -186,8 +186,12 @@ can process bounded unextracted stream entries into episodes.
 **Perception**: 4 classifiers run in parallel (entity, mode, affective,
 temporal). Each is LLM-backed with fail-closed observability via
 `onClassifierFailure` → `perception_classifier_degraded` trace event.
-Empty/fallback results are honest -- previous heuristic fallbacks
-were deleted because they produced poisonous noise.
+Mode + affective use the `background` (Opus) slot because they reason
+over the recency window; entity + temporal use the `recallExpansion`
+(Haiku) slot because they judge from the current message alone with
+bounded extraction rubrics. Empty/fallback results are honest --
+previous heuristic fallbacks were deleted because they produced
+poisonous noise.
 
 **Opening persistence**: append `user_msg` and the perception record to
 the stream after perception succeeds. Working memory is loaded.
@@ -446,11 +450,13 @@ Borg runs under Anthropic OAuth subscription -- there is **no
 per-token cost to optimize for**. Latency is the constraint.
 
 Per-turn LLM cost (rough order):
-- Perception classifiers: 4 background-slot Opus calls (entity, mode,
-  affective, temporal). Each <2s typical.
-- Haiku calls: corrective preference + goal promotion before retrieval,
-  then recall expansion inside retrieval. Each ~2-3s. S2 verification
-  can trigger a second recall expansion.
+- Perception classifiers: 2 background-slot Opus calls (mode, affective)
+  plus 2 recallExpansion-slot Haiku calls (entity, temporal). Each
+  <2s typical. The Haiku-eligible classifiers judge from the current
+  message alone, so no quality regression from the lighter slot.
+- Other Haiku calls: corrective preference + goal promotion before
+  retrieval, then recall expansion inside retrieval. Each ~2-3s. S2
+  verification can trigger a second recall expansion.
 - Deliberation: planner (~15s) + finalizer (~15s) on S2 turns. S1
   turns: just finalizer (~10s).
 - Commitment guard: usually one background Opus detection call when
