@@ -8,12 +8,15 @@ import type {
 import type { SuppressionSet } from "../attention/index.js";
 import type { PerceptionResult } from "../types.js";
 
+const ACTIVE_TURN_STATUS = "active";
+
 export type TurnOpeningPersistenceOptions = {
   workingMemoryStore: Pick<WorkingMemoryStore, "save">;
 };
 
 export type TurnOpeningPersistenceInput = {
   streamWriter: Pick<StreamWriter, "append">;
+  turnId: string;
   userMessage: string;
   persistUserMessage?: boolean;
   audience?: string;
@@ -41,6 +44,8 @@ export class TurnOpeningPersistence {
         : await input.streamWriter.append({
             kind: "user_msg",
             content: input.userMessage,
+            turn_id: input.turnId,
+            turn_status: ACTIVE_TURN_STATUS,
             ...(input.audience === undefined ? {} : { audience: input.audience }),
           });
 
@@ -54,6 +59,8 @@ export class TurnOpeningPersistence {
 
     const persistedPerceptionEntry = await input.streamWriter.append({
       kind: "perception",
+      turn_id: input.turnId,
+      turn_status: ACTIVE_TURN_STATUS,
       content: {
         mode: input.perception.mode,
         entities: input.perception.entities,

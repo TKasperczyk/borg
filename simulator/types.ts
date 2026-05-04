@@ -8,9 +8,12 @@ export type Persona = {
 };
 
 export type MetricsRow = {
+  event: "turn_metrics" | "aborted_turn";
   ts: number;
   turn_counter: number;
   turnId: string;
+  transport_chat_attempts: number;
+  failure_reason?: string;
   episode_count: number;
   semantic_node_count: number;
   semantic_edge_count: number;
@@ -61,7 +64,7 @@ export type SimulatorRunReport = {
   sessions: SimulatorSessionRecord[];
   suppressionEvents: SimulatorSuppressionRecord[];
   overseerCheckpoints: OverseerVerdict[];
-  turnFailures: Array<{ turn: number; error: string }>;
+  turnFailures: Array<{ turn: number; error: string; attempts: number }>;
   finalMetrics: MetricsRow;
   durationMs: number;
 };

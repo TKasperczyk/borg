@@ -12,7 +12,7 @@ import {
 } from "../src/index.js";
 
 import { MetricsCapture } from "./metrics.js";
-import { PersonaSession } from "./persona.js";
+import { PersonaSession, type PersonaTurnDraft } from "./persona.js";
 import { runOverseer, type RunOverseerOptions } from "./overseer.js";
 import type {
   MetricsRow,
@@ -158,7 +158,7 @@ async function runMaintenanceTick(
 
 export class SimulatorRunner {
   private readonly options: SimulatorRunnerOptions;
-  private turnFailures: Array<{ turn: number; error: string }> = [];
+  private turnFailures: Array<{ turn: number; error: string; attempts: number }> = [];
 
   constructor(options: SimulatorRunnerOptions) {
     this.options = options;
@@ -228,16 +228,17 @@ export class SimulatorRunner {
       const TRANSIENT_RETRY_ATTEMPTS = 2;
       const TRANSIENT_RETRY_DELAY_MS = 2_000;
       let consecutiveFailures = 0;
-      const turnFailures: Array<{ turn: number; error: string }> = [];
+      const turnFailures: Array<{ turn: number; error: string; attempts: number }> = [];
 
-      const attemptTurn = async (): Promise<{
+      const attemptTurn = async (
+        draft: PersonaTurnDraft,
+      ): Promise<{
         turnId: string;
         response: string;
         emitted: boolean;
         suppressionReason?: GenerationSuppressionReason;
       }> => {
-        const message = await persona.nextTurn(lastBorgResponse);
-        const result = await transport.chat(message, {
+        const result = await transport.chat(draft.message, {
           audience: this.options.persona.displayName,
           sessionId: currentSessionId,
         });
@@ -257,12 +258,20 @@ export class SimulatorRunner {
           response: string;
           emitted: boolean;
           suppressionReason?: GenerationSuppressionReason;
+          transportChatAttempts: number;
         } | null = null;
         let attemptError: unknown = null;
+        let attemptsMade = 0;
+        const draft = await persona.prepareNextTurn(lastBorgResponse);
 
         for (let attempt = 0; attempt <= TRANSIENT_RETRY_ATTEMPTS; attempt += 1) {
+          attemptsMade = attempt + 1;
           try {
-            success = await attemptTurn();
+            const result = await attemptTurn(draft);
+            success = {
+              ...result,
+              transportChatAttempts: attemptsMade,
+            };
             attemptError = null;
             break;
           } catch (error) {
@@ -277,7 +286,14 @@ export class SimulatorRunner {
 
         if (success === null) {
           const detail = formatErrorChain(attemptError);
-          turnFailures.push({ turn, error: detail });
+          persona.rollback(draft);
+          turnFailures.push({ turn, error: detail, attempts: attemptsMade });
+          await metrics.captureAborted(transport.getBorg(), turn, {
+            sessionId: currentSessionId,
+            sessionIds,
+            transportChatAttempts: attemptsMade,
+            failureReason: detail,
+          });
           consecutiveFailures += 1;
           // eslint-disable-next-line no-console
           console.warn(`[simulator] turn ${turn} failed after retries: ${detail}`);
@@ -290,20 +306,27 @@ export class SimulatorRunner {
           continue;
         }
 
+        persona.commit(draft, success.response);
         consecutiveFailures = 0;
 
         finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn, {
           sessionId: currentSessionId,
           sessionIds,
+          transportChatAttempts: success.transportChatAttempts,
         });
 
         if (!success.emitted) {
-          if (!isSessionEndingSuppression(success.suppressionReason)) {
+          const suppressionReason = success.suppressionReason;
+
+          if (
+            suppressionReason !== undefined &&
+            !isSessionEndingSuppression(suppressionReason)
+          ) {
             suppressionEvents.push({
               sessionIndex: sessions.length,
               sessionId: currentSessionId,
               turn,
-              reason: success.suppressionReason,
+              reason: suppressionReason,
             });
             lastBorgResponse = null;
             continue;
@@ -315,9 +338,7 @@ export class SimulatorRunner {
             startedAtTurn: currentSessionStartTurn,
             endedAtTurn: turn,
             endReason: "suppression",
-            ...(success.suppressionReason === undefined
-              ? {}
-              : { suppressionReason: success.suppressionReason }),
+            ...(suppressionReason === undefined ? {} : { suppressionReason }),
           });
 
           if (sessions.length >= maxSessions) {
@@ -465,7 +486,7 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
   if (report.turnFailures.length > 0) {
     lines.push("## Turn Failures", "");
     for (const failure of report.turnFailures) {
-      lines.push(`- Turn ${failure.turn}: ${failure.error}`);
+      lines.push(`- Turn ${failure.turn} after ${failure.attempts} attempts: ${failure.error}`);
     }
     lines.push("");
   }

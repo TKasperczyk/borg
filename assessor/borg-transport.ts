@@ -27,7 +27,12 @@ import {
   type GoalId,
   type SessionId,
 } from "../src/util/ids.js";
-import { getStreamDirectory, StreamReader, type StreamEntry } from "../src/stream/index.js";
+import {
+  getStreamDirectory,
+  StreamReader,
+  filterActiveStreamEntries,
+  type StreamEntry,
+} from "../src/stream/index.js";
 import { createEvalBorg, type CreateEvalBorgOptions } from "../eval/support/create-eval-borg.js";
 
 import { latestTurnId, readTraceEvents, summarizeTraceFile } from "./trace-reader.js";
@@ -280,15 +285,15 @@ export async function readStreamTranscript(dataDir: string): Promise<StreamEntry
     });
 
     for await (const entry of reader.iterate({
-      kinds: ["user_msg", "agent_msg"],
+      kinds: ["user_msg", "agent_msg", "internal_event"],
     })) {
       entries.push(entry);
     }
   }
 
-  return entries.sort(
-    (left, right) => left.timestamp - right.timestamp || left.id.localeCompare(right.id),
-  );
+  return filterActiveStreamEntries(entries)
+    .filter((entry) => entry.kind === "user_msg" || entry.kind === "agent_msg")
+    .sort((left, right) => left.timestamp - right.timestamp || left.id.localeCompare(right.id));
 }
 
 function extractGoalId(text: string): string | null {

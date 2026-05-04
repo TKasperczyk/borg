@@ -66,7 +66,13 @@ import { ReviewQueueRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import { EpisodicRepository, isEpisodeVisibleToAudience } from "../memory/episodic/index.js";
-import { StreamReader, StreamWriter, type StreamEntry } from "../stream/index.js";
+import {
+  ABORTED_TURN_EVENT,
+  StreamReader,
+  StreamWriter,
+  filterActiveStreamEntries,
+  type StreamEntry,
+} from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/index.js";
 import { SessionBusyError } from "../util/errors.js";
 import { SystemClock, type Clock } from "../util/clock.js";
@@ -74,8 +80,10 @@ import {
   DEFAULT_SESSION_ID,
   createCommitmentId,
   goalIdHelpers,
+  type ActionId,
   type EntityId,
   type EpisodeId,
+  type ExecutiveStepId,
   type GoalId,
   type SessionId,
   type StreamEntryId,
@@ -105,6 +113,8 @@ import {
   type RelationalGuardStreamEvidence,
 } from "./generation/relational-guard.js";
 import { StopCommitmentExtractor } from "./generation/self-stop-commitment.js";
+
+const ACTIVE_TURN_STATUS = "active";
 
 function flattenGoals(goals: ReadonlyArray<GoalRecord & { children?: unknown }>): GoalRecord[] {
   const flattened: GoalRecord[] = [];
@@ -170,6 +180,11 @@ type ProvenanceScopedSelfRecord = {
   } | null;
   evidence_episode_ids?: readonly EpisodeId[] | null;
   key_episode_ids?: readonly EpisodeId[] | null;
+};
+
+type PersistedGoalPromotionIds = {
+  goalIds: GoalId[];
+  executiveStepIds: ExecutiveStepId[];
 };
 
 function getSelfRecordEvidenceEpisodeIds(record: ProvenanceScopedSelfRecord): EpisodeId[] {
@@ -472,6 +487,7 @@ export class TurnOrchestrator {
     streamWriter: StreamWriter,
     error: unknown,
     sessionId: SessionId,
+    turnId: string,
   ): Promise<void> {
     const message =
       error instanceof Error
@@ -481,10 +497,60 @@ export class TurnOrchestrator {
     try {
       await streamWriter.append({
         kind: "internal_event",
-        content: `Turn failed for ${sessionId}: ${message}`,
+        turn_id: turnId,
+        turn_status: "aborted",
+        content: {
+          event: ABORTED_TURN_EVENT,
+          turn_id: turnId,
+          session_id: sessionId,
+          reason: message,
+        },
       });
     } catch {
       // Best-effort logging only.
+    }
+
+    if (this.tracer.enabled) {
+      this.tracer.emit("turn_aborted", {
+        turnId,
+        reason: message,
+        sessionId,
+      });
+    }
+  }
+
+  private async cleanupAbortedTurnState(input: {
+    initialWorkingMemory: WorkingMemory | null;
+    createdGoalIds: readonly GoalId[];
+    createdExecutiveStepIds: readonly ExecutiveStepId[];
+    createdActionIds: readonly ActionId[];
+  }): Promise<void> {
+    if (input.initialWorkingMemory !== null) {
+      this.options.workingMemoryStore.save(input.initialWorkingMemory);
+    }
+
+    for (const actionId of input.createdActionIds) {
+      try {
+        await this.options.actionRepository.delete(actionId);
+      } catch {
+        // Best effort; the abort marker still prevents stream-derived state reuse.
+      }
+    }
+
+    for (const stepId of input.createdExecutiveStepIds) {
+      try {
+        this.options.executiveStepsRepository.delete(stepId);
+      } catch {
+        // Best effort.
+      }
+    }
+
+    for (const goalId of input.createdGoalIds) {
+      try {
+        this.options.goalsRepository.remove(goalId);
+      } catch {
+        // Best effort.
+      }
     }
   }
 
@@ -543,13 +609,17 @@ export class TurnOrchestrator {
     persistedUserEntryId?: StreamEntryId;
     streamWriter: StreamWriter;
     turnId: string;
-  }): Promise<void> {
+  }): Promise<PersistedGoalPromotionIds> {
     const provenance = {
       kind: "online" as const,
       process: "goal-promotion-extractor",
     };
     const sourceStreamEntryIds =
       input.persistedUserEntryId === undefined ? undefined : [input.persistedUserEntryId];
+    const persisted: PersistedGoalPromotionIds = {
+      goalIds: [],
+      executiveStepIds: [],
+    };
 
     for (const candidate of input.candidates) {
       let goal: GoalRecord;
@@ -584,18 +654,21 @@ export class TurnOrchestrator {
         continue;
       }
 
+      persisted.goalIds.push(goal.id);
+
       if (candidate.initial_step === null) {
         continue;
       }
 
       try {
-        this.options.executiveStepsRepository.add({
+        const step = this.options.executiveStepsRepository.add({
           goalId: goal.id,
           description: candidate.initial_step.description,
           kind: candidate.initial_step.kind,
           dueAt: candidate.initial_step.due_at,
           provenance,
         });
+        persisted.executiveStepIds.push(step.id);
       } catch (error) {
         this.emitGoalPromotionDegraded({
           turnId: input.turnId,
@@ -614,6 +687,45 @@ export class TurnOrchestrator {
           },
         );
       }
+    }
+
+    return persisted;
+  }
+
+  private async persistCorrectiveCommitment(input: {
+    commitment: CommitmentRecord | null;
+    streamWriter: StreamWriter;
+  }): Promise<void> {
+    const commitment = input.commitment;
+
+    if (commitment === null) {
+      return;
+    }
+
+    try {
+      this.options.identityService.addCommitment({
+        id: commitment.id,
+        type: commitment.type,
+        directiveFamily: commitment.directive_family,
+        directive: commitment.directive,
+        priority: commitment.priority,
+        madeToEntity: commitment.made_to_entity,
+        restrictedAudience: commitment.restricted_audience,
+        aboutEntity: commitment.about_entity,
+        provenance: commitment.provenance,
+        sourceStreamEntryIds: commitment.source_stream_entry_ids,
+        createdAt: commitment.created_at,
+        expiresAt: commitment.expires_at,
+      });
+    } catch (error) {
+      await this.appendHookFailureEvent(
+        input.streamWriter,
+        "corrective_preference_commitment_persist",
+        error,
+        {
+          commitmentId: commitment.id,
+        },
+      );
     }
   }
 
@@ -672,6 +784,8 @@ export class TurnOrchestrator {
   }) {
     return input.streamWriter.append({
       kind: "agent_suppressed",
+      turn_id: input.turnId,
+      turn_status: ACTIVE_TURN_STATUS,
       content: {
         reason: input.reason,
         user_entry_id: input.userEntryId,
@@ -798,9 +912,14 @@ export class TurnOrchestrator {
     sessionId: SessionId,
   ): Promise<RelationalGuardStreamEvidence[]> {
     const reader = this.createStreamReader(sessionId);
+    const streamEntries: StreamEntry[] = [];
     const entries = new Map<StreamEntryId, RelationalGuardStreamEvidence>();
 
     for await (const entry of reader.iterate()) {
+      streamEntries.push(entry);
+    }
+
+    for (const entry of filterActiveStreamEntries(streamEntries)) {
       const evidence = streamEntryToRelationalGuardEvidence(entry);
 
       if (evidence !== null) {
@@ -905,11 +1024,16 @@ export class TurnOrchestrator {
 
     const turnId = randomUUID();
     const streamWriter = this.options.createStreamWriter(sessionId);
+    const createdGoalIds: GoalId[] = [];
+    const createdExecutiveStepIds: ExecutiveStepId[] = [];
+    const createdActionIds: ActionId[] = [];
+    let initialWorkingMemory: WorkingMemory | null = null;
 
     try {
       try {
         await this.catchUpStreamIngestion(sessionId, streamWriter);
         let workingMemory = this.options.workingMemoryStore.load(sessionId);
+        initialWorkingMemory = structuredClone(workingMemory);
         const turnPerception = this.perceptionGateway.beginTurn({
           turnId,
           onHookFailure: (hook, error, details) =>
@@ -962,6 +1086,7 @@ export class TurnOrchestrator {
 
         const openingPersistence = await this.turnOpeningPersistence.persist({
           streamWriter,
+          turnId,
           userMessage: input.userMessage,
           persistUserMessage: isUserTurn,
           audience: input.audience,
@@ -1027,32 +1152,6 @@ export class TurnOrchestrator {
           });
 
           correctiveCommitment = inMemoryCommitment;
-
-          try {
-            correctiveCommitment = this.options.identityService.addCommitment({
-              id: inMemoryCommitment.id,
-              type: inMemoryCommitment.type,
-              directiveFamily: inMemoryCommitment.directive_family,
-              directive: inMemoryCommitment.directive,
-              priority: inMemoryCommitment.priority,
-              madeToEntity: inMemoryCommitment.made_to_entity,
-              restrictedAudience: inMemoryCommitment.restricted_audience,
-              aboutEntity: inMemoryCommitment.about_entity,
-              provenance: inMemoryCommitment.provenance,
-              sourceStreamEntryIds: inMemoryCommitment.source_stream_entry_ids,
-              createdAt: inMemoryCommitment.created_at,
-              expiresAt: inMemoryCommitment.expires_at,
-            });
-          } catch (error) {
-            await this.appendHookFailureEvent(
-              streamWriter,
-              "corrective_preference_commitment_persist",
-              error,
-              {
-                commitmentId: inMemoryCommitment.id,
-              },
-            );
-          }
         }
 
         await this.applyCorrectiveSlotNegations({
@@ -1081,12 +1180,13 @@ export class TurnOrchestrator {
               },
             });
 
-            await actionStateExtractor.extract({
+            const actionStateRecords = await actionStateExtractor.extract({
               userMessage: input.userMessage,
               currentUserStreamEntryId: persistedUserEntryId,
               recentHistory: recencyWindow.messages,
               audienceEntityId,
             });
+            createdActionIds.push(...actionStateRecords.map((record) => record.id));
           }
 
           const activeGoalsForPromotion =
@@ -1118,13 +1218,15 @@ export class TurnOrchestrator {
           });
 
           if (goalPromotionCandidates.length > 0) {
-            await this.persistGoalPromotions({
+            const persistedPromotions = await this.persistGoalPromotions({
               candidates: goalPromotionCandidates,
               audienceEntityId,
               persistedUserEntryId,
               streamWriter,
               turnId,
             });
+            createdGoalIds.push(...persistedPromotions.goalIds);
+            createdExecutiveStepIds.push(...persistedPromotions.executiveStepIds);
           }
         }
 
@@ -1216,6 +1318,10 @@ export class TurnOrchestrator {
           this.options.workingMemoryStore.save({
             ...suppressionActionResult.workingMemory,
             updated_at: this.clock.now(),
+          });
+          await this.persistCorrectiveCommitment({
+            commitment: correctiveCommitment,
+            streamWriter,
           });
 
           return {
@@ -1501,6 +1607,8 @@ export class TurnOrchestrator {
           actionEmission.kind === "message"
             ? await streamWriter.append({
                 kind: "agent_msg",
+                turn_id: turnId,
+                turn_status: ACTIVE_TURN_STATUS,
                 content: actionResult.response,
                 tool_calls: actionResult.tool_calls,
                 ...(input.audience === undefined ? {} : { audience: input.audience }),
@@ -1580,6 +1688,10 @@ export class TurnOrchestrator {
           this.options.workingMemoryStore.save({
             ...suppressedWorkingMemory,
             updated_at: this.clock.now(),
+          });
+          await this.persistCorrectiveCommitment({
+            commitment: correctiveCommitment,
+            streamWriter,
           });
 
           return {
@@ -1753,6 +1865,10 @@ export class TurnOrchestrator {
           suppressed: suppressionSet.snapshot(),
           updated_at: this.clock.now(),
         });
+        await this.persistCorrectiveCommitment({
+          commitment: correctiveCommitment,
+          streamWriter,
+        });
 
         // Live-extract just-finished stream entries on a best-effort basis
         // for next-turn freshness. If extraction fails, the stream +
@@ -1779,7 +1895,13 @@ export class TurnOrchestrator {
           agentMessageId: persistedAgentEntry.id,
         };
       } catch (error) {
-        await this.appendFailureEvent(streamWriter, error, sessionId);
+        await this.cleanupAbortedTurnState({
+          initialWorkingMemory,
+          createdGoalIds,
+          createdExecutiveStepIds,
+          createdActionIds,
+        });
+        await this.appendFailureEvent(streamWriter, error, sessionId, turnId);
         throw error;
       }
     } finally {

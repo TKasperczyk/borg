@@ -5,6 +5,9 @@ import type { TurnPlan } from "./s2-planner.js";
 export async function persistDeliberationThoughts(
   streamWriter: StreamWriter | undefined,
   thoughts: readonly string[],
+  options: {
+    turnId?: string;
+  } = {},
 ): Promise<StreamEntry[]> {
   if (streamWriter === undefined || thoughts.length === 0) {
     return [];
@@ -14,6 +17,12 @@ export async function persistDeliberationThoughts(
     thoughts.map((thought) => ({
       kind: "thought",
       content: thought,
+      ...(options.turnId === undefined
+        ? {}
+        : {
+            turn_id: options.turnId,
+            turn_status: "active" as const,
+          }),
     })),
   );
 }

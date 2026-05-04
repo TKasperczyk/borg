@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { StreamWriter } from "../stream/index.js";
+import { ABORTED_TURN_EVENT, StreamWriter } from "../stream/index.js";
 import { ManualClock } from "../util/clock.js";
 import { createSessionId } from "../util/ids.js";
 
@@ -69,5 +69,51 @@ describe("RawStreamAdapter", () => {
       secondSessionEntry.id,
       firstSessionOlder.id,
     ]);
+  });
+
+  it("excludes aborted turn entries from recency and source-id resolution", async () => {
+    const dir = tempDir();
+    const clock = new ManualClock();
+    const sessionId = createSessionId();
+    const writer = new StreamWriter({
+      dataDir: dir,
+      sessionId,
+      clock,
+    });
+    const activeContent = "active user";
+    const abortedTurnId = "aborted-raw-stream-turn";
+
+    clock.set(100);
+    const active = await writer.append({
+      kind: "user_msg",
+      content: activeContent,
+    });
+    clock.set(200);
+    const aborted = await writer.append({
+      kind: "thought",
+      content: "aborted plan",
+      turn_id: abortedTurnId,
+      turn_status: "active",
+    });
+    clock.set(300);
+    await writer.append({
+      kind: "internal_event",
+      turn_id: abortedTurnId,
+      turn_status: "aborted",
+      content: {
+        event: ABORTED_TURN_EVENT,
+        turn_id: abortedTurnId,
+        reason: "turn failed",
+      },
+    });
+    writer.close();
+
+    const adapter = new RawStreamAdapter({ dataDir: dir });
+    const resolved = await adapter.resolveSourceIds([active.id, aborted.id]);
+
+    expect(adapter.recent({ sessionId, limit: 10 }).map((entry) => entry.content)).toEqual([
+      activeContent,
+    ]);
+    expect([...resolved.keys()]).toEqual([active.id]);
   });
 });

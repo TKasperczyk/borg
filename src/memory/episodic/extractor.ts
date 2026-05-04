@@ -12,7 +12,12 @@ import {
   type EmotionalArc,
 } from "../affective/index.js";
 import type { EntityRepository } from "../commitments/index.js";
-import { StreamReader, type StreamCursor, type StreamEntry } from "../../stream/index.js";
+import {
+  StreamReader,
+  filterActiveStreamEntries,
+  type StreamCursor,
+  type StreamEntry,
+} from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
 import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
@@ -66,6 +71,7 @@ const EPISODIC_CONTEXT_STREAM_KINDS = [
   "agent_msg",
   "agent_suppressed",
   "perception",
+  "internal_event",
 ] as const;
 const perceptionAffectiveContentSchema = z.object({
   affectiveSignal: affectiveSignalSchema,
@@ -729,14 +735,16 @@ export class EpisodicExtractor {
       }
     }
 
+    const activeContextEntries = filterActiveStreamEntries(contextEntries);
+    const activeStreamEntryIds = new Set(activeContextEntries.map((entry) => entry.id));
     const suppressedUserEntryIds = new Set(
-      contextEntries
+      activeContextEntries
         .map((entry) => suppressedUserEntryId(entry))
         .filter((entryId): entryId is string => entryId !== null),
     );
-    const extractableStreamEntries = streamEntries.filter(
-      (entry) => entry.kind !== "user_msg" || !suppressedUserEntryIds.has(entry.id),
-    );
+    const extractableStreamEntries = streamEntries
+      .filter((entry) => activeStreamEntryIds.has(entry.id))
+      .filter((entry) => entry.kind !== "user_msg" || !suppressedUserEntryIds.has(entry.id));
 
     if (extractableStreamEntries.length === 0) {
       return {
@@ -753,7 +761,7 @@ export class EpisodicExtractor {
 
     for (const chunk of chunks) {
       const chunkById = new Map(chunk.map((entry) => [entry.id, entry]));
-      const perceptionContextEntries = perceptionContextEntriesForChunk(chunk, contextEntries);
+      const perceptionContextEntries = perceptionContextEntriesForChunk(chunk, activeContextEntries);
       const relationalSlotSubjects = this.relationalSlotSubjectsForChunk(chunk);
       const result = await this.options.llmClient.complete({
         model: this.options.model,
@@ -773,7 +781,7 @@ export class EpisodicExtractor {
       const candidates = extracted.episodes;
 
       for (const candidate of candidates) {
-        const outcome = await this.processCandidate(candidate, chunkById, contextEntries);
+        const outcome = await this.processCandidate(candidate, chunkById, activeContextEntries);
 
         if (outcome === "inserted") {
           inserted += 1;
