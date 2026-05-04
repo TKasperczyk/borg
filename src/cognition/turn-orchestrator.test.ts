@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Borg, FakeLLMClient, ManualClock, type LLMCompleteOptions } from "../index.js";
 import type { BorgDependencies } from "../borg/types.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
-import type { SelfSnapshot } from "./deliberation/deliberator.js";
+import { Deliberator, type SelfSnapshot } from "./deliberation/deliberator.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { RelationalClaimGuard } from "./generation/relational-guard.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
@@ -71,6 +71,7 @@ async function openTestBorg(
           cognition: "test-cognition",
           background: "test-background",
           extraction: "test-extraction",
+          recallExpansion: "test-recall",
         },
       },
     }),
@@ -349,6 +350,40 @@ function createGoalPromotionResponse(
   };
 }
 
+function createActionStateResponse(
+  actionStates: Array<{
+    description: string;
+    actor?: "user" | "borg";
+    state?: "considering" | "committed_to_do" | "scheduled" | "completed" | "not_done";
+    audience_entity_id?: string | null;
+    evidence_stream_entry_ids: string[];
+    confidence?: number;
+  }>,
+) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_action_states",
+        name: "EmitActionStates",
+        input: {
+          action_states: actionStates.map((actionState) => ({
+            description: actionState.description,
+            actor: actionState.actor ?? "user",
+            state: actionState.state ?? "completed",
+            audience_entity_id: actionState.audience_entity_id ?? null,
+            evidence_stream_entry_ids: actionState.evidence_stream_entry_ids,
+            confidence: actionState.confidence ?? 0.9,
+          })),
+        },
+      },
+    ],
+  };
+}
+
 function createDynamicCommitmentJudgeResponse(reason: string) {
   return (options: LLMCompleteOptions) => {
     const content = String(options.messages[0]?.content ?? "");
@@ -453,12 +488,29 @@ function firstFinalizerRequest(
   );
 }
 
+async function removeTempDir(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
+      return;
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+
+      if (attempt === 4 || (code !== "ENOTEMPTY" && code !== "EBUSY")) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1)));
+    }
+  }
+}
+
 describe("TurnOrchestrator self snapshot audience visibility", () => {
   const tempDirs: string[] = [];
 
-  afterEach(() => {
+  afterEach(async () => {
     while (tempDirs.length > 0) {
-      rmSync(tempDirs.pop() as string, { recursive: true, force: true });
+      await removeTempDir(tempDirs.pop() as string);
     }
   });
 
@@ -1820,6 +1872,76 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       ]);
       expect(finalizerSystem).toContain("Help the user keep the Monday postmortem straight");
     } finally {
+      await borg.close();
+    }
+  });
+
+  it("persists current-turn action states before deliberation runs", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_176_550);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "none",
+          reason: "No durable correction detected.",
+          confidence: 0,
+        }),
+        Object.assign(
+          (options: LLMCompleteOptions) => {
+            expect(options.budget).toBe("action-state-extractor");
+            expect(options.model).toBe("test-recall");
+            const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+              current_user_stream_entry_id: string;
+            };
+
+            return createActionStateResponse([
+              {
+                description: "booked the tutor Tuesday 7pm",
+                state: "completed",
+                evidence_stream_entry_ids: [payload.current_user_stream_entry_id],
+                confidence: 0.95,
+              },
+            ]);
+          },
+          { budget: "action-state-extractor" },
+        ),
+        createGoalPromotionResponse([]),
+        "I see the tutor booking is done.",
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const originalRun = Deliberator.prototype.run;
+    const runSpy = vi.spyOn(Deliberator.prototype, "run").mockImplementation(function (
+      this: Deliberator,
+      ...args: Parameters<Deliberator["run"]>
+    ) {
+      expect(borg.actions.list({ state: "completed" })).toEqual([
+        expect.objectContaining({
+          description: "booked the tutor Tuesday 7pm",
+          state: "completed",
+        }),
+      ]);
+
+      return originalRun.apply(this, args);
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "I booked the tutor Tuesday 7pm.",
+        stakes: "low",
+      });
+
+      expect(runSpy).toHaveBeenCalledOnce();
+      expect(borg.actions.list({ state: "completed" })).toEqual([
+        expect.objectContaining({
+          description: "booked the tutor Tuesday 7pm",
+          provenance_stream_entry_ids: [expect.any(String)],
+        }),
+      ]);
+    } finally {
+      runSpy.mockRestore();
       await borg.close();
     }
   });
