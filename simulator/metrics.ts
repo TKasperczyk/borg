@@ -12,6 +12,7 @@ import {
   type SessionId,
 } from "../src/index.js";
 import { filterActiveStreamEntries } from "../src/stream/index.js";
+import type { ActionId } from "../src/util/ids.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
 
@@ -21,6 +22,8 @@ const LARGE_COUNT_LIMIT = 1_000_000;
 const TURN_METRICS_EVENT = "turn_metrics";
 const ABORTED_TURN_EVENT = "aborted_turn";
 const ABORTED_ATTEMPT_EVENT = "aborted_attempt";
+const OPEN_QUESTION_RECORD_TYPE = "open_question";
+const RESOLVED_STATUS = "resolved";
 
 type GoalTreeNodeLike = {
   children?: GoalTreeNodeLike[];
@@ -168,10 +171,22 @@ function reviewQueueOpenCountByType(borg: Borg): Record<ReviewKind, number> {
 function openQuestionResolvedCount(borg: Borg): number {
   return borg.identity
     .listEvents({
-      recordType: "open_question",
+      recordType: OPEN_QUESTION_RECORD_TYPE,
       limit: LARGE_COUNT_LIMIT,
     })
-    .filter((event) => event.action === "resolve").length;
+    .filter(
+      (event) =>
+        identityValueStatus(event.old_value) !== RESOLVED_STATUS &&
+        identityValueStatus(event.new_value) === RESOLVED_STATUS,
+    ).length;
+}
+
+function identityValueStatus(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  return (value as { status?: unknown }).status;
 }
 
 export class MetricsCapture {
@@ -179,7 +194,7 @@ export class MetricsCapture {
   private readonly tracePath?: string;
   private previousSemanticNodeCount?: number;
   private previousSemanticEdgeCount?: number;
-  private previousLatestCompletedActionAt?: number;
+  private readonly completedActionIdsSeen = new Set<ActionId>();
 
   constructor(filepath: string, options: MetricsCaptureOptions = {}) {
     this.filepath = filepath;
@@ -188,16 +203,15 @@ export class MetricsCapture {
 
   private captureMemoryBandMetrics(borg: Borg, sessionId: SessionId): MemoryBandMetricCounts {
     const actionRecordCountByState = borg.actions.countByState();
-    const latestCompletedActionAt = borg.actions.latestCompletedAt();
-    const recentCompletedActionCount = borg.actions.countCompletedSince(
-      this.previousLatestCompletedActionAt === undefined
-        ? Number.MIN_SAFE_INTEGER
-        : this.previousLatestCompletedActionAt + 1,
-    );
+    const completedActionIds = borg.actions.listCompletedIds();
+    const recentCompletedActionCount = completedActionIds.filter(
+      (id) => !this.completedActionIdsSeen.has(id),
+    ).length;
     const workingMemory = borg.workmem.load(sessionId);
 
-    this.previousLatestCompletedActionAt =
-      latestCompletedActionAt ?? this.previousLatestCompletedActionAt;
+    for (const id of completedActionIds) {
+      this.completedActionIdsSeen.add(id);
+    }
 
     return {
       action_record_count_total: borg.actions.count(),
@@ -261,17 +275,7 @@ export class MetricsCapture {
       semantic_nodes_added_since_last_check: semanticNodesAdded,
       semantic_edges_added_since_last_check: semanticEdgesAdded,
       open_question_count: openQuestions.length,
-      open_question_resolved_count: memoryBandMetrics.open_question_resolved_count,
       active_goal_count: flattenGoalCount(activeGoals),
-      action_record_count_total: memoryBandMetrics.action_record_count_total,
-      action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
-      recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
-      commitment_count_active: memoryBandMetrics.commitment_count_active,
-      commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
-      pending_action_count: memoryBandMetrics.pending_action_count,
-      pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
-      relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
-      review_queue_open_count_by_type: memoryBandMetrics.review_queue_open_count_by_type,
       generation_suppression_count: generationSuppressions,
       mood_valence: mood.valence,
       mood_arousal: mood.arousal,
@@ -287,6 +291,16 @@ export class MetricsCapture {
       ),
       borg_input_tokens: usage.inputTokens,
       borg_output_tokens: usage.outputTokens,
+      open_question_resolved_count: memoryBandMetrics.open_question_resolved_count,
+      action_record_count_total: memoryBandMetrics.action_record_count_total,
+      action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
+      recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
+      commitment_count_active: memoryBandMetrics.commitment_count_active,
+      commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
+      pending_action_count: memoryBandMetrics.pending_action_count,
+      pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
+      relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
+      review_queue_open_count_by_type: memoryBandMetrics.review_queue_open_count_by_type,
     };
 
     this.previousSemanticNodeCount = semanticNodes.length;
@@ -329,8 +343,15 @@ export class MetricsCapture {
       semantic_nodes_added_since_last_check: 0,
       semantic_edges_added_since_last_check: 0,
       open_question_count: openQuestions.length,
-      open_question_resolved_count: memoryBandMetrics.open_question_resolved_count,
       active_goal_count: flattenGoalCount(activeGoals),
+      generation_suppression_count: generationSuppressions,
+      mood_valence: mood.valence,
+      mood_arousal: mood.arousal,
+      retrieval_latency_ms: null,
+      deliberation_latency_ms: null,
+      borg_input_tokens: 0,
+      borg_output_tokens: 0,
+      open_question_resolved_count: memoryBandMetrics.open_question_resolved_count,
       action_record_count_total: memoryBandMetrics.action_record_count_total,
       action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
@@ -340,13 +361,6 @@ export class MetricsCapture {
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
       review_queue_open_count_by_type: memoryBandMetrics.review_queue_open_count_by_type,
-      generation_suppression_count: generationSuppressions,
-      mood_valence: mood.valence,
-      mood_arousal: mood.arousal,
-      retrieval_latency_ms: null,
-      deliberation_latency_ms: null,
-      borg_input_tokens: 0,
-      borg_output_tokens: 0,
     };
 
     appendJsonlLine(this.filepath, `${JSON.stringify(row)}\n`);

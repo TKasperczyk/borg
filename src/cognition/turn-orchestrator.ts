@@ -249,7 +249,6 @@ export class TurnOrchestrator {
       pendingActionJudgeModel: options.config.anthropic.models.background,
       clock: this.clock,
       tracer: this.tracer,
-      workingMemoryStore: options.workingMemoryStore,
     });
     const turnReflectionCoordinator = new TurnReflectionCoordinator({
       moodRepository: options.moodRepository,
@@ -363,13 +362,15 @@ export class TurnOrchestrator {
 
     try {
       try {
-        return await this.turnPhaseCoordinator.run({
+        const result = await this.turnPhaseCoordinator.run({
           input,
           sessionId,
           turnId,
           streamWriter,
           lifecycleTracker,
         });
+        lifecycleTracker.commitTurnState();
+        return result;
       } catch (error) {
         await lifecycleTracker.cleanupAbortedTurnState();
         await this.appendFailureEvent(streamWriter, error, sessionId, turnId);
