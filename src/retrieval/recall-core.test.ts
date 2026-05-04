@@ -545,12 +545,14 @@ describe("Recall Core", () => {
     });
     const matching = harness.commitmentRepository.add({
       type: "boundary",
+      directiveFamily: "atlas_confidentiality",
       directive: matchingDirective,
       priority: 8,
       provenance: { kind: "manual" },
     });
     const unrelated = harness.commitmentRepository.add({
       type: "promise",
+      directiveFamily: "public_launch_date",
       directive: unrelatedDirective,
       priority: 9,
       provenance: { kind: "manual" },
@@ -592,12 +594,14 @@ describe("Recall Core", () => {
     });
     harness.commitmentRepository.add({
       type: "boundary",
+      directiveFamily: "first_commitment_directive",
       directive: firstDirective,
       priority: 8,
       provenance: { kind: "manual" },
     });
     harness.commitmentRepository.add({
       type: "rule",
+      directiveFamily: "second_commitment_directive",
       directive: secondDirective,
       priority: 7,
       provenance: { kind: "manual" },

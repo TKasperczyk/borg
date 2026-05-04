@@ -213,6 +213,7 @@ function buildCorrectivePreferenceCommitment(input: {
   return commitmentSchema.parse({
     id: createCommitmentId(),
     type: input.candidate.type,
+    directive_family: input.candidate.directive_family,
     directive: input.candidate.directive,
     priority: input.candidate.priority,
     made_to_entity: null,
@@ -232,6 +233,7 @@ function buildCorrectivePreferenceCommitment(input: {
     revoked_reason: null,
     revoke_provenance: null,
     superseded_by: null,
+    last_reinforced_at: input.nowMs,
   });
 }
 
@@ -1007,6 +1009,7 @@ export class TurnOrchestrator {
           activeCommitments: activeCommitmentsForExtractor.map((commitment) => ({
             id: commitment.id,
             type: commitment.type,
+            directive_family: commitment.directive_family,
             directive: commitment.directive,
             priority: commitment.priority,
           })),
@@ -1029,6 +1032,7 @@ export class TurnOrchestrator {
             correctiveCommitment = this.options.identityService.addCommitment({
               id: inMemoryCommitment.id,
               type: inMemoryCommitment.type,
+              directiveFamily: inMemoryCommitment.directive_family,
               directive: inMemoryCommitment.directive,
               priority: inMemoryCommitment.priority,
               madeToEntity: inMemoryCommitment.made_to_entity,
@@ -1484,6 +1488,8 @@ export class TurnOrchestrator {
                   intents: deliberation.intents,
                   workingMemory,
                   pendingActionJudge,
+                  pendingActionEmbeddingClient: this.options.embeddingClient,
+                  pendingActionTimestamp: this.clock.now(),
                   onPendingActionRejected,
                 });
               })();

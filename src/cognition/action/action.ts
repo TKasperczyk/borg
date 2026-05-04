@@ -1,4 +1,5 @@
-import type { WorkingMemory } from "../../memory/working/index.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
+import { mergePendingActionsBySimilarity, type WorkingMemory } from "../../memory/working/index.js";
 import type { PendingTurnEmission } from "../generation/types.js";
 import type { IntentRecord } from "../types.js";
 import type { PendingActionJudge } from "./pending-action-judge.js";
@@ -17,6 +18,9 @@ export type ActionContext = {
   intents: readonly IntentRecord[];
   workingMemory: WorkingMemory;
   pendingActionJudge?: PendingActionJudge;
+  pendingActionEmbeddingClient?: EmbeddingClient;
+  pendingActionTimestamp?: number;
+  pendingActionSimilarityThreshold?: number;
   onPendingActionRejected?: (event: PendingActionRejection) => void | Promise<void>;
 };
 
@@ -91,6 +95,15 @@ export async function performAction(context: ActionContext): Promise<ActionResul
   };
   const emitted = emission.kind === "message";
   const pendingActions = emitted ? await filterPendingActions(context) : [];
+  const pending_actions = emitted
+    ? await mergePendingActionsBySimilarity({
+        existing: context.workingMemory.pending_actions,
+        incoming: pendingActions,
+        embeddingClient: context.pendingActionEmbeddingClient,
+        nowMs: context.pendingActionTimestamp ?? context.workingMemory.updated_at,
+        threshold: context.pendingActionSimilarityThreshold,
+      })
+    : [...context.workingMemory.pending_actions];
 
   return {
     response: emitted ? emission.content : "",
@@ -100,9 +113,7 @@ export async function performAction(context: ActionContext): Promise<ActionResul
     intents: pendingActions,
     workingMemory: {
       ...context.workingMemory,
-      pending_actions: emitted
-        ? [...context.workingMemory.pending_actions, ...pendingActions]
-        : [...context.workingMemory.pending_actions],
+      pending_actions,
     },
   };
 }

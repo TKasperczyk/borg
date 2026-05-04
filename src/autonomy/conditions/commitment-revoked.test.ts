@@ -25,12 +25,14 @@ describe("commitment revoked condition", () => {
 
     const active = harness.commitmentRepository.add({
       type: "promise",
+      directiveFamily: "keep_active",
       directive: "Keep this active",
       priority: 1,
       provenance: { kind: "manual" },
     });
     const revoked = harness.commitmentRepository.add({
       type: "boundary",
+      directiveFamily: "stop_oversharing",
       directive: "Stop oversharing",
       priority: 4,
       provenance: { kind: "manual" },

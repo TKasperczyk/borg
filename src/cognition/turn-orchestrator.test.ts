@@ -151,6 +151,10 @@ function createStopCommitmentResponse(input: {
         name: "EmitStopCommitmentClassification",
         input: {
           classification: input.classification,
+          directive_family:
+            input.classification === "stop_until_substantive_content"
+              ? "stop_until_substantive_content"
+              : null,
           reason: input.reason ?? "The assistant committed to stop until substantive content.",
           confidence: 0.94,
         },
@@ -279,6 +283,7 @@ function createCorrectivePreferenceResponse(input: {
   classification: "corrective_preference" | "none";
   type?: "preference" | "rule" | "boundary" | null;
   directive?: string | null;
+  directive_family?: string | null;
   priority?: number | null;
   reason?: string;
   confidence?: number;
@@ -297,6 +302,9 @@ function createCorrectivePreferenceResponse(input: {
           classification: input.classification,
           type: input.type ?? null,
           directive: input.directive ?? null,
+          directive_family:
+            input.directive_family ??
+            (input.classification === "corrective_preference" ? "test_directive_family" : null),
           priority: input.priority ?? null,
           reason: input.reason ?? "The current user turn corrected future response behavior.",
           confidence: input.confidence ?? 0.9,
@@ -1468,6 +1476,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     try {
       const commitment = borg.commitments.add({
         type: "boundary",
+        directiveFamily: "launch_date_boundary",
         directive: "Do not disclose launch dates.",
         priority: 10,
         provenance: { kind: "manual" },
@@ -1541,6 +1550,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     try {
       const commitment = borg.commitments.add({
         type: "boundary",
+        directiveFamily: "partner_name_boundary",
         directive: "Do not call the user's partner Sarah.",
         priority: 10,
         provenance: { kind: "manual" },

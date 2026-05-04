@@ -199,6 +199,7 @@ describe("cli correction commands", () => {
     const borg = await openCorrectionBorg(tempDir);
     borg.commitments.add({
       type: "boundary",
+      directiveFamily: "sam_informed",
       directive: "Keep Sam informed",
       priority: 5,
       audience: "Sam",

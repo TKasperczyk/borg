@@ -1289,6 +1289,7 @@ function defaultStopCommitmentResponse(): LLMCompleteResult {
         name: "EmitStopCommitmentClassification",
         input: {
           classification: "none",
+          directive_family: null,
           reason: "No operational no-output commitment.",
           confidence: 0,
         },
@@ -1331,6 +1332,7 @@ function defaultCorrectivePreferenceResponse(): LLMCompleteResult {
           classification: "none",
           type: null,
           directive: null,
+          directive_family: null,
           priority: null,
           reason: "No durable correction detected.",
           confidence: 0,

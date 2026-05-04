@@ -1657,7 +1657,12 @@ describe("Borg", () => {
       expect(result.retrievedEpisodeIds).toEqual(["ep_aaaaaaaaaaaaaaaa"]);
       expect(result.intents).toEqual([expectedIntent]);
       expect(borg.workmem.load().turn_counter).toBe(1);
-      expect(borg.workmem.load().pending_actions).toEqual([expectedIntent]);
+      expect(borg.workmem.load().pending_actions).toEqual([
+        {
+          ...expectedIntent,
+          created_at: 1_000,
+        },
+      ]);
       expect(borg.self.goals.list({ status: "active" })[0]?.id).toBe(goal.id);
       expect(borg.self.goals.list({ status: "active" })[0]?.progress_notes).toContain(
         "Reran the Atlas release stabilization plan.",
@@ -2006,6 +2011,7 @@ describe("Borg", () => {
     try {
       borg.commitments.add({
         type: "boundary",
+        directiveFamily: "atlas_sam_boundary",
         directive: "Do not discuss Atlas with Sam",
         priority: 10,
         audience: "Sam",
@@ -2014,6 +2020,7 @@ describe("Borg", () => {
       });
       borg.commitments.add({
         type: "boundary",
+        directiveFamily: "borealis_sam_boundary",
         directive: "Do not discuss Borealis with Sam",
         priority: 9,
         audience: "Sam",
@@ -2120,6 +2127,7 @@ describe("Borg", () => {
     try {
       const commitment = borg.commitments.add({
         type: "boundary",
+        directiveFamily: "atlas_sam_boundary",
         directive: "Do not discuss Atlas with Sam",
         priority: 10,
         audience: "Sam",

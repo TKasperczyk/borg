@@ -56,4 +56,28 @@ export const commitmentMigrations = [
       `);
     },
   },
+  {
+    id: 3,
+    name: "commitment_directive_family",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE commitments
+          ADD COLUMN directive_family TEXT NULL;
+
+        UPDATE commitments
+        SET directive_family = 'uncategorized'
+        WHERE directive_family IS NULL;
+
+        ALTER TABLE commitments
+          ADD COLUMN last_reinforced_at INTEGER NULL;
+
+        UPDATE commitments
+        SET last_reinforced_at = created_at
+        WHERE last_reinforced_at IS NULL;
+
+        CREATE INDEX IF NOT EXISTS commitments_directive_family_idx
+          ON commitments(directive_family, restricted_audience, made_to_entity);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

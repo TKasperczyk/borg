@@ -15,6 +15,10 @@ function commitmentResponse(classification: "stop_until_substantive_content" | "
         name: "EmitStopCommitmentClassification",
         input: {
           classification,
+          directive_family:
+            classification === "stop_until_substantive_content"
+              ? "stop_until_substantive_content"
+              : null,
           reason:
             classification === "stop_until_substantive_content"
               ? "Assistant committed to stop until real content arrives."
@@ -42,6 +46,7 @@ describe("StopCommitmentExtractor", () => {
         agentResponse: "I'm going to stop responding to these until real content arrives.",
       }),
     ).resolves.toEqual({
+      directive_family: "stop_until_substantive_content",
       reason: "Assistant committed to stop until real content arrives.",
       confidence: 0.9,
     });
@@ -63,6 +68,7 @@ describe("StopCommitmentExtractor", () => {
         agentResponse: "我会停止回复，直到你提供实质内容。",
       }),
     ).resolves.toEqual({
+      directive_family: "stop_until_substantive_content",
       reason: "Assistant committed to stop until real content arrives.",
       confidence: 0.9,
     });

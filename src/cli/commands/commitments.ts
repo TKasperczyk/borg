@@ -20,6 +20,7 @@ export function registerCommitmentCommands(cli: CAC, deps: CliCommandDeps): void
   cli
     .command("commitment <action> [arg]", "Manage commitments")
     .option("--type <type>", "Commitment type")
+    .option("--directive-family <slug>", "Directive-family slug")
     .option("--directive <text>", "Commitment directive")
     .option("--priority <priority>", "Priority", {
       type: [Number],
@@ -34,6 +35,10 @@ export function registerCommitmentCommands(cli: CAC, deps: CliCommandDeps): void
         const commitment = await withBorg(options, async (borg) =>
           borg.commitments.add({
             type: parseCommitmentType(commandOptions.type),
+            directiveFamily: parseRequiredText(
+              commandOptions.directiveFamily ?? commandOptions["directive-family"],
+              "--directive-family",
+            ),
             directive: parseRequiredText(commandOptions.directive, "--directive"),
             priority: parsePriority(commandOptions.priority),
             audience:

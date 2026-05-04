@@ -279,6 +279,7 @@ async function runPhase4(borg: Borg, state: DebugState): Promise<void> {
 
   borg.commitments.add({
     type: "boundary",
+    directiveFamily: "unsafe_code_boundary",
     directive: "don't suggest unsafe code",
     priority: 10,
     audience: "default",

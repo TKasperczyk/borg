@@ -4,11 +4,28 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { FixedClock } from "../../util/clock.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
+import { FixedClock, ManualClock } from "../../util/clock.js";
 import { WorkingMemoryError } from "../../util/errors.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { WorkingMemoryStore } from "./store.js";
 import { createWorkingMemory, workingMemorySchema } from "./types.js";
+
+class MapEmbeddingClient implements EmbeddingClient {
+  constructor(private readonly vectors: ReadonlyMap<string, readonly number[]>) {}
+
+  async embed(text: string): Promise<Float32Array> {
+    return Float32Array.from(this.vectors.get(text) ?? [0, 0]);
+  }
+
+  async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+    return Promise.all(texts.map((text) => this.embed(text)));
+  }
+}
+
+function actionText(text: string): string {
+  return `${text}\n${text}`;
+}
 
 describe("working memory store", () => {
   const tempDirs: string[] = [];
@@ -207,5 +224,83 @@ describe("working memory store", () => {
       },
     ]);
     expect(sanitized.updated_at).toBe(500);
+  });
+
+  it("semantically merges similar pending actions and refreshes the timestamp", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(100);
+    const first = "check whether Saturday Spanish neighborhood dry run happened";
+    const second = "follow up on whether Saturday Spanish dry run actually took place";
+    const store = new WorkingMemoryStore({
+      dataDir: tempDir,
+      clock,
+    });
+    const embeddingClient = new MapEmbeddingClient(
+      new Map([
+        [actionText(first), [1, 0]],
+        [actionText(second), [0.9, 0.1]],
+      ]),
+    );
+
+    await store.addPendingAction({
+      sessionId: DEFAULT_SESSION_ID,
+      action: {
+        description: first,
+        next_action: first,
+      },
+      embeddingClient,
+    });
+    clock.set(200);
+    const saved = await store.addPendingAction({
+      sessionId: DEFAULT_SESSION_ID,
+      action: {
+        description: second,
+        next_action: second,
+      },
+      embeddingClient,
+    });
+
+    expect(saved.pending_actions).toHaveLength(1);
+    expect(saved.pending_actions[0]?.description).toBe(first);
+    expect(saved.pending_actions[0]?.created_at).toBe(200);
+  });
+
+  it("keeps semantically distinct pending actions separate", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(100);
+    const first = "check whether Saturday Spanish neighborhood dry run happened";
+    const second = "prepare the backpressure design review";
+    const store = new WorkingMemoryStore({
+      dataDir: tempDir,
+      clock,
+    });
+    const embeddingClient = new MapEmbeddingClient(
+      new Map([
+        [actionText(first), [1, 0]],
+        [actionText(second), [0, 1]],
+      ]),
+    );
+
+    await store.addPendingAction({
+      sessionId: DEFAULT_SESSION_ID,
+      action: {
+        description: first,
+        next_action: first,
+      },
+      embeddingClient,
+    });
+    clock.set(200);
+    const saved = await store.addPendingAction({
+      sessionId: DEFAULT_SESSION_ID,
+      action: {
+        description: second,
+        next_action: second,
+      },
+      embeddingClient,
+    });
+
+    expect(saved.pending_actions.map((action) => action.description)).toEqual([first, second]);
   });
 });

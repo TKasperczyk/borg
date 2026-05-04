@@ -260,6 +260,7 @@ export type BorgSemanticFacade = {
 export type BorgCommitmentsFacade = {
   add: (input: {
     type: Parameters<CommitmentRepository["add"]>[0]["type"];
+    directiveFamily: string;
     directive: string;
     priority: number;
     madeTo?: string | null;
