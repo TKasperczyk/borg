@@ -574,6 +574,51 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
+  it("uses post-construction llmFactory overrides on subsequent turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000_000);
+    const initialLlm = new FakeLLMClient();
+    const replacementAnswer = "Replacement answer.";
+    const replacementLlm = new FakeLLMClient({
+      responses: [
+        {
+          text: replacementAnswer,
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, initialLlm, clock);
+
+    try {
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              llmFactory: () => FakeLLMClient;
+            };
+          };
+        };
+      };
+      internal.deps.turnOrchestrator.options.llmFactory = () => replacementLlm;
+
+      const result = await borg.turn({
+        userMessage: "Use the replacement client.",
+        stakes: "low",
+      });
+
+      expect(result.response).toBe(replacementAnswer);
+      expect(firstFinalizerRequest(replacementLlm.requests)?.budget).toBe("cognition-system-1");
+      expect(initialLlm.requests).toHaveLength(0);
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("does not surface self records backed only by another audience's private episodes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -769,6 +814,60 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(allRequestText).not.toContain("alice-private-growth");
       expect(allRequestText).not.toContain("alice-private-period");
       expect(allRequestText).not.toContain("Alice-private period narrative");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("filters gathered self snapshot records in a single visibility pass", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(2_000_000);
+    const borg = await openTestBorg(tempDir, new FakeLLMClient(), clock);
+
+    try {
+      const internal = borg as unknown as {
+        deps: Pick<BorgDependencies, "entityRepository"> & {
+          episodicRepository: EpisodicRepository;
+          turnOrchestrator: {
+            buildSelfSnapshot(audienceEntityId: EntityId | null): Promise<SelfSnapshot>;
+          };
+        };
+      };
+      const bobEntityId = internal.deps.entityRepository.resolve("Bob");
+      const publicEpisodeId = createEpisodeId();
+      const singlePassGoalDescription = "single-pass-goal";
+      const singlePassValueLabel = "single-pass-value";
+      const now = clock.now();
+
+      await internal.deps.episodicRepository.insert(
+        makeEpisode({
+          id: publicEpisodeId,
+          now,
+          audienceEntityId: null,
+          shared: true,
+          title: "Public single-pass snapshot evidence",
+        }),
+      );
+      borg.self.values.add({
+        label: singlePassValueLabel,
+        description: "Visible value.",
+        priority: 7,
+        provenance: { kind: "episodes", episode_ids: [publicEpisodeId] },
+      });
+      borg.self.goals.add({
+        description: singlePassGoalDescription,
+        priority: 7,
+        provenance: { kind: "episodes", episode_ids: [publicEpisodeId] },
+      });
+      const getManySpy = vi.spyOn(internal.deps.episodicRepository, "getMany");
+
+      const snapshot = await internal.deps.turnOrchestrator.buildSelfSnapshot(bobEntityId);
+
+      expect(snapshot.values.map((value) => value.label)).toContain(singlePassValueLabel);
+      expect(snapshot.goals.map((goal) => goal.description)).toContain(singlePassGoalDescription);
+      expect(getManySpy).toHaveBeenCalledTimes(1);
+      expect(getManySpy.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([publicEpisodeId]));
     } finally {
       await borg.close();
     }
