@@ -60,6 +60,66 @@ describe("embeddings", () => {
     await expect(client.embed("hello")).rejects.toBeInstanceOf(EmbeddingError);
   });
 
+  it("retries on JIT model_not_found 404 then succeeds", async () => {
+    const notLoaded = Object.assign(new Error("404 model_not_found"), {
+      status: 404,
+      code: "model_not_found",
+    });
+    const expectedEmbedding = [0.5, 0.25, 0.125];
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(notLoaded)
+      .mockRejectedValueOnce(notLoaded)
+      .mockResolvedValueOnce({
+        data: [{ index: 0, embedding: expectedEmbedding }],
+      });
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: expectedEmbedding.length,
+      modelReloadRetryDelaysMs: [0, 0, 0],
+      client: { embeddings: { create } },
+    });
+
+    const embedding = await client.embed("hello");
+
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(Array.from(embedding)).toEqual(expectedEmbedding);
+  });
+
+  it("gives up after exhausting retries on persistent model_not_found", async () => {
+    const notLoaded = Object.assign(new Error("404 model_not_found"), {
+      status: 404,
+      code: "model_not_found",
+    });
+    const create = vi.fn().mockRejectedValue(notLoaded);
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 3,
+      modelReloadRetryDelaysMs: [0, 0],
+      client: { embeddings: { create } },
+    });
+
+    await expect(client.embed("hello")).rejects.toBeInstanceOf(EmbeddingError);
+    expect(create).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retry on non-model_not_found errors", async () => {
+    const otherError = Object.assign(new Error("500 internal"), { status: 500 });
+    const create = vi.fn().mockRejectedValue(otherError);
+
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 3,
+      modelReloadRetryDelaysMs: [0, 0, 0],
+      client: { embeddings: { create } },
+    });
+
+    await expect(client.embed("hello")).rejects.toBeInstanceOf(EmbeddingError);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it("produces deterministic fake embeddings", async () => {
     const client = new FakeEmbeddingClient(4);
 

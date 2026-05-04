@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 
+import { sleep } from "../util/clock.js";
 import { ConfigError, EmbeddingError } from "../util/errors.js";
 
 type OpenAIEmbeddingsClient = {
@@ -28,7 +29,20 @@ export type OpenAICompatibleEmbeddingClientOptions = {
   model: string;
   dims: number;
   client?: OpenAIEmbeddingsClient;
+  modelReloadRetryDelaysMs?: readonly number[];
 };
+
+const DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS: readonly number[] = [1000, 4000, 10_000];
+
+function isModelNotLoadedError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+
+  const candidate = error as { status?: unknown; code?: unknown };
+
+  return candidate.status === 404 && candidate.code === "model_not_found";
+}
 
 function validateDimensions(embedding: number[], dims: number, model: string): Float32Array {
   if (embedding.length !== dims) {
@@ -44,6 +58,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   private readonly client: OpenAIEmbeddingsClient;
   private readonly model: string;
   private readonly dims: number;
+  private readonly modelReloadRetryDelaysMs: readonly number[];
 
   constructor(options: OpenAICompatibleEmbeddingClientOptions) {
     if (!Number.isInteger(options.dims) || options.dims <= 0) {
@@ -73,6 +88,8 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
 
     this.model = options.model;
     this.dims = options.dims;
+    this.modelReloadRetryDelaysMs =
+      options.modelReloadRetryDelaysMs ?? DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS;
   }
 
   async embed(text: string): Promise<Float32Array> {
@@ -91,18 +108,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     }
 
     try {
-      const singleInput = texts[0];
-      const response = await this.client.embeddings.create({
-        input: texts.length === 1 && singleInput !== undefined ? singleInput : [...texts],
-        model: this.model,
-        // Explicit -- the OpenAI SDK defaults to "base64", which we then have
-        // to decode ourselves. Many OpenAI-compatible providers (LM Studio,
-        // llama.cpp, vLLM) ignore encoding_format and always return a float
-        // array; the SDK then mis-interprets it as base64-encoded bytes and
-        // silently returns a truncated, all-zero Float32Array. Asking for
-        // "float" explicitly bypasses the client-side decode.
-        encoding_format: "float",
-      });
+      const response = await this.createWithModelReloadRetry(texts);
 
       if (response.data.length !== texts.length) {
         throw new EmbeddingError(
@@ -123,6 +129,48 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
         cause: error,
       });
     }
+  }
+
+  // JIT-loading inference servers (LM Studio, llama.cpp) evict the model when
+  // a different one is requested, returning 404 model_not_found until reload.
+  private async createWithModelReloadRetry(
+    texts: readonly string[],
+  ): ReturnType<OpenAIEmbeddingsClient["embeddings"]["create"]> {
+    const singleInput = texts[0];
+    const params = {
+      input: texts.length === 1 && singleInput !== undefined ? singleInput : [...texts],
+      model: this.model,
+      // Explicit -- the OpenAI SDK defaults to "base64", which we then have
+      // to decode ourselves. Many OpenAI-compatible providers (LM Studio,
+      // llama.cpp, vLLM) ignore encoding_format and always return a float
+      // array; the SDK then mis-interprets it as base64-encoded bytes and
+      // silently returns a truncated, all-zero Float32Array. Asking for
+      // "float" explicitly bypasses the client-side decode.
+      encoding_format: "float" as const,
+    };
+
+    const maxAttempts = this.modelReloadRetryDelaysMs.length;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.client.embeddings.create(params);
+      } catch (error) {
+        lastError = error;
+
+        if (!isModelNotLoadedError(error) || attempt === maxAttempts) {
+          throw error;
+        }
+
+        const delayMs = this.modelReloadRetryDelaysMs[attempt] ?? 0;
+
+        if (delayMs > 0) {
+          await sleep(delayMs);
+        }
+      }
+    }
+
+    throw lastError;
   }
 }
 

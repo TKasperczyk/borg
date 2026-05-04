@@ -18,6 +18,7 @@ type ParsedOptions = {
   maintenanceEvery?: string | number;
   out?: string;
   metricsOut?: string;
+  traceOut?: string;
   keep?: boolean;
   mock?: boolean;
   real?: boolean;
@@ -92,6 +93,7 @@ async function main(): Promise<void> {
     .option("--maintenance-every <n>", "Run light maintenance every N turns", { default: 10 })
     .option("--out <path>", "Write markdown report to a file")
     .option("--metrics-out <path>", "Write metrics JSONL to a file")
+    .option("--trace-out <path>", "Write per-turn trace JSONL to a file (default: /tmp)")
     .option("--keep", "Keep Borg data dirs and trace files for inspection")
     .option("--real", "Use real Anthropic persona and overseer calls")
     .option("--mock", "Use deterministic fake persona, overseer, and Borg LLM");
@@ -104,6 +106,13 @@ async function main(): Promise<void> {
     metricsOut === undefined || metricsOut.length === 0
       ? join(tmpdir(), `borg-simulator-${runId}.metrics.jsonl`)
       : metricsOut;
+  const traceOut = options.traceOut?.trim();
+  const tracePath = traceOut === undefined || traceOut.length === 0 ? undefined : traceOut;
+
+  if (tracePath !== undefined) {
+    mkdirSync(dirname(tracePath), { recursive: true });
+  }
+
   const report = await runSimulation({
     runId,
     persona: selectPersona(options.persona),
@@ -111,6 +120,7 @@ async function main(): Promise<void> {
     checkEvery: parsePositiveInteger(options.checkEvery, "--check-every", 250),
     maintenanceEvery: parsePositiveInteger(options.maintenanceEvery, "--maintenance-every", 10),
     metricsPath,
+    tracePath,
     keep: options.keep === true,
     mock: selectMode(options),
     env: process.env,
