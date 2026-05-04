@@ -187,6 +187,48 @@ function createNoOutputTurnPlanResponse() {
   };
 }
 
+function createTurnPlanResponse() {
+  return {
+    text: "",
+    input_tokens: 8,
+    output_tokens: 4,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_plan",
+        name: "EmitTurnPlan",
+        input: {
+          uncertainty: "whether the response should continue",
+          verification_steps: [],
+          tensions: [],
+          voice_note: "",
+          referenced_episode_ids: [],
+          intents: [],
+        },
+      },
+    ],
+  };
+}
+
+function createRecallExpansionResponse() {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_recall_expansion",
+        name: "EmitRecallExpansion",
+        input: {
+          facets: [],
+          named_terms: [],
+        },
+      },
+    ],
+  };
+}
+
 function createGenerationGateResponse(input: {
   decision: "proceed" | "suppress";
   substantive: boolean;
@@ -494,6 +536,16 @@ function firstFinalizerRequest(
   return requests.find(
     (request) => request.budget === "cognition-system-1" || request.budget === "cognition-system-2",
   );
+}
+
+function finalizerRequests(requests: readonly LLMCompleteOptions[]): LLMCompleteOptions[] {
+  return requests.filter(
+    (request) => request.budget === "cognition-system-1" || request.budget === "cognition-system-2",
+  );
+}
+
+function requestTextMessages(request: LLMCompleteOptions | undefined): string[] {
+  return request?.messages.map((message) => message.content) ?? [];
 }
 
 async function removeTempDir(path: string): Promise<void> {
@@ -1722,6 +1774,123 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           source_stream_entry_ids: [userEntry?.id],
         }),
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("marks failed turns aborted and keeps retry state clean", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_190_000);
+    const failedUserMessage = "Stop using ritual closing lines.";
+    const failedReason = "finalizer exploded";
+    const retryResponse = "I will keep it direct.";
+    let correctiveCalls = 0;
+    let finalizerCalls = 0;
+    const scriptedResponse = (options: LLMCompleteOptions) => {
+      if (options.budget === "corrective-preference-extractor") {
+        correctiveCalls += 1;
+        return correctiveCalls === 1
+          ? createCorrectivePreferenceResponse({
+              classification: "corrective_preference",
+              type: "preference",
+              directive: "Do not add ritual closing lines.",
+              priority: 8,
+              reason: "The user named a future response pattern to stop.",
+              confidence: 0.9,
+            })
+          : createCorrectivePreferenceResponse({
+              classification: "none",
+              reason: "No new preference.",
+              confidence: 0.9,
+            });
+      }
+
+      if (options.budget === "generation-gate") {
+        return createGenerationGateResponse({ decision: "proceed", substantive: true });
+      }
+
+      if (options.budget === "recall-expansion") {
+        return createRecallExpansionResponse();
+      }
+
+      if (options.budget === "cognition-plan") {
+        return createTurnPlanResponse();
+      }
+
+      if (options.budget === "cognition-system-2") {
+        finalizerCalls += 1;
+        if (finalizerCalls === 1) {
+          throw new Error(failedReason);
+        }
+        return retryResponse;
+      }
+
+      if (options.budget === "cognition-system-1") {
+        return retryResponse;
+      }
+
+      if (options.budget === "commitment-judge") {
+        return createCommitmentJudgeResponse([]);
+      }
+
+      if (options.budget === "generation-stop-commitment") {
+        return createStopCommitmentResponse({ classification: "none" });
+      }
+
+      if (options.budget === "reflection") {
+        return createEmptyReflectionResponse();
+      }
+
+      return retryResponse;
+    };
+    const llm = new FakeLLMClient({
+      responses: Array.from({ length: 20 }, () => scriptedResponse),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      await expect(
+        borg.turn({
+          userMessage: failedUserMessage,
+          stakes: "high",
+        }),
+      ).rejects.toThrow(failedReason);
+
+      const abortedEntries = borg.stream.tail(20);
+      const abortedMarker = abortedEntries.find(
+        (entry) => {
+          const content = entry.content as { event?: unknown };
+          return entry.kind === "internal_event" && content.event === "aborted_turn";
+        },
+      );
+      const abortedUserEntry = abortedEntries.find((entry) => entry.kind === "user_msg");
+      const abortedPlanEntry = abortedEntries.find((entry) => entry.kind === "thought");
+
+      expect(abortedMarker?.turn_status).toBe("aborted");
+      expect(abortedMarker?.content).toMatchObject({
+        turn_id: abortedUserEntry?.turn_id,
+        reason: expect.stringContaining(failedReason),
+      });
+      expect(abortedPlanEntry?.turn_id).toBe(abortedUserEntry?.turn_id);
+      expect(borg.commitments.list({ activeOnly: true })).toEqual([]);
+      expect(borg.workmem.load()).toMatchObject({
+        turn_counter: 0,
+        pending_actions: [],
+      });
+
+      const retry = await borg.turn({
+        userMessage: failedUserMessage,
+      });
+      const retryFinalizer = finalizerRequests(llm.requests).at(-1);
+      const retryUserMessages = requestTextMessages(retryFinalizer).filter(
+        (message) => message === failedUserMessage,
+      );
+
+      expect(retry.response).toBe(retryResponse);
+      expect(retryUserMessages).toEqual([failedUserMessage]);
+      expect(borg.commitments.list({ activeOnly: true })).toEqual([]);
     } finally {
       await borg.close();
     }

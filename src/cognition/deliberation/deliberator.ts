@@ -221,7 +221,9 @@ export class Deliberator {
     });
     const plan = planner.plan;
     const thoughts = plan === null ? [] : [formatTurnPlanForThought(plan)];
-    const persistedThoughtEntries = await persistDeliberationThoughts(streamWriter, thoughts);
+    const persistedThoughtEntries = await persistDeliberationThoughts(streamWriter, thoughts, {
+      turnId: context.turnId,
+    });
     const thoughtsPersisted = persistedThoughtEntries.length > 0;
 
     if (this.tracer.enabled && context.turnId !== undefined) {

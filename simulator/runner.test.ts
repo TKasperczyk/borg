@@ -93,23 +93,37 @@ function fakeSimulatorBorg(): Borg {
 
 function fakePersonaSession(messages: readonly string[]): {
   session: PersonaSession;
-  nextTurn: ReturnType<typeof vi.fn>;
+  prepareNextTurn: ReturnType<typeof vi.fn>;
+  commit: ReturnType<typeof vi.fn>;
+  rollback: ReturnType<typeof vi.fn>;
   startNewSession: ReturnType<typeof vi.fn>;
 } {
   let index = 0;
-  const nextTurn = vi.fn(async () => {
+  const prepareNextTurn = vi.fn(async () => {
     const message = messages[index] ?? messages.at(-1) ?? "persona turn";
-    index += 1;
-    return message;
+    return {
+      kind: "mock",
+      message,
+      history: null,
+      mockIndex: index,
+    };
   });
+  const commit = vi.fn(() => {
+    index += 1;
+  });
+  const rollback = vi.fn();
   const startNewSession = vi.fn();
 
   return {
     session: {
-      nextTurn,
+      prepareNextTurn,
+      commit,
+      rollback,
       startNewSession,
     } as unknown as PersonaSession,
-    nextTurn,
+    prepareNextTurn,
+    commit,
+    rollback,
     startNewSession,
   };
 }
@@ -155,6 +169,127 @@ function chatResult(input: {
 }
 
 describe("SimulatorRunner", () => {
+  it("drafts one persona turn while retrying transient transport failures", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const draftMessage = "stable persona draft";
+    const borgResponse = "Borg replied.";
+    const failureMessage = "transient transport failure";
+    const persona = fakePersonaSession([draftMessage]);
+    const seenMessages: string[] = [];
+    mockTransportLifecycle();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (message, options = {}) => {
+      seenMessages.push(message);
+
+      if (seenMessages.length < 3) {
+        throw new Error(failureMessage);
+      }
+
+      return chatResult({
+        response: borgResponse,
+        emitted: true,
+        turnId: "turn-retry-success",
+        sessionId: options.sessionId as SessionId,
+      });
+    });
+
+    const report = await runSimulation({
+      runId: "sim-runner-retry-draft-test",
+      persona: tomPersona,
+      personaSession: persona.session,
+      totalTurns: 1,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+    const [metricsRow] = readFileSync(metricsPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as { transport_chat_attempts: number });
+
+    expect(seenMessages).toEqual([draftMessage, draftMessage, draftMessage]);
+    expect(persona.prepareNextTurn).toHaveBeenCalledOnce();
+    expect(persona.commit).toHaveBeenCalledOnce();
+    expect(persona.commit.mock.calls[0]?.[0]).toMatchObject({ message: draftMessage });
+    expect(persona.commit.mock.calls[0]?.[1]).toBe(borgResponse);
+    expect(persona.rollback).not.toHaveBeenCalled();
+    expect(report.turnFailures).toEqual([]);
+    expect(metricsRow?.transport_chat_attempts).toBe(3);
+  });
+
+  it("rolls back a persona draft and records aborted metrics after exhausted retries", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const draftMessage = "rollback persona draft";
+    const borgResponse = "Recovered Borg reply.";
+    const failureMessage = "exhausted transport failure";
+    const persona = fakePersonaSession([draftMessage]);
+    const seenMessages: string[] = [];
+    mockTransportLifecycle();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (message, options = {}) => {
+      seenMessages.push(message);
+
+      if (seenMessages.length <= 3) {
+        throw new Error(failureMessage);
+      }
+
+      return chatResult({
+        response: borgResponse,
+        emitted: true,
+        turnId: "turn-after-abort",
+        sessionId: options.sessionId as SessionId,
+      });
+    });
+
+    const report = await runSimulation({
+      runId: "sim-runner-retry-rollback-test",
+      persona: tomPersona,
+      personaSession: persona.session,
+      totalTurns: 2,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+    const metricsRows = readFileSync(metricsPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            event: string;
+            transport_chat_attempts: number;
+            failure_reason?: string;
+          },
+      );
+
+    expect(seenMessages).toEqual([draftMessage, draftMessage, draftMessage, draftMessage]);
+    expect(persona.prepareNextTurn).toHaveBeenCalledTimes(2);
+    expect(persona.rollback).toHaveBeenCalledOnce();
+    expect(persona.commit).toHaveBeenCalledOnce();
+    expect(report.turnFailures).toEqual([
+      {
+        turn: 1,
+        attempts: 3,
+        error: failureMessage,
+      },
+    ]);
+    expect(metricsRows).toMatchObject([
+      {
+        event: "aborted_turn",
+        transport_chat_attempts: 3,
+        failure_reason: failureMessage,
+      },
+      {
+        event: "turn_metrics",
+        transport_chat_attempts: 1,
+      },
+    ]);
+  });
+
   it("runs a 20-turn mock simulation with overseer checkpoints and metrics", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
@@ -352,8 +487,8 @@ describe("SimulatorRunner", () => {
 
     expect(chatSessionIds).toHaveLength(2);
     expect(chatSessionIds[0]).toBe(chatSessionIds[1]);
-    expect(persona.nextTurn).toHaveBeenCalledTimes(2);
-    expect(persona.nextTurn.mock.calls.map(([previous]) => previous)).toEqual([null, null]);
+    expect(persona.prepareNextTurn).toHaveBeenCalledTimes(2);
+    expect(persona.prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([null, null]);
     expect(persona.startNewSession).not.toHaveBeenCalled();
     expect(report.resultState).toBe("completed");
     expect(report.sessions).toHaveLength(1);
@@ -409,7 +544,7 @@ describe("SimulatorRunner", () => {
 
     expect(chatSessionIds).toHaveLength(2);
     expect(chatSessionIds[0]).not.toBe(chatSessionIds[1]);
-    expect(persona.nextTurn).toHaveBeenCalledTimes(2);
+    expect(persona.prepareNextTurn).toHaveBeenCalledTimes(2);
     expect(persona.startNewSession).toHaveBeenCalledTimes(1);
     expect(persona.startNewSession.mock.calls[0]?.[0]).toBe(
       "It's the next evening. You're back on the couch after dinner.",

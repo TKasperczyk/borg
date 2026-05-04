@@ -22,6 +22,7 @@ export const STREAM_ENTRY_KINDS = [
 ] as const;
 
 export const streamEntryKindSchema = z.enum(STREAM_ENTRY_KINDS);
+export const streamTurnStatusSchema = z.enum(["active", "aborted"]);
 
 export const streamEntryIdSchema = z
   .string()
@@ -42,6 +43,8 @@ export const streamEntrySchema = z.object({
   timestamp: z.number().finite(),
   kind: streamEntryKindSchema,
   content: z.unknown(),
+  turn_id: z.string().min(1).optional(),
+  turn_status: streamTurnStatusSchema.default("active"),
   token_estimate: z.number().int().nonnegative().optional(),
   tool_calls: z.array(z.unknown()).optional(),
   audience: z.string().min(1).optional(),
@@ -60,8 +63,11 @@ export const streamEntryInputSchema = streamEntrySchema
   });
 
 export type StreamEntryKind = z.infer<typeof streamEntryKindSchema>;
-export type StreamEntry = z.infer<typeof streamEntrySchema>;
-export type StreamEntryInput = z.infer<typeof streamEntryInputSchema>;
+export type StreamTurnStatus = z.infer<typeof streamTurnStatusSchema>;
+export type StreamEntry = Omit<z.infer<typeof streamEntrySchema>, "turn_status"> & {
+  turn_status?: StreamTurnStatus;
+};
+export type StreamEntryInput = z.input<typeof streamEntryInputSchema>;
 
 export type StreamCursor = {
   ts: number;

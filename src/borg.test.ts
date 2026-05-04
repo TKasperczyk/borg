@@ -2416,7 +2416,7 @@ describe("Borg", () => {
     }
   });
 
-  it("saves working memory early and logs an internal event when a turn fails", async () => {
+  it("rolls back working memory and logs an aborted marker when a turn fails", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
 
@@ -2469,14 +2469,22 @@ describe("Borg", () => {
       ).rejects.toThrow("FakeLLMClient has no scripted response available");
 
       expect(borg.workmem.load()).toMatchObject({
-        turn_counter: 1,
-        mode: "problem_solving",
+        turn_counter: 0,
+        mode: null,
       });
-      expect(borg.stream.tail(3).map((entry) => entry.kind)).toEqual([
+      const entries = borg.stream.tail(3);
+
+      expect(entries.map((entry) => entry.kind)).toEqual([
         "user_msg",
         "perception",
         "internal_event",
       ]);
+      expect(entries[2]).toMatchObject({
+        turn_status: "aborted",
+        content: expect.objectContaining({
+          event: "aborted_turn",
+        }),
+      });
     } finally {
       await borg.close();
     }

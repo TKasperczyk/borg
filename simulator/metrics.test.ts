@@ -114,11 +114,14 @@ describe("MetricsCapture", () => {
       {
         sessionId,
         sessionIds: [sessionId, otherSessionId],
+        transportChatAttempts: 2,
       },
     );
     const written = JSON.parse(readFileSync(metricsPath, "utf8").trim()) as MetricsRow;
 
     expect(row.turn_counter).toBe(3);
+    expect(row.event).toBe("turn_metrics");
+    expect(row.transport_chat_attempts).toBe(2);
     expect(row.episode_count).toBe(2);
     expect(row.semantic_node_count).toBe(1);
     expect(row.semantic_edge_count).toBe(2);
@@ -145,6 +148,7 @@ describe("MetricsCapture", () => {
     await capture.capture(fakeBorg({ semanticNodes: 1, semanticEdges: 2 }), "turn-1", 1, {
       sessionId,
       sessionIds: [sessionId],
+      transportChatAttempts: 1,
     });
     const row = await capture.capture(
       fakeBorg({ semanticNodes: 4, semanticEdges: 5 }),
@@ -153,10 +157,31 @@ describe("MetricsCapture", () => {
       {
         sessionId,
         sessionIds: [sessionId],
+        transportChatAttempts: 1,
       },
     );
 
     expect(row.semantic_nodes_added_since_last_check).toBe(3);
     expect(row.semantic_edges_added_since_last_check).toBe(3);
+  });
+
+  it("captures aborted turns with a failure reason", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const capture = new MetricsCapture(metricsPath);
+    const sessionId = createSessionId();
+    const failureReason = "transport failed";
+
+    const row = await capture.captureAborted(fakeBorg(), 4, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 3,
+      failureReason,
+    });
+
+    expect(row.event).toBe("aborted_turn");
+    expect(row.turn_counter).toBe(4);
+    expect(row.transport_chat_attempts).toBe(3);
+    expect(row.failure_reason).toBe(failureReason);
   });
 });

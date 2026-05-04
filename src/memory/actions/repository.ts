@@ -1,4 +1,4 @@
-import { parseJsonArray, type JsonArrayCodecOptions } from "../../storage/codecs.js";
+import { parseJsonArray, quoteSqlString, type JsonArrayCodecOptions } from "../../storage/codecs.js";
 import {
   LanceDbTable,
   float64Field,
@@ -196,10 +196,14 @@ export class ActionRepository {
 
     this.enqueueEmbeddingTask(
       (async () => {
-        const embedding = await embeddingClient.embed(record.description);
-        await table.upsert([vectorRowFromAction(record, embedding)], {
-          on: "id",
-        });
+        try {
+          const embedding = await embeddingClient.embed(record.description);
+          await table.upsert([vectorRowFromAction(record, embedding)], {
+            on: "id",
+          });
+        } catch {
+          // SQL is the source of truth; vector refresh can retry on a later update.
+        }
       })(),
     );
   }
@@ -390,5 +394,15 @@ export class ActionRepository {
       .sort((left, right) => right.similarity - left.similarity)
       .slice(0, Math.max(1, limit))
       .map((item) => item.record);
+  }
+
+  async delete(id: ActionId): Promise<boolean> {
+    const result = this.db.prepare("DELETE FROM action_records WHERE id = ?").run(id);
+
+    if (result.changes > 0 && this.table !== undefined) {
+      await this.table.remove(`id = ${quoteSqlString(id)}`);
+    }
+
+    return result.changes > 0;
   }
 }

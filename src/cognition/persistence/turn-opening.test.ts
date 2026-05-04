@@ -10,6 +10,8 @@ import { TurnOpeningPersistence } from "./turn-opening.js";
 const userEntryId = "strm_abcdefghijklmnop" as StreamEntryId;
 const perceptionEntryId = "strm_bcdefghijklmnopa" as StreamEntryId;
 const entityId = "ent_abcdefghijklmnop" as EntityId;
+const turnId = "turn-opening-test";
+const activeTurnStatus = "active";
 
 function makePerception(): PerceptionResult {
   return {
@@ -37,6 +39,7 @@ function makeStreamWriter(sequence: string[]) {
         timestamp: input.kind === "user_msg" ? 1_000 : 1_001,
         session_id: DEFAULT_SESSION_ID,
         compressed: input.compressed ?? false,
+        turn_status: input.turn_status ?? activeTurnStatus,
       } satisfies StreamEntry;
     },
   };
@@ -83,6 +86,7 @@ describe("TurnOpeningPersistence", () => {
       },
     }).persist({
       streamWriter,
+      turnId,
       userMessage: "Fix Atlas",
       audience: "alice",
       workingMemory: initialWorkingMemory,
@@ -112,10 +116,14 @@ describe("TurnOpeningPersistence", () => {
       {
         kind: "user_msg",
         content: "Fix Atlas",
+        turn_id: turnId,
+        turn_status: activeTurnStatus,
         audience: "alice",
       },
       {
         kind: "perception",
+        turn_id: turnId,
+        turn_status: activeTurnStatus,
         content: {
           mode: "problem_solving",
           entities: ["Atlas"],
@@ -161,6 +169,7 @@ describe("TurnOpeningPersistence", () => {
       },
     }).persist({
       streamWriter,
+      turnId,
       userMessage: "",
       persistUserMessage: false,
       audience: "self",
@@ -176,6 +185,8 @@ describe("TurnOpeningPersistence", () => {
     expect(appended).toEqual([
       {
         kind: "perception",
+        turn_id: turnId,
+        turn_status: activeTurnStatus,
         content: {
           mode: "problem_solving",
           entities: ["Atlas"],
@@ -204,6 +215,7 @@ describe("TurnOpeningPersistence", () => {
       },
     }).persist({
       streamWriter,
+      turnId,
       userMessage: "Hello",
       workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 500),
       pendingSocialAttribution: null,

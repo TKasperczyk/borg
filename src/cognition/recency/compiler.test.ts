@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { StreamReader, StreamWriter } from "../../stream/index.js";
+import { ABORTED_TURN_EVENT, StreamReader, StreamWriter } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 
@@ -198,6 +198,48 @@ describe("TurnContextCompiler", () => {
     expect(window.messages).toHaveLength(2);
     expect(window.messages[window.messages.length - 1]?.role).toBe("assistant");
     expect(window.messages.map((m) => m.content)).toEqual(["first", "response"]);
+  });
+
+  it("excludes entries from an aborted turn", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+    const abortedTurnId = "aborted-turn";
+    const activeUserMessage = "active recency user";
+    const activeAgentMessage = "active recency response";
+
+    try {
+      await writer.append({ kind: "user_msg", content: activeUserMessage });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: activeAgentMessage });
+      clock.advance(10);
+      await writer.append({
+        kind: "user_msg",
+        content: "aborted user",
+        turn_id: abortedTurnId,
+        turn_status: "active",
+      });
+      clock.advance(10);
+      await writer.append({
+        kind: "internal_event",
+        turn_id: abortedTurnId,
+        turn_status: "aborted",
+        content: {
+          event: ABORTED_TURN_EVENT,
+          turn_id: abortedTurnId,
+          reason: "finalizer failed",
+        },
+      });
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler().compile(makeReader(dataDir));
+
+    expect(window.messages.map((message) => message.content)).toEqual([
+      activeUserMessage,
+      activeAgentMessage,
+    ]);
   });
 
   it("collapses same-role adjacency by keeping the newest entry in each run", async () => {

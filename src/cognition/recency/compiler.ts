@@ -1,4 +1,8 @@
-import { StreamReader, type StreamEntry } from "../../stream/index.js";
+import {
+  StreamReader,
+  filterActiveStreamEntries,
+  type StreamEntry,
+} from "../../stream/index.js";
 
 import type { RecencyMessage, RecencyWindow } from "./types.js";
 
@@ -93,7 +97,7 @@ export class TurnContextCompiler {
   ): RecencyWindow {
     const includeSelfTurns = options.includeSelfTurns ?? this.includeSelfTurns;
     const tailSize = Math.max(this.maxMessages * TAIL_MULTIPLIER, this.maxMessages);
-    const recent = streamReader.tail(tailSize);
+    const recent = filterActiveStreamEntries(streamReader.tail(tailSize));
 
     // Keep only conversation entries; preserve stream order.
     const conversational: Array<{

@@ -46,6 +46,15 @@ export type PersonaSessionOptions = {
   env?: NodeJS.ProcessEnv;
 };
 
+type PersonaTurnDraftKind = "mock" | "llm";
+
+export type PersonaTurnDraft = {
+  kind: PersonaTurnDraftKind;
+  message: string;
+  history: readonly [MessageParam, MessageParam] | null;
+  mockIndex: number | null;
+};
+
 type PersonaClientInit = {
   client: PersonaClient;
   systemPrefix: TextBlockParam[];
@@ -188,12 +197,16 @@ export class PersonaSession {
     this.nextSessionGap = gapContext;
   }
 
-  async nextTurn(borgPreviousResponse: string | null): Promise<string> {
+  async prepareNextTurn(borgPreviousResponse: string | null): Promise<PersonaTurnDraft> {
     if (this.mock) {
       const message =
         this.mockMessages[this.mockIndex % this.mockMessages.length] ?? DEFAULT_MOCK_MESSAGES[0];
-      this.mockIndex += 1;
-      return message;
+      return {
+        kind: "mock",
+        message,
+        history: null,
+        mockIndex: this.mockIndex,
+      };
     }
 
     const initialized =
@@ -234,9 +247,15 @@ export class PersonaSession {
     const text = await this.callPersona(initialized, requestMessages);
 
     if (text.length > 0) {
-      this.messages.push({ role: "user", content: baseUserMessage });
-      this.messages.push({ role: "assistant", content: text });
-      return text;
+      return {
+        kind: "llm",
+        message: text,
+        history: [
+          { role: "user", content: baseUserMessage },
+          { role: "assistant", content: text },
+        ],
+        mockIndex: null,
+      };
     }
 
     // Empty response: retry once with a generic nudge appended as an
@@ -264,9 +283,38 @@ export class PersonaSession {
     // Commit only the original user message + the recovered assistant
     // response -- the nudge exchange is harness-internal and should
     // not pollute the persona's apparent conversation history.
-    this.messages.push({ role: "user", content: baseUserMessage });
-    this.messages.push({ role: "assistant", content: nudgedText });
-    return nudgedText;
+    return {
+      kind: "llm",
+      message: nudgedText,
+      history: [
+        { role: "user", content: baseUserMessage },
+        { role: "assistant", content: nudgedText },
+      ],
+      mockIndex: null,
+    };
+  }
+
+  commit(draft: PersonaTurnDraft, _borgResponse: string): void {
+    if (draft.kind === "mock") {
+      if (draft.mockIndex === this.mockIndex) {
+        this.mockIndex += 1;
+      }
+      return;
+    }
+
+    if (draft.history === null) {
+      return;
+    }
+
+    this.messages.push(...draft.history);
+    if (this.messages.length === draft.history.length) {
+      this.nextSessionGap = null;
+    }
+  }
+
+  rollback(_draft: PersonaTurnDraft): void {
+    // Draft generation is side-effect free; rollback is part of the public
+    // lifecycle so runner failures can explicitly discard pending state.
   }
 
   private async callPersona(

@@ -1,11 +1,16 @@
 import {
   StreamReader,
+  collectAbortedTurnRefs,
+  filterActiveStreamEntries,
+  streamEntryIsActive,
   type StreamEntry,
   type StreamEntryIndexRepository,
 } from "../stream/index.js";
 import type { SessionId, StreamEntryId } from "../util/ids.js";
 
 import { CitationResolver } from "./citations.js";
+
+const RECENT_TAIL_MULTIPLIER = 4;
 
 export type RawStreamAdapterOptions = {
   dataDir: string;
@@ -23,11 +28,28 @@ export class RawStreamAdapter {
   }
 
   async resolveSourceIds(ids: readonly StreamEntryId[]): Promise<Map<string, StreamEntry>> {
-    return this.citationResolver.resolveCitationEntries(ids);
+    const entries = await this.citationResolver.resolveCitationEntries(ids);
+    const sessionIds = [...new Set([...entries.values()].map((entry) => entry.session_id))];
+    const markerEntries: StreamEntry[] = [];
+
+    for (const sessionId of sessionIds) {
+      const reader = new StreamReader({
+        dataDir: this.options.dataDir,
+        sessionId,
+      });
+
+      for await (const entry of reader.iterate({ kinds: ["internal_event"] })) {
+        markerEntries.push(entry);
+      }
+    }
+
+    const refs = collectAbortedTurnRefs(markerEntries);
+    return new Map([...entries].filter(([, entry]) => streamEntryIsActive(entry, refs)));
   }
 
   recent(options: { limit?: number; sessionId?: SessionId } = {}): StreamEntry[] {
     const limit = Math.max(1, options.limit ?? 4);
+    const tailLimit = limit * RECENT_TAIL_MULTIPLIER;
     const entries: StreamEntry[] = [];
     const sessionIds =
       options.sessionId === undefined
@@ -40,7 +62,7 @@ export class RawStreamAdapter {
         sessionId,
       });
 
-      entries.push(...reader.tail(limit));
+      entries.push(...filterActiveStreamEntries(reader.tail(tailLimit)));
     }
 
     return entries.sort(compareStreamEntriesDescending).slice(0, limit);

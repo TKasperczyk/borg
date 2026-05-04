@@ -34,7 +34,8 @@ export type TurnTraceEventName =
   | "open_question_resolution_degraded"
   | "commitment_check"
   | "relational_claim_guard"
-  | "reflection_emitted";
+  | "reflection_emitted"
+  | "turn_aborted";
 
 export type TurnTraceData = {
   turnId: string;
