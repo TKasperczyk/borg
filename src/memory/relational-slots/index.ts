@@ -3,6 +3,7 @@ export {
   RelationalSlotRepository,
   neutralPhraseForSlotKey,
   type RelationalSlotApplyResult,
+  type RelationalSlotCountByState,
   type RelationalSlotListOptions,
   type RelationalSlotRepositoryOptions,
 } from "./repository.js";

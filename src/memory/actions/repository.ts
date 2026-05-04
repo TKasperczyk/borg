@@ -24,6 +24,7 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import {
+  ACTION_STATES,
   actionRecordPatchSchema,
   actionRecordSchema,
   actionStateSchema,
@@ -150,6 +151,8 @@ export type ActionRepositoryOptions = {
   embeddingClient?: EmbeddingClient;
   clock?: Clock;
 };
+
+export type ActionCountByState = Record<ActionState, number>;
 
 export function createActionRecordsTableSchema(dimensions: number) {
   return schema([
@@ -357,6 +360,67 @@ export class ActionRepository {
       .all(...values, ...(limit === null ? [] : [limit])) as Record<string, unknown>[];
 
     return rows.map((row) => mapActionRow(row));
+  }
+
+  count(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM action_records").get() as
+      | { count: number }
+      | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  countByState(): ActionCountByState {
+    const counts = Object.fromEntries(
+      ACTION_STATES.map((state) => [state, 0]),
+    ) as ActionCountByState;
+    const rows = this.db
+      .prepare(
+        `
+          SELECT state, COUNT(*) AS count
+          FROM action_records
+          GROUP BY state
+        `,
+      )
+      .all() as Array<{ state: string; count: number }>;
+
+    for (const row of rows) {
+      const state = actionStateSchema.parse(row.state);
+      counts[state] = Number(row.count);
+    }
+
+    return counts;
+  }
+
+  countCompletedSince(timestampMs: number): number {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM action_records
+          WHERE state = 'completed'
+            AND completed_at IS NOT NULL
+            AND completed_at >= ?
+        `,
+      )
+      .get(timestampMs) as { count: number } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  latestCompletedAt(): number | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT MAX(completed_at) AS completed_at
+          FROM action_records
+          WHERE state = 'completed'
+            AND completed_at IS NOT NULL
+        `,
+      )
+      .get() as { completed_at: number | null } | undefined;
+
+    return row?.completed_at ?? null;
   }
 
   async findByDescription(description: string, limit: number): Promise<ActionRecord[]> {

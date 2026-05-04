@@ -89,6 +89,7 @@ export async function mergePendingActionsBySimilarity(input: {
   embeddingClient?: EmbeddingClient;
   nowMs: number;
   threshold?: number;
+  onSemanticMerge?: () => void;
 }): Promise<WorkingMemory["pending_actions"]> {
   const threshold = input.threshold ?? PENDING_ACTION_SEMANTIC_MERGE_THRESHOLD;
   let merged = normalizePendingActions([...input.existing]);
@@ -134,6 +135,7 @@ export async function mergePendingActionsBySimilarity(input: {
     }
 
     if (bestMatchIndex >= 0 && bestSimilarity >= threshold) {
+      input.onSemanticMerge?.();
       merged = merged.map((candidate, index) =>
         index === bestMatchIndex
           ? {
@@ -220,6 +222,7 @@ function replaceKnownValues(text: string, values: readonly string[], replacement
 
 export class WorkingMemoryStore {
   private readonly clock: Clock;
+  private pendingActionMergeCount = 0;
 
   constructor(private readonly options: WorkingMemoryStoreOptions = {}) {
     this.clock = options.clock ?? new SystemClock();
@@ -260,6 +263,18 @@ export class WorkingMemoryStore {
     const next = cloneWorkingMemory(parsed.data);
     this.writePersisted(next);
     return cloneWorkingMemory(next);
+  }
+
+  recordPendingActionMerges(count: number): void {
+    if (!Number.isFinite(count) || count <= 0) {
+      return;
+    }
+
+    this.pendingActionMergeCount += Math.floor(count);
+  }
+
+  getPendingActionMergeCount(): number {
+    return this.pendingActionMergeCount;
   }
 
   sanitizePendingActionsForRelationalSlot(
@@ -311,13 +326,18 @@ export class WorkingMemoryStore {
   }): Promise<WorkingMemory> {
     const nowMs = this.clock.now();
     const current = this.load(input.sessionId);
+    let semanticMergeCount = 0;
     const pendingActions = await mergePendingActionsBySimilarity({
       existing: current.pending_actions,
       incoming: [input.action],
       embeddingClient: input.embeddingClient,
       threshold: input.similarityThreshold,
       nowMs,
+      onSemanticMerge: () => {
+        semanticMergeCount += 1;
+      },
     });
+    this.recordPendingActionMerges(semanticMergeCount);
 
     return this.save({
       ...current,

@@ -1,7 +1,16 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { Borg, SessionId } from "../src/index.js";
+import {
+  ACTION_STATES,
+  RELATIONAL_SLOT_STATES,
+  REVIEW_KINDS,
+  type ActionState,
+  type Borg,
+  type RelationalSlotState,
+  type ReviewKind,
+  type SessionId,
+} from "../src/index.js";
 import { filterActiveStreamEntries } from "../src/stream/index.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
@@ -16,6 +25,20 @@ const ABORTED_ATTEMPT_EVENT = "aborted_attempt";
 type GoalTreeNodeLike = {
   children?: GoalTreeNodeLike[];
 };
+
+type MemoryBandMetricCounts = Pick<
+  MetricsRow,
+  | "action_record_count_total"
+  | "action_record_count_by_state"
+  | "recent_completed_action_count"
+  | "commitment_count_active"
+  | "commitment_count_superseded"
+  | "pending_action_count"
+  | "pending_action_merge_count"
+  | "relational_slot_count_by_state"
+  | "review_queue_open_count_by_type"
+  | "open_question_resolved_count"
+>;
 
 export type MetricsCaptureOptions = {
   tracePath?: string;
@@ -128,15 +151,72 @@ function generationSuppressionCount(borg: Borg, sessionIds: readonly SessionId[]
     .filter((entry) => entry.kind === "agent_suppressed").length;
 }
 
+function zeroCounts<K extends string>(keys: readonly K[]): Record<K, number> {
+  return Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
+}
+
+function reviewQueueOpenCountByType(borg: Borg): Record<ReviewKind, number> {
+  const counts = zeroCounts(REVIEW_KINDS);
+
+  for (const item of borg.review.list({ openOnly: true })) {
+    counts[item.kind] += 1;
+  }
+
+  return counts;
+}
+
+function openQuestionResolvedCount(borg: Borg): number {
+  return borg.identity
+    .listEvents({
+      recordType: "open_question",
+      limit: LARGE_COUNT_LIMIT,
+    })
+    .filter((event) => event.action === "resolve").length;
+}
+
 export class MetricsCapture {
   private readonly filepath: string;
   private readonly tracePath?: string;
   private previousSemanticNodeCount?: number;
   private previousSemanticEdgeCount?: number;
+  private previousLatestCompletedActionAt?: number;
 
   constructor(filepath: string, options: MetricsCaptureOptions = {}) {
     this.filepath = filepath;
     this.tracePath = options.tracePath;
+  }
+
+  private captureMemoryBandMetrics(borg: Borg, sessionId: SessionId): MemoryBandMetricCounts {
+    const actionRecordCountByState = borg.actions.countByState();
+    const latestCompletedActionAt = borg.actions.latestCompletedAt();
+    const recentCompletedActionCount = borg.actions.countCompletedSince(
+      this.previousLatestCompletedActionAt === undefined
+        ? Number.MIN_SAFE_INTEGER
+        : this.previousLatestCompletedActionAt + 1,
+    );
+    const workingMemory = borg.workmem.load(sessionId);
+
+    this.previousLatestCompletedActionAt =
+      latestCompletedActionAt ?? this.previousLatestCompletedActionAt;
+
+    return {
+      action_record_count_total: borg.actions.count(),
+      action_record_count_by_state: {
+        ...zeroCounts<ActionState>(ACTION_STATES),
+        ...actionRecordCountByState,
+      },
+      recent_completed_action_count: recentCompletedActionCount,
+      commitment_count_active: borg.commitments.countActive(),
+      commitment_count_superseded: borg.commitments.countSuperseded(),
+      pending_action_count: workingMemory.pending_actions.length,
+      pending_action_merge_count: borg.workmem.getPendingActionMergeCount(),
+      relational_slot_count_by_state: {
+        ...zeroCounts<RelationalSlotState>(RELATIONAL_SLOT_STATES),
+        ...borg.relationalSlots.countByState(),
+      },
+      review_queue_open_count_by_type: reviewQueueOpenCountByType(borg),
+      open_question_resolved_count: openQuestionResolvedCount(borg),
+    };
   }
 
   async capture(
@@ -168,6 +248,7 @@ export class MetricsCapture {
     });
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
+    const memoryBandMetrics = this.captureMemoryBandMetrics(borg, context.sessionId);
     const row: MetricsRow = {
       event: TURN_METRICS_EVENT,
       ts: Date.now(),
@@ -180,7 +261,17 @@ export class MetricsCapture {
       semantic_nodes_added_since_last_check: semanticNodesAdded,
       semantic_edges_added_since_last_check: semanticEdgesAdded,
       open_question_count: openQuestions.length,
+      open_question_resolved_count: memoryBandMetrics.open_question_resolved_count,
       active_goal_count: flattenGoalCount(activeGoals),
+      action_record_count_total: memoryBandMetrics.action_record_count_total,
+      action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
+      recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
+      commitment_count_active: memoryBandMetrics.commitment_count_active,
+      commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
+      pending_action_count: memoryBandMetrics.pending_action_count,
+      pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
+      relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
+      review_queue_open_count_by_type: memoryBandMetrics.review_queue_open_count_by_type,
       generation_suppression_count: generationSuppressions,
       mood_valence: mood.valence,
       mood_arousal: mood.arousal,
@@ -224,6 +315,7 @@ export class MetricsCapture {
     });
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
+    const memoryBandMetrics = this.captureMemoryBandMetrics(borg, context.sessionId);
     const row: MetricsRow = {
       event,
       ts: Date.now(),
@@ -237,7 +329,17 @@ export class MetricsCapture {
       semantic_nodes_added_since_last_check: 0,
       semantic_edges_added_since_last_check: 0,
       open_question_count: openQuestions.length,
+      open_question_resolved_count: memoryBandMetrics.open_question_resolved_count,
       active_goal_count: flattenGoalCount(activeGoals),
+      action_record_count_total: memoryBandMetrics.action_record_count_total,
+      action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
+      recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
+      commitment_count_active: memoryBandMetrics.commitment_count_active,
+      commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
+      pending_action_count: memoryBandMetrics.pending_action_count,
+      pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
+      relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
+      review_queue_open_count_by_type: memoryBandMetrics.review_queue_open_count_by_type,
       generation_suppression_count: generationSuppressions,
       mood_valence: mood.valence,
       mood_arousal: mood.arousal,

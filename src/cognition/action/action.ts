@@ -31,6 +31,7 @@ export type ActionResult = {
   tool_calls: ToolLoopCallRecord[];
   intents: IntentRecord[];
   workingMemory: WorkingMemory;
+  pending_action_merge_count?: number;
 };
 
 export type PendingActionRejection = {
@@ -95,6 +96,7 @@ export async function performAction(context: ActionContext): Promise<ActionResul
   };
   const emitted = emission.kind === "message";
   const pendingActions = emitted ? await filterPendingActions(context) : [];
+  let pendingActionMergeCount = 0;
   const pending_actions = emitted
     ? await mergePendingActionsBySimilarity({
         existing: context.workingMemory.pending_actions,
@@ -102,6 +104,9 @@ export async function performAction(context: ActionContext): Promise<ActionResul
         embeddingClient: context.pendingActionEmbeddingClient,
         nowMs: context.pendingActionTimestamp ?? context.workingMemory.updated_at,
         threshold: context.pendingActionSimilarityThreshold,
+        onSemanticMerge: () => {
+          pendingActionMergeCount += 1;
+        },
       })
     : [...context.workingMemory.pending_actions];
 
@@ -115,5 +120,6 @@ export async function performAction(context: ActionContext): Promise<ActionResul
       ...context.workingMemory,
       pending_actions,
     },
+    pending_action_merge_count: pendingActionMergeCount,
   };
 }

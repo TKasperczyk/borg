@@ -597,6 +597,38 @@ export class CommitmentRepository {
     return rows.map((row) => mapCommitmentRow(row));
   }
 
+  countActive(nowMs = this.clock.now()): number {
+    this.materializeExpiredCommitments(nowMs);
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM commitments
+          WHERE revoked_at IS NULL
+            AND superseded_by IS NULL
+            AND expired_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)
+        `,
+      )
+      .get(nowMs) as { count: number } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  countSuperseded(): number {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM commitments
+          WHERE superseded_by IS NOT NULL
+        `,
+      )
+      .get() as { count: number } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
   revoke(
     id: CommitmentId,
     reason: string,

@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ACTION_STATES,
   Borg,
   FakeLLMClient,
+  RELATIONAL_SLOT_STATES,
   type GenerationSuppressionReason,
   type SessionId,
 } from "../src/index.js";
@@ -46,6 +48,10 @@ function spyMaintenanceTick() {
     });
 }
 
+function zeroCounts<K extends string>(keys: readonly K[]): Record<K, number> {
+  return Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
+}
+
 function fakeSimulatorBorg(): Borg {
   return {
     mood: {
@@ -69,6 +75,27 @@ function fakeSimulatorBorg(): Borg {
       goals: {
         list: () => [],
       },
+    },
+    actions: {
+      count: () => 0,
+      countByState: () => zeroCounts(ACTION_STATES),
+      countCompletedSince: () => 0,
+      latestCompletedAt: () => null,
+    },
+    commitments: {
+      list: () => [],
+      countActive: () => 0,
+      countSuperseded: () => 0,
+    },
+    relationalSlots: {
+      countByState: () => zeroCounts(RELATIONAL_SLOT_STATES),
+    },
+    identity: {
+      listEvents: () => [],
+    },
+    workmem: {
+      load: () => ({ pending_actions: [] }),
+      getPendingActionMergeCount: () => 0,
     },
     stream: {
       tail: () => [],

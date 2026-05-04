@@ -353,6 +353,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         return extractor.extractFromEpisodes(episodes);
       },
     },
+    relationalSlots: {
+      countByState: () => deps.relationalSlotRepository.countByState(),
+    },
     commitments: {
       add: (input) =>
         deps.identityService.addCommitment({
@@ -388,6 +391,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
               ? null
               : deps.entityRepository.resolve(options.aboutEntity),
         }),
+      countActive: () => deps.commitmentRepository.countActive(),
+      countSuperseded: () => deps.commitmentRepository.countSuperseded(),
     },
     identity: {
       updateValue: (...args) => deps.identityService.updateValue(...args),
@@ -491,6 +496,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       clear: (sessionId = DEFAULT_SESSION_ID) => {
         deps.turnOrchestrator.clearWorkingMemory(sessionId);
       },
+      getPendingActionMergeCount: () => deps.workingMemoryStore.getPendingActionMergeCount(),
     },
   };
 }

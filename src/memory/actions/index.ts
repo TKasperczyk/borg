@@ -2,6 +2,7 @@ export { actionMigrations } from "./migrations.js";
 export {
   ActionRepository,
   createActionRecordsTableSchema,
+  type ActionCountByState,
   type ActionRecordListFilter,
   type ActionRepositoryOptions,
 } from "./repository.js";
