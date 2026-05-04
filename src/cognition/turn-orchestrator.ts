@@ -15,6 +15,7 @@ import {
   type CorrectivePreferenceCandidate,
   type CorrectivePreferenceSlotNegation,
 } from "./commitments/corrective-preference-extractor.js";
+import { ActionStateExtractor } from "./actions/action-state-extractor.js";
 import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { Deliberator, type SelfSnapshot, type TurnStakes } from "./deliberation/deliberator.js";
 import {
@@ -505,6 +506,26 @@ export class TurnOrchestrator {
     }
 
     this.tracer.emit("goal_promotion_extractor_degraded", {
+      turnId: input.turnId,
+      reason: input.reason,
+      ...(input.details ?? {}),
+      ...(this.tracer.includePayloads && input.error !== undefined
+        ? { error: input.error instanceof Error ? input.error.message : String(input.error) }
+        : {}),
+    });
+  }
+
+  private emitActionStateExtractorDegraded(input: {
+    turnId: string;
+    reason: string;
+    error?: unknown;
+    details?: Record<string, unknown>;
+  }): void {
+    if (!this.tracer.enabled) {
+      return;
+    }
+
+    this.tracer.emit("action_state_extractor_degraded", {
       turnId: input.turnId,
       reason: input.reason,
       ...(input.details ?? {}),
@@ -1039,6 +1060,31 @@ export class TurnOrchestrator {
         workingMemory = this.options.workingMemoryStore.load(sessionId);
 
         if (isUserTurn) {
+          if (persistedUserEntryId !== undefined) {
+            const actionStateExtractor = new ActionStateExtractor({
+              llmClient,
+              model: this.options.config.anthropic.models.recallExpansion,
+              actionRepository: this.options.actionRepository,
+              clock: this.clock,
+              tracer: this.tracer,
+              turnId,
+              onDegraded: (reason, error) => {
+                this.emitActionStateExtractorDegraded({
+                  turnId,
+                  reason,
+                  error,
+                });
+              },
+            });
+
+            await actionStateExtractor.extract({
+              userMessage: input.userMessage,
+              currentUserStreamEntryId: persistedUserEntryId,
+              recentHistory: recencyWindow.messages,
+              audienceEntityId,
+            });
+          }
+
           const activeGoalsForPromotion =
             await this.listActiveGoalsVisibleToAudience(audienceEntityId);
           const goalPromotionExtractor = new GoalPromotionExtractor({

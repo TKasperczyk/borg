@@ -122,6 +122,7 @@ export class ScriptedDebugLLM implements LLMClient {
   async complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
     if (
       options.budget === "corrective-preference-extractor" ||
+      options.budget === "action-state-extractor" ||
       options.budget === "relational-claim-auditor"
     ) {
       return this.respond(options);
@@ -156,6 +157,12 @@ export class ScriptedDebugLLM implements LLMClient {
     if (options.budget === "goal-promotion-extractor") {
       return buildToolResult(options, {
         promotions: [],
+      });
+    }
+
+    if (options.budget === "action-state-extractor") {
+      return buildToolResult(options, {
+        action_states: [],
       });
     }
 

@@ -2184,10 +2184,15 @@ describe("Borg", () => {
       const nonCorrectiveRequests = llm.requests.filter(
         (request) =>
           request.budget !== "corrective-preference-extractor" &&
+          request.budget !== "action-state-extractor" &&
           request.budget !== "goal-promotion-extractor",
       );
-      expect(llm.requests.some((request) => request.budget === "corrective-preference-extractor"))
-        .toBe(true);
+      expect(
+        llm.requests.some((request) => request.budget === "corrective-preference-extractor"),
+      ).toBe(true);
+      expect(llm.requests.some((request) => request.budget === "action-state-extractor")).toBe(
+        true,
+      );
       expect(llm.requests.some((request) => request.budget === "goal-promotion-extractor")).toBe(
         true,
       );

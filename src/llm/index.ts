@@ -1089,12 +1089,26 @@ function isGoalPromotionFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "goal-promotion-extractor";
 }
 
+function isActionStateExtractorFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "action-state-extractor";
+}
+
 function isRelationalClaimAuditorFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "relational-claim-auditor";
 }
 
 function isRecallExpansionFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "recall-expansion";
+}
+
+function scriptedResponseBudget(response: FakeLLMResponse | undefined): string | undefined {
+  if (typeof response !== "function") {
+    return undefined;
+  }
+
+  const budget = (response as { budget?: unknown }).budget;
+
+  return typeof budget === "string" ? budget : undefined;
 }
 
 function isProceduralContextResponse(response: FakeLLMResponse | undefined): boolean {
@@ -1183,6 +1197,24 @@ function isGoalPromotionResponse(response: FakeLLMResponse | undefined): boolean
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "EmitGoalPromotion",
+    );
+  }
+
+  return false;
+}
+
+function isActionStateResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "EmitActionStates");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "EmitActionStates",
     );
   }
 
@@ -1328,6 +1360,24 @@ function defaultGoalPromotionResponse(): LLMCompleteResult {
   };
 }
 
+function defaultActionStateResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_action_state",
+        name: "EmitActionStates",
+        input: {
+          action_states: [],
+        },
+      },
+    ],
+  };
+}
+
 function defaultRelationalClaimAuditResponse(): LLMCompleteResult {
   return {
     text: "",
@@ -1407,6 +1457,14 @@ export class FakeLLMClient implements LLMClient {
       !isGoalPromotionResponse(response)
     ) {
       return defaultGoalPromotionResponse();
+    }
+
+    if (
+      isActionStateExtractorFallbackRequest(options) &&
+      scriptedResponseBudget(response) !== "action-state-extractor" &&
+      !isActionStateResponse(response)
+    ) {
+      return defaultActionStateResponse();
     }
 
     if (
