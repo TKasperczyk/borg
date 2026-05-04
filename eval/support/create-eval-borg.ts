@@ -7,6 +7,7 @@ export const DEFAULT_EVAL_EMBEDDING_DIMS = 64;
 
 type EvalConfigOverrides = {
   dataDir?: string;
+  defaultUser?: Config["defaultUser"];
   perception?: Partial<Config["perception"]>;
   affective?: Partial<Config["affective"]>;
   embedding?: Partial<Config["embedding"]>;
@@ -77,6 +78,7 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
   const embeddingDimensions = options.embeddingDimensions ?? DEFAULT_EVAL_EMBEDDING_DIMS;
   const config: Config = {
     dataDir: options.tempDir,
+    defaultUser: options.config?.defaultUser ?? DEFAULT_CONFIG.defaultUser,
     perception: {
       ...DEFAULT_CONFIG.perception,
       ...options.config?.perception,

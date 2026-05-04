@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  Borg,
   FakeLLMClient,
-  type Borg,
   type GenerationSuppressionReason,
   type SessionId,
 } from "../src/index.js";
@@ -87,6 +87,7 @@ function fakeSimulatorBorg(): Borg {
     review: {
       list: () => [],
     },
+    close: async () => undefined,
   } as unknown as Borg;
 }
 
@@ -226,6 +227,40 @@ describe("SimulatorRunner", () => {
     });
 
     expect(chatSpy.mock.calls.map(([, options]) => options?.audience)).toEqual(["Tom", "Tom"]);
+  });
+
+  it("passes the persona display name as Borg defaultUser when opening", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const openSpy = vi.spyOn(Borg, "open").mockResolvedValue(fakeSimulatorBorg());
+    vi.spyOn(BorgTransport.prototype, "chat").mockResolvedValue({
+      response: "Mock response",
+      emitted: true,
+      emission: undefined as never,
+      turnId: "turn-default-user",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+      moodAfter: {
+        valence: 0,
+        arousal: 0,
+      },
+      toolCalls: [],
+    });
+
+    await runSimulation({
+      runId: "sim-runner-default-user-test",
+      persona: tomPersona,
+      totalTurns: 1,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+
+    expect(openSpy.mock.calls[0]?.[0]?.config?.defaultUser).toBe("Tom");
   });
 
   it("passes distinct session IDs after no_output_tool rotation and records them", async () => {

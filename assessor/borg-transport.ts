@@ -74,6 +74,7 @@ export type BorgTransportOptions = {
   llmClient?: BorgOpenOptions["llmClient"];
   embeddingClient?: BorgOpenOptions["embeddingClient"];
   clock?: ManualClock;
+  defaultUser?: string;
 };
 
 const MOCK_RESPONSE_COUNT = 20_000;
@@ -160,6 +161,7 @@ function createRealConfig(input: {
   env: NodeJS.ProcessEnv;
   scenario: Scenario;
   maintenance: boolean;
+  defaultUser?: string;
 }): Config {
   const loaded = loadConfig({
     dataDir: input.dataDir,
@@ -172,6 +174,7 @@ function createRealConfig(input: {
   const withScenarioOverrides = deepMerge(withAutonomyDisabled, {
     ...input.scenario.borgConfigOverrides,
     dataDir: input.dataDir,
+    ...(input.defaultUser === undefined ? {} : { defaultUser: input.defaultUser }),
   });
 
   return input.maintenance
@@ -512,6 +515,7 @@ export class BorgTransport {
   private readonly llmClient?: BorgOpenOptions["llmClient"];
   private readonly embeddingClient?: BorgOpenOptions["embeddingClient"];
   private readonly clock: ManualClock;
+  private readonly defaultUser?: string;
   private readonly seededGoals = new Map<string, GoalRecord>();
   private borg?: Borg;
 
@@ -529,6 +533,7 @@ export class BorgTransport {
     this.llmClient = options.llmClient;
     this.embeddingClient = options.embeddingClient;
     this.clock = options.clock ?? new ManualClock(Date.now());
+    this.defaultUser = options.defaultUser;
   }
 
   async open(): Promise<void> {
@@ -547,6 +552,7 @@ export class BorgTransport {
       const mockConfig: EvalConfigOverrides = {
         ...(this.scenario.borgConfigOverrides as EvalConfigOverrides),
         dataDir: this.dataDir,
+        ...(this.defaultUser === undefined ? {} : { defaultUser: this.defaultUser }),
         autonomy: deepMerge(
           {
             ...DEFAULT_CONFIG.autonomy,
@@ -582,6 +588,7 @@ export class BorgTransport {
         env,
         scenario: this.scenario,
         maintenance: this.maintenance,
+        defaultUser: this.defaultUser,
       }),
       env,
       tracerPath: this.tracePath,

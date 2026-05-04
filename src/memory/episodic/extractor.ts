@@ -469,6 +469,58 @@ function uniqueRelationalSlotSubjects(
   return unique;
 }
 
+function humanAudienceForRelationalSlot(
+  sourceEntries: readonly StreamEntry[],
+  relationalSlotSubjects: readonly RelationalSlotSubject[],
+): RelationalSlotSubject | null {
+  const audiences = uniqueStrings(
+    sourceEntries.flatMap((entry) => {
+      const audience = entry.audience?.trim();
+
+      return audience === undefined || audience.length === 0 || audience === "self"
+        ? []
+        : [audience];
+    }),
+  );
+
+  if (audiences.length !== 1) {
+    return null;
+  }
+
+  const audience = audiences[0];
+
+  return (
+    relationalSlotSubjects.find(
+      (subject) => subject.source === "audience" && subject.label === audience,
+    ) ?? null
+  );
+}
+
+function defaultUserRelationalSlotSubject(
+  relationalSlotSubjects: readonly RelationalSlotSubject[],
+): RelationalSlotSubject | null {
+  return relationalSlotSubjects.find((subject) => subject.source === "default_user") ?? null;
+}
+
+function resolveRelationalSlotSubjectEntityId(
+  subjectEntityId: string,
+  sourceEntries: readonly StreamEntry[],
+  relationalSlotSubjects: readonly RelationalSlotSubject[],
+): EntityId {
+  const candidate = subjectEntityId.trim();
+
+  if (candidate === "user") {
+    return (
+      (
+        humanAudienceForRelationalSlot(sourceEntries, relationalSlotSubjects) ??
+        defaultUserRelationalSlotSubject(relationalSlotSubjects)
+      )?.entity_id ?? (candidate as EntityId)
+    );
+  }
+
+  return candidate as EntityId;
+}
+
 function buildEpisodeFromCandidate(
   candidate: ExtractorCandidate,
   sourceEntries: readonly StreamEntry[],
@@ -613,7 +665,7 @@ export class EpisodicExtractor {
   private processRelationalSlotUpdate(
     candidate: RelationalSlotUpdateCandidate,
     chunkById: Map<string, StreamEntry>,
-    validSubjectIds: ReadonlySet<EntityId>,
+    relationalSlotSubjects: readonly RelationalSlotSubject[],
     sessionId: SessionId,
   ): void {
     const relationalSlotRepository = this.options.relationalSlotRepository;
@@ -623,7 +675,12 @@ export class EpisodicExtractor {
     }
 
     const sourceEntries = sourceEntriesFromRelationalSlotUpdate(candidate, chunkById);
-    const subjectEntityId = candidate.subject_entity_id as EntityId;
+    const subjectEntityId = resolveRelationalSlotSubjectEntityId(
+      candidate.subject_entity_id,
+      sourceEntries,
+      relationalSlotSubjects,
+    );
+    const validSubjectIds = new Set(relationalSlotSubjects.map((subject) => subject.entity_id));
 
     if (!validSubjectIds.has(subjectEntityId)) {
       throw new LLMError("Relational slot update referenced an unknown subject entity", {
@@ -726,10 +783,8 @@ export class EpisodicExtractor {
         skipped += 1;
       }
 
-      const validSubjectIds = new Set(relationalSlotSubjects.map((subject) => subject.entity_id));
-
       for (const slotUpdate of extracted.relational_slot_updates) {
-        this.processRelationalSlotUpdate(slotUpdate, chunkById, validSubjectIds, session);
+        this.processRelationalSlotUpdate(slotUpdate, chunkById, relationalSlotSubjects, session);
       }
     }
 
