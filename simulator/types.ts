@@ -1,4 +1,4 @@
-import type { SessionId } from "../src/index.js";
+import type { GenerationSuppressionReason, SessionId } from "../src/index.js";
 
 export type Persona = {
   key: string;
@@ -43,6 +43,14 @@ export type SimulatorSessionRecord = {
   startedAtTurn: number;
   endedAtTurn: number;
   endReason: "suppression" | "run_complete";
+  suppressionReason?: GenerationSuppressionReason;
+};
+
+export type SimulatorSuppressionRecord = {
+  sessionIndex: number;
+  sessionId: SessionId;
+  turn: number;
+  reason: GenerationSuppressionReason;
 };
 
 export type SimulatorRunReport = {
@@ -51,6 +59,7 @@ export type SimulatorRunReport = {
   totalTurns: number;
   resultState: SimulatorResultState;
   sessions: SimulatorSessionRecord[];
+  suppressionEvents: SimulatorSuppressionRecord[];
   overseerCheckpoints: OverseerVerdict[];
   turnFailures: Array<{ turn: number; error: string }>;
   finalMetrics: MetricsRow;

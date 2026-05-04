@@ -760,15 +760,31 @@ function emitTrace(input: {
     return;
   }
 
+  const unsupportedClaims = input.unsupported.map((validation) => ({
+    kind: validation.claim.kind,
+    reason: validation.reason,
+    ...(input.tracer?.includePayloads === true
+      ? {
+          asserted: validation.claim.asserted,
+          cited_stream_entry_ids: validation.claim.cited_stream_entry_ids,
+          cited_episode_ids: validation.claim.cited_episode_ids,
+          cited_commitment_ids: validation.claim.cited_commitment_ids,
+          cited_action_ids: validation.claim.cited_action_ids,
+          ...(validation.claim.kind === "callback" &&
+          validation.claim.callback_scope !== null &&
+          validation.claim.callback_scope !== undefined
+            ? { callback_scope: validation.claim.callback_scope }
+            : {}),
+        }
+      : {}),
+  }));
+
   input.tracer.emit("relational_claim_guard", {
     turnId: input.turnId,
     claimsExtracted: input.claims.length,
     claimsValid: input.validations.length - input.unsupported.length,
     claimsUnsupported: input.unsupported.length,
-    unsupportedClaims: input.unsupported.map((validation) => ({
-      kind: validation.claim.kind,
-      reason: validation.reason,
-    })),
+    unsupportedClaims,
     verdict: input.verdict,
     ...(input.suppressionReason === undefined
       ? {}

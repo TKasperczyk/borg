@@ -741,6 +741,74 @@ describe("RelationalClaimGuard", () => {
     );
   });
 
+  it("includes asserted unsupported claim payloads when payload tracing is enabled", async () => {
+    const streamEntryId = createStreamEntryId();
+    const episodeId = createEpisodeId();
+    const commitmentId = createCommitmentId();
+    const actionId = createActionId();
+    const asserted = "You mentioned the invoice earlier.";
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "callback",
+            asserted,
+            callback_scope: "prior_turn",
+            cited_stream_entry_ids: [streamEntryId],
+            cited_episode_ids: [episodeId],
+            cited_commitment_ids: [commitmentId],
+            cited_action_ids: [actionId],
+          }),
+        ]),
+        {
+          text: "   ",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const tracer = {
+      enabled: true,
+      includePayloads: true,
+      emit: vi.fn(),
+    };
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      tracer,
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    await guard.run({
+      turnId: "turn-trace-payload",
+      response: asserted,
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "relational_claim_guard",
+      expect.objectContaining({
+        unsupportedClaims: [
+          expect.objectContaining({
+            kind: "callback",
+            reason: expect.any(String),
+            asserted,
+            cited_stream_entry_ids: [streamEntryId],
+            cited_episode_ids: [episodeId],
+            cited_commitment_ids: [commitmentId],
+            cited_action_ids: [actionId],
+            callback_scope: "prior_turn",
+          }),
+        ],
+      }),
+    );
+  });
+
   it("rewrites unsupported non-self-correction claims once and re-audits", async () => {
     const llm = new FakeLLMClient({
       responses: [
