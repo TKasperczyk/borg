@@ -4,6 +4,7 @@ import { BorgTransport } from "../assessor/borg-transport.js";
 import type { Scenario } from "../assessor/types.js";
 import {
   createSessionId,
+  type GenerationSuppressionReason,
   type BorgOpenOptions,
   type MaintenanceCadence,
   type ReviewQueueItem,
@@ -19,6 +20,7 @@ import type {
   Persona,
   SimulatorRunReport,
   SimulatorSessionRecord,
+  SimulatorSuppressionRecord,
 } from "./types.js";
 
 const SESSION_GAP_DESCRIPTIONS: readonly string[] = [
@@ -52,6 +54,27 @@ export type SimulatorRunnerOptions = {
 };
 
 const DEFAULT_MAINTENANCE_EVERY = 10;
+
+function isSessionEndingSuppression(reason: GenerationSuppressionReason | undefined): boolean {
+  if (reason === undefined) return true;
+
+  if (reason === "generation_gate") return true;
+  if (reason === "active_discourse_stop") return true;
+  if (reason === "empty_finalizer") return true;
+  if (reason === "no_output_tool") return true;
+  if (reason === "s2_planner_no_output") return true;
+
+  if (reason === "commitment_revision_failed") return false;
+  if (reason === "rewrite_unsupported_or_empty") return false;
+  if (reason === "relational_guard_self_correction") return false;
+  if (reason === "relational_guard_audit_failed") return false;
+  if (reason === "relational_guard_rewrite_call_failed") return false;
+  if (reason === "relational_guard_rewrite_empty") return false;
+  if (reason === "relational_guard_reaudit_failed") return false;
+  if (reason === "relational_guard_rewrite_unsupported") return false;
+
+  return true;
+}
 
 function simulatorScenario(persona: Persona, totalTurns: number): Scenario {
   return {
@@ -181,6 +204,7 @@ export class SimulatorRunner {
     let finalMetrics: MetricsRow | undefined;
     let resultState: SimulatorRunReport["resultState"] = "completed";
     const sessions: SimulatorSessionRecord[] = [];
+    const suppressionEvents: SimulatorSuppressionRecord[] = [];
     let currentSessionStartTurn = 1;
     let currentSessionId: SessionId = createSessionId();
     const sessionIds: SessionId[] = [currentSessionId];
@@ -209,17 +233,30 @@ export class SimulatorRunner {
         turnId: string;
         response: string;
         emitted: boolean;
+        suppressionReason?: GenerationSuppressionReason;
       }> => {
         const message = await persona.nextTurn(lastBorgResponse);
         const result = await transport.chat(message, {
           audience: this.options.persona.displayName,
           sessionId: currentSessionId,
         });
-        return { turnId: result.turnId, response: result.response, emitted: result.emitted };
+        const suppressionReason =
+          result.emission?.kind === "suppressed" ? result.emission.reason : undefined;
+        return {
+          turnId: result.turnId,
+          response: result.response,
+          emitted: result.emitted,
+          suppressionReason,
+        };
       };
 
       for (let turn = 1; turn <= this.options.totalTurns; turn += 1) {
-        let success: { turnId: string; response: string; emitted: boolean } | null = null;
+        let success: {
+          turnId: string;
+          response: string;
+          emitted: boolean;
+          suppressionReason?: GenerationSuppressionReason;
+        } | null = null;
         let attemptError: unknown = null;
 
         for (let attempt = 0; attempt <= TRANSIENT_RETRY_ATTEMPTS; attempt += 1) {
@@ -260,17 +297,26 @@ export class SimulatorRunner {
         });
 
         if (!success.emitted) {
-          // Borg suppressed -- in a real product this means the user
-          // walked away. Treat it the same way: close out this session,
-          // run a heavy maintenance pass (the "time gap" is when offline
-          // work would actually fire in production), and rotate the
-          // persona to a fresh session so the run keeps going.
+          if (!isSessionEndingSuppression(success.suppressionReason)) {
+            suppressionEvents.push({
+              sessionIndex: sessions.length,
+              sessionId: currentSessionId,
+              turn,
+              reason: success.suppressionReason,
+            });
+            lastBorgResponse = null;
+            continue;
+          }
+
           sessions.push({
             sessionIndex: sessions.length,
             sessionId: currentSessionId,
             startedAtTurn: currentSessionStartTurn,
             endedAtTurn: turn,
             endReason: "suppression",
+            ...(success.suppressionReason === undefined
+              ? {}
+              : { suppressionReason: success.suppressionReason }),
           });
 
           if (sessions.length >= maxSessions) {
@@ -338,6 +384,7 @@ export class SimulatorRunner {
         totalTurns: this.options.totalTurns,
         resultState,
         sessions,
+        suppressionEvents,
         overseerCheckpoints,
         turnFailures: this.turnFailures,
         finalMetrics,
@@ -379,8 +426,20 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
   if (report.sessions.length > 0) {
     lines.push("## Sessions", "");
     for (const session of report.sessions) {
+      const reason =
+        session.suppressionReason === undefined ? "" : ` (${session.suppressionReason})`;
       lines.push(
-        `- Session ${session.sessionIndex} (turns ${session.startedAtTurn}-${session.endedAtTurn}): ended via ${session.endReason}`,
+        `- Session ${session.sessionIndex} (turns ${session.startedAtTurn}-${session.endedAtTurn}): ended via ${session.endReason}${reason}`,
+      );
+    }
+    lines.push("");
+  }
+
+  if (report.suppressionEvents.length > 0) {
+    lines.push("## Continued Suppressions", "");
+    for (const event of report.suppressionEvents) {
+      lines.push(
+        `- Turn ${event.turn} in session ${event.sessionIndex}: ${event.reason}; session continued`,
       );
     }
     lines.push("");
