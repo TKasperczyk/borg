@@ -31,6 +31,7 @@ function makeCommitment(id: string, priority: number, createdAt: number): Commit
   return {
     id: id as CommitmentId,
     type: "promise",
+    directive_family: `directive_${id}`,
     directive: `directive ${id}`,
     priority,
     made_to_entity: null,
@@ -46,6 +47,7 @@ function makeCommitment(id: string, priority: number, createdAt: number): Commit
     revoked_reason: null,
     revoke_provenance: null,
     superseded_by: null,
+    last_reinforced_at: createdAt,
   };
 }
 

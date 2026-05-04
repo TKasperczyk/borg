@@ -225,6 +225,7 @@ describe("identity service", () => {
       const streamEntryId = createStreamEntryId();
       const commitment = harness.identity.addCommitment({
         type: "preference",
+        directiveFamily: "user_named_response_corrections",
         directive: "Apply user-named response corrections in later turns.",
         priority: 8,
         restrictedAudience: null,

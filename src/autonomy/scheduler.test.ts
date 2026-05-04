@@ -155,6 +155,7 @@ describe("AutonomyScheduler", () => {
     });
     harness.commitmentRepository.add({
       type: "promise",
+      directiveFamily: "first_expiring_commitment",
       directive: "First expiring commitment",
       priority: 5,
       provenance: { kind: "manual" },
@@ -162,6 +163,7 @@ describe("AutonomyScheduler", () => {
     });
     harness.commitmentRepository.add({
       type: "promise",
+      directiveFamily: "second_expiring_commitment",
       directive: "Second expiring commitment",
       priority: 4,
       provenance: { kind: "manual" },

@@ -24,6 +24,7 @@ import {
   commitmentPatchSchema,
   commitmentSchema,
   entityRecordSchema,
+  normalizeDirectiveFamily,
   type CommitmentApplicableOptions,
   type CommitmentListOptions,
   type CommitmentPatch,
@@ -69,6 +70,7 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
   const parsed = commitmentSchema.safeParse({
     id: row.id,
     type: row.type,
+    directive_family: row.directive_family,
     directive: row.directive,
     priority: Number(row.priority),
     made_to_entity:
@@ -114,6 +116,7 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
       row.superseded_by === null || row.superseded_by === undefined
         ? null
         : parseCommitmentId(String(row.superseded_by)),
+    last_reinforced_at: Number(row.last_reinforced_at),
   });
 
   if (!parsed.success) {
@@ -320,9 +323,122 @@ export class CommitmentRepository {
     });
   }
 
+  private findActiveDirectiveFamilyMatches(
+    record: CommitmentRecord,
+    nowMs: number,
+  ): CommitmentRecord[] {
+    if (record.directive_family.length === 0) {
+      return [];
+    }
+
+    this.materializeExpiredCommitments(nowMs);
+
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM commitments
+          WHERE directive_family = ?
+            AND revoked_at IS NULL
+            AND superseded_by IS NULL
+            AND expired_at IS NULL
+            AND (expires_at IS NULL OR expires_at > ?)
+          ORDER BY last_reinforced_at DESC, created_at DESC
+        `,
+      )
+      .all(record.directive_family, nowMs) as Record<string, unknown>[];
+
+    return rows
+      .map((row) => mapCommitmentRow(row))
+      .filter(
+        (candidate) =>
+          candidate.made_to_entity === record.made_to_entity &&
+          candidate.restricted_audience === record.restricted_audience &&
+          candidate.about_entity === record.about_entity,
+      );
+  }
+
+  private mergeDirectiveFamilyMatch(
+    incoming: CommitmentRecord,
+    matches: readonly CommitmentRecord[],
+  ): CommitmentRecord {
+    const [kept, ...superseded] = [...matches].sort(
+      (left, right) =>
+        right.last_reinforced_at - left.last_reinforced_at ||
+        right.created_at - left.created_at ||
+        right.id.localeCompare(left.id),
+    );
+
+    if (kept === undefined) {
+      return incoming;
+    }
+
+    const sourceStreamEntryIds = uniqueStrings([
+      ...(kept.source_stream_entry_ids ?? []),
+      ...(incoming.source_stream_entry_ids ?? []),
+    ]);
+    const next = commitmentSchema.parse({
+      ...kept,
+      priority: Math.max(kept.priority, incoming.priority),
+      source_stream_entry_ids:
+        sourceStreamEntryIds.length === 0 ? undefined : sourceStreamEntryIds,
+      last_reinforced_at: Math.max(kept.last_reinforced_at, incoming.last_reinforced_at),
+    });
+
+    this.db
+      .prepare(
+        `
+          UPDATE commitments
+          SET priority = ?, source_stream_entry_ids = ?, last_reinforced_at = ?
+          WHERE id = ?
+        `,
+      )
+      .run(
+        next.priority,
+        next.source_stream_entry_ids === undefined
+          ? null
+          : serializeJsonValue(next.source_stream_entry_ids),
+        next.last_reinforced_at,
+        kept.id,
+      );
+
+    this.identityEventRepository?.record({
+      record_type: "commitment",
+      record_id: kept.id,
+      action: "update",
+      old_value: kept,
+      new_value: next,
+      reason: "directive_family_reinforced",
+      provenance: incoming.provenance,
+      ts: next.last_reinforced_at,
+    });
+
+    const supersede = this.db.prepare("UPDATE commitments SET superseded_by = ? WHERE id = ?");
+
+    for (const current of superseded) {
+      supersede.run(kept.id, current.id);
+      this.identityEventRepository?.record({
+        record_type: "commitment",
+        record_id: current.id,
+        action: "update",
+        old_value: current,
+        new_value: {
+          ...current,
+          superseded_by: kept.id,
+        },
+        reason: "directive_family_duplicate",
+        provenance: incoming.provenance,
+        ts: next.last_reinforced_at,
+      });
+    }
+
+    return next;
+  }
+
   add(input: {
     id?: CommitmentId;
     type: CommitmentType;
+    directiveFamily: string;
     directive: string;
     priority: number;
     madeToEntity?: EntityId | null;
@@ -345,6 +461,7 @@ export class CommitmentRepository {
     const record = commitmentSchema.parse({
       id: input.id ?? createCommitmentId(),
       type: input.type,
+      directive_family: normalizeDirectiveFamily(input.directiveFamily),
       directive: input.directive,
       priority: input.priority,
       made_to_entity: input.madeToEntity ?? null,
@@ -361,25 +478,32 @@ export class CommitmentRepository {
       revoked_reason: null,
       revoke_provenance: null,
       superseded_by: null,
+      last_reinforced_at: createdAt,
     });
     const storedProvenance = toStoredProvenance(record.provenance);
+    const familyMatches = this.findActiveDirectiveFamilyMatches(record, createdAt);
 
     return runIdentityWrite(this.identityEventRepository, () => {
+      if (familyMatches.length > 0) {
+        return this.mergeDirectiveFamilyMatch(record, familyMatches);
+      }
+
       this.db
         .prepare(
           `
             INSERT INTO commitments (
-              id, type, directive, priority, made_to_entity, restricted_audience, about_entity,
+              id, type, directive_family, directive, priority, made_to_entity, restricted_audience, about_entity,
               source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
               source_stream_entry_ids, created_at, expires_at, expired_at, revoked_at, revoked_reason,
               revoke_provenance_kind, revoke_provenance_episode_ids, revoke_provenance_process,
-              superseded_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              superseded_by, last_reinforced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
           record.id,
           record.type,
+          record.directive_family,
           record.directive,
           record.priority,
           record.made_to_entity,
@@ -403,6 +527,7 @@ export class CommitmentRepository {
           null,
           null,
           record.superseded_by,
+          record.last_reinforced_at,
         );
 
       this.identityEventRepository?.record({
@@ -611,16 +736,17 @@ export class CommitmentRepository {
         .prepare(
           `
             UPDATE commitments
-            SET type = ?, directive = ?, priority = ?, made_to_entity = ?, restricted_audience = ?,
+            SET type = ?, directive_family = ?, directive = ?, priority = ?, made_to_entity = ?, restricted_audience = ?,
                 about_entity = ?, source_episode_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
                 provenance_process = ?, source_stream_entry_ids = ?, expires_at = ?, expired_at = ?, revoked_at = ?, revoked_reason = ?,
                 revoke_provenance_kind = ?, revoke_provenance_episode_ids = ?, revoke_provenance_process = ?,
-                superseded_by = ?
+                superseded_by = ?, last_reinforced_at = ?
             WHERE id = ?
           `,
         )
         .run(
           next.type,
+          next.directive_family,
           next.directive,
           next.priority,
           next.made_to_entity,
@@ -643,6 +769,7 @@ export class CommitmentRepository {
           storedRevokeProvenance?.provenance_episode_ids ?? null,
           storedRevokeProvenance?.provenance_process ?? null,
           next.superseded_by,
+          next.last_reinforced_at,
           id,
         );
 

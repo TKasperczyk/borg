@@ -136,6 +136,7 @@ function stopCommitmentResponse() {
         name: "EmitStopCommitmentClassification",
         input: {
           classification: "stop_until_substantive_content",
+          directive_family: "stop_until_substantive_content",
           reason: "The assistant committed to stop until substantive content appears.",
           confidence: 0.95,
         },

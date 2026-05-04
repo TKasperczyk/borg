@@ -7,7 +7,11 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { commitmentIdSchema, commitmentTypeSchema } from "../../memory/commitments/index.js";
+import {
+  commitmentIdSchema,
+  commitmentTypeSchema,
+  normalizeDirectiveFamily,
+} from "../../memory/commitments/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import {
   entityIdHelpers,
@@ -65,6 +69,14 @@ const correctivePreferenceSchema = z
       .describe(
         "A concise first-person operational directive Borg can enforce when drafting or revising responses. Use null when classification is none.",
       ),
+    directive_family: z
+      .string()
+      .min(1)
+      .max(64)
+      .nullable()
+      .describe(
+        "Short canonical snake_case slug for the directive family, such as no_terminal_valediction, no_signoff, or respond_substantively. Use null when classification is none.",
+      ),
     priority: z
       .number()
       .int()
@@ -110,6 +122,7 @@ const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
   "Separately, fill slot_negations when the user rejects a supplied relational slot value, even if classification is none.",
   "For slot_negations, select subject_entity_id and slot_key only from supplied relational_slots and cite only the current_user_stream_entry_id.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
+  "Emit directive_family as a short snake_case semantic family slug chosen by meaning, not by surface wording.",
   "When uncertain, return none. The directive must be enforceable by a later response checker without needing to remember the current phrasing.",
 ].join("\n");
 
@@ -120,6 +133,7 @@ class MissingCorrectivePreferenceToolCallError extends Error {}
 export type CorrectivePreferenceCandidate = {
   type: Exclude<z.infer<typeof commitmentTypeSchema>, "promise">;
   directive: string;
+  directive_family: string;
   priority: number;
   reason: string;
   confidence: number;
@@ -165,6 +179,7 @@ export type ExtractCorrectivePreferenceInput = {
     id: CommitmentId;
     type: string;
     directive: string;
+    directive_family?: string | null;
     priority: number;
   }[];
   relationalSlots?: readonly {
@@ -181,20 +196,27 @@ function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreference
     return null;
   }
 
-  if (input.type === null || input.directive === null || input.priority === null) {
+  if (
+    input.type === null ||
+    input.directive === null ||
+    input.directive_family === null ||
+    input.priority === null
+  ) {
     return null;
   }
 
   const directive = input.directive.trim();
+  const directiveFamily = normalizeDirectiveFamily(input.directive_family);
   const reason = input.reason.trim();
 
-  if (directive.length === 0 || reason.length === 0) {
+  if (directive.length === 0 || directiveFamily.length === 0 || reason.length === 0) {
     return null;
   }
 
   return {
     type: input.type,
     directive,
+    directive_family: directiveFamily,
     priority: input.priority,
     reason,
     confidence: input.confidence,
@@ -268,6 +290,7 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
         active_commitments: input.activeCommitments.map((commitment) => ({
           id: commitment.id,
           type: commitment.type,
+          directive_family: commitment.directive_family ?? null,
           directive: commitment.directive,
           priority: commitment.priority,
         })),

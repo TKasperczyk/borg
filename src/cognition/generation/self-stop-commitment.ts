@@ -6,9 +6,18 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import { normalizeDirectiveFamily } from "../../memory/commitments/index.js";
 
 const stopCommitmentSchema = z.object({
   classification: z.enum(["stop_until_substantive_content", "none"]),
+  directive_family: z
+    .string()
+    .min(1)
+    .max(64)
+    .nullable()
+    .describe(
+      "Short canonical snake_case slug for this stop-commitment family. Use stop_until_substantive_content for positive classifications and null for none.",
+    ),
   reason: z.string().min(1),
   confidence: z.number().min(0).max(1),
 });
@@ -38,6 +47,7 @@ export type ExtractStopCommitmentInput = {
 };
 
 export type StopCommitmentExtraction = {
+  directive_family: string;
   reason: string;
   confidence: number;
 };
@@ -55,7 +65,18 @@ function parseResponse(result: LLMCompleteResult): StopCommitmentExtraction | nu
     return null;
   }
 
+  if (parsed.directive_family === null) {
+    return null;
+  }
+
+  const directiveFamily = normalizeDirectiveFamily(parsed.directive_family);
+
+  if (directiveFamily.length === 0) {
+    return null;
+  }
+
   return {
+    directive_family: directiveFamily,
     reason: parsed.reason,
     confidence: parsed.confidence,
   };
@@ -90,6 +111,7 @@ export class StopCommitmentExtractor {
             "Classify whether the assistant response is an operational commitment to stop emitting assistant messages until the user provides substantive new content.",
             "Return stop_until_substantive_content only for direct, future-facing commitments to emit no assistant messages until substantive user content appears.",
             "Return none for local style, topic, or explanation-boundary commitments that do not imply future no-output behavior.",
+            "When classification is stop_until_substantive_content, emit directive_family as stop_until_substantive_content.",
           ].join("\n"),
           messages: [
             {

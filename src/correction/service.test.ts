@@ -542,6 +542,7 @@ describe("correction service", () => {
       });
       borg.commitments.add({
         type: "boundary",
+        directiveFamily: "sam_memory_changes",
         directive: "Keep Sam posted on memory changes",
         priority: 7,
         audience: "Sam",

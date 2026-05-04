@@ -2036,6 +2036,7 @@ describe("deliberator", () => {
     const atlas = entities.resolve("Atlas");
     const commitment = commitments.add({
       type: "boundary",
+      directiveFamily: "atlas_sam_boundary",
       directive: "Do not discuss Atlas with Sam",
       priority: 9,
       restrictedAudience: sam,
@@ -2380,6 +2381,7 @@ describe("deliberator", () => {
     const atlas = entities.resolve("Atlas");
     const commitment = commitments.add({
       type: "boundary",
+      directiveFamily: "atlas_sam_boundary",
       directive: "Do not discuss Atlas with Sam",
       priority: 9,
       restrictedAudience: sam,

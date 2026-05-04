@@ -27,6 +27,7 @@ describe("commitment expiring trigger", () => {
 
     const dueCommitment = harness.commitmentRepository.add({
       type: "promise",
+      directiveFamily: "autonomy_design_review_response",
       directive: "Respond to the autonomy design review",
       priority: 8,
       provenance: { kind: "manual" },
@@ -34,6 +35,7 @@ describe("commitment expiring trigger", () => {
     });
     harness.commitmentRepository.add({
       type: "promise",
+      directiveFamily: "far_future_commitment",
       directive: "Far future commitment",
       priority: 2,
       provenance: { kind: "manual" },

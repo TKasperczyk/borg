@@ -357,6 +357,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       add: (input) =>
         deps.identityService.addCommitment({
           type: input.type,
+          directiveFamily: input.directiveFamily,
           directive: input.directive,
           priority: input.priority,
           madeToEntity:

@@ -1559,6 +1559,8 @@ describe("cli", () => {
           "add",
           "--type",
           "boundary",
+          "--directive-family",
+          "atlas_sam_boundary",
           "--directive",
           "Do not discuss Atlas with Sam",
           "--priority",

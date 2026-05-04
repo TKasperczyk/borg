@@ -12,6 +12,7 @@ function makeCommitment(): CommitmentRecord {
   return {
     id: commitmentId,
     type: "boundary",
+    directive_family: "launch_date_boundary",
     directive: "Do not discuss launch dates.",
     priority: 10,
     made_to_entity: null,
@@ -27,6 +28,7 @@ function makeCommitment(): CommitmentRecord {
     revoked_reason: null,
     revoke_provenance: null,
     superseded_by: null,
+    last_reinforced_at: 1_000,
   };
 }
 

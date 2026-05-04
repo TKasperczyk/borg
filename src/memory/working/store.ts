@@ -5,8 +5,15 @@ import { readJsonFile, writeJsonFileAtomic } from "../../util/atomic-write.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { WorkingMemoryError } from "../../util/errors.js";
 import type { SessionId } from "../../util/ids.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
+import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 
-import { createWorkingMemory, type WorkingMemory, workingMemorySchema } from "./types.js";
+import {
+  createWorkingMemory,
+  type PendingActionRecord,
+  type WorkingMemory,
+  workingMemorySchema,
+} from "./types.js";
 
 export type WorkingMemoryStoreOptions = {
   dataDir?: string;
@@ -21,6 +28,7 @@ export type RelationalSlotPendingActionSanitization = {
 
 const PENDING_ACTIONS_LIMIT = 16;
 const HOT_ENTITIES_LIMIT = 32;
+export const PENDING_ACTION_SEMANTIC_MERGE_THRESHOLD = 0.85;
 
 function cloneWorkingMemory(state: WorkingMemory): WorkingMemory {
   return structuredClone(state) as WorkingMemory;
@@ -57,6 +65,85 @@ function normalizePendingActions(
   }
 
   return deduped.reverse();
+}
+
+function pendingActionEmbeddingText(action: PendingActionRecord): string {
+  return [action.description, action.next_action ?? ""].join("\n").trim();
+}
+
+function withPendingActionTimestamp(action: PendingActionRecord, nowMs: number): PendingActionRecord {
+  return action.created_at === undefined
+    ? {
+        ...action,
+        created_at: nowMs,
+      }
+    : action;
+}
+
+export async function mergePendingActionsBySimilarity(input: {
+  existing: WorkingMemory["pending_actions"];
+  incoming: readonly PendingActionRecord[];
+  embeddingClient?: EmbeddingClient;
+  nowMs: number;
+  threshold?: number;
+}): Promise<WorkingMemory["pending_actions"]> {
+  const threshold = input.threshold ?? PENDING_ACTION_SEMANTIC_MERGE_THRESHOLD;
+  let merged = normalizePendingActions([...input.existing]);
+
+  for (const action of input.incoming) {
+    const incoming =
+      input.embeddingClient === undefined ? action : withPendingActionTimestamp(action, input.nowMs);
+
+    if (input.embeddingClient === undefined || merged.length === 0) {
+      merged = normalizePendingActions([...merged, incoming]);
+      continue;
+    }
+
+    const vectors = await input.embeddingClient.embedBatch([
+      pendingActionEmbeddingText(incoming),
+      ...merged.map((candidate) => pendingActionEmbeddingText(candidate)),
+    ]);
+    const incomingVector = vectors[0];
+
+    if (incomingVector === undefined) {
+      merged = normalizePendingActions([...merged, incoming]);
+      continue;
+    }
+
+    let bestMatchIndex = -1;
+    let bestSimilarity = Number.NEGATIVE_INFINITY;
+
+    for (let index = 0; index < merged.length; index += 1) {
+      const candidateVector = vectors[index + 1];
+
+      if (candidateVector === undefined) {
+        continue;
+      }
+
+      const similarity = cosineSimilarity(incomingVector, candidateVector);
+
+      if (similarity > bestSimilarity) {
+        bestSimilarity = similarity;
+        bestMatchIndex = index;
+      }
+    }
+
+    if (bestMatchIndex >= 0 && bestSimilarity >= threshold) {
+      merged = merged.map((candidate, index) =>
+        index === bestMatchIndex
+          ? {
+              ...candidate,
+              created_at: Math.max(candidate.created_at ?? 0, incoming.created_at ?? input.nowMs),
+            }
+          : candidate,
+      );
+      continue;
+    }
+
+    merged = normalizePendingActions([...merged, incoming]);
+  }
+
+  return normalizePendingActions(merged);
 }
 
 function normalizeHotEntities(hotEntities: readonly string[]): string[] {
@@ -208,6 +295,29 @@ export class WorkingMemoryStore {
       ...current,
       pending_actions: pendingActions,
       updated_at: this.clock.now(),
+    });
+  }
+
+  async addPendingAction(input: {
+    sessionId: SessionId;
+    action: PendingActionRecord;
+    embeddingClient?: EmbeddingClient;
+    similarityThreshold?: number;
+  }): Promise<WorkingMemory> {
+    const nowMs = this.clock.now();
+    const current = this.load(input.sessionId);
+    const pendingActions = await mergePendingActionsBySimilarity({
+      existing: current.pending_actions,
+      incoming: [input.action],
+      embeddingClient: input.embeddingClient,
+      threshold: input.similarityThreshold,
+      nowMs,
+    });
+
+    return this.save({
+      ...current,
+      pending_actions: pendingActions,
+      updated_at: nowMs,
     });
   }
 

@@ -545,6 +545,7 @@ describe("internal tools", () => {
     try {
       const commitment = borg.commitments.add({
         type: "promise",
+        directiveFamily: "sprint10_autonomy_followup",
         directive: "Follow up on Sprint 10 autonomy work",
         priority: 8,
         provenance: { kind: "manual" },
@@ -578,12 +579,14 @@ describe("internal tools", () => {
       const alex = harness.entityRepository.resolve("Alex");
       const publicCommitment = harness.commitmentRepository.add({
         type: "promise",
+        directiveFamily: "public_planning_followup",
         directive: "Follow up on public planning",
         priority: 5,
         provenance: { kind: "manual" },
       });
       const samCommitment = harness.commitmentRepository.add({
         type: "boundary",
+        directiveFamily: "sam_planning_scope",
         directive: "Keep Sam planning details scoped to Sam",
         priority: 10,
         restrictedAudience: sam,
@@ -591,6 +594,7 @@ describe("internal tools", () => {
       });
       const alexCommitment = harness.commitmentRepository.add({
         type: "boundary",
+        directiveFamily: "alex_planning_scope",
         directive: "Keep Alex planning details scoped to Alex",
         priority: 10,
         restrictedAudience: alex,
@@ -734,12 +738,14 @@ describe("internal tools", () => {
       const alex = harness.entityRepository.resolve("Alex");
       const publicCommitment = harness.commitmentRepository.add({
         type: "promise",
+        directiveFamily: "public_identity_event",
         directive: "Public identity event",
         priority: 5,
         provenance: { kind: "manual" },
       });
       const samCommitment = harness.commitmentRepository.add({
         type: "boundary",
+        directiveFamily: "sam_identity_event",
         directive: "Sam identity event",
         priority: 8,
         restrictedAudience: sam,
@@ -747,6 +753,7 @@ describe("internal tools", () => {
       });
       const alexCommitment = harness.commitmentRepository.add({
         type: "boundary",
+        directiveFamily: "alex_identity_event",
         directive: "Alex identity event",
         priority: 8,
         restrictedAudience: alex,

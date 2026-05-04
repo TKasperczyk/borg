@@ -112,6 +112,10 @@ export const discourseStateSchema = z.object({
   stop_until_substantive_content: stopUntilSubstantiveContentSchema.nullable(),
 }).strict();
 
+export const pendingActionRecordSchema = intentRecordSchema.extend({
+  created_at: z.number().finite().optional(),
+});
+
 // Sprint 53: pending procedural attempts are now a bounded list, not one
 // slot. Multi-step debugging or delayed-feedback work needs to track each
 // attempt independently; reflection retires only grounded success/failure
@@ -123,7 +127,7 @@ const workingMemoryObjectSchema = z.object({
   session_id: workingSessionIdSchema,
   turn_counter: z.number().int().nonnegative(),
   hot_entities: z.array(z.string().min(1)),
-  pending_actions: z.array(intentRecordSchema),
+  pending_actions: z.array(pendingActionRecordSchema),
   pending_social_attribution: pendingSocialAttributionSchema.nullable(),
   pending_trait_attribution: pendingTraitAttributionSchema.nullable(),
   suppressed: z.array(suppressedEntrySchema),
@@ -137,6 +141,7 @@ const workingMemoryObjectSchema = z.object({
 export const workingMemorySchema = workingMemoryObjectSchema;
 
 export type WorkingMemory = z.infer<typeof workingMemorySchema>;
+export type PendingActionRecord = z.infer<typeof pendingActionRecordSchema>;
 export type PendingSocialAttribution = z.infer<typeof pendingSocialAttributionSchema>;
 export type PendingTraitAttribution = z.infer<typeof pendingTraitAttributionSchema>;
 export type PendingProceduralAttempt = z.infer<typeof pendingProceduralAttemptSchema>;

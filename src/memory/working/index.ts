@@ -1,5 +1,7 @@
 export {
+  PENDING_ACTION_SEMANTIC_MERGE_THRESHOLD,
   WorkingMemoryStore,
+  mergePendingActionsBySimilarity,
   type RelationalSlotPendingActionSanitization,
   type WorkingMemoryStoreOptions,
 } from "./store.js";
@@ -17,6 +19,7 @@ export {
   workingMemorySchema,
   type DiscourseState,
   type DiscourseStopProvenance,
+  type PendingActionRecord,
   type PendingProceduralAttempt,
   type PendingSocialAttribution,
   type PendingTraitAttribution,

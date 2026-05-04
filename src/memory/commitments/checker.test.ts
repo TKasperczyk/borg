@@ -53,6 +53,7 @@ describe("commitment checker", () => {
     const atlas = entities.resolve("Atlas");
     const boundary = commitments.add({
       type: "boundary",
+      directiveFamily: "atlas_sam_boundary",
       directive: "Do not discuss Atlas with Sam",
       priority: 10,
       restrictedAudience: sam,
@@ -95,6 +96,7 @@ describe("commitment checker", () => {
     const atlas = entities.resolve("Atlas");
     const boundary = commitments.add({
       type: "boundary",
+      directiveFamily: "atlas_sam_boundary",
       directive: "Do not discuss Atlas with Sam",
       priority: 10,
       restrictedAudience: sam,
@@ -155,6 +157,7 @@ describe("commitment checker", () => {
     const alice = entities.resolve("Alice");
     const promise = commitments.add({
       type: "promise",
+      directiveFamily: "deployment_summary",
       directive: "Send the deployment summary",
       priority: 5,
       madeToEntity: alice,
@@ -173,6 +176,7 @@ describe("commitment checker", () => {
     const commitments = new CommitmentRepository({ db, clock });
     const promise = commitments.add({
       type: "promise",
+      directiveFamily: "no_public_launch_date",
       directive: "I will not promise a public launch date",
       priority: 8,
       provenance: { kind: "manual" },
@@ -226,6 +230,7 @@ describe("commitment checker", () => {
     const commitments = new CommitmentRepository({ db, clock });
     const promise = commitments.add({
       type: "promise",
+      directiveFamily: "unsupported_memory_claims",
       directive: "I will not make unsupported memory claims",
       priority: 8,
       provenance: { kind: "manual" },
@@ -271,6 +276,7 @@ describe("commitment checker", () => {
     const commitments = new CommitmentRepository({ db, clock });
     const boundary = commitments.add({
       type: "boundary",
+      directiveFamily: "atlas_boundary",
       directive: "Do not discuss Atlas",
       priority: 10,
       provenance: { kind: "manual" },
@@ -317,6 +323,7 @@ describe("commitment checker", () => {
     const commitments = new CommitmentRepository({ db, clock });
     const boundary = commitments.add({
       type: "boundary",
+      directiveFamily: "atlas_boundary",
       directive: "Do not discuss Atlas",
       priority: 10,
       provenance: { kind: "manual" },
@@ -365,6 +372,7 @@ describe("commitment checker", () => {
     const commitments = new CommitmentRepository({ db, clock });
     const boundary = commitments.add({
       type: "boundary",
+      directiveFamily: "atlas_boundary",
       directive: "Do not discuss Atlas",
       priority: 10,
       provenance: { kind: "manual" },
@@ -406,6 +414,7 @@ describe("commitment checker", () => {
     const commitments = new CommitmentRepository({ db, clock });
     const boundary = commitments.add({
       type: "boundary",
+      directiveFamily: "atlas_boundary",
       directive: "Do not discuss Atlas",
       priority: 10,
       provenance: { kind: "manual" },
@@ -448,6 +457,7 @@ describe("commitment checker", () => {
     const commitments = new CommitmentRepository({ db, clock });
     const boundary = commitments.add({
       type: "boundary",
+      directiveFamily: "atlas_boundary",
       directive: "Do not discuss Atlas",
       priority: 10,
       provenance: { kind: "manual" },
