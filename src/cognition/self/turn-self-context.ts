@@ -162,8 +162,13 @@ export class TurnSelfContextBuilder {
   constructor(private readonly options: TurnSelfContextOptions) {}
 
   async buildSelfSnapshot(audienceEntityId: EntityId | null): Promise<SelfSnapshot> {
+    const goals = flattenGoals(
+      this.options.goalsRepository.list({
+        status: "active",
+        visibleToAudienceEntityId: audienceEntityId,
+      }),
+    );
     const values = this.options.valuesRepository.list();
-    const goals = await this.listActiveGoalsVisibleToAudience(audienceEntityId);
     const traits = this.options.traitsRepository.list();
     const currentPeriod = this.options.autobiographicalRepository?.currentPeriod() ?? null;
     const recentGrowthMarkers = this.options.growthMarkersRepository?.list({ limit: 3 }) ?? [];

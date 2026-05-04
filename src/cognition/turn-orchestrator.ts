@@ -160,7 +160,7 @@ export class TurnOrchestrator {
         }));
     const perceptionGateway = new PerceptionGateway({
       config: options.config,
-      llmFactory: options.llmFactory,
+      llmFactory: () => options.llmFactory(),
       clock: this.clock,
       tracer: this.tracer,
       getAffectiveSignalDetector: () => options.affectiveSignalDetector,
@@ -269,7 +269,7 @@ export class TurnOrchestrator {
       relationalSlotRepository: options.relationalSlotRepository,
       toolDispatcher: options.toolDispatcher,
       streamIngestionCoordinator: options.streamIngestionCoordinator,
-      llmFactory: options.llmFactory,
+      llmFactory: () => options.llmFactory(),
       perceptionGateway,
       turnOpeningPersistence,
       attributionLifecycleService,
