@@ -1,4 +1,10 @@
-import type { GenerationSuppressionReason, SessionId } from "../src/index.js";
+import type {
+  ActionState,
+  GenerationSuppressionReason,
+  RelationalSlotState,
+  ReviewKind,
+  SessionId,
+} from "../src/index.js";
 
 export type Persona = {
   key: string;
@@ -20,7 +26,17 @@ export type MetricsRow = {
   semantic_nodes_added_since_last_check: number;
   semantic_edges_added_since_last_check: number;
   open_question_count: number;
+  open_question_resolved_count: number;
   active_goal_count: number;
+  action_record_count_total: number;
+  action_record_count_by_state: Record<ActionState, number>;
+  recent_completed_action_count: number;
+  commitment_count_active: number;
+  commitment_count_superseded: number;
+  pending_action_count: number;
+  pending_action_merge_count: number;
+  relational_slot_count_by_state: Record<RelationalSlotState, number>;
+  review_queue_open_count_by_type: Record<ReviewKind, number>;
   generation_suppression_count: number;
   mood_valence: number;
   mood_arousal: number;

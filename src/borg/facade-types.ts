@@ -10,6 +10,7 @@ import type { Provenance } from "../memory/common/index.js";
 import type { EpisodicRepository, ExtractFromStreamResult } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import type { SkillRepository, SkillSelector } from "../memory/procedural/index.js";
+import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import type {
   AutobiographicalRepository,
   GoalsRepository,
@@ -30,7 +31,7 @@ import type {
 } from "../memory/semantic/index.js";
 import type { SemanticExtractor } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
-import type { WorkingMemory } from "../memory/working/index.js";
+import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
 import type { OfflineProcessName } from "../offline/index.js";
 import type { RetrievedEpisode, RetrievalSearchOptions } from "../retrieval/index.js";
 import type { StreamCursor, StreamEntry, StreamEntryInput, StreamReader } from "../stream/index.js";
@@ -277,6 +278,8 @@ export type BorgCommitmentsFacade = {
     audience?: string | null;
     aboutEntity?: string | null;
   }) => ReturnType<CommitmentRepository["list"]>;
+  countActive: () => ReturnType<CommitmentRepository["countActive"]>;
+  countSuperseded: () => ReturnType<CommitmentRepository["countSuperseded"]>;
 };
 
 export type BorgIdentityFacade = {
@@ -337,6 +340,9 @@ export type BorgFacades = {
   actions: ActionRepository;
   social: BorgSocialFacade;
   semantic: BorgSemanticFacade;
+  relationalSlots: {
+    countByState: () => ReturnType<RelationalSlotRepository["countByState"]>;
+  };
   commitments: BorgCommitmentsFacade;
   identity: BorgIdentityFacade;
   correction: BorgCorrectionFacade;
@@ -366,5 +372,6 @@ export type BorgFacades = {
   workmem: {
     load: (sessionId?: SessionId) => WorkingMemory;
     clear: (sessionId?: SessionId) => void;
+    getPendingActionMergeCount: () => ReturnType<WorkingMemoryStore["getPendingActionMergeCount"]>;
   };
 };

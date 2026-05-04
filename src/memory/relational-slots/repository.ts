@@ -47,6 +47,8 @@ export type RelationalSlotApplyResult = {
   values_to_neutralize: string[];
 };
 
+export type RelationalSlotCountByState = Record<RelationalSlotState, number>;
+
 function uniqueTrimmed(values: readonly string[]): string[] {
   const unique: string[] = [];
 
@@ -314,6 +316,28 @@ export class RelationalSlotRepository {
       ...options,
       states: ["contested", "quarantined"],
     });
+  }
+
+  countByState(): RelationalSlotCountByState {
+    const counts = Object.fromEntries(
+      RELATIONAL_SLOT_STATES.map((state) => [state, 0]),
+    ) as RelationalSlotCountByState;
+    const rows = this.db
+      .prepare(
+        `
+          SELECT state, COUNT(*) AS count
+          FROM relational_slots
+          GROUP BY state
+        `,
+      )
+      .all() as Array<{ state: string; count: number }>;
+
+    for (const row of rows) {
+      const state = relationalSlotStateSchema.parse(row.state);
+      counts[state] = Number(row.count);
+    }
+
+    return counts;
   }
 
   applyAssertion(assertion: RelationalSlotAssertion): RelationalSlotApplyResult {

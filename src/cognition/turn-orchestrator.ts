@@ -249,6 +249,7 @@ export class TurnOrchestrator {
       pendingActionJudgeModel: options.config.anthropic.models.background,
       clock: this.clock,
       tracer: this.tracer,
+      workingMemoryStore: options.workingMemoryStore,
     });
     const turnReflectionCoordinator = new TurnReflectionCoordinator({
       moodRepository: options.moodRepository,
