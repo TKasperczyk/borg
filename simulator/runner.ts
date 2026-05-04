@@ -164,6 +164,7 @@ export class SimulatorRunner {
       tracePath: this.options.tracePath,
       llmClient: this.options.llmClient,
       embeddingClient: this.options.embeddingClient,
+      defaultUser: this.options.persona.displayName,
     });
     const metrics = new MetricsCapture(this.options.metricsPath, {
       tracePath: transport.tracePath,
