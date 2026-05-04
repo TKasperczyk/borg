@@ -52,7 +52,9 @@ const goalPromotionSchema = z
       .finite()
       .min(0)
       .max(10)
-      .describe("Relative priority from 0 to 10. Prefer moderate values unless urgency is explicit."),
+      .describe(
+        "Relative priority from 0 to 10. Prefer moderate values unless urgency is explicit.",
+      ),
     target_at: z
       .number()
       .finite()
@@ -302,7 +304,11 @@ function traceLlmCallResponse(options: {
   }
 }
 
-function traceLlmCallError(options: { tracer?: TurnTracer; turnId?: string; error: unknown }): void {
+function traceLlmCallError(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  error: unknown;
+}): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("llm_call_response", {
       turnId: options.turnId,

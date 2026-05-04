@@ -211,10 +211,7 @@ function buildClusters(
 
       const similarity = cosineSimilarity(left.embedding, right.embedding);
 
-      if (
-        similarity < similarityThreshold ||
-        !passesTemporalSoftGuard(left, right, similarity)
-      ) {
+      if (similarity < similarityThreshold || !passesTemporalSoftGuard(left, right, similarity)) {
         continue;
       }
 

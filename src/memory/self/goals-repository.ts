@@ -437,6 +437,45 @@ export class GoalsRepository {
     return next;
   }
 
+  restore(goal: GoalRecord): GoalRecord {
+    const parsed = goalSchema.parse(goal);
+    const storedProvenance = toStoredProvenance(parsed.provenance);
+
+    this.runGoalWrite(() => {
+      this.db
+        .prepare(
+          `
+            UPDATE goals
+            SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
+                last_progress_ts = ?, created_at = ?, target_at = ?, audience_entity_id = ?,
+                source_stream_entry_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
+                provenance_process = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          parsed.description,
+          parsed.priority,
+          parsed.parent_goal_id,
+          parsed.status,
+          parsed.progress_notes,
+          parsed.last_progress_ts,
+          parsed.created_at,
+          parsed.target_at,
+          parsed.audience_entity_id,
+          parsed.source_stream_entry_ids === undefined
+            ? null
+            : serializeJsonValue(parsed.source_stream_entry_ids),
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          parsed.id,
+        );
+    });
+
+    return parsed;
+  }
+
   remove(goalId: GoalId): boolean {
     const reparent = this.db
       .prepare("UPDATE goals SET parent_goal_id = NULL WHERE parent_goal_id = ?")

@@ -30,7 +30,7 @@ import { TurnContextCompiler } from "./recency/index.js";
 import { computeExecutiveContextFits, selectExecutiveFocus } from "../executive/index.js";
 import type { ExecutiveFocus, ExecutiveStepsRepository } from "../executive/index.js";
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
-import type { Reflector } from "./reflection/index.js";
+import type { ReflectionEffects, Reflector } from "./reflection/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import type { RetrievalPipeline, RetrievedEpisode } from "../retrieval/index.js";
 import {
@@ -50,7 +50,7 @@ import {
   type CommitmentRecord,
 } from "../memory/commitments/index.js";
 import { SkillSelector } from "../memory/procedural/index.js";
-import { RelationalSlotRepository } from "../memory/relational-slots/index.js";
+import { RelationalSlotRepository, type RelationalSlot } from "../memory/relational-slots/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import {
   appendInternalFailureEvent,
@@ -524,6 +524,12 @@ export class TurnOrchestrator {
     createdGoalIds: readonly GoalId[];
     createdExecutiveStepIds: readonly ExecutiveStepId[];
     createdActionIds: readonly ActionId[];
+    createdOpenQuestionIds: readonly ReflectionEffects["createdOpenQuestionIds"][number][];
+    updatedExecutiveSteps: readonly ReflectionEffects["updatedExecutiveSteps"][number][];
+    updatedGoals: readonly ReflectionEffects["updatedGoals"][number][];
+    resolvedOpenQuestions: readonly ReflectionEffects["resolvedOpenQuestions"][number][];
+    updatedEpisodeStats: readonly ReflectionEffects["updatedEpisodeStats"][number][];
+    appliedSlotNegations: readonly RelationalSlot[];
   }): Promise<void> {
     if (input.initialWorkingMemory !== null) {
       this.options.workingMemoryStore.save(input.initialWorkingMemory);
@@ -548,6 +554,54 @@ export class TurnOrchestrator {
     for (const goalId of input.createdGoalIds) {
       try {
         this.options.goalsRepository.remove(goalId);
+      } catch {
+        // Best effort.
+      }
+    }
+
+    for (const openQuestionId of input.createdOpenQuestionIds) {
+      try {
+        await this.options.openQuestionsRepository.delete(openQuestionId);
+      } catch {
+        // Best effort.
+      }
+    }
+
+    for (const step of [...input.updatedExecutiveSteps].reverse()) {
+      try {
+        this.options.executiveStepsRepository.restore(step);
+      } catch {
+        // Best effort.
+      }
+    }
+
+    for (const goal of [...input.updatedGoals].reverse()) {
+      try {
+        this.options.goalsRepository.restore(goal);
+      } catch {
+        // Best effort.
+      }
+    }
+
+    for (const question of [...input.resolvedOpenQuestions].reverse()) {
+      try {
+        this.options.openQuestionsRepository.restore(question);
+      } catch {
+        // Best effort.
+      }
+    }
+
+    for (const stats of [...input.updatedEpisodeStats].reverse()) {
+      try {
+        this.options.episodicRepository.updateStats(stats.episode_id, stats);
+      } catch {
+        // Best effort.
+      }
+    }
+
+    for (const slot of [...input.appliedSlotNegations].reverse()) {
+      try {
+        this.options.relationalSlotRepository.restore(slot);
       } catch {
         // Best effort.
       }
@@ -746,6 +800,7 @@ export class TurnOrchestrator {
     persistedUserEntryId?: StreamEntryId;
     sessionId: SessionId;
     streamWriter: StreamWriter;
+    appliedSlotNegations: RelationalSlot[];
   }): Promise<void> {
     if (input.persistedUserEntryId === undefined) {
       return;
@@ -759,6 +814,10 @@ export class TurnOrchestrator {
           rejected_value: negation.rejected_value,
           source_stream_entry_ids: [input.persistedUserEntryId],
         });
+
+        if (result?.previous !== null && result?.previous !== undefined) {
+          input.appliedSlotNegations.push(result.previous);
+        }
 
         if (result?.constrained === true) {
           this.options.workingMemoryStore.sanitizePendingActionsForRelationalSlot({
@@ -1027,6 +1086,12 @@ export class TurnOrchestrator {
     const createdGoalIds: GoalId[] = [];
     const createdExecutiveStepIds: ExecutiveStepId[] = [];
     const createdActionIds: ActionId[] = [];
+    const createdOpenQuestionIds: ReflectionEffects["createdOpenQuestionIds"] = [];
+    const updatedExecutiveSteps: ReflectionEffects["updatedExecutiveSteps"] = [];
+    const updatedGoals: ReflectionEffects["updatedGoals"] = [];
+    const resolvedOpenQuestions: ReflectionEffects["resolvedOpenQuestions"] = [];
+    const updatedEpisodeStats: ReflectionEffects["updatedEpisodeStats"] = [];
+    const appliedSlotNegations: RelationalSlot[] = [];
     let initialWorkingMemory: WorkingMemory | null = null;
 
     try {
@@ -1159,6 +1224,7 @@ export class TurnOrchestrator {
           persistedUserEntryId,
           sessionId,
           streamWriter,
+          appliedSlotNegations,
         });
         workingMemory = this.options.workingMemoryStore.load(sessionId);
 
@@ -1791,7 +1857,7 @@ export class TurnOrchestrator {
           visibleToAudienceEntityId: audienceEntityId,
           limit: 20,
         });
-        const reflectedWorkingMemory = await reflector.reflect(
+        const reflection = await reflector.reflect(
           {
             turnId,
             origin: input.origin ?? "user",
@@ -1818,6 +1884,14 @@ export class TurnOrchestrator {
           },
           streamWriter,
         );
+        createdActionIds.push(...reflection.effects.createdActionIds);
+        createdExecutiveStepIds.push(...reflection.effects.createdExecutiveStepIds);
+        createdOpenQuestionIds.push(...reflection.effects.createdOpenQuestionIds);
+        updatedExecutiveSteps.push(...reflection.effects.updatedExecutiveSteps);
+        updatedGoals.push(...reflection.effects.updatedGoals);
+        resolvedOpenQuestions.push(...reflection.effects.resolvedOpenQuestions);
+        updatedEpisodeStats.push(...reflection.effects.updatedEpisodeStats);
+        const reflectedWorkingMemory = reflection.workingMemory;
         const nextPendingSocialAttribution =
           audienceEntityId !== null &&
           interactionRecord !== null &&
@@ -1900,6 +1974,12 @@ export class TurnOrchestrator {
           createdGoalIds,
           createdExecutiveStepIds,
           createdActionIds,
+          createdOpenQuestionIds,
+          updatedExecutiveSteps,
+          updatedGoals,
+          resolvedOpenQuestions,
+          updatedEpisodeStats,
+          appliedSlotNegations,
         });
         await this.appendFailureEvent(streamWriter, error, sessionId, turnId);
         throw error;

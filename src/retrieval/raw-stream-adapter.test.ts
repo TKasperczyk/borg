@@ -9,6 +9,7 @@ import { ManualClock } from "../util/clock.js";
 import { createSessionId } from "../util/ids.js";
 
 import { RawStreamAdapter } from "./raw-stream-adapter.js";
+import { CitationResolver } from "./citations.js";
 
 const tempDirs: string[] = [];
 
@@ -109,11 +110,14 @@ describe("RawStreamAdapter", () => {
     writer.close();
 
     const adapter = new RawStreamAdapter({ dataDir: dir });
+    const citationResolver = new CitationResolver({ dataDir: dir });
     const resolved = await adapter.resolveSourceIds([active.id, aborted.id]);
+    const directlyResolved = await citationResolver.resolveCitationEntries([aborted.id]);
 
     expect(adapter.recent({ sessionId, limit: 10 }).map((entry) => entry.content)).toEqual([
       activeContent,
     ]);
     expect([...resolved.keys()]).toEqual([active.id]);
+    expect(directlyResolved.size).toBe(0);
   });
 });

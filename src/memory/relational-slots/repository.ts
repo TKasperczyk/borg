@@ -423,6 +423,14 @@ export class RelationalSlotRepository {
     });
   }
 
+  restore(slot: RelationalSlot): RelationalSlot {
+    const parsed = relationalSlotSchema.parse(slot);
+    this.runSlotWrite(() => {
+      this.upsert(parsed);
+    });
+    return parsed;
+  }
+
   setState(id: RelationalSlotId | string, state: RelationalSlotState): RelationalSlot | null {
     const slotId = typeof id === "string" ? parseRelationalSlotId(id) : id;
     const current = this.get(slotId);

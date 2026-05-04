@@ -49,7 +49,9 @@ function goalPromotionResponse(promotions: PromotionInput[]): LLMCompleteResult 
   };
 }
 
-function createExtractorInput(overrides: Partial<Parameters<GoalPromotionExtractor["extract"]>[0]> = {}) {
+function createExtractorInput(
+  overrides: Partial<Parameters<GoalPromotionExtractor["extract"]>[0]> = {},
+) {
   return {
     userMessage: "Help me track my italki shortlist.",
     recentHistory: [],
@@ -231,7 +233,11 @@ describe("GoalPromotionExtractor", () => {
 
     const result = await extractor.extract(createExtractorInput());
 
-    expect(result.map((candidate) => candidate.description)).toEqual(["Goal 1", "Goal 2", "Goal 3"]);
+    expect(result.map((candidate) => candidate.description)).toEqual([
+      "Goal 1",
+      "Goal 2",
+      "Goal 3",
+    ]);
   });
 
   it("traces extractor LLM calls and degrades on invalid payloads", async () => {

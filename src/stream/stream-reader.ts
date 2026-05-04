@@ -204,10 +204,7 @@ export class StreamReader {
             markUntilBound(bufferedEntry);
             emitted += 1;
 
-            if (
-              reachedUntilCursor ||
-              (options.limit !== undefined && emitted >= options.limit)
-            ) {
+            if (reachedUntilCursor || (options.limit !== undefined && emitted >= options.limit)) {
               break outer;
             }
           }

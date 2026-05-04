@@ -1859,12 +1859,10 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       ).rejects.toThrow(failedReason);
 
       const abortedEntries = borg.stream.tail(20);
-      const abortedMarker = abortedEntries.find(
-        (entry) => {
-          const content = entry.content as { event?: unknown };
-          return entry.kind === "internal_event" && content.event === "aborted_turn";
-        },
-      );
+      const abortedMarker = abortedEntries.find((entry) => {
+        const content = entry.content as { event?: unknown };
+        return entry.kind === "internal_event" && content.event === "aborted_turn";
+      });
       const abortedUserEntry = abortedEntries.find((entry) => entry.kind === "user_msg");
       const abortedPlanEntry = abortedEntries.find((entry) => entry.kind === "thought");
 
@@ -1891,6 +1889,286 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(retry.response).toBe(retryResponse);
       expect(retryUserMessages).toEqual([failedUserMessage]);
       expect(borg.commitments.list({ activeOnly: true })).toEqual([]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("rolls back corrective slot negations when a later turn phase aborts", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_190_500);
+    const failedReason = "finalizer exploded after slot negation";
+    let internal: {
+      deps: Pick<BorgDependencies, "entityRepository" | "relationalSlotRepository">;
+    };
+    const scriptedResponse = (options: LLMCompleteOptions) => {
+      if (options.budget === "corrective-preference-extractor") {
+        const tom = internal.deps.entityRepository.findByName("Tom");
+
+        return createCorrectivePreferenceResponse({
+          classification: "none",
+          slot_negations:
+            tom === null
+              ? []
+              : [
+                  {
+                    subject_entity_id: tom,
+                    slot_key: "partner.name",
+                    rejected_value: "Sarah",
+                    source_stream_entry_ids: [createStreamEntryId()],
+                    confidence: 0.95,
+                  },
+                ],
+        });
+      }
+
+      if (options.budget === "generation-gate") {
+        return createGenerationGateResponse({ decision: "proceed", substantive: true });
+      }
+
+      if (options.budget === "recall-expansion") {
+        return createRecallExpansionResponse();
+      }
+
+      if (options.budget === "cognition-plan") {
+        return createTurnPlanResponse();
+      }
+
+      if (options.budget === "cognition-system-2") {
+        throw new Error(failedReason);
+      }
+
+      return createEmptyReflectionResponse();
+    };
+    const llm = new FakeLLMClient({
+      responses: Array.from({ length: 20 }, () => scriptedResponse),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "entityRepository" | "relationalSlotRepository">;
+    };
+
+    try {
+      const tom = internal.deps.entityRepository.resolve("Tom");
+      const evidenceId = createStreamEntryId();
+      const prior = internal.deps.relationalSlotRepository.applyAssertion({
+        subject_entity_id: tom,
+        slot_key: "partner.name",
+        asserted_value: "Sarah",
+        source_stream_entry_ids: [evidenceId],
+      }).slot;
+
+      await expect(
+        borg.turn({
+          userMessage: "Her name is not Sarah.",
+          stakes: "high",
+        }),
+      ).rejects.toThrow(failedReason);
+
+      expect(
+        internal.deps.relationalSlotRepository.findBySubjectAndKey(tom, "partner.name"),
+      ).toEqual(prior);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("reverts reflector-side writes when the turn aborts after reflection", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_191_000);
+    const failedReason = "post-reflection save failed";
+    const scriptedResponse = (options: LLMCompleteOptions) => {
+      if (options.budget === "corrective-preference-extractor") {
+        return createCorrectivePreferenceResponse({ classification: "none" });
+      }
+
+      if (options.budget === "action-state-extractor") {
+        return createActionStateResponse([]);
+      }
+
+      if (options.budget === "goal-promotion-extractor") {
+        return createGoalPromotionResponse([]);
+      }
+
+      if (options.budget === "generation-gate") {
+        return createGenerationGateResponse({ decision: "proceed", substantive: true });
+      }
+
+      if (options.budget === "recall-expansion") {
+        return createRecallExpansionResponse();
+      }
+
+      if (options.budget === "cognition-system-1") {
+        return {
+          text: "Completed the check.",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        };
+      }
+
+      if (options.budget === "commitment-judge") {
+        return createCommitmentJudgeResponse([]);
+      }
+
+      if (options.budget === "generation-stop-commitment") {
+        return createStopCommitmentResponse({ classification: "none" });
+      }
+
+      if (options.budget === "reflection") {
+        const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+          active_goals?: Array<{ goal_id: string }>;
+          active_open_questions?: Array<{ id: string }>;
+          current_turn_stream_entry_ids?: string[];
+        };
+        const goalId = payload.active_goals?.[0]?.goal_id;
+        const questionId = payload.active_open_questions?.[0]?.id;
+        const currentStreamEntryId = payload.current_turn_stream_entry_ids?.[0];
+
+        return {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use" as const,
+          tool_calls: [
+            {
+              id: "toolu_reflection",
+              name: "EmitTurnReflection",
+              input: {
+                advanced_goals:
+                  goalId === undefined
+                    ? []
+                    : [{ goal_id: goalId, evidence: "The check was completed." }],
+                procedural_outcomes: [],
+                trait_demonstrations: [],
+                intent_updates: [
+                  {
+                    description: "Check deployment state",
+                    next_action: null,
+                    actor: "borg",
+                    status: "completed",
+                    confidence: 0.9,
+                    evidence: "Borg completed the check.",
+                  },
+                ],
+                step_outcomes: [],
+                proposed_steps:
+                  goalId === undefined
+                    ? []
+                    : [
+                        {
+                          goal_id: goalId,
+                          description: "Review the next deployment checkpoint",
+                          kind: "think",
+                          due_at: null,
+                          rationale: "Keep the active goal moving.",
+                        },
+                      ],
+                open_questions: [
+                  {
+                    question: "What deployment follow-up remains?",
+                    urgency: 0.6,
+                    related_episode_ids: [],
+                  },
+                ],
+                resolved_open_questions:
+                  questionId === undefined || currentStreamEntryId === undefined
+                    ? []
+                    : [
+                        {
+                          question_id: questionId,
+                          resolution_note: "The turn answered the deployment question.",
+                          evidence_episode_ids: [],
+                          evidence_stream_entry_ids: [currentStreamEntryId],
+                        },
+                      ],
+              },
+            },
+          ],
+        };
+      }
+
+      return createEmptyReflectionResponse();
+    };
+    const llm = new FakeLLMClient({
+      responses: Array.from({ length: 20 }, () => scriptedResponse),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<
+        BorgDependencies,
+        | "actionRepository"
+        | "executiveStepsRepository"
+        | "goalsRepository"
+        | "openQuestionsRepository"
+        | "workingMemoryStore"
+      >;
+    };
+
+    try {
+      const goal = borg.self.goals.add({
+        description: "Keep deployment state current",
+        priority: 10,
+        provenance: { kind: "manual" },
+      });
+      const question = borg.self.openQuestions.add({
+        question: "What is the deployment state?",
+        urgency: 0.8,
+        related_episode_ids: [],
+        related_semantic_node_ids: [],
+        provenance: { kind: "manual" },
+        source: "user",
+      });
+      const workingMemory = internal.deps.workingMemoryStore.load("default" as never);
+      const originalSave = internal.deps.workingMemoryStore.save.bind(
+        internal.deps.workingMemoryStore,
+      );
+      let threwAfterReflection = false;
+
+      internal.deps.workingMemoryStore.save({
+        ...workingMemory,
+        pending_actions: [
+          {
+            description: "Check deployment state",
+            next_action: null,
+          },
+        ],
+        updated_at: clock.now(),
+      });
+      vi.spyOn(internal.deps.workingMemoryStore, "save").mockImplementation((memory) => {
+        if (
+          !threwAfterReflection &&
+          memory.turn_counter > 0 &&
+          memory.pending_actions.length === 0
+        ) {
+          threwAfterReflection = true;
+          throw new Error(failedReason);
+        }
+
+        return originalSave(memory);
+      });
+
+      await expect(
+        borg.turn({
+          userMessage: "Please check the deployment state.",
+          stakes: "low",
+        }),
+      ).rejects.toThrow(failedReason);
+
+      expect(internal.deps.actionRepository.list({ limit: 10 })).toEqual([]);
+      expect(internal.deps.executiveStepsRepository.list(goal.id)).toEqual([]);
+      expect(internal.deps.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
+      expect(internal.deps.openQuestionsRepository.get(question.id)).toMatchObject({
+        status: "open",
+        resolution_note: null,
+        resolved_at: null,
+      });
+      expect(
+        internal.deps.openQuestionsRepository.list({ status: "open" }).map((item) => item.id),
+      ).toEqual([question.id]);
     } finally {
       await borg.close();
     }

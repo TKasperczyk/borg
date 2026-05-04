@@ -227,9 +227,6 @@ export class PersonaSession {
       this.messages.length === 0 || trimmedBorgResponse.length === 0
         ? initialPrompt(this.persona, this.nextSessionGap)
         : trimmedBorgResponse;
-    if (this.messages.length === 0) {
-      this.nextSessionGap = null;
-    }
 
     // Build the candidate request messages without committing to
     // history yet -- if the call fails or returns empty, we retry with

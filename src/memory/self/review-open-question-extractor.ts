@@ -95,9 +95,7 @@ function toOpenQuestionProposal(
     question: input.question,
     urgency: input.urgency,
     related_episode_ids: input.related_episode_ids.map((id) => parseEpisodeId(id)),
-    related_semantic_node_ids: input.related_semantic_node_ids.map((id) =>
-      parseSemanticNodeId(id),
-    ),
+    related_semantic_node_ids: input.related_semantic_node_ids.map((id) => parseSemanticNodeId(id)),
   };
 }
 

@@ -62,7 +62,14 @@ export function registerReviewCommands(cli: CAC, deps: CliCommandDeps): void {
               openOnly: true,
             }),
           );
-          writeLine(stdout, JSON.stringify(items.map((item) => renderReviewItem(item)), null, 2));
+          writeLine(
+            stdout,
+            JSON.stringify(
+              items.map((item) => renderReviewItem(item)),
+              null,
+              2,
+            ),
+          );
           return;
         }
 

@@ -41,7 +41,7 @@ const AFFECTIVE_SYSTEM_PROMPT = [
   "",
   'The speaker is the author of "text". Use "recent_history" (the speaker\'s prior turns) only to disambiguate the current text -- do not echo earlier signals if the current text has shifted.',
   "",
-  "You MUST emit valence, arousal, and dominant_emotion. Never omit fields. If the text is genuinely flat or you are uncertain, emit valence=0, arousal=0.1, dominant_emotion=\"neutral\".",
+  'You MUST emit valence, arousal, and dominant_emotion. Never omit fields. If the text is genuinely flat or you are uncertain, emit valence=0, arousal=0.1, dominant_emotion="neutral".',
 ].join("\n");
 const DEFAULT_MAX_LLM_FALLBACK_CALLS = 1;
 export const AFFECTIVE_FALLBACK_TOOL = {

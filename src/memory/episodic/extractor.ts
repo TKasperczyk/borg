@@ -761,7 +761,10 @@ export class EpisodicExtractor {
 
     for (const chunk of chunks) {
       const chunkById = new Map(chunk.map((entry) => [entry.id, entry]));
-      const perceptionContextEntries = perceptionContextEntriesForChunk(chunk, activeContextEntries);
+      const perceptionContextEntries = perceptionContextEntriesForChunk(
+        chunk,
+        activeContextEntries,
+      );
       const relationalSlotSubjects = this.relationalSlotSubjectsForChunk(chunk);
       const result = await this.options.llmClient.complete({
         model: this.options.model,

@@ -150,7 +150,10 @@ function toCallRecord(block: LLMToolUseBlock, result: ToolDispatchResult): ToolL
 
 async function dispatchToolUseBlock(
   dispatcher: ToolDispatcher,
-  options: Pick<ExecuteToolLoopOptions, "sessionId" | "origin" | "audienceEntityId" | "provenance">,
+  options: Pick<
+    ExecuteToolLoopOptions,
+    "sessionId" | "origin" | "turnId" | "audienceEntityId" | "provenance"
+  >,
   block: LLMToolUseBlock,
 ): Promise<ToolDispatchResult> {
   try {
@@ -159,6 +162,7 @@ async function dispatchToolUseBlock(
       toolName: block.name,
       input: block.input,
       sessionId: options.sessionId,
+      turnId: options.turnId,
       origin: options.origin,
       audienceEntityId: options.audienceEntityId,
       provenance: options.provenance,
@@ -310,6 +314,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
           toolName: block.name,
           input: block.input,
           sessionId: options.sessionId,
+          turnId: options.turnId,
           origin: options.origin,
           provenance: options.provenance,
           skipReason: "tool_not_available_in_context",
@@ -333,6 +338,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         {
           sessionId: options.sessionId,
           origin: options.origin,
+          turnId: options.turnId,
           audienceEntityId: options.audienceEntityId,
           provenance: options.provenance,
         },
@@ -368,6 +374,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         input: block.input,
         sessionId: options.sessionId,
         origin: options.origin,
+        turnId: options.turnId,
         provenance: options.provenance,
         skipReason: "max_tool_calls_per_iteration",
       });

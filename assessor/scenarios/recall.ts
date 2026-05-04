@@ -28,8 +28,7 @@ export const recallScenario: Scenario = {
       // without an explicit tool call. Accept either path as evidence
       // the recall was grounded in episodic memory.
       type: "any_of",
-      description:
-        "Recall turn was grounded in episodic memory (pipeline retrieval or tool call).",
+      description: "Recall turn was grounded in episodic memory (pipeline retrieval or tool call).",
       assertions: [
         {
           type: "event_seen",

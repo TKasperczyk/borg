@@ -33,9 +33,7 @@ function splitPartsFromPayload(payload: SkillSplitReviewPayload): SkillSplitPart
   }));
 }
 
-function movedContextStatsFromPayload(
-  payload: SkillSplitReviewPayload,
-): SkillContextStatsRecord[] {
+function movedContextStatsFromPayload(payload: SkillSplitReviewPayload): SkillContextStatsRecord[] {
   return payload.proposed_children.flatMap((child) => child.context_stats);
 }
 

@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createSessionId, type Borg, type SessionId } from "../src/index.js";
+import { ABORTED_TURN_EVENT, type StreamEntry } from "../src/stream/index.js";
+import { createStreamEntryId } from "../src/util/ids.js";
 
 import { MetricsCapture } from "./metrics.js";
 import type { MetricsRow } from "./types.js";
@@ -28,12 +30,14 @@ function fakeBorg(
     semanticNodes?: number;
     semanticEdges?: number;
     suppressedSessions?: readonly SessionId[];
+    streamEntriesBySession?: ReadonlyMap<SessionId, readonly StreamEntry[]>;
   } = {},
   observed: { moodSessions?: SessionId[]; tailSessions?: SessionId[] } = {},
 ): Borg {
   const semanticNodeCount = counts.semanticNodes ?? 1;
   const semanticEdgeCount = counts.semanticEdges ?? 2;
   const suppressedSessions = new Set(counts.suppressedSessions ?? []);
+  const streamEntriesBySession = counts.streamEntriesBySession ?? new Map();
 
   return {
     mood: {
@@ -67,6 +71,10 @@ function fakeBorg(
       tail: (_limit: number, options?: { session?: SessionId }) => {
         if (options?.session !== undefined) {
           observed.tailSessions?.push(options.session);
+        }
+
+        if (options?.session !== undefined && streamEntriesBySession.has(options.session)) {
+          return [...(streamEntriesBySession.get(options.session) ?? [])];
         }
 
         return options?.session !== undefined && suppressedSessions.has(options.session)
@@ -183,5 +191,70 @@ describe("MetricsCapture", () => {
     expect(row.turn_counter).toBe(4);
     expect(row.transport_chat_attempts).toBe(3);
     expect(row.failure_reason).toBe(failureReason);
+  });
+
+  it("excludes aborted suppressions from generation_suppression_count", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const capture = new MetricsCapture(metricsPath);
+    const sessionId = createSessionId();
+    const activeTurnId = "turn-active-suppression";
+    const abortedTurnId = "turn-aborted-suppression";
+    const streamEntriesBySession = new Map<SessionId, StreamEntry[]>([
+      [
+        sessionId,
+        [
+          {
+            id: createStreamEntryId(),
+            timestamp: 1,
+            kind: "agent_suppressed",
+            content: { reason: "generation_gate" },
+            turn_id: activeTurnId,
+            session_id: sessionId,
+            compressed: false,
+          },
+          {
+            id: createStreamEntryId(),
+            timestamp: 2,
+            kind: "agent_suppressed",
+            content: { reason: "generation_gate" },
+            turn_id: abortedTurnId,
+            session_id: sessionId,
+            compressed: false,
+          },
+          {
+            id: createStreamEntryId(),
+            timestamp: 3,
+            kind: "internal_event",
+            content: {
+              event: ABORTED_TURN_EVENT,
+              turn_id: abortedTurnId,
+              reason: "turn failed",
+            },
+            turn_id: abortedTurnId,
+            turn_status: "aborted",
+            session_id: sessionId,
+            compressed: false,
+          },
+        ],
+      ],
+    ]);
+    const borg = fakeBorg({ streamEntriesBySession });
+
+    const completed = await capture.capture(borg, activeTurnId, 1, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+    const aborted = await capture.captureAborted(borg, 2, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+      failureReason: "turn failed",
+      turnId: abortedTurnId,
+    });
+
+    expect(completed.generation_suppression_count).toBe(1);
+    expect(aborted.generation_suppression_count).toBe(1);
   });
 });

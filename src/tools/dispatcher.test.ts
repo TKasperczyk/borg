@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { StreamReader, StreamWriter } from "../stream/index.js";
+import {
+  ABORTED_TURN_EVENT,
+  StreamReader,
+  StreamWriter,
+  filterActiveStreamEntries,
+} from "../stream/index.js";
 import { ManualClock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 
@@ -86,6 +91,78 @@ describe("ToolDispatcher", () => {
         echoed: "hello",
       },
     });
+  });
+
+  it("marks tool stream entries with turn_id so aborted turns filter them out", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_500);
+    const turnId = "turn-tool-aborted";
+    const dispatcher = new ToolDispatcher({
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: tempDir,
+          sessionId,
+          clock,
+        }),
+    });
+
+    dispatcher.register({
+      name: "tool.test.echo",
+      description: "Echo test input.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({
+        value: z.string().min(1),
+      }),
+      outputSchema: z.object({
+        echoed: z.string().min(1),
+      }),
+      async invoke(input: { value: string }) {
+        return {
+          echoed: input.value,
+        };
+      },
+    });
+
+    await dispatcher.dispatch({
+      toolName: "tool.test.echo",
+      input: {
+        value: "hello",
+      },
+      origin: "deliberator",
+      turnId,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock,
+    });
+    await writer.append({
+      kind: "internal_event",
+      turn_id: turnId,
+      turn_status: "aborted",
+      content: {
+        event: ABORTED_TURN_EVENT,
+        turn_id: turnId,
+        reason: "test abort",
+      },
+    });
+    writer.close();
+
+    const entries = new StreamReader({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    }).tail(3);
+
+    expect(
+      entries.filter((entry) => entry.kind === "tool_call" || entry.kind === "tool_result"),
+    ).toEqual([
+      expect.objectContaining({ turn_id: turnId }),
+      expect.objectContaining({ turn_id: turnId }),
+    ]);
+    expect(filterActiveStreamEntries(entries)).toEqual([]);
   });
 
   it("returns a failed tool_result when input validation fails", async () => {

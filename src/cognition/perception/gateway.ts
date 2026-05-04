@@ -35,11 +35,7 @@ export type PerceptionGatewayInput = {
 
 export type PerceptionGatewayBeginInput = {
   turnId: string;
-  onHookFailure: (
-    hook: string,
-    error: unknown,
-    details?: Record<string, unknown>,
-  ) => Promise<void>;
+  onHookFailure: (hook: string, error: unknown, details?: Record<string, unknown>) => Promise<void>;
 };
 
 export type PerceptionGatewayResult = {

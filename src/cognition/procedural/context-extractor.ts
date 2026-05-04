@@ -33,10 +33,7 @@ export const PROCEDURAL_CONTEXT_TOOL = {
   inputSchema: toToolInputSchema(proceduralContextExtractionSchema),
 } satisfies LLMToolDefinition;
 
-export type ProceduralContextDegradedReason =
-  | "llm_unavailable"
-  | "llm_failed"
-  | "low_confidence";
+export type ProceduralContextDegradedReason = "llm_unavailable" | "llm_failed" | "low_confidence";
 
 export type ProceduralContextExtractorOptions = {
   llmClient?: LLMClient;
@@ -70,13 +67,18 @@ function deriveAudienceScope(input: {
   return "unknown";
 }
 
-function parseResponse(result: LLMCompleteResult): z.infer<typeof proceduralContextExtractionSchema> {
+function parseResponse(
+  result: LLMCompleteResult,
+): z.infer<typeof proceduralContextExtractionSchema> {
   const call = result.tool_calls.find((toolCall) => toolCall.name === PROCEDURAL_CONTEXT_TOOL_NAME);
 
   if (call === undefined) {
-    throw new LLMError(`Procedural context extractor did not emit ${PROCEDURAL_CONTEXT_TOOL_NAME}`, {
-      code: "PROCEDURAL_CONTEXT_INVALID",
-    });
+    throw new LLMError(
+      `Procedural context extractor did not emit ${PROCEDURAL_CONTEXT_TOOL_NAME}`,
+      {
+        code: "PROCEDURAL_CONTEXT_INVALID",
+      },
+    );
   }
 
   return proceduralContextExtractionSchema.parse(call.input);
@@ -105,10 +107,7 @@ function buildPrompt(input: ExtractProceduralContextInput): string {
 export class ProceduralContextExtractor {
   constructor(private readonly options: ProceduralContextExtractorOptions = {}) {}
 
-  private async degraded(
-    reason: ProceduralContextDegradedReason,
-    error?: unknown,
-  ): Promise<null> {
+  private async degraded(reason: ProceduralContextDegradedReason, error?: unknown): Promise<null> {
     try {
       await this.options.onDegraded?.(reason, error);
     } catch {

@@ -895,14 +895,7 @@ export class ReviewQueueRepository {
     const nextRefs = outcome?.refs ?? item.refs;
     const applyingStateKey = this.handlerApplyingStateKey(handler);
 
-    this.markResolved(
-      item.id,
-      finalResolution,
-      resolvedAt,
-      nextRefs,
-      item.refs,
-      applyingStateKey,
-    );
+    this.markResolved(item.id, finalResolution, resolvedAt, nextRefs, item.refs, applyingStateKey);
 
     return {
       ...item,

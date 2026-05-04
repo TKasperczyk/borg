@@ -1,11 +1,21 @@
 /* Citation stream lookup helpers for retrieval results. */
-import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+} from "node:fs";
 import { basename } from "node:path";
 
 import {
   getSessionStreamPath,
   getStreamDirectory,
   StreamReader,
+  collectAbortedTurnRefs,
+  streamEntryIsActive,
   streamEntrySchema,
   type StreamEntry,
   type StreamEntryIndexRepository,
@@ -69,7 +79,7 @@ export class CitationResolver {
     const pendingIds = new Set<string>(sourceStreamIds);
 
     if (pendingIds.size === 0) {
-      return entries;
+      return await this.filterResolvedEntries(entries);
     }
 
     const sessionIds = this.listSessionIds();
@@ -129,13 +139,55 @@ export class CitationResolver {
     }
 
     if (pendingIds.size === 0) {
-      return entries;
+      return await this.filterResolvedEntries(entries);
     }
 
     const scannedEntries = await this.scanCitationEntries(sessionIds, [...pendingIds]);
 
     for (const [entryId, entry] of scannedEntries) {
       entries.set(entryId, entry);
+    }
+
+    return this.filterResolvedEntries(entries);
+  }
+
+  private async filterResolvedEntries(
+    entries: Map<string, StreamEntry>,
+  ): Promise<Map<string, StreamEntry>> {
+    const sessionIds = [...new Set([...entries.values()].map((entry) => entry.session_id))];
+    const markerEntries: StreamEntry[] = [];
+
+    for (const sessionId of sessionIds) {
+      markerEntries.push(...this.readAbortMarkerEntries(sessionId));
+    }
+
+    const refs = collectAbortedTurnRefs(markerEntries);
+    return new Map([...entries].filter(([, entry]) => streamEntryIsActive(entry, refs)));
+  }
+
+  private readAbortMarkerEntries(sessionId: SessionId): StreamEntry[] {
+    const streamPath = getSessionStreamPath(this.options.dataDir, sessionId);
+
+    if (!existsSync(streamPath)) {
+      return [];
+    }
+
+    const entries: StreamEntry[] = [];
+
+    for (const line of readFileSync(streamPath, "utf8").split("\n")) {
+      if (line.trim() === "") {
+        continue;
+      }
+
+      try {
+        const parsed = streamEntrySchema.safeParse(JSON.parse(line) as unknown);
+
+        if (parsed.success && parsed.data.kind === "internal_event") {
+          entries.push(parsed.data);
+        }
+      } catch {
+        continue;
+      }
     }
 
     return entries;

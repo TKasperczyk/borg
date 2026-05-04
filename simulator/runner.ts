@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 
 import { BorgTransport } from "../assessor/borg-transport.js";
+import { latestTurnId, readTraceEvents } from "../assessor/trace-reader.js";
 import type { Scenario } from "../assessor/types.js";
 import {
   createSessionId,
@@ -266,6 +267,7 @@ export class SimulatorRunner {
 
         for (let attempt = 0; attempt <= TRANSIENT_RETRY_ATTEMPTS; attempt += 1) {
           attemptsMade = attempt + 1;
+          const traceBeforeCount = readTraceEvents(transport.tracePath).length;
           try {
             const result = await attemptTurn(draft);
             success = {
@@ -276,6 +278,21 @@ export class SimulatorRunner {
             break;
           } catch (error) {
             attemptError = error;
+            const failedTurnId = latestTurnId(
+              readTraceEvents(transport.tracePath).slice(traceBeforeCount),
+            );
+
+            if (failedTurnId !== null) {
+              await metrics.captureAborted(transport.getBorg(), turn, {
+                event: "aborted_attempt",
+                sessionId: currentSessionId,
+                sessionIds,
+                transportChatAttempts: attemptsMade,
+                failureReason: formatErrorChain(error),
+                turnId: failedTurnId,
+              });
+            }
+
             if (attempt < TRANSIENT_RETRY_ATTEMPTS) {
               await new Promise((resolve) =>
                 setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS * (attempt + 1)),
@@ -318,10 +335,7 @@ export class SimulatorRunner {
         if (!success.emitted) {
           const suppressionReason = success.suppressionReason;
 
-          if (
-            suppressionReason !== undefined &&
-            !isSessionEndingSuppression(suppressionReason)
-          ) {
+          if (suppressionReason !== undefined && !isSessionEndingSuppression(suppressionReason)) {
             suppressionEvents.push({
               sessionIndex: sessions.length,
               sessionId: currentSessionId,

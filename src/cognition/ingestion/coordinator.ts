@@ -182,10 +182,7 @@ export class StreamIngestionCoordinator {
     return entries.length > 0;
   }
 
-  async catchUp(
-    sessionId: SessionId,
-    options: PreTurnCatchUpOptions,
-  ): Promise<IngestionResult> {
+  async catchUp(sessionId: SessionId, options: PreTurnCatchUpOptions): Promise<IngestionResult> {
     if (this.closePromise !== null) {
       return this.closePromise.then(() => ({
         ran: false,
