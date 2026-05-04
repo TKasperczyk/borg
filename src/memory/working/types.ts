@@ -29,11 +29,13 @@ export const workingSessionIdSchema = z
   })
   .transform((value) => parseSessionId(value));
 
-export const suppressedEntrySchema = z.object({
-  id: z.string().min(1),
-  reason: z.string().min(1),
-  until_turn: z.number().int().nonnegative(),
-}).strict();
+export const suppressedEntrySchema = z
+  .object({
+    id: z.string().min(1),
+    reason: z.string().min(1),
+    until_turn: z.number().int().nonnegative(),
+  })
+  .strict();
 
 export const workingSkillIdSchema = z
   .string()
@@ -63,34 +65,40 @@ export const workingStreamEntryIdSchema = z
   })
   .transform((value) => value as StreamEntryId);
 
-export const pendingSocialAttributionSchema = z.object({
-  entity_id: z.string().min(1),
-  interaction_id: z.number().int().positive(),
-  agent_response_summary: z.string().min(1).nullable(),
-  turn_completed_ts: z.number().finite(),
-}).strict();
+export const pendingSocialAttributionSchema = z
+  .object({
+    entity_id: z.string().min(1),
+    interaction_id: z.number().int().positive(),
+    agent_response_summary: z.string().min(1).nullable(),
+    turn_completed_ts: z.number().finite(),
+  })
+  .strict();
 
-export const pendingTraitAttributionSchema = z.object({
-  trait_label: z.string().min(1),
-  strength_delta: z.number().min(0).max(0.2),
-  // Sprint 56: trait demonstration is evidenced by the assistant turn
-  // that actually displayed it -- captured here as the user_msg/agent_msg
-  // stream entries from the demonstrating turn. The orchestrator resolves
-  // these to the extracted episode at consumption time.
-  source_stream_entry_ids: z.array(workingStreamEntryIdSchema).min(1),
-  turn_completed_ts: z.number().finite(),
-  audience_entity_id: workingEntityIdSchema.nullable(),
-}).strict();
+export const pendingTraitAttributionSchema = z
+  .object({
+    trait_label: z.string().min(1),
+    strength_delta: z.number().min(0).max(0.2),
+    // Sprint 56: trait demonstration is evidenced by the assistant turn
+    // that actually displayed it -- captured here as the user_msg/agent_msg
+    // stream entries from the demonstrating turn. The orchestrator resolves
+    // these to the extracted episode at consumption time.
+    source_stream_entry_ids: z.array(workingStreamEntryIdSchema).min(1),
+    turn_completed_ts: z.number().finite(),
+    audience_entity_id: workingEntityIdSchema.nullable(),
+  })
+  .strict();
 
-export const pendingProceduralAttemptSchema = z.object({
-  problem_text: z.string().min(1),
-  approach_summary: z.string().min(1),
-  selected_skill_id: workingSkillIdSchema.nullable(),
-  source_stream_ids: z.array(workingStreamEntryIdSchema).min(1),
-  turn_counter: z.number().int().nonnegative(),
-  audience_entity_id: workingEntityIdSchema.nullable(),
-  procedural_context: proceduralContextSchema.nullable().optional(),
-}).strict();
+export const pendingProceduralAttemptSchema = z
+  .object({
+    problem_text: z.string().min(1),
+    approach_summary: z.string().min(1),
+    selected_skill_id: workingSkillIdSchema.nullable(),
+    source_stream_ids: z.array(workingStreamEntryIdSchema).min(1),
+    turn_counter: z.number().int().nonnegative(),
+    audience_entity_id: workingEntityIdSchema.nullable(),
+    procedural_context: proceduralContextSchema.nullable().optional(),
+  })
+  .strict();
 
 export const discourseStopProvenanceSchema = z.enum([
   "generation_gate",
@@ -101,16 +109,20 @@ export const discourseStopProvenanceSchema = z.enum([
   "relational_guard",
 ]);
 
-export const stopUntilSubstantiveContentSchema = z.object({
-  provenance: discourseStopProvenanceSchema,
-  source_stream_entry_id: workingStreamEntryIdSchema.optional(),
-  reason: z.string().min(1),
-  since_turn: z.number().int().nonnegative(),
-}).strict();
+export const stopUntilSubstantiveContentSchema = z
+  .object({
+    provenance: discourseStopProvenanceSchema,
+    source_stream_entry_id: workingStreamEntryIdSchema.optional(),
+    reason: z.string().min(1),
+    since_turn: z.number().int().nonnegative(),
+  })
+  .strict();
 
-export const discourseStateSchema = z.object({
-  stop_until_substantive_content: stopUntilSubstantiveContentSchema.nullable(),
-}).strict();
+export const discourseStateSchema = z
+  .object({
+    stop_until_substantive_content: stopUntilSubstantiveContentSchema.nullable(),
+  })
+  .strict();
 
 export const pendingActionRecordSchema = intentRecordSchema.extend({
   created_at: z.number().finite().optional(),
@@ -123,20 +135,22 @@ export const pendingActionRecordSchema = intentRecordSchema.extend({
 export const PENDING_PROCEDURAL_ATTEMPTS_LIMIT = 5;
 export const PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS = 8;
 
-const workingMemoryObjectSchema = z.object({
-  session_id: workingSessionIdSchema,
-  turn_counter: z.number().int().nonnegative(),
-  hot_entities: z.array(z.string().min(1)),
-  pending_actions: z.array(pendingActionRecordSchema),
-  pending_social_attribution: pendingSocialAttributionSchema.nullable(),
-  pending_trait_attribution: pendingTraitAttributionSchema.nullable(),
-  suppressed: z.array(suppressedEntrySchema),
-  mood: affectiveSignalSchema.nullable(),
-  pending_procedural_attempts: z.array(pendingProceduralAttemptSchema),
-  discourse_state: discourseStateSchema,
-  mode: cognitiveModeSchema.nullable(),
-  updated_at: z.number().finite(),
-}).strict();
+const workingMemoryObjectSchema = z
+  .object({
+    session_id: workingSessionIdSchema,
+    turn_counter: z.number().int().nonnegative(),
+    hot_entities: z.array(z.string().min(1)),
+    pending_actions: z.array(pendingActionRecordSchema),
+    pending_social_attribution: pendingSocialAttributionSchema.nullable(),
+    pending_trait_attribution: pendingTraitAttributionSchema.nullable(),
+    suppressed: z.array(suppressedEntrySchema),
+    mood: affectiveSignalSchema.nullable(),
+    pending_procedural_attempts: z.array(pendingProceduralAttemptSchema),
+    discourse_state: discourseStateSchema,
+    mode: cognitiveModeSchema.nullable(),
+    updated_at: z.number().finite(),
+  })
+  .strict();
 
 export const workingMemorySchema = workingMemoryObjectSchema;
 

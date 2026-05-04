@@ -71,7 +71,10 @@ function pendingActionEmbeddingText(action: PendingActionRecord): string {
   return [action.description, action.next_action ?? ""].join("\n").trim();
 }
 
-function withPendingActionTimestamp(action: PendingActionRecord, nowMs: number): PendingActionRecord {
+function withPendingActionTimestamp(
+  action: PendingActionRecord,
+  nowMs: number,
+): PendingActionRecord {
   return action.created_at === undefined
     ? {
         ...action,
@@ -92,7 +95,9 @@ export async function mergePendingActionsBySimilarity(input: {
 
   for (const action of input.incoming) {
     const incoming =
-      input.embeddingClient === undefined ? action : withPendingActionTimestamp(action, input.nowMs);
+      input.embeddingClient === undefined
+        ? action
+        : withPendingActionTimestamp(action, input.nowMs);
 
     if (input.embeddingClient === undefined || merged.length === 0) {
       merged = normalizePendingActions([...merged, incoming]);

@@ -309,6 +309,40 @@ export class ExecutiveStepsRepository {
     return result.changes > 0;
   }
 
+  restore(step: ExecutiveStep): ExecutiveStep {
+    const parsed = executiveStepSchema.parse(step);
+    const storedProvenance = toStoredProvenance(parsed.provenance);
+
+    this.runImmediateTransaction(() => {
+      this.db
+        .prepare(
+          `
+            UPDATE executive_steps
+            SET goal_id = ?, description = ?, status = ?, kind = ?, due_at = ?,
+                last_attempt_ts = ?, created_at = ?, updated_at = ?, provenance_kind = ?,
+                provenance_episode_ids = ?, provenance_process = ?
+            WHERE id = ?
+          `,
+        )
+        .run(
+          parsed.goal_id,
+          parsed.description,
+          parsed.status,
+          parsed.kind,
+          parsed.due_at,
+          parsed.last_attempt_ts,
+          parsed.created_at,
+          parsed.updated_at,
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          parsed.id,
+        );
+    });
+
+    return parsed;
+  }
+
   abandonOpenStepsForGoal(goalId: GoalId, reason: ExecutiveStepAbandonReason): ExecutiveStep[] {
     return this.runImmediateTransaction(() => {
       const openSteps = this.listOpen(goalId);

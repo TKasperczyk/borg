@@ -4,11 +4,7 @@ import { createStreamEntryId } from "../../util/ids.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildDialogueMessages, toContentBlockMessages } from "./dialogue.js";
 
-function makeRecency(
-  role: "user" | "assistant",
-  content: string,
-  index: number,
-): RecencyMessage {
+function makeRecency(role: "user" | "assistant", content: string, index: number): RecencyMessage {
   return {
     role,
     content,

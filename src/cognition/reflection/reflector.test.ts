@@ -729,7 +729,7 @@ describe("reflector", () => {
       executiveStepsRepository: harness.executiveStepsRepository,
     });
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       createExecutiveReflectionContext({
         origin: "autonomous",
         goal,
@@ -810,7 +810,7 @@ describe("reflector", () => {
         proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
       });
 
-      const reflected = await reflector.reflect(
+      const { workingMemory: reflected } = await reflector.reflect(
         createPendingProceduralReflectionContext(),
         harness.streamWriter,
       );
@@ -1158,7 +1158,7 @@ describe("reflector", () => {
       }),
       citationChain: [],
     };
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         userMessage: "We need to stabilize the Atlas release",
         workingMemory: {
@@ -1580,7 +1580,7 @@ describe("reflector", () => {
     });
     const currentTurnStreamEntryIds = [createStreamEntryId(), createStreamEntryId()];
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         userMessage: "The rollout passed and don't open a new incident.",
         workingMemory,
@@ -1660,7 +1660,7 @@ describe("reflector", () => {
       proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       createPendingProceduralReflectionContext(),
       harness.streamWriter,
     );
@@ -1687,7 +1687,7 @@ describe("reflector", () => {
       proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       createPendingProceduralReflectionContext(),
       harness.streamWriter,
     );
@@ -2856,7 +2856,7 @@ describe("reflector", () => {
       mode: "reflective",
     });
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         userMessage: "Why is Atlas still failing?",
         workingMemory,
@@ -2957,7 +2957,7 @@ describe("reflector", () => {
         proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
       });
 
-      const reflected = await reflector.reflect(
+      const { workingMemory: reflected } = await reflector.reflect(
         {
           userMessage:
             classification === "success"
@@ -3141,7 +3141,7 @@ describe("reflector", () => {
       proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         userMessage: "That worked after I changed the whole shape of the code.",
         perception: {
@@ -3379,7 +3379,7 @@ describe("reflector", () => {
       proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
     });
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         userMessage: "I'm frustrated and tired of this.",
         perception: {
@@ -3512,7 +3512,7 @@ describe("reflector", () => {
       model: "haiku",
     });
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         userMessage: "Please keep the answer short.",
         perception: {
@@ -3638,7 +3638,7 @@ describe("reflector", () => {
       model: "haiku",
     });
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         userMessage: "Let's work through the plan.",
         perception: {
@@ -3756,7 +3756,7 @@ describe("reflector", () => {
       model: "haiku",
     });
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         userMessage: "Let's work through the plan.",
         perception: {
@@ -3868,7 +3868,7 @@ describe("reflector", () => {
       model: "haiku",
     });
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         userMessage: "Let's work through the plan.",
         perception: {
@@ -4093,7 +4093,7 @@ describe("reflector", () => {
       citationChain: [],
     };
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         userMessage: "I want to sit with this feeling for a minute.",
         perception: {
@@ -4233,7 +4233,7 @@ describe("reflector", () => {
       citationChain: [],
     };
 
-    const reflected = await reflector.reflect(
+    const { workingMemory: reflected } = await reflector.reflect(
       {
         origin: "autonomous",
         userMessage: "Let me sit with this for a moment.",

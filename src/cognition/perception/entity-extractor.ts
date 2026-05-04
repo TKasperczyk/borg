@@ -37,9 +37,7 @@ const ENTITY_LLM_SYSTEM_PROMPT = [
 // Output sanitization: keep only language-neutral structural checks.
 // Natural-language validity belongs to the LLM extraction contract.
 const MAX_ENTITY_LENGTH = 64;
-const FORBIDDEN_ENTITY_PATTERNS: readonly RegExp[] = [
-  /^[\p{P}\p{S}]+$/u,
-];
+const FORBIDDEN_ENTITY_PATTERNS: readonly RegExp[] = [/^[\p{P}\p{S}]+$/u];
 
 function isAcceptableEntity(value: string): boolean {
   const trimmed = value.trim();

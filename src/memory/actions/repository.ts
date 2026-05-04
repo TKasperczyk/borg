@@ -1,4 +1,8 @@
-import { parseJsonArray, quoteSqlString, type JsonArrayCodecOptions } from "../../storage/codecs.js";
+import {
+  parseJsonArray,
+  quoteSqlString,
+  type JsonArrayCodecOptions,
+} from "../../storage/codecs.js";
 import {
   LanceDbTable,
   float64Field,

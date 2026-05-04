@@ -1,8 +1,4 @@
-import {
-  StreamReader,
-  filterActiveStreamEntries,
-  type StreamEntry,
-} from "../../stream/index.js";
+import { StreamReader, filterActiveStreamEntries, type StreamEntry } from "../../stream/index.js";
 
 import type { RecencyMessage, RecencyWindow } from "./types.js";
 

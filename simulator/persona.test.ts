@@ -41,4 +41,43 @@ describe("PersonaSession", () => {
     expect(draft.message).toBe(FIRST_TOM_TURN);
     expect(retry.message).toBe(FIRST_TOM_TURN);
   });
+
+  it("keeps new-session gap context across rolled-back llm drafts", async () => {
+    const gapContext = "It's the next morning. You're at your desk with coffee.";
+    const prompts: string[] = [];
+    const client = {
+      messages: {
+        stream(params: { messages: Array<{ content: unknown }> }) {
+          prompts.push(String(params.messages.at(-1)?.content ?? ""));
+          return {
+            async finalMessage() {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `persona draft ${prompts.length}`,
+                  },
+                ],
+              };
+            },
+          };
+        },
+      },
+    };
+    const persona = new PersonaSession({
+      persona: tomPersona,
+      client: client as never,
+    });
+
+    persona.startNewSession(gapContext);
+    const first = await persona.prepareNextTurn(null);
+    persona.rollback(first);
+    const second = await persona.prepareNextTurn(null);
+
+    expect(prompts).toEqual([
+      expect.stringContaining(gapContext),
+      expect.stringContaining(gapContext),
+    ]);
+    expect(second.message).toBe("persona draft 2");
+  });
 });

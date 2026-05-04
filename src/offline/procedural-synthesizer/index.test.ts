@@ -1781,7 +1781,7 @@ describe("ProceduralSynthesizerProcess", () => {
       ],
     };
 
-    const nextWorkingMemory = await reflector.reflect(
+    const { workingMemory: nextWorkingMemory } = await reflector.reflect(
       {
         userMessage: "That worked.",
         perception: {

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -217,6 +217,80 @@ describe("SimulatorRunner", () => {
     expect(persona.rollback).not.toHaveBeenCalled();
     expect(report.turnFailures).toEqual([]);
     expect(metricsRow?.transport_chat_attempts).toBe(3);
+  });
+
+  it("records aborted attempt metrics rows before a retry succeeds", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const tracePath = join(dir, "trace.jsonl");
+    const draftMessage = "stable persona draft";
+    const failureMessage = "transient transport failure";
+    const persona = fakePersonaSession([draftMessage]);
+    let attempts = 0;
+    mockTransportLifecycle();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) => {
+      attempts += 1;
+
+      if (attempts <= 2) {
+        appendFileSync(
+          tracePath,
+          `${JSON.stringify({
+            ts: attempts,
+            turnId: `turn-aborted-${attempts}`,
+            event: "turn_aborted",
+          })}\n`,
+        );
+        throw new Error(failureMessage);
+      }
+
+      return chatResult({
+        response: "Borg recovered.",
+        emitted: true,
+        turnId: "turn-success",
+        sessionId: options.sessionId as SessionId,
+      });
+    });
+
+    await runSimulation({
+      runId: "sim-runner-aborted-attempt-metrics-test",
+      persona: tomPersona,
+      personaSession: persona.session,
+      totalTurns: 1,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath,
+      mock: true,
+    });
+    const metricsRows = readFileSync(metricsPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            event: string;
+            turnId: string;
+            transport_chat_attempts: number;
+          },
+      );
+
+    expect(metricsRows).toMatchObject([
+      {
+        event: "aborted_attempt",
+        turnId: "turn-aborted-1",
+        transport_chat_attempts: 1,
+      },
+      {
+        event: "aborted_attempt",
+        turnId: "turn-aborted-2",
+        transport_chat_attempts: 2,
+      },
+      {
+        event: "turn_metrics",
+        turnId: "turn-success",
+        transport_chat_attempts: 3,
+      },
+    ]);
   });
 
   it("rolls back a persona draft and records aborted metrics after exhausted retries", async () => {

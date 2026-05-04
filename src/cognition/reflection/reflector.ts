@@ -2,7 +2,11 @@ import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/inde
 import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import { StreamWriter, streamEntryIdSchema } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
-import type { ExecutiveFocus, ExecutiveStepsRepository } from "../../executive/index.js";
+import type {
+  ExecutiveFocus,
+  ExecutiveStep,
+  ExecutiveStepsRepository,
+} from "../../executive/index.js";
 import {
   executiveStepGoalIdSchema,
   executiveStepIdSchema,
@@ -12,6 +16,7 @@ import {
 import {
   GoalsRepository,
   TraitsRepository,
+  buildOpenQuestionDedupeKey,
   openQuestionIdSchema,
   type GoalRecord,
   type OpenQuestion,
@@ -25,13 +30,17 @@ import {
   appendOpenQuestionHookFailureEvent,
 } from "../../memory/self/review-open-question-hook.js";
 import { EpisodicRepository, episodeIdSchema } from "../../memory/episodic/index.js";
+import type { EpisodeStats } from "../../memory/episodic/index.js";
 import type { ActionRepository, ActionState } from "../../memory/actions/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import {
   createActionId,
+  type ActionId,
   type EntityId,
   type EpisodeId,
+  type ExecutiveStepId,
   type GoalId,
+  type OpenQuestionId,
   type SkillId,
   type StreamEntryId,
 } from "../../util/ids.js";
@@ -63,6 +72,21 @@ export type ReflectionContext = {
   // (user_msg + agent_msg). Used as evidence for trait demonstrations
   // since the episode hasn't been extracted yet at reflection time.
   currentTurnStreamEntryIds?: readonly StreamEntryId[];
+};
+
+export type ReflectionEffects = {
+  createdActionIds: ActionId[];
+  createdExecutiveStepIds: ExecutiveStepId[];
+  createdOpenQuestionIds: OpenQuestionId[];
+  updatedExecutiveSteps: ExecutiveStep[];
+  updatedGoals: GoalRecord[];
+  resolvedOpenQuestions: OpenQuestion[];
+  updatedEpisodeStats: EpisodeStats[];
+};
+
+export type ReflectionResult = {
+  workingMemory: WorkingMemory;
+  effects: ReflectionEffects;
 };
 
 const SURFACED_TTL_TURNS = 4;
@@ -214,6 +238,18 @@ function emptyReflectionOutput(): ReflectionOutput {
     proposed_steps: [],
     open_questions: [],
     resolved_open_questions: [],
+  };
+}
+
+function emptyReflectionEffects(): ReflectionEffects {
+  return {
+    createdActionIds: [],
+    createdExecutiveStepIds: [],
+    createdOpenQuestionIds: [],
+    updatedExecutiveSteps: [],
+    updatedGoals: [],
+    resolvedOpenQuestions: [],
+    updatedEpisodeStats: [],
   };
 }
 
@@ -414,7 +450,7 @@ export type ReflectorOptions = {
     IdentityService,
     "updateGoal" | "updateGoalProgressFromReflection" | "addOpenQuestion" | "resolveOpenQuestion"
   >;
-  openQuestionsRepository?: Pick<OpenQuestionsRepository, "get">;
+  openQuestionsRepository?: Pick<OpenQuestionsRepository, "get" | "getByDedupeKey">;
   reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
   skillRepository?: SkillRepository;
   proceduralEvidenceRepository?: ProceduralEvidenceRepository;
@@ -436,8 +472,9 @@ export class Reflector {
     this.maxTokens = options.maxTokens ?? DEFAULT_REFLECTION_MAX_TOKENS;
   }
 
-  async reflect(context: ReflectionContext, streamWriter: StreamWriter): Promise<WorkingMemory> {
+  async reflect(context: ReflectionContext, streamWriter: StreamWriter): Promise<ReflectionResult> {
     const reflectionProvenance = buildReflectionProvenance(context.retrievedEpisodes);
+    const effects = emptyReflectionEffects();
     let reflectionOutput = emptyReflectionOutput();
 
     if (
@@ -466,6 +503,7 @@ export class Reflector {
       context,
       reflectionOutput.step_outcomes,
       streamWriter,
+      effects,
     );
     const proposedSteps = await this.dropAutonomousCloseAndReplaceProposals(
       context,
@@ -473,7 +511,7 @@ export class Reflector {
       autonomouslyClosedStepGoalIds,
       streamWriter,
     );
-    await this.applyProposedExecutiveSteps(context, proposedSteps, streamWriter);
+    await this.applyProposedExecutiveSteps(context, proposedSteps, streamWriter, effects);
 
     const advancedGoals = isAutonomousTurn ? [] : reflectionOutput.advanced_goals;
 
@@ -497,6 +535,7 @@ export class Reflector {
         this.options.reviewQueueRepository === undefined
       ) {
         this.options.goalsRepository.update(goal.id, patch, reflectionProvenance);
+        effects.updatedGoals.push(goal);
         continue;
       }
 
@@ -516,6 +555,8 @@ export class Reflector {
           refs: buildIdentityPatchReviewRefs(goal.id, patch, reflectionProvenance),
           reason: `reflector proposed updating goal ${goal.id}`,
         });
+      } else {
+        effects.updatedGoals.push(goal);
       }
     }
 
@@ -525,7 +566,11 @@ export class Reflector {
     );
     const referencedEpisodeIdSet = new Set(referencedEpisodeIds);
 
-    await this.applyResolvedOpenQuestions(context, reflectionOutput.resolved_open_questions);
+    await this.applyResolvedOpenQuestions(
+      context,
+      reflectionOutput.resolved_open_questions,
+      effects,
+    );
 
     for (const result of context.retrievedEpisodes) {
       const used = referencedEpisodeIdSet.has(result.episode.id);
@@ -537,6 +582,7 @@ export class Reflector {
           this.options.episodicRepository.updateStats(result.episode.id, {
             use_count: stats.use_count + 1,
           });
+          effects.updatedEpisodeStats.push(stats);
         }
 
         context.suppressionSet.suppress(result.episode.id, "already surfaced", SURFACED_TTL_TURNS);
@@ -553,6 +599,7 @@ export class Reflector {
       reflectionOutput.open_questions,
       referencedEpisodeIdSet,
       streamWriter,
+      effects,
     );
 
     context.suppressionSet.tickTurn();
@@ -580,7 +627,7 @@ export class Reflector {
       intentUpdates,
     );
 
-    await this.persistActionRecords(context, resolvedIntentUpdates, streamWriter);
+    await this.persistActionRecords(context, resolvedIntentUpdates, streamWriter, effects);
 
     if (resolvedIntentKeys.size > 0) {
       nextWorkingMemory = {
@@ -709,13 +756,17 @@ export class Reflector {
       };
     }
 
-    return nextWorkingMemory;
+    return {
+      workingMemory: nextWorkingMemory,
+      effects,
+    };
   }
 
   private async applyExecutiveStepOutcomes(
     context: ReflectionContext,
     outcomes: readonly ReflectionOutput["step_outcomes"][number][],
     streamWriter: StreamWriter,
+    effects: ReflectionEffects,
   ): Promise<Set<GoalId>> {
     const autonomouslyClosedStepGoalIds = new Set<GoalId>();
 
@@ -828,6 +879,7 @@ export class Reflector {
           status: outcome.new_status,
           last_attempt_ts: this.clock.now(),
         });
+        effects.updatedExecutiveSteps.push(current);
 
         if (context.origin === "autonomous" && isClosingExecutiveStepStatus(outcome.new_status)) {
           autonomouslyClosedStepGoalIds.add(current.goal_id);
@@ -851,6 +903,7 @@ export class Reflector {
     context: ReflectionContext,
     updates: readonly ReflectionOutput["intent_updates"][number][],
     streamWriter: StreamWriter,
+    effects: ReflectionEffects,
   ): Promise<void> {
     const repository = this.options.actionRepository;
 
@@ -868,10 +921,11 @@ export class Reflector {
 
     for (const update of updates) {
       const state = actionStateFromIntentStatus(update.status);
+      const id = createActionId();
 
       try {
         repository.add({
-          id: createActionId(),
+          id,
           description: update.description.trim(),
           actor: update.actor,
           audience_entity_id: context.audienceEntityId ?? null,
@@ -889,6 +943,7 @@ export class Reflector {
           unknown_at: null,
           ...stateTimestampPatch(state, nowMs),
         });
+        effects.createdActionIds.push(id);
       } catch (error) {
         await appendInternalFailureEvent(streamWriter, "action_record_persist", error, {
           description: update.description,
@@ -934,6 +989,7 @@ export class Reflector {
     context: ReflectionContext,
     proposals: readonly ReflectionOutput["proposed_steps"][number][],
     streamWriter: StreamWriter,
+    effects: ReflectionEffects,
   ): Promise<void> {
     if (proposals.length === 0) {
       return;
@@ -1019,13 +1075,14 @@ export class Reflector {
       }
 
       try {
-        repository.add({
+        const step = repository.add({
           goalId: selectedGoal.id,
           description: proposal.description,
           kind: proposal.kind,
           dueAt: proposal.due_at ?? null,
           provenance,
         });
+        effects.createdExecutiveStepIds.push(step.id);
       } catch (error) {
         await this.appendReflectorInternalEvent(streamWriter, {
           hook: "reflector_step_proposal_dropped",
@@ -1100,6 +1157,7 @@ export class Reflector {
   private async applyResolvedOpenQuestions(
     context: ReflectionContext,
     resolutions: readonly ReflectionOutput["resolved_open_questions"][number][],
+    effects: ReflectionEffects,
   ): Promise<void> {
     if (resolutions.length === 0) {
       return;
@@ -1221,6 +1279,8 @@ export class Reflector {
             reason: "guard_rejected",
             question_id: resolution.question_id,
           });
+        } else {
+          effects.resolvedOpenQuestions.push(current);
         }
       } catch (error) {
         this.emitOpenQuestionResolutionDegraded(context, {
@@ -1237,6 +1297,7 @@ export class Reflector {
     proposals: readonly ReflectionOutput["open_questions"][number][],
     referencedEpisodeIdSet: ReadonlySet<EpisodeId>,
     streamWriter: StreamWriter,
+    effects: ReflectionEffects,
   ): Promise<void> {
     if (proposals.length === 0) {
       return;
@@ -1264,6 +1325,14 @@ export class Reflector {
       const proposedEpisodeIds = [...new Set(proposal.related_episode_ids)];
       const relatedEpisodeIds = proposedEpisodeIds.filter((id) => referencedEpisodeIdSet.has(id));
       const droppedEpisodeIds = proposedEpisodeIds.filter((id) => !referencedEpisodeIdSet.has(id));
+      const existing = this.options.openQuestionsRepository?.getByDedupeKey(
+        buildOpenQuestionDedupeKey({
+          question,
+          relatedEpisodeIds,
+          relatedSemanticNodeIds: [],
+          audienceEntityId: context.audienceEntityId ?? null,
+        }),
+      );
 
       if (droppedEpisodeIds.length > 0) {
         await this.appendReflectorInternalEvent(streamWriter, {
@@ -1287,7 +1356,7 @@ export class Reflector {
             };
 
       try {
-        identityService.addOpenQuestion({
+        const openQuestion = identityService.addOpenQuestion({
           question,
           urgency: proposal.urgency,
           audience_entity_id: context.audienceEntityId ?? null,
@@ -1295,6 +1364,9 @@ export class Reflector {
           provenance,
           source: "reflection",
         });
+        if (existing === null) {
+          effects.createdOpenQuestionIds.push(openQuestion.id);
+        }
       } catch (error) {
         await appendOpenQuestionHookFailureEvent(streamWriter, "reflection_open_question", error);
       }

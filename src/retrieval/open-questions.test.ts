@@ -275,13 +275,23 @@ describe("retrieveOpenQuestionsForQuery", () => {
     });
     await repository.waitForPendingEmbeddings();
 
-    const unrelatedResults = await retrieveOpenQuestionsForQuery(repository, queryEmbeddingClient, query, {
-      limit: 1,
-    });
-    const relatedResults = await retrieveOpenQuestionsForQuery(repository, queryEmbeddingClient, query, {
-      relatedSemanticNodeIds: [semanticNodeId],
-      limit: 1,
-    });
+    const unrelatedResults = await retrieveOpenQuestionsForQuery(
+      repository,
+      queryEmbeddingClient,
+      query,
+      {
+        limit: 1,
+      },
+    );
+    const relatedResults = await retrieveOpenQuestionsForQuery(
+      repository,
+      queryEmbeddingClient,
+      query,
+      {
+        relatedSemanticNodeIds: [semanticNodeId],
+        limit: 1,
+      },
+    );
 
     expect(onEmbeddingFailure).toHaveBeenCalledWith(
       expect.any(Error),

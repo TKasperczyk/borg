@@ -15,6 +15,7 @@ export type ToolOrigin = "autonomous" | "deliberator";
 export type ToolInvocationContext = {
   sessionId: SessionId;
   origin: ToolOrigin;
+  turnId?: string;
   audienceEntityId?: EntityId | null;
   provenance?: unknown;
 };
@@ -34,6 +35,7 @@ export type ToolDispatchCall = {
   toolName: string;
   input: unknown;
   sessionId?: SessionId;
+  turnId?: string;
   origin: ToolOrigin;
   audienceEntityId?: EntityId | null;
   provenance?: unknown;
@@ -45,6 +47,7 @@ export type ToolSkippedCall = {
   toolName: string;
   input: unknown;
   sessionId?: SessionId;
+  turnId?: string;
   origin: ToolOrigin;
   audienceEntityId?: EntityId | null;
   provenance?: unknown;
@@ -158,6 +161,7 @@ export class ToolDispatcher {
     try {
       await writer.append({
         kind: "tool_call",
+        ...(call.turnId === undefined ? {} : { turn_id: call.turnId }),
         content: {
           call_id: callId,
           tool_name: call.toolName,
@@ -171,6 +175,7 @@ export class ToolDispatcher {
 
       await writer.append({
         kind: "tool_result",
+        ...(call.turnId === undefined ? {} : { turn_id: call.turnId }),
         content: {
           call_id: callId,
           ok: false,
@@ -202,6 +207,7 @@ export class ToolDispatcher {
     try {
       await writer.append({
         kind: "tool_call",
+        ...(call.turnId === undefined ? {} : { turn_id: call.turnId }),
         content: {
           call_id: callId,
           tool_name: call.toolName,
@@ -218,6 +224,7 @@ export class ToolDispatcher {
           call.toolName,
           "Unknown tool",
           startedAt,
+          call.turnId,
         );
       }
 
@@ -228,6 +235,7 @@ export class ToolDispatcher {
           call.toolName,
           `Tool ${call.toolName} is not allowed for origin ${call.origin}`,
           startedAt,
+          call.turnId,
         );
       }
 
@@ -240,12 +248,14 @@ export class ToolDispatcher {
           call.toolName,
           parsedInput.error.message,
           startedAt,
+          call.turnId,
         );
       }
 
       const context = {
         sessionId,
         origin: call.origin,
+        ...(call.turnId === undefined ? {} : { turnId: call.turnId }),
         ...(call.audienceEntityId === undefined ? {} : { audienceEntityId: call.audienceEntityId }),
         provenance: call.provenance,
       };
@@ -276,6 +286,7 @@ export class ToolDispatcher {
           call.toolName,
           `Timed out after ${timeoutMs}ms`,
           startedAt,
+          call.turnId,
         );
       }
 
@@ -286,6 +297,7 @@ export class ToolDispatcher {
           call.toolName,
           formatToolError(invocation.error),
           startedAt,
+          call.turnId,
         );
       }
 
@@ -298,12 +310,14 @@ export class ToolDispatcher {
           call.toolName,
           parsedOutput.error.message,
           startedAt,
+          call.turnId,
         );
       }
 
       const durationMs = Math.max(0, this.clock.now() - startedAt);
       await writer.append({
         kind: "tool_result",
+        ...(call.turnId === undefined ? {} : { turn_id: call.turnId }),
         content: {
           call_id: callId,
           ok: true,
@@ -330,11 +344,13 @@ export class ToolDispatcher {
     toolName: string,
     error: string,
     startedAt: number,
+    turnId?: string,
   ): Promise<ToolDispatchResult> {
     const durationMs = Math.max(0, this.clock.now() - startedAt);
 
     await writer.append({
       kind: "tool_result",
+      ...(turnId === undefined ? {} : { turn_id: turnId }),
       content: {
         call_id: callId,
         ok: false,

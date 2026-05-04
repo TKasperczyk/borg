@@ -1,8 +1,5 @@
 import { sampleBeta } from "./bayes.js";
-import {
-  proceduralContextSchema,
-  type ProceduralContext,
-} from "./context.js";
+import { proceduralContextSchema, type ProceduralContext } from "./context.js";
 import type {
   SkillRecord,
   SkillSelectionCandidate,

@@ -8,7 +8,7 @@ export type Persona = {
 };
 
 export type MetricsRow = {
-  event: "turn_metrics" | "aborted_turn";
+  event: "turn_metrics" | "aborted_turn" | "aborted_attempt";
   ts: number;
   turn_counter: number;
   turnId: string;

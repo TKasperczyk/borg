@@ -380,8 +380,7 @@ export class CommitmentRepository {
     const next = commitmentSchema.parse({
       ...kept,
       priority: Math.max(kept.priority, incoming.priority),
-      source_stream_entry_ids:
-        sourceStreamEntryIds.length === 0 ? undefined : sourceStreamEntryIds,
+      source_stream_entry_ids: sourceStreamEntryIds.length === 0 ? undefined : sourceStreamEntryIds,
       last_reinforced_at: Math.max(kept.last_reinforced_at, incoming.last_reinforced_at),
     });
 

@@ -1,8 +1,6 @@
 import {
   StreamReader,
-  collectAbortedTurnRefs,
   filterActiveStreamEntries,
-  streamEntryIsActive,
   type StreamEntry,
   type StreamEntryIndexRepository,
 } from "../stream/index.js";
@@ -28,23 +26,7 @@ export class RawStreamAdapter {
   }
 
   async resolveSourceIds(ids: readonly StreamEntryId[]): Promise<Map<string, StreamEntry>> {
-    const entries = await this.citationResolver.resolveCitationEntries(ids);
-    const sessionIds = [...new Set([...entries.values()].map((entry) => entry.session_id))];
-    const markerEntries: StreamEntry[] = [];
-
-    for (const sessionId of sessionIds) {
-      const reader = new StreamReader({
-        dataDir: this.options.dataDir,
-        sessionId,
-      });
-
-      for await (const entry of reader.iterate({ kinds: ["internal_event"] })) {
-        markerEntries.push(entry);
-      }
-    }
-
-    const refs = collectAbortedTurnRefs(markerEntries);
-    return new Map([...entries].filter(([, entry]) => streamEntryIsActive(entry, refs)));
+    return this.citationResolver.resolveCitationEntries(ids);
   }
 
   recent(options: { limit?: number; sessionId?: SessionId } = {}): StreamEntry[] {

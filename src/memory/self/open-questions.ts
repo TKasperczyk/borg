@@ -879,6 +879,74 @@ export class OpenQuestionsRepository {
     return next;
   }
 
+  restore(question: OpenQuestion): OpenQuestion {
+    const parsed = openQuestionSchema.parse(question);
+    const dedupeKey = buildOpenQuestionDedupeKey({
+      question: parsed.question,
+      relatedEpisodeIds: parsed.related_episode_ids,
+      relatedSemanticNodeIds: parsed.related_semantic_node_ids,
+      audienceEntityId: parsed.audience_entity_id,
+    });
+    const storedProvenance =
+      parsed.provenance === null ? null : toStoredProvenance(parsed.provenance);
+
+    this.db
+      .prepare(
+        `
+          UPDATE open_questions
+          SET question = ?, dedupe_key = ?, urgency = ?, status = ?, audience_entity_id = ?,
+              related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
+              provenance_episode_ids = ?, provenance_process = ?, source = ?, created_at = ?,
+              last_touched = ?, resolution_evidence_episode_ids = ?,
+              resolution_evidence_stream_entry_ids = ?, resolution_note = ?, resolved_at = ?,
+              abandoned_reason = ?, abandoned_at = ?
+          WHERE id = ?
+        `,
+      )
+      .run(
+        parsed.question,
+        dedupeKey,
+        parsed.urgency,
+        parsed.status,
+        parsed.audience_entity_id,
+        serializeJsonValue(parsed.related_episode_ids),
+        serializeJsonValue(parsed.related_semantic_node_ids),
+        storedProvenance?.provenance_kind ?? null,
+        storedProvenance?.provenance_episode_ids ?? null,
+        storedProvenance?.provenance_process ?? null,
+        parsed.source,
+        parsed.created_at,
+        parsed.last_touched,
+        serializeJsonValue(parsed.resolution_evidence_episode_ids),
+        serializeJsonValue(parsed.resolution_evidence_stream_entry_ids),
+        parsed.resolution_note,
+        parsed.resolved_at,
+        parsed.abandoned_reason,
+        parsed.abandoned_at,
+        parsed.id,
+      );
+
+    this.scheduleQuestionVectorUpsert(
+      parsed,
+      parsed.status === "open" ? "update" : "metadata_sync",
+      {
+        skipIfMissing: parsed.status !== "open",
+      },
+    );
+
+    return parsed;
+  }
+
+  async delete(id: OpenQuestionId): Promise<boolean> {
+    const result = this.db.prepare("DELETE FROM open_questions WHERE id = ?").run(id);
+
+    if (result.changes > 0 && this.table !== undefined) {
+      await this.table.remove(`id = ${quoteSqlString(id)}`);
+    }
+
+    return result.changes > 0;
+  }
+
   touch(id: OpenQuestionId, now = this.clock.now()): OpenQuestion {
     const existing = this.get(id);
 

@@ -11,7 +11,7 @@ export const tomPersona: Persona = {
     "",
     "Vary the conversation. Sometimes ask Borg for opinions, reference earlier conversations, contradict yourself in small human ways, or shift emotionally between frustrated, pleased, and curious. Keep messages conversational and plausible, not test-like.",
     "",
-    "ABSOLUTE RULE: this conversation has no ending. There is no \"this was good, talk later\" moment. There is no sign-off, no \"goodnight\", no \"hasta pronto\", no \"in whatever sense applies\", no winking close, no narrated wrap-up, no bracket-text meta-commentary about whether to continue. You are not playing through to the end of an evening; you are sustaining an open-ended stream. When a topic dies, pivot in the SAME message -- e.g. \"...anyway. Otto just did the thing where he\" or \"oh, separate thing -- I was thinking about\". If you ever feel the urge to wrap up, you have misunderstood the task: open a new topic instead.",
+    'ABSOLUTE RULE: this conversation has no ending. There is no "this was good, talk later" moment. There is no sign-off, no "goodnight", no "hasta pronto", no "in whatever sense applies", no winking close, no narrated wrap-up, no bracket-text meta-commentary about whether to continue. You are not playing through to the end of an evening; you are sustaining an open-ended stream. When a topic dies, pivot in the SAME message -- e.g. "...anyway. Otto just did the thing where he" or "oh, separate thing -- I was thinking about". If you ever feel the urge to wrap up, you have misunderstood the task: open a new topic instead.',
     "",
     "Output format: produce ONLY Tom's user message text. Never produce stage directions, brackets, narrator voice, or commentary about the conversation itself.",
   ].join("\n"),

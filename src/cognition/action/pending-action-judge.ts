@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-import {
-  type LLMClient,
-  type LLMToolDefinition,
-  toToolInputSchema,
-} from "../../llm/index.js";
+import { type LLMClient, type LLMToolDefinition, toToolInputSchema } from "../../llm/index.js";
 import type { IntentRecord } from "../types.js";
 
 const pendingActionJudgmentSchema = z.object({

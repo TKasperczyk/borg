@@ -2,6 +2,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:f
 import { dirname } from "node:path";
 
 import type { Borg, SessionId } from "../src/index.js";
+import { filterActiveStreamEntries } from "../src/stream/index.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
 
@@ -10,6 +11,7 @@ import type { MetricsRow } from "./types.js";
 const LARGE_COUNT_LIMIT = 1_000_000;
 const TURN_METRICS_EVENT = "turn_metrics";
 const ABORTED_TURN_EVENT = "aborted_turn";
+const ABORTED_ATTEMPT_EVENT = "aborted_attempt";
 
 type GoalTreeNodeLike = {
   children?: GoalTreeNodeLike[];
@@ -118,6 +120,14 @@ function usageForTurn(records: readonly TraceRecord[]): {
   return { inputTokens, outputTokens };
 }
 
+function generationSuppressionCount(borg: Borg, sessionIds: readonly SessionId[]): number {
+  return [...new Set(sessionIds)]
+    .flatMap((session) =>
+      filterActiveStreamEntries(borg.stream.tail(LARGE_COUNT_LIMIT, { session })),
+    )
+    .filter((entry) => entry.kind === "agent_suppressed").length;
+}
+
 export class MetricsCapture {
   private readonly filepath: string;
   private readonly tracePath?: string;
@@ -157,9 +167,7 @@ export class MetricsCapture {
       limit: LARGE_COUNT_LIMIT,
     });
     const activeGoals = borg.self.goals.list({ status: "active" });
-    const generationSuppressions = [...new Set(context.sessionIds)]
-      .flatMap((session) => borg.stream.tail(LARGE_COUNT_LIMIT, { session }))
-      .filter((entry) => entry.kind === "agent_suppressed").length;
+    const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
     const row: MetricsRow = {
       event: TURN_METRICS_EVENT,
       ts: Date.now(),
@@ -202,8 +210,10 @@ export class MetricsCapture {
     context: MetricsCaptureContext & {
       failureReason: string;
       turnId?: string;
+      event?: typeof ABORTED_TURN_EVENT | typeof ABORTED_ATTEMPT_EVENT;
     },
   ): Promise<MetricsRow> {
+    const event = context.event ?? ABORTED_TURN_EVENT;
     const mood = borg.mood.current(context.sessionId);
     const episodeResult = await borg.episodic.list({ limit: LARGE_COUNT_LIMIT });
     const semanticNodes = await borg.semantic.nodes.list({ limit: LARGE_COUNT_LIMIT });
@@ -213,14 +223,12 @@ export class MetricsCapture {
       limit: LARGE_COUNT_LIMIT,
     });
     const activeGoals = borg.self.goals.list({ status: "active" });
-    const generationSuppressions = [...new Set(context.sessionIds)]
-      .flatMap((session) => borg.stream.tail(LARGE_COUNT_LIMIT, { session }))
-      .filter((entry) => entry.kind === "agent_suppressed").length;
+    const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
     const row: MetricsRow = {
-      event: ABORTED_TURN_EVENT,
+      event,
       ts: Date.now(),
       turn_counter: turnCounter,
-      turnId: context.turnId ?? `${ABORTED_TURN_EVENT}_${turnCounter}`,
+      turnId: context.turnId ?? `${event}_${turnCounter}`,
       transport_chat_attempts: context.transportChatAttempts,
       failure_reason: context.failureReason,
       episode_count: episodeResult.items.length,
