@@ -19,6 +19,7 @@ import {
   type EntityId,
   type EpisodeId,
 } from "../util/ids.js";
+import type { IntentRecord } from "./types.js";
 
 type TraceEvent = {
   event: string;
@@ -187,7 +188,7 @@ function createNoOutputTurnPlanResponse() {
   };
 }
 
-function createTurnPlanResponse() {
+function createTurnPlanResponse(intents: readonly IntentRecord[] = []) {
   return {
     text: "",
     input_tokens: 8,
@@ -203,7 +204,27 @@ function createTurnPlanResponse() {
           tensions: [],
           voice_note: "",
           referenced_episode_ids: [],
-          intents: [],
+          intents,
+        },
+      },
+    ],
+  };
+}
+
+function createPendingActionJudgeResponse(classification: "action" | "non_action") {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_pending_action_judge",
+        name: "ClassifyPendingAction",
+        input: {
+          classification,
+          reason: "The planner item is classified for the pending-action store.",
+          confidence: 0.95,
         },
       },
     ],
@@ -1988,6 +2009,111 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(retry.response).toBe(retryResponse);
       expect(retryUserMessages).toEqual([failedUserMessage]);
       expect(borg.commitments.list({ activeOnly: true })).toEqual([]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("does not count pending-action merges from aborted turn attempts", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_190_250);
+    const failedReason = "reflection failed after pending-action merge";
+    const userMessage = "Keep an eye on deployment metrics.";
+    const response = "I will keep tracking it.";
+    const pendingAction: IntentRecord = {
+      description: "Follow up on deployment metrics",
+      next_action: "Check the deployment metrics status",
+    };
+    let sawPendingActionJudge = false;
+    let threwAfterMerge = false;
+    const scriptedResponse = (options: LLMCompleteOptions) => {
+      if (options.budget === "corrective-preference-extractor") {
+        return createCorrectivePreferenceResponse({
+          classification: "none",
+          reason: "No new preference.",
+          confidence: 0.9,
+        });
+      }
+
+      if (options.budget === "generation-gate") {
+        return createGenerationGateResponse({ decision: "proceed", substantive: true });
+      }
+
+      if (options.budget === "recall-expansion") {
+        return createRecallExpansionResponse();
+      }
+
+      if (options.budget === "cognition-plan") {
+        return createTurnPlanResponse([pendingAction]);
+      }
+
+      if (options.budget === "cognition-system-2" || options.budget === "cognition-system-1") {
+        return response;
+      }
+
+      if (options.budget === "pending-action-judge") {
+        sawPendingActionJudge = true;
+        return createPendingActionJudgeResponse("action");
+      }
+
+      if (options.budget === "generation-stop-commitment") {
+        return createStopCommitmentResponse({ classification: "none" });
+      }
+
+      if (options.budget === "commitment-judge") {
+        return createCommitmentJudgeResponse([]);
+      }
+
+      if (options.budget === "reflection") {
+        return createEmptyReflectionResponse();
+      }
+
+      return response;
+    };
+    const llm = new FakeLLMClient({
+      responses: Array.from({ length: 30 }, () => scriptedResponse),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "workingMemoryStore">;
+    };
+
+    try {
+      const workingMemory = internal.deps.workingMemoryStore.load("default" as never);
+      const originalSave = internal.deps.workingMemoryStore.save.bind(
+        internal.deps.workingMemoryStore,
+      );
+      internal.deps.workingMemoryStore.save({
+        ...workingMemory,
+        pending_actions: [pendingAction],
+        updated_at: clock.now(),
+      });
+      internal.deps.workingMemoryStore.recordPendingActionMerges(1);
+      vi.spyOn(internal.deps.workingMemoryStore, "save").mockImplementation((memory) => {
+        if (sawPendingActionJudge && !threwAfterMerge) {
+          threwAfterMerge = true;
+          throw new Error(failedReason);
+        }
+
+        return originalSave(memory);
+      });
+
+      await expect(
+        borg.turn({
+          userMessage,
+          stakes: "high",
+        }),
+      ).rejects.toThrow(failedReason);
+
+      expect(internal.deps.workingMemoryStore.getPendingActionMergeCount()).toBe(1);
+
+      await borg.turn({
+        userMessage,
+        stakes: "high",
+      });
+
+      expect(internal.deps.workingMemoryStore.getPendingActionMergeCount()).toBe(2);
     } finally {
       await borg.close();
     }

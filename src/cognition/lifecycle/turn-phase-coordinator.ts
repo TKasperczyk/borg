@@ -402,6 +402,7 @@ export class TurnPhaseCoordinator {
     });
     const actionResult = actionCoordinatorResult.actionResult;
     const actionEmission: PendingTurnEmission = actionCoordinatorResult.actionEmission;
+    lifecycleTracker.trackPendingActionMerges(actionResult.pending_action_merge_count ?? 0);
     const persistedAgentEntry =
       actionEmission.kind === "message"
         ? await streamWriter.append({

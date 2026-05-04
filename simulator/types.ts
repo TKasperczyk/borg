@@ -26,8 +26,16 @@ export type MetricsRow = {
   semantic_nodes_added_since_last_check: number;
   semantic_edges_added_since_last_check: number;
   open_question_count: number;
-  open_question_resolved_count: number;
   active_goal_count: number;
+  generation_suppression_count: number;
+  mood_valence: number;
+  mood_arousal: number;
+  retrieval_latency_ms: number | null;
+  deliberation_latency_ms: number | null;
+  borg_input_tokens: number;
+  borg_output_tokens: number;
+  // JSONL key order is part of the simulator metrics contract; new 6d-9 fields append here.
+  open_question_resolved_count: number;
   action_record_count_total: number;
   action_record_count_by_state: Record<ActionState, number>;
   recent_completed_action_count: number;
@@ -37,13 +45,6 @@ export type MetricsRow = {
   pending_action_merge_count: number;
   relational_slot_count_by_state: Record<RelationalSlotState, number>;
   review_queue_open_count_by_type: Record<ReviewKind, number>;
-  generation_suppression_count: number;
-  mood_valence: number;
-  mood_arousal: number;
-  retrieval_latency_ms: number | null;
-  deliberation_latency_ms: number | null;
-  borg_input_tokens: number;
-  borg_output_tokens: number;
 };
 
 export type OverseerVerdict = {

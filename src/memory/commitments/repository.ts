@@ -598,7 +598,6 @@ export class CommitmentRepository {
   }
 
   countActive(nowMs = this.clock.now()): number {
-    this.materializeExpiredCommitments(nowMs);
     const row = this.db
       .prepare(
         `

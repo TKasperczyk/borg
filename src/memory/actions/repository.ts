@@ -408,6 +408,22 @@ export class ActionRepository {
     return Number(row?.count ?? 0);
   }
 
+  listCompletedIds(): ActionId[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT id
+          FROM action_records
+          WHERE state = 'completed'
+            AND completed_at IS NOT NULL
+          ORDER BY completed_at ASC, id ASC
+        `,
+      )
+      .all() as Array<{ id: string }>;
+
+    return rows.map((row) => parseActionId(row.id));
+  }
+
   latestCompletedAt(): number | null {
     const row = this.db
       .prepare(

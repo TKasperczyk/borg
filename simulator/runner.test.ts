@@ -81,6 +81,7 @@ function fakeSimulatorBorg(): Borg {
       countByState: () => zeroCounts(ACTION_STATES),
       countCompletedSince: () => 0,
       latestCompletedAt: () => null,
+      listCompletedIds: () => [],
     },
     commitments: {
       list: () => [],

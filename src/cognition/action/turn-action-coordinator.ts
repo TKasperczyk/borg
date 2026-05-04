@@ -1,6 +1,6 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
-import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
+import type { WorkingMemory } from "../../memory/working/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { Clock } from "../../util/clock.js";
@@ -26,7 +26,6 @@ export type TurnActionCoordinatorOptions = {
   pendingActionJudgeModel: string;
   clock: Clock;
   tracer: TurnTracer;
-  workingMemoryStore?: Pick<WorkingMemoryStore, "recordPendingActionMerges">;
 };
 
 export type RunTurnActionInput = {
@@ -106,10 +105,6 @@ export class TurnActionCoordinator {
       kind: "message",
       content: actionResult.response,
     };
-
-    this.options.workingMemoryStore?.recordPendingActionMerges(
-      actionResult.pending_action_merge_count ?? 0,
-    );
 
     return {
       actionResult,

@@ -16,7 +16,7 @@ import type { ActionId, ExecutiveStepId, GoalId, OpenQuestionId } from "../../ut
 import type { ReflectionEffects } from "../reflection/index.js";
 
 export type TurnLifecycleTrackerOptions = {
-  workingMemoryStore: Pick<WorkingMemoryStore, "save">;
+  workingMemoryStore: Pick<WorkingMemoryStore, "recordPendingActionMerges" | "save">;
   actionRepository: Pick<ActionRepository, "delete">;
   executiveStepsRepository: Pick<ExecutiveStepsRepository, "delete" | "restore">;
   goalsRepository: Pick<GoalsRepository, "remove" | "restore">;
@@ -36,6 +36,7 @@ export class TurnLifecycleTracker {
   private readonly resolvedOpenQuestions: OpenQuestion[] = [];
   private readonly updatedEpisodeStats: EpisodeStats[] = [];
   private readonly appliedSlotNegations: RelationalSlot[] = [];
+  private pendingActionMergeCount = 0;
 
   constructor(private readonly options: TurnLifecycleTrackerOptions) {}
 
@@ -57,6 +58,14 @@ export class TurnLifecycleTracker {
 
   trackAppliedSlotNegation(slot: RelationalSlot): void {
     this.appliedSlotNegations.push(slot);
+  }
+
+  trackPendingActionMerges(count: number): void {
+    if (count <= 0) {
+      return;
+    }
+
+    this.pendingActionMergeCount += Math.floor(count);
   }
 
   trackReflectionEffects(effects: ReflectionEffects): void {
@@ -145,5 +154,9 @@ export class TurnLifecycleTracker {
         // Best effort.
       }
     }
+  }
+
+  commitTurnState(): void {
+    this.options.workingMemoryStore.recordPendingActionMerges(this.pendingActionMergeCount);
   }
 }

@@ -18,12 +18,24 @@ import type { EmbeddingClient } from "../src/embeddings/index.js";
 import { ActionRepository } from "../src/memory/actions/index.js";
 import { actionMigrations } from "../src/memory/actions/migrations.js";
 import { CommitmentRepository, commitmentMigrations } from "../src/memory/commitments/index.js";
-import { IdentityEventRepository, identityMigrations } from "../src/memory/identity/index.js";
+import {
+  IdentityEventRepository,
+  IdentityService,
+  identityMigrations,
+} from "../src/memory/identity/index.js";
 import {
   RelationalSlotRepository,
   relationalSlotMigrations,
 } from "../src/memory/relational-slots/index.js";
-import { selfMigrations } from "../src/memory/self/index.js";
+import {
+  AutobiographicalRepository,
+  GoalsRepository,
+  GrowthMarkersRepository,
+  OpenQuestionsRepository,
+  TraitsRepository,
+  ValuesRepository,
+  selfMigrations,
+} from "../src/memory/self/index.js";
 import { ReviewQueueRepository, semanticMigrations } from "../src/memory/semantic/index.js";
 import { WorkingMemoryStore } from "../src/memory/working/index.js";
 import { composeMigrations, openDatabase } from "../src/storage/sqlite/index.js";
@@ -34,6 +46,39 @@ import { MetricsCapture } from "./metrics.js";
 import type { MetricsRow } from "./types.js";
 
 const tempDirs: string[] = [];
+const OPEN_QUESTION_OPEN_STATUS = "open";
+const OPEN_QUESTION_RESOLVED_STATUS = "resolved";
+const TURN_METRICS_KEY_ORDER = [
+  "event",
+  "ts",
+  "turn_counter",
+  "turnId",
+  "transport_chat_attempts",
+  "episode_count",
+  "semantic_node_count",
+  "semantic_edge_count",
+  "semantic_nodes_added_since_last_check",
+  "semantic_edges_added_since_last_check",
+  "open_question_count",
+  "active_goal_count",
+  "generation_suppression_count",
+  "mood_valence",
+  "mood_arousal",
+  "retrieval_latency_ms",
+  "deliberation_latency_ms",
+  "borg_input_tokens",
+  "borg_output_tokens",
+  "open_question_resolved_count",
+  "action_record_count_total",
+  "action_record_count_by_state",
+  "recent_completed_action_count",
+  "commitment_count_active",
+  "commitment_count_superseded",
+  "pending_action_count",
+  "pending_action_merge_count",
+  "relational_slot_count_by_state",
+  "review_queue_open_count_by_type",
+] as const;
 
 class SameVectorEmbeddingClient implements EmbeddingClient {
   async embed(): Promise<Float32Array> {
@@ -123,6 +168,7 @@ function fakeBorg(
       countByState: () => zeroCounts(ACTION_STATES),
       countCompletedSince: () => 0,
       latestCompletedAt: () => null,
+      listCompletedIds: () => [],
     },
     self: {
       openQuestions: {
@@ -166,6 +212,48 @@ function fakeBorg(
       },
     },
   } as unknown as Borg;
+}
+
+function createIdentityHarness(db: ReturnType<typeof openDatabase>, clock: ManualClock) {
+  const identityEvents = new IdentityEventRepository({ db, clock });
+  const valuesRepository = new ValuesRepository({
+    db,
+    clock,
+    identityEventRepository: identityEvents,
+  });
+  const goalsRepository = new GoalsRepository({
+    db,
+    clock,
+    identityEventRepository: identityEvents,
+  });
+  const traitsRepository = new TraitsRepository({
+    db,
+    clock,
+    identityEventRepository: identityEvents,
+  });
+  const autobiographicalRepository = new AutobiographicalRepository({ db, clock });
+  const growthMarkersRepository = new GrowthMarkersRepository({ db, clock });
+  const openQuestionsRepository = new OpenQuestionsRepository({ db, clock });
+  const commitmentRepository = new CommitmentRepository({
+    db,
+    clock,
+    identityEventRepository: identityEvents,
+  });
+  const identity = new IdentityService({
+    valuesRepository,
+    goalsRepository,
+    traitsRepository,
+    autobiographicalRepository,
+    growthMarkersRepository,
+    openQuestionsRepository,
+    commitmentRepository,
+    identityEventRepository: identityEvents,
+  });
+
+  return {
+    identity,
+    openQuestionsRepository,
+  };
 }
 
 describe("MetricsCapture", () => {
@@ -230,6 +318,22 @@ describe("MetricsCapture", () => {
     expect(written).toEqual(row);
   });
 
+  it("writes turn metric keys in v21 order with new fields appended", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    await new MetricsCapture(metricsPath).capture(fakeBorg(), "turn-ordered", 1, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+
+    const written = JSON.parse(readFileSync(metricsPath, "utf8").trim()) as MetricsRow;
+
+    expect(Object.keys(written)).toEqual([...TURN_METRICS_KEY_ORDER]);
+  });
+
   it("records semantic graph growth since the previous capture", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
@@ -254,6 +358,124 @@ describe("MetricsCapture", () => {
 
     expect(row.semantic_nodes_added_since_last_check).toBe(3);
     expect(row.semantic_edges_added_since_last_check).toBe(3);
+  });
+
+  it("counts backdated completed actions as newly completed by id", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const db = openDatabase(join(dir, "borg.db"), {
+      migrations: actionMigrations,
+    });
+    const clock = new ManualClock(1_000);
+    const capture = new MetricsCapture(metricsPath);
+    const sessionId = createSessionId();
+    const actions = new ActionRepository({ db, clock });
+    const borg = {
+      ...fakeBorg(),
+      actions,
+    } as unknown as Borg;
+
+    try {
+      actions.add(
+        makeAction({
+          description: "First completed action",
+          state: "completed",
+          created_at: 100,
+          updated_at: 100,
+          completed_at: 100,
+        }),
+      );
+
+      const firstRow = await capture.capture(borg, "turn-complete-first", 1, {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      });
+
+      actions.add(
+        makeAction({
+          description: "Backdated completed action",
+          state: "completed",
+          created_at: 99,
+          updated_at: 101,
+          completed_at: 99,
+        }),
+      );
+
+      const secondRow = await capture.capture(borg, "turn-complete-second", 2, {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      });
+
+      expect(firstRow.recent_completed_action_count).toBe(1);
+      expect(secondRow.recent_completed_action_count).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("counts open questions resolved through the identity update path", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const db = openDatabase(join(dir, "borg.db"), {
+      migrations: composeMigrations(selfMigrations, commitmentMigrations, identityMigrations),
+    });
+    const clock = new ManualClock(1_000);
+    const sessionId = createSessionId();
+    const { identity, openQuestionsRepository } = createIdentityHarness(db, clock);
+    const provenance = { kind: "manual" } as const;
+
+    try {
+      const question = identity.addOpenQuestion({
+        question: "Which metrics path resolves this?",
+        urgency: 0.7,
+        related_episode_ids: [],
+        related_semantic_node_ids: [],
+        provenance,
+        source: "user",
+      });
+      const result = identity.updateOpenQuestion(
+        question.id,
+        {
+          status: OPEN_QUESTION_RESOLVED_STATUS,
+          resolution_evidence_stream_entry_ids: [createStreamEntryId()],
+          resolution_note: "The metrics update path resolved it.",
+          resolved_at: clock.now(),
+        },
+        provenance,
+        {
+          throughReview: true,
+        },
+      );
+      const borg = {
+        ...fakeBorg(),
+        identity: {
+          listEvents: (...args: Parameters<IdentityService["listEvents"]>) =>
+            identity.listEvents(...args),
+        },
+        self: {
+          openQuestions: {
+            list: (...args: Parameters<OpenQuestionsRepository["list"]>) =>
+              openQuestionsRepository.list(...args),
+          },
+          goals: {
+            list: () => [],
+          },
+        },
+      } as unknown as Borg;
+
+      const row = await new MetricsCapture(metricsPath).capture(borg, "turn-oq-update", 1, {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      });
+
+      expect(result.status).toBe("applied");
+      expect(row.open_question_resolved_count).toBe(1);
+    } finally {
+      db.close();
+    }
   });
 
   it("captures simulator metrics for action, commitment, working-memory, relational slot, review, and open-question bands", async () => {
@@ -411,6 +633,12 @@ describe("MetricsCapture", () => {
         record_type: "open_question",
         record_id: "open_question_metrics_1",
         action: "resolve",
+        old_value: {
+          status: OPEN_QUESTION_OPEN_STATUS,
+        },
+        new_value: {
+          status: OPEN_QUESTION_RESOLVED_STATUS,
+        },
         provenance: { kind: "manual" },
       });
 

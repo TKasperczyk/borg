@@ -83,6 +83,46 @@ describe("commitment repository", () => {
     db.close();
   });
 
+  it("counts active commitments without materializing expired records", () => {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
+    });
+    const clock = new FixedClock(20);
+    const identityEvents = new IdentityEventRepository({
+      db,
+      clock,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+      identityEventRepository: identityEvents,
+    });
+    const commitmentRows = () =>
+      db.prepare("SELECT id, expired_at FROM commitments ORDER BY id").all();
+    const identityEventRows = () =>
+      db.prepare("SELECT record_type, record_id, action FROM identity_events ORDER BY id").all();
+
+    try {
+      commitments.add({
+        type: "promise",
+        directiveFamily: "expired metrics fixture",
+        directive: "Follow up before the old deadline.",
+        priority: 5,
+        provenance: manualProvenance,
+        createdAt: 1,
+        expiresAt: 10,
+      });
+      const beforeCommitments = commitmentRows();
+      const beforeEvents = identityEventRows();
+
+      expect(commitments.countActive()).toBe(0);
+      expect(commitmentRows()).toEqual(beforeCommitments);
+      expect(identityEventRows()).toEqual(beforeEvents);
+    } finally {
+      db.close();
+    }
+  });
+
   it("treats a null audience as public-only for active commitment lists", () => {
     const db = openDatabase(":memory:", {
       migrations: composeMigrations(commitmentMigrations, identityMigrations),
