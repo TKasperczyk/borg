@@ -112,6 +112,7 @@ export type ClosureLoopAssessment = {
 };
 
 class MissingClosureLoopToolCallError extends Error {}
+class InvalidClosureLoopPayloadError extends Error {}
 
 function degradedClassification(
   reason: ClosureLoopClassifierDegradedReason,
@@ -165,7 +166,54 @@ function buildClosureLoopMessages(input: ClassifyClosureLoopInput): LLMMessage[]
   ];
 }
 
-function parseClosureLoopResponse(result: LLMCompleteResult): ClosureLoopClassification {
+function validateClosureLoopResponseCoverage(input: {
+  classification: ClosureLoopClassification;
+  suppliedMessages: readonly ClosureLoopMessageForClassification[];
+}): void {
+  const suppliedRefs = new Map<string, number>();
+  const classifiedRefs = new Map<string, number>();
+
+  for (const message of input.suppliedMessages) {
+    suppliedRefs.set(message.message_ref, (suppliedRefs.get(message.message_ref) ?? 0) + 1);
+  }
+
+  for (const message of input.classification.messages) {
+    classifiedRefs.set(message.message_ref, (classifiedRefs.get(message.message_ref) ?? 0) + 1);
+  }
+
+  for (const [messageRef, count] of suppliedRefs) {
+    if (count !== 1) {
+      throw new InvalidClosureLoopPayloadError(
+        `Closure-loop classifier received duplicate supplied message_ref ${messageRef}`,
+      );
+    }
+
+    if (classifiedRefs.get(messageRef) !== 1) {
+      throw new InvalidClosureLoopPayloadError(
+        `Closure-loop classifier omitted supplied message_ref ${messageRef}`,
+      );
+    }
+  }
+
+  for (const [messageRef, count] of classifiedRefs) {
+    if (!suppliedRefs.has(messageRef)) {
+      throw new InvalidClosureLoopPayloadError(
+        `Closure-loop classifier emitted unknown message_ref ${messageRef}`,
+      );
+    }
+
+    if (count !== 1) {
+      throw new InvalidClosureLoopPayloadError(
+        `Closure-loop classifier duplicated message_ref ${messageRef}`,
+      );
+    }
+  }
+}
+
+function parseClosureLoopResponse(
+  result: LLMCompleteResult,
+  suppliedMessages: readonly ClosureLoopMessageForClassification[],
+): ClosureLoopClassification {
   const call = result.tool_calls.find(
     (toolCall) => toolCall.name === CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
   );
@@ -182,12 +230,19 @@ function parseClosureLoopResponse(result: LLMCompleteResult): ClosureLoopClassif
     throw parsed.error;
   }
 
-  return {
+  const classification = {
     messages: parsed.data.messages,
     confidence: parsed.data.confidence,
     rationale: parsed.data.rationale.trim(),
     degraded: false,
   };
+
+  validateClosureLoopResponseCoverage({
+    classification,
+    suppliedMessages,
+  });
+
+  return classification;
 }
 
 function summarizeClosureLoopResponseShape(response: LLMCompleteResult): JsonValue {
@@ -298,6 +353,12 @@ export function assessClosureLoopClassification(input: {
   let mutualClosureCycles = 0;
 
   for (const message of ordered) {
+    if (isSubstantiveForClosureState(message.act)) {
+      pendingUserClosure = false;
+      mutualClosureCycles = 0;
+      continue;
+    }
+
     if (message.role === "user") {
       pendingUserClosure = isUserClosureAct(message.act);
       continue;
@@ -405,12 +466,12 @@ export class ClosureLoopClassifier {
     });
 
     try {
-      return parseClosureLoopResponse(response);
+      return parseClosureLoopResponse(response, input.messages);
     } catch (error) {
       return this.degraded(
         error instanceof MissingClosureLoopToolCallError
           ? "missing_tool_call"
-          : error instanceof z.ZodError
+          : error instanceof z.ZodError || error instanceof InvalidClosureLoopPayloadError
             ? "invalid_payload"
             : "llm_failed",
         error,

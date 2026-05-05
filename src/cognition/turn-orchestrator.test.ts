@@ -17,6 +17,11 @@ import type { ExecutiveStepsRepository } from "../executive/index.js";
 import { Deliberator, type SelfSnapshot } from "./deliberation/deliberator.js";
 import { ActionStateExtractor } from "./actions/action-state-extractor.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
+import {
+  CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
+  type ClosureLoopClassifiedMessage,
+} from "./generation/closure-loop.js";
+import { setClosureLoopDetected } from "./generation/discourse-state.js";
 import { RelationalClaimGuard } from "./generation/relational-guard.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
 import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
@@ -305,6 +310,58 @@ function createFrameAnomalyResponse(input: {
       },
     ],
   };
+}
+
+function createClosureLoopSignoffResponseFromRequest() {
+  return Object.assign(
+    (options: LLMCompleteOptions) => {
+      const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+        dialogue_window?: unknown;
+      };
+      const dialogueWindow = Array.isArray(payload.dialogue_window) ? payload.dialogue_window : [];
+      const messages: ClosureLoopClassifiedMessage[] = [];
+
+      for (const item of dialogueWindow) {
+        if (typeof item !== "object" || item === null) {
+          continue;
+        }
+
+        const message = item as { message_ref?: unknown; role?: unknown };
+
+        if (
+          typeof message.message_ref !== "string" ||
+          (message.role !== "user" && message.role !== "assistant")
+        ) {
+          continue;
+        }
+
+        messages.push({
+          message_ref: message.message_ref,
+          role: message.role,
+          act: message.role === "user" ? "signoff" : "assistant_valediction",
+        });
+      }
+
+      return {
+        text: "",
+        input_tokens: 4,
+        output_tokens: 2,
+        stop_reason: "tool_use" as const,
+        tool_calls: [
+          {
+            id: "toolu_closure_loop",
+            name: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
+            input: {
+              messages,
+              confidence: 0.96,
+              rationale: "The current user turn is another closure beat.",
+            },
+          },
+        ],
+      };
+    },
+    { budget: "closure-loop-classifier" },
+  );
 }
 
 function createCommitmentJudgeResponse(
@@ -1665,6 +1722,66 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         source_stream_entry_id: thoughtEntry?.id,
         since_turn: 1,
       });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("consumes a detected closure loop through S2 no-output before suppressing later closure", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_120_000);
+    const closureSourceEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        createGoalPromotionResponse([]),
+        createClosureLoopSignoffResponseFromRequest(),
+        createGenerationGateResponse({
+          decision: "proceed",
+          substantive: true,
+        }),
+        createNoOutputTurnPlanResponse(),
+        createGoalPromotionResponse([]),
+        createClosureLoopSignoffResponseFromRequest(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "workingMemoryStore">;
+    };
+
+    try {
+      const workingMemory = internal.deps.workingMemoryStore.load("default" as never);
+      internal.deps.workingMemoryStore.save(
+        setClosureLoopDetected(workingMemory, {
+          sourceStreamEntryIds: [closureSourceEntryId],
+          reason: "Two mutual closure cycles detected.",
+          sinceTurn: workingMemory.turn_counter,
+        }),
+      );
+
+      const first = await borg.turn({
+        userMessage: "phone down",
+        stakes: "high",
+      });
+      const afterFirst = internal.deps.workingMemoryStore.load("default" as never);
+
+      expect(first.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "s2_planner_no_output",
+      });
+      expect(afterFirst.discourse_state?.closure_loop?.status).toBe("named");
+
+      const second = await borg.turn({
+        userMessage: "phone still down",
+        stakes: "high",
+      });
+
+      expect(second.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "no_output_tool",
+      });
+      expect(second.response).toBe("");
     } finally {
       await borg.close();
     }

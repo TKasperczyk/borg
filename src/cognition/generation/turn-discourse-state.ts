@@ -9,7 +9,11 @@ import {
   setClosureLoopDetected,
   setStopUntilSubstantiveContent,
 } from "./discourse-state.js";
-import type { AgentSuppressedStreamContent, PendingTurnEmission } from "./types.js";
+import {
+  isNaturalSilenceSuppressionReason,
+  type AgentSuppressedStreamContent,
+  type PendingTurnEmission,
+} from "./types.js";
 
 const ACTIVE_TURN_STATUS = "active";
 const DISCOURSE_STATE_NAME = "stop_until_substantive_content";
@@ -217,25 +221,16 @@ export class TurnDiscourseStateService {
     sourceStreamEntryId: StreamEntryId;
     turnId: string;
   }): WorkingMemory {
+    let workingMemory = input.workingMemory;
+
     if (input.reason === "no_output_tool") {
-      const stopped = this.setStopState({
-        workingMemory: input.workingMemory,
+      workingMemory = this.setStopState({
+        workingMemory,
         provenance: "no_output_tool",
         sourceStreamEntryId: input.sourceStreamEntryId,
         reason: "Finalizer called no_output for this turn.",
         turnId: input.turnId,
       });
-
-      if ((stopped.discourse_state?.closure_loop ?? null)?.status === "detected") {
-        return this.markClosureLoopNamed({
-          workingMemory: stopped,
-          sourceStreamEntryId: input.sourceStreamEntryId,
-          reason: "Closure loop detected; finalizer chose no_output.",
-          turnId: input.turnId,
-        });
-      }
-
-      return stopped;
     }
 
     if (
@@ -243,7 +238,7 @@ export class TurnDiscourseStateService {
       input.reason === "rewrite_unsupported_or_empty"
     ) {
       return this.setStopState({
-        workingMemory: input.workingMemory,
+        workingMemory,
         provenance: "commitment_guard",
         sourceStreamEntryId: input.sourceStreamEntryId,
         reason:
@@ -256,7 +251,7 @@ export class TurnDiscourseStateService {
 
     if (isRelationalGuardSuppressionReason(input.reason)) {
       return this.setStopState({
-        workingMemory: input.workingMemory,
+        workingMemory,
         provenance: "relational_guard",
         sourceStreamEntryId: input.sourceStreamEntryId,
         reason:
@@ -267,6 +262,21 @@ export class TurnDiscourseStateService {
       });
     }
 
-    return input.workingMemory;
+    if (
+      isNaturalSilenceSuppressionReason(input.reason) &&
+      (workingMemory.discourse_state?.closure_loop ?? null)?.status === "detected"
+    ) {
+      return this.markClosureLoopNamed({
+        workingMemory,
+        sourceStreamEntryId: input.sourceStreamEntryId,
+        reason:
+          input.reason === "no_output_tool"
+            ? "Closure loop detected; finalizer chose no_output."
+            : `Closure loop detected; turn ended without assistant output (${input.reason}).`,
+        turnId: input.turnId,
+      });
+    }
+
+    return workingMemory;
   }
 }

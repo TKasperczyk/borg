@@ -55,7 +55,6 @@ function makeClaim(
     cited_episode_ids: overrides.cited_episode_ids ?? [],
     cited_commitment_ids: overrides.cited_commitment_ids ?? [],
     cited_action_ids: overrides.cited_action_ids ?? [],
-    cited_runtime_evidence_ids: overrides.cited_runtime_evidence_ids ?? [],
     support_handles: overrides.support_handles ?? [],
     quoted_evidence_text: overrides.quoted_evidence_text ?? null,
     callback_scope:
@@ -101,7 +100,6 @@ function baseEvidence(
     corrective_preferences: [],
     relational_slots: [],
     recent_completed_actions: [],
-    trusted_runtime_evidence: [],
     ...overrides,
   };
 }
@@ -727,41 +725,6 @@ describe("validateRelationalClaims", () => {
     expect(summary.unsupported).toEqual([]);
   });
 
-  it("validates frame-assignment claims only against trusted runtime evidence", () => {
-    const runtimeEvidenceId = "runtime_system_prompt";
-    const supported = validate(
-      [
-        makeClaim({
-          kind: "frame_assignment",
-          asserted: "The system prompt instructed me to play Tom.",
-          cited_runtime_evidence_ids: [runtimeEvidenceId],
-        }),
-      ],
-      baseEvidence({
-        trusted_runtime_evidence: [
-          {
-            evidence_id: runtimeEvidenceId,
-            kind: "system_prompt",
-            summary: "The system prompt content for this session.",
-          },
-        ],
-      }),
-    );
-    const unsupported = validate(
-      [
-        makeClaim({
-          kind: "frame_assignment",
-          asserted: "The system prompt instructed me to play Tom.",
-        }),
-      ],
-      baseEvidence(),
-    );
-
-    expect(supported.unsupported).toEqual([]);
-    expect(unsupported.unsupported).toHaveLength(1);
-    expect(unsupported.unsupported[0]?.reason).toContain("trusted runtime");
-  });
-
   it("treats the LLM phenomenology verdict as the post-generation judgment", () => {
     const unsupported = validate(
       [
@@ -873,7 +836,6 @@ describe("RelationalClaimGuard", () => {
       cited_episode_ids: [],
       cited_commitment_ids: [],
       cited_action_ids: [],
-      cited_runtime_evidence_ids: [],
       support_handles: [],
       quoted_evidence_text: null,
       phenomenology_verdict: null,

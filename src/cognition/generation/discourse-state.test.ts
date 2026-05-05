@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createWorkingMemory } from "../../memory/working/index.js";
 import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";
+import { NOOP_TRACER } from "../tracing/tracer.js";
 import {
   clearClosureLoop,
   clearStopUntilSubstantiveContent,
@@ -10,6 +11,7 @@ import {
   setClosureLoopDetected,
   setStopUntilSubstantiveContent,
 } from "./discourse-state.js";
+import { TurnDiscourseStateService } from "./turn-discourse-state.js";
 
 describe("discourse state", () => {
   it("sets and clears stop-until-substantive-content with provenance", () => {
@@ -83,5 +85,35 @@ describe("discourse state", () => {
       named_at_turn: 13,
     });
     expect(clearClosureLoop(named).discourse_state?.closure_loop).toBeNull();
+  });
+
+  it("marks a detected closure loop named after S2 planner no-output", () => {
+    const sourceStreamEntryId = createStreamEntryId();
+    const suppressionStreamEntryId = createStreamEntryId();
+    const workingMemory = {
+      ...createWorkingMemory(DEFAULT_SESSION_ID, 100),
+      turn_counter: 14,
+    };
+    const detected = setClosureLoopDetected(workingMemory, {
+      sourceStreamEntryIds: [sourceStreamEntryId],
+      reason: "Two mutual closure cycles detected.",
+      sinceTurn: 13,
+    });
+    const service = new TurnDiscourseStateService({
+      tracer: NOOP_TRACER,
+    });
+
+    const named = service.applySuppressedEmissionState({
+      workingMemory: detected,
+      reason: "s2_planner_no_output",
+      sourceStreamEntryId: suppressionStreamEntryId,
+      turnId: "turn-s2-no-output",
+    });
+
+    expect(named.discourse_state?.closure_loop).toMatchObject({
+      status: "named",
+      source_stream_entry_ids: [sourceStreamEntryId, suppressionStreamEntryId],
+      named_at_turn: 14,
+    });
   });
 });

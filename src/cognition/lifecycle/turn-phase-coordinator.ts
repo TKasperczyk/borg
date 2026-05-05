@@ -714,6 +714,7 @@ export class TurnPhaseCoordinator {
     });
 
     if (classification.degraded) {
+      // Closure-loop suppression is soft, so classifier degradation fails open for this turn.
       await this.appendHookFailureEvent(input.streamWriter, "closure_loop_classifier", null, {
         turnId: input.turnId,
         reason: classification.rationale,
@@ -908,6 +909,14 @@ export class TurnPhaseCoordinator {
       reason: suppressionReason,
       markerEntryId: suppressionMarker.id,
     };
+    const suppressedWorkingMemory = this.options.discourseStateService.applySuppressedEmissionState(
+      {
+        workingMemory: suppressionActionResult.workingMemory,
+        reason: suppressionReason,
+        sourceStreamEntryId: suppressionMarker.id,
+        turnId: input.turnId,
+      },
+    );
 
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("generation_suppressed", {
@@ -920,7 +929,7 @@ export class TurnPhaseCoordinator {
     }
 
     this.options.workingMemoryStore.save({
-      ...suppressionActionResult.workingMemory,
+      ...suppressedWorkingMemory,
       updated_at: this.options.clock.now(),
     });
     await this.persistCorrectiveCommitment(input.streamWriter, input.correctiveCommitment);
