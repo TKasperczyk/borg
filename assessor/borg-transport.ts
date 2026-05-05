@@ -293,7 +293,7 @@ export async function readStreamTranscript(dataDir: string): Promise<StreamEntry
 
   return filterActiveStreamEntries(entries)
     .filter((entry) => entry.kind === "user_msg" || entry.kind === "agent_msg")
-    .sort((left, right) => left.timestamp - right.timestamp || left.id.localeCompare(right.id));
+    .sort((left, right) => left.timestamp - right.timestamp);
 }
 
 function extractGoalId(text: string): string | null {

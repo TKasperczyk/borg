@@ -38,6 +38,9 @@ export const relationalSlotStreamEntryIdSchema = z
   .transform((value) => value as StreamEntryId);
 
 export const relationalSlotStateSchema = z.enum(RELATIONAL_SLOT_STATES);
+export const relationalSlotAssertionConfirmationSchema = z
+  .enum(["direct", "explicit", "assistant_seeded"])
+  .default("direct");
 
 export const relationalSlotAlternateValueSchema = z
   .object({
@@ -67,6 +70,7 @@ export const relationalSlotAssertionSchema = z
     slot_key: z.string().min(1),
     asserted_value: z.string().min(1),
     source_stream_entry_ids: z.array(relationalSlotStreamEntryIdSchema).min(1),
+    confirmation: relationalSlotAssertionConfirmationSchema,
   })
   .strict();
 
@@ -82,5 +86,8 @@ export const relationalSlotNegationSchema = z
 export type RelationalSlotState = z.infer<typeof relationalSlotStateSchema>;
 export type RelationalSlotAlternateValue = z.infer<typeof relationalSlotAlternateValueSchema>;
 export type RelationalSlot = z.infer<typeof relationalSlotSchema>;
-export type RelationalSlotAssertion = z.infer<typeof relationalSlotAssertionSchema>;
+export type RelationalSlotAssertion = z.input<typeof relationalSlotAssertionSchema>;
+export type RelationalSlotAssertionConfirmation = z.infer<
+  typeof relationalSlotAssertionConfirmationSchema
+>;
 export type RelationalSlotNegation = z.infer<typeof relationalSlotNegationSchema>;

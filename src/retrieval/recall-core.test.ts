@@ -330,6 +330,46 @@ describe("Recall Core", () => {
     );
   });
 
+  it("clips overlong recall expansion facets and traces clipping", async () => {
+    const tracer = createTracer();
+    const facets = [
+      { kind: "topic" as const, query: "Atlas low-priority", priority: 0.1 },
+      { kind: "relationship" as const, query: "Atlas relationship", priority: 0.9 },
+      { kind: "commitment" as const, query: "Atlas commitment", priority: 0.7 },
+      { kind: "open_question" as const, query: "Atlas open question", priority: 0.8 },
+      { kind: "topic" as const, query: "Atlas topic", priority: 0.6 },
+    ];
+    const llmClient = new FakeLLMClient({
+      responses: [recallExpansion({ facets })],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createStructuralEmbeddingClient(),
+      llmClient,
+    });
+    const pipeline = createTracedRetrievalPipeline(harness, tracer);
+
+    const result = await pipeline.searchWithContext("Atlas", {
+      limit: 3,
+      traceTurnId: "turn-recall-expansion-clipped",
+    });
+    const expansionIntents = result.recall_intents.filter(
+      (intent) => intent.source === "llm-expansion",
+    );
+
+    expect(expansionIntents.map((intent) => intent.query)).toEqual([
+      "Atlas relationship",
+      "Atlas open question",
+      "Atlas commitment",
+      "Atlas topic",
+    ]);
+    expect(tracer.emit).toHaveBeenCalledWith("recall_expansion_clipped", {
+      turnId: "turn-recall-expansion-clipped",
+      originalFacetCount: 5,
+      retainedFacetCount: 4,
+    });
+  });
+
   it("traces recall expansion transport failures as LLM responses", async () => {
     const tracer = createTracer();
     harness = await createOfflineTestHarness({

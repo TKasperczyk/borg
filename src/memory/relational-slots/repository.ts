@@ -131,6 +131,9 @@ function neutralPhraseForSlotKey(slotKey: string): string {
     case "partner.name":
     case "partner.role":
       return "your partner";
+    case "tutor.name":
+    case "tutor.role":
+      return "your tutor";
     case "dog.name":
       return "your dog";
     default:
@@ -341,11 +344,14 @@ export class RelationalSlotRepository {
   }
 
   applyAssertion(assertion: RelationalSlotAssertion): RelationalSlotApplyResult {
-    const parsed = relationalSlotAssertionSchema.parse({
+    const normalized = relationalSlotAssertionSchema.parse({
       ...assertion,
       slot_key: assertion.slot_key.trim(),
       asserted_value: assertion.asserted_value.trim(),
-      source_stream_entry_ids: uniqueStreamEntryIds(assertion.source_stream_entry_ids),
+    });
+    const parsed = relationalSlotAssertionSchema.parse({
+      ...normalized,
+      source_stream_entry_ids: uniqueStreamEntryIds(normalized.source_stream_entry_ids),
     });
 
     return this.runSlotWrite(() => {
@@ -358,7 +364,7 @@ export class RelationalSlotRepository {
           subject_entity_id: parsed.subject_entity_id,
           slot_key: parsed.slot_key,
           value: parsed.asserted_value,
-          state: "established",
+          state: parsed.confirmation === "assistant_seeded" ? "quarantined" : "established",
           evidence_stream_entry_ids: parsed.source_stream_entry_ids,
           contradicted_by_stream_entry_ids: [],
           alternate_values: [],
@@ -375,6 +381,7 @@ export class RelationalSlotRepository {
       if (parsed.asserted_value === current.value) {
         next = relationalSlotSchema.parse({
           ...current,
+          state: parsed.confirmation === "explicit" ? "established" : current.state,
           evidence_stream_entry_ids: uniqueStreamEntryIds([
             ...current.evidence_stream_entry_ids,
             ...parsed.source_stream_entry_ids,
@@ -390,11 +397,13 @@ export class RelationalSlotRepository {
         const candidate = relationalSlotSchema.parse({
           ...current,
           state:
-            current.state === "established"
-              ? "contested"
-              : current.state === "revoked"
-                ? "established"
-                : current.state,
+            parsed.confirmation === "assistant_seeded"
+              ? "quarantined"
+              : current.state === "established"
+                ? "contested"
+                : current.state === "revoked"
+                  ? "established"
+                  : current.state,
           alternate_values: alternateValues,
           contradicted_by_stream_entry_ids: uniqueStreamEntryIds([
             ...current.contradicted_by_stream_entry_ids,

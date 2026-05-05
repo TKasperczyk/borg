@@ -21,11 +21,13 @@ import type {
   RelationalSlotId,
   StreamEntryId,
 } from "../../util/ids.js";
+import type { JsonValue } from "../../util/json-value.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { PendingTurnEmission } from "./types.js";
 
 export const RELATIONAL_CLAIM_KINDS = [
   "relational_identity",
+  "unsupported_person_name",
   "callback",
   "session_scoped",
   "action_completion",
@@ -76,7 +78,7 @@ const claimAuditSchema = z
 const CLAIM_AUDIT_TOOL = {
   name: CLAIM_AUDIT_TOOL_NAME,
   description:
-    "Enumerate relational, callback, session-scoped, action-completion, and self-correction claims in the response.",
+    "Enumerate relational, person-name, callback, session-scoped, action-completion, and self-correction claims in the response.",
   inputSchema: toToolInputSchema(claimAuditSchema),
 } satisfies LLMToolDefinition;
 
@@ -84,10 +86,13 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "You audit a just-generated assistant response for specific claim types.",
   "Extract every claim that falls into one of these categories:",
   "- relational_identity: assertions about a person's relationship or identity, such as a partner name.",
+  "- unsupported_person_name: use or introduction of a person-like proper name for someone in the user's life, such as a tutor, partner, friend, coworker, roommate, teacher, coach, doctor, therapist, boss, or pet.",
   "- callback: assertions that the user said, mentioned, corrected, asked, or established something earlier.",
   "- session_scoped: assertions scoped to this conversation, thread, just now, or earlier in this conversation.",
   "- action_completion: assertions that an action has already been completed, booked, sent, filed, done, or carried out.",
   "- self_correction: assertions that Borg or the assistant corrected itself, was corrected by the user, or already fixed a prior mistake.",
+  'For unsupported_person_name claims, extract bare life-context names such as "ask Marta", "Marta said", "your tutor Marta", "text Marta", or "book with Marta". A person-like name in the user\'s life requires user-side source evidence: the current user message, prior current-session user evidence, an established non-contested relational slot, or retrieved source evidence whose user text contains that name.',
+  "Names that appear only in assistant output do not count as support. Do not treat clearly literary, fictional, public, product, project, work-title, or world-reference names as unsupported_person_name claims.",
   "For callback claims, you must classify callback_scope:",
   '- "current_turn": the response attributes something to the just-arrived current user message ("as you said", "you mentioned", "you called it that", "you put it as X" -- where X is in the current message).',
   '- "prior_turn": the response claims the user said something before the current message ("you said earlier", "we talked about that before", "last time you mentioned", "you previously corrected me").',
@@ -98,12 +103,93 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "Return an empty claims array when the response contains none of these claims.",
   "For every extracted claim, cite only evidence IDs present in the supplied evidence manifest.",
   "For relational_identity claims, also populate subject_entity_id, slot_key, and relational_slot_value when the claim maps to a supplied relational slot. When relational_slots include contested or quarantined slots for that subject, subject_entity_id and slot_key are required.",
+  "For unsupported_person_name claims, populate relational_slot_value with the person-like name when possible, and cite only user-side source handles containing that name. Do not cite assistant-only mentions as support.",
   "For action_completion claims, populate cited_action_ids with completed action_id values from recent_completed_actions. Stream, episode, and commitment IDs do not support action_completion claims.",
   "Do not infer support yourself beyond selecting cited handles. The validator will check handles deterministically.",
 ].join("\n");
 
 const RELATIONAL_GUARD_REWRITE_SYSTEM_PROMPT =
   "Remove or neutralize the following specific phrases from your response. Do not change anything else. Do not introduce new information. If a sentence cannot survive removal, delete the sentence.";
+
+const LIFE_CONTEXT_ROLE_WORDS = [
+  "tutor",
+  "partner",
+  "friend",
+  "coworker",
+  "colleague",
+  "roommate",
+  "teacher",
+  "coach",
+  "doctor",
+  "therapist",
+  "boss",
+  "manager",
+  "wife",
+  "husband",
+  "girlfriend",
+  "boyfriend",
+  "mother",
+  "father",
+  "mom",
+  "dad",
+  "sister",
+  "brother",
+  "daughter",
+  "son",
+  "dog",
+  "cat",
+] as const;
+
+const LIFE_CONTEXT_ACTION_PATTERNS = [
+  "[Aa]sk",
+  "[Tt]ext",
+  "[Tt]ell",
+  "[Cc]all",
+  "[Mm]essage",
+  "[Ee]mail",
+  "[Pp]ing",
+  "[Tt]hank",
+  "[Rr]emind",
+  "[Mm]eet",
+  "[Vv]isit",
+  "[Ss]ee",
+  "[Pp]hone",
+  "[Bb]ook\\s+with",
+  "[Ss]chedule\\s+with",
+  "[Tt]alk\\s+to",
+  "[Cc]heck\\s+with",
+  "[Ff]ollow\\s+up\\s+with",
+] as const;
+
+const KNOWN_WORLD_ENTITY_ALLOWLIST_SEEDS = ["Banks", "Shevek", "Use of Weapons"] as const;
+const PERSON_NAME_STOP_WORDS = [
+  "I",
+  "You",
+  "He",
+  "She",
+  "They",
+  "We",
+  "It",
+  "My",
+  "Your",
+  "Our",
+  "The",
+  "This",
+  "That",
+  "These",
+  "Those",
+  "As",
+  "If",
+  "When",
+  "Because",
+  "Earlier",
+  "Tonight",
+  "Tomorrow",
+  "Yesterday",
+] as const;
+const NAME_WORD_PATTERN = String.raw`\p{Lu}[\p{L}\p{M}'-]*`;
+const NAME_PHRASE_PATTERN = `${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN})?`;
+const PERSON_NAME_SCAN_PATTERN = new RegExp(`\\b${NAME_PHRASE_PATTERN}\\b`, "gu");
 
 export type RelationalGuardStreamEvidence = {
   entry_id: StreamEntryId;
@@ -596,6 +682,278 @@ function validateRelationalIdentityClaim(input: {
   return null;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function wordCasePattern(word: string): string {
+  const first = word[0];
+
+  if (first === undefined) {
+    return "";
+  }
+
+  return `[${first.toLowerCase()}${first.toUpperCase()}]${escapeRegExp(word.slice(1))}`;
+}
+
+function uniqueNames(values: readonly string[]): string[] {
+  const names: string[] = [];
+
+  for (const value of values) {
+    const trimmed = value.trim();
+
+    if (trimmed.length === 0) {
+      continue;
+    }
+
+    if (isIgnoredPersonName(trimmed)) {
+      continue;
+    }
+
+    if (names.some((existing) => existing === trimmed)) {
+      continue;
+    }
+
+    names.push(trimmed);
+  }
+
+  return names;
+}
+
+function isIgnoredPersonName(name: string): boolean {
+  const firstWord = name.split(/\s+/, 1)[0] ?? name;
+
+  return PERSON_NAME_STOP_WORDS.some((word) => word === name || word === firstWord);
+}
+
+function extractPotentialPersonNames(text: string): string[] {
+  return uniqueNames([...text.matchAll(PERSON_NAME_SCAN_PATTERN)].map((match) => match[0]));
+}
+
+type PersonNameUsage = {
+  name: string;
+  asserted: string;
+};
+
+function extractLifeContextPersonNameUsages(text: string): PersonNameUsage[] {
+  const rolePattern = LIFE_CONTEXT_ROLE_WORDS.map(wordCasePattern).join("|");
+  const actionPattern = LIFE_CONTEXT_ACTION_PATTERNS.join("|");
+  const patterns = [
+    new RegExp(
+      `\\b(?:${actionPattern})(?:\\s+(?:your|my|our|the)\\s+(?:${rolePattern}))?\\s+(${NAME_PHRASE_PATTERN})\\b`,
+      "gu",
+    ),
+    new RegExp(`\\b(?:your|my|our|the)\\s+(?:${rolePattern})\\s+(${NAME_PHRASE_PATTERN})\\b`, "gu"),
+    new RegExp(
+      `\\b(${NAME_PHRASE_PATTERN})\\s+(?:said|told|asked|mentioned|thinks|knows|suggested|recommended)\\b`,
+      "gu",
+    ),
+  ];
+  const usages: PersonNameUsage[] = [];
+
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const name = match[1]?.trim();
+      const asserted = match[0]?.trim();
+
+      if (name === undefined || asserted === undefined || name.length === 0) {
+        continue;
+      }
+
+      if (isIgnoredPersonName(name)) {
+        continue;
+      }
+
+      if (usages.some((usage) => usage.name === name && usage.asserted === asserted)) {
+        continue;
+      }
+
+      usages.push({ name, asserted });
+    }
+  }
+
+  return usages;
+}
+
+function buildUserSideNameAllowlist(evidence: RelationalGuardEvidenceManifest): Set<string> {
+  const names = new Set<string>(KNOWN_WORLD_ENTITY_ALLOWLIST_SEEDS);
+
+  if (evidence.current_user_message !== null) {
+    for (const name of extractPotentialPersonNames(evidence.current_user_message.text)) {
+      names.add(name);
+    }
+  }
+
+  for (const entry of evidence.current_session_stream_entries) {
+    if (entry.kind !== "user_msg") {
+      continue;
+    }
+
+    for (const name of extractPotentialPersonNames(entry.content)) {
+      names.add(name);
+    }
+  }
+
+  return names;
+}
+
+function establishedSlotSupportsName(
+  name: string,
+  evidence: RelationalGuardEvidenceManifest,
+): boolean {
+  return evidence.relational_slots.some(
+    (slot) => slot.state === "established" && slot.value === name,
+  );
+}
+
+function userEvidenceStreamIdsForName(
+  name: string,
+  evidence: RelationalGuardEvidenceManifest,
+): StreamEntryId[] {
+  const ids: StreamEntryId[] = [];
+  const current = evidence.current_user_message;
+
+  if (
+    current !== null &&
+    current.stream_entry_id !== null &&
+    current.text.includes(name) &&
+    !ids.some((entryId) => entryId === current.stream_entry_id)
+  ) {
+    ids.push(current.stream_entry_id);
+  }
+
+  for (const entry of evidence.current_session_stream_entries) {
+    if (entry.kind !== "user_msg" || !entry.content.includes(name)) {
+      continue;
+    }
+
+    if (!ids.some((entryId) => entryId === entry.entry_id)) {
+      ids.push(entry.entry_id);
+    }
+  }
+
+  return ids;
+}
+
+function userEvidenceSupportsName(
+  name: string,
+  evidence: RelationalGuardEvidenceManifest,
+): boolean {
+  return (
+    userEvidenceStreamIdsForName(name, evidence).length > 0 ||
+    establishedSlotSupportsName(name, evidence)
+  );
+}
+
+function personNamesForClaim(claim: RelationalClaimAuditClaim): string[] {
+  return uniqueNames([
+    ...(claim.relational_slot_value === null ? [] : [claim.relational_slot_value]),
+    ...extractLifeContextPersonNameUsages(claim.asserted).map((usage) => usage.name),
+    ...extractPotentialPersonNames(claim.asserted),
+  ]);
+}
+
+function validateUnsupportedPersonNameClaim(input: {
+  claim: RelationalClaimAuditClaim;
+  evidence: RelationalGuardEvidenceManifest;
+  streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
+  currentSessionId: string;
+}): string | null {
+  const names = personNamesForClaim(input.claim);
+
+  if (names.length === 0) {
+    return "person-name claim has no extracted name";
+  }
+
+  for (const name of names) {
+    if (establishedSlotSupportsName(name, input.evidence)) {
+      continue;
+    }
+
+    if (input.claim.cited_stream_entry_ids.length === 0) {
+      if (userEvidenceSupportsName(name, input.evidence)) {
+        continue;
+      }
+
+      return `unsupported person name ${name} has no user-side source evidence`;
+    }
+
+    const resolved = streamIdsExistInCurrentSession({
+      claim: input.claim,
+      streamEntries: input.streamEntries,
+      currentSessionId: input.currentSessionId,
+    });
+
+    if (typeof resolved === "string") {
+      return resolved;
+    }
+
+    if (resolved.some((entry) => entry.kind !== "user_msg")) {
+      return `unsupported person name ${name} cites non-user evidence`;
+    }
+
+    if (resolved.some((entry) => entry.content.includes(name))) {
+      continue;
+    }
+
+    return `unsupported person name ${name} does not appear verbatim in cited user evidence`;
+  }
+
+  return null;
+}
+
+function buildUnsupportedPersonNameBackstopValidations(input: {
+  response: string | undefined;
+  claims: readonly RelationalClaimAuditClaim[];
+  evidence: RelationalGuardEvidenceManifest;
+  offset: number;
+}): RelationalClaimValidation[] {
+  if (input.response === undefined) {
+    return [];
+  }
+
+  const allowlist = buildUserSideNameAllowlist(input.evidence);
+  const claimedNames = new Set(
+    input.claims
+      .filter((claim) => claim.kind === "unsupported_person_name")
+      .flatMap(personNamesForClaim),
+  );
+  const validations: RelationalClaimValidation[] = [];
+
+  for (const usage of extractLifeContextPersonNameUsages(input.response)) {
+    if (allowlist.has(usage.name) || claimedNames.has(usage.name)) {
+      continue;
+    }
+
+    if (userEvidenceSupportsName(usage.name, input.evidence)) {
+      continue;
+    }
+
+    claimedNames.add(usage.name);
+    const claim = relationalClaimSchema.parse({
+      kind: "unsupported_person_name",
+      asserted: usage.asserted,
+      cited_stream_entry_ids: [],
+      cited_episode_ids: [],
+      cited_commitment_ids: [],
+      cited_action_ids: [],
+      quoted_evidence_text: null,
+      callback_scope: null,
+      subject_entity_id: null,
+      slot_key: null,
+      relational_slot_value: usage.name,
+    });
+    validations.push({
+      claim_id: `claim_${input.offset + validations.length}`,
+      claim,
+      status: "unsupported",
+      reason: `unsupported person name ${usage.name} has no user-side source evidence`,
+    });
+  }
+
+  return validations;
+}
+
 function validateActionCompletionClaim(input: {
   claim: RelationalClaimAuditClaim;
   completedActions: ReadonlyMap<string, RelationalGuardActionEvidence>;
@@ -646,6 +1004,7 @@ function validateSelfCorrectionClaim(input: {
 
 export function validateRelationalClaims(input: {
   claims: readonly RelationalClaimAuditClaim[];
+  response?: string;
   evidence: RelationalGuardEvidenceManifest;
   currentSessionId: string;
   currentTurnTs: number;
@@ -668,6 +1027,14 @@ export function validateRelationalClaims(input: {
           streamEntries,
           relationalSlots,
           constrainedSlots,
+          currentSessionId: input.currentSessionId,
+        });
+        break;
+      case "unsupported_person_name":
+        reason = validateUnsupportedPersonNameClaim({
+          claim,
+          evidence: input.evidence,
+          streamEntries,
           currentSessionId: input.currentSessionId,
         });
         break;
@@ -722,10 +1089,17 @@ export function validateRelationalClaims(input: {
       reason: reason ?? "supported by cited evidence",
     };
   });
-  const unsupported = validations.filter((validation) => validation.status === "unsupported");
+  const backstopValidations = buildUnsupportedPersonNameBackstopValidations({
+    response: input.response,
+    claims: input.claims,
+    evidence: input.evidence,
+    offset: validations.length,
+  });
+  const allValidations = [...validations, ...backstopValidations];
+  const unsupported = allValidations.filter((validation) => validation.status === "unsupported");
 
   return {
-    validations,
+    validations: allValidations,
     unsupported,
   };
 }
@@ -747,6 +1121,43 @@ function buildRewriteMessages(input: {
   ];
 }
 
+function preview(text: string, maxLength = 500): string {
+  return text.length <= maxLength ? text : text.slice(0, maxLength);
+}
+
+function traceClaimPayload(
+  claim: RelationalClaimAuditClaim,
+  includePayloads: boolean,
+): { [key: string]: JsonValue } {
+  return {
+    kind: claim.kind,
+    ...(includePayloads
+      ? {
+          asserted: claim.asserted,
+          cited_stream_entry_ids: claim.cited_stream_entry_ids,
+          cited_episode_ids: claim.cited_episode_ids,
+          cited_commitment_ids: claim.cited_commitment_ids,
+          cited_action_ids: claim.cited_action_ids,
+          ...(claim.kind === "callback" &&
+          claim.callback_scope !== null &&
+          claim.callback_scope !== undefined
+            ? { callback_scope: claim.callback_scope }
+            : {}),
+        }
+      : {}),
+  };
+}
+
+function traceUnsupportedPayload(
+  validation: RelationalClaimValidation,
+  includePayloads: boolean,
+): { [key: string]: JsonValue } {
+  return {
+    ...traceClaimPayload(validation.claim, includePayloads),
+    reason: validation.reason,
+  };
+}
+
 function emitTrace(input: {
   tracer?: TurnTracer;
   turnId: string;
@@ -755,29 +1166,22 @@ function emitTrace(input: {
   unsupported: readonly RelationalClaimValidation[];
   verdict: "passed" | "rewritten" | "suppressed";
   suppressionReason?: string;
+  firstClaims?: readonly RelationalClaimAuditClaim[];
+  firstUnsupported?: readonly RelationalClaimValidation[];
+  rewrittenClaims?: readonly RelationalClaimAuditClaim[];
+  rewrittenUnsupported?: readonly RelationalClaimValidation[];
+  finalVerdict?: "passed" | "rewritten" | "suppressed";
+  originalResponse?: string;
+  rewrittenResponse?: string;
 }): void {
   if (input.tracer?.enabled !== true) {
     return;
   }
 
-  const unsupportedClaims = input.unsupported.map((validation) => ({
-    kind: validation.claim.kind,
-    reason: validation.reason,
-    ...(input.tracer?.includePayloads === true
-      ? {
-          asserted: validation.claim.asserted,
-          cited_stream_entry_ids: validation.claim.cited_stream_entry_ids,
-          cited_episode_ids: validation.claim.cited_episode_ids,
-          cited_commitment_ids: validation.claim.cited_commitment_ids,
-          cited_action_ids: validation.claim.cited_action_ids,
-          ...(validation.claim.kind === "callback" &&
-          validation.claim.callback_scope !== null &&
-          validation.claim.callback_scope !== undefined
-            ? { callback_scope: validation.claim.callback_scope }
-            : {}),
-        }
-      : {}),
-  }));
+  const includePayloads = input.tracer.includePayloads === true;
+  const unsupportedClaims = input.unsupported.map((validation) =>
+    traceUnsupportedPayload(validation, includePayloads),
+  );
 
   input.tracer.emit("relational_claim_guard", {
     turnId: input.turnId,
@@ -786,6 +1190,39 @@ function emitTrace(input: {
     claimsUnsupported: input.unsupported.length,
     unsupportedClaims,
     verdict: input.verdict,
+    ...(input.firstClaims === undefined
+      ? {}
+      : {
+          first_claims: input.firstClaims.map((claim) => traceClaimPayload(claim, includePayloads)),
+        }),
+    ...(input.firstUnsupported === undefined
+      ? {}
+      : {
+          first_unsupported: input.firstUnsupported.map((validation) =>
+            traceUnsupportedPayload(validation, includePayloads),
+          ),
+        }),
+    ...(input.rewrittenClaims === undefined
+      ? {}
+      : {
+          rewritten_claims: input.rewrittenClaims.map((claim) =>
+            traceClaimPayload(claim, includePayloads),
+          ),
+        }),
+    ...(input.rewrittenUnsupported === undefined
+      ? {}
+      : {
+          rewritten_unsupported: input.rewrittenUnsupported.map((validation) =>
+            traceUnsupportedPayload(validation, includePayloads),
+          ),
+        }),
+    ...(input.finalVerdict === undefined ? {} : { final_verdict: input.finalVerdict }),
+    ...(includePayloads && input.originalResponse !== undefined
+      ? { original_response_preview: preview(input.originalResponse) }
+      : {}),
+    ...(includePayloads && input.rewrittenResponse !== undefined
+      ? { rewritten_response_preview: preview(input.rewrittenResponse) }
+      : {}),
     ...(input.suppressionReason === undefined
       ? {}
       : { suppressionReason: input.suppressionReason }),
@@ -863,6 +1300,7 @@ export class RelationalClaimGuard {
 
     const firstValidation = validateRelationalClaims({
       claims,
+      response: input.response,
       evidence: input.evidence,
       currentSessionId: input.currentSessionId,
       currentTurnTs: input.currentTurnTs,
@@ -873,7 +1311,7 @@ export class RelationalClaimGuard {
       emitTrace({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        claims,
+        claims: firstValidation.validations.map((validation) => validation.claim),
         validations: firstValidation.validations,
         unsupported: [],
         verdict: "passed",
@@ -898,7 +1336,7 @@ export class RelationalClaimGuard {
       emitTrace({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        claims,
+        claims: firstValidation.validations.map((validation) => validation.claim),
         validations: firstValidation.validations,
         unsupported: firstValidation.unsupported,
         verdict: "suppressed",
@@ -930,7 +1368,7 @@ export class RelationalClaimGuard {
       emitTrace({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        claims,
+        claims: firstValidation.validations.map((validation) => validation.claim),
         validations: firstValidation.validations,
         unsupported: firstValidation.unsupported,
         verdict: "suppressed",
@@ -955,7 +1393,7 @@ export class RelationalClaimGuard {
       emitTrace({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        claims,
+        claims: firstValidation.validations.map((validation) => validation.claim),
         validations: firstValidation.validations,
         unsupported: firstValidation.unsupported,
         verdict: "suppressed",
@@ -987,7 +1425,7 @@ export class RelationalClaimGuard {
       emitTrace({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        claims,
+        claims: firstValidation.validations.map((validation) => validation.claim),
         validations: firstValidation.validations,
         unsupported: firstValidation.unsupported,
         verdict: "suppressed",
@@ -1008,6 +1446,7 @@ export class RelationalClaimGuard {
 
     const secondValidation = validateRelationalClaims({
       claims: secondClaims,
+      response: rewritten,
       evidence: input.evidence,
       currentSessionId: input.currentSessionId,
       currentTurnTs: input.currentTurnTs,
@@ -1020,7 +1459,7 @@ export class RelationalClaimGuard {
       emitTrace({
         tracer: this.options.tracer,
         turnId: input.turnId,
-        claims: secondClaims,
+        claims: secondValidation.validations.map((validation) => validation.claim),
         validations: secondValidation.validations,
         unsupported: secondValidation.unsupported,
         verdict: "suppressed",
@@ -1042,10 +1481,17 @@ export class RelationalClaimGuard {
     emitTrace({
       tracer: this.options.tracer,
       turnId: input.turnId,
-      claims,
-      validations: firstValidation.validations,
-      unsupported: firstValidation.unsupported,
+      claims: secondValidation.validations.map((validation) => validation.claim),
+      validations: secondValidation.validations,
+      unsupported: secondValidation.unsupported,
       verdict: "rewritten",
+      firstClaims: firstValidation.validations.map((validation) => validation.claim),
+      firstUnsupported: firstValidation.unsupported,
+      rewrittenClaims: secondValidation.validations.map((validation) => validation.claim),
+      rewrittenUnsupported: secondValidation.unsupported,
+      finalVerdict: "rewritten",
+      originalResponse: input.response,
+      rewrittenResponse: rewritten,
     });
 
     return {
