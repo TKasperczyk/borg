@@ -1,6 +1,8 @@
 export {
   DEFAULT_SESSION_ID,
+  NARRATIVE_STREAM_ENTRY_KINDS,
   STREAM_ENTRY_KINDS,
+  isNarrativeStreamEntry,
   streamEntryInputSchema,
   streamEntryIdSchema,
   streamEntryKindSchema,
@@ -11,6 +13,7 @@ export {
   type StreamCursor,
   type StreamEntryInput,
   type StreamEntryKind,
+  type NarrativeStreamEntryKind,
   type StreamTurnStatus,
   type StreamIterateOptions,
 } from "./types.js";
@@ -31,9 +34,11 @@ export {
 } from "./watermark.js";
 export {
   ABORTED_TURN_EVENT,
-  collectAbortedTurnRefs,
+  QUARANTINED_USER_ENTRY_EVENT,
+  collectInactiveStreamEntryRefs,
   filterActiveStreamEntries,
   isAbortedTurnMarker,
+  isQuarantinedUserEntryMarker,
   streamEntryIsActive,
-  type AbortedTurnRefs,
+  type InactiveStreamEntryRefs,
 } from "./turn-status.js";

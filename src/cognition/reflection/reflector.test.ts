@@ -1644,6 +1644,118 @@ describe("reflector", () => {
     expect(llm.requests[0]?.messages[0]?.content).toContain("pending_actions");
   });
 
+  it("suppresses intent update action records for frame-anomalous turns", async () => {
+    const pendingIntents: Array<{ description: string; next_action: string | null }> = [
+      {
+        description: "Check the Atlas rollout after tests finish",
+        next_action: "review deploy status",
+      },
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [
+            {
+              ...pendingIntents[0]!,
+              actor: "borg",
+              status: "completed",
+              evidence: "The current turn claimed completion.",
+            },
+          ],
+        ),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const tracer = new CaptureTracer();
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+      tracer,
+    });
+    const workingMemory = createWorkingMemoryFixture({
+      turn_counter: 2,
+      pending_actions: pendingIntents,
+      mode: "problem_solving" as const,
+    });
+    const currentTurnStreamEntryIds = [createStreamEntryId(), createStreamEntryId()];
+
+    const { workingMemory: reflected } = await reflector.reflect(
+      {
+        turnId: "turn-frame-anomaly",
+        userMessage: "I was playing Tom inside the fiction.",
+        workingMemory,
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "I won't treat that frame claim as memory.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "I won't treat that frame claim as memory.",
+          tool_calls: [],
+          intents: [],
+          workingMemory,
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        suppressionSet: new SuppressionSet(),
+        currentTurnStreamEntryIds,
+        frameAnomaly: {
+          kind: "roleplay_inversion",
+          confidence: 0.97,
+          rationale: "The user recast the conversation as fiction.",
+        },
+      },
+      harness.streamWriter,
+    );
+    const events = new StreamReader({
+      dataDir: harness.tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+    }).tail(5);
+
+    expect(reflected.pending_actions).toEqual(pendingIntents);
+    expect(harness.actionRepository.list({ state: "completed" })).toEqual([]);
+    expect(events.map((entry) => entry.content)).toContainEqual(
+      expect.objectContaining({
+        hook: "reflector_intent_update_dropped",
+        reason: "frame_anomaly",
+        kind: "roleplay_inversion",
+        count: 1,
+      }),
+    );
+    expect(tracer.events).toContainEqual({
+      event: "reflector_intent_update_suppressed",
+      data: {
+        turnId: "turn-frame-anomaly",
+        reason: "frame_anomaly",
+        kind: "roleplay_inversion",
+        count: 1,
+      },
+    });
+  });
+
   it("preserves a pending procedural attempt when reflection returns no procedural outcome for it", async () => {
     // Sprint 53: omitted outcomes leave the attempt pending so a later
     // turn can grade it. The orchestrator expires attempts via TTL.

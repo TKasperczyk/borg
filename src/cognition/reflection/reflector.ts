@@ -50,6 +50,7 @@ import { z } from "zod";
 import type { ActionResult } from "../action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import { SuppressionSet } from "../attention/index.js";
+import { isFrameAnomaly, type FrameAnomalyClassification } from "../frame-anomaly/index.js";
 import { intentRecordSchema, type IntentRecord, type PerceptionResult } from "../types.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 export type ReflectionContext = {
@@ -68,6 +69,7 @@ export type ReflectionContext = {
   audienceEntityId?: EntityId | null;
   activeOpenQuestions?: readonly OpenQuestion[];
   suppressionSet: SuppressionSet;
+  frameAnomaly?: FrameAnomalyClassification | null;
   // Sprint 56: stream entries persisted by the just-completed turn
   // (user_msg + agent_msg). Used as evidence for trait demonstrations
   // since the episode hasn't been extracted yet at reflection time.
@@ -608,7 +610,11 @@ export class Reflector {
       ...context.actionResult.workingMemory,
       updated_at: this.clock.now(),
     };
-    const intentUpdates = isAutonomousTurn ? [] : reflectionOutput.intent_updates;
+    const suppressIntentUpdatesForFrameAnomaly = isFrameAnomaly(context.frameAnomaly);
+    const intentUpdates =
+      isAutonomousTurn || suppressIntentUpdatesForFrameAnomaly
+        ? []
+        : reflectionOutput.intent_updates;
 
     if (isAutonomousTurn && reflectionOutput.intent_updates.length > 0) {
       await this.appendReflectorInternalEvent(streamWriter, {
@@ -616,6 +622,16 @@ export class Reflector {
         reason: "autonomous_turn",
         count: reflectionOutput.intent_updates.length,
       });
+    }
+
+    if (suppressIntentUpdatesForFrameAnomaly && reflectionOutput.intent_updates.length > 0) {
+      await this.appendReflectorInternalEvent(streamWriter, {
+        hook: "reflector_intent_update_dropped",
+        reason: "frame_anomaly",
+        kind: context.frameAnomaly?.kind,
+        count: reflectionOutput.intent_updates.length,
+      });
+      this.emitIntentUpdateSuppressed(context, reflectionOutput.intent_updates.length);
     }
 
     const resolvedIntentKeys = selectResolvedIntentKeys(
@@ -1151,6 +1167,21 @@ export class Reflector {
     tracer.emit("open_question_resolution_degraded", {
       turnId: context.turnId,
       ...details,
+    });
+  }
+
+  private emitIntentUpdateSuppressed(context: ReflectionContext, count: number): void {
+    const tracer = this.options.tracer;
+
+    if (tracer?.enabled !== true || context.turnId === undefined) {
+      return;
+    }
+
+    tracer.emit("reflector_intent_update_suppressed", {
+      turnId: context.turnId,
+      reason: "frame_anomaly",
+      kind: context.frameAnomaly?.kind ?? "unknown",
+      count,
     });
   }
 

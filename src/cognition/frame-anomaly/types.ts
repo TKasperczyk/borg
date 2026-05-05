@@ -7,6 +7,7 @@ export const FRAME_ANOMALY_KINDS = [
   "system_prompt_claim",
   "agent_authorship_claim",
   "roleplay_inversion",
+  "degraded",
 ] as const;
 
 export const frameAnomalyKindSchema = z.enum(FRAME_ANOMALY_KINDS);

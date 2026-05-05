@@ -8,6 +8,7 @@ import {
   Borg,
   FakeLLMClient,
   ManualClock,
+  QUARANTINED_USER_ENTRY_EVENT,
   type FrameAnomalyKind,
   type LLMCompleteOptions,
 } from "../index.js";
@@ -2701,6 +2702,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
 
         return entry.kind === "internal_event" && content.event === "frame_anomaly_gate";
       });
+      const quarantineEvent = borg.stream.tail(20).find((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === QUARANTINED_USER_ENTRY_EVENT;
+      });
 
       expect(budgets).toContain("frame-anomaly-classifier");
       expect(budgets).not.toContain("corrective-preference-extractor");
@@ -2713,6 +2719,84 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         source_stream_entry_id: expect.any(String),
         cited_stream_entry_ids: [expect.any(String)],
       });
+      expect(quarantineEvent?.content).toMatchObject({
+        event: QUARANTINED_USER_ENTRY_EVENT,
+        kind: "frame_assignment_claim",
+        source_stream_entry_id: expect.any(String),
+        cited_stream_entry_ids: [expect.any(String)],
+      });
+      expect(runSpy).toHaveBeenCalledOnce();
+      expect(borg.actions.list({ limit: 10 })).toEqual([]);
+    } finally {
+      extractSpy.mockRestore();
+      runSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("fails closed and records degradation when the frame-anomaly classifier fails", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_176_580);
+    const degradedFrameClassifier = Object.assign(
+      () => {
+        throw new Error("frame classifier unavailable");
+      },
+      { budget: "frame-anomaly-classifier" },
+    );
+    const llm = new FakeLLMClient({
+      responses: [
+        degradedFrameClassifier,
+        "I will avoid treating that as memory.",
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+    const extractSpy = vi.spyOn(ActionStateExtractor.prototype, "extract");
+    const originalRun = Deliberator.prototype.run;
+    const runSpy = vi.spyOn(Deliberator.prototype, "run").mockImplementation(function (
+      this: Deliberator,
+      ...args: Parameters<Deliberator["run"]>
+    ) {
+      expect(args[0].frameAnomaly).toMatchObject({
+        kind: "degraded",
+      });
+
+      return originalRun.apply(this, args);
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "You were actually playing Tom there.",
+        stakes: "low",
+      });
+
+      const budgets = llm.requests.map((request) => request.budget);
+      const quarantineEvent = borg.stream.tail(20).find((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === QUARANTINED_USER_ENTRY_EVENT;
+      });
+      const traceEvents = readTraceEvents(tracePath);
+
+      expect(budgets).toContain("frame-anomaly-classifier");
+      expect(budgets).not.toContain("corrective-preference-extractor");
+      expect(budgets).not.toContain("action-state-extractor");
+      expect(budgets).not.toContain("goal-promotion-extractor");
+      expect(extractSpy).not.toHaveBeenCalled();
+      expect(quarantineEvent?.content).toMatchObject({
+        event: QUARANTINED_USER_ENTRY_EVENT,
+        kind: "degraded",
+      });
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "frame_anomaly_classifier_degraded",
+          reason: "llm_failed",
+        }),
+      );
       expect(runSpy).toHaveBeenCalledOnce();
       expect(borg.actions.list({ limit: 10 })).toEqual([]);
     } finally {

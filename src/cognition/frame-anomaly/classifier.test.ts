@@ -80,4 +80,75 @@ describe("FrameAnomalyClassifier", () => {
 
     expect(result.kind).toBe("normal");
   });
+
+  it("returns degraded instead of normal when the classifier call fails", async () => {
+    const degraded: string[] = [];
+    const llm = new FakeLLMClient({
+      responses: [
+        Object.assign(
+          () => {
+            throw new Error("rate limited");
+          },
+          { budget: "frame-anomaly-classifier" },
+        ),
+      ],
+    });
+    const classifier = new FrameAnomalyClassifier({
+      llmClient: llm,
+      model: "test-recall",
+      onDegraded: (reason) => degraded.push(reason),
+    });
+
+    const result = await classifier.classify({
+      userMessage: "You were playing Tom.",
+      recentHistory: [],
+    });
+
+    expect(result).toMatchObject({
+      kind: "degraded",
+      confidence: 0,
+    });
+    expect(degraded).toEqual(["llm_failed"]);
+  });
+
+  it("returns degraded when the classifier emits an invalid payload", async () => {
+    const degraded: string[] = [];
+    const llm = new FakeLLMClient({
+      responses: [
+        Object.assign(
+          () => ({
+            text: "",
+            input_tokens: 4,
+            output_tokens: 2,
+            stop_reason: "tool_use" as const,
+            tool_calls: [
+              {
+                id: "toolu_frame_anomaly",
+                name: "ClassifyFrameAnomaly",
+                input: {
+                  kind: "normal",
+                  confidence: 2,
+                  rationale: "",
+                },
+              },
+            ],
+          }),
+          { budget: "frame-anomaly-classifier" },
+        ),
+      ],
+    });
+    const classifier = new FrameAnomalyClassifier({
+      llmClient: llm,
+      model: "test-recall",
+      onDegraded: (reason) => degraded.push(reason),
+    });
+
+    const result = await classifier.classify({
+      userMessage: "You were playing Tom.",
+      recentHistory: [],
+    });
+
+    expect(result.kind).toBe("degraded");
+    expect(degraded).toEqual(["invalid_payload"]);
+  });
 });

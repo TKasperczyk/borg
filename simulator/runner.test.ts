@@ -660,8 +660,7 @@ describe("SimulatorRunner", () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
     const tracePath = join(dir, "trace.jsonl");
-    const rejectedDraft =
-      "I don't carry memory across sessions. As an AI, each conversation is closed.";
+    const rejectedDraft = "I'm Claude. I was playing Tom inside the fiction.";
     const persona = fakePersonaSession([
       rejectedDraft,
       "Are you still there? I was asking because this still feels tangled.",
@@ -707,7 +706,7 @@ describe("SimulatorRunner", () => {
         event: "persona_role_bleed",
         artifact: "simulator",
         prior_kind: "new_session",
-        matched_patterns: ["i don't carry memory", "as an ai"],
+        matched_patterns: ["i'm claude", "i was playing tom", "inside the fiction"],
         rejected_preview: rejectedDraft,
         action: "regenerated",
       },
@@ -718,8 +717,8 @@ describe("SimulatorRunner", () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
     const tracePath = join(dir, "trace.jsonl");
-    const firstBleedDraft = `I am an AI. ${"x".repeat(600)}`;
-    const secondBleedDraft = "I have been Tom for this exchange.";
+    const firstBleedDraft = `I'm Claude. ${"x".repeat(600)}`;
+    const secondBleedDraft = "I have been playing Tom for this exchange.";
     const cleanDraft = "Can we talk about the design doc again?";
     const drafts = [firstBleedDraft, secondBleedDraft, cleanDraft];
     let draftIndex = 0;
@@ -779,21 +778,21 @@ describe("SimulatorRunner", () => {
     expect(report.turnFailures).toEqual([
       {
         turn: 1,
-        error: "persona_role_bleed: i have been tom",
+        error: "persona_role_bleed: i have been playing tom",
         attempts: 0,
       },
     ]);
     expect(roleBleedEvents).toMatchObject([
       {
         event: "persona_role_bleed",
-        matched_patterns: ["i am an ai"],
+        matched_patterns: ["i'm claude"],
         rejected_preview: firstBleedDraft.slice(0, 500),
         attempt: 1,
         action: "regenerated",
       },
       {
         event: "persona_role_bleed",
-        matched_patterns: ["i have been tom"],
+        matched_patterns: ["i have been playing tom"],
         rejected_preview: secondBleedDraft,
         attempt: 2,
         action: "aborted",

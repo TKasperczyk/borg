@@ -247,11 +247,15 @@ export { type WorkingMemory } from "./memory/working/index.js";
 
 export { type RetrievedEpisode } from "./retrieval/index.js";
 export {
+  NARRATIVE_STREAM_ENTRY_KINDS,
+  QUARANTINED_USER_ENTRY_EVENT,
   STREAM_ENTRY_KINDS,
+  isNarrativeStreamEntry,
   type StreamCursor,
   type StreamEntry,
   type StreamEntryInput,
   type StreamEntryKind,
+  type NarrativeStreamEntryKind,
   type StreamIterateOptions,
 } from "./stream/index.js";
 

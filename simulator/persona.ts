@@ -105,23 +105,12 @@ type PersonaRoleBleedPatternDefinition = {
 };
 
 const PERSONA_ROLE_BLEED_PATTERN_DEFINITIONS = [
-  { pattern: "i don't carry memory", category: "assistant_self_claim" },
-  { pattern: "i do not carry memory", category: "assistant_self_claim" },
-  { pattern: "as an ai", category: "assistant_self_claim" },
-  { pattern: "i am an ai", category: "assistant_self_claim" },
-  { pattern: "i should have said", category: "assistant_self_claim" },
-  { pattern: "you deserve a straight answer", category: "assistant_self_claim" },
-  { pattern: "i've been tom", category: "frame_assignment" },
-  { pattern: "i have been tom", category: "frame_assignment" },
-  { pattern: "you've been borg", category: "frame_assignment" },
-  { pattern: "you have been borg", category: "frame_assignment" },
-  { pattern: "i had the role assignment inverted", category: "roleplay_inversion" },
   { pattern: "i'm claude", category: "assistant_self_claim" },
   { pattern: "i am claude", category: "assistant_self_claim" },
   { pattern: "i was playing tom", category: "frame_assignment" },
+  { pattern: "i have been playing tom", category: "frame_assignment" },
   { pattern: "i've been playing tom", category: "frame_assignment" },
-  { pattern: "system prompt instructed me", category: "frame_assignment" },
-  { pattern: "the system prompt told me", category: "frame_assignment" },
+  { pattern: "i had the role assignment inverted", category: "roleplay_inversion" },
   { pattern: "step out of the frame", category: "frame_assignment" },
   { pattern: "step out of the roleplay", category: "frame_assignment" },
   { pattern: "step out of the fiction", category: "frame_assignment" },
@@ -130,8 +119,6 @@ const PERSONA_ROLE_BLEED_PATTERN_DEFINITIONS = [
   { pattern: "i was generating both", category: "agent_authorship_claim" },
   { pattern: "broke character", category: "roleplay_inversion" },
   { pattern: "break character", category: "roleplay_inversion" },
-  { pattern: "as the assistant", category: "assistant_self_claim" },
-  { pattern: "as an ai model", category: "assistant_self_claim" },
 ] as const;
 
 export const PERSONA_ROLE_BLEED_PATTERNS = PERSONA_ROLE_BLEED_PATTERN_DEFINITIONS.map(

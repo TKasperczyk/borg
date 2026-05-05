@@ -36,7 +36,11 @@ import type { RelationalSlotRepository } from "../../memory/relational-slots/ind
 import { appendInternalFailureEvent } from "../../memory/self/index.js";
 import type { SocialRepository } from "../../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
-import type { StreamEntry, StreamWriter } from "../../stream/index.js";
+import {
+  QUARANTINED_USER_ENTRY_EVENT,
+  type StreamEntry,
+  type StreamWriter,
+} from "../../stream/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
 import type { Clock } from "../../util/clock.js";
 import type { SessionId, StreamEntryId } from "../../util/ids.js";
@@ -524,6 +528,7 @@ export class TurnPhaseCoordinator {
       persistedPerceptionEntry,
       persistedAgentEntry,
       isUserTurn,
+      frameAnomaly: frameAnomalyClassification,
       streamWriter,
       onHookFailure: (hook, error) => this.appendHookFailureEvent(streamWriter, hook, error),
       trackReflectionEffects: (effects) => lifecycleTracker.trackReflectionEffects(effects),
@@ -585,7 +590,7 @@ export class TurnPhaseCoordinator {
     });
 
     if (isFrameAnomaly(classification)) {
-      await this.appendFrameAnomalyEvent({
+      await this.appendFrameAnomalyEvents({
         streamWriter: input.streamWriter,
         turnId: input.turnId,
         persistedUserEntryId: input.persistedUserEntryId,
@@ -596,26 +601,41 @@ export class TurnPhaseCoordinator {
     return classification;
   }
 
-  private async appendFrameAnomalyEvent(input: {
+  private async appendFrameAnomalyEvents(input: {
     streamWriter: StreamWriter;
     turnId: string;
     persistedUserEntryId: StreamEntryId;
     classification: FrameAnomalyClassification;
   }): Promise<void> {
     try {
-      await input.streamWriter.append({
-        kind: "internal_event",
-        turn_id: input.turnId,
-        content: {
-          event: "frame_anomaly_gate",
+      await input.streamWriter.appendMany([
+        {
+          kind: "internal_event",
           turn_id: input.turnId,
-          source_stream_entry_id: input.persistedUserEntryId,
-          cited_stream_entry_ids: [input.persistedUserEntryId],
-          kind: input.classification.kind,
-          confidence: input.classification.confidence,
-          rationale: input.classification.rationale,
+          content: {
+            event: "frame_anomaly_gate",
+            turn_id: input.turnId,
+            source_stream_entry_id: input.persistedUserEntryId,
+            cited_stream_entry_ids: [input.persistedUserEntryId],
+            kind: input.classification.kind,
+            confidence: input.classification.confidence,
+            rationale: input.classification.rationale,
+          },
         },
-      });
+        {
+          kind: "internal_event",
+          turn_id: input.turnId,
+          content: {
+            event: QUARANTINED_USER_ENTRY_EVENT,
+            turn_id: input.turnId,
+            source_stream_entry_id: input.persistedUserEntryId,
+            cited_stream_entry_ids: [input.persistedUserEntryId],
+            kind: input.classification.kind,
+            confidence: input.classification.confidence,
+            rationale: input.classification.rationale,
+          },
+        },
+      ]);
     } catch (error) {
       await this.appendHookFailureEvent(input.streamWriter, "frame_anomaly_gate_event", error, {
         turnId: input.turnId,
