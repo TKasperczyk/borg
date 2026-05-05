@@ -355,12 +355,28 @@ function renderEpisodeDerivedProvenance(episodeIds: readonly string[]): string {
 
 function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null {
   const stopState = workingMemory.discourse_state?.stop_until_substantive_content ?? null;
+  const closureLoop = workingMemory.discourse_state?.closure_loop ?? null;
+  const lines: string[] = [];
 
-  if (stopState === null) {
-    return null;
+  if (stopState !== null) {
+    lines.push(
+      `Discourse control: stop-until-substantive-content active since turn ${stopState.since_turn} (provenance: ${stopState.provenance}). Minimal input does not require a response.`,
+    );
   }
 
-  return `Discourse control: stop-until-substantive-content active since turn ${stopState.since_turn} (provenance: ${stopState.provenance}). Minimal input does not require a response.`;
+  if (closureLoop?.status === "detected") {
+    lines.push(
+      'Discourse control: closure_loop_detected. The recent exchange is repeated mutual goodbye/closure beats. For this turn, either call no_output or name the loop once, then stop adding send-offs: "We keep doing goodbye and continuing. I\'m going to stop adding send-offs unless you bring a substantive question."',
+    );
+  }
+
+  if (closureLoop?.status === "named") {
+    lines.push(
+      "Discourse control: closure loop already named. If the current user turn is another closure-shaped beat, call no_output. Do not add another goodbye, acknowledgment, imperative closer, or loop explanation unless the user brings substantive content.",
+    );
+  }
+
+  return lines.length === 0 ? null : lines.join("\n");
 }
 
 function summarizeRelationalSlotConstraints(slots: readonly RelationalSlot[]): string | null {

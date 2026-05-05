@@ -118,9 +118,20 @@ export const stopUntilSubstantiveContentSchema = z
   })
   .strict();
 
+export const closureLoopStateSchema = z
+  .object({
+    status: z.enum(["detected", "named"]),
+    source_stream_entry_ids: z.array(workingStreamEntryIdSchema),
+    reason: z.string().min(1),
+    since_turn: z.number().int().nonnegative(),
+    named_at_turn: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+
 export const discourseStateSchema = z
   .object({
     stop_until_substantive_content: stopUntilSubstantiveContentSchema.nullable(),
+    closure_loop: closureLoopStateSchema.nullable().optional(),
   })
   .strict();
 
@@ -162,6 +173,7 @@ export type PendingProceduralAttempt = z.infer<typeof pendingProceduralAttemptSc
 export type DiscourseState = z.infer<typeof discourseStateSchema>;
 export type DiscourseStopProvenance = z.infer<typeof discourseStopProvenanceSchema>;
 export type StopUntilSubstantiveContent = z.infer<typeof stopUntilSubstantiveContentSchema>;
+export type ClosureLoopState = z.infer<typeof closureLoopStateSchema>;
 
 /**
  * Derived live-state only. Phase E removed `scratchpad` (S2 planner output

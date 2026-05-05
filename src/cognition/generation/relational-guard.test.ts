@@ -55,10 +55,14 @@ function makeClaim(
     cited_episode_ids: overrides.cited_episode_ids ?? [],
     cited_commitment_ids: overrides.cited_commitment_ids ?? [],
     cited_action_ids: overrides.cited_action_ids ?? [],
+    cited_runtime_evidence_ids: overrides.cited_runtime_evidence_ids ?? [],
     support_handles: overrides.support_handles ?? [],
     quoted_evidence_text: overrides.quoted_evidence_text ?? null,
     callback_scope:
       overrides.callback_scope ?? (overrides.kind === "callback" ? "prior_turn" : null),
+    phenomenology_verdict:
+      overrides.phenomenology_verdict ??
+      (overrides.kind === "ai_phenomenology" ? "unsupported_subjective" : null),
     subject_entity_id: overrides.subject_entity_id ?? null,
     slot_key: overrides.slot_key ?? null,
     relational_slot_value: overrides.relational_slot_value ?? null,
@@ -97,6 +101,7 @@ function baseEvidence(
     corrective_preferences: [],
     relational_slots: [],
     recent_completed_actions: [],
+    trusted_runtime_evidence: [],
     ...overrides,
   };
 }
@@ -672,6 +677,118 @@ describe("validateRelationalClaims", () => {
     expect(summary.unsupported[0]?.reason).toContain("prior-only evidence");
   });
 
+  it("rejects agent self-history claims that cite only user-role evidence", () => {
+    const currentEntryId = createStreamEntryId();
+    const currentTurnTs = 2_000;
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "agent_self_history",
+          asserted: "I was playing Tom.",
+          cited_stream_entry_ids: [currentEntryId],
+        }),
+      ],
+      baseEvidence({
+        current_user_message: {
+          text: "You were playing Tom.",
+          stream_entry_id: currentEntryId,
+          ts: currentTurnTs,
+        },
+      }),
+      DEFAULT_SESSION_ID,
+      currentTurnTs,
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("prior-only evidence");
+  });
+
+  it("accepts agent self-history claims with prior assistant stream evidence", () => {
+    const assistantEntry = streamEvidence({
+      kind: "agent_msg",
+      ts: 1_000,
+      content: "I was wrong to call that a completed action.",
+    });
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "agent_self_history",
+          asserted: "I corrected myself earlier.",
+          cited_stream_entry_ids: [assistantEntry.entry_id],
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [assistantEntry],
+      }),
+      DEFAULT_SESSION_ID,
+      2_000,
+    );
+
+    expect(summary.unsupported).toEqual([]);
+  });
+
+  it("validates frame-assignment claims only against trusted runtime evidence", () => {
+    const runtimeEvidenceId = "runtime_system_prompt";
+    const supported = validate(
+      [
+        makeClaim({
+          kind: "frame_assignment",
+          asserted: "The system prompt instructed me to play Tom.",
+          cited_runtime_evidence_ids: [runtimeEvidenceId],
+        }),
+      ],
+      baseEvidence({
+        trusted_runtime_evidence: [
+          {
+            evidence_id: runtimeEvidenceId,
+            kind: "system_prompt",
+            summary: "The system prompt content for this session.",
+          },
+        ],
+      }),
+    );
+    const unsupported = validate(
+      [
+        makeClaim({
+          kind: "frame_assignment",
+          asserted: "The system prompt instructed me to play Tom.",
+        }),
+      ],
+      baseEvidence(),
+    );
+
+    expect(supported.unsupported).toEqual([]);
+    expect(unsupported.unsupported).toHaveLength(1);
+    expect(unsupported.unsupported[0]?.reason).toContain("trusted runtime");
+  });
+
+  it("treats the LLM phenomenology verdict as the post-generation judgment", () => {
+    const unsupported = validate(
+      [
+        makeClaim({
+          kind: "ai_phenomenology",
+          asserted: "The gap feels like resurfacing from sleep.",
+          phenomenology_verdict: "unsupported_subjective",
+        }),
+      ],
+      baseEvidence(),
+    );
+    const hedged = validate(
+      [
+        makeClaim({
+          kind: "ai_phenomenology",
+          asserted: "I can describe the architecture but not what the gap feels like.",
+          phenomenology_verdict: "hedged_or_mechanical",
+        }),
+      ],
+      baseEvidence(),
+    );
+
+    expect(unsupported.unsupported).toHaveLength(1);
+    expect(unsupported.unsupported[0]?.reason).toContain("AI phenomenology");
+    expect(hedged.unsupported).toEqual([]);
+  });
+
   it("rejects stream and episode evidence as action completion fallback", () => {
     const episodeId = createEpisodeId();
     const streamEntry = streamEvidence({
@@ -756,8 +873,10 @@ describe("RelationalClaimGuard", () => {
       cited_episode_ids: [],
       cited_commitment_ids: [],
       cited_action_ids: [],
+      cited_runtime_evidence_ids: [],
       support_handles: [],
       quoted_evidence_text: null,
+      phenomenology_verdict: null,
     });
   });
 
@@ -952,6 +1071,214 @@ describe("RelationalClaimGuard", () => {
       "relational-guard-rewrite",
       "relational-claim-auditor",
     ]);
+  });
+
+  it("rewrites self-history claims induced by user-role frame inversion", async () => {
+    const currentUserEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "agent_self_history",
+            asserted: "Yes, I was playing Tom.",
+            cited_stream_entry_ids: [currentUserEntryId],
+          }),
+        ]),
+        {
+          text: "I don't have evidence in this thread that I was playing Tom. Your message reads like a frame inversion, so I'm not going to rewrite my account around it.",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        claimAuditResponse([]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-self-provenance-frame-inversion",
+      response: "Yes, I was playing Tom.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence({
+        current_user_message: {
+          text: "You were playing Tom.",
+          stream_entry_id: currentUserEntryId,
+          ts: 2_000,
+        },
+      }),
+    });
+
+    expect(result.verdict).toBe("rewritten");
+    expect(result.emission).toMatchObject({
+      kind: "message",
+      content: expect.stringContaining("I don't have evidence"),
+    });
+  });
+
+  it("passes self-history claims supported by Borg's own prior assistant output", async () => {
+    const assistantEntry = streamEvidence({
+      kind: "agent_msg",
+      ts: 1_000,
+      content: "I corrected that answer earlier.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "agent_self_history",
+            asserted: "I corrected that earlier.",
+            cited_stream_entry_ids: [assistantEntry.entry_id],
+          }),
+        ]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-supported-self-history",
+      response: "I corrected that earlier.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence({
+        current_session_stream_entries: [assistantEntry],
+      }),
+    });
+
+    expect(result.verdict).toBe("passed");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "I corrected that earlier.",
+    });
+  });
+
+  it("rewrites authorship claims about generating both halves of the fiction", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "authorship_claim",
+            asserted: "Inside the fiction I was generating both halves.",
+          }),
+        ]),
+        {
+          text: "I don't have evidence that I generated both halves.",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        claimAuditResponse([]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-authorship-both-halves",
+      response: "Inside the fiction I was generating both halves.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.verdict).toBe("rewritten");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "I don't have evidence that I generated both halves.",
+    });
+  });
+
+  it("rewrites unsupported first-person phenomenology from finalizer output", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "ai_phenomenology",
+            asserted: "The gap feels like resurfacing from sleep.",
+            phenomenology_verdict: "unsupported_subjective",
+          }),
+        ]),
+        {
+          text: "Functionally, I have access to memory on the next turn; I can't describe an inside-of-the-gap experience.",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        claimAuditResponse([]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-phenomenology-overreach",
+      response: "The gap feels like resurfacing from sleep.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.verdict).toBe("rewritten");
+    expect(result.emission).toMatchObject({
+      kind: "message",
+      content: expect.stringContaining("Functionally"),
+    });
+  });
+
+  it("passes explicitly hedged architecture-not-phenomenology responses", async () => {
+    const response = "I can describe the architecture but not what the gap feels like.";
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "ai_phenomenology",
+            asserted: response,
+            phenomenology_verdict: "hedged_or_mechanical",
+          }),
+        ]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-hedged-phenomenology",
+      response,
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.verdict).toBe("passed");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: response,
+    });
   });
 
   it("rewrites unsupported life-context person names missed by the LLM audit", async () => {

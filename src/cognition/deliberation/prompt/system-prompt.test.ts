@@ -307,6 +307,31 @@ describe("buildBaseSystemPrompt", () => {
     expect(extractBlock(prompt, "borg_working_state")).not.toContain("Discourse control");
   });
 
+  it("renders closure-loop finalizer guidance in trusted discourse control", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: null,
+            closure_loop: {
+              status: "detected",
+              source_stream_entry_ids: ["strm_aaaaaaaaaaaaaaaa" as never],
+              reason: "Two closure cycles.",
+              since_turn: 8,
+              named_at_turn: null,
+            },
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_discourse_control");
+
+    expect(block).toContain("closure_loop_detected");
+    expect(block).toContain("either call no_output or name the loop once");
+  });
+
   it("renders contested and quarantined relational slot constraints only", () => {
     const subject = createEntityId();
     const prompt = buildBaseSystemPrompt(

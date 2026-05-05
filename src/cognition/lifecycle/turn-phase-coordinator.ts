@@ -47,6 +47,12 @@ import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { StreamIngestionCoordinator } from "../ingestion/index.js";
 import type { TurnRelationalGuardRunner } from "../generation/turn-relational-guard.js";
 import type { TurnLifecycleTracker } from "./turn-lifecycle-tracker.js";
+import {
+  ClosureLoopClassifier,
+  assessClosureLoopClassification,
+  buildClosureLoopMessageWindow,
+  type ClosureLoopAssessment,
+} from "../generation/closure-loop.js";
 
 const ACTIVE_TURN_STATUS = "active";
 
@@ -260,6 +266,46 @@ export class TurnPhaseCoordinator {
           };
     lifecycleTracker.trackCreatedGoalIds(persistedPromotions.goalIds);
     lifecycleTracker.trackCreatedExecutiveStepIds(persistedPromotions.executiveStepIds);
+
+    const closureLoopAssessment = await this.classifyClosureLoop({
+      llmClient,
+      turnId,
+      isUserTurn,
+      userMessage: turnInput.userMessage,
+      recentHistory: recencyWindow.messages,
+      persistedUserEntryId,
+      workingMemory,
+      streamWriter,
+    });
+
+    if (closureLoopAssessment?.currentUserSubstantive === true) {
+      workingMemory = this.options.discourseStateService.clearClosureLoop({
+        workingMemory,
+        reason: closureLoopAssessment.reason,
+        turnId,
+      });
+    } else if (
+      closureLoopAssessment?.currentUserClosureShaped === true &&
+      workingMemory.discourse_state?.closure_loop?.status === "named"
+    ) {
+      return this.suppressFromClosureLoop({
+        turnId,
+        turnInput,
+        streamWriter,
+        workingMemory,
+        persistedUserEntryId,
+        correctiveCommitment,
+        perceptionMode: perception.mode,
+        reason: closureLoopAssessment.reason,
+      });
+    } else if (closureLoopAssessment?.closureLoopDetected === true) {
+      workingMemory = this.options.discourseStateService.setClosureLoopDetected({
+        workingMemory,
+        sourceStreamEntryIds: closureLoopAssessment.sourceStreamEntryIds,
+        reason: closureLoopAssessment.reason,
+        turnId,
+      });
+    }
 
     const generationGate = new GenerationGate({
       llmClient,
@@ -504,6 +550,24 @@ export class TurnPhaseCoordinator {
         turnId,
       });
     }
+
+    if (postActionWorkingMemory.discourse_state?.closure_loop?.status === "detected") {
+      postActionWorkingMemory = this.options.discourseStateService.markClosureLoopNamed({
+        workingMemory: postActionWorkingMemory,
+        sourceStreamEntryId: persistedAgentEntry.id,
+        reason: "Closure loop detected; assistant used the single allowed naming/output turn.",
+        turnId,
+      });
+      postActionWorkingMemory = this.options.discourseStateService.setStopState({
+        workingMemory: postActionWorkingMemory,
+        provenance: "no_output_tool",
+        sourceStreamEntryId: persistedAgentEntry.id,
+        reason:
+          "Closure loop was already named once; suppress further closure-only turns until substantive content.",
+        turnId,
+      });
+    }
+
     await this.options.turnReflectionCoordinator.run({
       llmClient,
       sessionId,
@@ -601,6 +665,70 @@ export class TurnPhaseCoordinator {
     return classification;
   }
 
+  private async classifyClosureLoop(input: {
+    llmClient: LLMClient;
+    turnId: string;
+    isUserTurn: boolean;
+    userMessage: string;
+    recentHistory: readonly RecencyMessage[];
+    persistedUserEntryId?: StreamEntryId;
+    workingMemory: WorkingMemory;
+    streamWriter: StreamWriter;
+  }): Promise<ClosureLoopAssessment | null> {
+    if (!input.isUserTurn || input.persistedUserEntryId === undefined) {
+      return null;
+    }
+
+    const activeClosureLoop = input.workingMemory.discourse_state?.closure_loop ?? null;
+
+    if (activeClosureLoop === null && input.recentHistory.length < 4) {
+      return null;
+    }
+
+    const messages = buildClosureLoopMessageWindow({
+      recentHistory: input.recentHistory,
+      currentUserMessage: input.userMessage,
+      currentUserEntryId: input.persistedUserEntryId,
+    });
+    const classifier = new ClosureLoopClassifier({
+      llmClient: input.llmClient,
+      model: this.options.config.anthropic.models.recallExpansion,
+      tracer: this.options.tracer,
+      turnId: input.turnId,
+      onDegraded: (reason, error) => {
+        if (!this.options.tracer.enabled) {
+          return;
+        }
+
+        this.options.tracer.emit("closure_loop_classifier_degraded", {
+          turnId: input.turnId,
+          reason,
+          ...(this.options.tracer.includePayloads && error !== undefined
+            ? { error: error instanceof Error ? error.message : String(error) }
+            : {}),
+        });
+      },
+    });
+    const classification = await classifier.classify({
+      messages,
+    });
+
+    if (classification.degraded) {
+      await this.appendHookFailureEvent(input.streamWriter, "closure_loop_classifier", null, {
+        turnId: input.turnId,
+        reason: classification.rationale,
+      });
+
+      return null;
+    }
+
+    return assessClosureLoopClassification({
+      classification,
+      suppliedMessages: messages,
+      currentUserRef: input.persistedUserEntryId,
+    });
+  }
+
   private async appendFrameAnomalyEvents(input: {
     streamWriter: StreamWriter;
     turnId: string;
@@ -641,6 +769,92 @@ export class TurnPhaseCoordinator {
         turnId: input.turnId,
       });
     }
+  }
+
+  private async suppressFromClosureLoop(input: {
+    turnId: string;
+    turnInput: TurnPhaseInput;
+    streamWriter: StreamWriter;
+    workingMemory: WorkingMemory;
+    persistedUserEntryId?: StreamEntry["id"];
+    correctiveCommitment: Parameters<
+      CorrectivePreferenceTurnService["persistCommitment"]
+    >[0]["commitment"];
+    perceptionMode: CognitiveMode;
+    reason: string;
+  }): Promise<TurnPhaseResult> {
+    let workingMemory = this.options.discourseStateService.markClosureLoopNamed({
+      workingMemory: input.workingMemory,
+      reason: input.reason,
+      turnId: input.turnId,
+      sourceStreamEntryId: input.persistedUserEntryId,
+    });
+    workingMemory = this.options.discourseStateService.setStopState({
+      workingMemory,
+      provenance: "no_output_tool",
+      sourceStreamEntryId: input.persistedUserEntryId,
+      reason: "Closure loop already named; suppressing another closure-only turn.",
+      turnId: input.turnId,
+    });
+    const suppressionActionResult = await performAction({
+      response: "",
+      emission: {
+        kind: "suppressed",
+        reason: "no_output_tool",
+      },
+      toolCalls: [],
+      intents: [],
+      workingMemory: {
+        ...workingMemory,
+        updated_at: this.options.clock.now(),
+      },
+    });
+    const suppressionMarker = await this.options.discourseStateService.appendSuppressionMarker({
+      streamWriter: input.streamWriter,
+      reason: "no_output_tool",
+      userEntryId: input.persistedUserEntryId,
+      turnId: input.turnId,
+      audience: input.turnInput.audience,
+    });
+    const suppressionEmission: TurnEmission = {
+      kind: "suppressed",
+      reason: "no_output_tool",
+      markerEntryId: suppressionMarker.id,
+    };
+
+    if (this.options.tracer.enabled) {
+      this.options.tracer.emit("generation_suppressed", {
+        turnId: input.turnId,
+        reason: "no_output_tool",
+        streamEntryId: suppressionMarker.id,
+        source: "closure_loop",
+        classified: true,
+      });
+    }
+
+    this.options.workingMemoryStore.save({
+      ...suppressionActionResult.workingMemory,
+      updated_at: this.options.clock.now(),
+    });
+    await this.persistCorrectiveCommitment(input.streamWriter, input.correctiveCommitment);
+
+    return {
+      mode: input.perceptionMode,
+      path: "suppressed",
+      response: "",
+      emitted: false,
+      emission: suppressionEmission,
+      thoughts: [],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        stop_reason: "suppressed",
+      },
+      retrievedEpisodeIds: [],
+      referencedEpisodeIds: [],
+      intents: [],
+      toolCalls: [],
+    };
   }
 
   private async suppressFromGenerationGate(input: {

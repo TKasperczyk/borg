@@ -124,6 +124,7 @@ export class ScriptedDebugLLM implements LLMClient {
       options.budget === "corrective-preference-extractor" ||
       options.budget === "action-state-extractor" ||
       options.budget === "frame-anomaly-classifier" ||
+      options.budget === "closure-loop-classifier" ||
       options.budget === "relational-claim-auditor"
     ) {
       return this.respond(options);
@@ -172,6 +173,14 @@ export class ScriptedDebugLLM implements LLMClient {
         kind: "normal",
         confidence: 0,
         rationale: "No frame-provenance anomaly detected in the scripted debug prompt.",
+      });
+    }
+
+    if (options.budget === "closure-loop-classifier") {
+      return buildToolResult(options, {
+        messages: [],
+        confidence: 0,
+        rationale: "No closure loop detected in the scripted debug prompt.",
       });
     }
 
