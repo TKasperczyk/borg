@@ -44,12 +44,28 @@ const guards: readonly Guard[] = [
     name: "generation/extractor English wordlist or role-label regex marker",
     pattern:
       "(?i)(const\\s+\\w+\\s*=\\s*\\[[^\\n\\]]*\\b(?:stop|stopping|responding|generate|output|human|assistant|user)\\b[^\\n\\]]*\\b(?:stop|stopping|responding|generate|output|human|assistant|user)\\b|/[^\\n/]*\\(\\?:[^\\n/]*\\b(?:human|assistant|user)\\b[^\\n/]*\\b(?:human|assistant|user)\\b[^\\n/]*\\))",
-    paths: ["src/cognition/generation", "src/cognition/commitments", "src/cognition/goals"],
+    paths: [
+      "src/cognition/generation",
+      "src/cognition/commitments",
+      "src/cognition/goals",
+      "src/cognition/frame-anomaly",
+    ],
   },
   {
     name: "generation/extractor English Set wordlist marker",
     pattern: "new Set\\s*\\(\\s*\\[",
-    paths: ["src/cognition/generation", "src/cognition/commitments", "src/cognition/goals"],
+    paths: [
+      "src/cognition/generation",
+      "src/cognition/commitments",
+      "src/cognition/goals",
+      "src/cognition/frame-anomaly",
+    ],
+  },
+  {
+    name: "frame-anomaly broad degraded fallback marker",
+    pattern:
+      "pattern:\\s*[\"'](?:as an ai|as a language model|i am an ai|i'm an ai|i am an artificial intelligence|i'm an artificial intelligence)[\"']",
+    paths: ["src/cognition/frame-anomaly"],
   },
   {
     name: "commitment/goal extractor substring semantic matching",

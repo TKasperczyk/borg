@@ -50,7 +50,7 @@ export type MetricsCaptureContext = {
   sessionId: SessionId;
   sessionIds: readonly SessionId[];
   transportChatAttempts: number;
-  overseerRanOnSuppressedTurn?: boolean;
+  overseerDueOnSuppressedTurn?: boolean;
 };
 
 type FrameAnomalyMetricCounts = Pick<
@@ -396,7 +396,7 @@ export class MetricsCapture {
       quarantined_user_entry_count: frameAnomalyMetricCounts.quarantined_user_entry_count,
       early_extractors_skipped_frame_anomaly_count:
         frameAnomalyMetricCounts.early_extractors_skipped_frame_anomaly_count,
-      overseer_ran_on_suppressed_turn: context.overseerRanOnSuppressedTurn ?? false,
+      overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 
     this.previousSemanticNodeCount = semanticNodes.length;
@@ -475,7 +475,7 @@ export class MetricsCapture {
       quarantined_user_entry_count: frameAnomalyMetricCounts.quarantined_user_entry_count,
       early_extractors_skipped_frame_anomaly_count:
         frameAnomalyMetricCounts.early_extractors_skipped_frame_anomaly_count,
-      overseer_ran_on_suppressed_turn: context.overseerRanOnSuppressedTurn ?? false,
+      overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 
     appendJsonlLine(this.filepath, `${JSON.stringify(row)}\n`);

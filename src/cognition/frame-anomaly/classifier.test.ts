@@ -10,8 +10,9 @@ type TraceRecord = TurnTraceData & { event: TurnTraceEventName };
 
 class TestTracer implements TurnTracer {
   readonly enabled = true;
-  readonly includePayloads = true;
   readonly records: TraceRecord[] = [];
+
+  constructor(readonly includePayloads = true) {}
 
   emit(event: TurnTraceEventName, data: TurnTraceData): void {
     this.records.push({ event, ...data });
@@ -141,6 +142,12 @@ describe("FrameAnomalyClassifier", () => {
     expect(classified).toMatchObject({
       status: "ok",
       kind: "normal",
+      rawToolInputShape: expect.objectContaining({
+        type: "object",
+        fields: expect.arrayContaining([
+          expect.objectContaining({ name: "ignored_extra", type: "boolean" }),
+        ]),
+      }),
       rawToolInput: expect.objectContaining({ ignored_extra: true }),
     });
     expect(classified?.normalizations).toEqual(
@@ -148,6 +155,47 @@ describe("FrameAnomalyClassifier", () => {
         expect.objectContaining({ field: "kind", action: "alias_mapped" }),
         expect.objectContaining({ field: "confidence", action: "string_coerced" }),
         expect.objectContaining({ field: "rationale", action: "truncated" }),
+        expect.objectContaining({ field: "*", action: "extra_fields_ignored" }),
+      ]),
+    );
+  });
+
+  it("emits classifier output shape without raw payloads when payload tracing is off", async () => {
+    const tracer = new TestTracer(false);
+    const llm = new FakeLLMClient({
+      responses: [
+        frameAnomalyResponse({
+          kind: "no_anomaly",
+          extra: { ignored_extra: true },
+        }),
+      ],
+    });
+    const classifier = new FrameAnomalyClassifier({
+      llmClient: llm,
+      model: "test-recall",
+      tracer,
+      turnId: "turn-frame-shape",
+    });
+
+    await classifier.classify({
+      userMessage: "Closing the laptop. Talk tomorrow.",
+      recentHistory: [],
+    });
+    const classified = tracer.records.find((record) => record.event === "frame_anomaly_classified");
+
+    expect(classified?.rawToolInput).toBeUndefined();
+    expect(classified?.rawToolInputShape).toMatchObject({
+      type: "object",
+      fields: expect.arrayContaining([
+        expect.objectContaining({ name: "kind", type: "string" }),
+        expect.objectContaining({ name: "confidence", type: "number" }),
+        expect.objectContaining({ name: "rationale", type: "string" }),
+        expect.objectContaining({ name: "ignored_extra", type: "boolean" }),
+      ]),
+    });
+    expect(classified?.normalizations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "kind", action: "alias_mapped" }),
         expect.objectContaining({ field: "*", action: "extra_fields_ignored" }),
       ]),
     );

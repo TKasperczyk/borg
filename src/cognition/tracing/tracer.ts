@@ -78,6 +78,54 @@ export function toTraceJsonValue(value: unknown): JsonValue {
   return JSON.parse(serialized) as JsonValue;
 }
 
+function traceValueType(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+
+  if (Array.isArray(value)) {
+    return "array";
+  }
+
+  return typeof value;
+}
+
+function uniqueTraceValueTypes(values: readonly unknown[]): string[] {
+  return [...new Set(values.map((value) => traceValueType(value)))];
+}
+
+function summarizeTraceValueShapeInternal(value: unknown, depth: number): JsonValue {
+  if (Array.isArray(value)) {
+    return {
+      type: "array",
+      length: value.length,
+      itemTypes: uniqueTraceValueTypes(value),
+      sample:
+        depth >= 3
+          ? []
+          : value.slice(0, 5).map((item) => summarizeTraceValueShapeInternal(item, depth + 1)),
+    };
+  }
+
+  if (value !== null && typeof value === "object") {
+    return {
+      type: "object",
+      fields: Object.entries(value as Record<string, unknown>).map(([name, fieldValue]) => ({
+        name,
+        type: traceValueType(fieldValue),
+      })),
+    };
+  }
+
+  return {
+    type: traceValueType(value),
+  };
+}
+
+export function summarizeTraceValueShape(value: unknown): JsonValue {
+  return summarizeTraceValueShapeInternal(value, 0);
+}
+
 export type JsonlTracerOptions = {
   path: string;
   clock?: Clock;

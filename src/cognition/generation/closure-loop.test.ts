@@ -16,8 +16,9 @@ type TraceRecord = TurnTraceData & { event: TurnTraceEventName };
 
 class TestTracer implements TurnTracer {
   readonly enabled = true;
-  readonly includePayloads = true;
   readonly records: TraceRecord[] = [];
+
+  constructor(readonly includePayloads = true) {}
 
   emit(event: TurnTraceEventName, data: TurnTraceData): void {
     this.records.push({ event, ...data });
@@ -193,6 +194,161 @@ describe("ClosureLoopClassifier", () => {
           field: "*",
           action: "extra_fields_ignored",
         }),
+      ]),
+    );
+  });
+
+  it("maps LLM dialogue-act aliases before closure-loop assessment", async () => {
+    const tracer = new TestTracer();
+    const supplied = [
+      message({ role: "user", content: "going", ts: 1 }),
+      message({ role: "assistant", content: "Go.", ts: 2 }),
+      message({ role: "user", content: "really going", ts: 3 }),
+      message({ role: "assistant", content: "Talk soon.", ts: 4 }),
+      message({ role: "user", content: "phone down", ts: 5 }),
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        closureLoopResponse([
+          { ...classified(supplied[0]!, "substantive"), act: "user_signoff" },
+          { ...classified(supplied[1]!, "substantive"), act: "assistant_signoff" },
+          { ...classified(supplied[2]!, "substantive"), act: "user_closure" },
+          { ...classified(supplied[3]!, "substantive"), act: "assistant_goodnight" },
+          { ...classified(supplied[4]!, "substantive"), act: "user_signoff" },
+        ]),
+      ],
+    });
+    const classifier = new ClosureLoopClassifier({
+      llmClient: llm,
+      model: "test-recall",
+      tracer,
+      turnId: "turn-closure-aliases",
+    });
+
+    const result = await classifier.classify({
+      messages: supplied,
+    });
+    const assessment = assessClosureLoopClassification({
+      classification: result,
+      suppliedMessages: supplied,
+      currentUserRef: supplied[4]!.message_ref,
+    });
+    const normalized = tracer.records.find(
+      (record) => record.event === "closure_loop_classifier_payload_normalized",
+    );
+
+    expect(result.messages.map((item) => item.act)).toEqual([
+      "signoff",
+      "assistant_imperative_closer",
+      "signoff",
+      "assistant_valediction",
+      "signoff",
+    ]);
+    expect(assessment.closureLoopDetected).toBe(true);
+    expect(assessment.mutualClosureCycles).toBe(2);
+    expect(normalized?.normalizations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "act", action: "alias_mapped", to: "signoff" }),
+        expect.objectContaining({
+          field: "act",
+          action: "alias_mapped",
+          to: "assistant_imperative_closer",
+        }),
+        expect.objectContaining({
+          field: "act",
+          action: "alias_mapped",
+          to: "assistant_valediction",
+        }),
+      ]),
+    );
+  });
+
+  it("defaults genuinely unknown dialogue-act labels to substantive", async () => {
+    const tracer = new TestTracer();
+    const supplied = [message({ role: "user", content: "Can we inspect the scheduler?", ts: 1 })];
+    const llm = new FakeLLMClient({
+      responses: [
+        closureLoopResponse([
+          { ...classified(supplied[0]!, "substantive"), act: "not_a_known_closure_act" },
+        ]),
+      ],
+    });
+    const classifier = new ClosureLoopClassifier({
+      llmClient: llm,
+      model: "test-recall",
+      tracer,
+      turnId: "turn-closure-unknown-label",
+    });
+
+    const result = await classifier.classify({
+      messages: supplied,
+    });
+    const normalized = tracer.records.find(
+      (record) => record.event === "closure_loop_classifier_payload_normalized",
+    );
+
+    expect(result.messages).toEqual([classified(supplied[0]!, "substantive")]);
+    expect(normalized?.normalizations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: "act",
+          action: "invalid_or_missing_defaulted",
+          to: "substantive",
+        }),
+      ]),
+    );
+  });
+
+  it("emits raw classifier output shape without full payloads on normalization", async () => {
+    const tracer = new TestTracer(false);
+    const supplied = [
+      message({ role: "assistant", content: "Talk soon.", ts: 1 }),
+      message({ role: "user", content: "phone down", ts: 2 }),
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        closureLoopResponse(
+          [
+            {
+              ...classified(supplied[0]!, "substantive"),
+              act: "assistant_farewell",
+              extra_message_field: "ignored",
+            },
+            classified(supplied[1]!, "signoff"),
+          ],
+          { extra_payload_field: true },
+        ),
+      ],
+    });
+    const classifier = new ClosureLoopClassifier({
+      llmClient: llm,
+      model: "test-recall",
+      tracer,
+      turnId: "turn-closure-shape",
+    });
+
+    await classifier.classify({
+      messages: supplied,
+    });
+    const normalized = tracer.records.find(
+      (record) => record.event === "closure_loop_classifier_payload_normalized",
+    );
+
+    expect(normalized?.rawToolInput).toBeUndefined();
+    expect(normalized?.rawToolInputShape).toMatchObject({
+      type: "object",
+      fields: expect.arrayContaining([
+        expect.objectContaining({ name: "messages", type: "array" }),
+        expect.objectContaining({ name: "confidence", type: "number" }),
+        expect.objectContaining({ name: "rationale", type: "string" }),
+        expect.objectContaining({ name: "extra_payload_field", type: "boolean" }),
+      ]),
+    });
+    expect(normalized?.normalizations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "extra_fields_ignored" }),
+        expect.objectContaining({ action: "message_extra_fields_ignored" }),
+        expect.objectContaining({ action: "alias_mapped", to: "assistant_valediction" }),
       ]),
     );
   });
