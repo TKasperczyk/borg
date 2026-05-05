@@ -85,7 +85,7 @@ const TURN_METRICS_KEY_ORDER = [
   "frame_anomaly_degraded_fallback_match_count",
   "quarantined_user_entry_count",
   "early_extractors_skipped_frame_anomaly_count",
-  "overseer_ran_on_suppressed_turn",
+  "overseer_due_on_suppressed_turn",
 ] as const;
 
 class SameVectorEmbeddingClient implements EmbeddingClient {

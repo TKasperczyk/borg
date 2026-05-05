@@ -52,7 +52,9 @@ export type MetricsRow = {
   frame_anomaly_degraded_fallback_match_count: number;
   quarantined_user_entry_count: number;
   early_extractors_skipped_frame_anomaly_count: number;
-  overseer_ran_on_suppressed_turn: boolean;
+  // True when a checkpoint was scheduled on a suppressed turn; an actual run
+  // is represented by that turn's overseer verdict.
+  overseer_due_on_suppressed_turn: boolean;
 };
 
 export type OverseerVerdict = {

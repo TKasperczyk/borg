@@ -9,7 +9,7 @@ import {
 } from "../../llm/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import {
   type FrameAnomalyClassification,
   type FrameAnomalyKind,
@@ -391,6 +391,9 @@ function traceFrameAnomalyClassified(options: {
       ...normalization,
     })),
     ...(options.rawToolInput !== undefined
+      ? { rawToolInputShape: summarizeTraceValueShape(options.rawToolInput) }
+      : {}),
+    ...(options.rawToolInput !== undefined && options.tracer.includePayloads
       ? { rawToolInput: toTraceJsonValue(options.rawToolInput) }
       : {}),
   } satisfies Record<string, JsonValue | undefined> & { turnId: string };

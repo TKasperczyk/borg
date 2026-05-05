@@ -10,7 +10,7 @@ import {
 import type { StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 
 export const CLOSURE_LOOP_DIALOGUE_ACTS = [
   "substantive",
@@ -28,12 +28,25 @@ export const CLOSURE_LOOP_CLASSIFIER_TOOL_NAME = "ClassifyClosureLoopDialogueAct
 const CLOSURE_LOOP_RATIONALE_MAX_CHARS = 2_000;
 const CLOSURE_LOOP_CLASSIFICATION_FIELDS = ["messages", "confidence", "rationale"] as const;
 const CLOSURE_LOOP_MESSAGE_FIELDS = ["message_ref", "role", "act"] as const;
+const closureLoopDialogueActSchema = z.enum(CLOSURE_LOOP_DIALOGUE_ACTS);
+const CLOSURE_LOOP_DIALOGUE_ACT_ALIASES: Readonly<Record<string, ClosureLoopDialogueAct>> = {
+  user_signoff: "signoff",
+  user_closure: "signoff",
+  assistant_signoff: "assistant_imperative_closer",
+  assistant_closer: "assistant_imperative_closer",
+  assistant_goodnight: "assistant_valediction",
+  assistant_farewell: "assistant_valediction",
+  acknowledgment: "minimal_acknowledgment",
+  closure_objection: "meta_objection_to_closure",
+  restart: "reopening_after_signoff",
+  restart_after_signoff: "reopening_after_signoff",
+};
 
 const closureLoopClassifiedMessageSchema = z
   .object({
     message_ref: z.string().min(1),
     role: z.enum(["user", "assistant"]),
-    act: z.enum(CLOSURE_LOOP_DIALOGUE_ACTS),
+    act: closureLoopDialogueActSchema,
   })
   .passthrough();
 
@@ -204,6 +217,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function normalizeMachineLabel(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 function normalizeClosureLoopConfidence(
   value: unknown,
   normalizations: ClosureLoopPayloadNormalization[],
@@ -291,7 +308,40 @@ function normalizeClosureLoopAct(
   messageRef: string,
   normalizations: ClosureLoopPayloadNormalization[],
 ): ClosureLoopDialogueAct {
-  const parsed = z.enum(CLOSURE_LOOP_DIALOGUE_ACTS).safeParse(value);
+  if (typeof value !== "string") {
+    normalizations.push({
+      field: "act",
+      messageRef,
+      action: "invalid_or_missing_defaulted",
+      from: toTraceJsonValue(value),
+      to: "substantive",
+    });
+    return "substantive";
+  }
+
+  const normalized = normalizeMachineLabel(value);
+  const alias = CLOSURE_LOOP_DIALOGUE_ACT_ALIASES[normalized];
+  const candidate = alias ?? normalized;
+
+  if (alias !== undefined) {
+    normalizations.push({
+      field: "act",
+      messageRef,
+      action: "alias_mapped",
+      from: value,
+      to: alias,
+    });
+  } else if (candidate !== value) {
+    normalizations.push({
+      field: "act",
+      messageRef,
+      action: "machine_label_normalized",
+      from: value,
+      to: candidate,
+    });
+  }
+
+  const parsed = closureLoopDialogueActSchema.safeParse(candidate);
 
   if (parsed.success) {
     return parsed.data;
@@ -465,6 +515,7 @@ function traceClosureLoopPayloadNormalized(options: {
   options.tracer.emit("closure_loop_classifier_payload_normalized", {
     turnId: options.turnId,
     normalizations: options.normalizations.map((normalization) => ({ ...normalization })),
+    rawToolInputShape: summarizeTraceValueShape(options.rawToolInput),
     ...(options.tracer.includePayloads
       ? { rawToolInput: toTraceJsonValue(options.rawToolInput) }
       : {}),

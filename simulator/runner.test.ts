@@ -477,7 +477,7 @@ describe("SimulatorRunner", () => {
         (line) =>
           JSON.parse(line) as {
             turn_counter: number;
-            overseer_ran_on_suppressed_turn: boolean;
+            overseer_due_on_suppressed_turn: boolean;
           },
       );
 
@@ -485,7 +485,57 @@ describe("SimulatorRunner", () => {
     expect(overseerTurns).toEqual([1]);
     expect(metricsRow).toMatchObject({
       turn_counter: 1,
-      overseer_ran_on_suppressed_turn: true,
+      overseer_due_on_suppressed_turn: true,
+    });
+  });
+
+  it("records checkpoint due on suppressed turns even if the overseer throws", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const persona = fakePersonaSession(["checkpoint suppression"]);
+    mockTransportLifecycle();
+    spyMaintenanceTick();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) =>
+      chatResult({
+        response: "",
+        emitted: false,
+        turnId: "turn-suppressed-overseer-error",
+        sessionId: options.sessionId as SessionId,
+        suppressionReason: "commitment_revision_failed",
+      }),
+    );
+
+    await expect(
+      runSimulation({
+        runId: "sim-runner-suppressed-overseer-error-test",
+        persona: tomPersona,
+        personaSession: persona.session,
+        totalTurns: 1,
+        checkEvery: 1,
+        metricsPath,
+        dataDir: join(dir, "data"),
+        tracePath: join(dir, "trace.jsonl"),
+        mock: true,
+        overseerRunner: async () => {
+          throw new Error("overseer failed");
+        },
+      }),
+    ).rejects.toThrow("overseer failed");
+
+    const [metricsRow] = readFileSync(metricsPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            turn_counter: number;
+            overseer_due_on_suppressed_turn: boolean;
+          },
+      );
+
+    expect(metricsRow).toMatchObject({
+      turn_counter: 1,
+      overseer_due_on_suppressed_turn: true,
     });
   });
 

@@ -445,7 +445,7 @@ export class SimulatorRunner {
           sessionId: currentSessionId,
           sessionIds,
           transportChatAttempts: success.transportChatAttempts,
-          overseerRanOnSuppressedTurn: !success.emitted && overseerDue,
+          overseerDueOnSuppressedTurn: !success.emitted && overseerDue,
         });
 
         let heavyMaintenanceRan = false;
