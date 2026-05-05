@@ -30,6 +30,7 @@ import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ToolLoopCallRecord } from "../action/index.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
+import type { FrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { PendingTurnEmission } from "../generation/types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
 import type { RecencyMessage } from "../recency/index.js";
@@ -112,6 +113,7 @@ export type DeliberationContext = {
    * the being's visibility into its own just-completed turns.
    */
   recencyMessages?: readonly RecencyMessage[];
+  frameAnomaly?: FrameAnomalyClassification | null;
   options?: {
     stakes?: TurnStakes;
     maxThinkingTokens?: number;

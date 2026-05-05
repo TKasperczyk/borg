@@ -2193,7 +2193,8 @@ describe("Borg", () => {
         (request) =>
           request.budget !== "corrective-preference-extractor" &&
           request.budget !== "action-state-extractor" &&
-          request.budget !== "goal-promotion-extractor",
+          request.budget !== "goal-promotion-extractor" &&
+          request.budget !== "frame-anomaly-classifier",
       );
       expect(
         llm.requests.some((request) => request.budget === "corrective-preference-extractor"),
@@ -2202,6 +2203,9 @@ describe("Borg", () => {
         true,
       );
       expect(llm.requests.some((request) => request.budget === "goal-promotion-extractor")).toBe(
+        true,
+      );
+      expect(llm.requests.some((request) => request.budget === "frame-anomaly-classifier")).toBe(
         true,
       );
       expect(nonCorrectiveRequests.map((request) => request.model)).toEqual([

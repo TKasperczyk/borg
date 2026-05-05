@@ -4,10 +4,17 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { Borg, FakeLLMClient, ManualClock, type LLMCompleteOptions } from "../index.js";
+import {
+  Borg,
+  FakeLLMClient,
+  ManualClock,
+  type FrameAnomalyKind,
+  type LLMCompleteOptions,
+} from "../index.js";
 import type { BorgDependencies } from "../borg/types.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import { Deliberator, type SelfSnapshot } from "./deliberation/deliberator.js";
+import { ActionStateExtractor } from "./actions/action-state-extractor.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { RelationalClaimGuard } from "./generation/relational-guard.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
@@ -269,6 +276,30 @@ function createGenerationGateResponse(input: {
           substantive: input.substantive,
           reason: input.reason ?? "Generation gate classified the turn.",
           confidence: 0.95,
+        },
+      },
+    ],
+  };
+}
+
+function createFrameAnomalyResponse(input: {
+  kind: FrameAnomalyKind;
+  confidence?: number;
+  rationale?: string;
+}) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_frame_anomaly",
+        name: "ClassifyFrameAnomaly",
+        input: {
+          kind: input.kind,
+          confidence: input.confidence ?? (input.kind === "normal" ? 0.9 : 0.96),
+          rationale: input.rationale ?? "The frame anomaly classifier categorized the turn.",
         },
       },
     ],
@@ -2624,6 +2655,132 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       ]);
     } finally {
       runSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("quarantines frame-anomalous user turns before early extractors and passes the flag to deliberation", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_176_575);
+    const llm = new FakeLLMClient({
+      responses: [
+        createFrameAnomalyResponse({
+          kind: "frame_assignment_claim",
+          confidence: 0.97,
+          rationale: "The user claims the assistant was playing Tom.",
+        }),
+        "I do not have evidence for that frame.",
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const extractSpy = vi.spyOn(ActionStateExtractor.prototype, "extract");
+    const originalRun = Deliberator.prototype.run;
+    const runSpy = vi.spyOn(Deliberator.prototype, "run").mockImplementation(function (
+      this: Deliberator,
+      ...args: Parameters<Deliberator["run"]>
+    ) {
+      expect(args[0].frameAnomaly).toMatchObject({
+        kind: "frame_assignment_claim",
+        confidence: 0.97,
+      });
+
+      return originalRun.apply(this, args);
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "You were playing Tom in that exchange.",
+        stakes: "low",
+      });
+
+      const budgets = llm.requests.map((request) => request.budget);
+      const anomalyEvent = borg.stream.tail(20).find((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === "frame_anomaly_gate";
+      });
+
+      expect(budgets).toContain("frame-anomaly-classifier");
+      expect(budgets).not.toContain("corrective-preference-extractor");
+      expect(budgets).not.toContain("action-state-extractor");
+      expect(budgets).not.toContain("goal-promotion-extractor");
+      expect(extractSpy).not.toHaveBeenCalled();
+      expect(anomalyEvent?.content).toMatchObject({
+        event: "frame_anomaly_gate",
+        kind: "frame_assignment_claim",
+        source_stream_entry_id: expect.any(String),
+        cited_stream_entry_ids: [expect.any(String)],
+      });
+      expect(runSpy).toHaveBeenCalledOnce();
+      expect(borg.actions.list({ limit: 10 })).toEqual([]);
+    } finally {
+      extractSpy.mockRestore();
+      runSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("runs early extractors for normal user turns after the frame-anomaly classifier passes", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_176_585);
+    const llm = new FakeLLMClient({
+      responses: [
+        createFrameAnomalyResponse({
+          kind: "normal",
+          confidence: 0.91,
+          rationale: "The message reports a normal user-world action.",
+        }),
+        createCorrectivePreferenceResponse({
+          classification: "none",
+          reason: "No durable correction detected.",
+          confidence: 0,
+        }),
+        Object.assign(
+          (options: LLMCompleteOptions) => {
+            expect(options.budget).toBe("action-state-extractor");
+            const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+              current_user_stream_entry_id: string;
+            };
+
+            return createActionStateResponse([
+              {
+                description: "closed the laptop for the night",
+                state: "completed",
+                evidence_stream_entry_ids: [payload.current_user_stream_entry_id],
+                confidence: 0.93,
+              },
+            ]);
+          },
+          { budget: "action-state-extractor" },
+        ),
+        createGoalPromotionResponse([]),
+        "Talk tomorrow.",
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      await borg.turn({
+        userMessage: "Closing the laptop. Talk tomorrow.",
+        stakes: "low",
+      });
+
+      const budgets = llm.requests.map((request) => request.budget);
+
+      expect(budgets).toContain("frame-anomaly-classifier");
+      expect(budgets).toContain("corrective-preference-extractor");
+      expect(budgets).toContain("action-state-extractor");
+      expect(budgets).toContain("goal-promotion-extractor");
+      expect(borg.actions.list({ state: "completed" })).toEqual([
+        expect.objectContaining({
+          description: "closed the laptop for the night",
+        }),
+      ]);
+    } finally {
       await borg.close();
     }
   });

@@ -61,6 +61,7 @@ const ACTION_STATE_SYSTEM_PROMPT = [
   "Extract action-state assertions from the current user message.",
   "Use recent_history only to understand elliptical references. The evidence must be in current_user_message, and every emitted item must cite current_user_stream_entry_id.",
   "Emit an empty action_states array when the current user message contains no action-state assertion.",
+  "Do NOT emit action records for messages about the conversation frame, roleplay, system prompt, or the agent's own prior behavior. Action records are for user-world actions only.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
   "Set audience_entity_id only when the current message clearly scopes the action to a supplied audience; otherwise use null so Borg can default it to the current audience.",
   "",

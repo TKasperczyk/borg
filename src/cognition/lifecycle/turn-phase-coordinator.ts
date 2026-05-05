@@ -14,9 +14,15 @@ import type { TurnDiscourseStateService } from "../generation/turn-discourse-sta
 import type { PendingTurnEmission, TurnEmission } from "../generation/types.js";
 import { GenerationGate } from "../generation/generation-gate.js";
 import { StopCommitmentExtractor } from "../generation/self-stop-commitment.js";
+import {
+  FrameAnomalyClassifier,
+  isFrameAnomaly,
+  type FrameAnomalyClassification,
+} from "../frame-anomaly/index.js";
 import type { TurnGoalPromotionService } from "../goals/turn-goal-promotion-service.js";
 import type { PerceptionGateway } from "../perception/gateway.js";
 import type { TurnOpeningPersistence } from "../persistence/turn-opening.js";
+import type { RecencyMessage } from "../recency/index.js";
 import type { TurnReflectionCoordinator } from "../reflection/turn-reflection-coordinator.js";
 import type { TurnRetrievalCoordinator } from "../retrieval/turn-coordinator.js";
 import type { TurnSelfContextBuilder } from "../self/turn-self-context.js";
@@ -33,7 +39,7 @@ import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/ind
 import type { StreamEntry, StreamWriter } from "../../stream/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
 import type { Clock } from "../../util/clock.js";
-import type { SessionId } from "../../util/ids.js";
+import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { StreamIngestionCoordinator } from "../ingestion/index.js";
 import type { TurnRelationalGuardRunner } from "../generation/turn-relational-guard.js";
 import type { TurnLifecycleTracker } from "./turn-lifecycle-tracker.js";
@@ -182,19 +188,37 @@ export class TurnPhaseCoordinator {
     const persistedPerceptionEntry = openingPersistence.persistedPerceptionEntry;
     workingMemory = openingPersistence.workingMemory;
 
+    const frameAnomalyClassification = await this.classifyFrameAnomaly({
+      llmClient,
+      turnId,
+      isUserTurn,
+      userMessage: turnInput.userMessage,
+      recentHistory: recencyWindow.messages,
+      persistedUserEntryId,
+      streamWriter,
+    });
+    const currentTurnFrameAnomaly = isFrameAnomaly(frameAnomalyClassification)
+      ? frameAnomalyClassification
+      : null;
+
     const correctivePreferenceTurn =
-      await this.options.correctivePreferenceTurnService.extractAndApply({
-        llmClient,
-        turnId,
-        userMessage: turnInput.userMessage,
-        persistedUserEntryId,
-        recentHistory: recencyWindow.messages,
-        audienceEntityId,
-        sessionId,
-        onHookFailure: (hook, error, details) =>
-          this.appendHookFailureEvent(streamWriter, hook, error, details),
-        trackAppliedSlotNegation: (slot) => lifecycleTracker.trackAppliedSlotNegation(slot),
-      });
+      currentTurnFrameAnomaly === null
+        ? await this.options.correctivePreferenceTurnService.extractAndApply({
+            llmClient,
+            turnId,
+            userMessage: turnInput.userMessage,
+            persistedUserEntryId,
+            recentHistory: recencyWindow.messages,
+            audienceEntityId,
+            sessionId,
+            onHookFailure: (hook, error, details) =>
+              this.appendHookFailureEvent(streamWriter, hook, error, details),
+            trackAppliedSlotNegation: (slot) => lifecycleTracker.trackAppliedSlotNegation(slot),
+          })
+        : {
+            commitment: null,
+            workingMemory,
+          };
     const correctiveCommitment = correctivePreferenceTurn.commitment;
     workingMemory = correctivePreferenceTurn.workingMemory;
     const createdActionIds = await this.options.turnActionStateService.extract({
@@ -205,24 +229,31 @@ export class TurnPhaseCoordinator {
       persistedUserEntryId,
       recentHistory: recencyWindow.messages,
       audienceEntityId,
+      frameAnomaly: frameAnomalyClassification,
     });
     lifecycleTracker.trackCreatedActionIds(createdActionIds);
     const activeGoalsForPromotion = isUserTurn
       ? await this.options.selfContextBuilder.listActiveGoalsVisibleToAudience(audienceEntityId)
       : [];
-    const persistedPromotions = await this.options.turnGoalPromotionService.extractAndPersist({
-      llmClient,
-      turnId,
-      isUserTurn,
-      userMessage: turnInput.userMessage,
-      recentHistory: recencyWindow.messages,
-      audienceEntityId,
-      temporalCue: perception.temporalCue,
-      activeGoals: activeGoalsForPromotion,
-      persistedUserEntryId,
-      onHookFailure: (hook, error, details) =>
-        this.appendHookFailureEvent(streamWriter, hook, error, details),
-    });
+    const persistedPromotions =
+      currentTurnFrameAnomaly === null
+        ? await this.options.turnGoalPromotionService.extractAndPersist({
+            llmClient,
+            turnId,
+            isUserTurn,
+            userMessage: turnInput.userMessage,
+            recentHistory: recencyWindow.messages,
+            audienceEntityId,
+            temporalCue: perception.temporalCue,
+            activeGoals: activeGoalsForPromotion,
+            persistedUserEntryId,
+            onHookFailure: (hook, error, details) =>
+              this.appendHookFailureEvent(streamWriter, hook, error, details),
+          })
+        : {
+            goalIds: [],
+            executiveStepIds: [],
+          };
     lifecycleTracker.trackCreatedGoalIds(persistedPromotions.goalIds);
     lifecycleTracker.trackCreatedExecutiveStepIds(persistedPromotions.executiveStepIds);
 
@@ -362,6 +393,7 @@ export class TurnPhaseCoordinator {
         executiveFocus: executiveFocusWithStep,
         audienceProfile,
         recencyMessages: recencyWindow.messages,
+        frameAnomaly: currentTurnFrameAnomaly,
         options: {
           stakes: turnInput.stakes,
         },
@@ -513,6 +545,82 @@ export class TurnPhaseCoordinator {
       toolCalls: [...actionResult.tool_calls],
       agentMessageId: persistedAgentEntry.id,
     };
+  }
+
+  private async classifyFrameAnomaly(input: {
+    llmClient: LLMClient;
+    turnId: string;
+    isUserTurn: boolean;
+    userMessage: string;
+    recentHistory: readonly RecencyMessage[];
+    persistedUserEntryId?: StreamEntryId;
+    streamWriter: StreamWriter;
+  }): Promise<FrameAnomalyClassification | null> {
+    if (!input.isUserTurn || input.persistedUserEntryId === undefined) {
+      return null;
+    }
+
+    const classifier = new FrameAnomalyClassifier({
+      llmClient: input.llmClient,
+      model: this.options.config.anthropic.models.recallExpansion,
+      tracer: this.options.tracer,
+      turnId: input.turnId,
+      onDegraded: (reason, error) => {
+        if (!this.options.tracer.enabled) {
+          return;
+        }
+
+        this.options.tracer.emit("frame_anomaly_classifier_degraded", {
+          turnId: input.turnId,
+          reason,
+          ...(this.options.tracer.includePayloads && error !== undefined
+            ? { error: error instanceof Error ? error.message : String(error) }
+            : {}),
+        });
+      },
+    });
+    const classification = await classifier.classify({
+      userMessage: input.userMessage,
+      recentHistory: input.recentHistory,
+    });
+
+    if (isFrameAnomaly(classification)) {
+      await this.appendFrameAnomalyEvent({
+        streamWriter: input.streamWriter,
+        turnId: input.turnId,
+        persistedUserEntryId: input.persistedUserEntryId,
+        classification,
+      });
+    }
+
+    return classification;
+  }
+
+  private async appendFrameAnomalyEvent(input: {
+    streamWriter: StreamWriter;
+    turnId: string;
+    persistedUserEntryId: StreamEntryId;
+    classification: FrameAnomalyClassification;
+  }): Promise<void> {
+    try {
+      await input.streamWriter.append({
+        kind: "internal_event",
+        turn_id: input.turnId,
+        content: {
+          event: "frame_anomaly_gate",
+          turn_id: input.turnId,
+          source_stream_entry_id: input.persistedUserEntryId,
+          cited_stream_entry_ids: [input.persistedUserEntryId],
+          kind: input.classification.kind,
+          confidence: input.classification.confidence,
+          rationale: input.classification.rationale,
+        },
+      });
+    } catch (error) {
+      await this.appendHookFailureEvent(input.streamWriter, "frame_anomaly_gate_event", error, {
+        turnId: input.turnId,
+      });
+    }
   }
 
   private async suppressFromGenerationGate(input: {

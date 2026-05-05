@@ -32,6 +32,7 @@ export type TurnTraceEventName =
   | "commitment_extractor_degraded"
   | "action_state_extractor_degraded"
   | "goal_promotion_extractor_degraded"
+  | "frame_anomaly_classifier_degraded"
   | "open_question_resolution_degraded"
   | "commitment_check"
   | "relational_claim_guard"
