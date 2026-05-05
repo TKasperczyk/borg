@@ -4,9 +4,12 @@ import { BorgTransport } from "../assessor/borg-transport.js";
 import { latestTurnId, readTraceEvents } from "../assessor/trace-reader.js";
 import type { Scenario } from "../assessor/types.js";
 import {
+  AnthropicLLMClient,
   createSessionId,
+  DEFAULT_CONFIG,
   type GenerationSuppressionReason,
   type BorgOpenOptions,
+  type LLMClient,
   type MaintenanceCadence,
   type ReviewQueueItem,
   type SessionId,
@@ -15,9 +18,10 @@ import {
 import { MetricsCapture } from "./metrics.js";
 import { appendJsonlLine } from "./jsonl.js";
 import {
-  detectPersonaRoleBleed,
+  classifyPersonaRoleBleed,
   PersonaSession,
   type PersonaTurnDraft,
+  type PersonaRoleBleedDetection,
   type PriorBorgTurn,
 } from "./persona.js";
 import { runOverseer, type RunOverseerOptions } from "./overseer.js";
@@ -56,6 +60,7 @@ export type SimulatorRunnerOptions = {
   tracePath?: string;
   llmClient?: BorgOpenOptions["llmClient"];
   embeddingClient?: BorgOpenOptions["embeddingClient"];
+  personaRoleBleedLlmClient?: LLMClient;
   personaSession?: PersonaSession;
   overseerRunner?: (options: RunOverseerOptions) => Promise<OverseerVerdict>;
 };
@@ -110,7 +115,7 @@ function recordPersonaRoleBleed(input: {
   turn: number;
   sessionId: SessionId;
   priorTurn: PriorBorgTurn;
-  patterns: readonly string[];
+  detection: PersonaRoleBleedDetection;
   rejectedMessage: string;
   attempt: number;
   action: "regenerated" | "aborted";
@@ -126,7 +131,11 @@ function recordPersonaRoleBleed(input: {
       turn_counter: input.turn,
       sessionId: input.sessionId,
       prior_kind: input.priorTurn.kind,
-      matched_patterns: input.patterns,
+      matched_patterns: input.detection.matched,
+      category: input.detection.category,
+      confidence: input.detection.confidence,
+      classifier_source: input.detection.source,
+      rationale: input.detection.rationale,
       rejected_preview: rejectedPreview(input.rejectedMessage),
       attempt: input.attempt,
       action: input.action,
@@ -248,6 +257,9 @@ export class SimulatorRunner {
         mock: this.options.mock,
         env: this.options.env,
       });
+    const personaRoleBleedLlmClient =
+      this.options.personaRoleBleedLlmClient ??
+      (this.options.mock === true ? undefined : new AnthropicLLMClient({ env: this.options.env }));
     const overseerRunner = this.options.overseerRunner ?? runOverseer;
     const overseerCheckpoints: SimulatorRunReport["overseerCheckpoints"] = [];
     let priorBorgTurn: PriorBorgTurn = { kind: "new_session" };
@@ -319,9 +331,14 @@ export class SimulatorRunner {
           bleedAttempt <= PERSONA_ROLE_BLEED_MAX_ATTEMPTS;
           bleedAttempt += 1
         ) {
-          const bleedDetection = detectPersonaRoleBleed(draft.message);
+          const bleedDetection = await classifyPersonaRoleBleed({
+            message: draft.message,
+            llmClient: personaRoleBleedLlmClient,
+            model: DEFAULT_CONFIG.anthropic.models.recallExpansion,
+            personaName: this.options.persona.displayName,
+          });
 
-          if (bleedDetection.matched.length === 0) {
+          if (!bleedDetection.flagged) {
             break;
           }
 
@@ -331,7 +348,7 @@ export class SimulatorRunner {
             turn,
             sessionId: currentSessionId,
             priorTurn: priorBorgTurn,
-            patterns: bleedDetection.matched,
+            detection: bleedDetection,
             rejectedMessage: draft.message,
             attempt: bleedAttempt,
             action: finalBleedAttempt ? "aborted" : "regenerated",
@@ -339,7 +356,11 @@ export class SimulatorRunner {
           persona.rollback(draft);
 
           if (finalBleedAttempt) {
-            const detail = `${PERSONA_ROLE_BLEED_EVENT}: ${bleedDetection.matched.join(", ")}`;
+            const detail = `${PERSONA_ROLE_BLEED_EVENT}: ${
+              bleedDetection.matched.length > 0
+                ? bleedDetection.matched.join(", ")
+                : bleedDetection.category
+            }`;
             turnFailures.push({ turn, error: detail, attempts: 0 });
             await metrics.captureAborted(transport.getBorg(), turn, {
               sessionId: currentSessionId,

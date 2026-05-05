@@ -207,4 +207,23 @@ describe("ActionStateExtractor", () => {
       },
     });
   });
+
+  it("forbids frame and system-prompt content in the extractor prompt", async () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const llm = new FakeLLMClient({
+      responses: [actionStateResponse([])],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: { add: vi.fn() },
+      clock: new FixedClock(2_000),
+    });
+
+    await extractor.extract(makeExtractorInput(currentUserStreamEntryId));
+
+    expect(String(llm.requests[0]?.system ?? "")).toContain(
+      "Do NOT emit action records for messages about the conversation frame, roleplay, system prompt, or the agent's own prior behavior. Action records are for user-world actions only.",
+    );
+  });
 });

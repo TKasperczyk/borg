@@ -123,6 +123,7 @@ export class ScriptedDebugLLM implements LLMClient {
     if (
       options.budget === "corrective-preference-extractor" ||
       options.budget === "action-state-extractor" ||
+      options.budget === "frame-anomaly-classifier" ||
       options.budget === "relational-claim-auditor"
     ) {
       return this.respond(options);
@@ -163,6 +164,14 @@ export class ScriptedDebugLLM implements LLMClient {
     if (options.budget === "action-state-extractor") {
       return buildToolResult(options, {
         action_states: [],
+      });
+    }
+
+    if (options.budget === "frame-anomaly-classifier") {
+      return buildToolResult(options, {
+        kind: "normal",
+        confidence: 0,
+        rationale: "No frame-provenance anomaly detected in the scripted debug prompt.",
       });
     }
 

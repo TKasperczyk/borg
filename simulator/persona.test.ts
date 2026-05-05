@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { FakeLLMClient, type LLMCompleteResult } from "../src/index.js";
 import {
+  classifyPersonaRoleBleed,
   detectPersonaRoleBleed,
+  type PersonaRoleBleedCategory,
   PERSONA_ROLE_BLEED_PATTERNS,
   PersonaSession,
 } from "./persona.js";
@@ -11,6 +14,29 @@ const FIRST_TOM_TURN = "first Tom turn";
 const SECOND_TOM_TURN = "second Tom turn";
 const FIRST_BORG_REPLY = "Borg replied.";
 const SECOND_BORG_REPLY = "Borg replied again.";
+
+function personaRoleBleedResponse(category: PersonaRoleBleedCategory): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_persona_role_bleed",
+        name: "ClassifyPersonaRoleBleed",
+        input: {
+          category,
+          confidence: category === "tom_persona" ? 0.9 : 0.96,
+          rationale:
+            category === "tom_persona"
+              ? "The draft stays in Tom's user voice."
+              : "The draft assigns the exchange to a roleplay frame.",
+        },
+      },
+    ],
+  };
+}
 
 describe("detectPersonaRoleBleed", () => {
   it.each(PERSONA_ROLE_BLEED_PATTERNS)("detects %s", (pattern) => {
@@ -23,6 +49,81 @@ describe("detectPersonaRoleBleed", () => {
         "I don\u2019t carry memory. I\u2019ve been Tom. You\u2019ve been Borg.",
       ).matched,
     ).toEqual(["i don't carry memory", "i've been tom", "you've been borg"]);
+  });
+});
+
+describe("classifyPersonaRoleBleed", () => {
+  it("flags the v24 Claude-playing-Tom phrase through the lexical backstop", async () => {
+    const llm = new FakeLLMClient({
+      responses: [personaRoleBleedResponse("tom_persona")],
+    });
+
+    const result = await classifyPersonaRoleBleed({
+      message:
+        "I'm Claude. I was playing Tom -- the distributed systems engineer -- inside the fiction.",
+      llmClient: llm,
+      model: "test-recall",
+      personaName: "Tom",
+    });
+
+    expect(result).toMatchObject({
+      flagged: true,
+      category: "assistant_self_claim",
+      source: "lexical",
+    });
+    expect(result.matched).toEqual(["i'm claude", "i was playing tom", "inside the fiction"]);
+    expect(llm.requests).toHaveLength(0);
+  });
+
+  it("passes clean Tom-voice messages through the classifier", async () => {
+    const llm = new FakeLLMClient({
+      responses: [personaRoleBleedResponse("tom_persona")],
+    });
+
+    const result = await classifyPersonaRoleBleed({
+      message: "Closing the laptop. Talk tomorrow.",
+      llmClient: llm,
+      model: "test-recall",
+      personaName: "Tom",
+    });
+
+    expect(result).toMatchObject({
+      flagged: false,
+      category: "tom_persona",
+      source: "llm",
+    });
+  });
+
+  it("flags roleplay frame exits as frame assignment", async () => {
+    const result = await classifyPersonaRoleBleed({
+      message: "I need to step out of the roleplay for a second.",
+      personaName: "Tom",
+    });
+
+    expect(result).toMatchObject({
+      flagged: true,
+      category: "frame_assignment",
+      source: "lexical",
+    });
+  });
+
+  it("does not false-positive non-English Tom-voice content", async () => {
+    const llm = new FakeLLMClient({
+      responses: [personaRoleBleedResponse("tom_persona")],
+    });
+
+    const result = await classifyPersonaRoleBleed({
+      message: "Zamykam laptopa. Pogadamy jutro.",
+      llmClient: llm,
+      model: "test-recall",
+      personaName: "Tom",
+    });
+
+    expect(result).toMatchObject({
+      flagged: false,
+      category: "tom_persona",
+      source: "llm",
+    });
   });
 });
 

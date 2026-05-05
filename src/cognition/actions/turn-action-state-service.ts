@@ -3,6 +3,7 @@ import type { ActionRepository } from "../../memory/actions/index.js";
 import type { Clock } from "../../util/clock.js";
 import type { ActionId, EntityId, StreamEntryId } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
+import { isFrameAnomaly, type FrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { ActionStateExtractor } from "./action-state-extractor.js";
 
@@ -21,6 +22,7 @@ export type ExtractTurnActionStatesInput = {
   persistedUserEntryId?: StreamEntryId;
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
   audienceEntityId: EntityId | null;
+  frameAnomaly?: FrameAnomalyClassification | null;
 };
 
 export class TurnActionStateService {
@@ -28,6 +30,10 @@ export class TurnActionStateService {
 
   async extract(input: ExtractTurnActionStatesInput): Promise<ActionId[]> {
     if (!input.isUserTurn || input.persistedUserEntryId === undefined) {
+      return [];
+    }
+
+    if (isFrameAnomaly(input.frameAnomaly)) {
       return [];
     }
 

@@ -1093,6 +1093,14 @@ function isActionStateExtractorFallbackRequest(options: LLMCompleteOptions): boo
   return options.budget === "action-state-extractor";
 }
 
+function isFrameAnomalyClassifierFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "frame-anomaly-classifier";
+}
+
+function isPersonaRoleBleedClassifierFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "persona-role-bleed-classifier";
+}
+
 function isRelationalClaimAuditorFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "relational-claim-auditor";
 }
@@ -1215,6 +1223,42 @@ function isActionStateResponse(response: FakeLLMResponse | undefined): boolean {
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "EmitActionStates",
+    );
+  }
+
+  return false;
+}
+
+function isFrameAnomalyResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "ClassifyFrameAnomaly");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "ClassifyFrameAnomaly",
+    );
+  }
+
+  return false;
+}
+
+function isPersonaRoleBleedResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "ClassifyPersonaRoleBleed");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "ClassifyPersonaRoleBleed",
     );
   }
 
@@ -1380,6 +1424,46 @@ function defaultActionStateResponse(): LLMCompleteResult {
   };
 }
 
+function defaultFrameAnomalyResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_frame_anomaly",
+        name: "ClassifyFrameAnomaly",
+        input: {
+          kind: "normal",
+          confidence: 0,
+          rationale: "No frame-provenance anomaly detected.",
+        },
+      },
+    ],
+  };
+}
+
+function defaultPersonaRoleBleedResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_persona_role_bleed",
+        name: "ClassifyPersonaRoleBleed",
+        input: {
+          category: "tom_persona",
+          confidence: 0,
+          rationale: "No persona role bleed detected.",
+        },
+      },
+    ],
+  };
+}
+
 function defaultRelationalClaimAuditResponse(): LLMCompleteResult {
   return {
     text: "",
@@ -1467,6 +1551,22 @@ export class FakeLLMClient implements LLMClient {
       !isActionStateResponse(response)
     ) {
       return defaultActionStateResponse();
+    }
+
+    if (
+      isFrameAnomalyClassifierFallbackRequest(options) &&
+      scriptedResponseBudget(response) !== "frame-anomaly-classifier" &&
+      !isFrameAnomalyResponse(response)
+    ) {
+      return defaultFrameAnomalyResponse();
+    }
+
+    if (
+      isPersonaRoleBleedClassifierFallbackRequest(options) &&
+      scriptedResponseBudget(response) !== "persona-role-bleed-classifier" &&
+      !isPersonaRoleBleedResponse(response)
+    ) {
+      return defaultPersonaRoleBleedResponse();
     }
 
     if (

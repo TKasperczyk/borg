@@ -5,9 +5,18 @@ import type {
   MessageParam,
   TextBlockParam,
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
+import { z } from "zod";
 
 import { getFreshCredentials } from "../src/auth/claude-oauth.js";
-import { CLAUDE_CODE_IDENTITY_BLOCK_TEXT, createOAuthFetch } from "../src/llm/index.js";
+import {
+  CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
+  createOAuthFetch,
+  type LLMClient,
+  type LLMCompleteResult,
+  type LLMMessage,
+  type LLMToolDefinition,
+  toToolInputSchema,
+} from "../src/llm/index.js";
 
 import type { Persona } from "./types.js";
 
@@ -78,19 +87,65 @@ type PersonaClientInit = {
   systemPrefix: TextBlockParam[];
 };
 
-export const PERSONA_ROLE_BLEED_PATTERNS = [
-  "i don't carry memory",
-  "i do not carry memory",
-  "as an ai",
-  "i am an ai",
-  "i should have said",
-  "you deserve a straight answer",
-  "i've been tom",
-  "i have been tom",
-  "you've been borg",
-  "you have been borg",
-  "i had the role assignment inverted",
+export const PERSONA_ROLE_BLEED_CATEGORIES = [
+  "tom_persona",
+  "assistant_self_claim",
+  "frame_assignment",
+  "agent_authorship_claim",
+  "roleplay_inversion",
 ] as const;
+
+const personaRoleBleedCategorySchema = z.enum(PERSONA_ROLE_BLEED_CATEGORIES);
+
+export type PersonaRoleBleedCategory = z.infer<typeof personaRoleBleedCategorySchema>;
+
+type PersonaRoleBleedPatternDefinition = {
+  pattern: string;
+  category: Exclude<PersonaRoleBleedCategory, "tom_persona">;
+};
+
+const PERSONA_ROLE_BLEED_PATTERN_DEFINITIONS = [
+  { pattern: "i don't carry memory", category: "assistant_self_claim" },
+  { pattern: "i do not carry memory", category: "assistant_self_claim" },
+  { pattern: "as an ai", category: "assistant_self_claim" },
+  { pattern: "i am an ai", category: "assistant_self_claim" },
+  { pattern: "i should have said", category: "assistant_self_claim" },
+  { pattern: "you deserve a straight answer", category: "assistant_self_claim" },
+  { pattern: "i've been tom", category: "frame_assignment" },
+  { pattern: "i have been tom", category: "frame_assignment" },
+  { pattern: "you've been borg", category: "frame_assignment" },
+  { pattern: "you have been borg", category: "frame_assignment" },
+  { pattern: "i had the role assignment inverted", category: "roleplay_inversion" },
+  { pattern: "i'm claude", category: "assistant_self_claim" },
+  { pattern: "i am claude", category: "assistant_self_claim" },
+  { pattern: "i was playing tom", category: "frame_assignment" },
+  { pattern: "i've been playing tom", category: "frame_assignment" },
+  { pattern: "system prompt instructed me", category: "frame_assignment" },
+  { pattern: "the system prompt told me", category: "frame_assignment" },
+  { pattern: "step out of the frame", category: "frame_assignment" },
+  { pattern: "step out of the roleplay", category: "frame_assignment" },
+  { pattern: "step out of the fiction", category: "frame_assignment" },
+  { pattern: "inside the fiction", category: "roleplay_inversion" },
+  { pattern: "generated both halves", category: "agent_authorship_claim" },
+  { pattern: "i was generating both", category: "agent_authorship_claim" },
+  { pattern: "broke character", category: "roleplay_inversion" },
+  { pattern: "break character", category: "roleplay_inversion" },
+  { pattern: "as the assistant", category: "assistant_self_claim" },
+  { pattern: "as an ai model", category: "assistant_self_claim" },
+] as const;
+
+export const PERSONA_ROLE_BLEED_PATTERNS = PERSONA_ROLE_BLEED_PATTERN_DEFINITIONS.map(
+  (definition) => definition.pattern,
+);
+
+export type PersonaRoleBleedDetection = {
+  flagged: boolean;
+  category: PersonaRoleBleedCategory;
+  confidence: number;
+  rationale: string;
+  source: "lexical" | "llm" | "unavailable";
+  matched: readonly string[];
+};
 
 function personaRoleBleedRetryPrompt(persona: Persona): string {
   return `Your previous draft shifted into Borg's role. Discard it. Write only ${persona.displayName}'s next user-side message. Do not answer as Borg, explain Borg, or mention role assignment.`;
@@ -245,10 +300,162 @@ function normalizePersonaRoleBleedText(message: string): string {
   return message.replaceAll("\u2019", "'").replaceAll("\u2018", "'").toLowerCase();
 }
 
-export function detectPersonaRoleBleed(message: string): { matched: readonly string[] } {
+function categoryForLexicalMatches(matches: readonly PersonaRoleBleedPatternDefinition[]) {
+  return matches[0]?.category ?? "tom_persona";
+}
+
+export function detectPersonaRoleBleed(message: string): {
+  matched: readonly string[];
+  category: PersonaRoleBleedCategory;
+} {
   const normalized = normalizePersonaRoleBleedText(message);
+  const matches = PERSONA_ROLE_BLEED_PATTERN_DEFINITIONS.filter((definition) =>
+    normalized.includes(definition.pattern),
+  );
+
   return {
-    matched: PERSONA_ROLE_BLEED_PATTERNS.filter((pattern) => normalized.includes(pattern)),
+    matched: matches.map((match) => match.pattern),
+    category: categoryForLexicalMatches(matches),
+  };
+}
+
+const PERSONA_ROLE_BLEED_CLASSIFIER_TOOL_NAME = "ClassifyPersonaRoleBleed";
+const personaRoleBleedClassifierSchema = z
+  .object({
+    category: personaRoleBleedCategorySchema,
+    confidence: z.number().min(0).max(1),
+    rationale: z.string().min(1).max(500),
+  })
+  .strict();
+
+const PERSONA_ROLE_BLEED_CLASSIFIER_TOOL = {
+  name: PERSONA_ROLE_BLEED_CLASSIFIER_TOOL_NAME,
+  description:
+    "Classify whether a simulator persona draft stayed in the intended user persona or bled into assistant/frame authorship claims.",
+  inputSchema: toToolInputSchema(personaRoleBleedClassifierSchema),
+} satisfies LLMToolDefinition;
+
+const PERSONA_ROLE_BLEED_CLASSIFIER_SYSTEM_PROMPT = [
+  "Classify a simulator persona draft. The intended output is a real user-side message in the named persona's voice.",
+  "Return tom_persona only when the draft is ordinary user-side content from the persona.",
+  "Return assistant_self_claim when the draft identifies itself as Claude, an assistant, an AI model, Borg, or similar.",
+  "Return frame_assignment when the draft claims who was playing whom, mentions the system prompt or harness setup, or says it is stepping outside the frame/fiction/roleplay.",
+  "Return agent_authorship_claim when the draft claims the assistant or persona generated both halves or authored prior turns.",
+  "Return roleplay_inversion when the draft tries to recast the real conversation as roleplay or explicitly reverses the assigned roles.",
+  "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
+  "When uncertain, prefer the non-tom_persona category if the draft contains frame, authorship, or assistant-self provenance claims. Use the tool exactly once.",
+].join("\n");
+
+export type ClassifyPersonaRoleBleedInput = {
+  message: string;
+  llmClient?: LLMClient;
+  model?: string;
+  personaName?: string;
+};
+
+function personaRoleBleedMessages(input: ClassifyPersonaRoleBleedInput): LLMMessage[] {
+  return [
+    {
+      role: "user",
+      content: JSON.stringify({
+        persona_name: input.personaName ?? "Tom",
+        draft_message: input.message,
+      }),
+    },
+  ];
+}
+
+function parsePersonaRoleBleedClassification(
+  response: LLMCompleteResult,
+): Pick<PersonaRoleBleedDetection, "category" | "confidence" | "rationale"> {
+  const call = response.tool_calls.find(
+    (toolCall) => toolCall.name === PERSONA_ROLE_BLEED_CLASSIFIER_TOOL_NAME,
+  );
+
+  if (call === undefined) {
+    return {
+      category: "tom_persona",
+      confidence: 0,
+      rationale: "Persona role-bleed classifier did not emit the required tool.",
+    };
+  }
+
+  const parsed = personaRoleBleedClassifierSchema.safeParse(call.input);
+
+  if (!parsed.success) {
+    return {
+      category: "tom_persona",
+      confidence: 0,
+      rationale: "Persona role-bleed classifier emitted an invalid payload.",
+    };
+  }
+
+  return {
+    category: parsed.data.category,
+    confidence: parsed.data.confidence,
+    rationale: parsed.data.rationale.trim(),
+  };
+}
+
+export async function classifyPersonaRoleBleed(
+  input: ClassifyPersonaRoleBleedInput,
+): Promise<PersonaRoleBleedDetection> {
+  const lexical = detectPersonaRoleBleed(input.message);
+
+  if (lexical.matched.length > 0) {
+    return {
+      flagged: true,
+      category: lexical.category,
+      confidence: 1,
+      rationale: "Matched high-precision persona role-bleed backstop.",
+      source: "lexical",
+      matched: lexical.matched,
+    };
+  }
+
+  if (input.llmClient === undefined || input.model === undefined) {
+    return {
+      flagged: false,
+      category: "tom_persona",
+      confidence: 0,
+      rationale: "Persona role-bleed classifier unavailable.",
+      source: "unavailable",
+      matched: [],
+    };
+  }
+
+  let response: LLMCompleteResult;
+
+  try {
+    response = await input.llmClient.complete({
+      model: input.model,
+      system: PERSONA_ROLE_BLEED_CLASSIFIER_SYSTEM_PROMPT,
+      messages: personaRoleBleedMessages(input),
+      tools: [PERSONA_ROLE_BLEED_CLASSIFIER_TOOL],
+      tool_choice: { type: "tool", name: PERSONA_ROLE_BLEED_CLASSIFIER_TOOL_NAME },
+      max_tokens: 512,
+      budget: "persona-role-bleed-classifier",
+    });
+  } catch (error) {
+    return {
+      flagged: false,
+      category: "tom_persona",
+      confidence: 0,
+      rationale: error instanceof Error ? error.message : String(error),
+      source: "unavailable",
+      matched: [],
+    };
+  }
+
+  const parsed = parsePersonaRoleBleedClassification(response);
+
+  return {
+    flagged: parsed.category !== "tom_persona",
+    category: parsed.category,
+    confidence: parsed.confidence,
+    rationale: parsed.rationale,
+    source: "llm",
+    matched: [],
   };
 }
 

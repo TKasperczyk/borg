@@ -60,6 +60,17 @@ export {
   type GoalPromotionInitialStep,
 } from "./goals/goal-promotion-extractor.js";
 export {
+  FRAME_ANOMALY_KINDS,
+  FrameAnomalyClassifier,
+  frameAnomalyKindSchema,
+  isFrameAnomaly,
+  type ClassifyFrameAnomalyInput,
+  type FrameAnomalyClassification,
+  type FrameAnomalyClassifierDegradedReason,
+  type FrameAnomalyClassifierOptions,
+  type FrameAnomalyKind,
+} from "./frame-anomaly/index.js";
+export {
   StopCommitmentExtractor,
   type ExtractStopCommitmentInput,
   type StopCommitmentExtraction,
