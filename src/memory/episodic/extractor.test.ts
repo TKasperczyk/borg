@@ -488,6 +488,116 @@ describe("episodic extractor", () => {
     });
   });
 
+  it("quarantines assistant-seeded relational names when the user only adopts the name", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const tom = harness.entityRepository.resolve("Tom");
+    await harness.writer.append({
+      kind: "agent_msg",
+      content: "You could ask Marta the boring version next lesson.",
+    });
+    harness.clock.advance(10);
+    const user = await harness.writer.append({
+      kind: "user_msg",
+      content: "I'll ask Marta the boring version next lesson.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse(
+          [],
+          [
+            {
+              subject_entity_id: tom,
+              slot_key: "tutor.name",
+              asserted_value: "Marta",
+              source_stream_entry_ids: [user.id],
+            },
+          ],
+        ),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      defaultUser: "Tom",
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    const slot = harness.relationalSlotRepository.findBySubjectAndKey(tom, "tutor.name");
+
+    expect(slot).toMatchObject({
+      value: "Marta",
+      state: "quarantined",
+    });
+  });
+
+  it("lets explicit user confirmation establish an assistant-seeded relational name", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const tom = harness.entityRepository.resolve("Tom");
+    await harness.writer.append({
+      kind: "agent_msg",
+      content: "You could ask Marta the boring version next lesson.",
+    });
+    harness.clock.advance(10);
+    const bare = await harness.writer.append({
+      kind: "user_msg",
+      content: "I'll ask Marta the boring version next lesson.",
+    });
+    harness.clock.advance(10);
+    const explicit = await harness.writer.append({
+      kind: "user_msg",
+      content: "Her name is Marta.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse(
+          [],
+          [
+            {
+              subject_entity_id: tom,
+              slot_key: "tutor.name",
+              asserted_value: "Marta",
+              source_stream_entry_ids: [bare.id],
+            },
+            {
+              subject_entity_id: tom,
+              slot_key: "tutor.name",
+              asserted_value: "Marta",
+              source_stream_entry_ids: [explicit.id],
+            },
+          ],
+        ),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      defaultUser: "Tom",
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    const slot = harness.relationalSlotRepository.findBySubjectAndKey(tom, "tutor.name");
+
+    expect(slot).toMatchObject({
+      value: "Marta",
+      state: "established",
+      evidence_stream_entry_ids: [bare.id, explicit.id],
+    });
+  });
+
   it("resolves bare user relational slot subjects to the human audience entity", async () => {
     const harness = await createRelationalExtractorHarness();
     const user = await harness.writer.append({

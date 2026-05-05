@@ -25,7 +25,10 @@ import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { normalizeEpisodeAccess } from "./access.js";
 import { EpisodicRepository } from "./repository.js";
 import { type Episode } from "./types.js";
-import type { RelationalSlotRepository } from "../relational-slots/index.js";
+import type {
+  RelationalSlotAssertionConfirmation,
+  RelationalSlotRepository,
+} from "../relational-slots/index.js";
 import type { WorkingMemoryStore } from "../working/index.js";
 
 import { z } from "zod";
@@ -377,6 +380,8 @@ function buildExtractorPrompt(
     "For each episode, emit emotional_arc directly from the episode text and user signals. Use null only when there is no meaningful affective signal.",
     "Also emit relational_slot_updates for user-asserted relational attributes whose subject_entity_id appears in the supplied relational slot subject manifest.",
     "Use relational_slot_updates only for direct user assertions, not assistant statements, guesses, corrections, denials, or uncertainty.",
+    "If an assistant introduced a person name and a later user merely reuses that name, do not emit a relational_slot_update for the name. Bare adoption is not explicit confirmation.",
+    'Explicit confirmation can support a relational_slot_update, for example "her name is Marta", "yes, Marta", or "Marta is the tutor".',
     "relational_slot_updates.source_stream_entry_ids MUST reference user_msg ids present in the chunk.",
     'Use compact slot_key dot paths such as "partner.name", "partner.role", or "dog.name".',
     "Chunk:",
@@ -527,6 +532,132 @@ function resolveRelationalSlotSubjectEntityId(
   return candidate as EntityId;
 }
 
+const ASSISTANT_SEEDED_USER_TURN_WINDOW = 2;
+
+function streamEntryText(entry: StreamEntry): string {
+  if (typeof entry.content === "string") {
+    return entry.content;
+  }
+
+  try {
+    return JSON.stringify(entry.content);
+  } catch {
+    return String(entry.content);
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function entryMentionsValue(entry: StreamEntry, value: string): boolean {
+  return streamEntryText(entry).includes(value);
+}
+
+function priorContextWindow(
+  sourceEntry: StreamEntry,
+  contextEntries: readonly StreamEntry[],
+): StreamEntry[] {
+  const sourceIndex = contextEntries.findIndex((entry) => entry.id === sourceEntry.id);
+
+  if (sourceIndex <= 0) {
+    return [];
+  }
+
+  let startIndex = sourceIndex;
+  let userTurns = 0;
+
+  for (let index = sourceIndex - 1; index >= 0; index -= 1) {
+    const entry = contextEntries[index];
+
+    if (entry === undefined) {
+      continue;
+    }
+
+    if (entry.kind === "user_msg") {
+      userTurns += 1;
+
+      if (userTurns > ASSISTANT_SEEDED_USER_TURN_WINDOW) {
+        break;
+      }
+    }
+
+    startIndex = index;
+  }
+
+  return contextEntries.slice(startIndex, sourceIndex);
+}
+
+function isAssistantSeededValue(input: {
+  value: string;
+  sourceEntries: readonly StreamEntry[];
+  contextEntries: readonly StreamEntry[];
+}): boolean {
+  for (const sourceEntry of input.sourceEntries) {
+    const window = priorContextWindow(sourceEntry, input.contextEntries);
+
+    for (const [index, entry] of window.entries()) {
+      if (entry.kind !== "agent_msg" || !entryMentionsValue(entry, input.value)) {
+        continue;
+      }
+
+      const earlierUserMention = window
+        .slice(0, index)
+        .some(
+          (candidate) =>
+            candidate.kind === "user_msg" && entryMentionsValue(candidate, input.value),
+        );
+
+      if (!earlierUserMention) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function isExplicitRelationalSlotConfirmation(
+  candidate: RelationalSlotUpdateCandidate,
+  sourceEntries: readonly StreamEntry[],
+): boolean {
+  const value = escapeRegExp(candidate.asserted_value.trim());
+  const patterns = [
+    new RegExp(`\\b(?:her|his|their|my|its)\\s+name(?:\\s+is|'s)\\s+${value}\\b`, "iu"),
+    new RegExp(`\\b(?:yes|yeah|yep),?\\s+${value}\\b`, "iu"),
+    new RegExp(`\\b${value}\\s+is\\s+(?:the|my|our|his|her|their)\\s+[^.?!]{0,48}\\b`, "iu"),
+    new RegExp(`\\b(?:my|our|the)\\s+[^.?!]{0,48}\\s+is\\s+${value}\\b`, "iu"),
+  ];
+
+  return sourceEntries.some((entry) => {
+    const text = streamEntryText(entry);
+
+    return patterns.some((pattern) => pattern.test(text));
+  });
+}
+
+function relationalSlotAssertionConfirmation(input: {
+  candidate: RelationalSlotUpdateCandidate;
+  sourceEntries: readonly StreamEntry[];
+  contextEntries: readonly StreamEntry[];
+}): RelationalSlotAssertionConfirmation {
+  if (isExplicitRelationalSlotConfirmation(input.candidate, input.sourceEntries)) {
+    return "explicit";
+  }
+
+  if (
+    isAssistantSeededValue({
+      value: input.candidate.asserted_value,
+      sourceEntries: input.sourceEntries,
+      contextEntries: input.contextEntries,
+    })
+  ) {
+    return "assistant_seeded";
+  }
+
+  return "direct";
+}
+
 function buildEpisodeFromCandidate(
   candidate: ExtractorCandidate,
   sourceEntries: readonly StreamEntry[],
@@ -671,6 +802,7 @@ export class EpisodicExtractor {
   private processRelationalSlotUpdate(
     candidate: RelationalSlotUpdateCandidate,
     chunkById: Map<string, StreamEntry>,
+    contextEntries: readonly StreamEntry[],
     relationalSlotSubjects: readonly RelationalSlotSubject[],
     sessionId: SessionId,
   ): void {
@@ -699,6 +831,11 @@ export class EpisodicExtractor {
       slot_key: candidate.slot_key,
       asserted_value: candidate.asserted_value,
       source_stream_entry_ids: uniqueStreamEntryIds(sourceEntries) as StreamEntryId[],
+      confirmation: relationalSlotAssertionConfirmation({
+        candidate,
+        sourceEntries,
+        contextEntries,
+      }),
     });
 
     if (result.constrained) {
@@ -795,7 +932,13 @@ export class EpisodicExtractor {
       }
 
       for (const slotUpdate of extracted.relational_slot_updates) {
-        this.processRelationalSlotUpdate(slotUpdate, chunkById, relationalSlotSubjects, session);
+        this.processRelationalSlotUpdate(
+          slotUpdate,
+          chunkById,
+          activeContextEntries,
+          relationalSlotSubjects,
+          session,
+        );
       }
     }
 

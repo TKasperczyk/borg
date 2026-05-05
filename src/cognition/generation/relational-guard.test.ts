@@ -855,6 +855,82 @@ describe("RelationalClaimGuard", () => {
     ]);
   });
 
+  it("rewrites unsupported life-context person names missed by the LLM audit", async () => {
+    const currentUserEntryId = createStreamEntryId();
+    const original = "I'll ask Marta the boring version next lesson.";
+    const rewritten = "I'll ask your tutor the boring version next lesson.";
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([]),
+        {
+          text: rewritten,
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        claimAuditResponse([]),
+      ],
+    });
+    const tracer = {
+      enabled: true,
+      includePayloads: true,
+      emit: vi.fn(),
+    };
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      tracer,
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-marta-backstop",
+      response: original,
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence({
+        current_user_message: {
+          text: "My Spanish tutor is from Sevilla and obviously biased.",
+          stream_entry_id: currentUserEntryId,
+          ts: 2_000,
+        },
+      }),
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: rewritten,
+    });
+    expect(result.verdict).toBe("rewritten");
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "relational_claim_guard",
+      expect.objectContaining({
+        verdict: "rewritten",
+        final_verdict: "rewritten",
+        first_claims: [
+          expect.objectContaining({
+            kind: "unsupported_person_name",
+            asserted: "ask Marta",
+            cited_stream_entry_ids: [],
+          }),
+        ],
+        first_unsupported: [
+          expect.objectContaining({
+            kind: "unsupported_person_name",
+            asserted: "ask Marta",
+            cited_stream_entry_ids: [],
+          }),
+        ],
+        rewritten_claims: [],
+        rewritten_unsupported: [],
+        original_response_preview: original,
+        rewritten_response_preview: rewritten,
+      }),
+    );
+  });
+
   it("uses a distinct suppression reason when rewrite returns empty text", async () => {
     const llm = new FakeLLMClient({
       responses: [

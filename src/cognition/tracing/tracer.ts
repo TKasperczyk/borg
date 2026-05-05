@@ -12,6 +12,7 @@ export type TurnTraceEventName =
   | "working_memory_degraded"
   | "recency_compiled"
   | "retrieval_degraded"
+  | "recall_expansion_clipped"
   | "retrieval_started"
   | "retrieval_completed"
   | "path_selected"

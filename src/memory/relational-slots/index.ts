@@ -18,6 +18,7 @@ export {
   relationalSlotStateSchema,
   relationalSlotStreamEntryIdSchema,
   type RelationalSlot,
+  type RelationalSlotAssertionConfirmation,
   type RelationalSlotAlternateValue,
   type RelationalSlotAssertion,
   type RelationalSlotNegation,

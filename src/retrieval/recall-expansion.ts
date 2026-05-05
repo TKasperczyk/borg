@@ -17,25 +17,30 @@ const recallExpansionFacetKindSchema = z.enum([
   "commitment",
   "open_question",
 ]);
+const MAX_RECALL_EXPANSION_FACETS = 4;
+const MAX_RECALL_EXPANSION_NAMED_TERMS = 16;
+
+const recallExpansionFacetSchema = z.object({
+  kind: recallExpansionFacetKindSchema,
+  query: z.string().min(1).describe("A focused semantic retrieval query for this facet."),
+  priority: z.number().min(0).max(1).describe("Relative priority for this facet."),
+});
 
 const recallExpansionToolInputSchema = z.object({
   facets: z
-    .array(
-      z.object({
-        kind: recallExpansionFacetKindSchema,
-        query: z.string().min(1).describe("A focused semantic retrieval query for this facet."),
-        priority: z.number().min(0).max(1).describe("Relative priority for this facet."),
-      }),
-    )
+    .array(recallExpansionFacetSchema)
     .min(0)
-    .max(4)
+    .max(MAX_RECALL_EXPANSION_FACETS)
     .describe("Two to four focused semantic facets when useful; fewer is fine for simple turns."),
   named_terms: z
     .array(z.string().min(1))
-    .max(16)
+    .max(MAX_RECALL_EXPANSION_NAMED_TERMS)
     .describe(
       "Up to 16 explicit names, aliases, projects, people, products, or labels worth exact known-term lookup.",
     ),
+});
+const recallExpansionParserSchema = recallExpansionToolInputSchema.extend({
+  facets: z.array(recallExpansionFacetSchema).min(0),
 });
 
 export type RecallExpansionResult = z.infer<typeof recallExpansionToolInputSchema>;
@@ -61,6 +66,7 @@ const RECALL_EXPANSION_TOOL: LLMToolDefinition = {
 const RECALL_EXPANSION_SYSTEM_PROMPT = [
   "You expand one user turn into retrieval intents for Borg memory.",
   "Identify semantic facets that may need memories, and separately list explicit named terms worth exact lookup.",
+  "Return no more than 4 facets, ranked by priority.",
   "Return at most 16 named terms.",
   "Do not infer facts beyond the message. Do not answer the user. Use the tool exactly once.",
 ].join("\n");
@@ -133,7 +139,28 @@ export async function expandRecall(
     throw new Error("Recall expansion did not emit the required tool call");
   }
 
-  return recallExpansionToolInputSchema.parse(toolCall.input);
+  const parsed = recallExpansionParserSchema.parse(toolCall.input);
+
+  if (parsed.facets.length <= MAX_RECALL_EXPANSION_FACETS) {
+    return parsed;
+  }
+
+  if (options.tracer?.enabled === true && options.turnId !== undefined) {
+    options.tracer.emit("recall_expansion_clipped", {
+      turnId: options.turnId,
+      originalFacetCount: parsed.facets.length,
+      retainedFacetCount: MAX_RECALL_EXPANSION_FACETS,
+    });
+  }
+
+  return {
+    ...parsed,
+    facets: parsed.facets
+      .map((facet, index) => ({ facet, index }))
+      .sort((left, right) => right.facet.priority - left.facet.priority || left.index - right.index)
+      .slice(0, MAX_RECALL_EXPANSION_FACETS)
+      .map((item) => item.facet),
+  };
 }
 
 function isRecallExpansionToolCall(call: LLMToolCall): boolean {

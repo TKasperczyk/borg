@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BorgTransport } from "./borg-transport.js";
 import { recallScenario } from "./scenarios/recall.js";
-import { StreamWriter } from "../src/stream/index.js";
+import {
+  DEFAULT_SESSION_ID,
+  getSessionStreamPath,
+  getStreamDirectory,
+  StreamWriter,
+} from "../src/stream/index.js";
 import { ManualClock } from "../src/util/clock.js";
 import { createSessionId } from "../src/util/ids.js";
 
@@ -82,7 +87,7 @@ describe("BorgTransport", () => {
     }
   });
 
-  it("reads a sorted transcript across all stream sessions", async () => {
+  it("reads a timestamp-sorted transcript across all stream sessions with append-order ties", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "borg-transport-transcript-"));
     const clock = new ManualClock(0);
     const sessionId = createSessionId();
@@ -104,17 +109,22 @@ describe("BorgTransport", () => {
       });
 
       clock.set(100);
-      const tiedFromSession = await sessionWriter.append({
+      const earlySession = await sessionWriter.append({
         kind: "agent_msg",
-        content: "same timestamp session agent message",
+        content: "early session agent message",
       });
       await sessionWriter.append({
         kind: "thought",
         content: "not part of transcript",
       });
+      clock.set(150);
       const tiedFromDefault = await defaultWriter.append({
         kind: "user_msg",
         content: "same timestamp default user message",
+      });
+      const tiedSecondFromDefault = await defaultWriter.append({
+        kind: "agent_msg",
+        content: "same timestamp default agent message",
       });
 
       const transport = new BorgTransport({
@@ -125,24 +135,122 @@ describe("BorgTransport", () => {
         keep: true,
       });
       const transcript = await transport.readTranscript();
-      const tied = [tiedFromSession, tiedFromDefault].sort((left, right) =>
-        left.id.localeCompare(right.id),
-      );
 
-      expect(transcript.map((entry) => entry.id)).toEqual([tied[0]!.id, tied[1]!.id, late.id]);
+      expect(transcript.map((entry) => entry.id)).toEqual([
+        earlySession.id,
+        tiedFromDefault.id,
+        tiedSecondFromDefault.id,
+        late.id,
+      ]);
       expect(transcript.map((entry) => entry.content)).toEqual([
-        tied[0]!.content,
-        tied[1]!.content,
+        earlySession.content,
+        tiedFromDefault.content,
+        tiedSecondFromDefault.content,
         late.content,
       ]);
       expect(transcript.map((entry) => entry.kind)).toEqual([
-        tied[0]!.kind,
-        tied[1]!.kind,
+        earlySession.kind,
+        tiedFromDefault.kind,
+        tiedSecondFromDefault.kind,
         late.kind,
       ]);
     } finally {
       defaultWriter.close();
       sessionWriter.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps append order for same-timestamp entries when stream ids would reverse them", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-transport-transcript-tie-"));
+    const streamDir = getStreamDirectory(dataDir);
+    const streamPath = getSessionStreamPath(dataDir, DEFAULT_SESSION_ID);
+
+    try {
+      mkdirSync(streamDir, { recursive: true });
+      appendFileSync(
+        streamPath,
+        [
+          {
+            id: "strm_zzzzzzzzzzzzzzzz",
+            timestamp: 500,
+            kind: "user_msg",
+            content: "first in append order",
+            session_id: DEFAULT_SESSION_ID,
+          },
+          {
+            id: "strm_aaaaaaaaaaaaaaaa",
+            timestamp: 500,
+            kind: "agent_msg",
+            content: "second in append order",
+            session_id: DEFAULT_SESSION_ID,
+          },
+        ]
+          .map((entry) => `${JSON.stringify(entry)}\n`)
+          .join(""),
+      );
+
+      const transport = new BorgTransport({
+        runId: "transport-transcript-tie-test",
+        scenario: recallScenario,
+        mock: true,
+        dataDir,
+        keep: true,
+      });
+      const transcript = await transport.readTranscript();
+
+      expect(transcript.map((entry) => entry.id)).toEqual([
+        "strm_zzzzzzzzzzzzzzzz",
+        "strm_aaaaaaaaaaaaaaaa",
+      ]);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the Banks user turn before its same-timestamp agent response", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-transport-transcript-banks-"));
+    const streamDir = getStreamDirectory(dataDir);
+    const streamPath = getSessionStreamPath(dataDir, DEFAULT_SESSION_ID);
+
+    try {
+      mkdirSync(streamDir, { recursive: true });
+      appendFileSync(
+        streamPath,
+        [
+          {
+            id: "strm_zzzzzzzzzzzzzzzz",
+            timestamp: 700,
+            kind: "user_msg",
+            content: "Have you read Use of Weapons?",
+            session_id: DEFAULT_SESSION_ID,
+          },
+          {
+            id: "strm_aaaaaaaaaaaaaaaa",
+            timestamp: 700,
+            kind: "agent_msg",
+            content: "I haven't read Banks the way you've read Banks...",
+            session_id: DEFAULT_SESSION_ID,
+          },
+        ]
+          .map((entry) => `${JSON.stringify(entry)}\n`)
+          .join(""),
+      );
+
+      const transport = new BorgTransport({
+        runId: "transport-transcript-banks-test",
+        scenario: recallScenario,
+        mock: true,
+        dataDir,
+        keep: true,
+      });
+      const transcript = await transport.readTranscript();
+
+      expect(transcript.map((entry) => entry.content)).toEqual([
+        "Have you read Use of Weapons?",
+        "I haven't read Banks the way you've read Banks...",
+      ]);
+    } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
