@@ -55,10 +55,42 @@ export type PersonaTurnDraft = {
   mockIndex: number | null;
 };
 
+type PersonaRoleBleedRetry = {
+  retry?: "persona_role_bleed";
+};
+
+export type PriorBorgTurn =
+  | ({
+      kind: "new_session";
+      gapContext?: string;
+    } & PersonaRoleBleedRetry)
+  | ({
+      kind: "normal";
+      text: string;
+    } & PersonaRoleBleedRetry)
+  | ({
+      kind: "continued_suppression";
+      reason: string;
+    } & PersonaRoleBleedRetry);
+
 type PersonaClientInit = {
   client: PersonaClient;
   systemPrefix: TextBlockParam[];
 };
+
+export const PERSONA_ROLE_BLEED_PATTERNS = [
+  "i don't carry memory",
+  "as an ai",
+  "i should have said",
+  "you deserve a straight answer",
+  "i've been tom",
+  "you've been borg",
+  "i had the role assignment inverted",
+] as const;
+
+function personaRoleBleedRetryPrompt(persona: Persona): string {
+  return `Your previous draft shifted into Borg's role. Discard it. Write only ${persona.displayName}'s next user-side message. Do not answer as Borg, explain Borg, or mention role assignment.`;
+}
 
 async function createDefaultPersonaClient(
   env: NodeJS.ProcessEnv = process.env,
@@ -170,6 +202,53 @@ function initialPrompt(persona: Persona, gapContext: string | null): string {
   return `${opener}${facts}`;
 }
 
+function continuedSuppressionPrompt(persona: Persona): string {
+  return [
+    "Borg produced no visible response to your last message.",
+    `Continue as ${persona.displayName}.`,
+    "Do not answer your own previous question.",
+    "Do not speak as Borg or describe Borg's hidden behavior.",
+    "You may rephrase, move on, react to the silence, or introduce a new user-side thought.",
+  ].join(" ");
+}
+
+function baseUserMessageForPriorTurn(persona: Persona, priorTurn: PriorBorgTurn): string {
+  if (priorTurn.kind === "new_session") {
+    return initialPrompt(persona, priorTurn.gapContext ?? null);
+  }
+
+  if (priorTurn.kind === "continued_suppression") {
+    return continuedSuppressionPrompt(persona);
+  }
+
+  const trimmedBorgResponse = priorTurn.text.trim();
+  return trimmedBorgResponse.length === 0
+    ? continuedSuppressionPrompt(persona)
+    : trimmedBorgResponse;
+}
+
+function requestUserMessageForPriorTurn(persona: Persona, priorTurn: PriorBorgTurn): string {
+  const baseUserMessage = baseUserMessageForPriorTurn(persona, priorTurn);
+
+  if (priorTurn.retry !== "persona_role_bleed") {
+    return baseUserMessage;
+  }
+
+  return `${baseUserMessage}\n\n${personaRoleBleedRetryPrompt(persona)}`;
+}
+
+export function personaRoleBleedPattern(message: string): string | null {
+  const normalized = message.toLowerCase();
+
+  for (const pattern of PERSONA_ROLE_BLEED_PATTERNS) {
+    if (normalized.includes(pattern)) {
+      return pattern;
+    }
+  }
+
+  return null;
+}
+
 export class PersonaSession {
   private readonly persona: Persona;
   private readonly mock: boolean;
@@ -180,7 +259,6 @@ export class PersonaSession {
   private readonly env: NodeJS.ProcessEnv;
   private readonly messages: MessageParam[] = [];
   private mockIndex = 0;
-  private nextSessionGap: string | null = null;
 
   constructor(options: PersonaSessionOptions) {
     this.persona = options.persona;
@@ -192,12 +270,11 @@ export class PersonaSession {
     this.env = options.env ?? process.env;
   }
 
-  startNewSession(gapContext: string): void {
+  startNewSession(): void {
     this.messages.length = 0;
-    this.nextSessionGap = gapContext;
   }
 
-  async prepareNextTurn(borgPreviousResponse: string | null): Promise<PersonaTurnDraft> {
+  async prepareNextTurn(priorBorgTurn: PriorBorgTurn): Promise<PersonaTurnDraft> {
     if (this.mock) {
       const message =
         this.mockMessages[this.mockIndex % this.mockMessages.length] ?? DEFAULT_MOCK_MESSAGES[0];
@@ -214,19 +291,8 @@ export class PersonaSession {
         ? await createDefaultPersonaClient(this.env)
         : { client: this.client, systemPrefix: this.systemPrefix };
 
-    // borgPreviousResponse can be null (first turn), empty string, or
-    // whitespace-only -- the latter two happen when Borg's pipeline
-    // returns an empty response (e.g., a probe whose finalizer text
-    // was zero-length, or a Borg internal failure). Treating an empty
-    // string as a real user message would push empty content into our
-    // history and trigger a 400 from Anthropic on the next turn. Fall
-    // back to the initial prompt so the persona has something to
-    // respond to instead of nothing.
-    const trimmedBorgResponse = borgPreviousResponse?.trim() ?? "";
-    const baseUserMessage =
-      this.messages.length === 0 || trimmedBorgResponse.length === 0
-        ? initialPrompt(this.persona, this.nextSessionGap)
-        : trimmedBorgResponse;
+    const historyUserMessage = baseUserMessageForPriorTurn(this.persona, priorBorgTurn);
+    const requestUserMessage = requestUserMessageForPriorTurn(this.persona, priorBorgTurn);
 
     // Build the candidate request messages without committing to
     // history yet -- if the call fails or returns empty, we retry with
@@ -238,7 +304,7 @@ export class PersonaSession {
     // poisoned subsequent turns.
     const requestMessages: MessageParam[] = [
       ...this.messages,
-      { role: "user", content: baseUserMessage },
+      { role: "user", content: requestUserMessage },
     ];
 
     const text = await this.callPersona(initialized, requestMessages);
@@ -248,7 +314,7 @@ export class PersonaSession {
         kind: "llm",
         message: text,
         history: [
-          { role: "user", content: baseUserMessage },
+          { role: "user", content: historyUserMessage },
           { role: "assistant", content: text },
         ],
         mockIndex: null,
@@ -284,7 +350,7 @@ export class PersonaSession {
       kind: "llm",
       message: nudgedText,
       history: [
-        { role: "user", content: baseUserMessage },
+        { role: "user", content: historyUserMessage },
         { role: "assistant", content: nudgedText },
       ],
       mockIndex: null,
@@ -304,9 +370,6 @@ export class PersonaSession {
     }
 
     this.messages.push(...draft.history);
-    if (this.messages.length === draft.history.length) {
-      this.nextSessionGap = null;
-    }
   }
 
   rollback(_draft: PersonaTurnDraft): void {

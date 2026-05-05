@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PersonaSession } from "./persona.js";
+import { personaRoleBleedPattern, PersonaSession } from "./persona.js";
 import { tomPersona } from "./personas/tom.js";
 
 const FIRST_TOM_TURN = "first Tom turn";
@@ -16,11 +16,11 @@ describe("PersonaSession", () => {
       mockMessages: [FIRST_TOM_TURN, SECOND_TOM_TURN],
     });
 
-    const first = await persona.prepareNextTurn(null);
+    const first = await persona.prepareNextTurn({ kind: "new_session" });
     persona.commit(first, FIRST_BORG_REPLY);
-    const second = await persona.prepareNextTurn(FIRST_BORG_REPLY);
+    const second = await persona.prepareNextTurn({ kind: "normal", text: FIRST_BORG_REPLY });
     persona.commit(second, SECOND_BORG_REPLY);
-    const third = await persona.prepareNextTurn(SECOND_BORG_REPLY);
+    const third = await persona.prepareNextTurn({ kind: "normal", text: SECOND_BORG_REPLY });
 
     expect(first.message).toBe(FIRST_TOM_TURN);
     expect(second.message).toBe(SECOND_TOM_TURN);
@@ -34,9 +34,9 @@ describe("PersonaSession", () => {
       mockMessages: [FIRST_TOM_TURN, SECOND_TOM_TURN],
     });
 
-    const draft = await persona.prepareNextTurn(null);
+    const draft = await persona.prepareNextTurn({ kind: "new_session" });
     persona.rollback(draft);
-    const retry = await persona.prepareNextTurn(null);
+    const retry = await persona.prepareNextTurn({ kind: "new_session" });
 
     expect(draft.message).toBe(FIRST_TOM_TURN);
     expect(retry.message).toBe(FIRST_TOM_TURN);
@@ -69,15 +69,83 @@ describe("PersonaSession", () => {
       client: client as never,
     });
 
-    persona.startNewSession(gapContext);
-    const first = await persona.prepareNextTurn(null);
+    persona.startNewSession();
+    const first = await persona.prepareNextTurn({ kind: "new_session", gapContext });
     persona.rollback(first);
-    const second = await persona.prepareNextTurn(null);
+    const second = await persona.prepareNextTurn({ kind: "new_session", gapContext });
 
     expect(prompts).toEqual([
       expect.stringContaining(gapContext),
       expect.stringContaining(gapContext),
     ]);
     expect(second.message).toBe("persona draft 2");
+  });
+
+  it("uses the continued-suppression prompt without producing role-bleed text", async () => {
+    const prompts: string[] = [];
+    const client = {
+      messages: {
+        stream(params: { messages: Array<{ content: unknown }> }) {
+          prompts.push(String(params.messages.at(-1)?.content ?? ""));
+          return {
+            async finalMessage() {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: "Are you still there? I was asking because this keeps bothering me.",
+                  },
+                ],
+              };
+            },
+          };
+        },
+      },
+    };
+    const persona = new PersonaSession({
+      persona: tomPersona,
+      client: client as never,
+    });
+
+    const draft = await persona.prepareNextTurn({
+      kind: "continued_suppression",
+      reason: "relational_guard_audit_failed",
+    });
+
+    expect(prompts[0]).toContain("Borg produced no visible response to your last message.");
+    expect(prompts[0]).toContain("Continue as Tom.");
+    expect(prompts[0]).not.toContain("Open the conversation");
+    expect(personaRoleBleedPattern(draft.message)).toBeNull();
+  });
+
+  it("passes normal prior Borg text to the persona", async () => {
+    const prompts: string[] = [];
+    const client = {
+      messages: {
+        stream(params: { messages: Array<{ content: unknown }> }) {
+          prompts.push(String(params.messages.at(-1)?.content ?? ""));
+          return {
+            async finalMessage() {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: "That helps. Can we stay with the same thread?",
+                  },
+                ],
+              };
+            },
+          };
+        },
+      },
+    };
+    const persona = new PersonaSession({
+      persona: tomPersona,
+      client: client as never,
+    });
+
+    await persona.prepareNextTurn({ kind: "normal", text: FIRST_BORG_REPLY });
+
+    expect(prompts).toEqual([FIRST_BORG_REPLY]);
   });
 });

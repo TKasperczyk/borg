@@ -14,8 +14,9 @@ import {
 } from "../src/index.js";
 import { MaintenanceScheduler, type MaintenanceTickResult } from "../src/offline/scheduler.js";
 import { BorgTransport, type ChatWithBorgResult } from "../assessor/borg-transport.js";
+import { readTraceEvents } from "../assessor/trace-reader.js";
 import { runSimulation } from "./runner.js";
-import type { PersonaSession } from "./persona.js";
+import type { PersonaSession, PriorBorgTurn } from "./persona.js";
 import { tomPersona } from "./personas/tom.js";
 
 const tempDirs: string[] = [];
@@ -127,8 +128,9 @@ function fakePersonaSession(messages: readonly string[]): {
   startNewSession: ReturnType<typeof vi.fn>;
 } {
   let index = 0;
-  const prepareNextTurn = vi.fn(async () => {
-    const message = messages[index] ?? messages.at(-1) ?? "persona turn";
+  const prepareNextTurn = vi.fn(async (priorBorgTurn: PriorBorgTurn) => {
+    const messageIndex = priorBorgTurn.retry === "persona_role_bleed" ? index + 1 : index;
+    const message = messages[messageIndex] ?? messages.at(-1) ?? "persona turn";
     return {
       kind: "mock",
       message,
@@ -239,6 +241,7 @@ describe("SimulatorRunner", () => {
 
     expect(seenMessages).toEqual([draftMessage, draftMessage, draftMessage]);
     expect(persona.prepareNextTurn).toHaveBeenCalledOnce();
+    expect(persona.prepareNextTurn).toHaveBeenCalledWith({ kind: "new_session" });
     expect(persona.commit).toHaveBeenCalledOnce();
     expect(persona.commit.mock.calls[0]?.[0]).toMatchObject({ message: draftMessage });
     expect(persona.commit.mock.calls[0]?.[1]).toBe(borgResponse);
@@ -370,6 +373,10 @@ describe("SimulatorRunner", () => {
 
     expect(seenMessages).toEqual([draftMessage, draftMessage, draftMessage, draftMessage]);
     expect(persona.prepareNextTurn).toHaveBeenCalledTimes(2);
+    expect(persona.prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([
+      { kind: "new_session" },
+      { kind: "new_session" },
+    ]);
     expect(persona.rollback).toHaveBeenCalledOnce();
     expect(persona.commit).toHaveBeenCalledOnce();
     expect(report.turnFailures).toEqual([
@@ -500,6 +507,41 @@ describe("SimulatorRunner", () => {
     expect(openSpy.mock.calls[0]?.[0]?.config?.defaultUser).toBe("Tom");
   });
 
+  it("passes normal prior Borg output to the next persona turn", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const persona = fakePersonaSession(["first persona turn", "second persona turn"]);
+    let chatCalls = 0;
+    mockTransportLifecycle();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) => {
+      chatCalls += 1;
+
+      return chatResult({
+        response: chatCalls === 1 ? "First Borg reply." : "Second Borg reply.",
+        emitted: true,
+        turnId: `turn-normal-${chatCalls}`,
+        sessionId: options.sessionId as SessionId,
+      });
+    });
+
+    await runSimulation({
+      runId: "sim-runner-normal-prior-test",
+      persona: tomPersona,
+      personaSession: persona.session,
+      totalTurns: 2,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+
+    expect(persona.prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([
+      { kind: "new_session" },
+      { kind: "normal", text: "First Borg reply." },
+    ]);
+  });
+
   it("passes distinct session IDs after no_output_tool rotation and records them", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
@@ -590,7 +632,10 @@ describe("SimulatorRunner", () => {
     expect(chatSessionIds).toHaveLength(2);
     expect(chatSessionIds[0]).toBe(chatSessionIds[1]);
     expect(persona.prepareNextTurn).toHaveBeenCalledTimes(2);
-    expect(persona.prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([null, null]);
+    expect(persona.prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([
+      { kind: "new_session" },
+      { kind: "continued_suppression", reason: "relational_guard_self_correction" },
+    ]);
     expect(persona.startNewSession).not.toHaveBeenCalled();
     expect(report.resultState).toBe("completed");
     expect(report.sessions).toHaveLength(1);
@@ -607,6 +652,61 @@ describe("SimulatorRunner", () => {
         sessionId: chatSessionIds[0],
         turn: 1,
         reason: "relational_guard_self_correction",
+      },
+    ]);
+  });
+
+  it("rejects a persona role-bleed draft, regenerates, and records a trace artifact", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const tracePath = join(dir, "trace.jsonl");
+    const persona = fakePersonaSession([
+      "I don't carry memory across sessions, so each conversation is closed.",
+      "Are you still there? I was asking because this still feels tangled.",
+    ]);
+    const seenMessages: string[] = [];
+    mockTransportLifecycle();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (message, options = {}) => {
+      seenMessages.push(message);
+
+      return chatResult({
+        response: "Borg replied.",
+        emitted: true,
+        turnId: "turn-role-bleed-recovered",
+        sessionId: options.sessionId as SessionId,
+      });
+    });
+
+    await runSimulation({
+      runId: "sim-runner-persona-role-bleed-test",
+      persona: tomPersona,
+      personaSession: persona.session,
+      totalTurns: 1,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath,
+      mock: true,
+    });
+    const roleBleedEvents = readTraceEvents(tracePath).filter(
+      (event) => event.event === "persona_role_bleed",
+    );
+
+    expect(seenMessages).toEqual([
+      "Are you still there? I was asking because this still feels tangled.",
+    ]);
+    expect(persona.rollback).toHaveBeenCalledOnce();
+    expect(persona.prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([
+      { kind: "new_session" },
+      { kind: "new_session", retry: "persona_role_bleed" },
+    ]);
+    expect(roleBleedEvents).toMatchObject([
+      {
+        event: "persona_role_bleed",
+        artifact: "simulator",
+        prior_kind: "new_session",
+        pattern: "i don't carry memory",
+        action: "regenerated",
       },
     ]);
   });
@@ -647,10 +747,15 @@ describe("SimulatorRunner", () => {
     expect(chatSessionIds).toHaveLength(2);
     expect(chatSessionIds[0]).not.toBe(chatSessionIds[1]);
     expect(persona.prepareNextTurn).toHaveBeenCalledTimes(2);
+    expect(persona.prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([
+      { kind: "new_session" },
+      {
+        kind: "new_session",
+        gapContext: "It's the next evening. You're back on the couch after dinner.",
+      },
+    ]);
     expect(persona.startNewSession).toHaveBeenCalledTimes(1);
-    expect(persona.startNewSession.mock.calls[0]?.[0]).toBe(
-      "It's the next evening. You're back on the couch after dinner.",
-    );
+    expect(persona.startNewSession.mock.calls[0]).toEqual([]);
     expect(report.sessions).toHaveLength(2);
     expect(report.sessions[0]).toMatchObject({
       sessionIndex: 0,

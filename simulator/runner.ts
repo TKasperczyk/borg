@@ -1,3 +1,5 @@
+import { closeSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { BorgTransport } from "../assessor/borg-transport.js";
@@ -13,7 +15,12 @@ import {
 } from "../src/index.js";
 
 import { MetricsCapture } from "./metrics.js";
-import { PersonaSession, type PersonaTurnDraft } from "./persona.js";
+import {
+  personaRoleBleedPattern,
+  PersonaSession,
+  type PersonaTurnDraft,
+  type PriorBorgTurn,
+} from "./persona.js";
 import { runOverseer, type RunOverseerOptions } from "./overseer.js";
 import type {
   MetricsRow,
@@ -55,6 +62,8 @@ export type SimulatorRunnerOptions = {
 };
 
 const DEFAULT_MAINTENANCE_EVERY = 10;
+const PERSONA_ROLE_BLEED_EVENT = "persona_role_bleed";
+const PERSONA_ROLE_BLEED_MAX_ATTEMPTS = 2;
 
 function isSessionEndingSuppression(reason: GenerationSuppressionReason | undefined): boolean {
   if (reason === undefined) return true;
@@ -84,6 +93,53 @@ function simulatorScenario(persona: Persona, totalTurns: number): Scenario {
     systemPrompt: persona.systemPrompt,
     maxTurns: totalTurns,
   };
+}
+
+function appendJsonlLine(filePath: string, line: string): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+
+  let fileDescriptor: number | undefined;
+
+  try {
+    fileDescriptor = openSync(filePath, "a");
+    writeFileSync(fileDescriptor, line);
+    fsyncSync(fileDescriptor);
+  } finally {
+    if (fileDescriptor !== undefined) {
+      closeSync(fileDescriptor);
+    }
+  }
+}
+
+function priorBorgTurnRetry(priorTurn: PriorBorgTurn): PriorBorgTurn {
+  return { ...priorTurn, retry: PERSONA_ROLE_BLEED_EVENT };
+}
+
+function recordPersonaRoleBleed(input: {
+  tracePath: string;
+  turn: number;
+  sessionId: SessionId;
+  priorTurn: PriorBorgTurn;
+  pattern: string;
+  attempt: number;
+  action: "regenerated" | "aborted";
+}): void {
+  appendJsonlLine(
+    input.tracePath,
+    `${JSON.stringify({
+      ts: Date.now(),
+      wallMs: performance.now(),
+      turnId: `simulator_turn_${input.turn}`,
+      event: PERSONA_ROLE_BLEED_EVENT,
+      artifact: "simulator",
+      turn_counter: input.turn,
+      sessionId: input.sessionId,
+      prior_kind: input.priorTurn.kind,
+      pattern: input.pattern,
+      attempt: input.attempt,
+      action: input.action,
+    })}\n`,
+  );
 }
 
 // Walks the Error.cause chain to surface diagnostics that LLMError and
@@ -202,7 +258,7 @@ export class SimulatorRunner {
       });
     const overseerRunner = this.options.overseerRunner ?? runOverseer;
     const overseerCheckpoints: SimulatorRunReport["overseerCheckpoints"] = [];
-    let lastBorgResponse: string | null = null;
+    let priorBorgTurn: PriorBorgTurn = { kind: "new_session" };
     let finalMetrics: MetricsRow | undefined;
     let resultState: SimulatorRunReport["resultState"] = "completed";
     const sessions: SimulatorSessionRecord[] = [];
@@ -263,7 +319,61 @@ export class SimulatorRunner {
         } | null = null;
         let attemptError: unknown = null;
         let attemptsMade = 0;
-        const draft = await persona.prepareNextTurn(lastBorgResponse);
+        let draft = await persona.prepareNextTurn(priorBorgTurn);
+        let roleBleedAborted = false;
+
+        for (
+          let bleedAttempt = 1;
+          bleedAttempt <= PERSONA_ROLE_BLEED_MAX_ATTEMPTS;
+          bleedAttempt += 1
+        ) {
+          const bleedPattern = personaRoleBleedPattern(draft.message);
+
+          if (bleedPattern === null) {
+            break;
+          }
+
+          const finalBleedAttempt = bleedAttempt === PERSONA_ROLE_BLEED_MAX_ATTEMPTS;
+          recordPersonaRoleBleed({
+            tracePath: transport.tracePath,
+            turn,
+            sessionId: currentSessionId,
+            priorTurn: priorBorgTurn,
+            pattern: bleedPattern,
+            attempt: bleedAttempt,
+            action: finalBleedAttempt ? "aborted" : "regenerated",
+          });
+          persona.rollback(draft);
+
+          if (finalBleedAttempt) {
+            const detail = `${PERSONA_ROLE_BLEED_EVENT}: ${bleedPattern}`;
+            turnFailures.push({ turn, error: detail, attempts: 0 });
+            await metrics.captureAborted(transport.getBorg(), turn, {
+              sessionId: currentSessionId,
+              sessionIds,
+              transportChatAttempts: 0,
+              failureReason: detail,
+              turnId: `${PERSONA_ROLE_BLEED_EVENT}_${turn}`,
+            });
+            consecutiveFailures += 1;
+            // eslint-disable-next-line no-console
+            console.warn(`[simulator] turn ${turn} failed before Borg chat: ${detail}`);
+
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+              throw new Error(
+                `Simulator aborting: ${consecutiveFailures} consecutive turn failures (last: ${detail})`,
+              );
+            }
+            roleBleedAborted = true;
+            break;
+          }
+
+          draft = await persona.prepareNextTurn(priorBorgTurnRetry(priorBorgTurn));
+        }
+
+        if (roleBleedAborted) {
+          continue;
+        }
 
         for (let attempt = 0; attempt <= TRANSIENT_RETRY_ATTEMPTS; attempt += 1) {
           attemptsMade = attempt + 1;
@@ -342,7 +452,7 @@ export class SimulatorRunner {
               turn,
               reason: suppressionReason,
             });
-            lastBorgResponse = null;
+            priorBorgTurn = { kind: "continued_suppression", reason: suppressionReason };
             continue;
           }
 
@@ -364,15 +474,15 @@ export class SimulatorRunner {
           const gap =
             SESSION_GAP_DESCRIPTIONS[sessions.length % SESSION_GAP_DESCRIPTIONS.length] ??
             SESSION_GAP_DESCRIPTIONS[0]!;
-          persona.startNewSession(gap);
-          lastBorgResponse = null;
+          persona.startNewSession();
+          priorBorgTurn = { kind: "new_session", gapContext: gap };
           currentSessionStartTurn = turn + 1;
           currentSessionId = createSessionId();
           sessionIds.push(currentSessionId);
           continue;
         }
 
-        lastBorgResponse = success.response;
+        priorBorgTurn = { kind: "normal", text: success.response };
 
         const overseerDue =
           Number.isInteger(this.options.checkEvery) &&
