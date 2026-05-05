@@ -1,6 +1,7 @@
 import {
   StreamReader,
   filterActiveStreamEntries,
+  isNarrativeStreamEntry,
   type StreamEntry,
   type StreamEntryIndexRepository,
 } from "../stream/index.js";
@@ -44,7 +45,9 @@ export class RawStreamAdapter {
         sessionId,
       });
 
-      entries.push(...filterActiveStreamEntries(reader.tail(tailLimit)));
+      entries.push(
+        ...filterActiveStreamEntries(reader.tail(tailLimit)).filter(isNarrativeStreamEntry),
+      );
     }
 
     return entries.sort(compareStreamEntriesDescending).slice(0, limit);

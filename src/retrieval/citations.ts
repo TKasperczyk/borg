@@ -14,7 +14,7 @@ import {
   getSessionStreamPath,
   getStreamDirectory,
   StreamReader,
-  collectAbortedTurnRefs,
+  collectInactiveStreamEntryRefs,
   streamEntryIsActive,
   streamEntrySchema,
   type StreamEntry,
@@ -158,14 +158,14 @@ export class CitationResolver {
     const markerEntries: StreamEntry[] = [];
 
     for (const sessionId of sessionIds) {
-      markerEntries.push(...this.readAbortMarkerEntries(sessionId));
+      markerEntries.push(...this.readStatusMarkerEntries(sessionId));
     }
 
-    const refs = collectAbortedTurnRefs(markerEntries);
+    const refs = collectInactiveStreamEntryRefs(markerEntries);
     return new Map([...entries].filter(([, entry]) => streamEntryIsActive(entry, refs)));
   }
 
-  private readAbortMarkerEntries(sessionId: SessionId): StreamEntry[] {
+  private readStatusMarkerEntries(sessionId: SessionId): StreamEntry[] {
     const streamPath = getSessionStreamPath(this.options.dataDir, sessionId);
 
     if (!existsSync(streamPath)) {

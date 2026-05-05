@@ -15,6 +15,7 @@ import type { EntityRepository } from "../commitments/index.js";
 import {
   StreamReader,
   filterActiveStreamEntries,
+  isNarrativeStreamEntry,
   type StreamCursor,
   type StreamEntry,
 } from "../../stream/index.js";
@@ -69,7 +70,6 @@ type RelationalSlotSubject = {
   source: "default_user" | "audience";
 };
 const EXTRACT_EPISODES_TOOL_NAME = "EmitEpisodeCandidates";
-const EPISODIC_SOURCE_STREAM_KINDS = ["user_msg", "agent_msg"] as const;
 const EPISODIC_CONTEXT_STREAM_KINDS = [
   "user_msg",
   "agent_msg",
@@ -171,7 +171,7 @@ function uniqueStreamEntryIds(entries: readonly StreamEntry[]): Episode["source_
 }
 
 function isEpisodicSourceEntry(entry: StreamEntry): boolean {
-  return (EPISODIC_SOURCE_STREAM_KINDS as readonly string[]).includes(entry.kind);
+  return isNarrativeStreamEntry(entry);
 }
 
 function suppressedUserEntryId(entry: StreamEntry): string | null {

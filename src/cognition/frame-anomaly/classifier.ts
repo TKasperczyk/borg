@@ -67,13 +67,13 @@ export type ClassifyFrameAnomalyInput = {
 
 class MissingFrameAnomalyToolCallError extends Error {}
 
-function normalClassification(
-  rationale = "No frame-provenance anomaly detected.",
+function degradedClassification(
+  reason: FrameAnomalyClassifierDegradedReason,
 ): FrameAnomalyClassification {
   return {
-    kind: "normal",
+    kind: "degraded",
     confidence: 0,
-    rationale,
+    rationale: `Frame anomaly classifier degraded: ${reason}.`,
   };
 }
 
@@ -216,7 +216,7 @@ export class FrameAnomalyClassifier {
       // Best-effort degraded-mode logging only.
     }
 
-    return normalClassification("Frame anomaly classifier unavailable.");
+    return degradedClassification(reason);
   }
 
   async classify(input: ClassifyFrameAnomalyInput): Promise<FrameAnomalyClassification> {

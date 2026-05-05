@@ -44,11 +44,10 @@ describe("detectPersonaRoleBleed", () => {
   });
 
   it("normalizes curly apostrophes before matching contractions", () => {
-    expect(
-      detectPersonaRoleBleed(
-        "I don\u2019t carry memory. I\u2019ve been Tom. You\u2019ve been Borg.",
-      ).matched,
-    ).toEqual(["i don't carry memory", "i've been tom", "you've been borg"]);
+    expect(detectPersonaRoleBleed("I\u2019m Claude. I\u2019ve been playing Tom.").matched).toEqual([
+      "i'm claude",
+      "i've been playing tom",
+    ]);
   });
 });
 
@@ -92,6 +91,26 @@ describe("classifyPersonaRoleBleed", () => {
       category: "tom_persona",
       source: "llm",
     });
+  });
+
+  it("lets broad AI-tool phrasing reach the classifier", async () => {
+    const llm = new FakeLLMClient({
+      responses: [personaRoleBleedResponse("tom_persona")],
+    });
+
+    const result = await classifyPersonaRoleBleed({
+      message: "I tried it as an AI tool for the refactor notes, but I still need to review it.",
+      llmClient: llm,
+      model: "test-recall",
+      personaName: "Tom",
+    });
+
+    expect(result).toMatchObject({
+      flagged: false,
+      category: "tom_persona",
+      source: "llm",
+    });
+    expect(llm.requests).toHaveLength(1);
   });
 
   it("flags roleplay frame exits as frame assignment", async () => {

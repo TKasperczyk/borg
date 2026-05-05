@@ -120,4 +120,42 @@ describe("RawStreamAdapter", () => {
     expect([...resolved.keys()]).toEqual([active.id]);
     expect(directlyResolved.size).toBe(0);
   });
+
+  it("excludes diagnostic internal events from recent conversational evidence", async () => {
+    const dir = tempDir();
+    const clock = new ManualClock();
+    const sessionId = createSessionId();
+    const writer = new StreamWriter({
+      dataDir: dir,
+      sessionId,
+      clock,
+    });
+
+    clock.set(100);
+    const user = await writer.append({
+      kind: "user_msg",
+      content: "normal source",
+    });
+    clock.set(200);
+    await writer.append({
+      kind: "internal_event",
+      content: {
+        event: "frame_anomaly_gate",
+        source_stream_entry_id: user.id,
+      },
+    });
+    clock.set(300);
+    const agent = await writer.append({
+      kind: "agent_msg",
+      content: "normal response",
+    });
+    writer.close();
+
+    const adapter = new RawStreamAdapter({ dataDir: dir });
+
+    expect(adapter.recent({ sessionId, limit: 10 }).map((entry) => entry.id)).toEqual([
+      agent.id,
+      user.id,
+    ]);
+  });
 });

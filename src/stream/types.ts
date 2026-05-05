@@ -21,6 +21,8 @@ export const STREAM_ENTRY_KINDS = [
   "dream_report",
 ] as const;
 
+export const NARRATIVE_STREAM_ENTRY_KINDS = ["user_msg", "agent_msg"] as const;
+
 export const streamEntryKindSchema = z.enum(STREAM_ENTRY_KINDS);
 export const streamTurnStatusSchema = z.enum(["active", "aborted"]);
 
@@ -63,6 +65,7 @@ export const streamEntryInputSchema = streamEntrySchema
   });
 
 export type StreamEntryKind = z.infer<typeof streamEntryKindSchema>;
+export type NarrativeStreamEntryKind = (typeof NARRATIVE_STREAM_ENTRY_KINDS)[number];
 export type StreamTurnStatus = z.infer<typeof streamTurnStatusSchema>;
 export type StreamEntry = Omit<z.infer<typeof streamEntrySchema>, "turn_status"> & {
   turn_status?: StreamTurnStatus;
@@ -85,3 +88,9 @@ export type StreamIterateOptions = {
 
 export { DEFAULT_SESSION_ID };
 export type { SessionId };
+
+export function isNarrativeStreamEntry(
+  entry: Pick<StreamEntry, "kind">,
+): entry is StreamEntry & { kind: NarrativeStreamEntryKind } {
+  return (NARRATIVE_STREAM_ENTRY_KINDS as readonly StreamEntryKind[]).includes(entry.kind);
+}

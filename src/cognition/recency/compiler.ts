@@ -1,4 +1,9 @@
-import { StreamReader, filterActiveStreamEntries, type StreamEntry } from "../../stream/index.js";
+import {
+  StreamReader,
+  filterActiveStreamEntries,
+  isNarrativeStreamEntry,
+  type StreamEntry,
+} from "../../stream/index.js";
 
 import type { RecencyMessage, RecencyWindow } from "./types.js";
 
@@ -102,6 +107,10 @@ export class TurnContextCompiler {
     }> = [];
 
     for (const entry of recent) {
+      if (!isNarrativeStreamEntry(entry)) {
+        continue;
+      }
+
       const role = streamKindToRole(entry.kind);
 
       if (role === null) {
