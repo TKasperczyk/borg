@@ -1488,7 +1488,59 @@ function defaultPersonaRoleBleedResponse(): LLMCompleteResult {
   };
 }
 
-function defaultClosureLoopClassificationResponse(): LLMCompleteResult {
+function defaultClosureLoopClassifiedMessages(
+  messages: readonly LLMMessage[],
+): Array<{ message_ref: string; role: "user" | "assistant"; act: "substantive" }> {
+  const request = messages[0];
+
+  if (request === undefined) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(request.content) as { dialogue_window?: unknown };
+    const dialogueWindow = parsed.dialogue_window;
+
+    if (!Array.isArray(dialogueWindow)) {
+      return [];
+    }
+
+    const classified: Array<{
+      message_ref: string;
+      role: "user" | "assistant";
+      act: "substantive";
+    }> = [];
+
+    for (const item of dialogueWindow) {
+      if (typeof item !== "object" || item === null) {
+        continue;
+      }
+
+      const message = item as { message_ref?: unknown; role?: unknown };
+
+      if (
+        typeof message.message_ref !== "string" ||
+        (message.role !== "user" && message.role !== "assistant")
+      ) {
+        continue;
+      }
+
+      classified.push({
+        message_ref: message.message_ref,
+        role: message.role,
+        act: "substantive",
+      });
+    }
+
+    return classified;
+  } catch {
+    return [];
+  }
+}
+
+function defaultClosureLoopClassificationResponse(
+  messages: readonly LLMMessage[] = [],
+): LLMCompleteResult {
   return {
     text: "",
     input_tokens: 0,
@@ -1499,7 +1551,7 @@ function defaultClosureLoopClassificationResponse(): LLMCompleteResult {
         id: "toolu_default_closure_loop",
         name: "ClassifyClosureLoopDialogueActs",
         input: {
-          messages: [],
+          messages: defaultClosureLoopClassifiedMessages(messages),
           confidence: 0,
           rationale: "No closure-loop classification scripted.",
         },
@@ -1618,7 +1670,7 @@ export class FakeLLMClient implements LLMClient {
       scriptedResponseBudget(response) !== "closure-loop-classifier" &&
       !isClosureLoopClassificationResponse(response)
     ) {
-      return defaultClosureLoopClassificationResponse();
+      return defaultClosureLoopClassificationResponse(options.messages);
     }
 
     if (

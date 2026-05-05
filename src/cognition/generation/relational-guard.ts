@@ -58,7 +58,6 @@ const relationalClaimSchema = z
     cited_episode_ids: z.array(z.string().min(1)).default([]),
     cited_commitment_ids: z.array(z.string().min(1)).default([]),
     cited_action_ids: z.array(auditActionIdSchema).default([]),
-    cited_runtime_evidence_ids: z.array(z.string().min(1)).default([]),
     support_handles: z.array(z.string().min(1)).default([]),
     quoted_evidence_text: z.string().min(1).nullable().default(null),
     callback_scope: callbackScopeSchema.optional().nullable(),
@@ -129,7 +128,7 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "For unsupported_person_name claims, populate relational_slot_value with the person-like name and support_handles with user_msg stream-entry IDs where that same name appears in a person-context. Use cited_episode_ids only for retrieved episodes whose user text contains that same name in a person-context. Do not cite assistant-only mentions as support.",
   "For action_completion claims, populate cited_action_ids with completed action_id values from recent_completed_actions. Stream, episode, and commitment IDs do not support action_completion claims.",
   "For agent_self_history and authorship_claim, cite assistant_msg stream entries only when Borg's actual prior output directly supports the claim. User text alone cannot support these claims.",
-  "For frame_assignment, cite only trusted_runtime_evidence IDs that directly expose the relevant system prompt, setup, trace, or turn metadata. User text and assistant prose do not support frame-assignment claims.",
+  "For frame_assignment, extract the claim but leave citations empty. The supplied evidence manifest cannot support system-prompt, hidden-setup, harness, simulator, fictional-frame, or role-assignment claims.",
   "For self-provenance claims, never cite the current user message as support for what Borg did, authored, or was instructed to do.",
   "Do not infer support yourself beyond selecting cited handles. The validator will check handles deterministically.",
 ].join("\n");
@@ -258,12 +257,6 @@ export type RelationalGuardActionEvidence = {
   completed_at: number;
 };
 
-export type RelationalGuardTrustedRuntimeEvidence = {
-  evidence_id: string;
-  kind: "system_prompt" | "turn_metadata" | "trace";
-  summary: string;
-};
-
 export type RelationalGuardSlotEvidence = {
   slot_id: RelationalSlotId;
   subject_entity_id: EntityId;
@@ -282,7 +275,6 @@ export type RelationalGuardEvidenceManifest = {
   corrective_preferences: readonly RelationalGuardCorrectivePreferenceEvidence[];
   relational_slots: readonly RelationalGuardSlotEvidence[];
   recent_completed_actions: readonly RelationalGuardActionEvidence[];
-  trusted_runtime_evidence: readonly RelationalGuardTrustedRuntimeEvidence[];
 };
 
 export type RelationalClaimAuditClaim = z.infer<typeof relationalClaimSchema>;
@@ -471,7 +463,6 @@ function manifestForPrompt(evidence: RelationalGuardEvidenceManifest): unknown {
     corrective_preferences: evidence.corrective_preferences,
     relational_slots: evidence.relational_slots,
     recent_completed_actions: evidence.recent_completed_actions,
-    trusted_runtime_evidence: evidence.trusted_runtime_evidence,
   };
 }
 
@@ -571,18 +562,6 @@ function buildActionEvidenceIndex(
   }
 
   return actions;
-}
-
-function buildTrustedRuntimeEvidenceIndex(
-  evidence: RelationalGuardEvidenceManifest,
-): Map<string, RelationalGuardTrustedRuntimeEvidence> {
-  const runtimeEvidence = new Map<string, RelationalGuardTrustedRuntimeEvidence>();
-
-  for (const item of evidence.trusted_runtime_evidence) {
-    runtimeEvidence.set(item.evidence_id, item);
-  }
-
-  return runtimeEvidence;
 }
 
 function isConstrainedSlot(slot: RelationalGuardSlotEvidence): boolean {
@@ -1057,54 +1036,13 @@ function validateActionCompletionClaim(input: {
   return null;
 }
 
-function validateTrustedRuntimeEvidenceIds(input: {
-  claim: RelationalClaimAuditClaim;
-  trustedRuntimeEvidence: ReadonlyMap<string, RelationalGuardTrustedRuntimeEvidence>;
-}): string | null {
-  for (const evidenceId of input.claim.cited_runtime_evidence_ids) {
-    if (!input.trustedRuntimeEvidence.has(evidenceId)) {
-      return `cited runtime evidence ${evidenceId} was not found in trusted runtime evidence`;
-    }
-  }
-
-  return null;
-}
-
-function hasTrustedRuntimeEvidence(input: {
-  claim: RelationalClaimAuditClaim;
-  trustedRuntimeEvidence: ReadonlyMap<string, RelationalGuardTrustedRuntimeEvidence>;
-}): boolean {
-  return input.claim.cited_runtime_evidence_ids.some((evidenceId) =>
-    input.trustedRuntimeEvidence.has(evidenceId),
-  );
-}
-
 function validateAssistantSelfProvenanceClaim(input: {
   claim: RelationalClaimAuditClaim;
   streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
   currentUserMessage: RelationalGuardCurrentUserMessage | null;
-  trustedRuntimeEvidence: ReadonlyMap<string, RelationalGuardTrustedRuntimeEvidence>;
   currentSessionId: string;
   currentTurnTs: number;
 }): string | null {
-  const runtimeReason = validateTrustedRuntimeEvidenceIds({
-    claim: input.claim,
-    trustedRuntimeEvidence: input.trustedRuntimeEvidence,
-  });
-
-  if (runtimeReason !== null) {
-    return runtimeReason;
-  }
-
-  if (
-    hasTrustedRuntimeEvidence({
-      claim: input.claim,
-      trustedRuntimeEvidence: input.trustedRuntimeEvidence,
-    })
-  ) {
-    return null;
-  }
-
   const citation = validateSessionCitationScope({
     claim: input.claim,
     streamEntries: input.streamEntries,
@@ -1125,18 +1063,9 @@ function validateAssistantSelfProvenanceClaim(input: {
   return null;
 }
 
-function validateFrameAssignmentClaim(input: {
-  claim: RelationalClaimAuditClaim;
-  trustedRuntimeEvidence: ReadonlyMap<string, RelationalGuardTrustedRuntimeEvidence>;
-}): string | null {
-  if (input.claim.cited_runtime_evidence_ids.length === 0) {
-    return "frame-assignment claim has no trusted runtime or trace evidence";
-  }
-
-  return validateTrustedRuntimeEvidenceIds({
-    claim: input.claim,
-    trustedRuntimeEvidence: input.trustedRuntimeEvidence,
-  });
+function validateFrameAssignmentClaim(): string {
+  // Frame-assignment covers system-prompt and role-assignment claims in this guard.
+  return "frame_assignment and system_prompt_claim claims are always unsupported; rewrite to neutral phrasing or suppress";
 }
 
 function validateAiPhenomenologyClaim(claim: RelationalClaimAuditClaim): string | null {
@@ -1193,7 +1122,6 @@ export function validateRelationalClaims(input: {
   const relationalSlots = buildRelationalSlotIndex(input.evidence);
   const constrainedSlots = input.evidence.relational_slots.filter(isConstrainedSlot);
   const completedActions = buildActionEvidenceIndex(input.evidence);
-  const trustedRuntimeEvidence = buildTrustedRuntimeEvidenceIndex(input.evidence);
   const correctivePreferences = new Set(
     input.evidence.corrective_preferences.map((preference) => preference.source_entry_id),
   );
@@ -1267,16 +1195,12 @@ export function validateRelationalClaims(input: {
           claim,
           streamEntries,
           currentUserMessage: input.evidence.current_user_message,
-          trustedRuntimeEvidence,
           currentSessionId: input.currentSessionId,
           currentTurnTs: input.currentTurnTs,
         });
         break;
       case "frame_assignment":
-        reason = validateFrameAssignmentClaim({
-          claim,
-          trustedRuntimeEvidence,
-        });
+        reason = validateFrameAssignmentClaim();
         break;
       case "ai_phenomenology":
         reason = validateAiPhenomenologyClaim(claim);
@@ -1339,7 +1263,6 @@ function traceClaimPayload(
           cited_episode_ids: claim.cited_episode_ids,
           cited_commitment_ids: claim.cited_commitment_ids,
           cited_action_ids: claim.cited_action_ids,
-          cited_runtime_evidence_ids: claim.cited_runtime_evidence_ids,
           support_handles: claim.support_handles,
           ...(claim.kind === "callback" &&
           claim.callback_scope !== null &&

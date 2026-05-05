@@ -14,6 +14,7 @@ import {
   type ReviewQueueItem,
   type SessionId,
 } from "../src/index.js";
+import { isNaturalSilenceSuppressionReason } from "../src/cognition/generation/types.js";
 
 import { MetricsCapture } from "./metrics.js";
 import { appendJsonlLine } from "./jsonl.js";
@@ -73,22 +74,7 @@ const PERSONA_ROLE_BLEED_REJECTED_PREVIEW_CHARS = 500;
 function isSessionEndingSuppression(reason: GenerationSuppressionReason | undefined): boolean {
   if (reason === undefined) return true;
 
-  if (reason === "generation_gate") return true;
-  if (reason === "active_discourse_stop") return true;
-  if (reason === "empty_finalizer") return true;
-  if (reason === "no_output_tool") return true;
-  if (reason === "s2_planner_no_output") return true;
-
-  if (reason === "commitment_revision_failed") return false;
-  if (reason === "rewrite_unsupported_or_empty") return false;
-  if (reason === "relational_guard_self_correction") return false;
-  if (reason === "relational_guard_audit_failed") return false;
-  if (reason === "relational_guard_rewrite_call_failed") return false;
-  if (reason === "relational_guard_rewrite_empty") return false;
-  if (reason === "relational_guard_reaudit_failed") return false;
-  if (reason === "relational_guard_rewrite_unsupported") return false;
-
-  return true;
+  return isNaturalSilenceSuppressionReason(reason);
 }
 
 function simulatorScenario(persona: Persona, totalTurns: number): Scenario {
