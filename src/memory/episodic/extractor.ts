@@ -51,6 +51,7 @@ const relationalSlotUpdateCandidateSchema = z
     slot_key: z.string().min(1),
     asserted_value: z.string().min(1),
     source_stream_entry_ids: z.array(z.string().min(1)).min(1),
+    confirmation_kind: z.enum(["direct", "explicit"]),
   })
   .strict();
 
@@ -382,6 +383,7 @@ function buildExtractorPrompt(
     "Use relational_slot_updates only for direct user assertions, not assistant statements, guesses, corrections, denials, or uncertainty.",
     "If an assistant introduced a person name and a later user merely reuses that name, do not emit a relational_slot_update for the name. Bare adoption is not explicit confirmation.",
     'Explicit confirmation can support a relational_slot_update, for example "her name is Marta", "yes, Marta", or "Marta is the tutor".',
+    'For every relational_slot_update, emit confirmation_kind as "direct" for an ordinary user assertion or "explicit" when the user is explicitly confirming a previously uncertain, assistant-seeded, or contested value.',
     "relational_slot_updates.source_stream_entry_ids MUST reference user_msg ids present in the chunk.",
     'Use compact slot_key dot paths such as "partner.name", "partner.role", or "dog.name".',
     "Chunk:",
@@ -546,10 +548,6 @@ function streamEntryText(entry: StreamEntry): string {
   }
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function entryMentionsValue(entry: StreamEntry, value: string): boolean {
   return streamEntryText(entry).includes(value);
 }
@@ -617,31 +615,12 @@ function isAssistantSeededValue(input: {
   return false;
 }
 
-function isExplicitRelationalSlotConfirmation(
-  candidate: RelationalSlotUpdateCandidate,
-  sourceEntries: readonly StreamEntry[],
-): boolean {
-  const value = escapeRegExp(candidate.asserted_value.trim());
-  const patterns = [
-    new RegExp(`\\b(?:her|his|their|my|its)\\s+name(?:\\s+is|'s)\\s+${value}\\b`, "iu"),
-    new RegExp(`\\b(?:yes|yeah|yep),?\\s+${value}\\b`, "iu"),
-    new RegExp(`\\b${value}\\s+is\\s+(?:the|my|our|his|her|their)\\s+[^.?!]{0,48}\\b`, "iu"),
-    new RegExp(`\\b(?:my|our|the)\\s+[^.?!]{0,48}\\s+is\\s+${value}\\b`, "iu"),
-  ];
-
-  return sourceEntries.some((entry) => {
-    const text = streamEntryText(entry);
-
-    return patterns.some((pattern) => pattern.test(text));
-  });
-}
-
 function relationalSlotAssertionConfirmation(input: {
   candidate: RelationalSlotUpdateCandidate;
   sourceEntries: readonly StreamEntry[];
   contextEntries: readonly StreamEntry[];
 }): RelationalSlotAssertionConfirmation {
-  if (isExplicitRelationalSlotConfirmation(input.candidate, input.sourceEntries)) {
+  if (input.candidate.confirmation_kind === "explicit") {
     return "explicit";
   }
 

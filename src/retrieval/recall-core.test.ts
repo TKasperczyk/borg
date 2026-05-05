@@ -331,7 +331,10 @@ describe("Recall Core", () => {
   });
 
   it("clips overlong recall expansion facets and traces clipping", async () => {
-    const tracer = createTracer();
+    const tracer = {
+      ...createTracer(),
+      includePayloads: true,
+    };
     const facets = [
       { kind: "topic" as const, query: "Atlas low-priority", priority: 0.1 },
       { kind: "relationship" as const, query: "Atlas relationship", priority: 0.9 },
@@ -365,8 +368,9 @@ describe("Recall Core", () => {
     ]);
     expect(tracer.emit).toHaveBeenCalledWith("recall_expansion_clipped", {
       turnId: "turn-recall-expansion-clipped",
-      originalFacetCount: 5,
-      retainedFacetCount: 4,
+      original_count: 5,
+      retained_count: 4,
+      dropped_facets: [{ priority: 0.1, query: "Atlas low-priority" }],
     });
   });
 

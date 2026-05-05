@@ -52,6 +52,7 @@ const relationalClaimSchema = z
     cited_episode_ids: z.array(z.string().min(1)).default([]),
     cited_commitment_ids: z.array(z.string().min(1)).default([]),
     cited_action_ids: z.array(auditActionIdSchema).default([]),
+    support_handles: z.array(z.string().min(1)).default([]),
     quoted_evidence_text: z.string().min(1).nullable().default(null),
     callback_scope: callbackScopeSchema.optional().nullable(),
     subject_entity_id: z.string().min(1).nullable().default(null),
@@ -103,7 +104,7 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "Return an empty claims array when the response contains none of these claims.",
   "For every extracted claim, cite only evidence IDs present in the supplied evidence manifest.",
   "For relational_identity claims, also populate subject_entity_id, slot_key, and relational_slot_value when the claim maps to a supplied relational slot. When relational_slots include contested or quarantined slots for that subject, subject_entity_id and slot_key are required.",
-  "For unsupported_person_name claims, populate relational_slot_value with the person-like name when possible, and cite only user-side source handles containing that name. Do not cite assistant-only mentions as support.",
+  "For unsupported_person_name claims, populate relational_slot_value with the person-like name and support_handles with user_msg stream-entry IDs where that same name appears in a person-context. Use cited_episode_ids only for retrieved episodes whose user text contains that same name in a person-context. Do not cite assistant-only mentions as support.",
   "For action_completion claims, populate cited_action_ids with completed action_id values from recent_completed_actions. Stream, episode, and commitment IDs do not support action_completion claims.",
   "Do not infer support yourself beyond selecting cited handles. The validator will check handles deterministically.",
 ].join("\n");
@@ -189,7 +190,6 @@ const PERSON_NAME_STOP_WORDS = [
 ] as const;
 const NAME_WORD_PATTERN = String.raw`\p{Lu}[\p{L}\p{M}'-]*`;
 const NAME_PHRASE_PATTERN = `${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN})?`;
-const PERSON_NAME_SCAN_PATTERN = new RegExp(`\\b${NAME_PHRASE_PATTERN}\\b`, "gu");
 
 export type RelationalGuardStreamEvidence = {
   entry_id: StreamEntryId;
@@ -212,6 +212,7 @@ export type RelationalGuardEpisodeEvidence = {
   episode_id: EpisodeId;
   asOf: number;
   snippet: string;
+  user_texts: readonly string[];
 };
 
 export type RelationalGuardCommitmentEvidence = {
@@ -344,6 +345,9 @@ export function retrievedEpisodeToRelationalGuardEvidence(
     episode_id: episode.episode.id,
     asOf: episode.episode.updated_at,
     snippet: snippet(episode.episode.narrative),
+    user_texts: episode.citationChain
+      .filter((entry) => entry.kind === "user_msg")
+      .map((entry) => streamEntryContentToString(entry.content)),
   };
 }
 
@@ -425,7 +429,12 @@ function manifestForPrompt(evidence: RelationalGuardEvidenceManifest): unknown {
       ts: entry.ts,
       snippet: entry.snippet,
     })),
-    retrieved_episodes: evidence.retrieved_episodes,
+    retrieved_episodes: evidence.retrieved_episodes.map((episode) => ({
+      episode_id: episode.episode_id,
+      asOf: episode.asOf,
+      snippet: episode.snippet,
+      user_text_snippets: episode.user_texts.map((text) => snippet(text)),
+    })),
     active_commitments: evidence.active_commitments,
     corrective_preferences: evidence.corrective_preferences,
     relational_slots: evidence.relational_slots,
@@ -493,6 +502,18 @@ function buildStreamEvidenceIndex(
   }
 
   return entries;
+}
+
+function buildEpisodeEvidenceIndex(
+  evidence: RelationalGuardEvidenceManifest,
+): Map<string, RelationalGuardEpisodeEvidence> {
+  const episodes = new Map<string, RelationalGuardEpisodeEvidence>();
+
+  for (const episode of evidence.retrieved_episodes) {
+    episodes.set(episode.episode_id, episode);
+  }
+
+  return episodes;
 }
 
 function buildRelationalSlotIndex(
@@ -720,14 +741,24 @@ function uniqueNames(values: readonly string[]): string[] {
   return names;
 }
 
+function uniqueStrings(values: readonly string[]): string[] {
+  const unique: string[] = [];
+
+  for (const value of values) {
+    if (unique.some((existing) => existing === value)) {
+      continue;
+    }
+
+    unique.push(value);
+  }
+
+  return unique;
+}
+
 function isIgnoredPersonName(name: string): boolean {
   const firstWord = name.split(/\s+/, 1)[0] ?? name;
 
   return PERSON_NAME_STOP_WORDS.some((word) => word === name || word === firstWord);
-}
-
-function extractPotentialPersonNames(text: string): string[] {
-  return uniqueNames([...text.matchAll(PERSON_NAME_SCAN_PATTERN)].map((match) => match[0]));
 }
 
 type PersonNameUsage = {
@@ -775,26 +806,8 @@ function extractLifeContextPersonNameUsages(text: string): PersonNameUsage[] {
   return usages;
 }
 
-function buildUserSideNameAllowlist(evidence: RelationalGuardEvidenceManifest): Set<string> {
-  const names = new Set<string>(KNOWN_WORLD_ENTITY_ALLOWLIST_SEEDS);
-
-  if (evidence.current_user_message !== null) {
-    for (const name of extractPotentialPersonNames(evidence.current_user_message.text)) {
-      names.add(name);
-    }
-  }
-
-  for (const entry of evidence.current_session_stream_entries) {
-    if (entry.kind !== "user_msg") {
-      continue;
-    }
-
-    for (const name of extractPotentialPersonNames(entry.content)) {
-      names.add(name);
-    }
-  }
-
-  return names;
+function buildKnownWorldNameAllowlist(): Set<string> {
+  return new Set<string>(KNOWN_WORLD_ENTITY_ALLOWLIST_SEEDS);
 }
 
 function establishedSlotSupportsName(
@@ -806,57 +819,84 @@ function establishedSlotSupportsName(
   );
 }
 
-function userEvidenceStreamIdsForName(
-  name: string,
-  evidence: RelationalGuardEvidenceManifest,
-): StreamEntryId[] {
-  const ids: StreamEntryId[] = [];
-  const current = evidence.current_user_message;
-
-  if (
-    current !== null &&
-    current.stream_entry_id !== null &&
-    current.text.includes(name) &&
-    !ids.some((entryId) => entryId === current.stream_entry_id)
-  ) {
-    ids.push(current.stream_entry_id);
-  }
-
-  for (const entry of evidence.current_session_stream_entries) {
-    if (entry.kind !== "user_msg" || !entry.content.includes(name)) {
-      continue;
-    }
-
-    if (!ids.some((entryId) => entryId === entry.entry_id)) {
-      ids.push(entry.entry_id);
-    }
-  }
-
-  return ids;
-}
-
-function userEvidenceSupportsName(
-  name: string,
-  evidence: RelationalGuardEvidenceManifest,
-): boolean {
-  return (
-    userEvidenceStreamIdsForName(name, evidence).length > 0 ||
-    establishedSlotSupportsName(name, evidence)
-  );
-}
-
 function personNamesForClaim(claim: RelationalClaimAuditClaim): string[] {
-  return uniqueNames([
-    ...(claim.relational_slot_value === null ? [] : [claim.relational_slot_value]),
-    ...extractLifeContextPersonNameUsages(claim.asserted).map((usage) => usage.name),
-    ...extractPotentialPersonNames(claim.asserted),
-  ]);
+  return uniqueNames(claim.relational_slot_value === null ? [] : [claim.relational_slot_value]);
+}
+
+function supportHandlesForClaim(claim: RelationalClaimAuditClaim): string[] {
+  return uniqueStrings(claim.support_handles);
+}
+
+function validateStreamSupportHandles(input: {
+  name: string;
+  claim: RelationalClaimAuditClaim;
+  streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
+  currentSessionId: string;
+}): true | false | string {
+  const supportHandles = supportHandlesForClaim(input.claim);
+
+  if (supportHandles.length === 0) {
+    return false;
+  }
+
+  const supportClaim = {
+    ...input.claim,
+    cited_stream_entry_ids: supportHandles,
+  };
+  const resolved = streamIdsExistInCurrentSession({
+    claim: supportClaim,
+    streamEntries: input.streamEntries,
+    currentSessionId: input.currentSessionId,
+  });
+
+  if (typeof resolved === "string") {
+    return resolved;
+  }
+
+  if (resolved.some((entry) => entry.kind !== "user_msg")) {
+    return `unsupported person name ${input.name} cites non-user evidence`;
+  }
+
+  if (resolved.some((entry) => entry.content.includes(input.name))) {
+    return true;
+  }
+
+  return `unsupported person name ${input.name} does not appear verbatim in cited user evidence`;
+}
+
+function validateEpisodeSupportHandles(input: {
+  name: string;
+  claim: RelationalClaimAuditClaim;
+  episodes: ReadonlyMap<string, RelationalGuardEpisodeEvidence>;
+}): true | false | string {
+  if (input.claim.cited_episode_ids.length === 0) {
+    return false;
+  }
+
+  const resolved: RelationalGuardEpisodeEvidence[] = [];
+
+  for (const episodeId of input.claim.cited_episode_ids) {
+    const episode = input.episodes.get(episodeId);
+
+    if (episode === undefined) {
+      return `cited episode ${episodeId} was not found in retrieved evidence`;
+    }
+
+    resolved.push(episode);
+  }
+
+  if (resolved.some((episode) => episode.user_texts.some((text) => text.includes(input.name)))) {
+    return true;
+  }
+
+  return `unsupported person name ${input.name} does not appear verbatim in cited episode user evidence`;
 }
 
 function validateUnsupportedPersonNameClaim(input: {
   claim: RelationalClaimAuditClaim;
   evidence: RelationalGuardEvidenceManifest;
   streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
+  episodes: ReadonlyMap<string, RelationalGuardEpisodeEvidence>;
   currentSessionId: string;
 }): string | null {
   const names = personNamesForClaim(input.claim);
@@ -870,33 +910,36 @@ function validateUnsupportedPersonNameClaim(input: {
       continue;
     }
 
-    if (input.claim.cited_stream_entry_ids.length === 0) {
-      if (userEvidenceSupportsName(name, input.evidence)) {
-        continue;
-      }
-
-      return `unsupported person name ${name} has no user-side source evidence`;
-    }
-
-    const resolved = streamIdsExistInCurrentSession({
+    const streamSupport = validateStreamSupportHandles({
+      name,
       claim: input.claim,
       streamEntries: input.streamEntries,
       currentSessionId: input.currentSessionId,
     });
 
-    if (typeof resolved === "string") {
-      return resolved;
-    }
-
-    if (resolved.some((entry) => entry.kind !== "user_msg")) {
-      return `unsupported person name ${name} cites non-user evidence`;
-    }
-
-    if (resolved.some((entry) => entry.content.includes(name))) {
+    if (streamSupport === true) {
       continue;
     }
 
-    return `unsupported person name ${name} does not appear verbatim in cited user evidence`;
+    if (typeof streamSupport === "string") {
+      return streamSupport;
+    }
+
+    const episodeSupport = validateEpisodeSupportHandles({
+      name,
+      claim: input.claim,
+      episodes: input.episodes,
+    });
+
+    if (episodeSupport === true) {
+      continue;
+    }
+
+    if (typeof episodeSupport === "string") {
+      return episodeSupport;
+    }
+
+    return `unsupported person name ${name} has no user-side source evidence`;
   }
 
   return null;
@@ -912,7 +955,7 @@ function buildUnsupportedPersonNameBackstopValidations(input: {
     return [];
   }
 
-  const allowlist = buildUserSideNameAllowlist(input.evidence);
+  const allowlist = buildKnownWorldNameAllowlist();
   const claimedNames = new Set(
     input.claims
       .filter((claim) => claim.kind === "unsupported_person_name")
@@ -925,7 +968,7 @@ function buildUnsupportedPersonNameBackstopValidations(input: {
       continue;
     }
 
-    if (userEvidenceSupportsName(usage.name, input.evidence)) {
+    if (establishedSlotSupportsName(usage.name, input.evidence)) {
       continue;
     }
 
@@ -1011,6 +1054,7 @@ export function validateRelationalClaims(input: {
   hasCorrectivePreferenceEvidence: (entryId: StreamEntryId) => boolean;
 }): RelationalClaimValidationSummary {
   const streamEntries = buildStreamEvidenceIndex(input.evidence);
+  const episodes = buildEpisodeEvidenceIndex(input.evidence);
   const relationalSlots = buildRelationalSlotIndex(input.evidence);
   const constrainedSlots = input.evidence.relational_slots.filter(isConstrainedSlot);
   const completedActions = buildActionEvidenceIndex(input.evidence);
@@ -1035,6 +1079,7 @@ export function validateRelationalClaims(input: {
           claim,
           evidence: input.evidence,
           streamEntries,
+          episodes,
           currentSessionId: input.currentSessionId,
         });
         break;
@@ -1138,6 +1183,7 @@ function traceClaimPayload(
           cited_episode_ids: claim.cited_episode_ids,
           cited_commitment_ids: claim.cited_commitment_ids,
           cited_action_ids: claim.cited_action_ids,
+          support_handles: claim.support_handles,
           ...(claim.kind === "callback" &&
           claim.callback_scope !== null &&
           claim.callback_scope !== undefined

@@ -95,6 +95,50 @@ describe("relational slot repository", () => {
     }
   });
 
+  it("promotes an explicit different-value assertion and preserves the prior value as an alternate", () => {
+    const db = openDatabase(":memory:", {
+      migrations: relationalSlotMigrations,
+    });
+    const clock = new ManualClock(1_000);
+    const repo = new RelationalSlotRepository({ db, clock });
+    const subject = createEntityId();
+    const first = createStreamEntryId();
+    const second = createStreamEntryId();
+
+    try {
+      repo.applyAssertion({
+        subject_entity_id: subject,
+        slot_key: "partner.name",
+        asserted_value: "Sarah",
+        source_stream_entry_ids: [first],
+      });
+      clock.advance(10);
+      const promoted = repo.applyAssertion({
+        subject_entity_id: subject,
+        slot_key: "partner.name",
+        asserted_value: "Maya",
+        source_stream_entry_ids: [second],
+        confirmation: "explicit",
+      });
+
+      expect(promoted.slot).toMatchObject({
+        value: "Maya",
+        state: "established",
+        evidence_stream_entry_ids: [second],
+        contradicted_by_stream_entry_ids: [second],
+      });
+      expect(promoted.slot.alternate_values).toEqual([
+        {
+          value: "Sarah",
+          evidence_stream_entry_ids: [first],
+        },
+      ]);
+      expect(repo.findBySubjectAndKey(subject, "partner.name")).toEqual(promoted.slot);
+    } finally {
+      db.close();
+    }
+  });
+
   it("rereads slots inside the write transaction before conflicting assertions", () => {
     const db = openDatabase(":memory:", {
       migrations: relationalSlotMigrations,

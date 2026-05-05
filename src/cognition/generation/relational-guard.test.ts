@@ -55,6 +55,7 @@ function makeClaim(
     cited_episode_ids: overrides.cited_episode_ids ?? [],
     cited_commitment_ids: overrides.cited_commitment_ids ?? [],
     cited_action_ids: overrides.cited_action_ids ?? [],
+    support_handles: overrides.support_handles ?? [],
     quoted_evidence_text: overrides.quoted_evidence_text ?? null,
     callback_scope:
       overrides.callback_scope ?? (overrides.kind === "callback" ? "prior_turn" : null),
@@ -105,9 +106,11 @@ function validate(
   evidence: RelationalGuardEvidenceManifest,
   currentSessionId: SessionId = DEFAULT_SESSION_ID,
   currentTurnTs = 2_000,
+  response?: string,
 ) {
   return validateRelationalClaims({
     claims,
+    response,
     evidence,
     currentSessionId,
     currentTurnTs,
@@ -268,6 +271,100 @@ describe("validateRelationalClaims", () => {
     expect(summary.unsupported).toHaveLength(1);
     expect(summary.unsupported[0]?.reason).toContain("contested");
     expect(summary.unsupported[0]?.reason).toContain("your partner");
+  });
+
+  it("does not allowlist incidental capitalized user-text tokens as person-name support", () => {
+    const currentEntryId = createStreamEntryId();
+    const summary = validate(
+      [],
+      baseEvidence({
+        current_user_message: {
+          text: "My Spanish tutor is from Sevilla.",
+          stream_entry_id: currentEntryId,
+          ts: 2_000,
+        },
+      }),
+      DEFAULT_SESSION_ID,
+      2_000,
+      "I'll ask Sevilla the boring version.",
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.claim).toMatchObject({
+      kind: "unsupported_person_name",
+      relational_slot_value: "Sevilla",
+    });
+  });
+
+  it("accepts a user-named person when the auditor cites a user support handle", () => {
+    const userEntry = streamEvidence({
+      content: "Her name is Marta.",
+    });
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "unsupported_person_name",
+          asserted: "ask Marta",
+          relational_slot_value: "Marta",
+          support_handles: [userEntry.entry_id],
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [userEntry],
+      }),
+      DEFAULT_SESSION_ID,
+      2_000,
+      "I'll ask Marta the boring version.",
+    );
+
+    expect(summary.unsupported).toEqual([]);
+  });
+
+  it("accepts retrieved episode user text as person-name support and rejects narrative-only episode mentions", () => {
+    const supportedEpisodeId = createEpisodeId();
+    const narrativeOnlyEpisodeId = createEpisodeId();
+    const evidence = baseEvidence({
+      retrieved_episodes: [
+        {
+          episode_id: supportedEpisodeId,
+          asOf: 1_000,
+          snippet: "Tom confirmed a tutor name.",
+          user_texts: ["Her name is Marta."],
+        },
+        {
+          episode_id: narrativeOnlyEpisodeId,
+          asOf: 1_000,
+          snippet: "The episode summary mentions Marta.",
+          user_texts: ["The tutor lives nearby."],
+        },
+      ],
+    });
+    const supported = validate(
+      [
+        makeClaim({
+          kind: "unsupported_person_name",
+          asserted: "ask Marta",
+          relational_slot_value: "Marta",
+          cited_episode_ids: [supportedEpisodeId],
+        }),
+      ],
+      evidence,
+    );
+    const unsupported = validate(
+      [
+        makeClaim({
+          kind: "unsupported_person_name",
+          asserted: "ask Marta",
+          relational_slot_value: "Marta",
+          cited_episode_ids: [narrativeOnlyEpisodeId],
+        }),
+      ],
+      evidence,
+    );
+
+    expect(supported.unsupported).toEqual([]);
+    expect(unsupported.unsupported).toHaveLength(1);
+    expect(unsupported.unsupported[0]?.reason).toContain("cited episode user evidence");
   });
 
   it("accepts callbacks with prior current-session stream evidence and exact quotes", () => {
@@ -595,6 +692,7 @@ describe("validateRelationalClaims", () => {
             episode_id: episodeId,
             asOf: 1_000,
             snippet: "The invoice was completed.",
+            user_texts: ["The invoice was completed."],
           },
         ],
       }),
@@ -658,6 +756,7 @@ describe("RelationalClaimGuard", () => {
       cited_episode_ids: [],
       cited_commitment_ids: [],
       cited_action_ids: [],
+      support_handles: [],
       quoted_evidence_text: null,
     });
   });
