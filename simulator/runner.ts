@@ -1,5 +1,3 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { BorgTransport } from "../assessor/borg-transport.js";
@@ -15,8 +13,9 @@ import {
 } from "../src/index.js";
 
 import { MetricsCapture } from "./metrics.js";
+import { appendJsonlLine } from "./jsonl.js";
 import {
-  personaRoleBleedPattern,
+  detectPersonaRoleBleed,
   PersonaSession,
   type PersonaTurnDraft,
   type PriorBorgTurn,
@@ -64,6 +63,7 @@ export type SimulatorRunnerOptions = {
 const DEFAULT_MAINTENANCE_EVERY = 10;
 const PERSONA_ROLE_BLEED_EVENT = "persona_role_bleed";
 const PERSONA_ROLE_BLEED_MAX_ATTEMPTS = 2;
+const PERSONA_ROLE_BLEED_REJECTED_PREVIEW_CHARS = 500;
 
 function isSessionEndingSuppression(reason: GenerationSuppressionReason | undefined): boolean {
   if (reason === undefined) return true;
@@ -95,24 +95,14 @@ function simulatorScenario(persona: Persona, totalTurns: number): Scenario {
   };
 }
 
-function appendJsonlLine(filePath: string, line: string): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-
-  let fileDescriptor: number | undefined;
-
-  try {
-    fileDescriptor = openSync(filePath, "a");
-    writeFileSync(fileDescriptor, line);
-    fsyncSync(fileDescriptor);
-  } finally {
-    if (fileDescriptor !== undefined) {
-      closeSync(fileDescriptor);
-    }
-  }
-}
-
 function priorBorgTurnRetry(priorTurn: PriorBorgTurn): PriorBorgTurn {
   return { ...priorTurn, retry: PERSONA_ROLE_BLEED_EVENT };
+}
+
+function rejectedPreview(message: string): string {
+  return message.length <= PERSONA_ROLE_BLEED_REJECTED_PREVIEW_CHARS
+    ? message
+    : message.slice(0, PERSONA_ROLE_BLEED_REJECTED_PREVIEW_CHARS);
 }
 
 function recordPersonaRoleBleed(input: {
@@ -120,7 +110,8 @@ function recordPersonaRoleBleed(input: {
   turn: number;
   sessionId: SessionId;
   priorTurn: PriorBorgTurn;
-  pattern: string;
+  patterns: readonly string[];
+  rejectedMessage: string;
   attempt: number;
   action: "regenerated" | "aborted";
 }): void {
@@ -135,7 +126,8 @@ function recordPersonaRoleBleed(input: {
       turn_counter: input.turn,
       sessionId: input.sessionId,
       prior_kind: input.priorTurn.kind,
-      pattern: input.pattern,
+      matched_patterns: input.patterns,
+      rejected_preview: rejectedPreview(input.rejectedMessage),
       attempt: input.attempt,
       action: input.action,
     })}\n`,
@@ -327,9 +319,9 @@ export class SimulatorRunner {
           bleedAttempt <= PERSONA_ROLE_BLEED_MAX_ATTEMPTS;
           bleedAttempt += 1
         ) {
-          const bleedPattern = personaRoleBleedPattern(draft.message);
+          const bleedDetection = detectPersonaRoleBleed(draft.message);
 
-          if (bleedPattern === null) {
+          if (bleedDetection.matched.length === 0) {
             break;
           }
 
@@ -339,14 +331,15 @@ export class SimulatorRunner {
             turn,
             sessionId: currentSessionId,
             priorTurn: priorBorgTurn,
-            pattern: bleedPattern,
+            patterns: bleedDetection.matched,
+            rejectedMessage: draft.message,
             attempt: bleedAttempt,
             action: finalBleedAttempt ? "aborted" : "regenerated",
           });
           persona.rollback(draft);
 
           if (finalBleedAttempt) {
-            const detail = `${PERSONA_ROLE_BLEED_EVENT}: ${bleedPattern}`;
+            const detail = `${PERSONA_ROLE_BLEED_EVENT}: ${bleedDetection.matched.join(", ")}`;
             turnFailures.push({ turn, error: detail, attempts: 0 });
             await metrics.captureAborted(transport.getBorg(), turn, {
               sessionId: currentSessionId,

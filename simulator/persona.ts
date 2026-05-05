@@ -80,11 +80,15 @@ type PersonaClientInit = {
 
 export const PERSONA_ROLE_BLEED_PATTERNS = [
   "i don't carry memory",
+  "i do not carry memory",
   "as an ai",
+  "i am an ai",
   "i should have said",
   "you deserve a straight answer",
   "i've been tom",
+  "i have been tom",
   "you've been borg",
+  "you have been borg",
   "i had the role assignment inverted",
 ] as const;
 
@@ -237,16 +241,15 @@ function requestUserMessageForPriorTurn(persona: Persona, priorTurn: PriorBorgTu
   return `${baseUserMessage}\n\n${personaRoleBleedRetryPrompt(persona)}`;
 }
 
-export function personaRoleBleedPattern(message: string): string | null {
-  const normalized = message.toLowerCase();
+function normalizePersonaRoleBleedText(message: string): string {
+  return message.replaceAll("\u2019", "'").replaceAll("\u2018", "'").toLowerCase();
+}
 
-  for (const pattern of PERSONA_ROLE_BLEED_PATTERNS) {
-    if (normalized.includes(pattern)) {
-      return pattern;
-    }
-  }
-
-  return null;
+export function detectPersonaRoleBleed(message: string): { matched: readonly string[] } {
+  const normalized = normalizePersonaRoleBleedText(message);
+  return {
+    matched: PERSONA_ROLE_BLEED_PATTERNS.filter((pattern) => normalized.includes(pattern)),
+  };
 }
 
 export class PersonaSession {
