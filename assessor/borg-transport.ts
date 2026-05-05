@@ -28,8 +28,10 @@ import {
   type SessionId,
 } from "../src/util/ids.js";
 import {
+  ABORTED_TURN_EVENT,
   getStreamDirectory,
   StreamReader,
+  QUARANTINED_USER_ENTRY_EVENT,
   filterActiveStreamEntries,
   type StreamEntry,
 } from "../src/stream/index.js";
@@ -56,6 +58,12 @@ export type ChatWithBorgResult = {
     name: string;
     ok: boolean;
   }[];
+};
+
+export type AuditTranscriptEntry = {
+  entry: StreamEntry;
+  quarantined: boolean;
+  quarantineReason: string | null;
 };
 
 export type SeededGoalProgressEvidence = {
@@ -294,6 +302,103 @@ export async function readStreamTranscript(dataDir: string): Promise<StreamEntry
   return filterActiveStreamEntries(entries)
     .filter((entry) => entry.kind === "user_msg" || entry.kind === "agent_msg")
     .sort((left, right) => left.timestamp - right.timestamp);
+}
+
+function streamContentRecord(content: unknown): Record<string, unknown> | null {
+  return content !== null && typeof content === "object" && !Array.isArray(content)
+    ? (content as Record<string, unknown>)
+    : null;
+}
+
+function quarantineReasonsBySource(entries: readonly StreamEntry[]): Map<string, string> {
+  const reasons = new Map<string, string>();
+
+  for (const entry of entries) {
+    const content = streamContentRecord(entry.content);
+
+    if (
+      entry.kind !== "internal_event" ||
+      content === null ||
+      content.event !== QUARANTINED_USER_ENTRY_EVENT ||
+      typeof content.source_stream_entry_id !== "string"
+    ) {
+      continue;
+    }
+
+    const kind = typeof content.kind === "string" ? content.kind : "unknown";
+    reasons.set(content.source_stream_entry_id, `frame_anomaly:${kind}`);
+  }
+
+  return reasons;
+}
+
+function abortedTurnIds(entries: readonly StreamEntry[]): Set<string> {
+  const turnIds = new Set<string>();
+
+  for (const entry of entries) {
+    const content = streamContentRecord(entry.content);
+
+    if (
+      entry.kind === "internal_event" &&
+      content !== null &&
+      content.event === ABORTED_TURN_EVENT &&
+      typeof content.turn_id === "string"
+    ) {
+      turnIds.add(content.turn_id);
+    }
+  }
+
+  return turnIds;
+}
+
+export async function readOverseerAuditTranscript(
+  dataDir: string,
+): Promise<AuditTranscriptEntry[]> {
+  const entries: StreamEntry[] = [];
+
+  for (const sessionId of readTranscriptSessionIds(dataDir)) {
+    const reader = new StreamReader({
+      dataDir,
+      sessionId,
+    });
+
+    for await (const entry of reader.iterate({
+      kinds: ["user_msg", "agent_msg", "internal_event"],
+    })) {
+      entries.push(entry);
+    }
+  }
+
+  const activeNarrativeEntryIds = new Set(
+    filterActiveStreamEntries(entries)
+      .filter((entry) => entry.kind === "user_msg" || entry.kind === "agent_msg")
+      .map((entry) => entry.id),
+  );
+  const quarantineReasons = quarantineReasonsBySource(entries);
+  const abortedTurns = abortedTurnIds(entries);
+
+  return entries
+    .filter((entry) => entry.kind === "user_msg" || entry.kind === "agent_msg")
+    .filter((entry) => {
+      if (entry.turn_status === "aborted") {
+        return false;
+      }
+
+      if (entry.turn_id !== undefined && abortedTurns.has(entry.turn_id)) {
+        return false;
+      }
+
+      return (
+        activeNarrativeEntryIds.has(entry.id) ||
+        (entry.kind === "user_msg" && quarantineReasons.has(entry.id))
+      );
+    })
+    .map((entry) => ({
+      entry,
+      quarantined: quarantineReasons.has(entry.id),
+      quarantineReason: quarantineReasons.get(entry.id) ?? null,
+    }))
+    .sort((left, right) => left.entry.timestamp - right.entry.timestamp);
 }
 
 function extractGoalId(text: string): string | null {
@@ -702,6 +807,10 @@ export class BorgTransport {
 
   async readTranscript(): Promise<StreamEntry[]> {
     return readStreamTranscript(this.dataDir);
+  }
+
+  async readAuditTranscript(): Promise<AuditTranscriptEntry[]> {
+    return readOverseerAuditTranscript(this.dataDir);
   }
 
   getSeededGoal(key: string): GoalRecord | null {

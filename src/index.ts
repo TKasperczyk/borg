@@ -71,6 +71,7 @@ export {
   type GenerationGateOptions,
   type GenerationGateResult,
   type GenerationGateStructuralSignals,
+  type ActualFrameAnomalyClassification,
   type ClassifyFrameAnomalyInput,
   type FrameAnomalyClassification,
   type FrameAnomalyClassifierDegradedReason,

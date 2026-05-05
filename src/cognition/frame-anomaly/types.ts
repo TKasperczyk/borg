@@ -7,23 +7,38 @@ export const FRAME_ANOMALY_KINDS = [
   "system_prompt_claim",
   "agent_authorship_claim",
   "roleplay_inversion",
-  "degraded",
 ] as const;
 
 export const frameAnomalyKindSchema = z.enum(FRAME_ANOMALY_KINDS);
 
 export type FrameAnomalyKind = z.infer<typeof frameAnomalyKindSchema>;
 
-export type FrameAnomalyClassification = {
-  kind: FrameAnomalyKind;
-  confidence: number;
-  rationale: string;
+export type FrameAnomalyClassification =
+  | {
+      status: "ok";
+      kind: FrameAnomalyKind;
+      confidence: number;
+      rationale: string;
+    }
+  | {
+      status: "degraded";
+      reason: string;
+    };
+
+export type ActualFrameAnomalyClassification = Extract<
+  FrameAnomalyClassification,
+  { status: "ok" }
+> & {
+  kind: Exclude<FrameAnomalyKind, "normal">;
 };
 
 export function isFrameAnomaly(
-  classification: Pick<FrameAnomalyClassification, "kind"> | null | undefined,
-): boolean {
+  classification: FrameAnomalyClassification | null | undefined,
+): classification is ActualFrameAnomalyClassification {
   return (
-    classification !== null && classification !== undefined && classification.kind !== "normal"
+    classification !== null &&
+    classification !== undefined &&
+    classification.status === "ok" &&
+    classification.kind !== "normal"
   );
 }

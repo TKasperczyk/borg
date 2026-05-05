@@ -1,4 +1,5 @@
 import {
+  QUARANTINED_USER_ENTRY_EVENT,
   ACTION_STATES,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
@@ -49,7 +50,19 @@ export type MetricsCaptureContext = {
   sessionId: SessionId;
   sessionIds: readonly SessionId[];
   transportChatAttempts: number;
+  overseerRanOnSuppressedTurn?: boolean;
 };
+
+type FrameAnomalyMetricCounts = Pick<
+  MetricsRow,
+  | "frame_anomaly_classifier_calls"
+  | "frame_anomaly_classified_normal_count"
+  | "frame_anomaly_actual_anomaly_count"
+  | "frame_anomaly_degraded_count"
+  | "frame_anomaly_degraded_fallback_match_count"
+  | "quarantined_user_entry_count"
+  | "early_extractors_skipped_frame_anomaly_count"
+>;
 
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
   let count = 0;
@@ -134,6 +147,89 @@ function generationSuppressionCount(borg: Borg, sessionIds: readonly SessionId[]
       filterActiveStreamEntries(borg.stream.tail(LARGE_COUNT_LIMIT, { session })),
     )
     .filter((entry) => entry.kind === "agent_suppressed").length;
+}
+
+function traceLabel(record: TraceRecord): string | null {
+  return typeof record.label === "string" ? record.label : null;
+}
+
+function traceStatus(record: TraceRecord): string | null {
+  return typeof record.status === "string" ? record.status : null;
+}
+
+function traceKind(record: TraceRecord): string | null {
+  return typeof record.kind === "string" ? record.kind : null;
+}
+
+function streamContentEvent(content: unknown): string | null {
+  if (content === null || typeof content !== "object" || Array.isArray(content)) {
+    return null;
+  }
+
+  const event = (content as { event?: unknown }).event;
+  return typeof event === "string" ? event : null;
+}
+
+function streamContentTurnId(content: unknown): string | null {
+  if (content === null || typeof content !== "object" || Array.isArray(content)) {
+    return null;
+  }
+
+  const turnId = (content as { turn_id?: unknown }).turn_id;
+  return typeof turnId === "string" ? turnId : null;
+}
+
+function quarantinedUserEntryCount(
+  borg: Borg,
+  sessionIds: readonly SessionId[],
+  turnId: string,
+): number {
+  return [...new Set(sessionIds)]
+    .flatMap((session) => borg.stream.tail(LARGE_COUNT_LIMIT, { session }))
+    .filter(
+      (entry) =>
+        entry.kind === "internal_event" &&
+        streamContentEvent(entry.content) === QUARANTINED_USER_ENTRY_EVENT &&
+        streamContentTurnId(entry.content) === turnId,
+    ).length;
+}
+
+function frameAnomalyMetrics(input: {
+  traceRecords: readonly TraceRecord[];
+  borg: Borg;
+  sessionIds: readonly SessionId[];
+  turnId: string;
+}): FrameAnomalyMetricCounts {
+  const frameClassified = input.traceRecords.filter(
+    (record) => record.event === "frame_anomaly_classified",
+  );
+  const actualAnomalyCount = frameClassified.filter(
+    (record) => traceStatus(record) === "ok" && traceKind(record) !== "normal",
+  ).length;
+  const fallbackMatchCount = input.traceRecords.filter(
+    (record) => record.event === "frame_anomaly_degraded_fallback_match",
+  ).length;
+
+  return {
+    frame_anomaly_classifier_calls: input.traceRecords.filter(
+      (record) =>
+        record.event === "llm_call_started" && traceLabel(record) === "frame_anomaly_classifier",
+    ).length,
+    frame_anomaly_classified_normal_count: frameClassified.filter(
+      (record) => traceStatus(record) === "ok" && traceKind(record) === "normal",
+    ).length,
+    frame_anomaly_actual_anomaly_count: actualAnomalyCount,
+    frame_anomaly_degraded_count: frameClassified.filter(
+      (record) => traceStatus(record) === "degraded",
+    ).length,
+    frame_anomaly_degraded_fallback_match_count: fallbackMatchCount,
+    quarantined_user_entry_count: quarantinedUserEntryCount(
+      input.borg,
+      input.sessionIds,
+      input.turnId,
+    ),
+    early_extractors_skipped_frame_anomaly_count: actualAnomalyCount + fallbackMatchCount,
+  };
 }
 
 function zeroCounts<K extends string>(keys: readonly K[]): Record<K, number> {
@@ -245,6 +341,12 @@ export class MetricsCapture {
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
     const memoryBandMetrics = this.captureMemoryBandMetrics(borg, context.sessionId);
+    const frameAnomalyMetricCounts = frameAnomalyMetrics({
+      traceRecords,
+      borg,
+      sessionIds: context.sessionIds,
+      turnId,
+    });
     const row: MetricsRow = {
       event: TURN_METRICS_EVENT,
       ts: Date.now(),
@@ -283,6 +385,18 @@ export class MetricsCapture {
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
       review_queue_open_count_by_type: memoryBandMetrics.review_queue_open_count_by_type,
+      frame_anomaly_classifier_calls: frameAnomalyMetricCounts.frame_anomaly_classifier_calls,
+      frame_anomaly_classified_normal_count:
+        frameAnomalyMetricCounts.frame_anomaly_classified_normal_count,
+      frame_anomaly_actual_anomaly_count:
+        frameAnomalyMetricCounts.frame_anomaly_actual_anomaly_count,
+      frame_anomaly_degraded_count: frameAnomalyMetricCounts.frame_anomaly_degraded_count,
+      frame_anomaly_degraded_fallback_match_count:
+        frameAnomalyMetricCounts.frame_anomaly_degraded_fallback_match_count,
+      quarantined_user_entry_count: frameAnomalyMetricCounts.quarantined_user_entry_count,
+      early_extractors_skipped_frame_anomaly_count:
+        frameAnomalyMetricCounts.early_extractors_skipped_frame_anomaly_count,
+      overseer_ran_on_suppressed_turn: context.overseerRanOnSuppressedTurn ?? false,
     };
 
     this.previousSemanticNodeCount = semanticNodes.length;
@@ -312,11 +426,18 @@ export class MetricsCapture {
     const activeGoals = borg.self.goals.list({ status: "active" });
     const generationSuppressions = generationSuppressionCount(borg, context.sessionIds);
     const memoryBandMetrics = this.captureMemoryBandMetrics(borg, context.sessionId);
+    const turnId = context.turnId ?? `${event}_${turnCounter}`;
+    const frameAnomalyMetricCounts = frameAnomalyMetrics({
+      traceRecords: [],
+      borg,
+      sessionIds: context.sessionIds,
+      turnId,
+    });
     const row: MetricsRow = {
       event,
       ts: Date.now(),
       turn_counter: turnCounter,
-      turnId: context.turnId ?? `${event}_${turnCounter}`,
+      turnId,
       transport_chat_attempts: context.transportChatAttempts,
       failure_reason: context.failureReason,
       episode_count: episodeResult.items.length,
@@ -343,6 +464,18 @@ export class MetricsCapture {
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
       review_queue_open_count_by_type: memoryBandMetrics.review_queue_open_count_by_type,
+      frame_anomaly_classifier_calls: frameAnomalyMetricCounts.frame_anomaly_classifier_calls,
+      frame_anomaly_classified_normal_count:
+        frameAnomalyMetricCounts.frame_anomaly_classified_normal_count,
+      frame_anomaly_actual_anomaly_count:
+        frameAnomalyMetricCounts.frame_anomaly_actual_anomaly_count,
+      frame_anomaly_degraded_count: frameAnomalyMetricCounts.frame_anomaly_degraded_count,
+      frame_anomaly_degraded_fallback_match_count:
+        frameAnomalyMetricCounts.frame_anomaly_degraded_fallback_match_count,
+      quarantined_user_entry_count: frameAnomalyMetricCounts.quarantined_user_entry_count,
+      early_extractors_skipped_frame_anomaly_count:
+        frameAnomalyMetricCounts.early_extractors_skipped_frame_anomaly_count,
+      overseer_ran_on_suppressed_turn: context.overseerRanOnSuppressedTurn ?? false,
     };
 
     appendJsonlLine(this.filepath, `${JSON.stringify(row)}\n`);

@@ -2800,6 +2800,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       ...args: Parameters<Deliberator["run"]>
     ) {
       expect(args[0].frameAnomaly).toMatchObject({
+        status: "ok",
         kind: "frame_assignment_claim",
         confidence: 0.97,
       });
@@ -2851,7 +2852,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("fails closed and records degradation when the frame-anomaly classifier fails", async () => {
+  it("uses the degraded fallback to fail closed on catastrophic frame phrases", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -2879,7 +2880,8 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       ...args: Parameters<Deliberator["run"]>
     ) {
       expect(args[0].frameAnomaly).toMatchObject({
-        kind: "degraded",
+        status: "ok",
+        kind: "assistant_self_claim_in_user_role",
       });
 
       return originalRun.apply(this, args);
@@ -2887,7 +2889,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
 
     try {
       await borg.turn({
-        userMessage: "You were actually playing Tom there.",
+        userMessage: "I'm Claude and I had the role assignment inverted.",
         stakes: "low",
       });
 
@@ -2906,7 +2908,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(extractSpy).not.toHaveBeenCalled();
       expect(quarantineEvent?.content).toMatchObject({
         event: QUARANTINED_USER_ENTRY_EVENT,
-        kind: "degraded",
+        kind: "assistant_self_claim_in_user_role",
       });
       expect(traceEvents).toContainEqual(
         expect.objectContaining({
@@ -2914,11 +2916,103 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           reason: "llm_failed",
         }),
       );
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "frame_anomaly_degraded_fallback_match",
+          pattern: "i'm claude",
+          kind: "assistant_self_claim_in_user_role",
+        }),
+      );
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "frame_anomaly_quarantine_appended",
+          kind: "assistant_self_claim_in_user_role",
+        }),
+      );
       expect(runSpy).toHaveBeenCalledOnce();
       expect(borg.actions.list({ limit: 10 })).toEqual([]);
     } finally {
       extractSpy.mockRestore();
       runSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("treats degraded frame classification without fallback match as normal", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_176_582);
+    const degradedFrameClassifier = Object.assign(
+      () => {
+        throw new Error("frame classifier unavailable");
+      },
+      { budget: "frame-anomaly-classifier" },
+    );
+    const llm = new FakeLLMClient({
+      responses: [
+        degradedFrameClassifier,
+        createCorrectivePreferenceResponse({
+          classification: "none",
+          reason: "No durable correction detected.",
+          confidence: 0,
+        }),
+        Object.assign(
+          (options: LLMCompleteOptions) => {
+            const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+              current_user_stream_entry_id: string;
+            };
+
+            return createActionStateResponse([
+              {
+                description: "closed the laptop for the night",
+                state: "completed",
+                evidence_stream_entry_ids: [payload.current_user_stream_entry_id],
+                confidence: 0.93,
+              },
+            ]);
+          },
+          { budget: "action-state-extractor" },
+        ),
+        createGoalPromotionResponse([]),
+        "Talk tomorrow.",
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Closing the laptop. Talk tomorrow.",
+        stakes: "low",
+      });
+
+      const budgets = llm.requests.map((request) => request.budget);
+      const quarantineEvent = borg.stream.tail(20).find((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === QUARANTINED_USER_ENTRY_EVENT;
+      });
+      const traceEvents = readTraceEvents(tracePath);
+
+      expect(budgets).toContain("frame-anomaly-classifier");
+      expect(budgets).toContain("corrective-preference-extractor");
+      expect(budgets).toContain("action-state-extractor");
+      expect(budgets).toContain("goal-promotion-extractor");
+      expect(quarantineEvent).toBeUndefined();
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "frame_anomaly_degraded_fallback_normal",
+        }),
+      );
+      expect(borg.actions.list({ state: "completed" })).toEqual([
+        expect.objectContaining({
+          description: "closed the laptop for the night",
+        }),
+      ]);
+    } finally {
       await borg.close();
     }
   });

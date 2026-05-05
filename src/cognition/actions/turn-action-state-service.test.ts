@@ -28,6 +28,7 @@ describe("TurnActionStateService", () => {
         recentHistory: [],
         audienceEntityId: null,
         frameAnomaly: {
+          status: "ok",
           kind: "frame_assignment_claim",
           confidence: 0.96,
           rationale: "The user-role message assigns the prior exchange to a roleplay frame.",

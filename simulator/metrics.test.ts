@@ -78,6 +78,14 @@ const TURN_METRICS_KEY_ORDER = [
   "pending_action_merge_count",
   "relational_slot_count_by_state",
   "review_queue_open_count_by_type",
+  "frame_anomaly_classifier_calls",
+  "frame_anomaly_classified_normal_count",
+  "frame_anomaly_actual_anomaly_count",
+  "frame_anomaly_degraded_count",
+  "frame_anomaly_degraded_fallback_match_count",
+  "quarantined_user_entry_count",
+  "early_extractors_skipped_frame_anomaly_count",
+  "overseer_ran_on_suppressed_turn",
 ] as const;
 
 class SameVectorEmbeddingClient implements EmbeddingClient {
@@ -314,7 +322,7 @@ describe("MetricsCapture", () => {
     expect(row.borg_input_tokens).toBe(11);
     expect(row.borg_output_tokens).toBe(7);
     expect(observed.moodSessions).toEqual([sessionId]);
-    expect(observed.tailSessions).toEqual([sessionId, otherSessionId]);
+    expect(observed.tailSessions).toEqual([sessionId, otherSessionId, sessionId, otherSessionId]);
     expect(written).toEqual(row);
   });
 
@@ -332,6 +340,138 @@ describe("MetricsCapture", () => {
     const written = JSON.parse(readFileSync(metricsPath, "utf8").trim()) as MetricsRow;
 
     expect(Object.keys(written)).toEqual([...TURN_METRICS_KEY_ORDER]);
+  });
+
+  it("counts frame-anomaly classifier, fallback, and durable quarantine markers", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+    const anomalyTurnId = "turn-frame-anomaly";
+    const degradedTurnId = "turn-frame-degraded";
+    const normalTurnId = "turn-frame-normal";
+    const quarantinedUserEntryId = createStreamEntryId();
+    const streamEntriesBySession = new Map<SessionId, StreamEntry[]>([
+      [
+        sessionId,
+        [
+          {
+            id: createStreamEntryId(),
+            timestamp: 1,
+            kind: "internal_event",
+            content: {
+              event: "quarantined_user_entry",
+              turn_id: anomalyTurnId,
+              source_stream_entry_id: quarantinedUserEntryId,
+              kind: "frame_assignment_claim",
+            },
+            turn_id: anomalyTurnId,
+            session_id: sessionId,
+            compressed: false,
+          },
+        ],
+      ],
+    ]);
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: anomalyTurnId,
+          event: "llm_call_started",
+          label: "frame_anomaly_classifier",
+        },
+        {
+          ts: 101,
+          turnId: anomalyTurnId,
+          event: "frame_anomaly_classified",
+          status: "ok",
+          kind: "frame_assignment_claim",
+        },
+        {
+          ts: 200,
+          turnId: degradedTurnId,
+          event: "llm_call_started",
+          label: "frame_anomaly_classifier",
+        },
+        {
+          ts: 201,
+          turnId: degradedTurnId,
+          event: "frame_anomaly_classified",
+          status: "degraded",
+          reason: "invalid_payload",
+        },
+        {
+          ts: 202,
+          turnId: degradedTurnId,
+          event: "frame_anomaly_degraded_fallback_match",
+          pattern: "i'm claude",
+          kind: "assistant_self_claim_in_user_role",
+        },
+        {
+          ts: 300,
+          turnId: normalTurnId,
+          event: "llm_call_started",
+          label: "frame_anomaly_classifier",
+        },
+        {
+          ts: 301,
+          turnId: normalTurnId,
+          event: "frame_anomaly_classified",
+          status: "ok",
+          kind: "normal",
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const capture = new MetricsCapture(metricsPath, { tracePath });
+    const borg = fakeBorg({ streamEntriesBySession });
+    const anomaly = await capture.capture(borg, anomalyTurnId, 1, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+    const degraded = await capture.capture(borg, degradedTurnId, 2, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+    const normal = await capture.capture(borg, normalTurnId, 3, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+
+    expect(anomaly).toMatchObject({
+      frame_anomaly_classifier_calls: 1,
+      frame_anomaly_classified_normal_count: 0,
+      frame_anomaly_actual_anomaly_count: 1,
+      frame_anomaly_degraded_count: 0,
+      frame_anomaly_degraded_fallback_match_count: 0,
+      quarantined_user_entry_count: 1,
+      early_extractors_skipped_frame_anomaly_count: 1,
+    });
+    expect(degraded).toMatchObject({
+      frame_anomaly_classifier_calls: 1,
+      frame_anomaly_classified_normal_count: 0,
+      frame_anomaly_actual_anomaly_count: 0,
+      frame_anomaly_degraded_count: 1,
+      frame_anomaly_degraded_fallback_match_count: 1,
+      quarantined_user_entry_count: 0,
+      early_extractors_skipped_frame_anomaly_count: 1,
+    });
+    expect(normal).toMatchObject({
+      frame_anomaly_classifier_calls: 1,
+      frame_anomaly_classified_normal_count: 1,
+      frame_anomaly_actual_anomaly_count: 0,
+      frame_anomaly_degraded_count: 0,
+      frame_anomaly_degraded_fallback_match_count: 0,
+      quarantined_user_entry_count: 0,
+      early_extractors_skipped_frame_anomaly_count: 0,
+    });
   });
 
   it("records semantic graph growth since the previous capture", async () => {

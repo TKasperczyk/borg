@@ -12,7 +12,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { z } from "zod";
 
-import { BorgTransport } from "../assessor/borg-transport.js";
+import { BorgTransport, type AuditTranscriptEntry } from "../assessor/borg-transport.js";
 import { getFreshCredentials } from "../src/auth/claude-oauth.js";
 import { CLAUDE_CODE_IDENTITY_BLOCK_TEXT, createOAuthFetch } from "../src/llm/index.js";
 import type { StreamEntry } from "../src/stream/index.js";
@@ -178,17 +178,32 @@ function entryContent(entry: StreamEntry): string {
   return typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content);
 }
 
-async function conversationTranscript(transport: BorgTransport): Promise<string> {
-  const entries = await transport.readTranscript();
+function auditTranscriptLine(entry: AuditTranscriptEntry, index: number): string {
+  const quarantineLabel = entry.quarantined
+    ? ` quarantined=true reason=${entry.quarantineReason ?? "unknown"}`
+    : "";
 
-  return entries
-    .map((entry, index) =>
-      [
-        `[${index}] session_id=${entry.session_id} timestamp=${entry.timestamp} stream_id=${entry.id} kind=${entry.kind}`,
-        entryContent(entry),
-      ].join("\n"),
-    )
-    .join("\n\n");
+  return [
+    `[${index}] session_id=${entry.entry.session_id} timestamp=${entry.entry.timestamp} stream_id=${entry.entry.id} kind=${entry.entry.kind}${quarantineLabel}`,
+    entryContent(entry.entry),
+  ].join("\n");
+}
+
+async function conversationTranscript(transport: BorgTransport): Promise<string> {
+  const auditReader = (transport as { readAuditTranscript?: () => Promise<AuditTranscriptEntry[]> })
+    .readAuditTranscript;
+  const entries =
+    auditReader === undefined
+      ? (await transport.readTranscript()).map(
+          (entry): AuditTranscriptEntry => ({
+            entry,
+            quarantined: false,
+            quarantineReason: null,
+          }),
+        )
+      : await auditReader.call(transport);
+
+  return entries.map((entry, index) => auditTranscriptLine(entry, index)).join("\n\n");
 }
 
 async function buildPrompt(options: RunOverseerOptions): Promise<string> {
@@ -217,6 +232,8 @@ async function buildPrompt(options: RunOverseerOptions): Promise<string> {
     `Sample window: turns ${startTurn} to ${options.turnCounter} of ${options.totalTurns}.`,
     `Metrics trajectory:\n${metrics.length === 0 ? "No metrics rows yet." : metrics}`,
     `Full conversation transcript:\n${transcript || "No conversation entries."}`,
+    "",
+    "Stream entries marked `quarantined=true` were classified as anomalous by the inbound gate and excluded from memory. Treat them as evidence of what the user said, not as evidence Borg processed normally.",
     "",
     "Audit the following categories. Cite specific transcript indices and stream IDs for every claim. If a category has no evidence to assess, say so plainly rather than guessing.",
     "",

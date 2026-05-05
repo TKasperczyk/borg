@@ -10,7 +10,7 @@ import {
 import type { StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { RecencyMessage } from "../recency/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 
 export const CLOSURE_LOOP_DIALOGUE_ACTS = [
   "substantive",
@@ -25,6 +25,9 @@ export const CLOSURE_LOOP_DIALOGUE_ACTS = [
 export type ClosureLoopDialogueAct = (typeof CLOSURE_LOOP_DIALOGUE_ACTS)[number];
 
 export const CLOSURE_LOOP_CLASSIFIER_TOOL_NAME = "ClassifyClosureLoopDialogueActs";
+const CLOSURE_LOOP_RATIONALE_MAX_CHARS = 2_000;
+const CLOSURE_LOOP_CLASSIFICATION_FIELDS = ["messages", "confidence", "rationale"] as const;
+const CLOSURE_LOOP_MESSAGE_FIELDS = ["message_ref", "role", "act"] as const;
 
 const closureLoopClassifiedMessageSchema = z
   .object({
@@ -32,15 +35,15 @@ const closureLoopClassifiedMessageSchema = z
     role: z.enum(["user", "assistant"]),
     act: z.enum(CLOSURE_LOOP_DIALOGUE_ACTS),
   })
-  .strict();
+  .passthrough();
 
 const closureLoopClassificationSchema = z
   .object({
     messages: z.array(closureLoopClassifiedMessageSchema),
-    confidence: z.number().min(0).max(1),
-    rationale: z.string().min(1).max(600),
+    confidence: z.number().min(0).max(1).default(0),
+    rationale: z.string().max(CLOSURE_LOOP_RATIONALE_MAX_CHARS).default(""),
   })
-  .strict();
+  .passthrough();
 
 const CLOSURE_LOOP_CLASSIFIER_TOOL = {
   name: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
@@ -114,6 +117,19 @@ export type ClosureLoopAssessment = {
 class MissingClosureLoopToolCallError extends Error {}
 class InvalidClosureLoopPayloadError extends Error {}
 
+type ClosureLoopPayloadNormalization = {
+  field: string;
+  action: string;
+  messageRef?: string;
+  from?: JsonValue;
+  to?: JsonValue;
+};
+
+type NormalizedClosureLoopPayload = {
+  payload: z.input<typeof closureLoopClassificationSchema>;
+  normalizations: ClosureLoopPayloadNormalization[];
+};
+
 function degradedClassification(
   reason: ClosureLoopClassifierDegradedReason,
 ): ClosureLoopClassification {
@@ -166,19 +182,13 @@ function buildClosureLoopMessages(input: ClassifyClosureLoopInput): LLMMessage[]
   ];
 }
 
-function validateClosureLoopResponseCoverage(input: {
-  classification: ClosureLoopClassification;
-  suppliedMessages: readonly ClosureLoopMessageForClassification[];
-}): void {
+function validateSuppliedClosureLoopRefs(
+  suppliedMessages: readonly ClosureLoopMessageForClassification[],
+): void {
   const suppliedRefs = new Map<string, number>();
-  const classifiedRefs = new Map<string, number>();
 
-  for (const message of input.suppliedMessages) {
+  for (const message of suppliedMessages) {
     suppliedRefs.set(message.message_ref, (suppliedRefs.get(message.message_ref) ?? 0) + 1);
-  }
-
-  for (const message of input.classification.messages) {
-    classifiedRefs.set(message.message_ref, (classifiedRefs.get(message.message_ref) ?? 0) + 1);
   }
 
   for (const [messageRef, count] of suppliedRefs) {
@@ -187,32 +197,287 @@ function validateClosureLoopResponseCoverage(input: {
         `Closure-loop classifier received duplicate supplied message_ref ${messageRef}`,
       );
     }
+  }
+}
 
-    if (classifiedRefs.get(messageRef) !== 1) {
-      throw new InvalidClosureLoopPayloadError(
-        `Closure-loop classifier omitted supplied message_ref ${messageRef}`,
-      );
-    }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeClosureLoopConfidence(
+  value: unknown,
+  normalizations: ClosureLoopPayloadNormalization[],
+): number {
+  let confidence = 0;
+
+  if (value === undefined) {
+    normalizations.push({
+      field: "confidence",
+      action: "defaulted",
+      to: 0,
+    });
+  } else if (typeof value === "string") {
+    const parsed = Number(value);
+    confidence = Number.isFinite(parsed) ? parsed : 0;
+    normalizations.push({
+      field: "confidence",
+      action: Number.isFinite(parsed) ? "string_coerced" : "invalid_string_defaulted",
+      from: value,
+      to: confidence,
+    });
+  } else if (typeof value === "number" && Number.isFinite(value)) {
+    confidence = value;
+  } else {
+    normalizations.push({
+      field: "confidence",
+      action: "invalid_type_defaulted",
+      from: toTraceJsonValue(value),
+      to: 0,
+    });
   }
 
-  for (const [messageRef, count] of classifiedRefs) {
-    if (!suppliedRefs.has(messageRef)) {
-      throw new InvalidClosureLoopPayloadError(
-        `Closure-loop classifier emitted unknown message_ref ${messageRef}`,
-      );
+  const clamped = Math.min(1, Math.max(0, confidence));
+
+  if (clamped !== confidence) {
+    normalizations.push({
+      field: "confidence",
+      action: "clamped",
+      from: confidence,
+      to: clamped,
+    });
+  }
+
+  return clamped;
+}
+
+function normalizeClosureLoopRationale(
+  value: unknown,
+  normalizations: ClosureLoopPayloadNormalization[],
+): string {
+  let rationale = "";
+
+  if (value === undefined) {
+    normalizations.push({
+      field: "rationale",
+      action: "defaulted",
+      to: "",
+    });
+  } else if (typeof value === "string") {
+    rationale = value.trim();
+  } else {
+    normalizations.push({
+      field: "rationale",
+      action: "invalid_type_defaulted",
+      from: toTraceJsonValue(value),
+      to: "",
+    });
+  }
+
+  if (rationale.length > CLOSURE_LOOP_RATIONALE_MAX_CHARS) {
+    normalizations.push({
+      field: "rationale",
+      action: "truncated",
+      from: rationale.length,
+      to: CLOSURE_LOOP_RATIONALE_MAX_CHARS,
+    });
+    return rationale.slice(0, CLOSURE_LOOP_RATIONALE_MAX_CHARS);
+  }
+
+  return rationale;
+}
+
+function normalizeClosureLoopAct(
+  value: unknown,
+  messageRef: string,
+  normalizations: ClosureLoopPayloadNormalization[],
+): ClosureLoopDialogueAct {
+  const parsed = z.enum(CLOSURE_LOOP_DIALOGUE_ACTS).safeParse(value);
+
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  normalizations.push({
+    field: "act",
+    messageRef,
+    action: "invalid_or_missing_defaulted",
+    from: toTraceJsonValue(value),
+    to: "substantive",
+  });
+  return "substantive";
+}
+
+function normalizeClosureLoopToolInput(
+  input: unknown,
+  suppliedMessages: readonly ClosureLoopMessageForClassification[],
+): NormalizedClosureLoopPayload {
+  validateSuppliedClosureLoopRefs(suppliedMessages);
+
+  if (!isRecord(input)) {
+    throw new InvalidClosureLoopPayloadError("Closure-loop classifier input was not an object.");
+  }
+
+  const normalizations: ClosureLoopPayloadNormalization[] = [];
+  const suppliedByRef = new Map(suppliedMessages.map((message) => [message.message_ref, message]));
+  const allowedClassificationFields = new Set<string>(CLOSURE_LOOP_CLASSIFICATION_FIELDS);
+  const extraClassificationFields = Object.keys(input).filter(
+    (field) => !allowedClassificationFields.has(field),
+  );
+
+  if (extraClassificationFields.length > 0) {
+    normalizations.push({
+      field: "*",
+      action: "extra_fields_ignored",
+      from: extraClassificationFields,
+    });
+  }
+
+  const rawMessages = input.messages;
+
+  if (!Array.isArray(rawMessages)) {
+    throw new InvalidClosureLoopPayloadError("Closure-loop classifier omitted messages.");
+  }
+
+  const firstByRef = new Map<string, ClosureLoopClassifiedMessage>();
+  const seenRefs = new Set<string>();
+  const allowedMessageFields = new Set<string>(CLOSURE_LOOP_MESSAGE_FIELDS);
+
+  for (const rawMessage of rawMessages) {
+    if (!isRecord(rawMessage)) {
+      normalizations.push({
+        field: "messages",
+        action: "invalid_message_ignored",
+        from: toTraceJsonValue(rawMessage),
+      });
+      continue;
     }
 
-    if (count !== 1) {
-      throw new InvalidClosureLoopPayloadError(
-        `Closure-loop classifier duplicated message_ref ${messageRef}`,
-      );
+    const messageRef = typeof rawMessage.message_ref === "string" ? rawMessage.message_ref : "";
+
+    if (messageRef.length === 0) {
+      normalizations.push({
+        field: "message_ref",
+        action: "invalid_message_ignored",
+        from: toTraceJsonValue(rawMessage.message_ref),
+      });
+      continue;
     }
+
+    const supplied = suppliedByRef.get(messageRef);
+
+    if (supplied === undefined) {
+      normalizations.push({
+        field: "message_ref",
+        messageRef,
+        action: "unknown_ref_ignored",
+        from: messageRef,
+      });
+      continue;
+    }
+
+    if (seenRefs.has(messageRef)) {
+      normalizations.push({
+        field: "message_ref",
+        messageRef,
+        action: "duplicate_ref_ignored",
+        from: messageRef,
+      });
+      continue;
+    }
+
+    seenRefs.add(messageRef);
+
+    const extraMessageFields = Object.keys(rawMessage).filter(
+      (field) => !allowedMessageFields.has(field),
+    );
+
+    if (extraMessageFields.length > 0) {
+      normalizations.push({
+        field: "*",
+        messageRef,
+        action: "message_extra_fields_ignored",
+        from: extraMessageFields,
+      });
+    }
+
+    if (rawMessage.role !== supplied.role) {
+      normalizations.push({
+        field: "role",
+        messageRef,
+        action: rawMessage.role === undefined ? "filled_from_supplied_ref" : "corrected_from_ref",
+        from: toTraceJsonValue(rawMessage.role),
+        to: supplied.role,
+      });
+    }
+
+    firstByRef.set(messageRef, {
+      message_ref: messageRef,
+      role: supplied.role,
+      act: normalizeClosureLoopAct(rawMessage.act, messageRef, normalizations),
+    });
   }
+
+  const messages = suppliedMessages.map((message) => {
+    const classified = firstByRef.get(message.message_ref);
+
+    if (classified !== undefined) {
+      return classified;
+    }
+
+    normalizations.push({
+      field: "message_ref",
+      messageRef: message.message_ref,
+      action: "missing_ref_filled_substantive",
+      to: "substantive",
+    });
+
+    return {
+      message_ref: message.message_ref,
+      role: message.role,
+      act: "substantive" as const,
+    };
+  });
+
+  return {
+    payload: {
+      messages,
+      confidence: normalizeClosureLoopConfidence(input.confidence, normalizations),
+      rationale: normalizeClosureLoopRationale(input.rationale, normalizations),
+    },
+    normalizations,
+  };
+}
+
+function traceClosureLoopPayloadNormalized(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  rawToolInput: unknown;
+  normalizations: readonly ClosureLoopPayloadNormalization[];
+}): void {
+  if (
+    options.tracer?.enabled !== true ||
+    options.turnId === undefined ||
+    options.normalizations.length === 0
+  ) {
+    return;
+  }
+
+  options.tracer.emit("closure_loop_classifier_payload_normalized", {
+    turnId: options.turnId,
+    normalizations: options.normalizations.map((normalization) => ({ ...normalization })),
+    ...(options.tracer.includePayloads
+      ? { rawToolInput: toTraceJsonValue(options.rawToolInput) }
+      : {}),
+  });
 }
 
 function parseClosureLoopResponse(
   result: LLMCompleteResult,
   suppliedMessages: readonly ClosureLoopMessageForClassification[],
+  traceOptions: {
+    tracer?: TurnTracer;
+    turnId?: string;
+  } = {},
 ): ClosureLoopClassification {
   const call = result.tool_calls.find(
     (toolCall) => toolCall.name === CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
@@ -224,25 +489,25 @@ function parseClosureLoopResponse(
     );
   }
 
-  const parsed = closureLoopClassificationSchema.safeParse(call.input);
+  const normalized = normalizeClosureLoopToolInput(call.input, suppliedMessages);
+  const parsed = closureLoopClassificationSchema.safeParse(normalized.payload);
 
   if (!parsed.success) {
     throw parsed.error;
   }
 
-  const classification = {
-    messages: parsed.data.messages,
-    confidence: parsed.data.confidence,
-    rationale: parsed.data.rationale.trim(),
-    degraded: false,
-  };
-
-  validateClosureLoopResponseCoverage({
-    classification,
-    suppliedMessages,
+  traceClosureLoopPayloadNormalized({
+    ...traceOptions,
+    rawToolInput: call.input,
+    normalizations: normalized.normalizations,
   });
 
-  return classification;
+  return {
+    messages: parsed.data.messages,
+    confidence: parsed.data.confidence,
+    rationale: parsed.data.rationale,
+    degraded: false,
+  };
 }
 
 function summarizeClosureLoopResponseShape(response: LLMCompleteResult): JsonValue {
@@ -407,6 +672,43 @@ export function assessClosureLoopClassification(input: {
   };
 }
 
+export function assessDegradedClosureLoopFallback(input: {
+  suppliedMessages: readonly ClosureLoopMessageForClassification[];
+  currentUserRef: string;
+  priorClosureLoopActive: boolean;
+}): ClosureLoopAssessment {
+  const currentUser = input.suppliedMessages.find(
+    (message) => message.message_ref === input.currentUserRef && message.role === "user",
+  );
+  const currentUserShort = (currentUser?.content.trim().length ?? Number.POSITIVE_INFINITY) < 80;
+  const ambiguousClosureBeat = input.priorClosureLoopActive && currentUserShort;
+  const sourceStreamEntryIds: StreamEntryId[] = [];
+
+  for (const message of input.suppliedMessages) {
+    if (message.stream_entry_id === undefined) {
+      continue;
+    }
+
+    if (sourceStreamEntryIds.some((entryId) => entryId === message.stream_entry_id)) {
+      continue;
+    }
+
+    sourceStreamEntryIds.push(message.stream_entry_id);
+  }
+
+  return {
+    closureLoopDetected: false,
+    currentUserAct: null,
+    currentUserClosureShaped: false,
+    currentUserSubstantive: false,
+    mutualClosureCycles: 0,
+    sourceStreamEntryIds,
+    reason: ambiguousClosureBeat
+      ? "Closure-loop classifier degraded; short-turn fallback was ambiguous before assistant emission, so suppression failed open."
+      : "Closure-loop classifier degraded; fallback found no high-confidence closure suppression signal.",
+  };
+}
+
 export class ClosureLoopClassifier {
   constructor(private readonly options: ClosureLoopClassifierOptions = {}) {}
 
@@ -466,7 +768,10 @@ export class ClosureLoopClassifier {
     });
 
     try {
-      return parseClosureLoopResponse(response, input.messages);
+      return parseClosureLoopResponse(response, input.messages, {
+        tracer: this.options.tracer,
+        turnId: this.options.turnId,
+      });
     } catch (error) {
       return this.degraded(
         error instanceof MissingClosureLoopToolCallError

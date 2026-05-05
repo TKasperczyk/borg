@@ -625,10 +625,14 @@ export class Reflector {
     }
 
     if (suppressIntentUpdatesForFrameAnomaly && reflectionOutput.intent_updates.length > 0) {
+      const frameAnomalyKind = isFrameAnomaly(context.frameAnomaly)
+        ? context.frameAnomaly.kind
+        : "unknown";
+
       await this.appendReflectorInternalEvent(streamWriter, {
         hook: "reflector_intent_update_dropped",
         reason: "frame_anomaly",
-        kind: context.frameAnomaly?.kind,
+        kind: frameAnomalyKind,
         count: reflectionOutput.intent_updates.length,
       });
       this.emitIntentUpdateSuppressed(context, reflectionOutput.intent_updates.length);
@@ -1180,7 +1184,7 @@ export class Reflector {
     tracer.emit("reflector_intent_update_suppressed", {
       turnId: context.turnId,
       reason: "frame_anomaly",
-      kind: context.frameAnomaly?.kind ?? "unknown",
+      kind: isFrameAnomaly(context.frameAnomaly) ? context.frameAnomaly.kind : "unknown",
       count,
     });
   }
