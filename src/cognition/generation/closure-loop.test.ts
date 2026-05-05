@@ -2,15 +2,32 @@ import { describe, expect, it } from "vitest";
 
 import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
 import { createStreamEntryId, type StreamEntryId } from "../../util/ids.js";
+import type { TurnTracer, TurnTraceData, TurnTraceEventName } from "../tracing/tracer.js";
 import {
   CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
   ClosureLoopClassifier,
+  assessDegradedClosureLoopFallback,
   assessClosureLoopClassification,
   type ClosureLoopClassifiedMessage,
   type ClosureLoopMessageForClassification,
 } from "./closure-loop.js";
 
-function closureLoopResponse(messages: readonly ClosureLoopClassifiedMessage[]): LLMCompleteResult {
+type TraceRecord = TurnTraceData & { event: TurnTraceEventName };
+
+class TestTracer implements TurnTracer {
+  readonly enabled = true;
+  readonly includePayloads = true;
+  readonly records: TraceRecord[] = [];
+
+  emit(event: TurnTraceEventName, data: TurnTraceData): void {
+    this.records.push({ event, ...data });
+  }
+}
+
+function closureLoopResponse(
+  messages: readonly unknown[],
+  extra: Record<string, unknown> = {},
+): LLMCompleteResult {
   return {
     text: "",
     input_tokens: 4,
@@ -24,6 +41,7 @@ function closureLoopResponse(messages: readonly ClosureLoopClassifiedMessage[]):
           messages,
           confidence: 0.94,
           rationale: "The recent turns are repeated mutual closure beats.",
+          ...extra,
         },
       },
     ],
@@ -91,7 +109,7 @@ describe("ClosureLoopClassifier", () => {
     });
   });
 
-  it("degrades when the classifier omits a supplied message ref", async () => {
+  it("fills omitted supplied message refs as substantive", async () => {
     const degraded: string[] = [];
     const supplied = [
       message({ role: "assistant", content: "Talk soon.", ts: 1 }),
@@ -112,9 +130,71 @@ describe("ClosureLoopClassifier", () => {
       messages: supplied,
     });
 
-    expect(result.degraded).toBe(true);
-    expect(result.messages).toEqual([]);
-    expect(degraded).toEqual(["invalid_payload"]);
+    expect(result.degraded).toBe(false);
+    expect(result.messages).toEqual([
+      classified(supplied[0]!, "assistant_valediction"),
+      classified(supplied[1]!, "substantive"),
+    ]);
+    expect(degraded).toEqual([]);
+  });
+
+  it("takes the first duplicate message ref and traces the duplicate", async () => {
+    const tracer = new TestTracer();
+    const supplied = [
+      message({ role: "assistant", content: "Talk soon.", ts: 1 }),
+      message({ role: "user", content: "phone down", ts: 2 }),
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        closureLoopResponse(
+          [
+            {
+              ...classified(supplied[0]!, "assistant_valediction"),
+              extra_field: "ignored",
+            },
+            classified(supplied[0]!, "substantive"),
+            classified(supplied[1]!, "signoff"),
+          ],
+          { extra_payload_field: true },
+        ),
+      ],
+    });
+    const classifier = new ClosureLoopClassifier({
+      llmClient: llm,
+      model: "test-recall",
+      tracer,
+      turnId: "turn-closure-duplicate",
+    });
+
+    const result = await classifier.classify({
+      messages: supplied,
+    });
+    const normalized = tracer.records.find(
+      (record) => record.event === "closure_loop_classifier_payload_normalized",
+    );
+
+    expect(result.messages).toEqual([
+      classified(supplied[0]!, "assistant_valediction"),
+      classified(supplied[1]!, "signoff"),
+    ]);
+    expect(normalized?.normalizations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: "message_ref",
+          messageRef: supplied[0]!.message_ref,
+          action: "duplicate_ref_ignored",
+        }),
+        expect.objectContaining({
+          field: "*",
+          messageRef: supplied[0]!.message_ref,
+          action: "message_extra_fields_ignored",
+        }),
+        expect.objectContaining({
+          field: "*",
+          action: "extra_fields_ignored",
+        }),
+      ]),
+    );
   });
 });
 
@@ -243,5 +323,29 @@ describe("assessClosureLoopClassification", () => {
 
     expect(assessment.currentUserClosureShaped).toBe(true);
     expect(assessment.closureLoopDetected).toBe(false);
+  });
+
+  it("keeps degraded short-turn heuristic fail-open when suppression is ambiguous", () => {
+    const currentUserEntryId = createStreamEntryId();
+    const supplied: ClosureLoopMessageForClassification[] = [
+      {
+        message_ref: currentUserEntryId,
+        role: "user",
+        content: "phone down",
+        stream_entry_id: currentUserEntryId as StreamEntryId,
+        ts: 10,
+      },
+    ];
+
+    const assessment = assessDegradedClosureLoopFallback({
+      suppliedMessages: supplied,
+      currentUserRef: currentUserEntryId,
+      priorClosureLoopActive: true,
+    });
+
+    expect(assessment.closureLoopDetected).toBe(false);
+    expect(assessment.currentUserClosureShaped).toBe(false);
+    expect(assessment.currentUserSubstantive).toBe(false);
+    expect(assessment.reason).toContain("suppression failed open");
   });
 });

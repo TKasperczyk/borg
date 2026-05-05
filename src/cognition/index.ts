@@ -64,6 +64,7 @@ export {
   FrameAnomalyClassifier,
   frameAnomalyKindSchema,
   isFrameAnomaly,
+  type ActualFrameAnomalyClassification,
   type ClassifyFrameAnomalyInput,
   type FrameAnomalyClassification,
   type FrameAnomalyClassifierDegradedReason,

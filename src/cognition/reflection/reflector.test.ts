@@ -1723,6 +1723,7 @@ describe("reflector", () => {
         suppressionSet: new SuppressionSet(),
         currentTurnStreamEntryIds,
         frameAnomaly: {
+          status: "ok",
           kind: "roleplay_inversion",
           confidence: 0.97,
           rationale: "The user recast the conversation as fiction.",

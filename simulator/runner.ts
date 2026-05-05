@@ -436,11 +436,38 @@ export class SimulatorRunner {
         persona.commit(draft, success.response);
         consecutiveFailures = 0;
 
+        const overseerDue =
+          Number.isInteger(this.options.checkEvery) &&
+          this.options.checkEvery > 0 &&
+          turn % this.options.checkEvery === 0;
+
         finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn, {
           sessionId: currentSessionId,
           sessionIds,
           transportChatAttempts: success.transportChatAttempts,
+          overseerRanOnSuppressedTurn: !success.emitted && overseerDue,
         });
+
+        let heavyMaintenanceRan = false;
+
+        if (turn % maintenanceEvery === 0) {
+          await runMaintenanceTick(transport, turn, "light");
+        }
+
+        if (overseerDue) {
+          await runMaintenanceTick(transport, turn, "heavy");
+          heavyMaintenanceRan = true;
+          overseerCheckpoints.push(
+            await overseerRunner({
+              transport,
+              metricsPath: this.options.metricsPath,
+              turnCounter: turn,
+              totalTurns: this.options.totalTurns,
+              mock: this.options.mock,
+              env: this.options.env,
+            }),
+          );
+        }
 
         if (!success.emitted) {
           const suppressionReason = success.suppressionReason;
@@ -470,7 +497,11 @@ export class SimulatorRunner {
             break;
           }
 
-          await runMaintenanceTick(transport, turn, "heavy");
+          if (!heavyMaintenanceRan) {
+            await runMaintenanceTick(transport, turn, "heavy");
+            heavyMaintenanceRan = true;
+          }
+
           const gap =
             SESSION_GAP_DESCRIPTIONS[sessions.length % SESSION_GAP_DESCRIPTIONS.length] ??
             SESSION_GAP_DESCRIPTIONS[0]!;
@@ -483,29 +514,6 @@ export class SimulatorRunner {
         }
 
         priorBorgTurn = { kind: "normal", text: success.response };
-
-        const overseerDue =
-          Number.isInteger(this.options.checkEvery) &&
-          this.options.checkEvery > 0 &&
-          turn % this.options.checkEvery === 0;
-
-        if (turn % maintenanceEvery === 0) {
-          await runMaintenanceTick(transport, turn, "light");
-        }
-
-        if (overseerDue) {
-          await runMaintenanceTick(transport, turn, "heavy");
-          overseerCheckpoints.push(
-            await overseerRunner({
-              transport,
-              metricsPath: this.options.metricsPath,
-              turnCounter: turn,
-              totalTurns: this.options.totalTurns,
-              mock: this.options.mock,
-              env: this.options.env,
-            }),
-          );
-        }
       }
 
       this.turnFailures = turnFailures;

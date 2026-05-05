@@ -432,6 +432,63 @@ describe("SimulatorRunner", () => {
     expect(metricsRows.at(-1)?.turn_counter).toBe(20);
   });
 
+  it("runs overseer checkpoints on suppressed turns before continuing", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const persona = fakePersonaSession(["checkpoint suppression"]);
+    const overseerTurns: number[] = [];
+    mockTransportLifecycle();
+    spyMaintenanceTick();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) =>
+      chatResult({
+        response: "",
+        emitted: false,
+        turnId: "turn-suppressed-checkpoint",
+        sessionId: options.sessionId as SessionId,
+        suppressionReason: "commitment_revision_failed",
+      }),
+    );
+
+    const report = await runSimulation({
+      runId: "sim-runner-suppressed-overseer-test",
+      persona: tomPersona,
+      personaSession: persona.session,
+      totalTurns: 1,
+      checkEvery: 1,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+      overseerRunner: async ({ turnCounter }) => {
+        overseerTurns.push(turnCounter);
+        return {
+          ts: Date.now(),
+          turn_counter: turnCounter,
+          status: "healthy",
+          observations: ["Suppression checkpoint inspected."],
+          recommendation: "Continue.",
+        };
+      },
+    });
+    const [metricsRow] = readFileSync(metricsPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            turn_counter: number;
+            overseer_ran_on_suppressed_turn: boolean;
+          },
+      );
+
+    expect(report.overseerCheckpoints).toHaveLength(1);
+    expect(overseerTurns).toEqual([1]);
+    expect(metricsRow).toMatchObject({
+      turn_counter: 1,
+      overseer_ran_on_suppressed_turn: true,
+    });
+  });
+
   it("runs periodic maintenance ticks on cadence in mock mode", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
@@ -722,7 +779,7 @@ describe("SimulatorRunner", () => {
     const cleanDraft = "Can we talk about the design doc again?";
     const drafts = [firstBleedDraft, secondBleedDraft, cleanDraft];
     let draftIndex = 0;
-    const prepareNextTurn = vi.fn(async () => {
+    const prepareNextTurn = vi.fn(async (_priorBorgTurn: PriorBorgTurn) => {
       const message = drafts[draftIndex] ?? cleanDraft;
       draftIndex += 1;
       return {

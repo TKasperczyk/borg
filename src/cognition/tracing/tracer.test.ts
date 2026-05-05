@@ -311,6 +311,7 @@ describe("TurnTracer", () => {
       "perception_completed",
       "llm_call_started",
       "llm_call_response",
+      "frame_anomaly_classified",
       "llm_call_started",
       "llm_call_response",
       "llm_call_started",

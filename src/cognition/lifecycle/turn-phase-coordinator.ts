@@ -16,7 +16,9 @@ import { GenerationGate } from "../generation/generation-gate.js";
 import { StopCommitmentExtractor } from "../generation/self-stop-commitment.js";
 import {
   FrameAnomalyClassifier,
+  classifyFrameAnomalyDegradedFallback,
   isFrameAnomaly,
+  type ActualFrameAnomalyClassification,
   type FrameAnomalyClassification,
 } from "../frame-anomaly/index.js";
 import type { TurnGoalPromotionService } from "../goals/turn-goal-promotion-service.js";
@@ -49,6 +51,7 @@ import type { TurnRelationalGuardRunner } from "../generation/turn-relational-gu
 import type { TurnLifecycleTracker } from "./turn-lifecycle-tracker.js";
 import {
   ClosureLoopClassifier,
+  assessDegradedClosureLoopFallback,
   assessClosureLoopClassification,
   buildClosureLoopMessageWindow,
   type ClosureLoopAssessment,
@@ -648,10 +651,30 @@ export class TurnPhaseCoordinator {
         });
       },
     });
-    const classification = await classifier.classify({
+    let classification = await classifier.classify({
       userMessage: input.userMessage,
       recentHistory: input.recentHistory,
     });
+
+    if (classification.status === "degraded") {
+      const fallback = classifyFrameAnomalyDegradedFallback(input.userMessage);
+
+      if (fallback.matched) {
+        if (this.options.tracer.enabled) {
+          this.options.tracer.emit("frame_anomaly_degraded_fallback_match", {
+            turnId: input.turnId,
+            pattern: fallback.pattern,
+            kind: fallback.kind,
+          });
+        }
+
+        classification = fallback.classification;
+      } else if (this.options.tracer.enabled) {
+        this.options.tracer.emit("frame_anomaly_degraded_fallback_normal", {
+          turnId: input.turnId,
+        });
+      }
+    }
 
     if (isFrameAnomaly(classification)) {
       await this.appendFrameAnomalyEvents({
@@ -714,13 +737,16 @@ export class TurnPhaseCoordinator {
     });
 
     if (classification.degraded) {
-      // Closure-loop suppression is soft, so classifier degradation fails open for this turn.
       await this.appendHookFailureEvent(input.streamWriter, "closure_loop_classifier", null, {
         turnId: input.turnId,
         reason: classification.rationale,
       });
 
-      return null;
+      return assessDegradedClosureLoopFallback({
+        suppliedMessages: messages,
+        currentUserRef: input.persistedUserEntryId,
+        priorClosureLoopActive: activeClosureLoop !== null,
+      });
     }
 
     return assessClosureLoopClassification({
@@ -734,7 +760,7 @@ export class TurnPhaseCoordinator {
     streamWriter: StreamWriter;
     turnId: string;
     persistedUserEntryId: StreamEntryId;
-    classification: FrameAnomalyClassification;
+    classification: ActualFrameAnomalyClassification;
   }): Promise<void> {
     try {
       await input.streamWriter.appendMany([
@@ -765,6 +791,14 @@ export class TurnPhaseCoordinator {
           },
         },
       ]);
+
+      if (this.options.tracer.enabled) {
+        this.options.tracer.emit("frame_anomaly_quarantine_appended", {
+          turnId: input.turnId,
+          kind: input.classification.kind,
+          sourceStreamEntryId: input.persistedUserEntryId,
+        });
+      }
     } catch (error) {
       await this.appendHookFailureEvent(input.streamWriter, "frame_anomaly_gate_event", error, {
         turnId: input.turnId,

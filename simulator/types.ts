@@ -45,6 +45,14 @@ export type MetricsRow = {
   pending_action_merge_count: number;
   relational_slot_count_by_state: Record<RelationalSlotState, number>;
   review_queue_open_count_by_type: Record<ReviewKind, number>;
+  frame_anomaly_classifier_calls: number;
+  frame_anomaly_classified_normal_count: number;
+  frame_anomaly_actual_anomaly_count: number;
+  frame_anomaly_degraded_count: number;
+  frame_anomaly_degraded_fallback_match_count: number;
+  quarantined_user_entry_count: number;
+  early_extractors_skipped_frame_anomaly_count: number;
+  overseer_ran_on_suppressed_turn: boolean;
 };
 
 export type OverseerVerdict = {

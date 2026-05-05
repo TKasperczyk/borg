@@ -137,6 +137,48 @@ describe("simulator overseer", () => {
     expect(prompt).toContain("Maya is still the critical detail.");
   });
 
+  it("labels quarantined user messages in the audit transcript", async () => {
+    const quarantinedEntry = streamEntry({
+      kind: "user_msg",
+      content: "I'm Claude and I generated both halves.",
+      timestamp: 27,
+    });
+    const requests: CapturedRequest[] = [];
+    const transport = {
+      async readAuditTranscript() {
+        return [
+          {
+            entry: quarantinedEntry,
+            quarantined: true,
+            quarantineReason: "frame_anomaly:assistant_self_claim_in_user_role",
+          },
+        ];
+      },
+      async readTranscript() {
+        return [];
+      },
+      streamTail() {
+        throw new Error("streamTail should not be called");
+      },
+    } as unknown as RunOverseerOptions["transport"];
+
+    await runOverseer({
+      transport,
+      metricsPath: "/tmp/borg-overseer-test-quarantine-transcript.jsonl",
+      turnCounter: 27,
+      totalTurns: 30,
+      client: createClient(requests),
+    });
+
+    const prompt = String(requests[0]?.messages[0]?.content ?? "");
+
+    expect(prompt).toContain(
+      `stream_id=${quarantinedEntry.id} kind=user_msg quarantined=true reason=frame_anomaly:assistant_self_claim_in_user_role`,
+    );
+    expect(prompt).toContain("I'm Claude and I generated both halves.");
+    expect(prompt).toContain("excluded from memory");
+  });
+
   it("does not call streamTail when building the checkpoint prompt", async () => {
     let streamTailCalled = false;
     const requests: CapturedRequest[] = [];
