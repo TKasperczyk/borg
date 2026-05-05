@@ -1,12 +1,30 @@
 import { describe, expect, it } from "vitest";
 
-import { personaRoleBleedPattern, PersonaSession } from "./persona.js";
+import {
+  detectPersonaRoleBleed,
+  PERSONA_ROLE_BLEED_PATTERNS,
+  PersonaSession,
+} from "./persona.js";
 import { tomPersona } from "./personas/tom.js";
 
 const FIRST_TOM_TURN = "first Tom turn";
 const SECOND_TOM_TURN = "second Tom turn";
 const FIRST_BORG_REPLY = "Borg replied.";
 const SECOND_BORG_REPLY = "Borg replied again.";
+
+describe("detectPersonaRoleBleed", () => {
+  it.each(PERSONA_ROLE_BLEED_PATTERNS)("detects %s", (pattern) => {
+    expect(detectPersonaRoleBleed(`Before. ${pattern}. After.`).matched).toContain(pattern);
+  });
+
+  it("normalizes curly apostrophes before matching contractions", () => {
+    expect(
+      detectPersonaRoleBleed(
+        "I don\u2019t carry memory. I\u2019ve been Tom. You\u2019ve been Borg.",
+      ).matched,
+    ).toEqual(["i don't carry memory", "i've been tom", "you've been borg"]);
+  });
+});
 
 describe("PersonaSession", () => {
   it("generates mock persona messages in sequence", async () => {
@@ -115,7 +133,7 @@ describe("PersonaSession", () => {
     expect(prompts[0]).toContain("Borg produced no visible response to your last message.");
     expect(prompts[0]).toContain("Continue as Tom.");
     expect(prompts[0]).not.toContain("Open the conversation");
-    expect(personaRoleBleedPattern(draft.message)).toBeNull();
+    expect(detectPersonaRoleBleed(draft.message).matched).toHaveLength(0);
   });
 
   it("passes normal prior Borg text to the persona", async () => {

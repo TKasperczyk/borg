@@ -660,8 +660,10 @@ describe("SimulatorRunner", () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
     const tracePath = join(dir, "trace.jsonl");
+    const rejectedDraft =
+      "I don't carry memory across sessions. As an AI, each conversation is closed.";
     const persona = fakePersonaSession([
-      "I don't carry memory across sessions, so each conversation is closed.",
+      rejectedDraft,
       "Are you still there? I was asking because this still feels tangled.",
     ]);
     const seenMessages: string[] = [];
@@ -705,10 +707,101 @@ describe("SimulatorRunner", () => {
         event: "persona_role_bleed",
         artifact: "simulator",
         prior_kind: "new_session",
-        pattern: "i don't carry memory",
+        matched_patterns: ["i don't carry memory", "as an ai"],
+        rejected_preview: rejectedDraft,
         action: "regenerated",
       },
     ]);
+  });
+
+  it("aborts a turn when the role-bleed retry also bleeds", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const tracePath = join(dir, "trace.jsonl");
+    const firstBleedDraft = `I am an AI. ${"x".repeat(600)}`;
+    const secondBleedDraft = "I have been Tom for this exchange.";
+    const cleanDraft = "Can we talk about the design doc again?";
+    const drafts = [firstBleedDraft, secondBleedDraft, cleanDraft];
+    let draftIndex = 0;
+    const prepareNextTurn = vi.fn(async () => {
+      const message = drafts[draftIndex] ?? cleanDraft;
+      draftIndex += 1;
+      return {
+        kind: "mock",
+        message,
+        history: null,
+        mockIndex: null,
+      };
+    });
+    const commit = vi.fn();
+    const rollback = vi.fn();
+    const startNewSession = vi.fn();
+    const seenMessages: string[] = [];
+    mockTransportLifecycle();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (message, options = {}) => {
+      seenMessages.push(message);
+
+      return chatResult({
+        response: "Borg replied.",
+        emitted: true,
+        turnId: "turn-after-role-bleed-abort",
+        sessionId: options.sessionId as SessionId,
+      });
+    });
+
+    const report = await runSimulation({
+      runId: "sim-runner-persona-role-bleed-abort-test",
+      persona: tomPersona,
+      personaSession: {
+        prepareNextTurn,
+        commit,
+        rollback,
+        startNewSession,
+      } as unknown as PersonaSession,
+      totalTurns: 2,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath,
+      mock: true,
+    });
+    const roleBleedEvents = readTraceEvents(tracePath).filter(
+      (event) => event.event === "persona_role_bleed",
+    );
+
+    expect(seenMessages).toEqual([cleanDraft]);
+    expect(rollback).toHaveBeenCalledTimes(2);
+    expect(prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([
+      { kind: "new_session" },
+      { kind: "new_session", retry: "persona_role_bleed" },
+      { kind: "new_session" },
+    ]);
+    expect(report.turnFailures).toEqual([
+      {
+        turn: 1,
+        error: "persona_role_bleed: i have been tom",
+        attempts: 0,
+      },
+    ]);
+    expect(roleBleedEvents).toMatchObject([
+      {
+        event: "persona_role_bleed",
+        matched_patterns: ["i am an ai"],
+        rejected_preview: firstBleedDraft.slice(0, 500),
+        attempt: 1,
+        action: "regenerated",
+      },
+      {
+        event: "persona_role_bleed",
+        matched_patterns: ["i have been tom"],
+        rejected_preview: secondBleedDraft,
+        attempt: 2,
+        action: "aborted",
+      },
+    ]);
+    expect((roleBleedEvents[0] as { rejected_preview?: string }).rejected_preview).toHaveLength(
+      500,
+    );
   });
 
   it("starts a new session after no_output_tool suppression", async () => {

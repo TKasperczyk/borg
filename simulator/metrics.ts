@@ -1,6 +1,3 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-
 import {
   ACTION_STATES,
   RELATIONAL_SLOT_STATES,
@@ -16,6 +13,7 @@ import type { ActionId } from "../src/util/ids.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
 
+import { appendJsonlLine } from "./jsonl.js";
 import type { MetricsRow } from "./types.js";
 
 const LARGE_COUNT_LIMIT = 1_000_000;
@@ -52,22 +50,6 @@ export type MetricsCaptureContext = {
   sessionIds: readonly SessionId[];
   transportChatAttempts: number;
 };
-
-function appendJsonlLine(filePath: string, line: string): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-
-  let fileDescriptor: number | undefined;
-
-  try {
-    fileDescriptor = openSync(filePath, "a");
-    writeFileSync(fileDescriptor, line);
-    fsyncSync(fileDescriptor);
-  } finally {
-    if (fileDescriptor !== undefined) {
-      closeSync(fileDescriptor);
-    }
-  }
-}
 
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
   let count = 0;
