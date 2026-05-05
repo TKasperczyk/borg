@@ -455,6 +455,7 @@ describe("episodic extractor", () => {
               slot_key: "partner.name",
               asserted_value: "Sarah",
               source_stream_entry_ids: [user.id],
+              confirmation_kind: "direct",
             },
           ],
         ),
@@ -510,6 +511,7 @@ describe("episodic extractor", () => {
               slot_key: "tutor.name",
               asserted_value: "Marta",
               source_stream_entry_ids: [user.id],
+              confirmation_kind: "direct",
             },
           ],
         ),
@@ -564,12 +566,14 @@ describe("episodic extractor", () => {
               slot_key: "tutor.name",
               asserted_value: "Marta",
               source_stream_entry_ids: [bare.id],
+              confirmation_kind: "direct",
             },
             {
               subject_entity_id: tom,
               slot_key: "tutor.name",
               asserted_value: "Marta",
               source_stream_entry_ids: [explicit.id],
+              confirmation_kind: "explicit",
             },
           ],
         ),
@@ -595,6 +599,57 @@ describe("episodic extractor", () => {
       value: "Marta",
       state: "established",
       evidence_stream_entry_ids: [bare.id, explicit.id],
+    });
+  });
+
+  it("lets non-English LLM explicit confirmation establish an assistant-seeded relational name", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const tom = harness.entityRepository.resolve("Tom");
+    await harness.writer.append({
+      kind: "agent_msg",
+      content: "You could ask Marta the boring version next lesson.",
+    });
+    harness.clock.advance(10);
+    const explicit = await harness.writer.append({
+      kind: "user_msg",
+      content: "Tak, ma na imie Marta.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse(
+          [],
+          [
+            {
+              subject_entity_id: tom,
+              slot_key: "tutor.name",
+              asserted_value: "Marta",
+              source_stream_entry_ids: [explicit.id],
+              confirmation_kind: "explicit",
+            },
+          ],
+        ),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      defaultUser: "Tom",
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    const slot = harness.relationalSlotRepository.findBySubjectAndKey(tom, "tutor.name");
+
+    expect(slot).toMatchObject({
+      value: "Marta",
+      state: "established",
+      evidence_stream_entry_ids: [explicit.id],
     });
   });
 
@@ -625,6 +680,7 @@ describe("episodic extractor", () => {
               slot_key: "dog.name",
               asserted_value: "Otto",
               source_stream_entry_ids: [user.id],
+              confirmation_kind: "direct",
             },
           ],
         ),
@@ -674,6 +730,7 @@ describe("episodic extractor", () => {
               slot_key: "dog.name",
               asserted_value: "Otto",
               source_stream_entry_ids: [user.id],
+              confirmation_kind: "direct",
             },
           ],
         ),
@@ -751,12 +808,14 @@ describe("episodic extractor", () => {
               slot_key: "dog.name",
               asserted_value: "Otto",
               source_stream_entry_ids: [dog.id],
+              confirmation_kind: "direct",
             },
             {
               subject_entity_id: tom,
               slot_key: "partner.name",
               asserted_value: "Elena",
               source_stream_entry_ids: [partner.id],
+              confirmation_kind: "direct",
             },
           ],
         ),
@@ -867,18 +926,21 @@ describe("episodic extractor", () => {
               slot_key: "partner.name",
               asserted_value: "Sarah",
               source_stream_entry_ids: [sarah.id],
+              confirmation_kind: "direct",
             },
             {
               subject_entity_id: tom,
               slot_key: "partner.name",
               asserted_value: "Maya",
               source_stream_entry_ids: [maya.id],
+              confirmation_kind: "direct",
             },
             {
               subject_entity_id: tom,
               slot_key: "partner.name",
               asserted_value: "Clara",
               source_stream_entry_ids: [clara.id],
+              confirmation_kind: "direct",
             },
           ],
         ),

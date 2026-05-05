@@ -145,21 +145,31 @@ export async function expandRecall(
     return parsed;
   }
 
+  const orderedFacets = parsed.facets
+    .map((facet, index) => ({ facet, index }))
+    .sort((left, right) => right.facet.priority - left.facet.priority || left.index - right.index);
+  const retainedFacets = orderedFacets.slice(0, MAX_RECALL_EXPANSION_FACETS);
+  const droppedFacets = orderedFacets.slice(MAX_RECALL_EXPANSION_FACETS);
+
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("recall_expansion_clipped", {
       turnId: options.turnId,
-      originalFacetCount: parsed.facets.length,
-      retainedFacetCount: MAX_RECALL_EXPANSION_FACETS,
+      original_count: parsed.facets.length,
+      retained_count: MAX_RECALL_EXPANSION_FACETS,
+      ...(options.tracer.includePayloads === true
+        ? {
+            dropped_facets: droppedFacets.map((item) => ({
+              priority: item.facet.priority,
+              query: item.facet.query,
+            })),
+          }
+        : {}),
     });
   }
 
   return {
     ...parsed,
-    facets: parsed.facets
-      .map((facet, index) => ({ facet, index }))
-      .sort((left, right) => right.facet.priority - left.facet.priority || left.index - right.index)
-      .slice(0, MAX_RECALL_EXPANSION_FACETS)
-      .map((item) => item.facet),
+    facets: retainedFacets.map((item) => item.facet),
   };
 }
 

@@ -179,6 +179,22 @@ function addAlternateValue(
   ];
 }
 
+function removeAlternateValue(
+  alternates: readonly RelationalSlotAlternateValue[],
+  value: string,
+): RelationalSlotAlternateValue[] {
+  return alternates.filter((alternate) => alternate.value !== value);
+}
+
+function alternateEvidenceForValue(
+  alternates: readonly RelationalSlotAlternateValue[],
+  value: string,
+): StreamEntryId[] {
+  return (
+    alternates.find((alternate) => alternate.value === value)?.evidence_stream_entry_ids ?? []
+  );
+}
+
 function hasKnownValue(slot: RelationalSlot, value: string): boolean {
   if (slot.value === value) {
     return true;
@@ -389,6 +405,32 @@ export class RelationalSlotRepository {
           updated_at: nowMs,
         });
       } else {
+        if (parsed.confirmation === "explicit") {
+          const promotedEvidence = uniqueStreamEntryIds([
+            ...alternateEvidenceForValue(current.alternate_values, parsed.asserted_value),
+            ...parsed.source_stream_entry_ids,
+          ]);
+          const alternateValues = addAlternateValue(
+            removeAlternateValue(current.alternate_values, parsed.asserted_value),
+            current.value,
+            current.evidence_stream_entry_ids,
+          );
+          next = relationalSlotSchema.parse({
+            ...current,
+            value: parsed.asserted_value,
+            state: "established",
+            evidence_stream_entry_ids: promotedEvidence,
+            alternate_values: alternateValues,
+            contradicted_by_stream_entry_ids: uniqueStreamEntryIds([
+              ...current.contradicted_by_stream_entry_ids,
+              ...parsed.source_stream_entry_ids,
+            ]),
+            updated_at: nowMs,
+          });
+          this.upsert(next);
+          return buildResult(current, next);
+        }
+
         const alternateValues = addAlternateValue(
           current.alternate_values,
           parsed.asserted_value,
