@@ -123,6 +123,7 @@ describe("ActionStateExtractor", () => {
         corrective_preferences: [],
         relational_slots: [],
         recent_completed_actions: [actionRecordToRelationalGuardEvidence(records[0]!)],
+        trusted_runtime_evidence: [],
       },
       currentSessionId: DEFAULT_SESSION_ID,
       currentTurnTs: 3_000,

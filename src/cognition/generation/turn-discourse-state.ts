@@ -3,22 +3,29 @@ import type { StreamEntryId } from "../../util/ids.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import {
+  clearClosureLoop,
   clearStopUntilSubstantiveContent,
+  markClosureLoopNamed,
+  setClosureLoopDetected,
   setStopUntilSubstantiveContent,
 } from "./discourse-state.js";
 import type { AgentSuppressedStreamContent, PendingTurnEmission } from "./types.js";
 
 const ACTIVE_TURN_STATUS = "active";
 const DISCOURSE_STATE_NAME = "stop_until_substantive_content";
+const CLOSURE_LOOP_STATE_NAME = "closure_loop";
 type SuppressionReason = Extract<PendingTurnEmission, { kind: "suppressed" }>["reason"];
-const RELATIONAL_GUARD_SUPPRESSION_REASONS: ReadonlySet<SuppressionReason> = new Set([
-  "relational_guard_self_correction",
-  "relational_guard_audit_failed",
-  "relational_guard_rewrite_call_failed",
-  "relational_guard_rewrite_empty",
-  "relational_guard_reaudit_failed",
-  "relational_guard_rewrite_unsupported",
-] satisfies SuppressionReason[]);
+
+function isRelationalGuardSuppressionReason(reason: SuppressionReason): boolean {
+  return (
+    reason === "relational_guard_self_correction" ||
+    reason === "relational_guard_audit_failed" ||
+    reason === "relational_guard_rewrite_call_failed" ||
+    reason === "relational_guard_rewrite_empty" ||
+    reason === "relational_guard_reaudit_failed" ||
+    reason === "relational_guard_rewrite_unsupported"
+  );
+}
 
 export type TurnDiscourseStateServiceOptions = {
   tracer: TurnTracer;
@@ -86,6 +93,78 @@ export class TurnDiscourseStateService {
     return next;
   }
 
+  setClosureLoopDetected(input: {
+    workingMemory: WorkingMemory;
+    sourceStreamEntryIds: readonly StreamEntryId[];
+    reason: string;
+    turnId: string;
+  }): WorkingMemory {
+    const next = setClosureLoopDetected(input.workingMemory, {
+      sourceStreamEntryIds: input.sourceStreamEntryIds,
+      reason: input.reason,
+      sinceTurn: input.workingMemory.turn_counter,
+    });
+
+    if (this.options.tracer.enabled) {
+      this.options.tracer.emit("discourse_state_set", {
+        turnId: input.turnId,
+        state: CLOSURE_LOOP_STATE_NAME,
+        provenance: "closure_loop_classifier",
+        reason: input.reason,
+        sourceStreamEntryIds: [...input.sourceStreamEntryIds],
+      });
+    }
+
+    return next;
+  }
+
+  markClosureLoopNamed(input: {
+    workingMemory: WorkingMemory;
+    reason: string;
+    turnId: string;
+    sourceStreamEntryId?: StreamEntryId;
+  }): WorkingMemory {
+    const next = markClosureLoopNamed(input.workingMemory, {
+      sourceStreamEntryId: input.sourceStreamEntryId,
+      reason: input.reason,
+      turn: input.workingMemory.turn_counter,
+    });
+
+    if (this.options.tracer.enabled) {
+      this.options.tracer.emit("discourse_state_set", {
+        turnId: input.turnId,
+        state: CLOSURE_LOOP_STATE_NAME,
+        provenance: "closure_loop_named",
+        reason: input.reason,
+        ...(input.sourceStreamEntryId === undefined
+          ? {}
+          : { sourceStreamEntryId: input.sourceStreamEntryId }),
+      });
+    }
+
+    return next;
+  }
+
+  clearClosureLoop(input: {
+    workingMemory: WorkingMemory;
+    reason: string;
+    turnId: string;
+  }): WorkingMemory {
+    const active = input.workingMemory.discourse_state?.closure_loop ?? null;
+    const next = clearClosureLoop(input.workingMemory);
+
+    if (active !== null && this.options.tracer.enabled) {
+      this.options.tracer.emit("discourse_state_cleared", {
+        turnId: input.turnId,
+        state: CLOSURE_LOOP_STATE_NAME,
+        provenance: "closure_loop_classifier",
+        reason: input.reason,
+      });
+    }
+
+    return next;
+  }
+
   async appendHardCapEvent(input: {
     streamWriter: Pick<StreamWriter, "append">;
     turnId: string;
@@ -139,13 +218,24 @@ export class TurnDiscourseStateService {
     turnId: string;
   }): WorkingMemory {
     if (input.reason === "no_output_tool") {
-      return this.setStopState({
+      const stopped = this.setStopState({
         workingMemory: input.workingMemory,
         provenance: "no_output_tool",
         sourceStreamEntryId: input.sourceStreamEntryId,
         reason: "Finalizer called no_output for this turn.",
         turnId: input.turnId,
       });
+
+      if ((stopped.discourse_state?.closure_loop ?? null)?.status === "detected") {
+        return this.markClosureLoopNamed({
+          workingMemory: stopped,
+          sourceStreamEntryId: input.sourceStreamEntryId,
+          reason: "Closure loop detected; finalizer chose no_output.",
+          turnId: input.turnId,
+        });
+      }
+
+      return stopped;
     }
 
     if (
@@ -164,7 +254,7 @@ export class TurnDiscourseStateService {
       });
     }
 
-    if (RELATIONAL_GUARD_SUPPRESSION_REASONS.has(input.reason)) {
+    if (isRelationalGuardSuppressionReason(input.reason)) {
       return this.setStopState({
         workingMemory: input.workingMemory,
         provenance: "relational_guard",

@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";
 import {
+  clearClosureLoop,
   clearStopUntilSubstantiveContent,
+  markClosureLoopNamed,
   reviewStopHardCap,
+  setClosureLoopDetected,
   setStopUntilSubstantiveContent,
 } from "./discourse-state.js";
 
@@ -49,5 +52,36 @@ describe("discourse state", () => {
       activeTurns: 50,
     });
     expect(workingMemory.discourse_state?.stop_until_substantive_content).not.toBeNull();
+  });
+
+  it("tracks closure-loop detection, naming, and clearing", () => {
+    const sourceStreamEntryId = createStreamEntryId();
+    const detected = setClosureLoopDetected(createWorkingMemory(DEFAULT_SESSION_ID, 100), {
+      sourceStreamEntryIds: [sourceStreamEntryId],
+      reason: "Two mutual closure cycles detected.",
+      sinceTurn: 12,
+    });
+
+    expect(detected.discourse_state?.closure_loop).toEqual({
+      status: "detected",
+      source_stream_entry_ids: [sourceStreamEntryId],
+      reason: "Two mutual closure cycles detected.",
+      since_turn: 12,
+      named_at_turn: null,
+    });
+
+    const named = markClosureLoopNamed(detected, {
+      sourceStreamEntryId,
+      reason: "Named once.",
+      turn: 13,
+    });
+
+    expect(named.discourse_state?.closure_loop).toMatchObject({
+      status: "named",
+      reason: "Named once.",
+      since_turn: 12,
+      named_at_turn: 13,
+    });
+    expect(clearClosureLoop(named).discourse_state?.closure_loop).toBeNull();
   });
 });

@@ -17,6 +17,7 @@ export {
   suppressedEntrySchema,
   stopUntilSubstantiveContentSchema,
   workingMemorySchema,
+  type ClosureLoopState,
   type DiscourseState,
   type DiscourseStopProvenance,
   type PendingActionRecord,

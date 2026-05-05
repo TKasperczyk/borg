@@ -87,6 +87,7 @@ export class TurnRelationalGuardRunner {
         recent_completed_actions: this.listRecentCompletedActions(input.audienceEntityId).map(
           actionRecordToRelationalGuardEvidence,
         ),
+        trusted_runtime_evidence: [],
       },
     });
 

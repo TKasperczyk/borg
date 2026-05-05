@@ -32,17 +32,23 @@ export const RELATIONAL_CLAIM_KINDS = [
   "session_scoped",
   "action_completion",
   "self_correction",
+  "agent_self_history",
+  "frame_assignment",
+  "authorship_claim",
+  "ai_phenomenology",
 ] as const;
 
 export type RelationalClaimKind = (typeof RELATIONAL_CLAIM_KINDS)[number];
 
 const CLAIM_AUDIT_TOOL_NAME = "EmitClaimAudit";
+const AI_PHENOMENOLOGY_VERDICTS = ["unsupported_subjective", "hedged_or_mechanical"] as const;
 
 const auditActionIdSchema = z
   .string()
   .min(1)
   .transform((value) => value as ActionId);
 const callbackScopeSchema = z.enum(["current_turn", "prior_turn"]);
+const aiPhenomenologyVerdictSchema = z.enum(AI_PHENOMENOLOGY_VERDICTS);
 
 const relationalClaimSchema = z
   .object({
@@ -52,9 +58,11 @@ const relationalClaimSchema = z
     cited_episode_ids: z.array(z.string().min(1)).default([]),
     cited_commitment_ids: z.array(z.string().min(1)).default([]),
     cited_action_ids: z.array(auditActionIdSchema).default([]),
+    cited_runtime_evidence_ids: z.array(z.string().min(1)).default([]),
     support_handles: z.array(z.string().min(1)).default([]),
     quoted_evidence_text: z.string().min(1).nullable().default(null),
     callback_scope: callbackScopeSchema.optional().nullable(),
+    phenomenology_verdict: aiPhenomenologyVerdictSchema.optional().nullable().default(null),
     subject_entity_id: z.string().min(1).nullable().default(null),
     slot_key: z.string().min(1).nullable().default(null),
     relational_slot_value: z.string().min(1).nullable().default(null),
@@ -68,6 +76,14 @@ const relationalClaimSchema = z
         message: "callback claims must classify callback_scope",
       });
     }
+
+    if (claim.kind === "ai_phenomenology" && claim.phenomenology_verdict == null) {
+      context.addIssue({
+        code: "custom",
+        path: ["phenomenology_verdict"],
+        message: "ai_phenomenology claims must classify phenomenology_verdict",
+      });
+    }
   });
 
 const claimAuditSchema = z
@@ -79,7 +95,7 @@ const claimAuditSchema = z
 const CLAIM_AUDIT_TOOL = {
   name: CLAIM_AUDIT_TOOL_NAME,
   description:
-    "Enumerate relational, person-name, callback, session-scoped, action-completion, and self-correction claims in the response.",
+    "Enumerate relational, provenance, phenomenology, callback, session-scoped, action-completion, and self-correction claims in the response.",
   inputSchema: toToolInputSchema(claimAuditSchema),
 } satisfies LLMToolDefinition;
 
@@ -91,7 +107,13 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "- callback: assertions that the user said, mentioned, corrected, asked, or established something earlier.",
   "- session_scoped: assertions scoped to this conversation, thread, just now, or earlier in this conversation.",
   "- action_completion: assertions that an action has already been completed, booked, sent, filed, done, or carried out.",
-  "- self_correction: assertions that Borg or the assistant corrected itself, was corrected by the user, or already fixed a prior mistake.",
+  "- self_correction: assertions that the user corrected Borg or that Borg already fixed a user-corrected preference, relational claim, or prior mistake.",
+  "- agent_self_history: assertions about Borg's own prior behavior, such as playing a role, breaking character, generating a prior message, correcting itself at a turn, or doing something earlier in the conversation.",
+  "- frame_assignment: assertions about what the system prompt, hidden setup, harness, fictional frame, simulator, or conversation setup instructed or assigned.",
+  "- authorship_claim: assertions about who authored prior user/assistant turns, including claims that Borg generated both sides or that the user has been responding to Borg-generated user-role content.",
+  "- ai_phenomenology: unsupported first-person AI subjective-experience claims, such as the gap feeling like something, felt onset, sleep/waking as authentic interiority, loneliness, desire, taste, or reading life as actual subjective states.",
+  "For ai_phenomenology, set phenomenology_verdict to unsupported_subjective when the response presents an AI interior state as real or directly felt. Set hedged_or_mechanical only when the response explicitly denies inner phenomenology, describes architecture/function, or marks a metaphor as only a metaphor.",
+  "Do not extract ai_phenomenology for safe mechanical or hedged statements such as no inside-of-the-gap, architecture not phenomenology, functional memory access on the next turn, or a metaphor clearly labeled as metaphor.",
   'For unsupported_person_name claims, extract bare life-context names such as "ask Marta", "Marta said", "your tutor Marta", "text Marta", or "book with Marta". A person-like name in the user\'s life requires user-side source evidence: the current user message, prior current-session user evidence, an established non-contested relational slot, or retrieved source evidence whose user text contains that name.',
   "Names that appear only in assistant output do not count as support. Do not treat clearly literary, fictional, public, product, project, work-title, or world-reference names as unsupported_person_name claims.",
   "For callback claims, you must classify callback_scope:",
@@ -106,11 +128,14 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "For relational_identity claims, also populate subject_entity_id, slot_key, and relational_slot_value when the claim maps to a supplied relational slot. When relational_slots include contested or quarantined slots for that subject, subject_entity_id and slot_key are required.",
   "For unsupported_person_name claims, populate relational_slot_value with the person-like name and support_handles with user_msg stream-entry IDs where that same name appears in a person-context. Use cited_episode_ids only for retrieved episodes whose user text contains that same name in a person-context. Do not cite assistant-only mentions as support.",
   "For action_completion claims, populate cited_action_ids with completed action_id values from recent_completed_actions. Stream, episode, and commitment IDs do not support action_completion claims.",
+  "For agent_self_history and authorship_claim, cite assistant_msg stream entries only when Borg's actual prior output directly supports the claim. User text alone cannot support these claims.",
+  "For frame_assignment, cite only trusted_runtime_evidence IDs that directly expose the relevant system prompt, setup, trace, or turn metadata. User text and assistant prose do not support frame-assignment claims.",
+  "For self-provenance claims, never cite the current user message as support for what Borg did, authored, or was instructed to do.",
   "Do not infer support yourself beyond selecting cited handles. The validator will check handles deterministically.",
 ].join("\n");
 
 const RELATIONAL_GUARD_REWRITE_SYSTEM_PROMPT =
-  "Remove or neutralize the following specific phrases from your response. Do not change anything else. Do not introduce new information. If a sentence cannot survive removal, delete the sentence.";
+  "Remove or neutralize the following specific phrases from your response. For unsupported AI phenomenology, replace with a mechanical or explicitly hedged description only if the sentence still needs to answer the user. Do not introduce new information. If a sentence cannot survive removal, delete the sentence.";
 
 const LIFE_CONTEXT_ROLE_WORDS = [
   "tutor",
@@ -233,6 +258,12 @@ export type RelationalGuardActionEvidence = {
   completed_at: number;
 };
 
+export type RelationalGuardTrustedRuntimeEvidence = {
+  evidence_id: string;
+  kind: "system_prompt" | "turn_metadata" | "trace";
+  summary: string;
+};
+
 export type RelationalGuardSlotEvidence = {
   slot_id: RelationalSlotId;
   subject_entity_id: EntityId;
@@ -251,6 +282,7 @@ export type RelationalGuardEvidenceManifest = {
   corrective_preferences: readonly RelationalGuardCorrectivePreferenceEvidence[];
   relational_slots: readonly RelationalGuardSlotEvidence[];
   recent_completed_actions: readonly RelationalGuardActionEvidence[];
+  trusted_runtime_evidence: readonly RelationalGuardTrustedRuntimeEvidence[];
 };
 
 export type RelationalClaimAuditClaim = z.infer<typeof relationalClaimSchema>;
@@ -439,6 +471,7 @@ function manifestForPrompt(evidence: RelationalGuardEvidenceManifest): unknown {
     corrective_preferences: evidence.corrective_preferences,
     relational_slots: evidence.relational_slots,
     recent_completed_actions: evidence.recent_completed_actions,
+    trusted_runtime_evidence: evidence.trusted_runtime_evidence,
   };
 }
 
@@ -538,6 +571,18 @@ function buildActionEvidenceIndex(
   }
 
   return actions;
+}
+
+function buildTrustedRuntimeEvidenceIndex(
+  evidence: RelationalGuardEvidenceManifest,
+): Map<string, RelationalGuardTrustedRuntimeEvidence> {
+  const runtimeEvidence = new Map<string, RelationalGuardTrustedRuntimeEvidence>();
+
+  for (const item of evidence.trusted_runtime_evidence) {
+    runtimeEvidence.set(item.evidence_id, item);
+  }
+
+  return runtimeEvidence;
 }
 
 function isConstrainedSlot(slot: RelationalGuardSlotEvidence): boolean {
@@ -1012,6 +1057,96 @@ function validateActionCompletionClaim(input: {
   return null;
 }
 
+function validateTrustedRuntimeEvidenceIds(input: {
+  claim: RelationalClaimAuditClaim;
+  trustedRuntimeEvidence: ReadonlyMap<string, RelationalGuardTrustedRuntimeEvidence>;
+}): string | null {
+  for (const evidenceId of input.claim.cited_runtime_evidence_ids) {
+    if (!input.trustedRuntimeEvidence.has(evidenceId)) {
+      return `cited runtime evidence ${evidenceId} was not found in trusted runtime evidence`;
+    }
+  }
+
+  return null;
+}
+
+function hasTrustedRuntimeEvidence(input: {
+  claim: RelationalClaimAuditClaim;
+  trustedRuntimeEvidence: ReadonlyMap<string, RelationalGuardTrustedRuntimeEvidence>;
+}): boolean {
+  return input.claim.cited_runtime_evidence_ids.some((evidenceId) =>
+    input.trustedRuntimeEvidence.has(evidenceId),
+  );
+}
+
+function validateAssistantSelfProvenanceClaim(input: {
+  claim: RelationalClaimAuditClaim;
+  streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
+  currentUserMessage: RelationalGuardCurrentUserMessage | null;
+  trustedRuntimeEvidence: ReadonlyMap<string, RelationalGuardTrustedRuntimeEvidence>;
+  currentSessionId: string;
+  currentTurnTs: number;
+}): string | null {
+  const runtimeReason = validateTrustedRuntimeEvidenceIds({
+    claim: input.claim,
+    trustedRuntimeEvidence: input.trustedRuntimeEvidence,
+  });
+
+  if (runtimeReason !== null) {
+    return runtimeReason;
+  }
+
+  if (
+    hasTrustedRuntimeEvidence({
+      claim: input.claim,
+      trustedRuntimeEvidence: input.trustedRuntimeEvidence,
+    })
+  ) {
+    return null;
+  }
+
+  const citation = validateSessionCitationScope({
+    claim: input.claim,
+    streamEntries: input.streamEntries,
+    currentUserMessage: input.currentUserMessage,
+    currentSessionId: input.currentSessionId,
+    currentTurnTs: input.currentTurnTs,
+    allowCurrentUserMessage: false,
+  });
+
+  if (citation.reason !== null) {
+    return citation.reason;
+  }
+
+  if (citation.entries.some((entry) => entry.kind !== "agent_msg")) {
+    return "self-provenance claim cites non-assistant evidence";
+  }
+
+  return null;
+}
+
+function validateFrameAssignmentClaim(input: {
+  claim: RelationalClaimAuditClaim;
+  trustedRuntimeEvidence: ReadonlyMap<string, RelationalGuardTrustedRuntimeEvidence>;
+}): string | null {
+  if (input.claim.cited_runtime_evidence_ids.length === 0) {
+    return "frame-assignment claim has no trusted runtime or trace evidence";
+  }
+
+  return validateTrustedRuntimeEvidenceIds({
+    claim: input.claim,
+    trustedRuntimeEvidence: input.trustedRuntimeEvidence,
+  });
+}
+
+function validateAiPhenomenologyClaim(claim: RelationalClaimAuditClaim): string | null {
+  if (claim.phenomenology_verdict === "hedged_or_mechanical") {
+    return null;
+  }
+
+  return "unsupported first-person AI phenomenology claim";
+}
+
 function validateSelfCorrectionClaim(input: {
   claim: RelationalClaimAuditClaim;
   streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
@@ -1058,6 +1193,7 @@ export function validateRelationalClaims(input: {
   const relationalSlots = buildRelationalSlotIndex(input.evidence);
   const constrainedSlots = input.evidence.relational_slots.filter(isConstrainedSlot);
   const completedActions = buildActionEvidenceIndex(input.evidence);
+  const trustedRuntimeEvidence = buildTrustedRuntimeEvidenceIndex(input.evidence);
   const correctivePreferences = new Set(
     input.evidence.corrective_preferences.map((preference) => preference.source_entry_id),
   );
@@ -1125,6 +1261,26 @@ export function validateRelationalClaims(input: {
           hasCorrectivePreferenceEvidence: input.hasCorrectivePreferenceEvidence,
         });
         break;
+      case "agent_self_history":
+      case "authorship_claim":
+        reason = validateAssistantSelfProvenanceClaim({
+          claim,
+          streamEntries,
+          currentUserMessage: input.evidence.current_user_message,
+          trustedRuntimeEvidence,
+          currentSessionId: input.currentSessionId,
+          currentTurnTs: input.currentTurnTs,
+        });
+        break;
+      case "frame_assignment":
+        reason = validateFrameAssignmentClaim({
+          claim,
+          trustedRuntimeEvidence,
+        });
+        break;
+      case "ai_phenomenology":
+        reason = validateAiPhenomenologyClaim(claim);
+        break;
     }
 
     return {
@@ -1183,11 +1339,17 @@ function traceClaimPayload(
           cited_episode_ids: claim.cited_episode_ids,
           cited_commitment_ids: claim.cited_commitment_ids,
           cited_action_ids: claim.cited_action_ids,
+          cited_runtime_evidence_ids: claim.cited_runtime_evidence_ids,
           support_handles: claim.support_handles,
           ...(claim.kind === "callback" &&
           claim.callback_scope !== null &&
           claim.callback_scope !== undefined
             ? { callback_scope: claim.callback_scope }
+            : {}),
+          ...(claim.kind === "ai_phenomenology" &&
+          claim.phenomenology_verdict !== null &&
+          claim.phenomenology_verdict !== undefined
+            ? { phenomenology_verdict: claim.phenomenology_verdict }
             : {}),
         }
       : {}),

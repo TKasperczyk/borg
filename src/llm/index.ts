@@ -1101,6 +1101,10 @@ function isPersonaRoleBleedClassifierFallbackRequest(options: LLMCompleteOptions
   return options.budget === "persona-role-bleed-classifier";
 }
 
+function isClosureLoopClassifierFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "closure-loop-classifier";
+}
+
 function isRelationalClaimAuditorFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "relational-claim-auditor";
 }
@@ -1259,6 +1263,26 @@ function isPersonaRoleBleedResponse(response: FakeLLMResponse | undefined): bool
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "ClassifyPersonaRoleBleed",
+    );
+  }
+
+  return false;
+}
+
+function isClosureLoopClassificationResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some(
+      (toolCall) => toolCall.name === "ClassifyClosureLoopDialogueActs",
+    );
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "ClassifyClosureLoopDialogueActs",
     );
   }
 
@@ -1464,6 +1488,26 @@ function defaultPersonaRoleBleedResponse(): LLMCompleteResult {
   };
 }
 
+function defaultClosureLoopClassificationResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_closure_loop",
+        name: "ClassifyClosureLoopDialogueActs",
+        input: {
+          messages: [],
+          confidence: 0,
+          rationale: "No closure-loop classification scripted.",
+        },
+      },
+    ],
+  };
+}
+
 function defaultRelationalClaimAuditResponse(): LLMCompleteResult {
   return {
     text: "",
@@ -1567,6 +1611,14 @@ export class FakeLLMClient implements LLMClient {
       !isPersonaRoleBleedResponse(response)
     ) {
       return defaultPersonaRoleBleedResponse();
+    }
+
+    if (
+      isClosureLoopClassifierFallbackRequest(options) &&
+      scriptedResponseBudget(response) !== "closure-loop-classifier" &&
+      !isClosureLoopClassificationResponse(response)
+    ) {
+      return defaultClosureLoopClassificationResponse();
     }
 
     if (
