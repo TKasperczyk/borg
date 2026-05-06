@@ -11,6 +11,7 @@ function correctivePreferenceResponse(input: {
   type?: "preference" | "rule" | "boundary" | null;
   directive?: string | null;
   directive_family?: string | null;
+  closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
   priority?: number | null;
   reason?: string;
   confidence?: number;
@@ -30,6 +31,9 @@ function correctivePreferenceResponse(input: {
           type: input.type ?? null,
           directive: input.directive ?? null,
           directive_family: input.directive_family ?? null,
+          closure_pressure_relevance:
+            input.closure_pressure_relevance ??
+            (input.classification === "corrective_preference" ? "neutral" : null),
           priority: input.priority ?? null,
           reason: input.reason ?? "Classification reason.",
           confidence: input.confidence ?? 0.9,
@@ -50,6 +54,7 @@ describe("CorrectivePreferenceExtractor", () => {
           type: "preference",
           directive: "Do not add ritual closing lines when the conversation is still open.",
           directive_family: "no_terminal_valediction",
+          closure_pressure_relevance: "no_closure",
           priority: 8,
           reason: "The user corrected recurring future response behavior.",
           confidence: 0.9,
@@ -72,6 +77,7 @@ describe("CorrectivePreferenceExtractor", () => {
       type: "preference",
       directive: "Do not add ritual closing lines when the conversation is still open.",
       directive_family: "no_terminal_valediction",
+      closure_pressure_relevance: "no_closure",
       priority: 8,
       reason: "The user corrected recurring future response behavior.",
       confidence: 0.9,
@@ -97,6 +103,7 @@ describe("CorrectivePreferenceExtractor", () => {
           type: "preference",
           directive: "Do not add ritual closing lines when the conversation is still open.",
           directive_family: "no_terminal_valediction",
+          closure_pressure_relevance: "no_closure",
           priority: 8,
           reason: "The user corrected recurring future response behavior.",
           confidence: 0.9,
@@ -121,6 +128,7 @@ describe("CorrectivePreferenceExtractor", () => {
       type: "preference",
       directive: "Do not add ritual closing lines when the conversation is still open.",
       directive_family: "no_terminal_valediction",
+      closure_pressure_relevance: "no_closure",
     });
 
     expect(emit).toHaveBeenCalledWith("llm_call_started", {
@@ -239,6 +247,7 @@ describe("CorrectivePreferenceExtractor", () => {
           type: "rule",
           directive: "Adjust future response behavior.",
           directive_family: "adjust_future_response_behavior",
+          closure_pressure_relevance: "neutral",
           priority: 5,
           reason: "The signal is ambiguous.",
           confidence: 0.5,

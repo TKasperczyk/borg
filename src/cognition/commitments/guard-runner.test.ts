@@ -13,6 +13,7 @@ function makeCommitment(): CommitmentRecord {
     id: commitmentId,
     type: "boundary",
     directive_family: "launch_date_boundary",
+    closure_pressure_relevance: "neutral",
     directive: "Do not discuss launch dates.",
     priority: 10,
     made_to_entity: null,

@@ -8,6 +8,7 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import {
+  closurePressureRelevanceSchema,
   commitmentIdSchema,
   commitmentTypeSchema,
   normalizeDirectiveFamily,
@@ -77,6 +78,11 @@ const correctivePreferenceSchema = z
       .describe(
         "Short canonical snake_case slug for the directive family, such as no_terminal_valediction, no_signoff, or respond_substantively. Use null when classification is none.",
       ),
+    closure_pressure_relevance: closurePressureRelevanceSchema
+      .nullable()
+      .describe(
+        "Set no_closure when the durable correction asks Borg not to add endings, signoffs, wrap-ups, terminal valedictions, or closure pressure; set closure_seeking when it asks Borg to provide those; otherwise set neutral. Use null when classification is none.",
+      ),
     priority: z
       .number()
       .int()
@@ -123,6 +129,7 @@ const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
   "For slot_negations, select subject_entity_id and slot_key only from supplied relational_slots and cite only the current_user_stream_entry_id.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
   "Emit directive_family as a short snake_case semantic family slug chosen by meaning, not by surface wording.",
+  'Emit closure_pressure_relevance as "no_closure" for durable no-wrap-up/no-signoff/no-closure corrections, "closure_seeking" for durable requests to add closure, and "neutral" otherwise.',
   "When uncertain, return none. The directive must be enforceable by a later response checker without needing to remember the current phrasing.",
 ].join("\n");
 
@@ -134,6 +141,7 @@ export type CorrectivePreferenceCandidate = {
   type: Exclude<z.infer<typeof commitmentTypeSchema>, "promise">;
   directive: string;
   directive_family: string;
+  closure_pressure_relevance: z.infer<typeof closurePressureRelevanceSchema>;
   priority: number;
   reason: string;
   confidence: number;
@@ -180,6 +188,7 @@ export type ExtractCorrectivePreferenceInput = {
     type: string;
     directive: string;
     directive_family?: string | null;
+    closure_pressure_relevance?: z.infer<typeof closurePressureRelevanceSchema> | null;
     priority: number;
   }[];
   relationalSlots?: readonly {
@@ -200,6 +209,7 @@ function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreference
     input.type === null ||
     input.directive === null ||
     input.directive_family === null ||
+    input.closure_pressure_relevance === null ||
     input.priority === null
   ) {
     return null;
@@ -217,6 +227,7 @@ function toCandidate(input: CorrectivePreferenceToolInput): CorrectivePreference
     type: input.type,
     directive,
     directive_family: directiveFamily,
+    closure_pressure_relevance: input.closure_pressure_relevance,
     priority: input.priority,
     reason,
     confidence: input.confidence,
@@ -291,6 +302,7 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
           id: commitment.id,
           type: commitment.type,
           directive_family: commitment.directive_family ?? null,
+          closure_pressure_relevance: commitment.closure_pressure_relevance ?? null,
           directive: commitment.directive,
           priority: commitment.priority,
         })),

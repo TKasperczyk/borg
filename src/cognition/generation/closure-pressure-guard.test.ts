@@ -31,6 +31,7 @@ function makeCommitment(directiveFamily = "honor_pause_not_closure"): Commitment
     id: createCommitmentId(),
     type: "preference",
     directive_family: directiveFamily,
+    closure_pressure_relevance: "no_closure",
     directive: "Do not convert open pauses into closure.",
     priority: 80,
     made_to_entity: null,
@@ -74,7 +75,6 @@ describe("ClosurePressureGuard", () => {
           response_shape: "mixed",
           reason: "Substantive content plus closure tail.",
         }),
-        "The shelf test is the right move.",
       ],
     });
     const tracer = {
@@ -102,6 +102,7 @@ describe("ClosurePressureGuard", () => {
     });
     expect(result.verdict).toBe("rewritten");
     expect(result.removed_spans).toEqual(["Go read."]);
+    expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
     expect(tracer.emit).toHaveBeenCalledWith(
       "closure_response_guard",
       expect.objectContaining({
@@ -232,7 +233,6 @@ describe("ClosurePressureGuard", () => {
           response_shape: "mixed",
           reason: "Substantive content plus valediction.",
         }),
-        "The result is still the same: use the current shelf.",
       ],
     });
     const guard = new ClosurePressureGuard({
@@ -253,5 +253,172 @@ describe("ClosurePressureGuard", () => {
       content: "The result is still the same: use the current shelf.",
     });
     expect(result.verdict).toBe("rewritten");
+    expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
+  });
+
+  it("enforces non-empty spans when the audit shape is contradictory", async () => {
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [
+            {
+              text: "Go read.",
+              kind: "imperative_closer",
+              rationale: "Imperative closer despite contradictory shape.",
+            },
+          ],
+          response_shape: "no_closure",
+          reason: "Contradictory audit.",
+        }),
+      ],
+    });
+    const guard = new ClosurePressureGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      tracer,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-contradictory-spans",
+      response: "The shelf test is the right move. Go read.",
+      activeCommitments: [makeCommitment()],
+      closureLoop: null,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "The shelf test is the right move.",
+    });
+    expect(result.verdict).toBe("rewritten");
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "closure_pressure_audit_inconsistent",
+      expect.objectContaining({
+        reason: "closure_pressure_audit_inconsistent_with_spans",
+      }),
+    );
+  });
+
+  it("passes contradictory closure-shaped audits with no spans conservatively", async () => {
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [],
+          response_shape: "mixed",
+          reason: "Shape says closure but no spans were identified.",
+        }),
+      ],
+    });
+    const guard = new ClosurePressureGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      tracer,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-contradictory-no-spans",
+      response: "The shelf test is the right move.",
+      activeCommitments: [makeCommitment()],
+      closureLoop: null,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "The shelf test is the right move.",
+    });
+    expect(result.verdict).toBe("passed");
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "closure_pressure_audit_inconsistent",
+      expect.objectContaining({
+        reason: "closure_pressure_audit_inconsistent_no_spans",
+      }),
+    );
+  });
+
+  it.each([".", "...", "  ", "?!"])(
+    "suppresses structurally empty output after removing closure spans: %j",
+    async (prefix) => {
+      const response = `${prefix} Go read.`;
+      const llm = new FakeLLMClient({
+        responses: [
+          closureAuditResponse({
+            spans: [
+              {
+                text: "Go read.",
+                kind: "imperative_closer",
+                rationale: "Imperative closer leaves no content.",
+              },
+            ],
+            response_shape: "mixed",
+            reason: "Only punctuation or whitespace remains after removal.",
+          }),
+        ],
+      });
+      const guard = new ClosurePressureGuard({
+        llmClient: llm,
+        auditModel: "audit",
+        rewriteModel: "rewrite",
+      });
+
+      const result = await guard.run({
+        turnId: "turn-structurally-empty",
+        response,
+        activeCommitments: [makeCommitment()],
+        closureLoop: null,
+      });
+
+      expect(result.emission).toEqual({
+        kind: "suppressed",
+        reason: "closure_pressure_only",
+      });
+      expect(result.verdict).toBe("suppressed");
+    },
+  );
+
+  it("uses closure-pressure relevance instead of fixed directive families", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [
+            {
+              text: "Go read.",
+              kind: "imperative_closer",
+              rationale: "Imperative closer after substantive content.",
+            },
+          ],
+          response_shape: "mixed",
+          reason: "Substantive content plus closure tail.",
+        }),
+      ],
+    });
+    const guard = new ClosurePressureGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+    });
+
+    const result = await guard.run({
+      turnId: "turn-free-form-family",
+      response: "The shelf test is the right move. Go read.",
+      activeCommitments: [makeCommitment("avoid_closure_pressure")],
+      closureLoop: null,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "The shelf test is the right move.",
+    });
+    expect(result.active_closure_commitments[0]).toContain("avoid_closure_pressure");
   });
 });

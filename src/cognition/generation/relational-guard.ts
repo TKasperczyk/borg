@@ -22,6 +22,7 @@ import type {
   StreamEntryId,
 } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
+import { valueAppearsIn } from "../../util/text-presence.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { PendingTurnEmission } from "./types.js";
 
@@ -633,7 +634,10 @@ function validateQuotedEvidence(
     return null;
   }
 
-  const found = entries.some((entry) => entry.content.includes(claim.quoted_evidence_text ?? ""));
+  const quotedEvidenceText = claim.quoted_evidence_text;
+  const found =
+    quotedEvidenceText !== null &&
+    entries.some((entry) => valueAppearsIn(entry.content, quotedEvidenceText));
 
   return found ? null : "quoted evidence text does not appear verbatim in the cited stream entry";
 }
@@ -915,7 +919,7 @@ function validateStreamSupportHandlesForValue(input: {
     return `${input.label} cites non-user evidence`;
   }
 
-  if (resolved.some((entry) => entry.content.includes(input.value))) {
+  if (resolved.some((entry) => valueAppearsIn(entry.content, input.value))) {
     return true;
   }
 
@@ -944,7 +948,9 @@ function validateEpisodeSupportHandlesForValue(input: {
     resolved.push(episode);
   }
 
-  if (resolved.some((episode) => episode.user_texts.some((text) => text.includes(input.value)))) {
+  if (
+    resolved.some((episode) => episode.user_texts.some((text) => valueAppearsIn(text, input.value)))
+  ) {
     return true;
   }
 
@@ -981,7 +987,7 @@ function userSupportEntriesContainingValue(input: {
   }
 
   return resolved.filter(
-    (entry) => entry.kind === "user_msg" && entry.content.includes(input.value),
+    (entry) => entry.kind === "user_msg" && valueAppearsIn(entry.content, input.value),
   );
 }
 
@@ -1017,7 +1023,7 @@ function entryWasSeededByRecentAssistant(input: {
       continue;
     }
 
-    if (entry.kind === "agent_msg" && entry.content.includes(input.value)) {
+    if (entry.kind === "agent_msg" && valueAppearsIn(entry.content, input.value)) {
       return true;
     }
   }
@@ -1137,6 +1143,11 @@ function validateUnsupportedSpecificDetailClaim(input: {
   }
 
   const label = `unsupported specific detail ${value}`;
+
+  if (input.claim.specific_detail_support_kind === "assistant_seeded_repetition") {
+    return `unsupported specific detail ${value} is assistant_seeded`;
+  }
+
   const streamSupport = validateStreamSupportHandlesForValue({
     value,
     label,
@@ -1157,14 +1168,7 @@ function validateUnsupportedSpecificDetailClaim(input: {
       return null;
     }
 
-    const episodeSupport = validateEpisodeSupportHandlesForValue({
-      value,
-      label,
-      claim: input.claim,
-      episodes: input.episodes,
-    });
-
-    return episodeSupport === true ? null : assistantSeed;
+    return assistantSeed;
   }
 
   if (typeof streamSupport === "string") {

@@ -8,6 +8,7 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
+import { valueAppearsIn } from "../../util/text-presence.js";
 import type { ClosureLoopState } from "../../memory/working/index.js";
 import type { TurnTraceData, TurnTracer } from "../tracing/tracer.js";
 import type { PendingTurnEmission } from "./types.js";
@@ -38,20 +39,22 @@ export const CLOSURE_FUNCTION_EXAMPLES = [
   "Held. Book.",
 ] as const;
 
-export const CLOSURE_PRESSURE_COMMITMENT_FAMILIES = [
-  "honor_pause_not_closure",
-  "no_sleep_closure",
-  "no_closure_on_transition",
-  "extend_over_close",
-  "no_closure",
-  "no_terminal_valediction",
-  "no_signoff",
-  "respond_substantively",
-] as const;
+const STRUCTURALLY_EMPTY_TEXT_PATTERN = /^[\s\p{P}\p{S}]*$/u;
+const SPAN_WHITESPACE_PATTERN = /\s/u;
+const TRAILING_REMOVAL_JUNK_PATTERN = /[\s,;:]+$/u;
 
-const CLOSURE_PRESSURE_COMMITMENT_FAMILY_SET = new Set<string>(
-  CLOSURE_PRESSURE_COMMITMENT_FAMILIES,
-);
+const SMART_QUOTE_REPLACEMENTS: ReadonlyArray<readonly [string, string]> = [
+  ["\u2018", "'"],
+  ["\u2019", "'"],
+  ["\u201a", "'"],
+  ["\u201b", "'"],
+  ["\u2032", "'"],
+  ["\u201c", '"'],
+  ["\u201d", '"'],
+  ["\u201e", '"'],
+  ["\u201f", '"'],
+  ["\u2033", '"'],
+];
 
 const closureResponseSpanSchema = z
   .object({
@@ -88,9 +91,6 @@ const CLOSURE_RESPONSE_AUDIT_SYSTEM_PROMPT = [
   'Set response_shape to "closure_only" when removing closure-function spans would leave no substantive content.',
   "Do not treat ordinary concise substantive answers as closure-pressure just because they are short.",
 ].join("\n");
-
-const CLOSURE_RESPONSE_REWRITE_SYSTEM_PROMPT =
-  "Remove only the supplied closure-function spans from the response. Preserve substantive content, do not add new information, and return an empty string if nothing substantive remains.";
 
 export type ClosureResponseSpan = z.infer<typeof closureResponseSpanSchema>;
 export type ClosureResponseAudit = z.infer<typeof closureResponseAuditSchema>;
@@ -147,27 +147,10 @@ function buildAuditMessages(response: string): LLMMessage[] {
   ];
 }
 
-function buildRewriteMessages(input: {
-  response: string;
-  spans: readonly ClosureResponseSpan[];
-}): LLMMessage[] {
-  return [
-    {
-      role: "user",
-      content: JSON.stringify({
-        response: input.response,
-        closure_spans_to_remove: input.spans.map((span) => span.text),
-      }),
-    },
-  ];
-}
-
 function activeClosureCommitmentFamilies(
   commitments: readonly CommitmentRecord[],
 ): CommitmentRecord[] {
-  return commitments.filter((commitment) =>
-    CLOSURE_PRESSURE_COMMITMENT_FAMILY_SET.has(commitment.directive_family),
-  );
+  return commitments.filter((commitment) => commitment.closure_pressure_relevance === "no_closure");
 }
 
 function activeClosureCommitmentLabels(commitments: readonly CommitmentRecord[]): string[] {
@@ -219,6 +202,166 @@ function traceClosureGuard(input: {
   input.tracer.emit("closure_response_guard", payload);
 }
 
+function traceClosureAuditInconsistent(input: {
+  tracer?: TurnTracer;
+  turnId: string;
+  reason: string;
+  audit: ClosureResponseAudit;
+}): void {
+  if (input.tracer?.enabled !== true) {
+    return;
+  }
+
+  input.tracer.emit("closure_pressure_audit_inconsistent", {
+    turnId: input.turnId,
+    reason: input.reason,
+    spans_detected: input.audit.spans.length,
+    response_shape: input.audit.response_shape,
+  });
+}
+
+type TextRange = {
+  start: number;
+  end: number;
+};
+
+type NormalizedTextIndex = {
+  text: string;
+  ranges: TextRange[];
+};
+
+function normalizeSpanCharacter(value: string): string {
+  let normalized = value;
+
+  for (const [from, to] of SMART_QUOTE_REPLACEMENTS) {
+    normalized = normalized.replaceAll(from, to);
+  }
+
+  return normalized.normalize("NFC").toLocaleLowerCase();
+}
+
+function buildNormalizedTextIndex(value: string): NormalizedTextIndex {
+  let text = "";
+  const ranges: TextRange[] = [];
+  let offset = 0;
+
+  for (const character of value) {
+    const start = offset;
+    offset += character.length;
+
+    if (SPAN_WHITESPACE_PATTERN.test(character)) {
+      if (text[text.length - 1] === " ") {
+        const lastRange = ranges[ranges.length - 1];
+
+        if (lastRange !== undefined) {
+          lastRange.end = offset;
+        }
+      } else {
+        text += " ";
+        ranges.push({ start, end: offset });
+      }
+
+      continue;
+    }
+
+    for (const normalizedCharacter of normalizeSpanCharacter(character)) {
+      text += normalizedCharacter;
+      ranges.push({ start, end: offset });
+    }
+  }
+
+  return { text, ranges };
+}
+
+function normalizedSpanText(value: string): string {
+  return buildNormalizedTextIndex(value).text.trim();
+}
+
+function findNormalizedSpanRanges(response: string, spanText: string): TextRange[] {
+  const normalized = buildNormalizedTextIndex(response);
+  const needle = normalizedSpanText(spanText);
+  const matches: TextRange[] = [];
+
+  if (needle.length === 0) {
+    return matches;
+  }
+
+  let index = normalized.text.indexOf(needle);
+
+  while (index >= 0) {
+    const first = normalized.ranges[index];
+    const last = normalized.ranges[index + needle.length - 1];
+
+    if (first !== undefined && last !== undefined) {
+      matches.push({
+        start: first.start,
+        end: last.end,
+      });
+    }
+
+    index = normalized.text.indexOf(needle, index + 1);
+  }
+
+  return matches;
+}
+
+function rangesOverlap(left: TextRange, right: TextRange): boolean {
+  return left.start < right.end && right.start < left.end;
+}
+
+function findUniqueRemovalRange(input: {
+  response: string;
+  span: ClosureResponseSpan;
+  selectedRanges: readonly TextRange[];
+}): TextRange | null {
+  if (!valueAppearsIn(input.response, input.span.text)) {
+    return null;
+  }
+
+  const matches = findNormalizedSpanRanges(input.response, input.span.text).filter(
+    (range) => !input.selectedRanges.some((selected) => rangesOverlap(range, selected)),
+  );
+
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
+function structurallyEmptyText(value: string): boolean {
+  return STRUCTURALLY_EMPTY_TEXT_PATTERN.test(value);
+}
+
+function cleanRemovedClosureText(value: string): string {
+  return value.replace(TRAILING_REMOVAL_JUNK_PATTERN, "").trim();
+}
+
+function removeClosureSpansDeterministically(input: {
+  response: string;
+  spans: readonly ClosureResponseSpan[];
+}): string | null {
+  const ranges: TextRange[] = [];
+
+  for (const span of input.spans) {
+    const range = findUniqueRemovalRange({
+      response: input.response,
+      span,
+      selectedRanges: ranges,
+    });
+
+    if (range === null) {
+      return null;
+    }
+
+    ranges.push(range);
+  }
+
+  let rewritten = input.response;
+
+  for (const range of [...ranges].sort((left, right) => right.start - left.start)) {
+    rewritten = `${rewritten.slice(0, range.start)}${rewritten.slice(range.end)}`;
+  }
+
+  return cleanRemovedClosureText(rewritten);
+}
+
 export class ClosurePressureGuard {
   constructor(private readonly options: ClosurePressureGuardOptions) {}
 
@@ -234,22 +377,6 @@ export class ClosurePressureGuard {
     });
 
     return parseAuditResponse(result);
-  }
-
-  private async rewrite(input: {
-    response: string;
-    spans: readonly ClosureResponseSpan[];
-  }): Promise<string> {
-    const result = await this.options.llmClient.complete({
-      model: this.options.rewriteModel,
-      system: CLOSURE_RESPONSE_REWRITE_SYSTEM_PROMPT,
-      messages: buildRewriteMessages(input),
-      max_tokens: 512,
-      temperature: 0,
-      budget: "closure-response-rewrite",
-    });
-
-    return result.text.trim();
   }
 
   async run(input: ClosurePressureGuardInput): Promise<ClosurePressureGuardResult> {
@@ -286,7 +413,7 @@ export class ClosurePressureGuard {
       };
     }
 
-    if (audit.spans.length === 0 || audit.response_shape === "no_closure") {
+    if (audit.spans.length === 0 && audit.response_shape === "no_closure") {
       const reason = "no_closure_spans";
 
       traceClosureGuard({
@@ -310,6 +437,48 @@ export class ClosurePressureGuard {
         reason,
         audit,
       };
+    }
+
+    if (audit.spans.length === 0) {
+      const reason = "closure_pressure_audit_inconsistent_no_spans";
+
+      traceClosureAuditInconsistent({
+        tracer: this.options.tracer,
+        turnId: input.turnId,
+        reason,
+        audit,
+      });
+
+      traceClosureGuard({
+        tracer: this.options.tracer,
+        turnId: input.turnId,
+        verdict: "passed",
+        removedSpans: [],
+        activeClosureCommitments: activeCommitmentLabels,
+        reason,
+        audit,
+      });
+
+      return {
+        emission: {
+          kind: "message",
+          content: input.response,
+        },
+        verdict: "passed",
+        removed_spans: [],
+        active_closure_commitments: activeCommitmentLabels,
+        reason,
+        audit,
+      };
+    }
+
+    if (audit.response_shape === "no_closure") {
+      traceClosureAuditInconsistent({
+        tracer: this.options.tracer,
+        turnId: input.turnId,
+        reason: "closure_pressure_audit_inconsistent_with_spans",
+        audit,
+      });
     }
 
     if (activeCommitments.length === 0 && !closureLoopNamed) {
@@ -366,40 +535,12 @@ export class ClosurePressureGuard {
       };
     }
 
-    let rewritten: string;
+    const rewritten = removeClosureSpansDeterministically({
+      response: input.response,
+      spans: audit.spans,
+    });
 
-    try {
-      rewritten = await this.rewrite({
-        response: input.response,
-        spans: audit.spans,
-      });
-    } catch {
-      const reason = "closure_response_rewrite_failed_open";
-
-      traceClosureGuard({
-        tracer: this.options.tracer,
-        turnId: input.turnId,
-        verdict: "passed",
-        removedSpans: [],
-        activeClosureCommitments: activeCommitmentLabels,
-        reason,
-        audit,
-      });
-
-      return {
-        emission: {
-          kind: "message",
-          content: input.response,
-        },
-        verdict: "passed",
-        removed_spans: [],
-        active_closure_commitments: activeCommitmentLabels,
-        reason,
-        audit,
-      };
-    }
-
-    if (rewritten.length === 0) {
+    if (rewritten === null || structurallyEmptyText(rewritten)) {
       const reason = "closure_pressure_only";
 
       traceClosureGuard({

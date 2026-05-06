@@ -80,4 +80,14 @@ export const commitmentMigrations = [
       `);
     },
   },
+  {
+    id: 4,
+    name: "commitment_closure_pressure_relevance",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE commitments
+          ADD COLUMN closure_pressure_relevance TEXT NOT NULL DEFAULT 'neutral';
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

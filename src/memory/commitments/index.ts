@@ -13,7 +13,9 @@ export {
   type EntityRepositoryOptions,
 } from "./repository.js";
 export {
+  CLOSURE_PRESSURE_RELEVANCE,
   COMMITMENT_TYPES,
+  closurePressureRelevanceSchema,
   commitmentIdSchema,
   commitmentPatchSchema,
   commitmentSchema,
@@ -28,5 +30,6 @@ export {
   type CommitmentPatch,
   type CommitmentRecord,
   type CommitmentType,
+  type ClosurePressureRelevance,
   type EntityRecord,
 } from "./types.js";

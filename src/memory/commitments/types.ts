@@ -11,6 +11,7 @@ import {
 } from "../../util/ids.js";
 
 export const COMMITMENT_TYPES = ["promise", "boundary", "rule", "preference"] as const;
+export const CLOSURE_PRESSURE_RELEVANCE = ["no_closure", "neutral", "closure_seeking"] as const;
 
 export function normalizeDirectiveFamily(value: string): string {
   const lower = value.trim().toLowerCase();
@@ -63,6 +64,7 @@ export const streamEntryIdSchema = z
   .transform((value) => value as StreamEntryId);
 
 export const commitmentTypeSchema = z.enum(COMMITMENT_TYPES);
+export const closurePressureRelevanceSchema = z.enum(CLOSURE_PRESSURE_RELEVANCE);
 
 export const directiveFamilySchema = z
   .string()
@@ -81,6 +83,7 @@ export const commitmentSchema = z.object({
   id: commitmentIdSchema,
   type: commitmentTypeSchema,
   directive_family: directiveFamilySchema,
+  closure_pressure_relevance: closurePressureRelevanceSchema.default("neutral"),
   directive: z.string().min(1),
   priority: z.number().int(),
   made_to_entity: entityIdSchema.nullable(),
@@ -110,6 +113,7 @@ export type EntityRecord = z.infer<typeof entityRecordSchema>;
 export type CommitmentRecord = z.infer<typeof commitmentSchema>;
 export type CommitmentPatch = z.infer<typeof commitmentPatchSchema>;
 export type CommitmentType = z.infer<typeof commitmentTypeSchema>;
+export type ClosurePressureRelevance = z.infer<typeof closurePressureRelevanceSchema>;
 export type CommitmentProvenance = Provenance;
 
 export type CommitmentListOptions = {
