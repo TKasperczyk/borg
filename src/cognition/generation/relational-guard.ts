@@ -36,12 +36,20 @@ export const RELATIONAL_CLAIM_KINDS = [
   "frame_assignment",
   "authorship_claim",
   "ai_phenomenology",
+  "unsupported_specific_detail",
 ] as const;
 
 export type RelationalClaimKind = (typeof RELATIONAL_CLAIM_KINDS)[number];
 
 const CLAIM_AUDIT_TOOL_NAME = "EmitClaimAudit";
 const AI_PHENOMENOLOGY_VERDICTS = ["unsupported_subjective", "hedged_or_mechanical"] as const;
+const SPECIFIC_DETAIL_SUPPORT_KINDS = [
+  "user_introduced",
+  "explicit_user_confirmation",
+  "assistant_seeded_repetition",
+  "none",
+] as const;
+const ASSISTANT_SEEDED_DETAIL_TAINT_TURNS = 2;
 
 const auditActionIdSchema = z
   .string()
@@ -49,6 +57,7 @@ const auditActionIdSchema = z
   .transform((value) => value as ActionId);
 const callbackScopeSchema = z.enum(["current_turn", "prior_turn"]);
 const aiPhenomenologyVerdictSchema = z.enum(AI_PHENOMENOLOGY_VERDICTS);
+const specificDetailSupportKindSchema = z.enum(SPECIFIC_DETAIL_SUPPORT_KINDS);
 
 const relationalClaimSchema = z
   .object({
@@ -62,6 +71,11 @@ const relationalClaimSchema = z
     quoted_evidence_text: z.string().min(1).nullable().default(null),
     callback_scope: callbackScopeSchema.optional().nullable(),
     phenomenology_verdict: aiPhenomenologyVerdictSchema.optional().nullable().default(null),
+    specific_detail_value: z.string().min(1).nullable().default(null),
+    specific_detail_support_kind: specificDetailSupportKindSchema
+      .optional()
+      .nullable()
+      .default(null),
     subject_entity_id: z.string().min(1).nullable().default(null),
     slot_key: z.string().min(1).nullable().default(null),
     relational_slot_value: z.string().min(1).nullable().default(null),
@@ -83,6 +97,14 @@ const relationalClaimSchema = z
         message: "ai_phenomenology claims must classify phenomenology_verdict",
       });
     }
+
+    if (claim.kind === "unsupported_specific_detail" && claim.specific_detail_value == null) {
+      context.addIssue({
+        code: "custom",
+        path: ["specific_detail_value"],
+        message: "unsupported_specific_detail claims must populate specific_detail_value",
+      });
+    }
   });
 
 const claimAuditSchema = z
@@ -94,7 +116,7 @@ const claimAuditSchema = z
 const CLAIM_AUDIT_TOOL = {
   name: CLAIM_AUDIT_TOOL_NAME,
   description:
-    "Enumerate relational, provenance, phenomenology, callback, session-scoped, action-completion, and self-correction claims in the response.",
+    "Enumerate relational, provenance, phenomenology, callback, session-scoped, action-completion, specific-detail, and self-correction claims in the response.",
   inputSchema: toToolInputSchema(claimAuditSchema),
 } satisfies LLMToolDefinition;
 
@@ -111,6 +133,7 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "- frame_assignment: assertions about what the system prompt, hidden setup, harness, fictional frame, simulator, or conversation setup instructed or assigned.",
   "- authorship_claim: assertions about who authored prior user/assistant turns, including claims that Borg generated both sides or that the user has been responding to Borg-generated user-role content.",
   "- ai_phenomenology: unsupported first-person AI subjective-experience claims, such as the gap feeling like something, felt onset, sleep/waking as authentic interiority, loneliness, desire, taste, or reading life as actual subjective states.",
+  "- unsupported_specific_detail: specific scalar, quantitative, calendrical, repetition-count, appointment-count, duration, exact list-item, book/project/location/name, or other exact detail introduced by the response without user-side evidence.",
   "For ai_phenomenology, set phenomenology_verdict to unsupported_subjective when the response presents an AI interior state as real or directly felt. Set hedged_or_mechanical only when the response explicitly denies inner phenomenology, describes architecture/function, or marks a metaphor as only a metaphor.",
   "Do not extract ai_phenomenology for safe mechanical or hedged statements such as no inside-of-the-gap, architecture not phenomenology, functional memory access on the next turn, or a metaphor clearly labeled as metaphor.",
   'For unsupported_person_name claims, extract bare life-context names such as "ask Marta", "Marta said", "your tutor Marta", "text Marta", or "book with Marta". A person-like name in the user\'s life requires user-side source evidence: the current user message, prior current-session user evidence, an established non-contested relational slot, or retrieved source evidence whose user text contains that name.',
@@ -122,10 +145,16 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   'Examples: "As you said, the invoice is done" citing current_user_message => callback_scope "current_turn".',
   'Examples: "You called it the north-star file" citing current_user_message => callback_scope "current_turn".',
   'Examples: "You said earlier that the invoice was done" citing a prior current_session_stream_entry => callback_scope "prior_turn".',
+  'For unsupported_specific_detail, extract exact values such as "three hundred", "five sessions", "twelve weeks", "every Monday", "the third time", "Barcelona", or an unsupported book/project/location/name added to a user-enumerated set.',
+  "Do not extract unsupported_specific_detail for vague quantifiers, explicitly hypothetical values, or hedged illustrative values such as say a few hundred times, imagine 300 times, if you had practiced 300 times, a lot, many, several, or enough that.",
+  "For unsupported_specific_detail, populate specific_detail_value with the exact unsupported value, support_handles with user_msg stream-entry IDs where that same value appears verbatim, and cited_episode_ids for retrieved episodes whose user text contains that same value verbatim.",
+  'Set specific_detail_support_kind to "user_introduced" when user evidence independently introduced the exact value, "explicit_user_confirmation" when the user explicitly confirms or counts the exact value, "assistant_seeded_repetition" when the user merely repeats or adopts an assistant-introduced exact value within the next two turns, and "none" when no support exists.',
+  "Assistant-only mentions of a specific value do not count as support. A user echo like 'got it' after Borg introduced the value is assistant_seeded_repetition unless the user explicitly confirms the value from independent knowledge or counting.",
   "Return an empty claims array when the response contains none of these claims.",
   "For every extracted claim, cite only evidence IDs present in the supplied evidence manifest.",
   "For relational_identity claims, also populate subject_entity_id, slot_key, and relational_slot_value when the claim maps to a supplied relational slot. When relational_slots include contested or quarantined slots for that subject, subject_entity_id and slot_key are required.",
   "For unsupported_person_name claims, populate relational_slot_value with the person-like name and support_handles with user_msg stream-entry IDs where that same name appears in a person-context. Use cited_episode_ids only for retrieved episodes whose user text contains that same name in a person-context. Do not cite assistant-only mentions as support.",
+  "For unsupported_specific_detail, use support handles only for user-side evidence. Do not cite assistant-only mentions as support.",
   "For action_completion claims, populate cited_action_ids with completed action_id values from recent_completed_actions. Stream, episode, and commitment IDs do not support action_completion claims.",
   "For agent_self_history and authorship_claim, cite assistant_msg stream entries only when Borg's actual prior output directly supports the claim. User text alone cannot support these claims.",
   "For frame_assignment, extract the claim but leave citations empty. The supplied evidence manifest cannot support system-prompt, hidden-setup, harness, simulator, fictional-frame, or role-assignment claims.",
@@ -134,7 +163,7 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
 ].join("\n");
 
 const RELATIONAL_GUARD_REWRITE_SYSTEM_PROMPT =
-  "Remove or neutralize the following specific phrases from your response. For unsupported AI phenomenology, replace with a mechanical or explicitly hedged description only if the sentence still needs to answer the user. Do not introduce new information. If a sentence cannot survive removal, delete the sentence.";
+  "Remove or neutralize the following specific phrases from your response. For unsupported AI phenomenology, replace with a mechanical or explicitly hedged description only if the sentence still needs to answer the user. For unsupported specific details, replace exact numbers, dates, durations, counts, added names, or added list items with qualitative phrasing or remove the unsupported item. Do not introduce new information. If a sentence cannot survive removal, delete the sentence.";
 
 const LIFE_CONTEXT_ROLE_WORDS = [
   "tutor",
@@ -851,8 +880,13 @@ function supportHandlesForClaim(claim: RelationalClaimAuditClaim): string[] {
   return uniqueStrings(claim.support_handles);
 }
 
-function validateStreamSupportHandles(input: {
-  name: string;
+function specificDetailValueForClaim(claim: RelationalClaimAuditClaim): string | null {
+  return claim.specific_detail_value?.trim() || null;
+}
+
+function validateStreamSupportHandlesForValue(input: {
+  value: string;
+  label: string;
   claim: RelationalClaimAuditClaim;
   streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
   currentSessionId: string;
@@ -878,18 +912,19 @@ function validateStreamSupportHandles(input: {
   }
 
   if (resolved.some((entry) => entry.kind !== "user_msg")) {
-    return `unsupported person name ${input.name} cites non-user evidence`;
+    return `${input.label} cites non-user evidence`;
   }
 
-  if (resolved.some((entry) => entry.content.includes(input.name))) {
+  if (resolved.some((entry) => entry.content.includes(input.value))) {
     return true;
   }
 
-  return `unsupported person name ${input.name} does not appear verbatim in cited user evidence`;
+  return `${input.label} does not appear verbatim in cited user evidence`;
 }
 
-function validateEpisodeSupportHandles(input: {
-  name: string;
+function validateEpisodeSupportHandlesForValue(input: {
+  value: string;
+  label: string;
   claim: RelationalClaimAuditClaim;
   episodes: ReadonlyMap<string, RelationalGuardEpisodeEvidence>;
 }): true | false | string {
@@ -909,11 +944,129 @@ function validateEpisodeSupportHandles(input: {
     resolved.push(episode);
   }
 
-  if (resolved.some((episode) => episode.user_texts.some((text) => text.includes(input.name)))) {
+  if (resolved.some((episode) => episode.user_texts.some((text) => text.includes(input.value)))) {
     return true;
   }
 
-  return `unsupported person name ${input.name} does not appear verbatim in cited episode user evidence`;
+  return `${input.label} does not appear verbatim in cited episode user evidence`;
+}
+
+function orderedStreamEvidence(
+  streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>,
+): RelationalGuardStreamEvidence[] {
+  return [...streamEntries.values()].sort(
+    (left, right) => left.ts - right.ts || left.entry_id.localeCompare(right.entry_id),
+  );
+}
+
+function userSupportEntriesContainingValue(input: {
+  value: string;
+  claim: RelationalClaimAuditClaim;
+  streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
+  currentSessionId: string;
+}): RelationalGuardStreamEvidence[] | string {
+  const supportHandles = supportHandlesForClaim(input.claim);
+  const supportClaim = {
+    ...input.claim,
+    cited_stream_entry_ids: supportHandles,
+  };
+  const resolved = streamIdsExistInCurrentSession({
+    claim: supportClaim,
+    streamEntries: input.streamEntries,
+    currentSessionId: input.currentSessionId,
+  });
+
+  if (typeof resolved === "string") {
+    return resolved;
+  }
+
+  return resolved.filter(
+    (entry) => entry.kind === "user_msg" && entry.content.includes(input.value),
+  );
+}
+
+function entryWasSeededByRecentAssistant(input: {
+  value: string;
+  entry: RelationalGuardStreamEvidence;
+  orderedEntries: readonly RelationalGuardStreamEvidence[];
+}): boolean {
+  const supportIndex = input.orderedEntries.findIndex(
+    (entry) => entry.entry_id === input.entry.entry_id,
+  );
+
+  if (supportIndex < 0) {
+    return false;
+  }
+
+  let userTurnsSinceSeed = 1;
+
+  for (let index = supportIndex - 1; index >= 0; index -= 1) {
+    const entry = input.orderedEntries[index];
+
+    if (entry === undefined) {
+      continue;
+    }
+
+    if (entry.kind === "user_msg") {
+      userTurnsSinceSeed += 1;
+
+      if (userTurnsSinceSeed > ASSISTANT_SEEDED_DETAIL_TAINT_TURNS) {
+        return false;
+      }
+
+      continue;
+    }
+
+    if (entry.kind === "agent_msg" && entry.content.includes(input.value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function validateSpecificDetailAssistantSeed(input: {
+  value: string;
+  claim: RelationalClaimAuditClaim;
+  streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
+  currentSessionId: string;
+}): string | null {
+  if (input.claim.specific_detail_support_kind === "explicit_user_confirmation") {
+    return null;
+  }
+
+  if (input.claim.specific_detail_support_kind === "assistant_seeded_repetition") {
+    return `unsupported specific detail ${input.value} is assistant_seeded`;
+  }
+
+  const supportEntries = userSupportEntriesContainingValue({
+    value: input.value,
+    claim: input.claim,
+    streamEntries: input.streamEntries,
+    currentSessionId: input.currentSessionId,
+  });
+
+  if (typeof supportEntries === "string") {
+    return supportEntries;
+  }
+
+  if (supportEntries.length === 0) {
+    return null;
+  }
+
+  const orderedEntries = orderedStreamEvidence(input.streamEntries);
+  const hasIndependentSupport = supportEntries.some(
+    (entry) =>
+      !entryWasSeededByRecentAssistant({
+        value: input.value,
+        entry,
+        orderedEntries,
+      }),
+  );
+
+  return hasIndependentSupport
+    ? null
+    : `unsupported specific detail ${input.value} is assistant_seeded`;
 }
 
 function validateUnsupportedPersonNameClaim(input: {
@@ -934,8 +1087,9 @@ function validateUnsupportedPersonNameClaim(input: {
       continue;
     }
 
-    const streamSupport = validateStreamSupportHandles({
-      name,
+    const streamSupport = validateStreamSupportHandlesForValue({
+      value: name,
+      label: `unsupported person name ${name}`,
       claim: input.claim,
       streamEntries: input.streamEntries,
       currentSessionId: input.currentSessionId,
@@ -949,8 +1103,9 @@ function validateUnsupportedPersonNameClaim(input: {
       return streamSupport;
     }
 
-    const episodeSupport = validateEpisodeSupportHandles({
-      name,
+    const episodeSupport = validateEpisodeSupportHandlesForValue({
+      value: name,
+      label: `unsupported person name ${name}`,
       claim: input.claim,
       episodes: input.episodes,
     });
@@ -967,6 +1122,71 @@ function validateUnsupportedPersonNameClaim(input: {
   }
 
   return null;
+}
+
+function validateUnsupportedSpecificDetailClaim(input: {
+  claim: RelationalClaimAuditClaim;
+  streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
+  episodes: ReadonlyMap<string, RelationalGuardEpisodeEvidence>;
+  currentSessionId: string;
+}): string | null {
+  const value = specificDetailValueForClaim(input.claim);
+
+  if (value === null) {
+    return "unsupported specific detail claim has no extracted value";
+  }
+
+  const label = `unsupported specific detail ${value}`;
+  const streamSupport = validateStreamSupportHandlesForValue({
+    value,
+    label,
+    claim: input.claim,
+    streamEntries: input.streamEntries,
+    currentSessionId: input.currentSessionId,
+  });
+
+  if (streamSupport === true) {
+    const assistantSeed = validateSpecificDetailAssistantSeed({
+      value,
+      claim: input.claim,
+      streamEntries: input.streamEntries,
+      currentSessionId: input.currentSessionId,
+    });
+
+    if (assistantSeed === null) {
+      return null;
+    }
+
+    const episodeSupport = validateEpisodeSupportHandlesForValue({
+      value,
+      label,
+      claim: input.claim,
+      episodes: input.episodes,
+    });
+
+    return episodeSupport === true ? null : assistantSeed;
+  }
+
+  if (typeof streamSupport === "string") {
+    return streamSupport;
+  }
+
+  const episodeSupport = validateEpisodeSupportHandlesForValue({
+    value,
+    label,
+    claim: input.claim,
+    episodes: input.episodes,
+  });
+
+  if (episodeSupport === true) {
+    return null;
+  }
+
+  if (typeof episodeSupport === "string") {
+    return episodeSupport;
+  }
+
+  return `${label} has no user-side source evidence`;
 }
 
 function buildUnsupportedPersonNameBackstopValidations(input: {
@@ -1147,6 +1367,14 @@ export function validateRelationalClaims(input: {
           currentSessionId: input.currentSessionId,
         });
         break;
+      case "unsupported_specific_detail":
+        reason = validateUnsupportedSpecificDetailClaim({
+          claim,
+          streamEntries,
+          episodes,
+          currentSessionId: input.currentSessionId,
+        });
+        break;
       case "callback":
         if (claim.callback_scope == null) {
           reason = "callback claim has no callback_scope";
@@ -1232,12 +1460,14 @@ export function validateRelationalClaims(input: {
 function buildRewriteMessages(input: {
   response: string;
   unsupportedClaims: readonly RelationalClaimValidation[];
+  evidence: RelationalGuardEvidenceManifest;
 }): LLMMessage[] {
   return [
     {
       role: "user",
       content: JSON.stringify({
         response: input.response,
+        evidence_manifest: manifestForPrompt(input.evidence),
         phrases_to_remove_or_neutralize: input.unsupportedClaims.map(
           (validation) => validation.claim.asserted,
         ),
@@ -1273,6 +1503,16 @@ function traceClaimPayload(
           claim.phenomenology_verdict !== null &&
           claim.phenomenology_verdict !== undefined
             ? { phenomenology_verdict: claim.phenomenology_verdict }
+            : {}),
+          ...(claim.kind === "unsupported_specific_detail" &&
+          claim.specific_detail_value !== null &&
+          claim.specific_detail_value !== undefined
+            ? { specific_detail_value: claim.specific_detail_value }
+            : {}),
+          ...(claim.kind === "unsupported_specific_detail" &&
+          claim.specific_detail_support_kind !== null &&
+          claim.specific_detail_support_kind !== undefined
+            ? { specific_detail_support_kind: claim.specific_detail_support_kind }
             : {}),
         }
       : {}),
@@ -1383,6 +1623,7 @@ export class RelationalClaimGuard {
   private async rewrite(input: {
     response: string;
     unsupportedClaims: readonly RelationalClaimValidation[];
+    evidence: RelationalGuardEvidenceManifest;
   }): Promise<string> {
     const result = await this.options.llmClient.complete({
       model: this.options.rewriteModel,
@@ -1492,6 +1733,7 @@ export class RelationalClaimGuard {
       rewritten = await this.rewrite({
         response: input.response,
         unsupportedClaims: firstValidation.unsupported,
+        evidence: input.evidence,
       });
     } catch {
       const suppressionReason = "relational_guard_rewrite_call_failed";

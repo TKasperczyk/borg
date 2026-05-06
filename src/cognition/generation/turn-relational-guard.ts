@@ -2,6 +2,7 @@ import type { LLMClient } from "../../llm/index.js";
 import type { ActionRecord, ActionRepository } from "../../memory/actions/index.js";
 import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
+import type { ClosureLoopState } from "../../memory/working/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import {
   filterActiveStreamEntries,
@@ -11,6 +12,7 @@ import {
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import { ClosurePressureGuard } from "./closure-pressure-guard.js";
 import type { PendingTurnEmission } from "./types.js";
 import {
   RelationalClaimGuard,
@@ -47,6 +49,7 @@ export type RunTurnRelationalGuardInput = {
   persistedUserEntry?: StreamEntry;
   retrievedEpisodes: readonly RetrievedEpisode[];
   activeCommitments: readonly CommitmentRecord[];
+  closureLoop: ClosureLoopState | null;
   audienceEntityId: EntityId | null;
 };
 
@@ -90,7 +93,24 @@ export class TurnRelationalGuardRunner {
       },
     });
 
-    return result.emission;
+    if (result.emission.kind === "suppressed") {
+      return result.emission;
+    }
+
+    const closureGuard = new ClosurePressureGuard({
+      llmClient: input.llmClient,
+      auditModel: this.options.auditModel,
+      rewriteModel: this.options.rewriteModel,
+      tracer: this.options.tracer,
+    });
+    const closureResult = await closureGuard.run({
+      turnId: input.turnId,
+      response: result.emission.content,
+      activeCommitments: input.activeCommitments,
+      closureLoop: input.closureLoop,
+    });
+
+    return closureResult.emission;
   }
 
   listRecentCompletedActions(audienceEntityId: EntityId | null): ActionRecord[] {

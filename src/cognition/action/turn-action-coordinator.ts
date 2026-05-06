@@ -143,6 +143,7 @@ export class TurnActionCoordinator {
             persistedUserEntry: input.persistedUserEntry,
             retrievedEpisodes: input.retrievedEpisodes,
             activeCommitments: input.applicableCommitments,
+            closureLoop: input.workingMemory.discourse_state?.closure_loop ?? null,
             audienceEntityId: input.audienceEntityId,
           });
 

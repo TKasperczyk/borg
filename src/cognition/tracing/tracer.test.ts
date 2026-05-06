@@ -335,6 +335,7 @@ describe("TurnTracer", () => {
       "llm_call_response",
       "commitment_check",
       "relational_claim_guard",
+      "closure_response_guard",
       "reflection_emitted",
     ]);
     expect(events.find((event) => event.event === "plan_persisted")).toMatchObject({

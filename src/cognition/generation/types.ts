@@ -6,6 +6,7 @@ export type GenerationSuppressionReason =
   | "empty_finalizer"
   | "no_output_tool"
   | "s2_planner_no_output"
+  | "closure_pressure_only"
   | "commitment_revision_failed"
   | "rewrite_unsupported_or_empty"
   | "relational_guard_self_correction"
@@ -21,6 +22,7 @@ export const NATURAL_SILENCE_SUPPRESSION_REASONS = [
   "empty_finalizer",
   "no_output_tool",
   "s2_planner_no_output",
+  "closure_pressure_only",
 ] as const satisfies readonly GenerationSuppressionReason[];
 
 const NATURAL_SILENCE_SUPPRESSION_REASON_SET: ReadonlySet<GenerationSuppressionReason> = new Set(
