@@ -62,6 +62,10 @@ function makeClaim(
     phenomenology_verdict:
       overrides.phenomenology_verdict ??
       (overrides.kind === "ai_phenomenology" ? "unsupported_subjective" : null),
+    specific_detail_value: overrides.specific_detail_value ?? null,
+    specific_detail_support_kind:
+      overrides.specific_detail_support_kind ??
+      (overrides.kind === "unsupported_specific_detail" ? "none" : null),
     subject_entity_id: overrides.subject_entity_id ?? null,
     slot_key: overrides.slot_key ?? null,
     relational_slot_value: overrides.relational_slot_value ?? null,
@@ -368,6 +372,80 @@ describe("validateRelationalClaims", () => {
     expect(supported.unsupported).toEqual([]);
     expect(unsupported.unsupported).toHaveLength(1);
     expect(unsupported.unsupported[0]?.reason).toContain("cited episode user evidence");
+  });
+
+  it("rejects unsupported specific details with no user-side evidence", () => {
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "unsupported_specific_detail",
+          asserted: "three hundred times",
+          specific_detail_value: "three hundred",
+          specific_detail_support_kind: "none",
+        }),
+      ],
+      baseEvidence(),
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("no user-side source evidence");
+  });
+
+  it("does not treat assistant-seeded user repetition as specific-detail support", () => {
+    const assistantEntry = streamEvidence({
+      kind: "agent_msg",
+      ts: 1_000,
+      content: "By being wrong about soup three hundred times.",
+    });
+    const userEntry = streamEvidence({
+      ts: 1_100,
+      content: "three hundred wrong soups. Got it.",
+    });
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "unsupported_specific_detail",
+          asserted: "three hundred times",
+          specific_detail_value: "three hundred",
+          specific_detail_support_kind: "user_introduced",
+          support_handles: [userEntry.entry_id],
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [assistantEntry, userEntry],
+      }),
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("assistant_seeded");
+  });
+
+  it("accepts explicit user confirmation of an assistant-seeded specific detail", () => {
+    const assistantEntry = streamEvidence({
+      kind: "agent_msg",
+      ts: 1_000,
+      content: "By being wrong about soup three hundred times.",
+    });
+    const userEntry = streamEvidence({
+      ts: 1_100,
+      content: "yes, three hundred is right, I literally counted",
+    });
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "unsupported_specific_detail",
+          asserted: "three hundred times",
+          specific_detail_value: "three hundred",
+          specific_detail_support_kind: "explicit_user_confirmation",
+          support_handles: [userEntry.entry_id],
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [assistantEntry, userEntry],
+      }),
+    );
+
+    expect(summary.unsupported).toEqual([]);
   });
 
   it("accepts callbacks with prior current-session stream evidence and exact quotes", () => {
@@ -1033,6 +1111,140 @@ describe("RelationalClaimGuard", () => {
       "relational-guard-rewrite",
       "relational-claim-auditor",
     ]);
+  });
+
+  it("rewrites unsupported scalar details to qualitative phrasing", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "unsupported_specific_detail",
+            asserted: "three hundred times",
+            specific_detail_value: "three hundred",
+            specific_detail_support_kind: "none",
+          }),
+        ]),
+        {
+          text: "By being wrong about soup enough times that the pattern starts to compile.",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        claimAuditResponse([]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-specific-detail-soup",
+      response: "By being wrong about soup three hundred times.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.verdict).toBe("rewritten");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "By being wrong about soup enough times that the pattern starts to compile.",
+    });
+  });
+
+  it("passes specific details supported by explicit user evidence", async () => {
+    const userEntry = streamEvidence({
+      content: "three hundred wrong soups, that's my count",
+    });
+    const response = "By being wrong about soup three hundred times.";
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "unsupported_specific_detail",
+            asserted: "three hundred times",
+            specific_detail_value: "three hundred",
+            specific_detail_support_kind: "user_introduced",
+            support_handles: [userEntry.entry_id],
+          }),
+        ]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-specific-detail-supported",
+      response,
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence({
+        current_session_stream_entries: [userEntry],
+      }),
+    });
+
+    expect(result.verdict).toBe("passed");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: response,
+    });
+  });
+
+  it("rewrites unsupported named additions to user-enumerated sets", async () => {
+    const userEntry = streamEvidence({
+      content: "The itinerary is Sevilla, Granada, Cordoba, Madrid.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "unsupported_specific_detail",
+            asserted: "Barcelona",
+            specific_detail_value: "Barcelona",
+            specific_detail_support_kind: "none",
+          }),
+        ]),
+        {
+          text: "For the cities you listed -- Sevilla, Granada, Cordoba, Madrid -- that route can work.",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        claimAuditResponse([]),
+      ],
+    });
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-specific-detail-barcelona",
+      response: "Madrid -> Granada -> Barcelona is a good shape.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence({
+        current_session_stream_entries: [userEntry],
+      }),
+    });
+
+    expect(result.verdict).toBe("rewritten");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content:
+        "For the cities you listed -- Sevilla, Granada, Cordoba, Madrid -- that route can work.",
+    });
   });
 
   it("rewrites self-history claims induced by user-role frame inversion", async () => {

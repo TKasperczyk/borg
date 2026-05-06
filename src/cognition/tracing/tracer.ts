@@ -43,6 +43,7 @@ export type TurnTraceEventName =
   | "reflector_intent_update_suppressed"
   | "commitment_check"
   | "relational_claim_guard"
+  | "closure_response_guard"
   | "reflection_emitted"
   | "turn_aborted";
 

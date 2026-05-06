@@ -125,7 +125,8 @@ export class ScriptedDebugLLM implements LLMClient {
       options.budget === "action-state-extractor" ||
       options.budget === "frame-anomaly-classifier" ||
       options.budget === "closure-loop-classifier" ||
-      options.budget === "relational-claim-auditor"
+      options.budget === "relational-claim-auditor" ||
+      options.budget === "closure-response-auditor"
     ) {
       return this.respond(options);
     }
@@ -187,6 +188,14 @@ export class ScriptedDebugLLM implements LLMClient {
     if (options.budget === "relational-claim-auditor") {
       return buildToolResult(options, {
         claims: [],
+      });
+    }
+
+    if (options.budget === "closure-response-auditor") {
+      return buildToolResult(options, {
+        spans: [],
+        response_shape: "no_closure",
+        reason: "No closure pressure detected in the scripted debug prompt.",
       });
     }
 

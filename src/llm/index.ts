@@ -1109,6 +1109,10 @@ function isRelationalClaimAuditorFallbackRequest(options: LLMCompleteOptions): b
   return options.budget === "relational-claim-auditor";
 }
 
+function isClosureResponseAuditorFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "closure-response-auditor";
+}
+
 function isRecallExpansionFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "recall-expansion";
 }
@@ -1301,6 +1305,24 @@ function isRelationalClaimAuditResponse(response: FakeLLMResponse | undefined): 
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "EmitClaimAudit",
+    );
+  }
+
+  return false;
+}
+
+function isClosureResponseAuditResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "EmitClosureResponseAudit");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "EmitClosureResponseAudit",
     );
   }
 
@@ -1578,6 +1600,26 @@ function defaultRelationalClaimAuditResponse(): LLMCompleteResult {
   };
 }
 
+function defaultClosureResponseAuditResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_closure_response_audit",
+        name: "EmitClosureResponseAudit",
+        input: {
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure-response audit scripted.",
+        },
+      },
+    ],
+  };
+}
+
 export class FakeLLMClient implements LLMClient {
   private readonly usageSink?: TokenUsageSink;
   readonly requests: LLMCompleteOptions[] = [];
@@ -1678,6 +1720,14 @@ export class FakeLLMClient implements LLMClient {
       !isRelationalClaimAuditResponse(response)
     ) {
       return defaultRelationalClaimAuditResponse();
+    }
+
+    if (
+      isClosureResponseAuditorFallbackRequest(options) &&
+      scriptedResponseBudget(response) !== "closure-response-auditor" &&
+      !isClosureResponseAuditResponse(response)
+    ) {
+      return defaultClosureResponseAuditResponse();
     }
 
     this.responses.shift();
