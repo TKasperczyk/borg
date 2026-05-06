@@ -436,6 +436,7 @@ function createCorrectivePreferenceResponse(input: {
   type?: "preference" | "rule" | "boundary" | null;
   directive?: string | null;
   directive_family?: string | null;
+  closure_pressure_relevance?: "no_closure" | "neutral" | "closure_seeking" | null;
   priority?: number | null;
   reason?: string;
   confidence?: number;
@@ -457,6 +458,9 @@ function createCorrectivePreferenceResponse(input: {
           directive_family:
             input.directive_family ??
             (input.classification === "corrective_preference" ? "test_directive_family" : null),
+          closure_pressure_relevance:
+            input.closure_pressure_relevance ??
+            (input.classification === "corrective_preference" ? "neutral" : null),
           priority: input.priority ?? null,
           reason: input.reason ?? "The current user turn corrected future response behavior.",
           confidence: input.confidence ?? 0.9,
@@ -2001,6 +2005,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           classification: "corrective_preference",
           type: "preference",
           directive: "Do not add ritual closing lines when the conversation is open.",
+          closure_pressure_relevance: "no_closure",
           priority: 8,
           reason: "The user named a future response pattern to stop.",
           confidence: 0.9,
@@ -2033,6 +2038,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(addInput).toMatchObject({
         type: "preference",
         directive: "Do not add ritual closing lines when the conversation is open.",
+        closurePressureRelevance: "no_closure",
         priority: 8,
         restrictedAudience: samEntityId,
         sourceStreamEntryIds: [userEntry?.id],
@@ -2040,6 +2046,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(commitments).toEqual([
         expect.objectContaining({
           restricted_audience: samEntityId,
+          closure_pressure_relevance: "no_closure",
           source_stream_entry_ids: [userEntry?.id],
         }),
       ]);
@@ -2065,6 +2072,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
               classification: "corrective_preference",
               type: "preference",
               directive: "Do not add ritual closing lines.",
+              closure_pressure_relevance: "no_closure",
               priority: 8,
               reason: "The user named a future response pattern to stop.",
               confidence: 0.9,
@@ -3245,6 +3253,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           classification: "corrective_preference",
           type: "preference",
           directive: "Do not add ritual closing lines when the conversation is open.",
+          closure_pressure_relevance: "no_closure",
           priority: 8,
           reason: "The user named a future response pattern to stop.",
           confidence: 0.9,
@@ -3282,6 +3291,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           classification: "corrective_preference",
           type: "preference",
           directive: "Do not add ritual closing lines when the conversation is open.",
+          closure_pressure_relevance: "no_closure",
           priority: 8,
           reason: "The user named a future response pattern to stop.",
           confidence: 0.9,
@@ -3327,6 +3337,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           classification: "corrective_preference",
           type: "preference",
           directive: "Do not add ritual closing lines when the conversation is open.",
+          closure_pressure_relevance: "no_closure",
           priority: 8,
           reason: "The user named a future response pattern to stop.",
           confidence: 0.9,

@@ -32,6 +32,7 @@ function makeCommitment(id: string, priority: number, createdAt: number): Commit
     id: id as CommitmentId,
     type: "promise",
     directive_family: `directive_${id}`,
+    closure_pressure_relevance: "neutral",
     directive: `directive ${id}`,
     priority,
     made_to_entity: null,

@@ -44,6 +44,7 @@ export type TurnTraceEventName =
   | "commitment_check"
   | "relational_claim_guard"
   | "closure_response_guard"
+  | "closure_pressure_audit_inconsistent"
   | "reflection_emitted"
   | "turn_aborted";
 

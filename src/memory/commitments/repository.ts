@@ -71,6 +71,7 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
     id: row.id,
     type: row.type,
     directive_family: row.directive_family,
+    closure_pressure_relevance: row.closure_pressure_relevance,
     directive: row.directive,
     priority: Number(row.priority),
     made_to_entity:
@@ -380,6 +381,11 @@ export class CommitmentRepository {
     const next = commitmentSchema.parse({
       ...kept,
       priority: Math.max(kept.priority, incoming.priority),
+      closure_pressure_relevance:
+        kept.closure_pressure_relevance === "no_closure" ||
+        incoming.closure_pressure_relevance === "no_closure"
+          ? "no_closure"
+          : incoming.closure_pressure_relevance,
       source_stream_entry_ids: sourceStreamEntryIds.length === 0 ? undefined : sourceStreamEntryIds,
       last_reinforced_at: Math.max(kept.last_reinforced_at, incoming.last_reinforced_at),
     });
@@ -388,12 +394,13 @@ export class CommitmentRepository {
       .prepare(
         `
           UPDATE commitments
-          SET priority = ?, source_stream_entry_ids = ?, last_reinforced_at = ?
+          SET priority = ?, closure_pressure_relevance = ?, source_stream_entry_ids = ?, last_reinforced_at = ?
           WHERE id = ?
         `,
       )
       .run(
         next.priority,
+        next.closure_pressure_relevance,
         next.source_stream_entry_ids === undefined
           ? null
           : serializeJsonValue(next.source_stream_entry_ids),
@@ -440,6 +447,7 @@ export class CommitmentRepository {
     directiveFamily: string;
     directive: string;
     priority: number;
+    closurePressureRelevance?: CommitmentRecord["closure_pressure_relevance"];
     madeToEntity?: EntityId | null;
     restrictedAudience?: EntityId | null;
     aboutEntity?: EntityId | null;
@@ -461,6 +469,7 @@ export class CommitmentRepository {
       id: input.id ?? createCommitmentId(),
       type: input.type,
       directive_family: normalizeDirectiveFamily(input.directiveFamily),
+      closure_pressure_relevance: input.closurePressureRelevance ?? "neutral",
       directive: input.directive,
       priority: input.priority,
       made_to_entity: input.madeToEntity ?? null,
@@ -491,18 +500,19 @@ export class CommitmentRepository {
         .prepare(
           `
             INSERT INTO commitments (
-              id, type, directive_family, directive, priority, made_to_entity, restricted_audience, about_entity,
+              id, type, directive_family, closure_pressure_relevance, directive, priority, made_to_entity, restricted_audience, about_entity,
               source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
               source_stream_entry_ids, created_at, expires_at, expired_at, revoked_at, revoked_reason,
               revoke_provenance_kind, revoke_provenance_episode_ids, revoke_provenance_process,
               superseded_by, last_reinforced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
           record.id,
           record.type,
           record.directive_family,
+          record.closure_pressure_relevance,
           record.directive,
           record.priority,
           record.made_to_entity,
@@ -766,7 +776,7 @@ export class CommitmentRepository {
         .prepare(
           `
             UPDATE commitments
-            SET type = ?, directive_family = ?, directive = ?, priority = ?, made_to_entity = ?, restricted_audience = ?,
+            SET type = ?, directive_family = ?, closure_pressure_relevance = ?, directive = ?, priority = ?, made_to_entity = ?, restricted_audience = ?,
                 about_entity = ?, source_episode_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
                 provenance_process = ?, source_stream_entry_ids = ?, expires_at = ?, expired_at = ?, revoked_at = ?, revoked_reason = ?,
                 revoke_provenance_kind = ?, revoke_provenance_episode_ids = ?, revoke_provenance_process = ?,
@@ -777,6 +787,7 @@ export class CommitmentRepository {
         .run(
           next.type,
           next.directive_family,
+          next.closure_pressure_relevance,
           next.directive,
           next.priority,
           next.made_to_entity,

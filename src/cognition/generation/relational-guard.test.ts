@@ -420,6 +420,127 @@ describe("validateRelationalClaims", () => {
     expect(summary.unsupported[0]?.reason).toContain("assistant_seeded");
   });
 
+  it("detects assistant-seeded repetitions with case differences", () => {
+    const assistantEntry = streamEvidence({
+      kind: "agent_msg",
+      ts: 1_000,
+      content: "Three hundred wrong soups is the number.",
+    });
+    const userEntry = streamEvidence({
+      ts: 1_100,
+      content: "three hundred wrong soups. Got it.",
+    });
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "unsupported_specific_detail",
+          asserted: "three hundred wrong soups",
+          specific_detail_value: "three hundred wrong soups",
+          specific_detail_support_kind: "user_introduced",
+          support_handles: [userEntry.entry_id],
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [assistantEntry, userEntry],
+      }),
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("assistant_seeded");
+  });
+
+  it("detects assistant-seeded repetitions with trailing punctuation differences", () => {
+    const assistantEntry = streamEvidence({
+      kind: "agent_msg",
+      ts: 1_000,
+      content: "You practiced 300 times.",
+    });
+    const userEntry = streamEvidence({
+      ts: 1_100,
+      content: "300 times",
+    });
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "unsupported_specific_detail",
+          asserted: "300 times",
+          specific_detail_value: "300 times.",
+          specific_detail_support_kind: "user_introduced",
+          support_handles: [userEntry.entry_id],
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [assistantEntry, userEntry],
+      }),
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("assistant_seeded");
+  });
+
+  it("does not support numeric values inside larger numbers", () => {
+    const userEntry = streamEvidence({
+      ts: 1_000,
+      content: "I practiced 1200 times.",
+    });
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "unsupported_specific_detail",
+          asserted: "200 times",
+          specific_detail_value: "200",
+          specific_detail_support_kind: "user_introduced",
+          support_handles: [userEntry.entry_id],
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [userEntry],
+      }),
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("does not appear verbatim");
+  });
+
+  it("does not let episode support override assistant-seeded specific-detail taint", () => {
+    const episodeId = createEpisodeId();
+    const assistantEntry = streamEvidence({
+      kind: "agent_msg",
+      ts: 1_000,
+      content: "You practiced 300 times.",
+    });
+    const userEntry = streamEvidence({
+      ts: 1_100,
+      content: "300",
+    });
+    const summary = validate(
+      [
+        makeClaim({
+          kind: "unsupported_specific_detail",
+          asserted: "300 times",
+          specific_detail_value: "300",
+          specific_detail_support_kind: "user_introduced",
+          support_handles: [userEntry.entry_id],
+          cited_episode_ids: [episodeId],
+        }),
+      ],
+      baseEvidence({
+        current_session_stream_entries: [assistantEntry, userEntry],
+        retrieved_episodes: [
+          {
+            episode_id: episodeId,
+            asOf: 1_200,
+            snippet: "The user echoed a scalar detail.",
+            user_texts: ["300"],
+          },
+        ],
+      }),
+    );
+
+    expect(summary.unsupported).toHaveLength(1);
+    expect(summary.unsupported[0]?.reason).toContain("assistant_seeded");
+  });
+
   it("accepts explicit user confirmation of an assistant-seeded specific detail", () => {
     const assistantEntry = streamEvidence({
       kind: "agent_msg",
