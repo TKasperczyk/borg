@@ -56,6 +56,8 @@ export type SimulatorRunnerOptions = {
   maxSessions?: number;
   keep?: boolean;
   mock?: boolean;
+  shadowPostGenGuards?: boolean;
+  pipelineCDoublePrime?: boolean;
   env?: NodeJS.ProcessEnv;
   dataDir?: string;
   tracePath?: string;
@@ -70,6 +72,39 @@ const DEFAULT_MAINTENANCE_EVERY = 10;
 const PERSONA_ROLE_BLEED_EVENT = "persona_role_bleed";
 const PERSONA_ROLE_BLEED_MAX_ATTEMPTS = 2;
 const PERSONA_ROLE_BLEED_REJECTED_PREVIEW_CHARS = 500;
+export const PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE =
+  "--pipeline-c-double-prime sets per-guard modes explicitly; --shadow-post-gen-guards is incompatible";
+
+export const PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES = {
+  generation: {
+    evidenceLedger: { enabled: true },
+    manifestFinalizer: { enabled: true },
+    manifestValidator: { enabled: true, onCriticalFailure: "no_output" },
+    postGenerationGuards: {
+      commitment: { mode: "shadow" },
+      closurePressure: { mode: "enforce" },
+      relationalClaim: {
+        mode: "shadow",
+      },
+    },
+  },
+} satisfies NonNullable<Scenario["borgConfigOverrides"]>;
+
+const SHADOW_POST_GEN_GUARDS_BORG_CONFIG_OVERRIDES = {
+  generation: {
+    postGenerationGuards: {
+      commitment: {
+        mode: "shadow",
+      },
+      relationalClaim: {
+        mode: "shadow",
+      },
+      closurePressure: {
+        mode: "shadow",
+      },
+    },
+  },
+} satisfies NonNullable<Scenario["borgConfigOverrides"]>;
 
 function isSessionEndingSuppression(reason: GenerationSuppressionReason | undefined): boolean {
   if (reason === undefined) return true;
@@ -77,12 +112,28 @@ function isSessionEndingSuppression(reason: GenerationSuppressionReason | undefi
   return isNaturalSilenceSuppressionReason(reason);
 }
 
-function simulatorScenario(persona: Persona, totalTurns: number): Scenario {
+export function createSimulatorScenario(
+  persona: Persona,
+  totalTurns: number,
+  options: Pick<SimulatorRunnerOptions, "shadowPostGenGuards" | "pipelineCDoublePrime"> = {},
+): Scenario {
+  if (options.pipelineCDoublePrime === true && options.shadowPostGenGuards === true) {
+    throw new Error(PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE);
+  }
+
+  const borgConfigOverrides =
+    options.pipelineCDoublePrime === true
+      ? PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES
+      : options.shadowPostGenGuards === true
+        ? SHADOW_POST_GEN_GUARDS_BORG_CONFIG_OVERRIDES
+        : undefined;
+
   return {
     name: `simulator-${persona.key}`,
     description: `Long-horizon simulator run for ${persona.displayName}.`,
     systemPrompt: persona.systemPrompt,
     maxTurns: totalTurns,
+    ...(borgConfigOverrides === undefined ? {} : { borgConfigOverrides }),
   };
 }
 
@@ -219,10 +270,22 @@ export class SimulatorRunner {
       throw new Error("maintenanceEvery must be a positive integer");
     }
 
+    const scenario = createSimulatorScenario(this.options.persona, this.options.totalTurns, {
+      shadowPostGenGuards: this.options.shadowPostGenGuards,
+      pipelineCDoublePrime: this.options.pipelineCDoublePrime,
+    });
+
+    if (this.options.pipelineCDoublePrime === true) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[simulator] Pipeline C″ active: manifest finalizer + validator on; closure-pressure enforce; commitment and relational guards shadow.",
+      );
+    }
+
     const started = performance.now();
     const transport = new BorgTransport({
       runId: this.options.runId,
-      scenario: simulatorScenario(this.options.persona, this.options.totalTurns),
+      scenario,
       keep: this.options.keep,
       mock: this.options.mock,
       maintenance: true,

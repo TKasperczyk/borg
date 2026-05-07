@@ -2,7 +2,7 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
-import type { ActionRecord } from "../../memory/actions/index.js";
+import type { ActionRecord, ActionRepository } from "../../memory/actions/index.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type {
   AutobiographicalPeriod,
@@ -14,7 +14,10 @@ import type {
 } from "../../memory/self/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import type { SkillSelectionResult } from "../../memory/procedural/index.js";
-import type { RelationalSlot } from "../../memory/relational-slots/index.js";
+import type {
+  RelationalSlot,
+  RelationalSlotRepository,
+} from "../../memory/relational-slots/index.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
@@ -33,6 +36,7 @@ import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { FrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { PendingTurnEmission } from "../generation/types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
+import type { EvidenceLedger } from "../evidence-ledger/index.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
@@ -114,6 +118,18 @@ export type DeliberationContext = {
    */
   recencyMessages?: readonly RecencyMessage[];
   frameAnomaly?: FrameAnomalyClassification | null;
+  /**
+   * Optional finalizer-only evidence ledger prompt section. This is appended
+   * after the legacy base prompt and before S2 additional retrieval / plan
+   * sections when enabled.
+   */
+  evidenceLedgerPromptSection?: string | null;
+  /**
+   * Typed ledger corresponding to evidenceLedgerPromptSection. The manifest
+   * finalizer requires this to keep prompt-visible IDs tied to structured
+   * evidence refs.
+   */
+  evidenceLedger?: EvidenceLedger | null;
   options?: {
     stakes?: TurnStakes;
     maxThinkingTokens?: number;
@@ -125,6 +141,11 @@ export type DeliberationUsage = {
   input_tokens: number;
   output_tokens: number;
   stop_reason: string | null;
+};
+
+export type CognitionThinkingConfig = {
+  enabled: boolean;
+  budget_tokens: number;
 };
 
 export type DeliberationResult = {
@@ -148,7 +169,12 @@ export type DeliberatorOptions = {
   llmClient: LLMClient;
   toolDispatcher: ToolDispatcher;
   cognitionModel: string;
-  backgroundModel: string;
+  cognitionThinking?: CognitionThinkingConfig;
   clock?: Clock;
   tracer?: TurnTracer;
+  manifestFinalizerEnabled?: boolean;
+  manifestValidatorEnabled?: boolean;
+  manifestValidatorOnCriticalFailure?: "no_output" | "legacy_fallback";
+  relationalSlotRepository?: Pick<RelationalSlotRepository, "get">;
+  actionRepository?: Pick<ActionRepository, "get">;
 };

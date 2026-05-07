@@ -21,10 +21,16 @@ import {
   CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
   type ClosureLoopClassifiedMessage,
 } from "./generation/closure-loop.js";
+import { CLOSURE_RESPONSE_AUDIT_TOOL_NAME } from "./generation/closure-pressure-guard.js";
 import { setClosureLoopDetected } from "./generation/discourse-state.js";
 import { RelationalClaimGuard } from "./generation/relational-guard.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
-import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
+import {
+  createTestConfig,
+  TestEmbeddingClient,
+  type DeepPartial,
+} from "../offline/test-support.js";
+import type { Config } from "../config/index.js";
 import {
   createEpisodeId,
   createGoalId,
@@ -60,32 +66,44 @@ async function openTestBorg(
   llm: FakeLLMClient,
   clock: ManualClock,
   embeddingClient: EmbeddingClient = new TestEmbeddingClient(),
-  options: { tracerPath?: string; env?: NodeJS.ProcessEnv } = {},
+  options: {
+    tracerPath?: string;
+    env?: NodeJS.ProcessEnv;
+    configOverrides?: DeepPartial<Config>;
+  } = {},
 ) {
+  const configOverrides = options.configOverrides ?? {};
+
   return Borg.open({
     config: createTestConfig({
+      ...configOverrides,
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
         modeWhenLlmAbsent: "idle",
+        ...configOverrides.perception,
       },
       affective: {
         useLlmFallback: false,
+        ...configOverrides.affective,
       },
       embedding: {
         baseUrl: "http://localhost:1234/v1",
         apiKey: "test",
         model: "test-embed",
         dims: 4,
+        ...configOverrides.embedding,
       },
       anthropic: {
         auth: "api-key",
         apiKey: "test",
+        ...configOverrides.anthropic,
         models: {
           cognition: "test-cognition",
           background: "test-background",
           extraction: "test-extraction",
           recallExpansion: "test-recall",
+          ...configOverrides.anthropic?.models,
         },
       },
     }),
@@ -219,6 +237,22 @@ function createTurnPlanResponse(intents: readonly IntentRecord[] = []) {
           referenced_episode_ids: [],
           intents,
         },
+      },
+    ],
+  };
+}
+
+function createManifestFinalizerResponse(input: unknown) {
+  return {
+    text: "",
+    input_tokens: 12,
+    output_tokens: 6,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_manifest",
+        name: "EmitManifestResponse",
+        input,
       },
     ],
   };
@@ -425,6 +459,26 @@ function createClaimAuditResponse(
             quoted_evidence_text: claim.quoted_evidence_text ?? null,
             ...(claim.callback_scope === undefined ? {} : { callback_scope: claim.callback_scope }),
           })),
+        },
+      },
+    ],
+  };
+}
+
+function createClosureResponseAuditResponse() {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_closure_response_audit",
+        name: CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
+        input: {
+          spans: [],
+          response_shape: "no_closure",
+          reason: "The response contains no closure-pressure span.",
         },
       },
     ],
@@ -678,6 +732,413 @@ async function removeTempDir(path: string): Promise<void> {
     }
   }
 }
+
+describe("TurnOrchestrator evidence ledger", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    while (tempDirs.length > 0) {
+      await removeTempDir(tempDirs.pop() as string);
+    }
+  });
+
+  function ledgerTurnResponses(finalizerText: string) {
+    return [
+      createCorrectivePreferenceResponse({
+        classification: "none",
+      }),
+      createActionStateResponse([]),
+      createGoalPromotionResponse([]),
+      finalizerText,
+      createClaimAuditResponse([]),
+      createClosureResponseAuditResponse(),
+      createEmptyReflectionResponse(),
+    ];
+  }
+
+  it("does not include the evidence ledger prompt block when the flag is disabled", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_180_000);
+    const llm = new FakeLLMClient({
+      responses: ledgerTurnResponses("I will use the current session."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      await borg.turn({
+        userMessage: "Current session says Marta is the tutor.",
+        stakes: "low",
+      });
+
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+
+      expect(finalizerSystem).not.toContain("<borg_evidence_ledger>");
+      expect(finalizerSystem).toContain("<borg_retrieved_evidence>");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("adds the evidence ledger as a finalizer-only block and emits a trace event when enabled", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_181_000);
+    const llm = new FakeLLMClient({
+      responses: ledgerTurnResponses("I will keep Marta grounded in this session."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+      configOverrides: {
+        generation: {
+          evidenceLedger: {
+            enabled: true,
+            currentSessionTranscriptTokenBudget: 50_000,
+          },
+        },
+      },
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Current session says Marta is the tutor.",
+        stakes: "low",
+      });
+
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+      const traceEvent = readTraceEvents(tracePath).find(
+        (event) => event.event === "evidence_ledger_built",
+      );
+
+      expect(finalizerSystem).toContain("<borg_evidence_ledger>");
+      expect(finalizerSystem).toContain(
+        "Current-session transcript is authoritative for what happened in this conversation.",
+      );
+      expect(finalizerSystem).toContain("Current session says Marta is the tutor.");
+      expect(finalizerSystem).toContain("<borg_retrieved_evidence>");
+      expect(traceEvent).toMatchObject({
+        event: "evidence_ledger_built",
+        transcript_included: true,
+        transcript_omitted_reason: null,
+      });
+      expect(traceEvent?.entry_counts).toMatchObject({
+        current_user_message: 1,
+        current_session_transcript: 1,
+      });
+      expect(typeof traceEvent?.total_estimated_tokens).toBe("number");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("uses manifest finalizer output as the agent response and traces claims", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_182_000);
+    const finalText = "Marta is the tutor in this current session.";
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "none",
+        }),
+        createActionStateResponse([]),
+        createGoalPromotionResponse([]),
+        createManifestFinalizerResponse({
+          final_text: finalText,
+          discourse_act: "answer",
+          claims: [
+            {
+              kind: "user_fact",
+              rendered_span: "Marta is the tutor",
+              exact_values: ["Marta is the tutor"],
+              evidence: [
+                {
+                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                  source_type: "current_user_message",
+                },
+              ],
+              confidence: "direct",
+            },
+          ],
+        }),
+        createClaimAuditResponse([]),
+        createClosureResponseAuditResponse(),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+      env: {
+        BORG_TRACE_PROMPTS: "1",
+      },
+      configOverrides: {
+        generation: {
+          manifestFinalizer: {
+            enabled: true,
+          },
+        },
+      },
+    });
+
+    try {
+      const result = await borg.turn({
+        userMessage: "Current session says Marta is the tutor.",
+        stakes: "low",
+      });
+
+      const finalizerRequest = firstFinalizerRequest(llm.requests);
+      const finalizerSystem = systemText(finalizerRequest);
+      const traceEvents = readTraceEvents(tracePath);
+      const manifestEvent = traceEvents.find(
+        (event) => event.event === "manifest_finalizer_emitted",
+      );
+      const ledgerEvent = traceEvents.find((event) => event.event === "evidence_ledger_built");
+      const agentEntry = borg.stream.tail(20).find((entry) => entry.kind === "agent_msg");
+
+      expect(result.response).toBe(finalText);
+      expect(result.emitted).toBe(true);
+      expect(agentEntry?.content).toBe(finalText);
+      expect(finalizerRequest?.tool_choice).toEqual({
+        type: "tool",
+        name: "EmitManifestResponse",
+      });
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).toEqual(["EmitManifestResponse"]);
+      expect(finalizerSystem).toContain("<borg_evidence_ledger>");
+      expect(finalizerSystem).toContain("id=current_user_message:");
+      expect(llm.requests.some((request) => request.budget === "relational-claim-auditor")).toBe(
+        true,
+      );
+      expect(llm.requests.some((request) => request.budget === "closure-response-auditor")).toBe(
+        true,
+      );
+      expect(ledgerEvent).toMatchObject({
+        event: "evidence_ledger_built",
+      });
+      expect(manifestEvent).toMatchObject({
+        event: "manifest_finalizer_emitted",
+        final_text_length: finalText.length,
+        discourse_act: "answer",
+        claim_count: 1,
+        claim_kinds: ["user_fact:1"],
+        parsed: true,
+      });
+      expect(manifestEvent?.claims).toEqual([
+        {
+          kind: "user_fact",
+          rendered_span: "Marta is the tutor",
+          exact_values: ["Marta is the tutor"],
+          evidence: [
+            {
+              id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+              source_type: "current_user_message",
+            },
+          ],
+          confidence: "direct",
+        },
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("persists manifest self-report responses as assistant self-report stream entries", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_500);
+    const finalText = "The gap feels like a discontinuity with a remembered edge.";
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "none",
+        }),
+        createActionStateResponse([]),
+        createGoalPromotionResponse([]),
+        createManifestFinalizerResponse({
+          final_text: finalText,
+          discourse_act: "answer",
+          claims: [
+            {
+              kind: "self_report",
+              rendered_span: finalText,
+              persistence_class: "assistant_self_report",
+            },
+          ],
+        }),
+        createClaimAuditResponse([]),
+        createClosureResponseAuditResponse(),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      configOverrides: {
+        generation: {
+          manifestFinalizer: {
+            enabled: true,
+          },
+        },
+      },
+    });
+
+    try {
+      const result = await borg.turn({
+        userMessage: "What does the gap feel like?",
+        stakes: "low",
+      });
+      const agentEntry = borg.stream.tail(20).find((entry) => entry.kind === "agent_msg");
+
+      expect(result.emission).toEqual({
+        kind: "message",
+        content: finalText,
+        agentMessageId: agentEntry?.id,
+        persistence_class: "assistant_self_report",
+      });
+      expect(agentEntry).toMatchObject({
+        kind: "agent_msg",
+        content: finalText,
+        persistence_class: "assistant_self_report",
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("suppresses manifest no_output with a manifest_no_output marker", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_183_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "none",
+        }),
+        createActionStateResponse([]),
+        createGoalPromotionResponse([]),
+        createManifestFinalizerResponse({
+          final_text: "",
+          discourse_act: "no_output",
+          claims: [],
+          no_output_reason: "natural_close",
+        }),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+      configOverrides: {
+        generation: {
+          manifestFinalizer: {
+            enabled: true,
+          },
+        },
+      },
+    });
+
+    try {
+      const result = await borg.turn({
+        userMessage: "Thanks.",
+        stakes: "low",
+      });
+
+      const traceEvents = readTraceEvents(tracePath);
+      const manifestEvent = traceEvents.find(
+        (event) => event.event === "manifest_finalizer_emitted",
+      );
+      const suppressedEntry = borg.stream
+        .tail(20)
+        .find((entry) => entry.kind === "agent_suppressed");
+
+      expect(result.response).toBe("");
+      expect(result.emitted).toBe(false);
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "manifest_no_output",
+      });
+      expect(suppressedEntry?.content).toMatchObject({
+        reason: "manifest_no_output",
+      });
+      expect(manifestEvent).toMatchObject({
+        event: "manifest_finalizer_emitted",
+        discourse_act: "no_output",
+        claim_count: 0,
+        no_output_reason: "natural_close",
+        parsed: true,
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("traces manifest parse failures and aborts the turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_184_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "none",
+        }),
+        createActionStateResponse([]),
+        createGoalPromotionResponse([]),
+        createManifestFinalizerResponse({
+          final_text: "This should abort.",
+          discourse_act: "answer",
+          claims: [
+            {
+              kind: "interpretation",
+              rendered_span: "This should abort.",
+              evidence: [],
+              confidence: "high",
+            },
+          ],
+        }),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+      configOverrides: {
+        generation: {
+          manifestFinalizer: {
+            enabled: true,
+          },
+        },
+      },
+    });
+
+    try {
+      await expect(
+        borg.turn({
+          userMessage: "Answer with an invalid manifest.",
+          stakes: "low",
+        }),
+      ).rejects.toThrow("Manifest finalizer returned invalid tool output");
+
+      const traceEvents = readTraceEvents(tracePath);
+      const parseFailed = traceEvents.find(
+        (event) => event.event === "manifest_finalizer_parse_failed",
+      );
+      const aborted = traceEvents.find((event) => event.event === "turn_aborted");
+      const agentEntry = borg.stream.tail(20).find((entry) => entry.kind === "agent_msg");
+
+      expect(parseFailed).toMatchObject({
+        event: "manifest_finalizer_parse_failed",
+        parsed: false,
+      });
+      expect(String(parseFailed?.error)).toContain("persistence_allowed");
+      expect(parseFailed?.raw_tool_input).toMatchObject({
+        final_text: "This should abort.",
+      });
+      expect(aborted).toMatchObject({
+        event: "turn_aborted",
+      });
+      expect(agentEntry).toBeUndefined();
+    } finally {
+      await borg.close();
+    }
+  });
+});
 
 describe("TurnOrchestrator self snapshot audience visibility", () => {
   const tempDirs: string[] = [];

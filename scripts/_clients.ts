@@ -16,6 +16,7 @@ import {
   type LLMCompleteOptions,
   type LLMCompleteResult,
 } from "../src/index.ts";
+import { estimatePromptTokensFromLength } from "../src/util/token-estimate.ts";
 
 export type ScriptClientMode = "real" | "fake";
 export type ScriptClientSelectionMode = "auto" | "real" | "fakes";
@@ -55,14 +56,9 @@ function buildLlmResult(
 
   return {
     text,
-    input_tokens: Math.max(1, Math.ceil(promptLength / 4)),
-    output_tokens: Math.max(
-      1,
-      Math.ceil(
-        (text.length +
-          toolCalls.reduce((sum, call) => sum + JSON.stringify(call.input).length, 0)) /
-          4,
-      ),
+    input_tokens: estimatePromptTokensFromLength(promptLength),
+    output_tokens: estimatePromptTokensFromLength(
+      text.length + toolCalls.reduce((sum, call) => sum + JSON.stringify(call.input).length, 0),
     ),
     stop_reason: toolCalls.length > 0 ? "tool_use" : "end_turn",
     tool_calls: toolCalls,

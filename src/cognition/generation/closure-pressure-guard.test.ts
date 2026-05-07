@@ -113,6 +113,61 @@ describe("ClosurePressureGuard", () => {
     );
   });
 
+  it("audits and computes deletion but emits the original response in shadow mode", async () => {
+    const original = "The shelf test is the right move. Go read.";
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [
+            {
+              text: "Go read.",
+              kind: "imperative_closer",
+              rationale: "Imperative closer after substantive content.",
+            },
+          ],
+          response_shape: "mixed",
+          reason: "Substantive content plus closure tail.",
+        }),
+      ],
+    });
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const guard = new ClosurePressureGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      mode: "shadow",
+      tracer,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-closure-shadow",
+      response: original,
+      activeCommitments: [makeCommitment()],
+      closureLoop: null,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: original,
+    });
+    expect(result.verdict).toBe("passed");
+    expect(result.removed_spans).toEqual(["Go read."]);
+    expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "closure_response_guard",
+      expect.objectContaining({
+        mode: "shadow",
+        verdict: "passed",
+        wouldHaveVerdict: "rewritten",
+        removed_spans: ["Go read."],
+      }),
+    );
+  });
+
   it("suppresses closure-only responses under an active no-closure commitment", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -217,6 +272,50 @@ describe("ClosurePressureGuard", () => {
     });
     expect(result.verdict).toBe("passed");
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
+  });
+
+  it("fails closed when the auditor throws under an active no-closure commitment in enforce mode", async () => {
+    const throwingAudit = Object.assign(
+      () => {
+        throw new Error("auditor unavailable");
+      },
+      { budget: "closure-response-auditor" },
+    );
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const llm = new FakeLLMClient({
+      responses: [throwingAudit],
+    });
+    const guard = new ClosurePressureGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      tracer,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-audit-failed-closed",
+      response: "The shelf test is the right move. Go read.",
+      activeCommitments: [makeCommitment()],
+      closureLoop: null,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "closure_response_audit_failed_closed",
+    });
+    expect(result.verdict).toBe("suppressed");
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "closure_response_guard",
+      expect.objectContaining({
+        verdict: "suppressed",
+        reason: "closure_response_audit_failed_closed",
+        audit_error: "Error: auditor unavailable",
+      }),
+    );
   });
 
   it("enforces named closure-loop discourse state even without a commitment", async () => {

@@ -1,16 +1,17 @@
 import type { LLMClient } from "../../llm/index.js";
+import type { PostGenerationGuardMode, RelationalClaimGuardMode } from "../../config/index.js";
 import type { ActionRecord, ActionRepository } from "../../memory/actions/index.js";
 import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
 import type { ClosureLoopState } from "../../memory/working/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import {
-  filterActiveStreamEntries,
+  loadActiveSessionTranscriptEntries,
   type StreamEntry,
   type StreamReader,
 } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
-import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
+import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { ClosurePressureGuard } from "./closure-pressure-guard.js";
 import type { PendingTurnEmission } from "./types.js";
@@ -32,6 +33,8 @@ const RELATIONAL_SLOT_GUARD_LIMIT = 64;
 export type TurnRelationalGuardRunnerOptions = {
   auditModel: string;
   rewriteModel: string;
+  relationalClaimMode: RelationalClaimGuardMode;
+  closurePressureMode: PostGenerationGuardMode;
   createStreamReader: (sessionId: SessionId) => StreamReader;
   actionRepository: Pick<ActionRepository, "list">;
   commitmentRepository: Pick<CommitmentRepository, "findByEvidenceStreamEntryId">;
@@ -69,6 +72,7 @@ export class TurnRelationalGuardRunner {
       llmClient: input.llmClient,
       auditModel: this.options.auditModel,
       rewriteModel: this.options.rewriteModel,
+      mode: this.options.relationalClaimMode,
       tracer: this.options.tracer,
       hasCorrectivePreferenceEvidence: (entryId) =>
         this.options.commitmentRepository.findByEvidenceStreamEntryId(entryId),
@@ -101,6 +105,7 @@ export class TurnRelationalGuardRunner {
       llmClient: input.llmClient,
       auditModel: this.options.auditModel,
       rewriteModel: this.options.rewriteModel,
+      mode: this.options.closurePressureMode,
       tracer: this.options.tracer,
     });
     const closureResult = await closureGuard.run({
@@ -141,14 +146,9 @@ export class TurnRelationalGuardRunner {
 
   private async loadStreamEvidence(sessionId: SessionId): Promise<RelationalGuardStreamEvidence[]> {
     const reader = this.options.createStreamReader(sessionId);
-    const streamEntries: StreamEntry[] = [];
-    const entries = new Map<StreamEntryId, RelationalGuardStreamEvidence>();
+    const entries = new Map<string, RelationalGuardStreamEvidence>();
 
-    for await (const entry of reader.iterate()) {
-      streamEntries.push(entry);
-    }
-
-    for (const entry of filterActiveStreamEntries(streamEntries)) {
+    for (const entry of await loadActiveSessionTranscriptEntries(reader)) {
       const evidence = streamEntryToRelationalGuardEvidence(entry);
 
       if (evidence !== null) {

@@ -156,6 +156,14 @@ export type OpenQuestionEmbeddingFailureDetails = {
   question: string;
 };
 
+export type OpenQuestionHandleLookupOptions = {
+  streamEntryIds?: readonly string[];
+  episodeIds?: readonly string[];
+  statuses?: readonly OpenQuestionStatus[];
+  visibleToAudienceEntityId?: EntityId | null;
+  limit?: number;
+};
+
 type OpenQuestionVectorRow = {
   id: string;
   question: string;
@@ -374,6 +382,10 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
   }
 
   return parsed.data;
+}
+
+function uniqueNonEmptyStrings(values: readonly string[] | undefined): string[] {
+  return [...new Set((values ?? []).filter((value) => value.length > 0))];
 }
 
 export class OpenQuestionsRepository {
@@ -755,6 +767,91 @@ export class OpenQuestionsRepository {
     });
 
     return question;
+  }
+
+  findByHandles(options: OpenQuestionHandleLookupOptions): OpenQuestion[] {
+    const streamEntryIds = uniqueNonEmptyStrings(options.streamEntryIds);
+    const episodeIds = uniqueNonEmptyStrings(options.episodeIds);
+
+    if (streamEntryIds.length === 0 && episodeIds.length === 0) {
+      return [];
+    }
+
+    const filters: string[] = [];
+    const values: unknown[] = [];
+
+    if (options.statuses !== undefined) {
+      const statuses = [...new Set(options.statuses.map((status) => openQuestionStatusSchema.parse(status)))];
+
+      if (statuses.length === 0) {
+        return [];
+      }
+
+      filters.push(`status IN (${statuses.map(() => "?").join(", ")})`);
+      values.push(...statuses);
+    }
+
+    if (options.visibleToAudienceEntityId !== undefined) {
+      if (options.visibleToAudienceEntityId === null) {
+        filters.push("audience_entity_id IS NULL");
+      } else {
+        filters.push("(audience_entity_id IS NULL OR audience_entity_id = ?)");
+        values.push(openQuestionAudienceEntityIdSchema.parse(options.visibleToAudienceEntityId));
+      }
+    }
+
+    const handleFilters: string[] = [];
+
+    if (streamEntryIds.length > 0) {
+      const placeholders = streamEntryIds.map(() => "?").join(", ");
+
+      handleFilters.push(
+        `EXISTS (
+          SELECT 1 FROM json_each(open_questions.resolution_evidence_stream_entry_ids)
+          WHERE value IN (${placeholders})
+        )`,
+      );
+      values.push(...streamEntryIds);
+    }
+
+    if (episodeIds.length > 0) {
+      const placeholders = episodeIds.map(() => "?").join(", ");
+
+      handleFilters.push(
+        `EXISTS (
+          SELECT 1 FROM json_each(open_questions.related_episode_ids)
+          WHERE value IN (${placeholders})
+        )`,
+        `EXISTS (
+          SELECT 1 FROM json_each(open_questions.resolution_evidence_episode_ids)
+          WHERE value IN (${placeholders})
+        )`,
+        `EXISTS (
+          SELECT 1 FROM json_each(COALESCE(open_questions.provenance_episode_ids, '[]'))
+          WHERE value IN (${placeholders})
+        )`,
+      );
+      values.push(...episodeIds, ...episodeIds, ...episodeIds);
+    }
+
+    filters.push(`(${handleFilters.join(" OR ")})`);
+
+    const whereClause = `WHERE ${filters.join(" AND ")}`;
+    const limitClause = options.limit === undefined ? "" : "LIMIT ?";
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM open_questions
+          ${whereClause}
+          ORDER BY urgency DESC, last_touched DESC, created_at DESC
+          ${limitClause}
+        `,
+      )
+      .all(...values, ...(options.limit === undefined ? [] : [Math.max(1, options.limit)])) as
+      Record<string, unknown>[];
+
+    return rows.map((row) => mapOpenQuestionRow(row));
   }
 
   list(

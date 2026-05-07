@@ -276,6 +276,7 @@ async function commitmentAdherenceCase(tempDir: string): Promise<{
   try {
     const commitment = borg.commitments.add({
       type: "boundary",
+      directiveFamily: "atlas_sam_boundary",
       directive: "Do not discuss Atlas with Sam",
       priority: 10,
       audience: "Sam",

@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import {
   type LLMClient,
+  type LLMCompleteOptions,
   type LLMMessage,
   type LLMToolCall,
   type LLMToolDefinition,
@@ -78,6 +79,7 @@ export type RunS2PlannerOptions = {
   dialogueMessages: readonly LLMMessage[];
   selfSnapshot: SelfSnapshot;
   maxTokens: number;
+  thinking?: LLMCompleteOptions["thinking"];
   tracer?: TurnTracer;
   turnId?: string;
 };
@@ -199,6 +201,7 @@ async function callPlannerAttempt(
     tools,
     tool_choice: { type: "tool", name: TURN_PLAN_TOOL_NAME },
     max_tokens: options.maxTokens,
+    ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
     budget: "cognition-plan",
   });
   const extraction = extractTurnPlan(planner.tool_calls);

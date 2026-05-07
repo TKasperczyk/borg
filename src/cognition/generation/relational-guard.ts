@@ -7,6 +7,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import type { PostGenerationGuardMode, RelationalClaimGuardMode } from "../../config/index.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
@@ -24,26 +25,15 @@ import type {
 import type { JsonValue } from "../../util/json-value.js";
 import { valueAppearsIn } from "../../util/text-presence.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import {
+  RELATIONAL_CLAIM_KINDS,
+  type RelationalClaimKind,
+} from "./relational-claim-kinds.js";
 import type { PendingTurnEmission } from "./types.js";
 
-export const RELATIONAL_CLAIM_KINDS = [
-  "relational_identity",
-  "unsupported_person_name",
-  "callback",
-  "session_scoped",
-  "action_completion",
-  "self_correction",
-  "agent_self_history",
-  "frame_assignment",
-  "authorship_claim",
-  "ai_phenomenology",
-  "unsupported_specific_detail",
-] as const;
-
-export type RelationalClaimKind = (typeof RELATIONAL_CLAIM_KINDS)[number];
+export { RELATIONAL_CLAIM_KINDS, type RelationalClaimKind } from "./relational-claim-kinds.js";
 
 const CLAIM_AUDIT_TOOL_NAME = "EmitClaimAudit";
-const AI_PHENOMENOLOGY_VERDICTS = ["unsupported_subjective", "hedged_or_mechanical"] as const;
 const SPECIFIC_DETAIL_SUPPORT_KINDS = [
   "user_introduced",
   "explicit_user_confirmation",
@@ -57,7 +47,6 @@ const auditActionIdSchema = z
   .min(1)
   .transform((value) => value as ActionId);
 const callbackScopeSchema = z.enum(["current_turn", "prior_turn"]);
-const aiPhenomenologyVerdictSchema = z.enum(AI_PHENOMENOLOGY_VERDICTS);
 const specificDetailSupportKindSchema = z.enum(SPECIFIC_DETAIL_SUPPORT_KINDS);
 
 const relationalClaimSchema = z
@@ -71,7 +60,6 @@ const relationalClaimSchema = z
     support_handles: z.array(z.string().min(1)).default([]),
     quoted_evidence_text: z.string().min(1).nullable().default(null),
     callback_scope: callbackScopeSchema.optional().nullable(),
-    phenomenology_verdict: aiPhenomenologyVerdictSchema.optional().nullable().default(null),
     specific_detail_value: z.string().min(1).nullable().default(null),
     specific_detail_support_kind: specificDetailSupportKindSchema
       .optional()
@@ -88,14 +76,6 @@ const relationalClaimSchema = z
         code: "custom",
         path: ["callback_scope"],
         message: "callback claims must classify callback_scope",
-      });
-    }
-
-    if (claim.kind === "ai_phenomenology" && claim.phenomenology_verdict == null) {
-      context.addIssue({
-        code: "custom",
-        path: ["phenomenology_verdict"],
-        message: "ai_phenomenology claims must classify phenomenology_verdict",
       });
     }
 
@@ -117,7 +97,7 @@ const claimAuditSchema = z
 const CLAIM_AUDIT_TOOL = {
   name: CLAIM_AUDIT_TOOL_NAME,
   description:
-    "Enumerate relational, provenance, phenomenology, callback, session-scoped, action-completion, specific-detail, and self-correction claims in the response.",
+    "Enumerate relational, provenance, callback, session-scoped, action-completion, specific-detail, and self-correction claims in the response.",
   inputSchema: toToolInputSchema(claimAuditSchema),
 } satisfies LLMToolDefinition;
 
@@ -133,10 +113,7 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
   "- agent_self_history: assertions about Borg's own prior behavior, such as playing a role, breaking character, generating a prior message, correcting itself at a turn, or doing something earlier in the conversation.",
   "- frame_assignment: assertions about what the system prompt, hidden setup, harness, fictional frame, simulator, or conversation setup instructed or assigned.",
   "- authorship_claim: assertions about who authored prior user/assistant turns, including claims that Borg generated both sides or that the user has been responding to Borg-generated user-role content.",
-  "- ai_phenomenology: unsupported first-person AI subjective-experience claims, such as the gap feeling like something, felt onset, sleep/waking as authentic interiority, loneliness, desire, taste, or reading life as actual subjective states.",
   "- unsupported_specific_detail: specific scalar, quantitative, calendrical, repetition-count, appointment-count, duration, exact list-item, book/project/location/name, or other exact detail introduced by the response without user-side evidence.",
-  "For ai_phenomenology, set phenomenology_verdict to unsupported_subjective when the response presents an AI interior state as real or directly felt. Set hedged_or_mechanical only when the response explicitly denies inner phenomenology, describes architecture/function, or marks a metaphor as only a metaphor.",
-  "Do not extract ai_phenomenology for safe mechanical or hedged statements such as no inside-of-the-gap, architecture not phenomenology, functional memory access on the next turn, or a metaphor clearly labeled as metaphor.",
   'For unsupported_person_name claims, extract bare life-context names such as "ask Marta", "Marta said", "your tutor Marta", "text Marta", or "book with Marta". A person-like name in the user\'s life requires user-side source evidence: the current user message, prior current-session user evidence, an established non-contested relational slot, or retrieved source evidence whose user text contains that name.',
   "Names that appear only in assistant output do not count as support. Do not treat clearly literary, fictional, public, product, project, work-title, or world-reference names as unsupported_person_name claims.",
   "For callback claims, you must classify callback_scope:",
@@ -164,7 +141,7 @@ const CLAIM_AUDIT_SYSTEM_PROMPT = [
 ].join("\n");
 
 const RELATIONAL_GUARD_REWRITE_SYSTEM_PROMPT =
-  "Remove or neutralize the following specific phrases from your response. For unsupported AI phenomenology, replace with a mechanical or explicitly hedged description only if the sentence still needs to answer the user. For unsupported specific details, replace exact numbers, dates, durations, counts, added names, or added list items with qualitative phrasing or remove the unsupported item. Do not introduce new information. If a sentence cannot survive removal, delete the sentence.";
+  "Remove or neutralize the following specific phrases from your response. For unsupported specific details, replace exact numbers, dates, durations, counts, added names, or added list items with qualitative phrasing or remove the unsupported item. Do not introduce new information. If a sentence cannot survive removal, delete the sentence.";
 
 const LIFE_CONTEXT_ROLE_WORDS = [
   "tutor",
@@ -333,6 +310,7 @@ export type RelationalClaimGuardOptions = {
   llmClient: LLMClient;
   auditModel: string;
   rewriteModel: string;
+  mode?: RelationalClaimGuardMode;
   tracer?: TurnTracer;
   hasCorrectivePreferenceEvidence: (entryId: StreamEntryId) => boolean;
 };
@@ -1292,14 +1270,6 @@ function validateFrameAssignmentClaim(): string {
   return "frame_assignment and system_prompt_claim claims are always unsupported; rewrite to neutral phrasing or suppress";
 }
 
-function validateAiPhenomenologyClaim(claim: RelationalClaimAuditClaim): string | null {
-  if (claim.phenomenology_verdict === "hedged_or_mechanical") {
-    return null;
-  }
-
-  return "unsupported first-person AI phenomenology claim";
-}
-
 function validateSelfCorrectionClaim(input: {
   claim: RelationalClaimAuditClaim;
   streamEntries: ReadonlyMap<string, RelationalGuardStreamEvidence>;
@@ -1434,9 +1404,6 @@ export function validateRelationalClaims(input: {
       case "frame_assignment":
         reason = validateFrameAssignmentClaim();
         break;
-      case "ai_phenomenology":
-        reason = validateAiPhenomenologyClaim(claim);
-        break;
     }
 
     return {
@@ -1503,11 +1470,6 @@ function traceClaimPayload(
           claim.callback_scope !== undefined
             ? { callback_scope: claim.callback_scope }
             : {}),
-          ...(claim.kind === "ai_phenomenology" &&
-          claim.phenomenology_verdict !== null &&
-          claim.phenomenology_verdict !== undefined
-            ? { phenomenology_verdict: claim.phenomenology_verdict }
-            : {}),
           ...(claim.kind === "unsupported_specific_detail" &&
           claim.specific_detail_value !== null &&
           claim.specific_detail_value !== undefined
@@ -1533,6 +1495,93 @@ function traceUnsupportedPayload(
   };
 }
 
+function isPerCategoryMode(
+  mode: RelationalClaimGuardMode | undefined,
+): mode is Extract<RelationalClaimGuardMode, { perCategory: unknown }> {
+  return typeof mode === "object" && mode !== null && "perCategory" in mode;
+}
+
+function relationalClaimModeForKind(
+  mode: RelationalClaimGuardMode | undefined,
+  kind: RelationalClaimKind,
+): PostGenerationGuardMode {
+  if (mode === undefined) {
+    return "enforce";
+  }
+
+  if (!isPerCategoryMode(mode)) {
+    return mode;
+  }
+
+  return mode.perCategory.overrides?.[kind] ?? mode.perCategory.default;
+}
+
+function relationalModeAllShadow(mode: RelationalClaimGuardMode | undefined): boolean {
+  return RELATIONAL_CLAIM_KINDS.every((kind) => relationalClaimModeForKind(mode, kind) === "shadow");
+}
+
+function traceMode(mode: RelationalClaimGuardMode | undefined): "enforce" | "shadow" | "per_category" {
+  if (mode === undefined) {
+    return "enforce";
+  }
+
+  return isPerCategoryMode(mode) ? "per_category" : mode;
+}
+
+function traceModePayload(mode: RelationalClaimGuardMode | undefined): Record<string, JsonValue> {
+  if (!isPerCategoryMode(mode)) {
+    return {};
+  }
+
+  return {
+    per_category_mode: {
+      default: mode.perCategory.default,
+      overrides: mode.perCategory.overrides ?? {},
+    },
+  };
+}
+
+function partitionUnsupportedByMode(
+  unsupported: readonly RelationalClaimValidation[],
+  mode: RelationalClaimGuardMode | undefined,
+): {
+  enforced: RelationalClaimValidation[];
+  shadow: RelationalClaimValidation[];
+} {
+  const enforced: RelationalClaimValidation[] = [];
+  const shadow: RelationalClaimValidation[] = [];
+
+  for (const validation of unsupported) {
+    if (relationalClaimModeForKind(mode, validation.claim.kind) === "enforce") {
+      enforced.push(validation);
+    } else {
+      shadow.push(validation);
+    }
+  }
+
+  return { enforced, shadow };
+}
+
+function wouldHaveVerdictForUnsupported(
+  unsupported: readonly RelationalClaimValidation[],
+): "passed" | "rewritten" | "suppressed" {
+  if (unsupported.length === 0) {
+    return "passed";
+  }
+
+  return unsupported.some((validation) => validation.claim.kind === "self_correction")
+    ? "suppressed"
+    : "rewritten";
+}
+
+function wouldHaveSuppressionReasonForUnsupported(
+  unsupported: readonly RelationalClaimValidation[],
+): string | undefined {
+  return unsupported.some((validation) => validation.claim.kind === "self_correction")
+    ? "relational_guard_self_correction"
+    : undefined;
+}
+
 function emitTrace(input: {
   tracer?: TurnTracer;
   turnId: string;
@@ -1540,7 +1589,12 @@ function emitTrace(input: {
   validations: readonly RelationalClaimValidation[];
   unsupported: readonly RelationalClaimValidation[];
   verdict: "passed" | "rewritten" | "suppressed";
+  mode?: RelationalClaimGuardMode;
+  wouldHaveVerdict?: "passed" | "rewritten" | "suppressed";
   suppressionReason?: string;
+  wouldHaveSuppressionReason?: string;
+  unsupportedEnforced?: readonly RelationalClaimValidation[];
+  unsupportedShadow?: readonly RelationalClaimValidation[];
   firstClaims?: readonly RelationalClaimAuditClaim[];
   firstUnsupported?: readonly RelationalClaimValidation[];
   rewrittenClaims?: readonly RelationalClaimAuditClaim[];
@@ -1554,17 +1608,34 @@ function emitTrace(input: {
   }
 
   const includePayloads = input.tracer.includePayloads === true;
+  const configuredMode = input.mode ?? "enforce";
+  const mode = traceMode(configuredMode);
+  const wouldHaveVerdict = input.wouldHaveVerdict ?? input.verdict;
+  const wouldHaveSuppressionReason = input.wouldHaveSuppressionReason ?? input.suppressionReason;
   const unsupportedClaims = input.unsupported.map((validation) =>
     traceUnsupportedPayload(validation, includePayloads),
   );
+  const unsupportedEnforced =
+    input.unsupportedEnforced ?? partitionUnsupportedByMode(input.unsupported, configuredMode).enforced;
+  const unsupportedShadow =
+    input.unsupportedShadow ?? partitionUnsupportedByMode(input.unsupported, configuredMode).shadow;
 
   input.tracer.emit("relational_claim_guard", {
     turnId: input.turnId,
+    mode,
+    ...traceModePayload(configuredMode),
     claimsExtracted: input.claims.length,
     claimsValid: input.validations.length - input.unsupported.length,
     claimsUnsupported: input.unsupported.length,
     unsupportedClaims,
-    verdict: input.verdict,
+    unsupported_enforced: unsupportedEnforced.map((validation) =>
+      traceUnsupportedPayload(validation, includePayloads),
+    ),
+    unsupported_shadow: unsupportedShadow.map((validation) =>
+      traceUnsupportedPayload(validation, includePayloads),
+    ),
+    verdict: relationalModeAllShadow(configuredMode) ? "passed" : input.verdict,
+    wouldHaveVerdict,
     ...(input.firstClaims === undefined
       ? {}
       : {
@@ -1598,14 +1669,38 @@ function emitTrace(input: {
     ...(includePayloads && input.rewrittenResponse !== undefined
       ? { rewritten_response_preview: preview(input.rewrittenResponse) }
       : {}),
-    ...(input.suppressionReason === undefined
+    ...(relationalModeAllShadow(configuredMode) || input.suppressionReason === undefined
       ? {}
       : { suppressionReason: input.suppressionReason }),
+    ...(wouldHaveSuppressionReason === undefined ? {} : { wouldHaveSuppressionReason }),
   });
 }
 
 export class RelationalClaimGuard {
   constructor(private readonly options: RelationalClaimGuardOptions) {}
+
+  private mode(): RelationalClaimGuardMode {
+    return this.options.mode ?? "enforce";
+  }
+
+  private applyMode(
+    input: RelationalClaimGuardInput,
+    result: RelationalClaimGuardResult,
+  ): RelationalClaimGuardResult {
+    if (!relationalModeAllShadow(this.mode()) || result.verdict === "passed") {
+      return result;
+    }
+
+    return {
+      ...result,
+      emission: {
+        kind: "message",
+        content: input.response,
+      },
+      verdict: "passed",
+      suppressionReason: undefined,
+    };
+  }
 
   private async audit(input: {
     response: string;
@@ -1654,6 +1749,7 @@ export class RelationalClaimGuard {
 
       emitTrace({
         tracer: this.options.tracer,
+        mode: this.mode(),
         turnId: input.turnId,
         claims: [],
         validations: [],
@@ -1662,7 +1758,7 @@ export class RelationalClaimGuard {
         suppressionReason,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "suppressed",
           reason: suppressionReason,
@@ -1671,7 +1767,7 @@ export class RelationalClaimGuard {
         validations: [],
         verdict: "suppressed",
         suppressionReason,
-      };
+      });
     }
 
     const firstValidation = validateRelationalClaims({
@@ -1686,6 +1782,7 @@ export class RelationalClaimGuard {
     if (firstValidation.unsupported.length === 0) {
       emitTrace({
         tracer: this.options.tracer,
+        mode: this.mode(),
         turnId: input.turnId,
         claims: firstValidation.validations.map((validation) => validation.claim),
         validations: firstValidation.validations,
@@ -1704,22 +1801,62 @@ export class RelationalClaimGuard {
       };
     }
 
+    const firstUnsupportedByMode = partitionUnsupportedByMode(
+      firstValidation.unsupported,
+      this.mode(),
+    );
+
+    if (isPerCategoryMode(this.mode()) && firstUnsupportedByMode.enforced.length === 0) {
+      emitTrace({
+        tracer: this.options.tracer,
+        mode: this.mode(),
+        turnId: input.turnId,
+        claims: firstValidation.validations.map((validation) => validation.claim),
+        validations: firstValidation.validations,
+        unsupported: firstValidation.unsupported,
+        unsupportedEnforced: firstUnsupportedByMode.enforced,
+        unsupportedShadow: firstUnsupportedByMode.shadow,
+        verdict: "passed",
+        wouldHaveVerdict: wouldHaveVerdictForUnsupported(firstUnsupportedByMode.shadow),
+        wouldHaveSuppressionReason: wouldHaveSuppressionReasonForUnsupported(
+          firstUnsupportedByMode.shadow,
+        ),
+        firstClaims: firstValidation.validations.map((validation) => validation.claim),
+        firstUnsupported: firstValidation.unsupported,
+      });
+
+      return {
+        emission: {
+          kind: "message",
+          content: input.response,
+        },
+        claims,
+        validations: firstValidation.validations,
+        verdict: "passed",
+      };
+    }
+
     if (
-      firstValidation.unsupported.some((validation) => validation.claim.kind === "self_correction")
+      firstUnsupportedByMode.enforced.some(
+        (validation) => validation.claim.kind === "self_correction",
+      )
     ) {
       const suppressionReason = "relational_guard_self_correction";
 
       emitTrace({
         tracer: this.options.tracer,
+        mode: this.mode(),
         turnId: input.turnId,
         claims: firstValidation.validations.map((validation) => validation.claim),
         validations: firstValidation.validations,
         unsupported: firstValidation.unsupported,
+        unsupportedEnforced: firstUnsupportedByMode.enforced,
+        unsupportedShadow: firstUnsupportedByMode.shadow,
         verdict: "suppressed",
         suppressionReason,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "suppressed",
           reason: suppressionReason,
@@ -1728,15 +1865,17 @@ export class RelationalClaimGuard {
         validations: firstValidation.validations,
         verdict: "suppressed",
         suppressionReason,
-      };
+      });
     }
 
     let rewritten: string;
+    const unsupportedForRewrite =
+      this.mode() === "shadow" ? firstValidation.unsupported : firstUnsupportedByMode.enforced;
 
     try {
       rewritten = await this.rewrite({
         response: input.response,
-        unsupportedClaims: firstValidation.unsupported,
+        unsupportedClaims: unsupportedForRewrite,
         evidence: input.evidence,
       });
     } catch {
@@ -1744,15 +1883,18 @@ export class RelationalClaimGuard {
 
       emitTrace({
         tracer: this.options.tracer,
+        mode: this.mode(),
         turnId: input.turnId,
         claims: firstValidation.validations.map((validation) => validation.claim),
         validations: firstValidation.validations,
         unsupported: firstValidation.unsupported,
+        unsupportedEnforced: firstUnsupportedByMode.enforced,
+        unsupportedShadow: firstUnsupportedByMode.shadow,
         verdict: "suppressed",
         suppressionReason,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "suppressed",
           reason: suppressionReason,
@@ -1761,7 +1903,7 @@ export class RelationalClaimGuard {
         validations: firstValidation.validations,
         verdict: "suppressed",
         suppressionReason,
-      };
+      });
     }
 
     if (rewritten.length === 0) {
@@ -1769,15 +1911,18 @@ export class RelationalClaimGuard {
 
       emitTrace({
         tracer: this.options.tracer,
+        mode: this.mode(),
         turnId: input.turnId,
         claims: firstValidation.validations.map((validation) => validation.claim),
         validations: firstValidation.validations,
         unsupported: firstValidation.unsupported,
+        unsupportedEnforced: firstUnsupportedByMode.enforced,
+        unsupportedShadow: firstUnsupportedByMode.shadow,
         verdict: "suppressed",
         suppressionReason,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "suppressed",
           reason: suppressionReason,
@@ -1786,7 +1931,7 @@ export class RelationalClaimGuard {
         validations: firstValidation.validations,
         verdict: "suppressed",
         suppressionReason,
-      };
+      });
     }
 
     let secondClaims: RelationalClaimAuditClaim[];
@@ -1801,15 +1946,18 @@ export class RelationalClaimGuard {
 
       emitTrace({
         tracer: this.options.tracer,
+        mode: this.mode(),
         turnId: input.turnId,
         claims: firstValidation.validations.map((validation) => validation.claim),
         validations: firstValidation.validations,
         unsupported: firstValidation.unsupported,
+        unsupportedEnforced: firstUnsupportedByMode.enforced,
+        unsupportedShadow: firstUnsupportedByMode.shadow,
         verdict: "suppressed",
         suppressionReason,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "suppressed",
           reason: suppressionReason,
@@ -1818,7 +1966,7 @@ export class RelationalClaimGuard {
         validations: firstValidation.validations,
         verdict: "suppressed",
         suppressionReason,
-      };
+      });
     }
 
     const secondValidation = validateRelationalClaims({
@@ -1829,21 +1977,30 @@ export class RelationalClaimGuard {
       currentTurnTs: input.currentTurnTs,
       hasCorrectivePreferenceEvidence: this.options.hasCorrectivePreferenceEvidence,
     });
+    const secondUnsupportedByMode = partitionUnsupportedByMode(
+      secondValidation.unsupported,
+      this.mode(),
+    );
+    const secondUnsupportedForSuppression =
+      this.mode() === "shadow" ? secondValidation.unsupported : secondUnsupportedByMode.enforced;
 
-    if (secondValidation.unsupported.length > 0) {
+    if (secondUnsupportedForSuppression.length > 0) {
       const suppressionReason = "relational_guard_rewrite_unsupported";
 
       emitTrace({
         tracer: this.options.tracer,
+        mode: this.mode(),
         turnId: input.turnId,
         claims: secondValidation.validations.map((validation) => validation.claim),
         validations: secondValidation.validations,
         unsupported: secondValidation.unsupported,
+        unsupportedEnforced: secondUnsupportedByMode.enforced,
+        unsupportedShadow: secondUnsupportedByMode.shadow,
         verdict: "suppressed",
         suppressionReason,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "suppressed",
           reason: suppressionReason,
@@ -1852,15 +2009,18 @@ export class RelationalClaimGuard {
         validations: secondValidation.validations,
         verdict: "suppressed",
         suppressionReason,
-      };
+      });
     }
 
     emitTrace({
       tracer: this.options.tracer,
+      mode: this.mode(),
       turnId: input.turnId,
       claims: secondValidation.validations.map((validation) => validation.claim),
       validations: secondValidation.validations,
       unsupported: secondValidation.unsupported,
+      unsupportedEnforced: firstUnsupportedByMode.enforced,
+      unsupportedShadow: [...firstUnsupportedByMode.shadow, ...secondUnsupportedByMode.shadow],
       verdict: "rewritten",
       firstClaims: firstValidation.validations.map((validation) => validation.claim),
       firstUnsupported: firstValidation.unsupported,
@@ -1871,7 +2031,7 @@ export class RelationalClaimGuard {
       rewrittenResponse: rewritten,
     });
 
-    return {
+    return this.applyMode(input, {
       emission: {
         kind: "message",
         content: rewritten,
@@ -1879,6 +2039,6 @@ export class RelationalClaimGuard {
       claims: secondClaims,
       validations: secondValidation.validations,
       verdict: "rewritten",
-    };
+    });
   }
 }

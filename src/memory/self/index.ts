@@ -43,6 +43,7 @@ export {
   type OpenQuestion,
   type OpenQuestionEmbeddingBackfillReport,
   type OpenQuestionEmbeddingFailureDetails,
+  type OpenQuestionHandleLookupOptions,
   type OpenQuestionPatch,
   type OpenQuestionSearchCandidate,
   type OpenQuestionSource,

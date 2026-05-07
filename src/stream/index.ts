@@ -2,10 +2,12 @@ export {
   DEFAULT_SESSION_ID,
   NARRATIVE_STREAM_ENTRY_KINDS,
   STREAM_ENTRY_KINDS,
+  STREAM_ENTRY_PERSISTENCE_CLASSES,
   isNarrativeStreamEntry,
   streamEntryInputSchema,
   streamEntryIdSchema,
   streamEntryKindSchema,
+  streamEntryPersistenceClassSchema,
   streamEntrySchema,
   streamTurnStatusSchema,
   type SessionId,
@@ -13,6 +15,7 @@ export {
   type StreamCursor,
   type StreamEntryInput,
   type StreamEntryKind,
+  type StreamEntryPersistenceClass,
   type NarrativeStreamEntryKind,
   type StreamTurnStatus,
   type StreamIterateOptions,
@@ -42,3 +45,11 @@ export {
   streamEntryIsActive,
   type InactiveStreamEntryRefs,
 } from "./turn-status.js";
+export {
+  activeSessionTranscriptEntries,
+  isTranscriptStreamEntry,
+  loadActiveSessionTranscriptEntries,
+  loadSessionStreamEntries,
+  type TranscriptStreamEntry,
+  type TranscriptStreamEntryKind,
+} from "./transcript.js";

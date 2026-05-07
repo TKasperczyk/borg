@@ -83,6 +83,46 @@ export function resolveBorgConfig(options: {
         ...(rawConfig as Partial<Config>).streamIngestion?.preTurnCatchup,
       },
     },
+    generation: {
+      ...DEFAULT_CONFIG.generation,
+      ...(rawConfig as Partial<Config>).generation,
+      cognition: {
+        ...DEFAULT_CONFIG.generation.cognition,
+        ...(rawConfig as Partial<Config>).generation?.cognition,
+        thinking: {
+          ...DEFAULT_CONFIG.generation.cognition.thinking,
+          ...(rawConfig as Partial<Config>).generation?.cognition?.thinking,
+        },
+      },
+      evidenceLedger: {
+        ...DEFAULT_CONFIG.generation.evidenceLedger,
+        ...(rawConfig as Partial<Config>).generation?.evidenceLedger,
+      },
+      manifestFinalizer: {
+        ...DEFAULT_CONFIG.generation.manifestFinalizer,
+        ...(rawConfig as Partial<Config>).generation?.manifestFinalizer,
+      },
+      manifestValidator: {
+        ...DEFAULT_CONFIG.generation.manifestValidator,
+        ...(rawConfig as Partial<Config>).generation?.manifestValidator,
+      },
+      postGenerationGuards: {
+        ...DEFAULT_CONFIG.generation.postGenerationGuards,
+        ...(rawConfig as Partial<Config>).generation?.postGenerationGuards,
+        commitment: {
+          ...DEFAULT_CONFIG.generation.postGenerationGuards.commitment,
+          ...(rawConfig as Partial<Config>).generation?.postGenerationGuards?.commitment,
+        },
+        relationalClaim: {
+          ...DEFAULT_CONFIG.generation.postGenerationGuards.relationalClaim,
+          ...(rawConfig as Partial<Config>).generation?.postGenerationGuards?.relationalClaim,
+        },
+        closurePressure: {
+          ...DEFAULT_CONFIG.generation.postGenerationGuards.closurePressure,
+          ...(rawConfig as Partial<Config>).generation?.postGenerationGuards?.closurePressure,
+        },
+      },
+    },
     executive: {
       ...DEFAULT_CONFIG.executive,
       ...(rawConfig as Partial<Config>).executive,

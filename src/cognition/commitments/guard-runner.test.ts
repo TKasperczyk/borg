@@ -51,10 +51,11 @@ function verdictResponse(violations: unknown[]): LLMCompleteResult {
   };
 }
 
-function makeRunner(tracer: TurnTracer) {
+function makeRunner(tracer: TurnTracer, mode?: "enforce" | "shadow") {
   return new CommitmentGuardRunner({
     detectionModel: "judge-model",
     rewriteModel: "rewrite-model",
+    ...(mode === undefined ? {} : { mode }),
     entityRepository: {
       get: vi.fn(() => null),
     } as unknown as EntityRepository,
@@ -63,6 +64,40 @@ function makeRunner(tracer: TurnTracer) {
 }
 
 describe("CommitmentGuardRunner", () => {
+  it("defaults an omitted mode to enforce in trace output", async () => {
+    const llm = new FakeLLMClient();
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+
+    const result = await makeRunner(tracer, undefined).run({
+      turnId: "turn-default-mode",
+      llmClient: llm,
+      response: "No commitments active.",
+      userMessage: "Hello",
+      cognitionInput: "Hello",
+      origin: "user",
+      autonomyTrigger: null,
+      commitments: [],
+      relevantEntities: [],
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "No commitments active.",
+    });
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
+      turnId: "turn-default-mode",
+      mode: "enforce",
+      verdict: "passed",
+      wouldHaveVerdict: "passed",
+      rewriteTriggered: false,
+      violationCount: 0,
+    });
+  });
+
   it("uses the raw user message and untrusted cognition context for autonomous turns", async () => {
     const llm = new FakeLLMClient({
       responses: [verdictResponse([])],
@@ -103,7 +138,9 @@ describe("CommitmentGuardRunner", () => {
     );
     expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
       turnId: "turn-1",
+      mode: "enforce",
       verdict: "passed",
+      wouldHaveVerdict: "passed",
       rewriteTriggered: false,
       violationCount: 0,
     });
@@ -152,9 +189,125 @@ describe("CommitmentGuardRunner", () => {
     });
     expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
       turnId: "turn-2",
+      mode: "enforce",
       verdict: "suppressed",
+      wouldHaveVerdict: "suppressed",
+      wouldHaveSuppressionReason: "commitment_revision_failed",
       rewriteTriggered: true,
       violationCount: 1,
+    });
+  });
+
+  it("runs rewrite logic but emits the original response in shadow mode", async () => {
+    const violation = {
+      commitment_id: commitmentId,
+      reason: "Discloses launch date.",
+      confidence: 0.9,
+    };
+    const original = "Launch is tomorrow.";
+    const llm = new FakeLLMClient({
+      responses: [
+        verdictResponse([violation]),
+        {
+          text: "   ",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+
+    const result = await makeRunner(tracer, "shadow").run({
+      turnId: "turn-shadow",
+      llmClient: llm,
+      response: original,
+      userMessage: "When is launch?",
+      cognitionInput: "When is launch?",
+      origin: "user",
+      autonomyTrigger: null,
+      commitments: [makeCommitment()],
+      relevantEntities: [],
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: original,
+    });
+    expect(result.revised).toBe(false);
+    expect(llm.requests.map((request) => request.budget)).toEqual([
+      "commitment-judge",
+      "commitment-revision",
+    ]);
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
+      turnId: "turn-shadow",
+      mode: "shadow",
+      verdict: "passed",
+      wouldHaveVerdict: "suppressed",
+      wouldHaveSuppressionReason: "rewrite_unsupported_or_empty",
+      rewriteTriggered: true,
+      violationCount: 1,
+    });
+  });
+
+  it("swallows checker failures in shadow mode and returns the original response", async () => {
+    const violation = {
+      commitment_id: commitmentId,
+      reason: "Discloses launch date.",
+      confidence: 0.9,
+    };
+    const original = "Launch is tomorrow.";
+    const llm = new FakeLLMClient({
+      responses: [
+        verdictResponse([violation]),
+        () => {
+          throw new Error("rewrite transport failed");
+        },
+      ],
+    });
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+
+    const result = await makeRunner(tracer, "shadow").run({
+      turnId: "turn-shadow-error",
+      llmClient: llm,
+      response: original,
+      userMessage: "When is launch?",
+      cognitionInput: "When is launch?",
+      origin: "user",
+      autonomyTrigger: null,
+      commitments: [makeCommitment()],
+      relevantEntities: [],
+    });
+
+    expect(result).toEqual({
+      passed: true,
+      violations: [],
+      revised: false,
+      emission: {
+        kind: "message",
+        content: original,
+      },
+    });
+    expect(llm.requests.map((request) => request.budget)).toEqual([
+      "commitment-judge",
+      "commitment-revision",
+    ]);
+    expect(tracer.emit).toHaveBeenCalledWith("commitment_check", {
+      turnId: "turn-shadow-error",
+      mode: "shadow",
+      verdict: "passed",
+      shadowError: "rewrite transport failed",
+      rewriteTriggered: false,
+      violationCount: 0,
     });
   });
 });

@@ -50,6 +50,20 @@ export type TurnActionCoordinatorResult = {
   actionEmission: PendingTurnEmission;
 };
 
+function withMessagePersistenceClass(
+  emission: PendingTurnEmission,
+  persistenceClass: Extract<PendingTurnEmission, { kind: "message" }>["persistence_class"],
+): PendingTurnEmission {
+  if (emission.kind === "suppressed" || persistenceClass === undefined) {
+    return emission;
+  }
+
+  return {
+    ...emission,
+    persistence_class: persistenceClass,
+  };
+}
+
 export class TurnActionCoordinator {
   constructor(private readonly options: TurnActionCoordinatorOptions) {}
 
@@ -130,22 +144,28 @@ export class TurnActionCoordinator {
       commitments: input.applicableCommitments,
       relevantEntities: input.perceptionEntities,
     });
-    const commitmentEmission = commitmentCheck.emission;
+    const commitmentEmission = withMessagePersistenceClass(
+      commitmentCheck.emission,
+      input.deliberationEmission.persistence_class,
+    );
     const guardedEmission =
       commitmentEmission.kind === "suppressed"
         ? commitmentEmission
-        : await this.options.relationalGuardRunner.run({
-            llmClient: input.llmClient,
-            turnId: input.turnId,
-            response: commitmentEmission.content,
-            userMessage: input.userMessage,
-            sessionId: input.sessionId,
-            persistedUserEntry: input.persistedUserEntry,
-            retrievedEpisodes: input.retrievedEpisodes,
-            activeCommitments: input.applicableCommitments,
-            closureLoop: input.workingMemory.discourse_state?.closure_loop ?? null,
-            audienceEntityId: input.audienceEntityId,
-          });
+        : withMessagePersistenceClass(
+            await this.options.relationalGuardRunner.run({
+              llmClient: input.llmClient,
+              turnId: input.turnId,
+              response: commitmentEmission.content,
+              userMessage: input.userMessage,
+              sessionId: input.sessionId,
+              persistedUserEntry: input.persistedUserEntry,
+              retrievedEpisodes: input.retrievedEpisodes,
+              activeCommitments: input.applicableCommitments,
+              closureLoop: input.workingMemory.discourse_state?.closure_loop ?? null,
+              audienceEntityId: input.audienceEntityId,
+            }),
+            input.deliberationEmission.persistence_class,
+          );
 
     return performAction({
       response: guardedEmission.kind === "message" ? guardedEmission.content : "",

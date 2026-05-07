@@ -223,12 +223,15 @@ export class TurnDiscourseStateService {
   }): WorkingMemory {
     let workingMemory = input.workingMemory;
 
-    if (input.reason === "no_output_tool") {
+    if (input.reason === "no_output_tool" || input.reason === "manifest_no_output") {
       workingMemory = this.setStopState({
         workingMemory,
-        provenance: "no_output_tool",
+        provenance: input.reason,
         sourceStreamEntryId: input.sourceStreamEntryId,
-        reason: "Finalizer called no_output for this turn.",
+        reason:
+          input.reason === "manifest_no_output"
+            ? "Manifest finalizer emitted no_output for this turn."
+            : "Finalizer called no_output for this turn.",
         turnId: input.turnId,
       });
     }
@@ -272,7 +275,9 @@ export class TurnDiscourseStateService {
         reason:
           input.reason === "no_output_tool"
             ? "Closure loop detected; finalizer chose no_output."
-            : `Closure loop detected; turn ended without assistant output (${input.reason}).`,
+            : input.reason === "manifest_no_output"
+              ? "Closure loop detected; manifest finalizer chose no_output."
+              : `Closure loop detected; turn ended without assistant output (${input.reason}).`,
         turnId: input.turnId,
       });
     }

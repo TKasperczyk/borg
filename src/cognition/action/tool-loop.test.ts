@@ -15,7 +15,11 @@ import {
 } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
-import { FakeLLMClient, type LLMContentBlockMessage } from "../../llm/index.js";
+import {
+  FakeLLMClient,
+  type LLMContentBlockMessage,
+  type LLMConverseOptions,
+} from "../../llm/index.js";
 import { executeToolLoop } from "./tool-loop.js";
 
 function createDispatcher(tempDir: string, clock = new ManualClock(1_000)): ToolDispatcher {
@@ -256,6 +260,84 @@ describe("executeToolLoop", () => {
       sessionId: DEFAULT_SESSION_ID,
     }).tail(2);
     expect(entries.map((entry) => entry.kind)).toEqual(["tool_call", "tool_result"]);
+  });
+
+  it("re-transforms prior assistant tool_use names in OAuth transport history", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const dispatcher = createDispatcher(tempDir);
+    dispatcher.register({
+      name: "tool.episodic.search",
+      description: "Search episodic memory.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({
+        query: z.string().min(1),
+      }),
+      outputSchema: z.object({
+        ok: z.literal(true),
+      }),
+      async invoke() {
+        return { ok: true } as const;
+      },
+    });
+    const llm = new FakeLLMClient({
+      oauthToolNameTransport: true,
+      responses: [
+        [
+          {
+            type: "tool_use",
+            id: "toolu_oauth",
+            name: "tool.episodic.search",
+            input: { query: "Marta" },
+          },
+        ],
+        (options: LLMConverseOptions) => {
+          const assistantMessage = options.messages.find(
+            (message) => message.role === "assistant",
+          );
+
+          expect(assistantMessage?.content).toContainEqual({
+            type: "tool_use",
+            id: "toolu_oauth",
+            name: "Tool_episodic_search",
+            input: { query: "Marta" },
+          });
+
+          return "done";
+        },
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      systemPrompt: "be concise",
+      initialMessages: baseMessages(),
+      tools: dispatcher.listTools("deliberator"),
+      origin: "deliberator",
+      budget: "test",
+    });
+
+    expect(result.toolCallsMade).toMatchObject([
+      {
+        name: "tool.episodic.search",
+        ok: true,
+      },
+    ]);
+    expect(llm.converseRequests[1]?.messages[1]).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_oauth",
+          name: "Tool_episodic_search",
+          input: { query: "Marta" },
+        },
+      ],
+    });
   });
 
   it("executes multiple tool uses sequentially in model order", async () => {

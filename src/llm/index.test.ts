@@ -299,6 +299,52 @@ describe("llm", () => {
     });
   });
 
+  it("rewrites dotted OAuth tool_use names in outbound message history", async () => {
+    const fetchMock = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const body = JSON.parse(String(init?.body)) as {
+          messages: Array<{
+            role: string;
+            content: Array<{ type: string; name?: string }>;
+          }>;
+        };
+
+        expect(body.messages[1]?.content[0]).toMatchObject({
+          type: "tool_use",
+          name: "Tool_episodic_search",
+        });
+
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const oauthFetch = createOAuthFetch();
+    await oauthFetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({
+        tools: [{ name: "tool.episodic.search" }],
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "search memory" }],
+          },
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_1",
+                name: "tool.episodic.search",
+                input: { query: "planning" },
+              },
+            ],
+          },
+        ],
+      }),
+    });
+  });
+
   it("rewrites mixed OAuth tool batches per name instead of lowercasing everything", async () => {
     vi.stubGlobal(
       "fetch",

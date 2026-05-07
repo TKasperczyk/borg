@@ -7,8 +7,9 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import type { PostGenerationGuardMode } from "../../config/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
-import { valueAppearsIn } from "../../util/text-presence.js";
+import { deleteSpans, isStructurallyEmptyText } from "../../util/span-deletion.js";
 import type { ClosureLoopState } from "../../memory/working/index.js";
 import type { TurnTraceData, TurnTracer } from "../tracing/tracer.js";
 import type { PendingTurnEmission } from "./types.js";
@@ -38,23 +39,6 @@ export const CLOSURE_FUNCTION_EXAMPLES = [
   "Banks is waiting.",
   "Held. Book.",
 ] as const;
-
-const STRUCTURALLY_EMPTY_TEXT_PATTERN = /^[\s\p{P}\p{S}]*$/u;
-const SPAN_WHITESPACE_PATTERN = /\s/u;
-const TRAILING_REMOVAL_JUNK_PATTERN = /[\s,;:]+$/u;
-
-const SMART_QUOTE_REPLACEMENTS: ReadonlyArray<readonly [string, string]> = [
-  ["\u2018", "'"],
-  ["\u2019", "'"],
-  ["\u201a", "'"],
-  ["\u201b", "'"],
-  ["\u2032", "'"],
-  ["\u201c", '"'],
-  ["\u201d", '"'],
-  ["\u201e", '"'],
-  ["\u201f", '"'],
-  ["\u2033", '"'],
-];
 
 const closureResponseSpanSchema = z
   .object({
@@ -108,6 +92,7 @@ export type ClosurePressureGuardOptions = {
   llmClient: LLMClient;
   auditModel: string;
   rewriteModel: string;
+  mode?: PostGenerationGuardMode;
   tracer?: TurnTracer;
 };
 
@@ -161,26 +146,38 @@ function traceClosureGuard(input: {
   tracer?: TurnTracer;
   turnId: string;
   verdict: "passed" | "rewritten" | "suppressed";
+  mode?: PostGenerationGuardMode;
+  wouldHaveVerdict?: "passed" | "rewritten" | "suppressed";
+  wouldHaveSuppressionReason?: string;
   removedSpans: readonly string[];
   activeClosureCommitments: readonly string[];
   reason: string;
   audit: ClosureResponseAudit | null;
   originalResponse?: string;
   rewrittenResponse?: string;
+  auditError?: string;
 }): void {
   if (input.tracer?.enabled !== true) {
     return;
   }
 
   const includePayloads = input.tracer.includePayloads === true;
+  const mode = input.mode ?? "enforce";
+  const wouldHaveVerdict = input.wouldHaveVerdict ?? input.verdict;
   const payload: TurnTraceData = {
     turnId: input.turnId,
-    verdict: input.verdict,
+    mode,
+    verdict: mode === "shadow" ? "passed" : input.verdict,
+    wouldHaveVerdict,
     removed_spans: [...input.removedSpans],
     active_closure_commitments: [...input.activeClosureCommitments],
     reason: input.reason,
     spans_detected: input.audit?.spans.length ?? 0,
     response_shape: input.audit?.response_shape ?? null,
+    ...(input.auditError === undefined ? {} : { audit_error: input.auditError }),
+    ...(input.wouldHaveSuppressionReason === undefined
+      ? {}
+      : { wouldHaveSuppressionReason: input.wouldHaveSuppressionReason }),
   };
 
   if (includePayloads && input.audit !== null) {
@@ -220,150 +217,34 @@ function traceClosureAuditInconsistent(input: {
   });
 }
 
-type TextRange = {
-  start: number;
-  end: number;
-};
-
-type NormalizedTextIndex = {
-  text: string;
-  ranges: TextRange[];
-};
-
-function normalizeSpanCharacter(value: string): string {
-  let normalized = value;
-
-  for (const [from, to] of SMART_QUOTE_REPLACEMENTS) {
-    normalized = normalized.replaceAll(from, to);
-  }
-
-  return normalized.normalize("NFC").toLocaleLowerCase();
-}
-
-function buildNormalizedTextIndex(value: string): NormalizedTextIndex {
-  let text = "";
-  const ranges: TextRange[] = [];
-  let offset = 0;
-
-  for (const character of value) {
-    const start = offset;
-    offset += character.length;
-
-    if (SPAN_WHITESPACE_PATTERN.test(character)) {
-      if (text[text.length - 1] === " ") {
-        const lastRange = ranges[ranges.length - 1];
-
-        if (lastRange !== undefined) {
-          lastRange.end = offset;
-        }
-      } else {
-        text += " ";
-        ranges.push({ start, end: offset });
-      }
-
-      continue;
-    }
-
-    for (const normalizedCharacter of normalizeSpanCharacter(character)) {
-      text += normalizedCharacter;
-      ranges.push({ start, end: offset });
-    }
-  }
-
-  return { text, ranges };
-}
-
-function normalizedSpanText(value: string): string {
-  return buildNormalizedTextIndex(value).text.trim();
-}
-
-function findNormalizedSpanRanges(response: string, spanText: string): TextRange[] {
-  const normalized = buildNormalizedTextIndex(response);
-  const needle = normalizedSpanText(spanText);
-  const matches: TextRange[] = [];
-
-  if (needle.length === 0) {
-    return matches;
-  }
-
-  let index = normalized.text.indexOf(needle);
-
-  while (index >= 0) {
-    const first = normalized.ranges[index];
-    const last = normalized.ranges[index + needle.length - 1];
-
-    if (first !== undefined && last !== undefined) {
-      matches.push({
-        start: first.start,
-        end: last.end,
-      });
-    }
-
-    index = normalized.text.indexOf(needle, index + 1);
-  }
-
-  return matches;
-}
-
-function rangesOverlap(left: TextRange, right: TextRange): boolean {
-  return left.start < right.end && right.start < left.end;
-}
-
-function findUniqueRemovalRange(input: {
-  response: string;
-  span: ClosureResponseSpan;
-  selectedRanges: readonly TextRange[];
-}): TextRange | null {
-  if (!valueAppearsIn(input.response, input.span.text)) {
-    return null;
-  }
-
-  const matches = findNormalizedSpanRanges(input.response, input.span.text).filter(
-    (range) => !input.selectedRanges.some((selected) => rangesOverlap(range, selected)),
-  );
-
-  return matches.length === 1 ? (matches[0] ?? null) : null;
-}
-
-function structurallyEmptyText(value: string): boolean {
-  return STRUCTURALLY_EMPTY_TEXT_PATTERN.test(value);
-}
-
-function cleanRemovedClosureText(value: string): string {
-  return value.replace(TRAILING_REMOVAL_JUNK_PATTERN, "").trim();
-}
-
-function removeClosureSpansDeterministically(input: {
-  response: string;
-  spans: readonly ClosureResponseSpan[];
-}): string | null {
-  const ranges: TextRange[] = [];
-
-  for (const span of input.spans) {
-    const range = findUniqueRemovalRange({
-      response: input.response,
-      span,
-      selectedRanges: ranges,
-    });
-
-    if (range === null) {
-      return null;
-    }
-
-    ranges.push(range);
-  }
-
-  let rewritten = input.response;
-
-  for (const range of [...ranges].sort((left, right) => right.start - left.start)) {
-    rewritten = `${rewritten.slice(0, range.start)}${rewritten.slice(range.end)}`;
-  }
-
-  return cleanRemovedClosureText(rewritten);
+function formatAuditError(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
 export class ClosurePressureGuard {
   constructor(private readonly options: ClosurePressureGuardOptions) {}
+
+  private mode(): PostGenerationGuardMode {
+    return this.options.mode ?? "enforce";
+  }
+
+  private applyMode(
+    input: ClosurePressureGuardInput,
+    result: ClosurePressureGuardResult,
+  ): ClosurePressureGuardResult {
+    if (this.mode() === "enforce" || result.verdict === "passed") {
+      return result;
+    }
+
+    return {
+      ...result,
+      emission: {
+        kind: "message",
+        content: input.response,
+      },
+      verdict: "passed",
+    };
+  }
 
   private async audit(response: string): Promise<ClosureResponseAudit> {
     const result = await this.options.llmClient.complete({
@@ -387,20 +268,54 @@ export class ClosurePressureGuard {
 
     try {
       audit = await this.audit(input.response);
-    } catch {
+    } catch (error) {
+      const auditError = formatAuditError(error);
+      const failClosed = this.mode() === "enforce" && (activeCommitments.length > 0 || closureLoopNamed);
+
+      if (failClosed) {
+        const reason = "closure_response_audit_failed_closed";
+
+        traceClosureGuard({
+          tracer: this.options.tracer,
+          turnId: input.turnId,
+          mode: this.mode(),
+          verdict: "suppressed",
+          wouldHaveSuppressionReason: reason,
+          removedSpans: [],
+          activeClosureCommitments: activeCommitmentLabels,
+          reason,
+          audit: null,
+          auditError,
+        });
+
+        return {
+          emission: {
+            kind: "suppressed",
+            reason,
+          },
+          verdict: "suppressed",
+          removed_spans: [],
+          active_closure_commitments: activeCommitmentLabels,
+          reason,
+          audit: null,
+        };
+      }
+
       const reason = "closure_response_audit_failed_open";
 
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        mode: this.mode(),
         verdict: "passed",
         removedSpans: [],
         activeClosureCommitments: activeCommitmentLabels,
         reason,
         audit: null,
+        auditError,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "message",
           content: input.response,
@@ -410,7 +325,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit: null,
-      };
+      });
     }
 
     if (audit.spans.length === 0 && audit.response_shape === "no_closure") {
@@ -419,6 +334,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        mode: this.mode(),
         verdict: "passed",
         removedSpans: [],
         activeClosureCommitments: activeCommitmentLabels,
@@ -426,7 +342,7 @@ export class ClosurePressureGuard {
         audit,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "message",
           content: input.response,
@@ -436,7 +352,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit,
-      };
+      });
     }
 
     if (audit.spans.length === 0) {
@@ -452,6 +368,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        mode: this.mode(),
         verdict: "passed",
         removedSpans: [],
         activeClosureCommitments: activeCommitmentLabels,
@@ -459,7 +376,7 @@ export class ClosurePressureGuard {
         audit,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "message",
           content: input.response,
@@ -469,7 +386,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit,
-      };
+      });
     }
 
     if (audit.response_shape === "no_closure") {
@@ -487,6 +404,7 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        mode: this.mode(),
         verdict: "passed",
         removedSpans: [],
         activeClosureCommitments: activeCommitmentLabels,
@@ -494,7 +412,7 @@ export class ClosurePressureGuard {
         audit,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "message",
           content: input.response,
@@ -504,7 +422,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit,
-      };
+      });
     }
 
     const removedSpans = audit.spans.map((span) => span.text);
@@ -515,14 +433,16 @@ export class ClosurePressureGuard {
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        mode: this.mode(),
         verdict: "suppressed",
+        wouldHaveSuppressionReason: reason,
         removedSpans,
         activeClosureCommitments: activeCommitmentLabels,
         reason,
         audit,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "suppressed",
           reason,
@@ -532,28 +452,30 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit,
-      };
+      });
     }
 
-    const rewritten = removeClosureSpansDeterministically({
-      response: input.response,
-      spans: audit.spans,
-    });
+    const deletion = deleteSpans(
+      input.response,
+      audit.spans.map((span) => span.text),
+    );
 
-    if (rewritten === null || structurallyEmptyText(rewritten)) {
+    if (!deletion.allRemoved || isStructurallyEmptyText(deletion.result)) {
       const reason = "closure_pressure_only";
 
       traceClosureGuard({
         tracer: this.options.tracer,
         turnId: input.turnId,
+        mode: this.mode(),
         verdict: "suppressed",
+        wouldHaveSuppressionReason: reason,
         removedSpans,
         activeClosureCommitments: activeCommitmentLabels,
         reason,
         audit,
       });
 
-      return {
+      return this.applyMode(input, {
         emission: {
           kind: "suppressed",
           reason,
@@ -563,7 +485,7 @@ export class ClosurePressureGuard {
         active_closure_commitments: activeCommitmentLabels,
         reason,
         audit,
-      };
+      });
     }
 
     const reason = "closure_spans_removed";
@@ -571,25 +493,26 @@ export class ClosurePressureGuard {
     traceClosureGuard({
       tracer: this.options.tracer,
       turnId: input.turnId,
+      mode: this.mode(),
       verdict: "rewritten",
       removedSpans,
       activeClosureCommitments: activeCommitmentLabels,
       reason,
       audit,
       originalResponse: input.response,
-      rewrittenResponse: rewritten,
+      rewrittenResponse: deletion.result,
     });
 
-    return {
+    return this.applyMode(input, {
       emission: {
         kind: "message",
-        content: rewritten,
+        content: deletion.result,
       },
       verdict: "rewritten",
       removed_spans: removedSpans,
       active_closure_commitments: activeCommitmentLabels,
       reason,
       audit,
-    };
+    });
   }
 }

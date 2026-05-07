@@ -2,12 +2,88 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
+import {
+  RELATIONAL_CLAIM_KINDS,
+  type RelationalClaimKind,
+} from "../cognition/generation/relational-claim-kinds.js";
 import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
 
 const DEFAULT_DATA_DIR = "~/.borg";
 const anthropicAuthModeSchema = z.enum(["auto", "oauth", "api-key"]);
+export const postGenerationGuardModeSchema = z.enum(["enforce", "shadow"]);
+const postGenerationGuardConfigSchema = z.object({
+  mode: postGenerationGuardModeSchema,
+});
+const postGenerationGuardFileConfigSchema = postGenerationGuardConfigSchema.partial();
+export const relationalClaimGuardModeSchema = z.union([
+  postGenerationGuardModeSchema,
+  z
+    .object({
+      perCategory: z
+        .object({
+          default: postGenerationGuardModeSchema,
+          overrides: z
+            .partialRecord(z.enum(RELATIONAL_CLAIM_KINDS), postGenerationGuardModeSchema)
+            .optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+]);
+const relationalClaimGuardConfigSchema = z.object({
+  mode: relationalClaimGuardModeSchema,
+});
+const relationalClaimGuardFileConfigSchema = relationalClaimGuardConfigSchema.partial();
+const postGenerationGuardsFileConfigSchema = z
+  .object({
+    commitment: postGenerationGuardFileConfigSchema.optional(),
+    relationalClaim: relationalClaimGuardFileConfigSchema.optional(),
+    closurePressure: postGenerationGuardFileConfigSchema.optional(),
+  })
+  .partial();
+const evidenceLedgerConfigSchema = z.object({
+  enabled: z.boolean(),
+  currentSessionTranscriptTokenBudget: z.number().int().positive(),
+});
+const evidenceLedgerFileConfigSchema = evidenceLedgerConfigSchema.partial();
+const cognitionThinkingConfigSchema = z.object({
+  enabled: z.boolean(),
+  budget_tokens: z.number().int().positive(),
+});
+const cognitionThinkingFileConfigSchema = cognitionThinkingConfigSchema.partial();
+const cognitionConfigSchema = z.object({
+  thinking: cognitionThinkingConfigSchema,
+});
+const cognitionFileConfigSchema = z
+  .object({
+    thinking: cognitionThinkingFileConfigSchema.optional(),
+  })
+  .partial();
+const manifestFinalizerConfigSchema = z.object({
+  enabled: z.boolean(),
+});
+const manifestFinalizerFileConfigSchema = manifestFinalizerConfigSchema.partial();
+const manifestValidatorCriticalFailureSchema = z.enum(["no_output", "legacy_fallback"]);
+const manifestValidatorConfigSchema = z.object({
+  enabled: z.boolean(),
+  onCriticalFailure: manifestValidatorCriticalFailureSchema,
+});
+const manifestValidatorFileConfigSchema = manifestValidatorConfigSchema.partial();
+
+export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
+export type RelationalClaimGuardMode =
+  | PostGenerationGuardMode
+  | {
+      perCategory: {
+        default: PostGenerationGuardMode;
+        overrides?: Partial<Record<RelationalClaimKind, PostGenerationGuardMode>>;
+      };
+    };
+export type ManifestValidatorCriticalFailure = z.infer<
+  typeof manifestValidatorCriticalFailureSchema
+>;
 
 const configFileSchema = z
   .object({
@@ -76,6 +152,11 @@ const configFileSchema = z
     generation: z
       .object({
         discourseStateHardCapTurns: z.number().int().positive().optional(),
+        cognition: cognitionFileConfigSchema.optional(),
+        evidenceLedger: evidenceLedgerFileConfigSchema.optional(),
+        manifestFinalizer: manifestFinalizerFileConfigSchema.optional(),
+        manifestValidator: manifestValidatorFileConfigSchema.optional(),
+        postGenerationGuards: postGenerationGuardsFileConfigSchema.optional(),
       })
       .partial()
       .optional(),
@@ -365,6 +446,15 @@ export const configSchema = z.object({
   }),
   generation: z.object({
     discourseStateHardCapTurns: z.number().int().positive(),
+    cognition: cognitionConfigSchema,
+    evidenceLedger: evidenceLedgerConfigSchema,
+    manifestFinalizer: manifestFinalizerConfigSchema,
+    manifestValidator: manifestValidatorConfigSchema,
+    postGenerationGuards: z.object({
+      commitment: postGenerationGuardConfigSchema,
+      relationalClaim: relationalClaimGuardConfigSchema,
+      closurePressure: postGenerationGuardConfigSchema,
+    }),
   }),
   streamIngestion: z.object({
     preTurnCatchup: z.object({
@@ -571,6 +661,34 @@ export const DEFAULT_CONFIG: Config = {
   },
   generation: {
     discourseStateHardCapTurns: 50,
+    cognition: {
+      thinking: {
+        enabled: false,
+        budget_tokens: 4096,
+      },
+    },
+    evidenceLedger: {
+      enabled: false,
+      currentSessionTranscriptTokenBudget: 50_000,
+    },
+    manifestFinalizer: {
+      enabled: false,
+    },
+    manifestValidator: {
+      enabled: false,
+      onCriticalFailure: "no_output",
+    },
+    postGenerationGuards: {
+      commitment: {
+        mode: "enforce",
+      },
+      relationalClaim: {
+        mode: "enforce",
+      },
+      closurePressure: {
+        mode: "enforce",
+      },
+    },
   },
   streamIngestion: {
     preTurnCatchup: {
@@ -842,6 +960,29 @@ function readOptionalEnvAnthropicAuthMode(
   return parsed.data;
 }
 
+function readOptionalEnvManifestValidatorCriticalFailure(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): z.infer<typeof manifestValidatorCriticalFailureSchema> | undefined {
+  const raw = readOptionalEnvString(env, name);
+
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  const parsed = manifestValidatorCriticalFailureSchema.safeParse(raw);
+
+  if (!parsed.success) {
+    throw new ConfigError(
+      `Environment variable ${name} must be one of: ${manifestValidatorCriticalFailureSchema.options.join(
+        ", ",
+      )}`,
+    );
+  }
+
+  return parsed.data;
+}
+
 function isNodeError(error: unknown): error is NodeJS.ErrnoException & { code: string } {
   return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string";
 }
@@ -991,6 +1132,67 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
         readOptionalEnvNumber(env, "BORG_GENERATION_DISCOURSE_HARD_CAP_TURNS") ??
         fileConfig.generation?.discourseStateHardCapTurns ??
         DEFAULT_CONFIG.generation.discourseStateHardCapTurns,
+      cognition: {
+        thinking: {
+          enabled:
+            readOptionalEnvBoolean(env, "BORG_GENERATION_COGNITION_THINKING_ENABLED") ??
+            fileConfig.generation?.cognition?.thinking?.enabled ??
+            DEFAULT_CONFIG.generation.cognition.thinking.enabled,
+          budget_tokens:
+            readOptionalEnvNumber(env, "BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS") ??
+            fileConfig.generation?.cognition?.thinking?.budget_tokens ??
+            DEFAULT_CONFIG.generation.cognition.thinking.budget_tokens,
+        },
+      },
+      evidenceLedger: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_GENERATION_EVIDENCE_LEDGER_ENABLED") ??
+          fileConfig.generation?.evidenceLedger?.enabled ??
+          DEFAULT_CONFIG.generation.evidenceLedger.enabled,
+        currentSessionTranscriptTokenBudget:
+          readOptionalEnvNumber(
+            env,
+            "BORG_GENERATION_EVIDENCE_LEDGER_CURRENT_SESSION_TRANSCRIPT_TOKEN_BUDGET",
+          ) ??
+          fileConfig.generation?.evidenceLedger?.currentSessionTranscriptTokenBudget ??
+          DEFAULT_CONFIG.generation.evidenceLedger.currentSessionTranscriptTokenBudget,
+      },
+      manifestFinalizer: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_GENERATION_MANIFEST_FINALIZER_ENABLED") ??
+          fileConfig.generation?.manifestFinalizer?.enabled ??
+          DEFAULT_CONFIG.generation.manifestFinalizer.enabled,
+      },
+      manifestValidator: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_GENERATION_MANIFEST_VALIDATOR_ENABLED") ??
+          fileConfig.generation?.manifestValidator?.enabled ??
+          DEFAULT_CONFIG.generation.manifestValidator.enabled,
+        onCriticalFailure:
+          readOptionalEnvManifestValidatorCriticalFailure(
+            env,
+            "BORG_GENERATION_MANIFEST_VALIDATOR_ON_CRITICAL_FAILURE",
+          ) ??
+          fileConfig.generation?.manifestValidator?.onCriticalFailure ??
+          DEFAULT_CONFIG.generation.manifestValidator.onCriticalFailure,
+      },
+      postGenerationGuards: {
+        commitment: {
+          mode:
+            fileConfig.generation?.postGenerationGuards?.commitment?.mode ??
+            DEFAULT_CONFIG.generation.postGenerationGuards.commitment.mode,
+        },
+        relationalClaim: {
+          mode:
+            fileConfig.generation?.postGenerationGuards?.relationalClaim?.mode ??
+            DEFAULT_CONFIG.generation.postGenerationGuards.relationalClaim.mode,
+        },
+        closurePressure: {
+          mode:
+            fileConfig.generation?.postGenerationGuards?.closurePressure?.mode ??
+            DEFAULT_CONFIG.generation.postGenerationGuards.closurePressure.mode,
+        },
+      },
     },
     streamIngestion: {
       preTurnCatchup: {
@@ -1413,6 +1615,15 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
       },
     },
   };
+
+  if (
+    candidate.generation.manifestValidator.enabled &&
+    !candidate.generation.manifestFinalizer.enabled
+  ) {
+    throw new ConfigError(
+      "manifestValidator.enabled requires manifestFinalizer.enabled (validator runs inside the manifest path)",
+    );
+  }
 
   const parsed = configSchema.safeParse(candidate);
 

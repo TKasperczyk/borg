@@ -15,7 +15,7 @@ import {
 import { MaintenanceScheduler, type MaintenanceTickResult } from "../src/offline/scheduler.js";
 import { BorgTransport, type ChatWithBorgResult } from "../assessor/borg-transport.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
-import { runSimulation } from "./runner.js";
+import { createSimulatorScenario, runSimulation } from "./runner.js";
 import type { PersonaSession, PriorBorgTurn } from "./persona.js";
 import { tomPersona } from "./personas/tom.js";
 
@@ -199,6 +199,33 @@ function chatResult(input: {
 }
 
 describe("SimulatorRunner", () => {
+  it("builds Pipeline C-double-prime config overrides", () => {
+    const scenario = createSimulatorScenario(tomPersona, 100, {
+      pipelineCDoublePrime: true,
+    });
+
+    expect(scenario.borgConfigOverrides).toEqual({
+      generation: {
+        evidenceLedger: { enabled: true },
+        manifestFinalizer: { enabled: true },
+        manifestValidator: { enabled: true, onCriticalFailure: "no_output" },
+        postGenerationGuards: {
+          commitment: { mode: "shadow" },
+          closurePressure: { mode: "enforce" },
+          relationalClaim: {
+            mode: "shadow",
+          },
+        },
+      },
+    });
+  });
+
+  it("keeps simulator config overrides unset by default", () => {
+    const scenario = createSimulatorScenario(tomPersona, 100);
+
+    expect(scenario.borgConfigOverrides).toBeUndefined();
+  });
+
   it("drafts one persona turn while retrying transient transport failures", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");

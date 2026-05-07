@@ -23,6 +23,8 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
 import { createEpisodeId, DEFAULT_SESSION_ID, type SessionId } from "../../util/ids.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
+import { valueAppearsIn } from "../../util/text-presence.js";
+import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
 import { normalizeEpisodeAccess } from "./access.js";
 import { EpisodicRepository } from "./repository.js";
 import { type Episode } from "./types.js";
@@ -128,9 +130,7 @@ function estimateTokens(entry: StreamEntry): number {
     return entry.token_estimate;
   }
 
-  const content =
-    typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content ?? null);
-  return Math.max(1, Math.ceil(content.length / 4));
+  return estimatePromptTokens(stringifyPromptContent(entry.content));
 }
 
 function chunkEntries(entries: readonly StreamEntry[], maxTokens: number): StreamEntry[][] {
@@ -549,7 +549,7 @@ function streamEntryText(entry: StreamEntry): string {
 }
 
 function entryMentionsValue(entry: StreamEntry, value: string): boolean {
-  return streamEntryText(entry).includes(value);
+  return valueAppearsIn(streamEntryText(entry), value);
 }
 
 function priorContextWindow(

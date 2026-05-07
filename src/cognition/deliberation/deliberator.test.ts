@@ -23,6 +23,8 @@ import type {
   RetrievedEpisode,
 } from "../../retrieval/index.js";
 import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
+import type { EvidenceLedger } from "../evidence-ledger/index.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import { Deliberator } from "./deliberator.js";
 
 function makeRetrievedEpisode(id: string, score: number, tags: string[] = []): RetrievedEpisode {
@@ -105,13 +107,70 @@ function createToolDispatcher(tempDirs: string[]): ToolDispatcher {
   });
 }
 
-function createDeliberator(llm: FakeLLMClient, tempDirs: string[]): Deliberator {
+function createDeliberator(
+  llm: FakeLLMClient,
+  tempDirs: string[],
+  options: {
+    manifestFinalizerEnabled?: boolean;
+    manifestValidatorEnabled?: boolean;
+    manifestValidatorOnCriticalFailure?: "no_output" | "legacy_fallback";
+    cognitionThinking?: { enabled: boolean; budget_tokens: number };
+    tracer?: TurnTracer;
+  } = {},
+): Deliberator {
   return new Deliberator({
     llmClient: llm,
     toolDispatcher: createToolDispatcher(tempDirs),
     cognitionModel: "sonnet",
-    backgroundModel: "haiku",
+    cognitionThinking: options.cognitionThinking,
+    manifestFinalizerEnabled: options.manifestFinalizerEnabled,
+    manifestValidatorEnabled: options.manifestValidatorEnabled,
+    manifestValidatorOnCriticalFailure: options.manifestValidatorOnCriticalFailure,
+    relationalSlotRepository: {
+      get: () => null,
+    },
+    actionRepository: {
+      get: () => null,
+    },
+    tracer: options.tracer,
   });
+}
+
+function makeEvidenceLedger(): EvidenceLedger {
+  return {
+    sections: [
+      {
+        id: "current_user_message",
+        label: "1. Current User Message",
+        entries: [
+          {
+            id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+            source_type: "current_user_message",
+            session_scope: "current_session",
+            actor: "user",
+            trust_rank: 1,
+            text: "Please answer directly.",
+            stream_index: 0,
+          },
+        ],
+      },
+    ],
+    transcriptIncluded: false,
+    transcriptOmittedReason: "over_budget",
+    estimatedTokens: 24,
+  };
+}
+
+class CapturingTracer implements TurnTracer {
+  readonly enabled = true;
+
+  constructor(readonly includePayloads = false) {}
+
+  readonly events: { event: TurnTraceEventName; data: TurnTraceData }[] = [];
+
+  emit(event: TurnTraceEventName, data: TurnTraceData): void {
+    this.events.push({ event, data });
+  }
 }
 
 describe("deliberator", () => {
@@ -135,7 +194,13 @@ describe("deliberator", () => {
         },
       ],
     });
-    const deliberator = createDeliberator(llm, tempDirs);
+    const deliberator = createDeliberator(llm, tempDirs, {
+      manifestFinalizerEnabled: false,
+      cognitionThinking: {
+        enabled: true,
+        budget_tokens: 2048,
+      },
+    });
 
     const result = await deliberator.run({
       sessionId: DEFAULT_SESSION_ID,
@@ -184,6 +249,10 @@ describe("deliberator", () => {
 
     expect(result.response).toBe("Answer after seeing prior turns");
     expect(llm.converseRequests).toHaveLength(1);
+    expect(llm.converseRequests[0]?.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 2048,
+    });
     const messages = llm.requests[0]?.messages;
     expect(messages).toEqual([
       { role: "user", content: "What's the plan?" },
@@ -254,6 +323,677 @@ describe("deliberator", () => {
     }
   });
 
+  it("uses the manifest finalizer forced tool when the flag is enabled", async () => {
+    const tracer = new CapturingTracer(true);
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "Free text should be ignored.",
+          input_tokens: 18,
+          output_tokens: 7,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_manifest",
+              name: "EmitManifestResponse",
+              input: {
+                final_text: "Manifest-backed answer.",
+                discourse_act: "answer",
+                claims: [
+                  {
+                    kind: "user_fact",
+                    rendered_span: "Manifest-backed answer.",
+                    exact_values: ["Please answer directly."],
+                    evidence: [
+                      {
+                        id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                        source_type: "current_user_message",
+                      },
+                    ],
+                    confidence: "direct",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      manifestFinalizerEnabled: true,
+      cognitionThinking: {
+        enabled: true,
+        budget_tokens: 3072,
+      },
+      tracer,
+    });
+
+    const result = await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-manifest",
+      userMessage: "Please answer directly.",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
+      evidenceLedger: makeEvidenceLedger(),
+      evidenceLedgerPromptSection:
+        "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        hot_entities: [],
+        pending_actions: [],
+        pending_social_attribution: null,
+        pending_trait_attribution: null,
+        mood: null,
+        pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      options: { stakes: "low" },
+    });
+
+    expect(result.response).toBe("Manifest-backed answer.");
+    expect(result.emitted).toBe(true);
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "Manifest-backed answer.",
+    });
+    expect(result.tool_calls).toEqual([]);
+    expect(llm.converseRequests).toHaveLength(0);
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: "EmitManifestResponse",
+    });
+    expect(llm.requests[0]?.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 3072,
+    });
+    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitManifestResponse"]);
+    const system = llm.requests[0]?.system as string;
+    expect(system).toContain("You must call the EmitManifestResponse tool exactly once.");
+    expect(system).toContain("<borg_evidence_ledger>");
+    expect(system).toContain("id=current_user_message:strm_aaaaaaaaaaaaaaaa");
+    const emittedEvent = tracer.events.find(
+      (entry) => entry.event === "manifest_finalizer_emitted",
+    );
+    expect(emittedEvent?.data).toMatchObject({
+      turnId: "turn-manifest",
+      final_text_length: "Manifest-backed answer.".length,
+      discourse_act: "answer",
+      claim_count: 1,
+      claim_kinds: ["user_fact:1"],
+      parsed: true,
+    });
+    expect(emittedEvent?.data.claims).toEqual([
+      {
+        kind: "user_fact",
+        rendered_span: "Manifest-backed answer.",
+        exact_values: ["Please answer directly."],
+        evidence: [
+          {
+            id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+            source_type: "current_user_message",
+          },
+        ],
+        confidence: "direct",
+      },
+    ]);
+    expect(tracer.events.some((entry) => entry.event === "manifest_validation")).toBe(false);
+  });
+
+  it("marks manifest self-report emissions with assistant self-report persistence class", async () => {
+    const selfReport = "The gap feels like a discontinuity with a remembered edge.";
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 18,
+          output_tokens: 7,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_manifest_self_report",
+              name: "EmitManifestResponse",
+              input: {
+                final_text: selfReport,
+                discourse_act: "answer",
+                claims: [
+                  {
+                    kind: "self_report",
+                    rendered_span: selfReport,
+                    persistence_class: "assistant_self_report",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      manifestFinalizerEnabled: true,
+    });
+
+    const result = await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-manifest-self-report",
+      userMessage: "What does the gap feel like?",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      retrievalResult: [],
+      retrievalConfidence: makeRetrievalConfidence(),
+      evidenceLedger: makeEvidenceLedger(),
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        hot_entities: [],
+        pending_actions: [],
+        pending_social_attribution: null,
+        pending_trait_attribution: null,
+        mood: null,
+        pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      options: { stakes: "low" },
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: selfReport,
+      persistence_class: "assistant_self_report",
+    });
+  });
+
+  it("validates manifest finalizer output when both manifest flags are enabled", async () => {
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_manifest_valid",
+              name: "EmitManifestResponse",
+              input: {
+                final_text: "Please answer directly.",
+                discourse_act: "answer",
+                claims: [
+                  {
+                    kind: "user_fact",
+                    rendered_span: "Please answer directly.",
+                    exact_values: ["Please answer directly"],
+                    evidence: [
+                      {
+                        id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                        source_type: "current_user_message",
+                      },
+                    ],
+                    confidence: "direct",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      manifestFinalizerEnabled: true,
+      manifestValidatorEnabled: true,
+      tracer,
+    });
+
+    const result = await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-manifest-valid",
+      userMessage: "Please answer directly.",
+      userEntryId: "strm_aaaaaaaaaaaaaaaa",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
+      evidenceLedger: makeEvidenceLedger(),
+      evidenceLedgerPromptSection:
+        "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        hot_entities: [],
+        pending_actions: [],
+        pending_social_attribution: null,
+        pending_trait_attribution: null,
+        mood: null,
+        pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      options: { stakes: "low" },
+    });
+
+    expect(result.response).toBe("Please answer directly.");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "Please answer directly.",
+    });
+    const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
+    expect(validationEvent?.data).toMatchObject({
+      turnId: "turn-manifest-valid",
+      verdict: "valid",
+      final_verdict: "passed",
+      passed_claims: 1,
+      final_text_changed: false,
+    });
+  });
+
+  it("rewrites invalid non-critical manifest spans before emission", async () => {
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_manifest_rewrite",
+              name: "EmitManifestResponse",
+              input: {
+                final_text: "Stable answer remains. Luis prefers verbose answers.",
+                discourse_act: "answer",
+                claims: [
+                  {
+                    kind: "user_fact",
+                    rendered_span: "Luis prefers verbose answers.",
+                    exact_values: ["Luis"],
+                    evidence: [
+                      {
+                        id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                        source_type: "current_user_message",
+                      },
+                    ],
+                    confidence: "direct",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      manifestFinalizerEnabled: true,
+      manifestValidatorEnabled: true,
+      tracer,
+    });
+
+    const result = await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-manifest-rewrite",
+      userMessage: "Please answer directly.",
+      userEntryId: "strm_aaaaaaaaaaaaaaaa",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
+      evidenceLedger: makeEvidenceLedger(),
+      evidenceLedgerPromptSection:
+        "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        hot_entities: [],
+        pending_actions: [],
+        pending_social_attribution: null,
+        pending_trait_attribution: null,
+        mood: null,
+        pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      options: { stakes: "low" },
+    });
+
+    expect(result.response).toBe("Stable answer remains.");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "Stable answer remains.",
+    });
+    const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
+    expect(validationEvent?.data).toMatchObject({
+      turnId: "turn-manifest-rewrite",
+      verdict: "invalid",
+      final_verdict: "rewritten",
+      final_text_changed: true,
+      spans_removed: ["Luis prefers verbose answers."],
+    });
+  });
+
+  it("suppresses invalid critical manifest output when configured for no_output", async () => {
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_manifest_critical",
+              name: "EmitManifestResponse",
+              input: {
+                final_text: "Luis.",
+                discourse_act: "answer",
+                claims: [
+                  {
+                    kind: "user_fact",
+                    rendered_span: "Luis.",
+                    exact_values: ["Luis"],
+                    evidence: [
+                      {
+                        id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                        source_type: "current_user_message",
+                      },
+                    ],
+                    confidence: "direct",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      manifestFinalizerEnabled: true,
+      manifestValidatorEnabled: true,
+      manifestValidatorOnCriticalFailure: "no_output",
+      tracer,
+    });
+
+    const result = await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-manifest-critical",
+      userMessage: "Please answer directly.",
+      userEntryId: "strm_aaaaaaaaaaaaaaaa",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
+      evidenceLedger: makeEvidenceLedger(),
+      evidenceLedgerPromptSection:
+        "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        hot_entities: [],
+        pending_actions: [],
+        pending_social_attribution: null,
+        pending_trait_attribution: null,
+        mood: null,
+        pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      options: { stakes: "low" },
+    });
+
+    expect(result.response).toBe("");
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "manifest_validation_failed_critical",
+    });
+    const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
+    expect(validationEvent?.data).toMatchObject({
+      turnId: "turn-manifest-critical",
+      verdict: "invalid",
+      final_verdict: "no_output",
+      final_text_changed: false,
+    });
+  });
+
+  it("reruns the legacy finalizer when critical manifest validation requests fallback", async () => {
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_manifest_fallback",
+              name: "EmitManifestResponse",
+              input: {
+                final_text: "Luis.",
+                discourse_act: "answer",
+                claims: [
+                  {
+                    kind: "user_fact",
+                    rendered_span: "Luis.",
+                    exact_values: ["Luis"],
+                    evidence: [
+                      {
+                        id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                        source_type: "current_user_message",
+                      },
+                    ],
+                    confidence: "direct",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          text: "Legacy fallback answer.",
+          input_tokens: 6,
+          output_tokens: 3,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      manifestFinalizerEnabled: true,
+      manifestValidatorEnabled: true,
+      manifestValidatorOnCriticalFailure: "legacy_fallback",
+      tracer,
+    });
+
+    const result = await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-manifest-fallback",
+      userMessage: "Please answer directly.",
+      userEntryId: "strm_aaaaaaaaaaaaaaaa",
+      perception: {
+        entities: [],
+        mode: "problem_solving",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
+      evidenceLedger: makeEvidenceLedger(),
+      evidenceLedgerPromptSection:
+        "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        hot_entities: [],
+        pending_actions: [],
+        pending_social_attribution: null,
+        pending_trait_attribution: null,
+        mood: null,
+        pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
+        suppressed: [],
+        mode: "problem_solving",
+        updated_at: 0,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      options: { stakes: "low" },
+    });
+
+    expect(result.response).toBe("Legacy fallback answer.");
+    expect(result.tool_calls).toEqual([]);
+    expect(result.usage).toEqual({
+      input_tokens: 16,
+      output_tokens: 7,
+      stop_reason: "end_turn",
+    });
+    expect(llm.requests).toHaveLength(2);
+    expect(llm.requests[0]?.tool_choice).toEqual({
+      type: "tool",
+      name: "EmitManifestResponse",
+    });
+    expect(llm.requests[1]?.tool_choice).toBeUndefined();
+    const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
+    expect(validationEvent?.data).toMatchObject({
+      turnId: "turn-manifest-fallback",
+      verdict: "invalid",
+      final_verdict: "legacy_fallback",
+    });
+  });
+
+  it("suppresses manifest no_output responses with manifest_no_output", async () => {
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 10,
+          output_tokens: 3,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_manifest_no_output",
+              name: "EmitManifestResponse",
+              input: {
+                final_text: "",
+                discourse_act: "no_output",
+                claims: [],
+                no_output_reason: "natural_close",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      manifestFinalizerEnabled: true,
+      tracer,
+    });
+
+    const result = await deliberator.run({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-manifest-no-output",
+      userMessage: "Thanks.",
+      perception: {
+        entities: [],
+        mode: "idle",
+        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+        temporalCue: null,
+      },
+      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+      retrievalConfidence: makeRetrievalConfidence(),
+      evidenceLedger: makeEvidenceLedger(),
+      evidenceLedgerPromptSection:
+        "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
+      workingMemory: {
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: 1,
+        hot_entities: [],
+        pending_actions: [],
+        pending_social_attribution: null,
+        pending_trait_attribution: null,
+        mood: null,
+        pending_procedural_attempts: [],
+        discourse_state: {
+          stop_until_substantive_content: null,
+        },
+        suppressed: [],
+        mode: "idle",
+        updated_at: 0,
+      },
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      options: { stakes: "low" },
+    });
+
+    expect(result.response).toBe("");
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "manifest_no_output",
+    });
+    const emittedEvent = tracer.events.find(
+      (entry) => entry.event === "manifest_finalizer_emitted",
+    );
+    expect(emittedEvent?.data).toMatchObject({
+      turnId: "turn-manifest-no-output",
+      discourse_act: "no_output",
+      claim_count: 0,
+      no_output_reason: "natural_close",
+      parsed: true,
+    });
+  });
+
   it("passes only deliberator-allowed tools to the final-response loop", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -299,7 +1039,6 @@ describe("deliberator", () => {
       llmClient: llm,
       toolDispatcher: dispatcher,
       cognitionModel: "sonnet",
-      backgroundModel: "haiku",
     });
 
     const result = await deliberator.run({
@@ -380,7 +1119,12 @@ describe("deliberator", () => {
         },
       ],
     });
-    const deliberator = createDeliberator(llm, tempDirs);
+    const deliberator = createDeliberator(llm, tempDirs, {
+      cognitionThinking: {
+        enabled: true,
+        budget_tokens: 4096,
+      },
+    });
 
     await deliberator.run({
       sessionId: DEFAULT_SESSION_ID,
@@ -444,6 +1188,14 @@ describe("deliberator", () => {
     // it emits natural response text.
     expect(llm.requests[0]?.tool_choice).toEqual({ type: "tool", name: "EmitTurnPlan" });
     expect(llm.requests[1]?.tool_choice).toBeUndefined();
+    expect(llm.requests[0]?.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 4096,
+    });
+    expect(llm.requests[1]?.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 4096,
+    });
 
     // Both calls share the identity/voice framing so voice lands
     // consistently across plan and response.
@@ -499,7 +1251,6 @@ describe("deliberator", () => {
       llmClient: llm,
       toolDispatcher: dispatcher,
       cognitionModel: "sonnet",
-      backgroundModel: "haiku",
     });
     const streamDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(streamDir);
@@ -566,6 +1317,133 @@ describe("deliberator", () => {
         .filter((entry) => entry.kind === "thought");
       expect(thoughts).toHaveLength(1);
       expect(String(thoughts[0]?.content)).toContain("emission: no_output");
+    } finally {
+      writer.close();
+    }
+  });
+
+  it("routes S2 planner no-output recommendations through manifest finalizer when enabled", async () => {
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_no_output",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "No assistant message is appropriate.",
+                referenced_episode_ids: [],
+                intents: [],
+                emission_recommendation: "no_output",
+              },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 12,
+          output_tokens: 6,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_manifest_no_output",
+              name: "EmitManifestResponse",
+              input: {
+                final_text: "",
+                discourse_act: "no_output",
+                claims: [],
+                no_output_reason: "planner_recommended_no_output",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      manifestFinalizerEnabled: true,
+      tracer,
+    });
+    const streamDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(streamDir);
+    const writer = new StreamWriter({
+      dataDir: streamDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(0),
+    });
+
+    try {
+      const result = await deliberator.run(
+        {
+          sessionId: DEFAULT_SESSION_ID,
+          turnId: "turn-s2-manifest-no-output",
+          userMessage: "No.",
+          perception: {
+            entities: [],
+            mode: "reflective",
+            affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+            temporalCue: null,
+          },
+          retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+          retrievalConfidence: makeRetrievalConfidence(),
+          evidenceLedger: makeEvidenceLedger(),
+          evidenceLedgerPromptSection:
+            "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
+          workingMemory: {
+            session_id: DEFAULT_SESSION_ID,
+            turn_counter: 2,
+            hot_entities: [],
+            pending_actions: [],
+            pending_social_attribution: null,
+            pending_trait_attribution: null,
+            mood: null,
+            pending_procedural_attempts: [],
+            discourse_state: {
+              stop_until_substantive_content: null,
+            },
+            suppressed: [],
+            mode: "reflective",
+            updated_at: 0,
+          },
+          selfSnapshot: { values: [], goals: [], traits: [] },
+          options: { stakes: "high" },
+        },
+        writer,
+      );
+
+      expect(result.emitted).toBe(false);
+      expect(result.emission).toEqual({
+        kind: "suppressed",
+        reason: "manifest_no_output",
+      });
+      expect(result.emissionRecommendation).toBe("emit");
+      expect(result.response).toBe("");
+      expect(result.tool_calls).toEqual([]);
+      expect(result.usage).toEqual({
+        input_tokens: 20,
+        output_tokens: 10,
+        stop_reason: "tool_use",
+      });
+      expect(llm.requests).toHaveLength(2);
+      expect(llm.requests[0]?.tool_choice).toEqual({ type: "tool", name: "EmitTurnPlan" });
+      expect(llm.requests[1]?.tool_choice).toEqual({
+        type: "tool",
+        name: "EmitManifestResponse",
+      });
+      expect(String(llm.requests[1]?.system)).toContain(
+        "Emission recommendation: no assistant message",
+      );
+      expect(tracer.events.some((entry) => entry.event === "plan_extraction")).toBe(true);
+      expect(tracer.events.some((entry) => entry.event === "manifest_finalizer_emitted")).toBe(
+        true,
+      );
     } finally {
       writer.close();
     }

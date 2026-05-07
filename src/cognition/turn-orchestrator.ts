@@ -188,6 +188,7 @@ export class TurnOrchestrator {
     const commitmentGuardRunner = new CommitmentGuardRunner({
       detectionModel: options.config.anthropic.models.background,
       rewriteModel: options.config.anthropic.models.cognition,
+      mode: options.config.generation.postGenerationGuards.commitment.mode,
       entityRepository: options.entityRepository,
       tracer: this.tracer,
     });
@@ -235,6 +236,8 @@ export class TurnOrchestrator {
     const relationalGuardRunner = new TurnRelationalGuardRunner({
       auditModel: options.config.anthropic.models.background,
       rewriteModel: options.config.anthropic.models.cognition,
+      relationalClaimMode: options.config.generation.postGenerationGuards.relationalClaim.mode,
+      closurePressureMode: options.config.generation.postGenerationGuards.closurePressure.mode,
       createStreamReader,
       actionRepository: options.actionRepository,
       commitmentRepository: options.commitmentRepository,
@@ -267,7 +270,10 @@ export class TurnOrchestrator {
       entityRepository: options.entityRepository,
       socialRepository: options.socialRepository,
       relationalSlotRepository: options.relationalSlotRepository,
+      actionRepository: options.actionRepository,
+      openQuestionsRepository: options.openQuestionsRepository,
       toolDispatcher: options.toolDispatcher,
+      createStreamReader,
       streamIngestionCoordinator: options.streamIngestionCoordinator,
       llmFactory: () => options.llmFactory(),
       perceptionGateway,

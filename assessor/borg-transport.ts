@@ -21,6 +21,7 @@ import {
   type TurnEmission,
   type LLMToolCall,
 } from "../src/index.js";
+import { estimatePromptTokens } from "../src/util/token-estimate.js";
 import {
   createSemanticNodeId,
   parseSessionId,
@@ -460,7 +461,7 @@ function textResult(text: string): LLMCompleteResult {
   return {
     text,
     input_tokens: 24,
-    output_tokens: Math.max(1, Math.ceil(text.length / 4)),
+    output_tokens: estimatePromptTokens(text),
     stop_reason: "end_turn",
     tool_calls: [],
   };
@@ -475,7 +476,7 @@ function textConversation(text: string): LLMConverseResult {
       },
     ],
     input_tokens: 24,
-    output_tokens: Math.max(1, Math.ceil(text.length / 4)),
+    output_tokens: estimatePromptTokens(text),
     stop_reason: "end_turn",
   };
 }

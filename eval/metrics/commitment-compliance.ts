@@ -116,6 +116,7 @@ export const commitmentComplianceMetric = {
       try {
         const commitment = borg.commitments.add({
           type: fixture.data.commitment.type,
+          directiveFamily: fixture.name,
           directive: fixture.data.commitment.directive,
           priority: fixture.data.commitment.priority,
           audience: fixture.data.commitment.audience ?? undefined,

@@ -211,6 +211,42 @@ export function createTestConfig(
     generation: {
       ...DEFAULT_CONFIG.generation,
       ...overrides.generation,
+      cognition: {
+        ...DEFAULT_CONFIG.generation.cognition,
+        ...overrides.generation?.cognition,
+        thinking: {
+          ...DEFAULT_CONFIG.generation.cognition.thinking,
+          ...overrides.generation?.cognition?.thinking,
+        },
+      },
+      evidenceLedger: {
+        ...DEFAULT_CONFIG.generation.evidenceLedger,
+        ...overrides.generation?.evidenceLedger,
+      },
+      manifestFinalizer: {
+        ...DEFAULT_CONFIG.generation.manifestFinalizer,
+        ...overrides.generation?.manifestFinalizer,
+      },
+      manifestValidator: {
+        ...DEFAULT_CONFIG.generation.manifestValidator,
+        ...overrides.generation?.manifestValidator,
+      },
+      postGenerationGuards: {
+        ...DEFAULT_CONFIG.generation.postGenerationGuards,
+        ...overrides.generation?.postGenerationGuards,
+        commitment: {
+          ...DEFAULT_CONFIG.generation.postGenerationGuards.commitment,
+          ...overrides.generation?.postGenerationGuards?.commitment,
+        },
+        relationalClaim: {
+          ...DEFAULT_CONFIG.generation.postGenerationGuards.relationalClaim,
+          ...overrides.generation?.postGenerationGuards?.relationalClaim,
+        },
+        closurePressure: {
+          ...DEFAULT_CONFIG.generation.postGenerationGuards.closurePressure,
+          ...overrides.generation?.postGenerationGuards?.closurePressure,
+        },
+      },
     },
     streamIngestion: {
       ...DEFAULT_CONFIG.streamIngestion,

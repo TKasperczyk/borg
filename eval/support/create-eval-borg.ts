@@ -18,7 +18,18 @@ type EvalConfigOverrides = {
   retrieval?: Partial<Omit<Config["retrieval"], "semantic">> & {
     semantic?: Partial<Config["retrieval"]["semantic"]>;
   };
-  generation?: Partial<Config["generation"]>;
+  generation?: Partial<Omit<Config["generation"], "postGenerationGuards">> & {
+    postGenerationGuards?: Partial<
+      Omit<
+        Config["generation"]["postGenerationGuards"],
+        "commitment" | "relationalClaim" | "closurePressure"
+      >
+    > & {
+      commitment?: Partial<Config["generation"]["postGenerationGuards"]["commitment"]>;
+      relationalClaim?: Partial<Config["generation"]["postGenerationGuards"]["relationalClaim"]>;
+      closurePressure?: Partial<Config["generation"]["postGenerationGuards"]["closurePressure"]>;
+    };
+  };
   streamIngestion?: Partial<Omit<Config["streamIngestion"], "preTurnCatchup">> & {
     preTurnCatchup?: Partial<Config["streamIngestion"]["preTurnCatchup"]>;
   };
@@ -125,6 +136,30 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
     generation: {
       ...DEFAULT_CONFIG.generation,
       ...options.config?.generation,
+      cognition: {
+        ...DEFAULT_CONFIG.generation.cognition,
+        ...options.config?.generation?.cognition,
+        thinking: {
+          ...DEFAULT_CONFIG.generation.cognition.thinking,
+          ...options.config?.generation?.cognition?.thinking,
+        },
+      },
+      postGenerationGuards: {
+        ...DEFAULT_CONFIG.generation.postGenerationGuards,
+        ...options.config?.generation?.postGenerationGuards,
+        commitment: {
+          ...DEFAULT_CONFIG.generation.postGenerationGuards.commitment,
+          ...options.config?.generation?.postGenerationGuards?.commitment,
+        },
+        relationalClaim: {
+          ...DEFAULT_CONFIG.generation.postGenerationGuards.relationalClaim,
+          ...options.config?.generation?.postGenerationGuards?.relationalClaim,
+        },
+        closurePressure: {
+          ...DEFAULT_CONFIG.generation.postGenerationGuards.closurePressure,
+          ...options.config?.generation?.postGenerationGuards?.closurePressure,
+        },
+      },
     },
     streamIngestion: {
       ...DEFAULT_CONFIG.streamIngestion,

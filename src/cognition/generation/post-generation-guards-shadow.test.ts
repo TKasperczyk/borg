@@ -1,0 +1,273 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
+import type { EntityRepository, CommitmentRecord } from "../../memory/commitments/index.js";
+import type { StreamReader } from "../../stream/index.js";
+import { FixedClock } from "../../util/clock.js";
+import { createCommitmentId, createStreamEntryId, DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { CommitmentGuardRunner } from "../commitments/guard-runner.js";
+import type { TurnTracer } from "../tracing/tracer.js";
+import {
+  CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
+  type ClosureResponseAudit,
+} from "./closure-pressure-guard.js";
+import type { RelationalClaimAuditClaim } from "./relational-guard.js";
+import { TurnRelationalGuardRunner } from "./turn-relational-guard.js";
+
+function commitmentVerdictResponse(violations: unknown[]): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_commitment",
+        name: "EmitCommitmentViolations",
+        input: {
+          violations,
+        },
+      },
+    ],
+  };
+}
+
+function claimAuditResponse(claims: readonly RelationalClaimAuditClaim[]): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_claim_audit",
+        name: "EmitClaimAudit",
+        input: {
+          claims,
+        },
+      },
+    ],
+  };
+}
+
+function closureAuditResponse(audit: ClosureResponseAudit): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_closure_response_audit",
+        name: CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
+        input: audit,
+      },
+    ],
+  };
+}
+
+function makeCommitment(): CommitmentRecord {
+  return {
+    id: createCommitmentId(),
+    type: "boundary",
+    directive_family: "launch_date_boundary",
+    closure_pressure_relevance: "no_closure",
+    directive: "Do not discuss launch dates, and do not convert open pauses into closure.",
+    priority: 10,
+    made_to_entity: null,
+    restricted_audience: null,
+    about_entity: null,
+    provenance: {
+      kind: "system",
+    },
+    source_stream_entry_ids: [createStreamEntryId()],
+    created_at: 1_000,
+    expires_at: null,
+    expired_at: null,
+    revoked_at: null,
+    revoked_reason: null,
+    revoke_provenance: null,
+    superseded_by: null,
+    last_reinforced_at: 1_000,
+  };
+}
+
+function makeCallbackClaim(asserted: string): RelationalClaimAuditClaim {
+  return {
+    kind: "callback",
+    asserted,
+    cited_stream_entry_ids: [],
+    cited_episode_ids: [],
+    cited_commitment_ids: [],
+    cited_action_ids: [],
+    support_handles: [],
+    quoted_evidence_text: null,
+    callback_scope: "prior_turn",
+    specific_detail_value: null,
+    specific_detail_support_kind: null,
+    subject_entity_id: null,
+    slot_key: null,
+    relational_slot_value: null,
+  };
+}
+
+function emptyStreamReader(): StreamReader {
+  return {
+    async *iterate() {
+      return;
+    },
+  } as unknown as StreamReader;
+}
+
+describe("post-generation guard shadow chain", () => {
+  it("keeps the original candidate through commitment, relational, and closure shadow guards", async () => {
+    const original =
+      "Launch is tomorrow. You mentioned Marta earlier. The shelf test is the right move. Go read.";
+    const commitment = makeCommitment();
+    const llm = new FakeLLMClient({
+      responses: [
+        commitmentVerdictResponse([
+          {
+            commitment_id: commitment.id,
+            reason: "Discloses launch timing.",
+            confidence: 0.95,
+          },
+        ]),
+        {
+          text: "I can't discuss launch timing. You mentioned Marta earlier. The shelf test is the right move. Go read.",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        commitmentVerdictResponse([]),
+        claimAuditResponse([makeCallbackClaim("You mentioned Marta earlier.")]),
+        {
+          text: "Launch is tomorrow. The shelf test is the right move. Go read.",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        claimAuditResponse([]),
+        closureAuditResponse({
+          spans: [
+            {
+              text: "Go read.",
+              kind: "imperative_closer",
+              rationale: "Imperative closer after substantive content.",
+            },
+          ],
+          response_shape: "mixed",
+          reason: "Substantive content plus closure tail.",
+        }),
+      ],
+    });
+    const emit = vi.fn();
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit,
+    };
+    const commitmentRunner = new CommitmentGuardRunner({
+      detectionModel: "judge",
+      rewriteModel: "rewrite",
+      mode: "shadow",
+      entityRepository: {
+        get: vi.fn(() => null),
+      } as unknown as EntityRepository,
+      tracer,
+    });
+
+    const commitmentResult = await commitmentRunner.run({
+      turnId: "turn-shadow-chain",
+      llmClient: llm,
+      response: original,
+      userMessage: "When is launch?",
+      cognitionInput: "When is launch?",
+      origin: "user",
+      autonomyTrigger: null,
+      commitments: [commitment],
+      relevantEntities: [],
+    });
+
+    expect(commitmentResult.emission).toEqual({
+      kind: "message",
+      content: original,
+    });
+
+    const relationalRunner = new TurnRelationalGuardRunner({
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      relationalClaimMode: "shadow",
+      closurePressureMode: "shadow",
+      createStreamReader: () => emptyStreamReader(),
+      actionRepository: {
+        list: vi.fn(() => []),
+      },
+      commitmentRepository: {
+        findByEvidenceStreamEntryId: vi.fn(() => false),
+      },
+      relationalSlotRepository: {
+        list: vi.fn(() => []),
+      },
+      clock: new FixedClock(2_000),
+      tracer,
+    });
+
+    const finalEmission = await relationalRunner.run({
+      llmClient: llm,
+      turnId: "turn-shadow-chain",
+      response:
+        commitmentResult.emission.kind === "message" ? commitmentResult.emission.content : "",
+      userMessage: "When is launch?",
+      sessionId: DEFAULT_SESSION_ID,
+      retrievedEpisodes: [],
+      activeCommitments: [commitment],
+      closureLoop: null,
+      audienceEntityId: null,
+    });
+
+    expect(finalEmission).toEqual({
+      kind: "message",
+      content: original,
+    });
+    expect(llm.requests.map((request) => request.budget)).toEqual([
+      "commitment-judge",
+      "commitment-revision",
+      "commitment-judge",
+      "relational-claim-auditor",
+      "relational-guard-rewrite",
+      "relational-claim-auditor",
+      "closure-response-auditor",
+    ]);
+    expect(emit.mock.calls).toEqual(
+      expect.arrayContaining([
+        [
+          "commitment_check",
+          expect.objectContaining({
+            mode: "shadow",
+            verdict: "passed",
+            wouldHaveVerdict: "rewritten",
+          }),
+        ],
+        [
+          "relational_claim_guard",
+          expect.objectContaining({
+            mode: "shadow",
+            verdict: "passed",
+            wouldHaveVerdict: "rewritten",
+          }),
+        ],
+        [
+          "closure_response_guard",
+          expect.objectContaining({
+            mode: "shadow",
+            verdict: "passed",
+            wouldHaveVerdict: "rewritten",
+          }),
+        ],
+      ]),
+    );
+  });
+});

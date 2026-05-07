@@ -10,6 +10,14 @@ import {
   type CorrectivePreferenceTurnService,
 } from "../commitments/corrective-preference-service.js";
 import { Deliberator, type TurnStakes } from "../deliberation/deliberator.js";
+import {
+  EvidenceLedgerBuilder,
+  estimateEvidenceLedgerPromptTokens,
+  renderEvidenceLedger,
+  summarizeEvidenceLedgerTrace,
+  type EvidenceLedger,
+  type EvidenceLedgerBuildInput,
+} from "../evidence-ledger/index.js";
 import type { TurnDiscourseStateService } from "../generation/turn-discourse-state.js";
 import type { PendingTurnEmission, TurnEmission } from "../generation/types.js";
 import { GenerationGate } from "../generation/generation-gate.js";
@@ -28,19 +36,24 @@ import type { RecencyMessage } from "../recency/index.js";
 import type { TurnReflectionCoordinator } from "../reflection/turn-reflection-coordinator.js";
 import type { TurnRetrievalCoordinator } from "../retrieval/turn-coordinator.js";
 import type { TurnSelfContextBuilder } from "../self/turn-self-context.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import type { CognitiveMode, IntentRecord } from "../types.js";
 import type { Config } from "../../config/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
+import type { ActionRepository } from "../../memory/actions/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
-import { appendInternalFailureEvent } from "../../memory/self/index.js";
+import {
+  appendInternalFailureEvent,
+  type OpenQuestionsRepository,
+} from "../../memory/self/index.js";
 import type { SocialRepository } from "../../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import {
   QUARANTINED_USER_ENTRY_EVENT,
   type StreamEntry,
+  type StreamReader,
   type StreamWriter,
 } from "../../stream/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
@@ -58,6 +71,11 @@ import {
 } from "../generation/closure-loop.js";
 
 const ACTIVE_TURN_STATUS = "active";
+
+type EvidenceLedgerFinalizerContext = {
+  ledger: EvidenceLedger | null;
+  promptSection: string | null;
+};
 
 export type TurnPhaseInput = {
   userMessage: string;
@@ -94,7 +112,10 @@ export type TurnPhaseCoordinatorOptions = {
   entityRepository: EntityRepository;
   socialRepository: SocialRepository;
   relationalSlotRepository: RelationalSlotRepository;
+  actionRepository: Pick<ActionRepository, "get" | "list">;
+  openQuestionsRepository: Pick<OpenQuestionsRepository, "findByHandles">;
   toolDispatcher: ToolDispatcher;
+  createStreamReader: (sessionId: SessionId) => StreamReader;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
   llmFactory: () => LLMClient;
   perceptionGateway: PerceptionGateway;
@@ -409,13 +430,34 @@ export class TurnPhaseCoordinator {
     const relationalSlots = this.options.relationalSlotRepository.listConstrained({
       limit: 24,
     });
+    const evidenceLedgerContext = await this.buildEvidenceLedgerFinalizerContext({
+      sessionId,
+      turnId,
+      audienceEntityId,
+      currentUserMessage: turnInput.userMessage,
+      currentUserEntry: persistedUserEntry ?? undefined,
+      workingMemory,
+      applicableCommitments,
+      retrievedEvidence: retrieval.evidence,
+      retrievedEpisodes,
+      retrievedSemantic,
+      openQuestions: retrieval.open_questions,
+      pendingCorrections,
+      frameAnomaly: currentTurnFrameAnomaly,
+    });
     const deliberator = new Deliberator({
       llmClient,
       toolDispatcher: this.options.toolDispatcher,
       cognitionModel: this.options.config.anthropic.models.cognition,
-      backgroundModel: this.options.config.anthropic.models.background,
+      cognitionThinking: this.options.config.generation.cognition.thinking,
       clock: this.options.clock,
       tracer: this.options.tracer,
+      manifestFinalizerEnabled: this.options.config.generation.manifestFinalizer.enabled,
+      manifestValidatorEnabled: this.options.config.generation.manifestValidator.enabled,
+      manifestValidatorOnCriticalFailure:
+        this.options.config.generation.manifestValidator.onCriticalFailure,
+      relationalSlotRepository: this.options.relationalSlotRepository,
+      actionRepository: this.options.actionRepository,
     });
     const deliberation = await deliberator.run(
       {
@@ -447,6 +489,8 @@ export class TurnPhaseCoordinator {
         audienceProfile,
         recencyMessages: recencyWindow.messages,
         frameAnomaly: currentTurnFrameAnomaly,
+        evidenceLedgerPromptSection: evidenceLedgerContext.promptSection,
+        evidenceLedger: evidenceLedgerContext.ledger,
         options: {
           stakes: turnInput.stakes,
         },
@@ -496,6 +540,9 @@ export class TurnPhaseCoordinator {
             turn_status: ACTIVE_TURN_STATUS,
             content: actionResult.response,
             tool_calls: actionResult.tool_calls,
+            ...(actionEmission.persistence_class === undefined
+              ? {}
+              : { persistence_class: actionEmission.persistence_class }),
             ...(turnInput.audience === undefined ? {} : { audience: turnInput.audience }),
           })
         : await this.options.discourseStateService.appendSuppressionMarker({
@@ -524,6 +571,9 @@ export class TurnPhaseCoordinator {
       kind: "message",
       content: actionResult.response,
       agentMessageId: persistedAgentEntry.id,
+      ...(actionEmission.persistence_class === undefined
+        ? {}
+        : { persistence_class: actionEmission.persistence_class }),
     };
     let postActionWorkingMemory = actionResult.workingMemory;
     const stopCommitmentExtractor = new StopCommitmentExtractor({
@@ -1040,6 +1090,49 @@ export class TurnPhaseCoordinator {
       referencedEpisodeIds: [...(input.deliberation.referencedEpisodeIds ?? [])],
       intents: [],
       toolCalls: [...input.actionResult.tool_calls],
+    };
+  }
+
+  private async buildEvidenceLedgerFinalizerContext(
+    input: EvidenceLedgerBuildInput,
+  ): Promise<EvidenceLedgerFinalizerContext> {
+    const config = this.options.config.generation.evidenceLedger;
+    const shouldBuild = config.enabled || this.options.config.generation.manifestFinalizer.enabled;
+
+    if (!shouldBuild) {
+      return {
+        ledger: null,
+        promptSection: null,
+      };
+    }
+
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: this.options.createStreamReader,
+      relationalSlotRepository: this.options.relationalSlotRepository,
+      actionRepository: this.options.actionRepository,
+      openQuestionsRepository: this.options.openQuestionsRepository,
+      currentSessionTranscriptTokenBudget: config.currentSessionTranscriptTokenBudget,
+    });
+    const ledger = await builder.build(input);
+    const rendered = renderEvidenceLedger(ledger);
+    const traceSummary = summarizeEvidenceLedgerTrace({
+      ...ledger,
+      estimatedTokens: estimateEvidenceLedgerPromptTokens(ledger),
+    });
+
+    if (this.options.tracer.enabled && input.turnId !== undefined) {
+      this.options.tracer.emit("evidence_ledger_built", {
+        turnId: input.turnId,
+        entry_counts: toTraceJsonValue(traceSummary.entryCountsBySection),
+        transcript_included: traceSummary.transcriptIncluded,
+        transcript_omitted_reason: traceSummary.transcriptOmittedReason ?? null,
+        total_estimated_tokens: traceSummary.totalEstimatedTokens,
+      });
+    }
+
+    return {
+      ledger,
+      promptSection: rendered,
     };
   }
 

@@ -1,3 +1,9 @@
+.graphifyignore
+.claude
+.serena
+simulator-runs
+replay-out
+graphify-out
 node_modules
 dist
 coverage

@@ -22,8 +22,10 @@ export const STREAM_ENTRY_KINDS = [
 ] as const;
 
 export const NARRATIVE_STREAM_ENTRY_KINDS = ["user_msg", "agent_msg"] as const;
+export const STREAM_ENTRY_PERSISTENCE_CLASSES = ["assistant_self_report"] as const;
 
 export const streamEntryKindSchema = z.enum(STREAM_ENTRY_KINDS);
+export const streamEntryPersistenceClassSchema = z.enum(STREAM_ENTRY_PERSISTENCE_CLASSES);
 export const streamTurnStatusSchema = z.enum(["active", "aborted"]);
 
 export const streamEntryIdSchema = z
@@ -50,6 +52,7 @@ export const streamEntrySchema = z.object({
   token_estimate: z.number().int().nonnegative().optional(),
   tool_calls: z.array(z.unknown()).optional(),
   audience: z.string().min(1).optional(),
+  persistence_class: streamEntryPersistenceClassSchema.optional(),
   session_id: sessionIdSchema,
   compressed: z.boolean().default(false),
 });
@@ -65,6 +68,7 @@ export const streamEntryInputSchema = streamEntrySchema
   });
 
 export type StreamEntryKind = z.infer<typeof streamEntryKindSchema>;
+export type StreamEntryPersistenceClass = z.infer<typeof streamEntryPersistenceClassSchema>;
 export type NarrativeStreamEntryKind = (typeof NARRATIVE_STREAM_ENTRY_KINDS)[number];
 export type StreamTurnStatus = z.infer<typeof streamTurnStatusSchema>;
 export type StreamEntry = Omit<z.infer<typeof streamEntrySchema>, "turn_status"> & {

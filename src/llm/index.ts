@@ -194,6 +194,7 @@ export type FakeLLMResponse =
 export type FakeLLMClientOptions = {
   responses?: FakeLLMResponse[];
   usageSink?: TokenUsageSink;
+  oauthToolNameTransport?: boolean;
 };
 
 function toAnthropicMessages(messages: readonly LLMMessage[]): MessageParam[] {
@@ -326,6 +327,139 @@ function transformToolNameForOAuth(name: string): string {
   const normalized = name.replace(/[^A-Za-z0-9_]/g, "_");
 
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function transformToolNameForOAuthWithMap(
+  name: string,
+  originalNamesByTransformed: Map<string, string>,
+): string {
+  const transformed = transformToolNameForOAuth(name);
+
+  if (transformed !== name) {
+    originalNamesByTransformed.set(transformed, name);
+  }
+
+  return transformed;
+}
+
+function mutateOutboundMessageToolUseNames(
+  messages: unknown,
+  originalNamesByTransformed: Map<string, string>,
+): boolean {
+  if (!Array.isArray(messages)) {
+    return false;
+  }
+
+  let changed = false;
+
+  for (const message of messages) {
+    if (message === null || typeof message !== "object") {
+      continue;
+    }
+
+    const content = (message as { content?: unknown }).content;
+
+    if (!Array.isArray(content)) {
+      continue;
+    }
+
+    for (const block of content) {
+      if (block === null || typeof block !== "object") {
+        continue;
+      }
+
+      const record = block as Record<string, unknown>;
+
+      if (record.type !== "tool_use" || typeof record.name !== "string") {
+        continue;
+      }
+
+      const transformedName = transformToolNameForOAuthWithMap(
+        record.name,
+        originalNamesByTransformed,
+      );
+
+      if (transformedName !== record.name) {
+        record.name = transformedName;
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
+}
+
+function oauthTransportToolDefinitions(
+  tools: readonly LLMToolDefinition[] | undefined,
+): readonly LLMToolDefinition[] | undefined {
+  return tools?.map((tool) => {
+    const transformedName = transformToolNameForOAuth(tool.name);
+
+    if (transformedName === tool.name) {
+      return tool;
+    }
+
+    return {
+      ...tool,
+      name: transformedName,
+    };
+  });
+}
+
+function oauthTransportToolChoice(
+  toolChoice: LLMCallOptions["tool_choice"],
+): LLMCallOptions["tool_choice"] {
+  if (toolChoice?.type !== "tool") {
+    return toolChoice;
+  }
+
+  const transformedName = transformToolNameForOAuth(toolChoice.name);
+
+  if (transformedName === toolChoice.name) {
+    return toolChoice;
+  }
+
+  return {
+    ...toolChoice,
+    name: transformedName,
+  };
+}
+
+function oauthTransportContentBlock(block: LLMContentBlock): LLMContentBlock {
+  if (block.type !== "tool_use") {
+    return block;
+  }
+
+  const transformedName = transformToolNameForOAuth(block.name);
+
+  if (transformedName === block.name) {
+    return block;
+  }
+
+  return {
+    ...block,
+    name: transformedName,
+  };
+}
+
+function oauthTransportConverseOptions(options: LLMConverseOptions): LLMConverseOptions {
+  return {
+    ...options,
+    tools: oauthTransportToolDefinitions(options.tools),
+    tool_choice: oauthTransportToolChoice(options.tool_choice),
+    messages: options.messages.map((message) => ({
+      role: message.role,
+      content: message.content.map((block) => oauthTransportContentBlock(block)),
+    })),
+  };
+}
+
+function oauthTransportCompleteOptions(options: LLMCompleteOptions): LLMCompleteOptions {
+  return {
+    ...options,
+    tools: oauthTransportToolDefinitions(options.tools),
+    tool_choice: oauthTransportToolChoice(options.tool_choice),
+  };
 }
 
 function mutateToolUseNames(
@@ -494,10 +628,12 @@ export function createOAuthFetch(): typeof fetch {
               return tool;
             }
 
-            const transformedName = transformToolNameForOAuth(record.name);
+            const transformedName = transformToolNameForOAuthWithMap(
+              record.name,
+              originalNamesByTransformed,
+            );
 
             if (transformedName !== record.name) {
-              originalNamesByTransformed.set(transformedName, record.name);
               modified = true;
               return {
                 ...record,
@@ -515,16 +651,22 @@ export function createOAuthFetch(): typeof fetch {
           typeof (parsed.tool_choice as { name?: unknown }).name === "string"
         ) {
           const toolChoice = parsed.tool_choice as Record<string, unknown>;
-          const transformedName = transformToolNameForOAuth(toolChoice.name as string);
+          const transformedName = transformToolNameForOAuthWithMap(
+            toolChoice.name as string,
+            originalNamesByTransformed,
+          );
 
           if (transformedName !== toolChoice.name) {
-            originalNamesByTransformed.set(transformedName, toolChoice.name as string);
             parsed.tool_choice = {
               ...toolChoice,
               name: transformedName,
             };
             modified = true;
           }
+        }
+
+        if (mutateOutboundMessageToolUseNames(parsed.messages, originalNamesByTransformed)) {
+          modified = true;
         }
 
         if (modified) {
@@ -1623,6 +1765,7 @@ function defaultClosureResponseAuditResponse(): LLMCompleteResult {
 
 export class FakeLLMClient implements LLMClient {
   private readonly usageSink?: TokenUsageSink;
+  private readonly oauthToolNameTransport: boolean;
   readonly requests: LLMCompleteOptions[] = [];
   readonly converseRequests: LLMConverseOptions[] = [];
   private readonly responses: FakeLLMResponse[];
@@ -1630,6 +1773,7 @@ export class FakeLLMClient implements LLMClient {
   constructor(options: FakeLLMClientOptions = {}) {
     this.responses = [...(options.responses ?? [])];
     this.usageSink = options.usageSink;
+    this.oauthToolNameTransport = options.oauthToolNameTransport ?? false;
   }
 
   pushResponse(response: FakeLLMResponse): void {
@@ -1637,6 +1781,9 @@ export class FakeLLMClient implements LLMClient {
   }
 
   async complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
+    const transportOptions = this.oauthToolNameTransport
+      ? oauthTransportCompleteOptions(options)
+      : options;
     const response = this.responses[0];
 
     if (
@@ -1647,7 +1794,7 @@ export class FakeLLMClient implements LLMClient {
       throw new LLMError("FakeLLMClient has no scripted recall expansion response available");
     }
 
-    this.requests.push(options);
+    this.requests.push(transportOptions);
 
     if (
       isStopCommitmentFallbackRequest(options) &&
@@ -1743,7 +1890,7 @@ export class FakeLLMClient implements LLMClient {
             response as (
               options: LLMCompleteOptions,
             ) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>
-          )(options)
+          )(transportOptions)
         : response;
     const normalized = normalizeFakeCompleteResponse(resolved);
 
@@ -1760,8 +1907,11 @@ export class FakeLLMClient implements LLMClient {
   }
 
   async converse(options: LLMConverseOptions): Promise<LLMConverseResult> {
-    this.converseRequests.push(options);
-    this.requests.push(toCompleteCompatibleRequest(options));
+    const transportOptions = this.oauthToolNameTransport
+      ? oauthTransportConverseOptions(options)
+      : options;
+    this.converseRequests.push(transportOptions);
+    this.requests.push(toCompleteCompatibleRequest(transportOptions));
     const response = this.responses.shift();
 
     if (response === undefined) {
@@ -1774,7 +1924,7 @@ export class FakeLLMClient implements LLMClient {
             response as (
               options: LLMConverseOptions,
             ) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>
-          )(options)
+          )(transportOptions)
         : response;
     const normalized = normalizeFakeConverseResponse(resolved);
 

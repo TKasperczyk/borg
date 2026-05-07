@@ -8,6 +8,7 @@ import type {
   RetrievedSemanticHit,
   RetrievedSemanticNode,
 } from "../../../retrieval/index.js";
+import { estimatePromptTokens } from "../../../util/token-estimate.js";
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
 
 const LOW_RETRIEVAL_CONFIDENCE_THRESHOLD = 0.45;
@@ -57,10 +58,6 @@ export function summarizeRetrievalConfidence(
   // Not user-facing -- the LLM phrases uncertainty naturally rather than
   // emitting the percentage. This is the signal, not the phrasing.
   return lines.join("\n");
-}
-
-function estimatePromptTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4));
 }
 
 function summarizeCitationChain(result: RetrievedEpisode): string | null {

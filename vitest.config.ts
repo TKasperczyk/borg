@@ -10,6 +10,7 @@ export default defineConfig({
       "scripts/**/*.test.ts",
       "assessor/**/*.test.ts",
       "simulator/**/*.test.ts",
+      "eval/**/*.test.ts",
     ],
     testTimeout: 15_000,
     hookTimeout: 15_000,

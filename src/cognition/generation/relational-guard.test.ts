@@ -59,9 +59,6 @@ function makeClaim(
     quoted_evidence_text: overrides.quoted_evidence_text ?? null,
     callback_scope:
       overrides.callback_scope ?? (overrides.kind === "callback" ? "prior_turn" : null),
-    phenomenology_verdict:
-      overrides.phenomenology_verdict ??
-      (overrides.kind === "ai_phenomenology" ? "unsupported_subjective" : null),
     specific_detail_value: overrides.specific_detail_value ?? null,
     specific_detail_support_kind:
       overrides.specific_detail_support_kind ??
@@ -924,33 +921,6 @@ describe("validateRelationalClaims", () => {
     expect(summary.unsupported).toEqual([]);
   });
 
-  it("treats the LLM phenomenology verdict as the post-generation judgment", () => {
-    const unsupported = validate(
-      [
-        makeClaim({
-          kind: "ai_phenomenology",
-          asserted: "The gap feels like resurfacing from sleep.",
-          phenomenology_verdict: "unsupported_subjective",
-        }),
-      ],
-      baseEvidence(),
-    );
-    const hedged = validate(
-      [
-        makeClaim({
-          kind: "ai_phenomenology",
-          asserted: "I can describe the architecture but not what the gap feels like.",
-          phenomenology_verdict: "hedged_or_mechanical",
-        }),
-      ],
-      baseEvidence(),
-    );
-
-    expect(unsupported.unsupported).toHaveLength(1);
-    expect(unsupported.unsupported[0]?.reason).toContain("AI phenomenology");
-    expect(hedged.unsupported).toEqual([]);
-  });
-
   it("rejects stream and episode evidence as action completion fallback", () => {
     const episodeId = createEpisodeId();
     const streamEntry = streamEvidence({
@@ -1037,7 +1007,6 @@ describe("RelationalClaimGuard", () => {
       cited_action_ids: [],
       support_handles: [],
       quoted_evidence_text: null,
-      phenomenology_verdict: null,
     });
   });
 
@@ -1232,6 +1201,236 @@ describe("RelationalClaimGuard", () => {
       "relational-guard-rewrite",
       "relational-claim-auditor",
     ]);
+  });
+
+  it("runs rewrite and re-audit but emits the original response in shadow mode", async () => {
+    const original = "You mentioned that earlier.";
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "callback",
+            asserted: "You mentioned that earlier.",
+          }),
+        ]),
+        {
+          text: "Neutralized response.",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        claimAuditResponse([]),
+      ],
+    });
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      mode: "shadow",
+      tracer,
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-callback-shadow",
+      response: original,
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: original,
+    });
+    expect(result.verdict).toBe("passed");
+    expect(llm.requests.map((request) => request.budget)).toEqual([
+      "relational-claim-auditor",
+      "relational-guard-rewrite",
+      "relational-claim-auditor",
+    ]);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "relational_claim_guard",
+      expect.objectContaining({
+        mode: "shadow",
+        verdict: "passed",
+        wouldHaveVerdict: "rewritten",
+        first_unsupported: [
+          expect.objectContaining({
+            kind: "callback",
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("does not let per-category shadow claims rewrite or suppress the emission", async () => {
+    const original = "I already fixed that earlier.";
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "self_correction",
+            asserted: "I already fixed that earlier.",
+          }),
+        ]),
+      ],
+    });
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      mode: {
+        perCategory: {
+          default: "shadow",
+          overrides: {
+            unsupported_specific_detail: "enforce",
+          },
+        },
+      },
+      tracer,
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-self-correction-shadow-category",
+      response: original,
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: original,
+    });
+    expect(result.verdict).toBe("passed");
+    expect(llm.requests.map((request) => request.budget)).toEqual([
+      "relational-claim-auditor",
+    ]);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "relational_claim_guard",
+      expect.objectContaining({
+        mode: "per_category",
+        per_category_mode: {
+          default: "shadow",
+          overrides: {
+            unsupported_specific_detail: "enforce",
+          },
+        },
+        verdict: "passed",
+        wouldHaveVerdict: "suppressed",
+        wouldHaveSuppressionReason: "relational_guard_self_correction",
+        unsupported_enforced: [],
+        unsupported_shadow: [
+          expect.objectContaining({
+            kind: "self_correction",
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("enforces overridden per-category claims while leaving other categories in shadow", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([
+          makeClaim({
+            kind: "unsupported_specific_detail",
+            asserted: "three hundred exact repetitions",
+            specific_detail_value: "three hundred",
+            specific_detail_support_kind: "none",
+          }),
+          makeClaim({
+            kind: "callback",
+            asserted: "You mentioned that earlier.",
+          }),
+        ]),
+        {
+          text: "You mentioned that earlier.",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+        claimAuditResponse([]),
+      ],
+    });
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const guard = new RelationalClaimGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      mode: {
+        perCategory: {
+          default: "shadow",
+          overrides: {
+            unsupported_specific_detail: "enforce",
+          },
+        },
+      },
+      tracer,
+      hasCorrectivePreferenceEvidence: () => false,
+    });
+
+    const result = await guard.run({
+      turnId: "turn-specific-detail-enforced-callback-shadow",
+      response: "You did it three hundred times. You mentioned that earlier.",
+      currentSessionId: DEFAULT_SESSION_ID,
+      currentTurnTs: 2_000,
+      evidence: baseEvidence(),
+    });
+
+    expect(result.verdict).toBe("rewritten");
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "You mentioned that earlier.",
+    });
+    expect(llm.requests.map((request) => request.budget)).toEqual([
+      "relational-claim-auditor",
+      "relational-guard-rewrite",
+      "relational-claim-auditor",
+    ]);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "relational_claim_guard",
+      expect.objectContaining({
+        mode: "per_category",
+        verdict: "rewritten",
+        unsupported_enforced: [
+          expect.objectContaining({
+            kind: "unsupported_specific_detail",
+          }),
+        ],
+        unsupported_shadow: [
+          expect.objectContaining({
+            kind: "callback",
+          }),
+        ],
+        first_unsupported: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "unsupported_specific_detail",
+          }),
+          expect.objectContaining({
+            kind: "callback",
+          }),
+        ]),
+      }),
+    );
   });
 
   it("rewrites unsupported scalar details to qualitative phrasing", async () => {
@@ -1496,83 +1695,6 @@ describe("RelationalClaimGuard", () => {
     expect(result.emission).toEqual({
       kind: "message",
       content: "I don't have evidence that I generated both halves.",
-    });
-  });
-
-  it("rewrites unsupported first-person phenomenology from finalizer output", async () => {
-    const llm = new FakeLLMClient({
-      responses: [
-        claimAuditResponse([
-          makeClaim({
-            kind: "ai_phenomenology",
-            asserted: "The gap feels like resurfacing from sleep.",
-            phenomenology_verdict: "unsupported_subjective",
-          }),
-        ]),
-        {
-          text: "Functionally, I have access to memory on the next turn; I can't describe an inside-of-the-gap experience.",
-          input_tokens: 1,
-          output_tokens: 1,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-        claimAuditResponse([]),
-      ],
-    });
-    const guard = new RelationalClaimGuard({
-      llmClient: llm,
-      auditModel: "audit",
-      rewriteModel: "rewrite",
-      hasCorrectivePreferenceEvidence: () => false,
-    });
-
-    const result = await guard.run({
-      turnId: "turn-phenomenology-overreach",
-      response: "The gap feels like resurfacing from sleep.",
-      currentSessionId: DEFAULT_SESSION_ID,
-      currentTurnTs: 2_000,
-      evidence: baseEvidence(),
-    });
-
-    expect(result.verdict).toBe("rewritten");
-    expect(result.emission).toMatchObject({
-      kind: "message",
-      content: expect.stringContaining("Functionally"),
-    });
-  });
-
-  it("passes explicitly hedged architecture-not-phenomenology responses", async () => {
-    const response = "I can describe the architecture but not what the gap feels like.";
-    const llm = new FakeLLMClient({
-      responses: [
-        claimAuditResponse([
-          makeClaim({
-            kind: "ai_phenomenology",
-            asserted: response,
-            phenomenology_verdict: "hedged_or_mechanical",
-          }),
-        ]),
-      ],
-    });
-    const guard = new RelationalClaimGuard({
-      llmClient: llm,
-      auditModel: "audit",
-      rewriteModel: "rewrite",
-      hasCorrectivePreferenceEvidence: () => false,
-    });
-
-    const result = await guard.run({
-      turnId: "turn-hedged-phenomenology",
-      response,
-      currentSessionId: DEFAULT_SESSION_ID,
-      currentTurnTs: 2_000,
-      evidence: baseEvidence(),
-    });
-
-    expect(result.verdict).toBe("passed");
-    expect(result.emission).toEqual({
-      kind: "message",
-      content: response,
     });
   });
 

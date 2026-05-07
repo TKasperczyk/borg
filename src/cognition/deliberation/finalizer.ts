@@ -1,7 +1,7 @@
 // Routes S1/S2 final response generation through the deliberator tool loop.
 import { z } from "zod";
 
-import type { LLMClient, LLMContentBlockMessage } from "../../llm/index.js";
+import type { LLMClient, LLMContentBlockMessage, LLMConverseOptions } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
@@ -33,6 +33,7 @@ export type RunFinalizerOptions = {
   tools: readonly ToolDefinition[];
   userEntryId: string | undefined;
   maxTokens: number;
+  thinking?: LLMConverseOptions["thinking"];
   path: "system_1" | "system_2";
   additionalPromptSections?: readonly (string | null)[];
   tracer?: TurnTracer;
@@ -61,6 +62,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<ToolLo
     origin: "deliberator",
     provenance: toolProvenance,
     maxTokens: options.maxTokens,
+    ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
     budget: options.path === "system_1" ? "cognition-system-1" : "cognition-system-2",
     tracer: options.tracer,
     turnId: options.turnId,

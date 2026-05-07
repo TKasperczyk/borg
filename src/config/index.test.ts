@@ -49,6 +49,34 @@ describe("config", () => {
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(100);
+    expect(config.generation.evidenceLedger).toEqual({
+      enabled: false,
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+    expect(config.generation.cognition).toEqual({
+      thinking: {
+        enabled: false,
+        budget_tokens: 4096,
+      },
+    });
+    expect(config.generation.manifestFinalizer).toEqual({
+      enabled: false,
+    });
+    expect(config.generation.manifestValidator).toEqual({
+      enabled: false,
+      onCriticalFailure: "no_output",
+    });
+    expect(config.generation.postGenerationGuards).toEqual({
+      commitment: {
+        mode: "enforce",
+      },
+      relationalClaim: {
+        mode: "enforce",
+      },
+      closurePressure: {
+        mode: "enforce",
+      },
+    });
   });
 
   it("names the autonomy wake cap for the configured rolling window", () => {
@@ -99,6 +127,30 @@ describe("config", () => {
           maxEntries: 12,
         },
       },
+      generation: {
+        evidenceLedger: {
+          enabled: true,
+          currentSessionTranscriptTokenBudget: 12_000,
+        },
+        cognition: {
+          thinking: {
+            enabled: false,
+            budget_tokens: 2048,
+          },
+        },
+        manifestFinalizer: {
+          enabled: false,
+        },
+        manifestValidator: {
+          enabled: false,
+          onCriticalFailure: "no_output",
+        },
+        postGenerationGuards: {
+          relationalClaim: {
+            mode: "shadow",
+          },
+        },
+      },
     });
 
     const config = loadConfig({
@@ -112,6 +164,12 @@ describe("config", () => {
         BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
         BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES: "8",
+        BORG_GENERATION_EVIDENCE_LEDGER_CURRENT_SESSION_TRANSCRIPT_TOKEN_BUDGET: "16000",
+        BORG_GENERATION_COGNITION_THINKING_ENABLED: "true",
+        BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS: "8192",
+        BORG_GENERATION_MANIFEST_FINALIZER_ENABLED: "true",
+        BORG_GENERATION_MANIFEST_VALIDATOR_ENABLED: "true",
+        BORG_GENERATION_MANIFEST_VALIDATOR_ON_CRITICAL_FAILURE: "legacy_fallback",
         BORG_MODEL_RECALL_EXPANSION: "env-recall",
         ANTHROPIC_API_KEY: "secret",
       },
@@ -126,9 +184,67 @@ describe("config", () => {
     expect(config.anthropic.models.recallExpansion).toBe("env-recall");
     expect(config.executive.goalFocusThreshold).toBe(0.6);
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(8);
+    expect(config.generation.postGenerationGuards.commitment.mode).toBe("enforce");
+    expect(config.generation.postGenerationGuards.relationalClaim.mode).toBe("shadow");
+    expect(config.generation.postGenerationGuards.closurePressure.mode).toBe("enforce");
+    expect(config.generation.evidenceLedger.enabled).toBe(true);
+    expect(config.generation.evidenceLedger.currentSessionTranscriptTokenBudget).toBe(16_000);
+    expect(config.generation.cognition.thinking).toEqual({
+      enabled: true,
+      budget_tokens: 8192,
+    });
+    expect(config.generation.manifestFinalizer.enabled).toBe(true);
+    expect(config.generation.manifestValidator).toEqual({
+      enabled: true,
+      onCriticalFailure: "legacy_fallback",
+    });
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
     expect(config.offline.beliefReviser.enabled).toBe(true);
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);
+  });
+
+  it("accepts relational claim guard per-category mode while keeping simple modes", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      generation: {
+        postGenerationGuards: {
+          commitment: {
+            mode: "enforce",
+          },
+          relationalClaim: {
+            mode: {
+              perCategory: {
+                default: "shadow",
+                overrides: {
+                  unsupported_specific_detail: "enforce",
+                },
+              },
+            },
+          },
+          closurePressure: {
+            mode: "shadow",
+          },
+        },
+      },
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {},
+    });
+
+    expect(config.generation.postGenerationGuards.commitment.mode).toBe("enforce");
+    expect(config.generation.postGenerationGuards.relationalClaim.mode).toEqual({
+      perCategory: {
+        default: "shadow",
+        overrides: {
+          unsupported_specific_detail: "enforce",
+        },
+      },
+    });
+    expect(config.generation.postGenerationGuards.closurePressure.mode).toBe("shadow");
   });
 
   it("defaults recall expansion to the dedicated Haiku slot", () => {
@@ -198,6 +314,46 @@ describe("config", () => {
         },
       }),
     ).toThrow(ConfigError);
+  });
+
+  it("rejects invalid manifest validator critical-failure modes", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    expect(() =>
+      loadConfig({
+        dataDir: tempDir,
+        env: {
+          BORG_GENERATION_MANIFEST_VALIDATOR_ON_CRITICAL_FAILURE: "retry_forever",
+        },
+      }),
+    ).toThrow(ConfigError);
+  });
+
+  it("rejects enabling the manifest validator without the manifest finalizer", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      generation: {
+        manifestFinalizer: {
+          enabled: false,
+        },
+        manifestValidator: {
+          enabled: true,
+          onCriticalFailure: "no_output",
+        },
+      },
+    });
+
+    expect(() =>
+      loadConfig({
+        dataDir: tempDir,
+        env: {},
+      }),
+    ).toThrow(
+      "manifestValidator.enabled requires manifestFinalizer.enabled (validator runs inside the manifest path)",
+    );
   });
 
   it("rejects reflector confidence ceilings above the hard cap", () => {

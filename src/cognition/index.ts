@@ -19,6 +19,25 @@ export {
   type SelfSnapshot,
   type TurnStakes,
 } from "./deliberation/deliberator.js";
+export {
+  EvidenceLedgerBuilder,
+  evidenceLedgerSourceTypeSchema,
+  estimateEvidenceLedgerPromptTokens,
+  renderEvidenceLedger,
+  summarizeEvidenceLedgerTrace,
+  type EvidenceLedger,
+  type EvidenceLedgerActor,
+  type EvidenceLedgerBuildInput,
+  type EvidenceLedgerBuilderOptions,
+  type EvidenceLedgerEntry,
+  type EvidenceLedgerSection,
+  type EvidenceLedgerSectionId,
+  type EvidenceLedgerSessionScope,
+  type EvidenceLedgerSourceType,
+  type EvidenceLedgerTaint,
+  type EvidenceLedgerTraceSummary,
+  type EvidenceLedgerTranscriptOmittedReason,
+} from "./evidence-ledger/index.js";
 export { Perceiver, perceive } from "./perception/index.js";
 export {
   clearStopUntilSubstantiveContent,
