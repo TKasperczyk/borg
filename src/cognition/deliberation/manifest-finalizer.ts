@@ -4,9 +4,8 @@ import {
   type LLMCompleteOptions,
   type LLMCompleteResult,
   type LLMMessage,
-  type LLMToolCall,
-  type LLMToolDefinition,
-  toToolInputSchema,
+  type LLMOutputConfig,
+  toStructuredOutputFormat,
 } from "../../llm/index.js";
 import type { EvidenceLedger } from "../evidence-ledger/index.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
@@ -19,14 +18,9 @@ import {
   type ManifestClaim,
 } from "./manifest-schema.js";
 
-export const EMIT_MANIFEST_RESPONSE_TOOL_NAME = "EmitManifestResponse";
-
-const EMIT_MANIFEST_RESPONSE_TOOL: LLMToolDefinition = {
-  name: EMIT_MANIFEST_RESPONSE_TOOL_NAME,
-  description:
-    "Emit the final assistant text and the structured claim manifest for that exact text.",
-  inputSchema: toToolInputSchema(emitManifestResponseSchema),
-};
+const MANIFEST_RESPONSE_OUTPUT_CONFIG = {
+  format: toStructuredOutputFormat(emitManifestResponseSchema),
+} satisfies LLMOutputConfig;
 
 const MANIFEST_COVERAGE_INSTRUCTIONS = [
   "The claim manifest is the source contract for final_text.",
@@ -59,7 +53,7 @@ const MANIFEST_COVERAGE_INSTRUCTIONS = [
 ].join("\n");
 
 const MANIFEST_FINALIZER_INSTRUCTIONS = [
-  `You must call the ${EMIT_MANIFEST_RESPONSE_TOOL_NAME} tool exactly once. Do not answer in free text outside the tool call.`,
+  "Return exactly one structured response matching the provided schema.",
   "Put the complete assistant response in final_text.",
   "Set discourse_act to no_output only when the correct current-turn behavior is to emit no assistant message at all. When discourse_act is no_output, populate no_output_reason.",
   "For every claim evidence ref, cite EvidenceLedger entry IDs verbatim exactly as they appear in id=... metadata inside <borg_evidence_ledger>.",
@@ -88,82 +82,29 @@ export type ManifestFinalizerResult = {
   usage: DeliberationUsage;
 };
 
-export type ManifestFinalizerUnwrapped =
-  | false
-  | "input_wrapper"
-  | "arguments_wrapper"
-  | "parameter_value_wrapper"
-  | "response_wrapper"
-  | "function_name_dropped";
-
 type ManifestExtractionResult =
   | {
       ok: true;
       manifest: EmitManifestResponse;
-      rawToolInput: unknown;
-      unwrapped: ManifestFinalizerUnwrapped;
+      rawStructuredOutput: unknown;
     }
   | {
       ok: false;
       error: string;
       issues?: unknown;
-      rawToolInput?: unknown;
-      rawToolCalls: readonly LLMToolCall[];
+      rawStructuredOutput: unknown;
     };
 
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-function normalizeManifestInput(input: unknown): {
-  value: unknown;
-  unwrapped: ManifestFinalizerUnwrapped;
-} {
-  if (!isObjectRecord(input)) {
-    return {
-      value: input,
-      unwrapped: false,
-    };
-  }
+function isStructuredOutputParseFailure(error: unknown): error is LLMError & { rawText?: string } {
+  return error instanceof LLMError && error.code === "LLM_STRUCTURED_OUTPUT_PARSE_FAILED";
+}
 
-  const wrapperReasons = {
-    input: "input_wrapper",
-    arguments: "arguments_wrapper",
-    $PARAMETER_VALUE: "parameter_value_wrapper",
-    response: "response_wrapper",
-  } as const satisfies Record<string, Exclude<ManifestFinalizerUnwrapped, false | "function_name_dropped">>;
-  const keys = Object.keys(input);
-  const wrapperKey = keys.length === 1 ? keys[0] : undefined;
-  const wrapperReason =
-    wrapperKey === undefined
-      ? undefined
-      : wrapperReasons[wrapperKey as keyof typeof wrapperReasons];
-  let value: unknown = input;
-  let unwrapped: ManifestFinalizerUnwrapped = false;
-
-  if (wrapperReason !== undefined) {
-    const inner = input[wrapperKey as keyof typeof input];
-
-    if (isObjectRecord(inner)) {
-      value = inner;
-      unwrapped = wrapperReason;
-    }
-  }
-
-  if (!isObjectRecord(value) || typeof value.$FUNCTION_NAME !== "string") {
-    return {
-      value,
-      unwrapped,
-    };
-  }
-
-  // API leakage of tool-call metadata into payload; the manifest itself remains strict.
-  const { $FUNCTION_NAME: _droppedFunctionName, ...normalized } = value;
-
-  return {
-    value: normalized,
-    unwrapped: unwrapped === false ? "function_name_dropped" : unwrapped,
-  };
+function structuredOutputParseCauseMessage(error: LLMError): string {
+  return error.cause === undefined ? error.message : errorMessage(error.cause);
 }
 
 function buildManifestSystemPrompt(options: RunManifestFinalizerOptions): string {
@@ -188,65 +129,43 @@ function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMe
   );
 }
 
-function summarizeToolSchemas(tools: readonly LLMToolDefinition[]): JsonValue {
-  return tools.map((tool) => ({
-    name: tool.name,
+function summarizeOutputConfig(outputConfig: LLMOutputConfig): JsonValue {
+  const schema = outputConfig.format.schema;
+  const properties = schema.properties;
+
+  return {
+    format: outputConfig.format.type,
     propertyCount:
-      tool.inputSchema.properties === undefined
-        ? 0
-        : Object.keys(tool.inputSchema.properties).length,
-    required: Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required.map(String) : [],
-  }));
+      properties !== null && typeof properties === "object" && !Array.isArray(properties)
+        ? Object.keys(properties).length
+        : 0,
+    required: Array.isArray(schema.required) ? schema.required.map(String) : [],
+  };
 }
 
 function summarizeResponseShape(result: LLMCompleteResult): JsonValue {
   return {
     textLength: result.text.length,
-    toolUseBlocks: result.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.name,
-    })),
+    structuredOutputPresent: result.structured_output !== undefined,
   };
 }
 
-function extractManifestResponse(toolCalls: readonly LLMToolCall[]): ManifestExtractionResult {
-  if (toolCalls.length !== 1) {
-    return {
-      ok: false,
-      error: `Manifest finalizer must emit exactly one ${EMIT_MANIFEST_RESPONSE_TOOL_NAME} tool call; received ${toolCalls.length}`,
-      rawToolCalls: toolCalls,
-    };
-  }
-
-  const call = toolCalls[0] as LLMToolCall;
-
-  if (call.name !== EMIT_MANIFEST_RESPONSE_TOOL_NAME) {
-    return {
-      ok: false,
-      error: `Manifest finalizer emitted unexpected tool ${call.name}; expected ${EMIT_MANIFEST_RESPONSE_TOOL_NAME}`,
-      rawToolInput: call.input,
-      rawToolCalls: toolCalls,
-    };
-  }
-
-  const normalized = normalizeManifestInput(call.input);
-  const parsed = emitManifestResponseSchema.safeParse(normalized.value);
+function extractManifestResponse(structuredOutput: unknown): ManifestExtractionResult {
+  const parsed = emitManifestResponseSchema.safeParse(structuredOutput);
 
   if (!parsed.success) {
     return {
       ok: false,
       error: parsed.error.message,
       issues: parsed.error.issues,
-      rawToolInput: call.input,
-      rawToolCalls: toolCalls,
+      rawStructuredOutput: structuredOutput,
     };
   }
 
   return {
     ok: true,
     manifest: parsed.data,
-    rawToolInput: call.input,
-    unwrapped: normalized.unwrapped,
+    rawStructuredOutput: structuredOutput,
   };
 }
 
@@ -272,6 +191,22 @@ function claimCountsByKind(claims: readonly ManifestClaim[]): JsonValue {
   return counts;
 }
 
+function emitStructuredOutputParseFailedTrace(
+  options: RunManifestFinalizerOptions,
+  error: LLMError & { rawText?: string },
+): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("manifest_finalizer_parse_failed", {
+    turnId: options.turnId,
+    parsed: false,
+    error: structuredOutputParseCauseMessage(error),
+    ...(error.rawText === undefined ? {} : { raw_text: error.rawText }),
+  });
+}
+
 function emitParseFailedTrace(
   options: RunManifestFinalizerOptions,
   extraction: ManifestExtractionResult,
@@ -285,17 +220,13 @@ function emitParseFailedTrace(
     parsed: false,
     error: extraction.error,
     ...(extraction.issues === undefined ? {} : { issues: toTraceJsonValue(extraction.issues) }),
-    ...(extraction.rawToolInput === undefined
-      ? {}
-      : { raw_tool_input: toTraceJsonValue(extraction.rawToolInput) }),
-    raw_tool_calls: toTraceJsonValue(extraction.rawToolCalls),
+    raw_structured_output: toTraceJsonValue(extraction.rawStructuredOutput),
   });
 }
 
 function emitManifestTrace(
   options: RunManifestFinalizerOptions,
   manifest: EmitManifestResponse,
-  unwrapped: ManifestFinalizerUnwrapped,
 ): void {
   if (options.tracer?.enabled !== true || options.turnId === undefined) {
     return;
@@ -309,7 +240,6 @@ function emitManifestTrace(
     claim_kinds: summarizeClaimKinds(manifest.claims),
     claim_counts_by_kind: claimCountsByKind(manifest.claims),
     parsed: true,
-    ...(unwrapped === false ? {} : { manifest_finalizer_unwrapped: unwrapped }),
     ...(manifest.no_output_reason === undefined
       ? {}
       : { no_output_reason: manifest.no_output_reason }),
@@ -331,7 +261,6 @@ export async function runManifestFinalizer(
   }
 
   const systemPrompt = buildManifestSystemPrompt(options);
-  const tools = [EMIT_MANIFEST_RESPONSE_TOOL];
   const traceEnabled = options.tracer?.enabled === true && options.turnId !== undefined;
   const traceLabel = `${options.path}_manifest_finalizer`;
 
@@ -341,29 +270,42 @@ export async function runManifestFinalizer(
       label: traceLabel,
       model: options.model,
       promptCharCount: countCompletePromptChars(systemPrompt, options.dialogueMessages),
-      toolSchemas: summarizeToolSchemas(tools),
+      outputConfig: summarizeOutputConfig(MANIFEST_RESPONSE_OUTPUT_CONFIG),
       ...(options.tracer?.includePayloads
         ? {
             prompt: toTraceJsonValue({
               system: systemPrompt,
               messages: options.dialogueMessages,
-              tools,
+              output_config: MANIFEST_RESPONSE_OUTPUT_CONFIG,
             }),
           }
         : {}),
     });
   }
 
-  const result = await options.llmClient.complete({
-    model: options.model,
-    system: systemPrompt,
-    messages: options.dialogueMessages,
-    tools,
-    tool_choice: { type: "tool", name: EMIT_MANIFEST_RESPONSE_TOOL_NAME },
-    max_tokens: options.maxTokens,
-    ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
-    budget: options.path === "system_1" ? "cognition-system-1" : "cognition-system-2",
-  });
+  let result: LLMCompleteResult;
+
+  try {
+    result = await options.llmClient.complete({
+      model: options.model,
+      system: systemPrompt,
+      messages: options.dialogueMessages,
+      output_config: MANIFEST_RESPONSE_OUTPUT_CONFIG,
+      max_tokens: options.maxTokens,
+      ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
+      budget: options.path === "system_1" ? "cognition-system-1" : "cognition-system-2",
+    });
+  } catch (error) {
+    if (!isStructuredOutputParseFailure(error)) {
+      throw error;
+    }
+
+    emitStructuredOutputParseFailedTrace(options, error);
+    throw new LLMError("Manifest finalizer returned invalid structured output", {
+      cause: structuredOutputParseCauseMessage(error),
+      code: "MANIFEST_FINALIZER_OUTPUT_INVALID",
+    });
+  }
 
   if (traceEnabled && options.turnId !== undefined) {
     options.tracer?.emit("llm_call_response", {
@@ -379,24 +321,24 @@ export async function runManifestFinalizer(
         ? {
             response: toTraceJsonValue({
               text: result.text,
-              toolCalls: result.tool_calls,
+              structuredOutput: result.structured_output,
             }),
           }
         : {}),
     });
   }
 
-  const extraction = extractManifestResponse(result.tool_calls);
+  const extraction = extractManifestResponse(result.structured_output);
 
   if (!extraction.ok) {
     emitParseFailedTrace(options, extraction);
-    throw new LLMError("Manifest finalizer returned invalid tool output", {
+    throw new LLMError("Manifest finalizer returned invalid structured output", {
       cause: extraction.error,
       code: "MANIFEST_FINALIZER_OUTPUT_INVALID",
     });
   }
 
-  emitManifestTrace(options, extraction.manifest, extraction.unwrapped);
+  emitManifestTrace(options, extraction.manifest);
 
   return {
     manifest: extraction.manifest,

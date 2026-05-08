@@ -160,9 +160,7 @@ function scriptFinalizerResponse(
       scenario.evidencePlaceholders,
     );
 
-    return manifestFinalizerResponse(
-      scenario.manifestToolInput?.(materialized, { pipeline }) ?? materialized,
-    );
+    return manifestFinalizerResponse(materialized);
   }) as FakeLLMResponse;
 }
 

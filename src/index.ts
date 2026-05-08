@@ -32,6 +32,8 @@ export {
 export {
   AnthropicLLMClient,
   FakeLLMClient,
+  LLMStructuredOutputParseError,
+  toStructuredOutputFormat,
   type LLMClient,
   type LLMContentBlock,
   type LLMContentBlockMessage,
@@ -40,6 +42,7 @@ export {
   type LLMConverseOptions,
   type LLMConverseResult,
   type LLMMessage,
+  type LLMOutputConfig,
   type LLMSystemBlock,
   type LLMTextBlock,
   type LLMToolCall,

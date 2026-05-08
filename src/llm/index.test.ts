@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import type { Message } from "@anthropic-ai/sdk/resources/messages/messages.js";
 
@@ -12,7 +13,9 @@ import {
   AnthropicLLMClient,
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
   FakeLLMClient,
+  LLMStructuredOutputParseError,
   createOAuthFetch,
+  toStructuredOutputFormat,
   type TokenUsageEvent,
 } from "./index.js";
 
@@ -156,6 +159,120 @@ describe("llm", () => {
         output_tokens: 7,
       },
     ]);
+  });
+
+  it("passes structured output config and extracts parsed JSON text", async () => {
+    const outputConfig = {
+      format: {
+        type: "json_schema" as const,
+        schema: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+          },
+          required: ["ok"],
+          additionalProperties: false,
+        },
+      },
+    };
+    const create = vi.fn().mockResolvedValue(
+      createMessageBody({
+        content: [{ type: "text", text: '{"ok":true}', citations: null }],
+        stop_reason: "end_turn",
+      }),
+    );
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: { create },
+      },
+    });
+
+    const result = await client.complete({
+      model: "claude-sonnet-4-5",
+      messages: [{ role: "user", content: "return ok" }],
+      output_config: outputConfig,
+      max_tokens: 128,
+      budget: "test",
+    });
+
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      output_config: outputConfig,
+    });
+    expect(result).toMatchObject({
+      text: '{"ok":true}',
+      structured_output: { ok: true },
+      stop_reason: "end_turn",
+    });
+  });
+
+  it("throws a typed structured-output parse error for non-JSON response text", async () => {
+    const create = vi.fn().mockResolvedValue(
+      createMessageBody({
+        content: [{ type: "text", text: "I cannot comply.", citations: null }],
+        stop_reason: "refusal",
+      }),
+    );
+    const client = new AnthropicLLMClient({
+      client: {
+        messages: { create },
+      },
+    });
+
+    const promise = client.complete({
+      model: "claude-sonnet-4-5",
+      messages: [{ role: "user", content: "return ok" }],
+      output_config: {
+        format: {
+          type: "json_schema",
+          schema: {
+            type: "object",
+            properties: { ok: { type: "boolean" } },
+            required: ["ok"],
+            additionalProperties: false,
+          },
+        },
+      },
+      max_tokens: 128,
+      budget: "test",
+    });
+
+    await expect(promise).rejects.toBeInstanceOf(LLMStructuredOutputParseError);
+    await expect(promise).rejects.toMatchObject({
+      code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+      rawText: "I cannot comply.",
+    });
+  });
+
+  it("preserves discriminator and literal constraints in structured-output schemas", () => {
+    const format = toStructuredOutputFormat(
+      z
+        .object({
+          discourse_act: z.enum(["answer", "no_output"]),
+          claim: z.discriminatedUnion("kind", [
+            z
+              .object({
+                kind: z.literal("user_fact"),
+                confidence: z.enum(["direct", "inferred"]),
+              })
+              .strict(),
+            z
+              .object({
+                kind: z.literal("interpretation"),
+                persistence_allowed: z.literal(false),
+              })
+              .strict(),
+          ]),
+        })
+        .strict(),
+    );
+    const serialized = JSON.stringify(format.schema);
+
+    // Structured outputs must enforce value-level constraints at the API layer;
+    // this guards against SDK/schema-conversion regressions that turn them into prose.
+    expect(serialized).toContain('"enum":["answer","no_output"]');
+    expect(serialized).toContain('"const":"user_fact"');
+    expect(serialized).toContain('"const":"interpretation"');
+    expect(serialized).toContain('"const":false');
   });
 
   it("keeps PascalCase tool names unchanged through the OAuth fetch wrapper", async () => {

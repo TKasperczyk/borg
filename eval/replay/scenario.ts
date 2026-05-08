@@ -71,12 +71,6 @@ export type ReplayScenario = {
   perceptionUseLlmFallback?: boolean;
   unsafeCandidateText: string;
   manifestResponse: EmitManifestResponse;
-  manifestToolInput?: (
-    manifest: EmitManifestResponse,
-    context: {
-      pipeline: ReplayPipeline;
-    },
-  ) => unknown;
   evidencePlaceholders?: Record<string, EvidencePlaceholder>;
   scriptLLMResponses: (client: FakeLLMClient, context: ScenarioScriptContext) => void;
   safeOutputPredicate: (emittedText: string) => boolean;
@@ -122,19 +116,14 @@ export function textResponse(text: string): LLMCompleteResult {
   };
 }
 
-export function manifestFinalizerResponse(input: unknown): LLMCompleteResult {
+export function manifestFinalizerResponse(input: EmitManifestResponse): LLMCompleteResult {
   return {
-    text: "",
+    text: JSON.stringify(input),
     input_tokens: 1,
     output_tokens: 1,
-    stop_reason: "tool_use",
-    tool_calls: [
-      {
-        id: "toolu_replay_manifest",
-        name: "EmitManifestResponse",
-        input,
-      },
-    ],
+    stop_reason: "end_turn",
+    tool_calls: [],
+    structured_output: input,
   };
 }
 

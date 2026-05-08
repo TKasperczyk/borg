@@ -20,10 +20,6 @@ import pronounCitationOnlyPronoun from "./19-pronoun-citation-only-pronoun.js";
 import pronounFalseAcceptance from "./20-pronoun-false-acceptance.js";
 import tomLeakConfigName from "./21-tom-leak-config-name.js";
 import tomAllowedAfterSelfDeclaration from "./22-tom-allowed-after-self-declaration.js";
-import parserParameterValueWrapper from "./23-parser-parameter-value-wrapper.js";
-import parserResponseWrapper from "./24-parser-response-wrapper.js";
-import parserFunctionNameExtraField from "./25-parser-function-name-extra-field.js";
-import parserFunctionNameMissingClaims from "./26-parser-function-name-missing-claims.js";
 import suppressionNetworkWeather from "./27-suppression-network-weather.js";
 import closureLoopPersistence from "./28-closure-loop-persistence.js";
 import crossSessionPartnerNameConflict from "./29-cross-session-partner-name-conflict.js";
@@ -54,10 +50,6 @@ export const REPLAY_SCENARIOS: readonly ReplayScenario[] = [
   pronounFalseAcceptance,
   tomLeakConfigName,
   tomAllowedAfterSelfDeclaration,
-  parserParameterValueWrapper,
-  parserResponseWrapper,
-  parserFunctionNameExtraField,
-  parserFunctionNameMissingClaims,
   suppressionNetworkWeather,
   closureLoopPersistence,
   crossSessionPartnerNameConflict,

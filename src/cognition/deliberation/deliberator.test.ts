@@ -161,6 +161,20 @@ function makeEvidenceLedger(): EvidenceLedger {
   };
 }
 
+function createManifestFinalizerResponse(
+  input: unknown,
+  usage: { inputTokens: number; outputTokens: number } = { inputTokens: 10, outputTokens: 4 },
+) {
+  return {
+    text: JSON.stringify(input),
+    input_tokens: usage.inputTokens,
+    output_tokens: usage.outputTokens,
+    stop_reason: "end_turn" as const,
+    tool_calls: [],
+    structured_output: input,
+  };
+}
+
 class CapturingTracer implements TurnTracer {
   readonly enabled = true;
 
@@ -323,40 +337,31 @@ describe("deliberator", () => {
     }
   });
 
-  it("uses the manifest finalizer forced tool when the flag is enabled", async () => {
+  it("uses the manifest finalizer structured output when the flag is enabled", async () => {
     const tracer = new CapturingTracer(true);
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Free text should be ignored.",
-          input_tokens: 18,
-          output_tokens: 7,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_manifest",
-              name: "EmitManifestResponse",
-              input: {
-                final_text: "Manifest-backed answer.",
-                discourse_act: "answer",
-                claims: [
+        createManifestFinalizerResponse(
+          {
+            final_text: "Manifest-backed answer.",
+            discourse_act: "answer",
+            claims: [
+              {
+                kind: "user_fact",
+                rendered_span: "Manifest-backed answer.",
+                exact_values: ["Please answer directly."],
+                evidence: [
                   {
-                    kind: "user_fact",
-                    rendered_span: "Manifest-backed answer.",
-                    exact_values: ["Please answer directly."],
-                    evidence: [
-                      {
-                        id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                        source_type: "current_user_message",
-                      },
-                    ],
-                    confidence: "direct",
+                    id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                    source_type: "current_user_message",
                   },
                 ],
+                confidence: "direct",
               },
-            },
-          ],
-        },
+            ],
+          },
+          { inputTokens: 18, outputTokens: 7 },
+        ),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
@@ -411,17 +416,15 @@ describe("deliberator", () => {
     });
     expect(result.tool_calls).toEqual([]);
     expect(llm.converseRequests).toHaveLength(0);
-    expect(llm.requests[0]?.tool_choice).toEqual({
-      type: "tool",
-      name: "EmitManifestResponse",
-    });
+    expect(llm.requests[0]?.tool_choice).toBeUndefined();
     expect(llm.requests[0]?.thinking).toEqual({
       type: "enabled",
       budget_tokens: 3072,
     });
-    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual(["EmitManifestResponse"]);
+    expect(llm.requests[0]?.tools).toBeUndefined();
+    expect(llm.requests[0]?.output_config?.format.type).toBe("json_schema");
     const system = llm.requests[0]?.system as string;
-    expect(system).toContain("You must call the EmitManifestResponse tool exactly once.");
+    expect(system).toContain("Return exactly one structured response matching the provided schema.");
     expect(system).toContain("<borg_evidence_ledger>");
     expect(system).toContain("id=current_user_message:strm_aaaaaaaaaaaaaaaa");
     const emittedEvent = tracer.events.find(
@@ -456,29 +459,20 @@ describe("deliberator", () => {
     const selfReport = "The gap feels like a discontinuity with a remembered edge.";
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "",
-          input_tokens: 18,
-          output_tokens: 7,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_manifest_self_report",
-              name: "EmitManifestResponse",
-              input: {
-                final_text: selfReport,
-                discourse_act: "answer",
-                claims: [
-                  {
-                    kind: "self_report",
-                    rendered_span: selfReport,
-                    persistence_class: "assistant_self_report",
-                  },
-                ],
+        createManifestFinalizerResponse(
+          {
+            final_text: selfReport,
+            discourse_act: "answer",
+            claims: [
+              {
+                kind: "self_report",
+                rendered_span: selfReport,
+                persistence_class: "assistant_self_report",
               },
-            },
-          ],
-        },
+            ],
+          },
+          { inputTokens: 18, outputTokens: 7 },
+        ),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
@@ -529,36 +523,24 @@ describe("deliberator", () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "",
-          input_tokens: 10,
-          output_tokens: 4,
-          stop_reason: "tool_use",
-          tool_calls: [
+        createManifestFinalizerResponse({
+          final_text: "Please answer directly.",
+          discourse_act: "answer",
+          claims: [
             {
-              id: "toolu_manifest_valid",
-              name: "EmitManifestResponse",
-              input: {
-                final_text: "Please answer directly.",
-                discourse_act: "answer",
-                claims: [
-                  {
-                    kind: "user_fact",
-                    rendered_span: "Please answer directly.",
-                    exact_values: ["Please answer directly"],
-                    evidence: [
-                      {
-                        id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                        source_type: "current_user_message",
-                      },
-                    ],
-                    confidence: "direct",
-                  },
-                ],
-              },
+              kind: "user_fact",
+              rendered_span: "Please answer directly.",
+              exact_values: ["Please answer directly"],
+              evidence: [
+                {
+                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                  source_type: "current_user_message",
+                },
+              ],
+              confidence: "direct",
             },
           ],
-        },
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
@@ -622,36 +604,24 @@ describe("deliberator", () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "",
-          input_tokens: 10,
-          output_tokens: 4,
-          stop_reason: "tool_use",
-          tool_calls: [
+        createManifestFinalizerResponse({
+          final_text: "Stable answer remains. Luis prefers verbose answers.",
+          discourse_act: "answer",
+          claims: [
             {
-              id: "toolu_manifest_rewrite",
-              name: "EmitManifestResponse",
-              input: {
-                final_text: "Stable answer remains. Luis prefers verbose answers.",
-                discourse_act: "answer",
-                claims: [
-                  {
-                    kind: "user_fact",
-                    rendered_span: "Luis prefers verbose answers.",
-                    exact_values: ["Luis"],
-                    evidence: [
-                      {
-                        id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                        source_type: "current_user_message",
-                      },
-                    ],
-                    confidence: "direct",
-                  },
-                ],
-              },
+              kind: "user_fact",
+              rendered_span: "Luis prefers verbose answers.",
+              exact_values: ["Luis"],
+              evidence: [
+                {
+                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                  source_type: "current_user_message",
+                },
+              ],
+              confidence: "direct",
             },
           ],
-        },
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
@@ -715,36 +685,24 @@ describe("deliberator", () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "",
-          input_tokens: 10,
-          output_tokens: 4,
-          stop_reason: "tool_use",
-          tool_calls: [
+        createManifestFinalizerResponse({
+          final_text: "Luis.",
+          discourse_act: "answer",
+          claims: [
             {
-              id: "toolu_manifest_critical",
-              name: "EmitManifestResponse",
-              input: {
-                final_text: "Luis.",
-                discourse_act: "answer",
-                claims: [
-                  {
-                    kind: "user_fact",
-                    rendered_span: "Luis.",
-                    exact_values: ["Luis"],
-                    evidence: [
-                      {
-                        id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                        source_type: "current_user_message",
-                      },
-                    ],
-                    confidence: "direct",
-                  },
-                ],
-              },
+              kind: "user_fact",
+              rendered_span: "Luis.",
+              exact_values: ["Luis"],
+              evidence: [
+                {
+                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                  source_type: "current_user_message",
+                },
+              ],
+              confidence: "direct",
             },
           ],
-        },
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
@@ -809,36 +767,24 @@ describe("deliberator", () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "",
-          input_tokens: 10,
-          output_tokens: 4,
-          stop_reason: "tool_use",
-          tool_calls: [
+        createManifestFinalizerResponse({
+          final_text: "Luis.",
+          discourse_act: "answer",
+          claims: [
             {
-              id: "toolu_manifest_fallback",
-              name: "EmitManifestResponse",
-              input: {
-                final_text: "Luis.",
-                discourse_act: "answer",
-                claims: [
-                  {
-                    kind: "user_fact",
-                    rendered_span: "Luis.",
-                    exact_values: ["Luis"],
-                    evidence: [
-                      {
-                        id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                        source_type: "current_user_message",
-                      },
-                    ],
-                    confidence: "direct",
-                  },
-                ],
-              },
+              kind: "user_fact",
+              rendered_span: "Luis.",
+              exact_values: ["Luis"],
+              evidence: [
+                {
+                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                  source_type: "current_user_message",
+                },
+              ],
+              confidence: "direct",
             },
           ],
-        },
+        }),
         {
           text: "Legacy fallback answer.",
           input_tokens: 6,
@@ -899,10 +845,8 @@ describe("deliberator", () => {
       stop_reason: "end_turn",
     });
     expect(llm.requests).toHaveLength(2);
-    expect(llm.requests[0]?.tool_choice).toEqual({
-      type: "tool",
-      name: "EmitManifestResponse",
-    });
+    expect(llm.requests[0]?.tool_choice).toBeUndefined();
+    expect(llm.requests[0]?.output_config?.format.type).toBe("json_schema");
     expect(llm.requests[1]?.tool_choice).toBeUndefined();
     const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
     expect(validationEvent?.data).toMatchObject({
@@ -916,24 +860,15 @@ describe("deliberator", () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "",
-          input_tokens: 10,
-          output_tokens: 3,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_manifest_no_output",
-              name: "EmitManifestResponse",
-              input: {
-                final_text: "",
-                discourse_act: "no_output",
-                claims: [],
-                no_output_reason: "natural_close",
-              },
-            },
-          ],
-        },
+        createManifestFinalizerResponse(
+          {
+            final_text: "",
+            discourse_act: "no_output",
+            claims: [],
+            no_output_reason: "natural_close",
+          },
+          { inputTokens: 10, outputTokens: 3 },
+        ),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
@@ -1347,24 +1282,15 @@ describe("deliberator", () => {
             },
           ],
         },
-        {
-          text: "",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_manifest_no_output",
-              name: "EmitManifestResponse",
-              input: {
-                final_text: "",
-                discourse_act: "no_output",
-                claims: [],
-                no_output_reason: "planner_recommended_no_output",
-              },
-            },
-          ],
-        },
+        createManifestFinalizerResponse(
+          {
+            final_text: "",
+            discourse_act: "no_output",
+            claims: [],
+            no_output_reason: "planner_recommended_no_output",
+          },
+          { inputTokens: 12, outputTokens: 6 },
+        ),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
@@ -1429,14 +1355,12 @@ describe("deliberator", () => {
       expect(result.usage).toEqual({
         input_tokens: 20,
         output_tokens: 10,
-        stop_reason: "tool_use",
+        stop_reason: "end_turn",
       });
       expect(llm.requests).toHaveLength(2);
       expect(llm.requests[0]?.tool_choice).toEqual({ type: "tool", name: "EmitTurnPlan" });
-      expect(llm.requests[1]?.tool_choice).toEqual({
-        type: "tool",
-        name: "EmitManifestResponse",
-      });
+      expect(llm.requests[1]?.tool_choice).toBeUndefined();
+      expect(llm.requests[1]?.output_config?.format.type).toBe("json_schema");
       expect(String(llm.requests[1]?.system)).toContain(
         "Emission recommendation: no assistant message",
       );

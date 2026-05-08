@@ -11,6 +11,7 @@ import {
   QUARANTINED_USER_ENTRY_EVENT,
   type FrameAnomalyKind,
   type LLMCompleteOptions,
+  type LLMCompleteResult,
 } from "../index.js";
 import type { BorgDependencies } from "../borg/types.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
@@ -244,17 +245,33 @@ function createTurnPlanResponse(intents: readonly IntentRecord[] = []) {
 
 function createManifestFinalizerResponse(input: unknown) {
   return {
-    text: "",
+    text: JSON.stringify(input),
     input_tokens: 12,
     output_tokens: 6,
-    stop_reason: "tool_use" as const,
-    tool_calls: [
-      {
-        id: "toolu_manifest",
-        name: "EmitManifestResponse",
-        input,
-      },
-    ],
+    stop_reason: "end_turn" as const,
+    tool_calls: [],
+    structured_output: input,
+  };
+}
+
+function createMissingStructuredManifestResponse(text = ""): LLMCompleteResult {
+  return {
+    text,
+    input_tokens: 12,
+    output_tokens: 6,
+    stop_reason: "end_turn",
+    tool_calls: [],
+    structured_output: undefined,
+  };
+}
+
+function createUnparsedStructuredManifestResponse(text: string): LLMCompleteResult {
+  return {
+    text,
+    input_tokens: 12,
+    output_tokens: 6,
+    stop_reason: "end_turn",
+    tool_calls: [],
   };
 }
 
@@ -900,11 +917,9 @@ describe("TurnOrchestrator evidence ledger", () => {
       expect(result.response).toBe(finalText);
       expect(result.emitted).toBe(true);
       expect(agentEntry?.content).toBe(finalText);
-      expect(finalizerRequest?.tool_choice).toEqual({
-        type: "tool",
-        name: "EmitManifestResponse",
-      });
-      expect(finalizerRequest?.tools?.map((tool) => tool.name)).toEqual(["EmitManifestResponse"]);
+      expect(finalizerRequest?.tool_choice).toBeUndefined();
+      expect(finalizerRequest?.tools).toBeUndefined();
+      expect(finalizerRequest?.output_config?.format.type).toBe("json_schema");
       expect(finalizerSystem).toContain("<borg_evidence_ledger>");
       expect(finalizerSystem).toContain("id=current_user_message:");
       expect(llm.requests.some((request) => request.budget === "relational-claim-auditor")).toBe(
@@ -1132,7 +1147,7 @@ describe("TurnOrchestrator evidence ledger", () => {
         parsed: false,
       });
       expect(String(parseFailed?.error)).toContain("persistence_allowed");
-      expect(parseFailed?.raw_tool_input).toMatchObject({
+      expect(parseFailed?.raw_structured_output).toMatchObject({
         final_text: "This should suppress.",
       });
       expect(aborted).toBeUndefined();
@@ -1144,6 +1159,111 @@ describe("TurnOrchestrator evidence ledger", () => {
       await borg.close();
     }
   });
+
+  it.each([
+    {
+      name: "missing structured output",
+      response: () => createMissingStructuredManifestResponse(),
+      expectedTrace: "invalid_type",
+    },
+    {
+      name: "invalid JSON text",
+      response: () => createUnparsedStructuredManifestResponse("{"),
+      expectedTrace: "JSON",
+    },
+    {
+      name: "claim kind typo",
+      response: () =>
+        createManifestFinalizerResponse({
+          final_text: "This should suppress.",
+          discourse_act: "answer",
+          claims: [
+            {
+              kind: "user_face",
+              rendered_span: "This should suppress.",
+              exact_values: ["This should suppress."],
+              evidence: [
+                {
+                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                  source_type: "current_user_message",
+                },
+              ],
+              confidence: "direct",
+            },
+          ],
+        }),
+      expectedTrace: "user_face",
+    },
+    {
+      name: "invalid discourse act",
+      response: () =>
+        createManifestFinalizerResponse({
+          final_text: "This should suppress.",
+          discourse_act: "invalid_act",
+          claims: [
+            {
+              kind: "hedge",
+              rendered_span: "This should suppress.",
+            },
+          ],
+        }),
+      expectedTrace: "invalid_act",
+    },
+  ])(
+    "suppresses manifest finalizer $name without aborting the turn",
+    async ({ response, expectedTrace }) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      const tracePath = join(tempDir, "trace.jsonl");
+      const clock = new ManualClock(1_800_000_184_500);
+      const llm = new FakeLLMClient({
+        responses: [
+          createCorrectivePreferenceResponse({
+            classification: "none",
+          }),
+          createActionStateResponse([]),
+          createGoalPromotionResponse([]),
+          response(),
+        ],
+      });
+      const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+        tracerPath: tracePath,
+        configOverrides: {
+          generation: {
+            manifestFinalizer: {
+              enabled: true,
+            },
+          },
+        },
+      });
+
+      try {
+        const result = await borg.turn({
+          userMessage: "Answer with a malformed manifest.",
+          stakes: "low",
+        });
+
+        const traceEvents = readTraceEvents(tracePath);
+        const parseFailed = traceEvents.find(
+          (event) => event.event === "manifest_finalizer_parse_failed",
+        );
+        const aborted = traceEvents.find((event) => event.event === "turn_aborted");
+
+        expect(result.emission).toMatchObject({
+          kind: "suppressed",
+          reason: "manifest_finalizer_failed",
+        });
+        expect(parseFailed).toMatchObject({
+          event: "manifest_finalizer_parse_failed",
+          parsed: false,
+        });
+        expect(JSON.stringify(parseFailed)).toContain(expectedTrace);
+        expect(aborted).toBeUndefined();
+      } finally {
+        await borg.close();
+      }
+    },
+  );
 });
 
 describe("TurnOrchestrator self snapshot audience visibility", () => {

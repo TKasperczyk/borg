@@ -1,8 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   ContentBlockParam,
+  JSONOutputFormat,
   Message,
   MessageParam,
+  OutputConfig,
   TextBlock,
   TextBlockParam,
   ThinkingConfigParam,
@@ -81,6 +83,22 @@ export type LLMToolCall = {
   input: unknown;
 };
 
+export class LLMStructuredOutputParseError extends LLMError {
+  readonly rawText: string;
+
+  constructor(rawText: string, cause: unknown) {
+    super("Failed to parse Anthropic structured output", {
+      cause,
+      code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+    });
+    this.rawText = rawText;
+  }
+}
+
+export type LLMOutputConfig = {
+  format: JSONOutputFormat;
+};
+
 export function toToolInputSchema(schema: z.ZodType): LLMToolDefinition["inputSchema"] {
   const jsonSchema = z.toJSONSchema(schema, {
     io: "input",
@@ -94,6 +112,52 @@ export function toToolInputSchema(schema: z.ZodType): LLMToolDefinition["inputSc
   return jsonSchema as LLMToolDefinition["inputSchema"];
 }
 
+function isJsonSchemaObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeStructuredJsonSchema(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeStructuredJsonSchema(entry));
+  }
+
+  if (!isJsonSchemaObject(value)) {
+    return value;
+  }
+
+  const normalized: Record<string, unknown> = {};
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "$schema") {
+      continue;
+    }
+
+    normalized[key === "oneOf" ? "anyOf" : key] = normalizeStructuredJsonSchema(entry);
+  }
+
+  return normalized;
+}
+
+// Keep value constraints machine-enforced. The SDK's Zod helper currently
+// rewrites some literal/enum constraints into descriptions while preparing a
+// stricter schema shape, so Borg performs only the small normalizations needed
+// for Anthropic structured outputs and leaves const/enum intact.
+export function toStructuredOutputFormat(schema: z.ZodType): JSONOutputFormat {
+  const jsonSchema = z.toJSONSchema(schema, {
+    io: "output",
+    unrepresentable: "any",
+  });
+
+  if (jsonSchema.type !== "object") {
+    throw new TypeError("Structured output schema must serialize to a top-level object schema");
+  }
+
+  return {
+    type: "json_schema",
+    schema: normalizeStructuredJsonSchema(jsonSchema) as JSONOutputFormat["schema"],
+  };
+}
+
 type LLMCallOptions = {
   model: string;
   // If callers embed retrieved memory or other user-derived records into
@@ -102,6 +166,7 @@ type LLMCallOptions = {
   system?: string | readonly LLMSystemBlock[];
   tools?: readonly LLMToolDefinition[];
   tool_choice?: { type: "tool"; name: string } | { type: "any" } | { type: "auto" };
+  output_config?: LLMOutputConfig;
   max_tokens?: number;
   temperature?: number;
   thinking?: ThinkingConfigParam;
@@ -118,6 +183,7 @@ export type LLMCompleteResult = {
   output_tokens: number;
   stop_reason: string | null;
   tool_calls: LLMToolCall[];
+  structured_output?: unknown;
 };
 
 export type LLMConverseOptions = LLMCallOptions & {
@@ -129,6 +195,7 @@ export type LLMConverseResult = {
   input_tokens: number;
   output_tokens: number;
   stop_reason: string | null;
+  structured_output?: unknown;
 };
 
 export type TokenUsageEvent = {
@@ -153,6 +220,7 @@ type AnthropicClientLike = {
       messages: MessageParam[];
       tools?: Tool[];
       tool_choice?: ToolChoice;
+      output_config?: OutputConfig;
       max_tokens: number;
       temperature?: number;
       thinking?: ThinkingConfigParam;
@@ -284,6 +352,31 @@ function extractText(message: Message): string {
     .filter(isTextBlock)
     .map((block) => block.text)
     .join("");
+}
+
+function parseStructuredOutputText(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    throw new LLMStructuredOutputParseError(text, error);
+  }
+}
+
+function extractStructuredOutput(
+  message: Message,
+  outputConfig: LLMCallOptions["output_config"],
+): unknown {
+  if (outputConfig?.format === undefined) {
+    return undefined;
+  }
+
+  const parsedOutput = (message as Message & { parsed_output?: unknown }).parsed_output;
+
+  if (parsedOutput !== undefined && parsedOutput !== null) {
+    return parsedOutput;
+  }
+
+  return parseStructuredOutputText(extractText(message));
 }
 
 function extractMessageBlocks(message: Message): LLMContentBlock[] {
@@ -971,6 +1064,7 @@ export class AnthropicLLMClient implements LLMClient {
         messages,
         tools: toAnthropicTools(options.tools),
         tool_choice: toAnthropicToolChoice(options.tool_choice),
+        ...(options.output_config === undefined ? {} : { output_config: options.output_config }),
         max_tokens: resolveMaxTokens(options),
         ...(options.temperature !== undefined && !shouldOmitTemperature(options.model)
           ? { temperature: options.temperature }
@@ -1035,12 +1129,28 @@ export class AnthropicLLMClient implements LLMClient {
 
   private async createMessage(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
     const response = await this.createRawMessage(options, toAnthropicMessages(options.messages));
+    let structuredOutput: unknown;
+
+    try {
+      structuredOutput = extractStructuredOutput(response, options.output_config);
+    } catch (error) {
+      if (error instanceof LLMStructuredOutputParseError) {
+        throw error;
+      }
+
+      throw new LLMError("Failed to parse Anthropic structured output", {
+        cause: error,
+        code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+      });
+    }
+
     const result = {
       text: extractText(response),
       input_tokens: response.usage.input_tokens,
       output_tokens: response.usage.output_tokens,
       stop_reason: response.stop_reason,
       tool_calls: extractToolCalls(response),
+      ...(options.output_config === undefined ? {} : { structured_output: structuredOutput }),
     } satisfies LLMCompleteResult;
     await this.emitUsage(options, result);
     return result;
@@ -1051,11 +1161,27 @@ export class AnthropicLLMClient implements LLMClient {
       options,
       toAnthropicConversationMessages(options.messages),
     );
+    let structuredOutput: unknown;
+
+    try {
+      structuredOutput = extractStructuredOutput(response, options.output_config);
+    } catch (error) {
+      if (error instanceof LLMStructuredOutputParseError) {
+        throw error;
+      }
+
+      throw new LLMError("Failed to parse Anthropic structured output", {
+        cause: error,
+        code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+      });
+    }
+
     const result = {
       messageBlocks: extractMessageBlocks(response),
       input_tokens: response.usage.input_tokens,
       output_tokens: response.usage.output_tokens,
       stop_reason: response.stop_reason,
+      ...(options.output_config === undefined ? {} : { structured_output: structuredOutput }),
     } satisfies LLMConverseResult;
     await this.emitUsage(options, result);
     return result;
@@ -1175,6 +1301,39 @@ function normalizeFakeCompleteResponse(response: FakeLLMResponseValue): LLMCompl
   }
 
   return response;
+}
+
+function withFakeStructuredOutput(
+  options: Pick<LLMCallOptions, "output_config">,
+  result: LLMCompleteResult,
+): LLMCompleteResult {
+  if (options.output_config === undefined || "structured_output" in result) {
+    return result;
+  }
+
+  return {
+    ...result,
+    structured_output: parseStructuredOutputText(result.text),
+  };
+}
+
+function withFakeConversationStructuredOutput(
+  options: Pick<LLMCallOptions, "output_config">,
+  result: LLMConverseResult,
+): LLMConverseResult {
+  if (options.output_config === undefined || "structured_output" in result) {
+    return result;
+  }
+
+  const text = result.messageBlocks
+    .filter((block): block is LLMTextBlock => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+
+  return {
+    ...result,
+    structured_output: parseStructuredOutputText(text),
+  };
 }
 
 function flattenBlockContentForCompatibility(content: LLMToolResultBlock["content"]): string {
@@ -1892,7 +2051,10 @@ export class FakeLLMClient implements LLMClient {
             ) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>
           )(transportOptions)
         : response;
-    const normalized = normalizeFakeCompleteResponse(resolved);
+    const normalized = withFakeStructuredOutput(
+      transportOptions,
+      normalizeFakeCompleteResponse(resolved),
+    );
 
     if (this.usageSink !== undefined) {
       await this.usageSink({
@@ -1926,7 +2088,10 @@ export class FakeLLMClient implements LLMClient {
             ) => FakeLLMResponseValue | Promise<FakeLLMResponseValue>
           )(transportOptions)
         : response;
-    const normalized = normalizeFakeConverseResponse(resolved);
+    const normalized = withFakeConversationStructuredOutput(
+      transportOptions,
+      normalizeFakeConverseResponse(resolved),
+    );
 
     if (this.usageSink !== undefined) {
       await this.usageSink({

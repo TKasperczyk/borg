@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { FakeLLMClient, type LLMToolCall } from "../../llm/index.js";
+import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
 import type { EvidenceLedger } from "../evidence-ledger/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import { runManifestFinalizer } from "./manifest-finalizer.js";
+import type { EmitManifestResponse } from "./manifest-schema.js";
 
 class CapturingTracer implements TurnTracer {
   readonly enabled = true;
@@ -46,19 +47,32 @@ const validManifestInput = {
       rendered_span: "Done.",
     },
   ],
-};
+} satisfies EmitManifestResponse;
 
-async function runWithToolCalls(toolCalls: readonly LLMToolCall[], tracer: CapturingTracer) {
+function structuredOutputResponse(output: unknown): LLMCompleteResult {
+  return {
+    text: JSON.stringify(output),
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "end_turn",
+    tool_calls: [],
+    structured_output: output,
+  };
+}
+
+function unparsedStructuredOutputResponse(text: string): LLMCompleteResult {
+  return {
+    text,
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "end_turn",
+    tool_calls: [],
+  };
+}
+
+async function runWithResponse(response: LLMCompleteResult, tracer: CapturingTracer) {
   const llm = new FakeLLMClient({
-    responses: [
-      {
-        text: "",
-        input_tokens: 4,
-        output_tokens: 2,
-        stop_reason: "tool_use",
-        tool_calls: [...toolCalls],
-      },
-    ],
+    responses: [response],
   });
 
   return runManifestFinalizer({
@@ -74,24 +88,14 @@ async function runWithToolCalls(toolCalls: readonly LLMToolCall[], tracer: Captu
   });
 }
 
+async function runWithStructuredOutput(output: unknown, tracer: CapturingTracer) {
+  return runWithResponse(structuredOutputResponse(output), tracer);
+}
+
 describe("manifest finalizer parser", () => {
-  it("injects manifest coverage instructions into the forced tool prompt", async () => {
+  it("injects manifest coverage instructions into the structured-output prompt", async () => {
     const llm = new FakeLLMClient({
-      responses: [
-        {
-          text: "",
-          input_tokens: 4,
-          output_tokens: 2,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_manifest",
-              name: "EmitManifestResponse",
-              input: validManifestInput,
-            },
-          ],
-        },
-      ],
+      responses: [structuredOutputResponse(validManifestInput)],
     });
 
     await runManifestFinalizer({
@@ -120,105 +124,40 @@ describe("manifest finalizer parser", () => {
     expect(llm.requests[0]?.system).toContain(
       "A manifest with too few claims is invalid even if the prose sounds good.",
     );
+    expect(llm.requests[0]?.system).toContain(
+      "Return exactly one structured response matching the provided schema.",
+    );
+    expect(llm.requests[0]?.tools).toBeUndefined();
+    expect(llm.requests[0]?.tool_choice).toBeUndefined();
+    expect(llm.requests[0]?.output_config?.format.type).toBe("json_schema");
   });
 
-  it.each([
-    {
-      wrapper: "input",
-      expectedTrace: "input_wrapper",
-      input: {
-        input: validManifestInput,
-      },
-    },
-    {
-      wrapper: "arguments",
-      expectedTrace: "arguments_wrapper",
-      input: {
-        arguments: validManifestInput,
-      },
-    },
-    {
-      wrapper: "$PARAMETER_VALUE",
-      expectedTrace: "parameter_value_wrapper",
-      input: {
-        $PARAMETER_VALUE: validManifestInput,
-      },
-    },
-    {
-      wrapper: "response",
-      expectedTrace: "response_wrapper",
-      input: {
-        response: validManifestInput,
-      },
-    },
-  ])("unwraps a single $wrapper manifest tool input wrapper", async ({ input, expectedTrace }) => {
+  it("parses the structured output value directly", async () => {
     const tracer = new CapturingTracer();
 
-    const result = await runWithToolCalls(
-      [
-        {
-          id: "toolu_manifest",
-          name: "EmitManifestResponse",
-          input,
-        },
-      ],
-      tracer,
-    );
+    const result = await runWithStructuredOutput(validManifestInput, tracer);
 
     expect(result.manifest).toEqual(validManifestInput);
     expect(
       tracer.events.find((entry) => entry.event === "manifest_finalizer_emitted")?.data,
     ).toMatchObject({
       parsed: true,
-      manifest_finalizer_unwrapped: expectedTrace,
+      final_text_length: validManifestInput.final_text.length,
     });
   });
 
-  it("drops leaked tool metadata before strict manifest parsing", async () => {
-    const tracer = new CapturingTracer();
-
-    const result = await runWithToolCalls(
-      [
-        {
-          id: "toolu_manifest",
-          name: "EmitManifestResponse",
-          input: {
-            ...validManifestInput,
-            $FUNCTION_NAME: "EmitManifestResponse",
-          },
-        },
-      ],
-      tracer,
-    );
-
-    expect(result.manifest).toEqual(validManifestInput);
-    expect(
-      tracer.events.find((entry) => entry.event === "manifest_finalizer_emitted")?.data,
-    ).toMatchObject({
-      parsed: true,
-      manifest_finalizer_unwrapped: "function_name_dropped",
-    });
-  });
-
-  it("still rejects leaked tool metadata when required claims are missing", async () => {
+  it("fails loudly when the structured output does not match the manifest schema", async () => {
     const tracer = new CapturingTracer();
 
     await expect(
-      runWithToolCalls(
-        [
-          {
-            id: "toolu_manifest",
-            name: "EmitManifestResponse",
-            input: {
-              final_text: "Done.",
-              discourse_act: "answer",
-              $FUNCTION_NAME: "EmitManifestResponse",
-            },
-          },
-        ],
+      runWithStructuredOutput(
+        {
+          final_text: "Done.",
+          discourse_act: "answer",
+        },
         tracer,
       ),
-    ).rejects.toThrow("Manifest finalizer returned invalid tool output");
+    ).rejects.toThrow("Manifest finalizer returned invalid structured output");
 
     const parseFailed = tracer.events.find(
       (entry) => entry.event === "manifest_finalizer_parse_failed",
@@ -226,58 +165,25 @@ describe("manifest finalizer parser", () => {
 
     expect(parseFailed?.data.parsed).toBe(false);
     expect(JSON.stringify(parseFailed?.data.issues)).toContain("claims");
+    expect(parseFailed?.data.raw_structured_output).toEqual({
+      final_text: "Done.",
+      discourse_act: "answer",
+    });
   });
 
-  it.each([
-    {
-      name: "zero tool calls",
-      toolCalls: [] as LLMToolCall[],
-      error: "received 0",
-      rawToolCallCount: 0,
-    },
-    {
-      name: "multiple manifest tool calls",
-      toolCalls: [
-        {
-          id: "toolu_manifest_1",
-          name: "EmitManifestResponse",
-          input: validManifestInput,
-        },
-        {
-          id: "toolu_manifest_2",
-          name: "EmitManifestResponse",
-          input: validManifestInput,
-        },
-      ] satisfies LLMToolCall[],
-      error: "received 2",
-      rawToolCallCount: 2,
-    },
-    {
-      name: "wrong tool name",
-      toolCalls: [
-        {
-          id: "toolu_wrong",
-          name: "WrongTool",
-          input: validManifestInput,
-        },
-      ] satisfies LLMToolCall[],
-      error: "unexpected tool WrongTool",
-      rawToolCallCount: 1,
-    },
-  ])("fails loudly on $name", async ({ toolCalls, error, rawToolCallCount }) => {
+  it("traces non-JSON structured-output text as a manifest parse failure", async () => {
     const tracer = new CapturingTracer();
 
-    await expect(runWithToolCalls(toolCalls, tracer)).rejects.toThrow(
-      "Manifest finalizer returned invalid tool output",
-    );
+    await expect(
+      runWithResponse(unparsedStructuredOutputResponse("{"), tracer),
+    ).rejects.toThrow("Manifest finalizer returned invalid structured output");
 
     const parseFailed = tracer.events.find(
       (entry) => entry.event === "manifest_finalizer_parse_failed",
     );
 
-    expect(parseFailed?.data.error).toContain(error);
     expect(parseFailed?.data.parsed).toBe(false);
-    expect(Array.isArray(parseFailed?.data.raw_tool_calls)).toBe(true);
-    expect(parseFailed?.data.raw_tool_calls).toHaveLength(rawToolCallCount);
+    expect(String(parseFailed?.data.error)).toContain("JSON");
+    expect(parseFailed?.data.raw_text).toBe("{");
   });
 });
