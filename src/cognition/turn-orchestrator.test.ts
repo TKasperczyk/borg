@@ -1085,7 +1085,7 @@ describe("TurnOrchestrator evidence ledger", () => {
     }
   });
 
-  it("traces manifest parse failures and suppresses the turn", async () => {
+  it("demotes per-kind violations to discourse_only without suppressing the turn", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -1098,12 +1098,16 @@ describe("TurnOrchestrator evidence ledger", () => {
         createActionStateResponse([]),
         createGoalPromotionResponse([]),
         createManifestFinalizerResponse({
-          final_text: "This should suppress.",
+          final_text: "This will be demoted.",
           discourse_act: "answer",
           claims: [
             {
+              // interpretation is missing persistence_allowed -- a per-kind
+              // requirement that Anthropic does not enforce at the API level.
+              // Locally, tighten now demotes to discourse_only instead of
+              // failing the whole turn.
               kind: "interpretation",
-              rendered_span: "This should suppress.",
+              rendered_span: "This will be demoted.",
               evidence: [],
               confidence: "high",
             },
@@ -1124,37 +1128,29 @@ describe("TurnOrchestrator evidence ledger", () => {
 
     try {
       const result = await borg.turn({
-        userMessage: "Answer with an invalid manifest.",
+        userMessage: "Answer with a per-kind violation.",
         stakes: "low",
       });
 
       const traceEvents = readTraceEvents(tracePath);
+      const emitted = traceEvents.find(
+        (event) => event.event === "manifest_finalizer_emitted",
+      );
       const parseFailed = traceEvents.find(
         (event) => event.event === "manifest_finalizer_parse_failed",
       );
       const aborted = traceEvents.find((event) => event.event === "turn_aborted");
-      const agentEntry = borg.stream.tail(20).find((entry) => entry.kind === "agent_msg");
-      const suppressionEntry = borg.stream
-        .tail(20)
-        .find((entry) => entry.kind === "agent_suppressed");
 
-      expect(result.emission).toMatchObject({
-        kind: "suppressed",
-        reason: "manifest_finalizer_failed",
-      });
-      expect(parseFailed).toMatchObject({
-        event: "manifest_finalizer_parse_failed",
-        parsed: false,
-      });
-      expect(String(parseFailed?.error)).toContain("persistence_allowed");
-      expect(parseFailed?.raw_structured_output).toMatchObject({
-        final_text: "This should suppress.",
-      });
+      // No suppression -- the turn proceeds with a demoted claim.
+      expect(parseFailed).toBeUndefined();
       expect(aborted).toBeUndefined();
-      expect(agentEntry).toBeUndefined();
-      expect(suppressionEntry?.content).toMatchObject({
-        reason: "manifest_finalizer_failed",
+      expect(emitted).toMatchObject({
+        parsed: true,
+        demotion_count: 1,
       });
+      const demotions = emitted?.demotions as Array<{ original_kind: string }> | undefined;
+      expect(demotions?.[0]?.original_kind).toBe("interpretation");
+      expect(result.emission?.kind).not.toBe("suppressed");
     } finally {
       await borg.close();
     }

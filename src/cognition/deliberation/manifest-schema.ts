@@ -447,8 +447,19 @@ function pickStrictClaimInput(flat: FlatManifestClaim): Record<string, unknown> 
   }
 }
 
+export type ManifestClaimDemotion = {
+  index: number;
+  original_kind: FlatManifestClaim["kind"];
+  reason: string;
+  issues: unknown;
+};
+
 export type TightenManifestResult =
-  | { ok: true; manifest: EmitManifestResponse }
+  | {
+      ok: true;
+      manifest: EmitManifestResponse;
+      demotions: readonly ManifestClaimDemotion[];
+    }
   | {
       ok: false;
       error: string;
@@ -457,8 +468,17 @@ export type TightenManifestResult =
       offending_claim: FlatManifestClaim | null;
     };
 
+// Anthropic's structured-outputs grammar compiler accepts allOf+if/then
+// syntactically but does NOT enforce `then.required` arrays at the API
+// level (verified empirically -- v32 saw user_fact and action_state claims
+// emitted with required fields missing despite the if/then conditionals).
+// To avoid suppressing the entire turn over a single misclassified claim,
+// per-kind violations are demoted to discourse_only here. The original kind
+// + reason is recorded in demotions for trace observability and rate
+// monitoring.
 export function tightenManifestResponse(flat: FlatEmitManifestResponse): TightenManifestResult {
   const tightenedClaims: ManifestClaim[] = [];
+  const demotions: ManifestClaimDemotion[] = [];
 
   for (let index = 0; index < flat.claims.length; index += 1) {
     const flatClaim = flat.claims[index];
@@ -469,7 +489,15 @@ export function tightenManifestResponse(flat: FlatEmitManifestResponse): Tighten
     const strictInput = pickStrictClaimInput(flatClaim);
     const parsed = manifestClaimSchema.safeParse(strictInput);
 
-    if (!parsed.success) {
+    if (parsed.success) {
+      tightenedClaims.push(parsed.data);
+      continue;
+    }
+
+    if (flatClaim.kind === "discourse_only") {
+      // A discourse_only claim that fails strict validation cannot be
+      // demoted further -- something fundamental is off. Surface as a
+      // top-level failure so the turn can route to manifest_finalizer_failed.
       return {
         ok: false,
         error: parsed.error.message,
@@ -479,7 +507,22 @@ export function tightenManifestResponse(flat: FlatEmitManifestResponse): Tighten
       };
     }
 
-    tightenedClaims.push(parsed.data);
+    demotions.push({
+      index,
+      original_kind: flatClaim.kind,
+      reason: parsed.error.message,
+      issues: parsed.error.issues,
+    });
+
+    const demotedClaim: ManifestClaim = {
+      kind: "discourse_only",
+      rendered_span: flatClaim.rendered_span,
+      ...(flatClaim.addresses_audience_by_name !== undefined
+        ? { addresses_audience_by_name: flatClaim.addresses_audience_by_name }
+        : {}),
+    };
+
+    tightenedClaims.push(demotedClaim);
   }
 
   const candidate: EmitManifestResponse = {
@@ -501,5 +544,5 @@ export function tightenManifestResponse(flat: FlatEmitManifestResponse): Tighten
     };
   }
 
-  return { ok: true, manifest: parsed.data };
+  return { ok: true, manifest: parsed.data, demotions };
 }

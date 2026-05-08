@@ -18,6 +18,7 @@ import {
   type EmitManifestResponse,
   type FlatManifestClaim,
   type ManifestClaim,
+  type ManifestClaimDemotion,
 } from "./manifest-schema.js";
 
 // The wire schema uses a flat parent property bag plus allOf+if/then
@@ -51,13 +52,24 @@ const MANIFEST_COVERAGE_INSTRUCTIONS = [
   "",
   "Use slot_fact for established relational/profile slot values.",
   "",
-  "Use agent_self_provenance only for claims about Borg's own prior behavior, authorship, role, system state, or conversation-frame history.",
+  "Use agent_self_provenance only for claims about Borg's own prior behavior, authorship, role, system state, or conversation-frame history. If you are saying you have NO record / NO retrieval / NO memory of something, that is NOT agent_self_provenance -- use discourse_only or self_report. agent_self_provenance always cites at least one evidence entry.",
   "",
   "If an exact value cannot be cited from the EvidenceLedger, remove it from final_text or phrase it qualitatively.",
   "",
   "When the entity is referenced by pronoun (she/he/they/it) or descriptive noun phrase (the tutor, your partner) in the supporting evidence, cite BOTH (1) the evidence that establishes the entity's name, AND (2) the evidence that contains the pronoun/descriptive reference and the predicate. Do not cite only the pronoun-bearing evidence for a named claim.",
   "",
   "A manifest with too few claims is invalid even if the prose sounds good.",
+  "",
+  "Required fields per kind. If you cannot provide every required field for a kind, use a permissive kind (discourse_only or hedge) instead. Do NOT emit a kind with missing required fields.",
+  "  - discourse_only: kind, rendered_span (no other fields required)",
+  "  - hedge: kind, rendered_span (no other fields required)",
+  "  - self_report: kind, rendered_span, persistence_class: \"assistant_self_report\"",
+  "  - user_fact: kind, rendered_span, evidence (>=1 ledger entry), exact_values (>=1 string), confidence in {direct, inferred, uncertain}",
+  "  - prior_callback: kind, rendered_span, evidence (>=1 ledger entry), callback_scope in {current_turn, current_session_prior, prior_session}",
+  "  - action_state: kind, rendered_span, evidence (>=1 ledger entry), action_record_id, asserted_state in {considering, committed_to_do, scheduled, completed, not_done, unknown}",
+  "  - slot_fact: kind, rendered_span, evidence (>=1 ledger entry), exact_values (>=1 string), slot_id",
+  "  - agent_self_provenance: kind, rendered_span, evidence (>=1 ledger entry)",
+  "  - interpretation: kind, rendered_span, evidence (any length), confidence in {low, medium, high}, persistence_allowed: false",
 ].join("\n");
 
 const MANIFEST_FINALIZER_INSTRUCTIONS = [
@@ -94,6 +106,7 @@ type ManifestExtractionResult =
   | {
       ok: true;
       manifest: EmitManifestResponse;
+      demotions: readonly ManifestClaimDemotion[];
       rawStructuredOutput: unknown;
     }
   | {
@@ -191,6 +204,7 @@ function extractManifestResponse(structuredOutput: unknown): ManifestExtractionR
   return {
     ok: true,
     manifest: tightened.manifest,
+    demotions: tightened.demotions,
     rawStructuredOutput: structuredOutput,
   };
 }
@@ -263,6 +277,7 @@ function emitParseFailedTrace(
 function emitManifestTrace(
   options: RunManifestFinalizerOptions,
   manifest: EmitManifestResponse,
+  demotions: readonly ManifestClaimDemotion[],
 ): void {
   if (options.tracer?.enabled !== true || options.turnId === undefined) {
     return;
@@ -276,6 +291,21 @@ function emitManifestTrace(
     claim_kinds: summarizeClaimKinds(manifest.claims),
     claim_counts_by_kind: claimCountsByKind(manifest.claims),
     parsed: true,
+    demotion_count: demotions.length,
+    ...(demotions.length === 0
+      ? {}
+      : {
+          demotions: toTraceJsonValue(
+            demotions.map((demotion) => ({
+              index: demotion.index,
+              original_kind: demotion.original_kind,
+              reason: demotion.reason,
+              ...(options.tracer?.includePayloads
+                ? { issues: toTraceJsonValue(demotion.issues) }
+                : {}),
+            })),
+          ),
+        }),
     ...(manifest.no_output_reason === undefined
       ? {}
       : { no_output_reason: manifest.no_output_reason }),
@@ -374,7 +404,7 @@ export async function runManifestFinalizer(
     });
   }
 
-  emitManifestTrace(options, extraction.manifest);
+  emitManifestTrace(options, extraction.manifest, extraction.demotions);
 
   return {
     manifest: extraction.manifest,

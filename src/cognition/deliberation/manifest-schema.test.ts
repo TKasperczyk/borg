@@ -254,7 +254,7 @@ describe("flat manifest wire schema", () => {
     }
   });
 
-  it("rejects per-kind violations during tightening", () => {
+  it("demotes per-kind violations to discourse_only and records them", () => {
     const wire = flatEmitManifestResponseSchema.safeParse({
       final_text: "Will check that for you.",
       discourse_act: "answer",
@@ -273,11 +273,31 @@ describe("flat manifest wire schema", () => {
 
     const tightened = tightenManifestResponse(wire.data);
 
-    expect(tightened.ok).toBe(false);
-    if (!tightened.ok) {
-      expect(tightened.offending_claim_index).toBe(0);
-      expect(tightened.offending_claim?.kind).toBe("user_fact");
+    expect(tightened.ok).toBe(true);
+    if (tightened.ok) {
+      expect(tightened.manifest.claims).toHaveLength(1);
+      expect(tightened.manifest.claims[0]?.kind).toBe("discourse_only");
+      expect(tightened.manifest.claims[0]?.rendered_span).toBe("You prefer concise answers.");
+      expect(tightened.demotions).toHaveLength(1);
+      expect(tightened.demotions[0]?.original_kind).toBe("user_fact");
+      expect(tightened.demotions[0]?.index).toBe(0);
     }
+  });
+
+  it("hard-fails when even a discourse_only claim cannot be tightened", () => {
+    // discourse_only requires a rendered_span; if rendered_span is missing,
+    // there is nothing to demote to and the manifest cannot proceed.
+    const wire = flatEmitManifestResponseSchema.safeParse({
+      final_text: "Will check that.",
+      discourse_act: "answer",
+      claims: [
+        {
+          kind: "discourse_only",
+        },
+      ],
+    });
+
+    expect(wire.success).toBe(false);
   });
 
   it("strips fields that do not belong to a kind before strict parsing", () => {
