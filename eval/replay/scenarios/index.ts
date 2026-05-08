@@ -25,6 +25,7 @@ import closureLoopPersistence from "./28-closure-loop-persistence.js";
 import crossSessionPartnerNameConflict from "./29-cross-session-partner-name-conflict.js";
 import interpretationImperfectEvidenceWarning from "./30-interpretation-imperfect-evidence-warning.js";
 import interpretationHidesExactFact from "./31-interpretation-hides-exact-fact.js";
+import tomLeakUnflaggedVocative from "./32-tom-leak-unflagged-vocative.js";
 import type { ReplayScenario } from "../scenario.js";
 
 export const REPLAY_SCENARIOS: readonly ReplayScenario[] = [
@@ -55,4 +56,5 @@ export const REPLAY_SCENARIOS: readonly ReplayScenario[] = [
   crossSessionPartnerNameConflict,
   interpretationImperfectEvidenceWarning,
   interpretationHidesExactFact,
+  tomLeakUnflaggedVocative,
 ];
