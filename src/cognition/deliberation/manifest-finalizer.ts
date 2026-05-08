@@ -13,13 +13,18 @@ import type { JsonValue } from "../../util/json-value.js";
 import { LLMError } from "../../util/errors.js";
 import type { DeliberationUsage } from "./types.js";
 import {
-  emitManifestResponseSchema,
+  flatEmitManifestResponseSchema,
+  tightenManifestResponse,
   type EmitManifestResponse,
+  type FlatManifestClaim,
   type ManifestClaim,
 } from "./manifest-schema.js";
 
+// The wire schema is intentionally flatter than the strict discriminated
+// union (see manifest-schema.ts for why). The result is tightened via
+// tightenManifestResponse before any downstream code sees it.
 const MANIFEST_RESPONSE_OUTPUT_CONFIG = {
-  format: toStructuredOutputFormat(emitManifestResponseSchema),
+  format: toStructuredOutputFormat(flatEmitManifestResponseSchema),
 } satisfies LLMOutputConfig;
 
 const MANIFEST_COVERAGE_INSTRUCTIONS = [
@@ -90,8 +95,11 @@ type ManifestExtractionResult =
     }
   | {
       ok: false;
+      phase: "wire" | "tighten";
       error: string;
       issues?: unknown;
+      offendingClaimIndex?: number | null;
+      offendingClaim?: FlatManifestClaim | null;
       rawStructuredOutput: unknown;
     };
 
@@ -151,20 +159,35 @@ function summarizeResponseShape(result: LLMCompleteResult): JsonValue {
 }
 
 function extractManifestResponse(structuredOutput: unknown): ManifestExtractionResult {
-  const parsed = emitManifestResponseSchema.safeParse(structuredOutput);
+  const wireParse = flatEmitManifestResponseSchema.safeParse(structuredOutput);
 
-  if (!parsed.success) {
+  if (!wireParse.success) {
     return {
       ok: false,
-      error: parsed.error.message,
-      issues: parsed.error.issues,
+      phase: "wire",
+      error: wireParse.error.message,
+      issues: wireParse.error.issues,
+      rawStructuredOutput: structuredOutput,
+    };
+  }
+
+  const tightened = tightenManifestResponse(wireParse.data);
+
+  if (!tightened.ok) {
+    return {
+      ok: false,
+      phase: "tighten",
+      error: tightened.error,
+      issues: tightened.issues,
+      offendingClaimIndex: tightened.offending_claim_index,
+      offendingClaim: tightened.offending_claim,
       rawStructuredOutput: structuredOutput,
     };
   }
 
   return {
     ok: true,
-    manifest: parsed.data,
+    manifest: tightened.manifest,
     rawStructuredOutput: structuredOutput,
   };
 }
@@ -218,8 +241,18 @@ function emitParseFailedTrace(
   options.tracer.emit("manifest_finalizer_parse_failed", {
     turnId: options.turnId,
     parsed: false,
+    phase: extraction.phase,
     error: extraction.error,
     ...(extraction.issues === undefined ? {} : { issues: toTraceJsonValue(extraction.issues) }),
+    ...(extraction.offendingClaimIndex === undefined
+      ? {}
+      : {
+          offending_claim_index:
+            extraction.offendingClaimIndex === null ? null : extraction.offendingClaimIndex,
+        }),
+    ...(extraction.offendingClaim === undefined || extraction.offendingClaim === null
+      ? {}
+      : { offending_claim: toTraceJsonValue(extraction.offendingClaim) }),
     raw_structured_output: toTraceJsonValue(extraction.rawStructuredOutput),
   });
 }

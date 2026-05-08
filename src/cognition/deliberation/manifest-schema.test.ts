@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   emitManifestResponseSchema,
+  flatEmitManifestResponseSchema,
   manifestClaimSchema,
+  tightenManifestResponse,
+  type FlatManifestClaim,
   type ManifestClaim,
 } from "./manifest-schema.js";
 
@@ -198,5 +201,139 @@ describe("manifest schema", () => {
     },
   ])("rejects empty exact_values arrays for $kind", ({ claim }) => {
     expect(manifestClaimSchema.safeParse(claim).success).toBe(false);
+  });
+});
+
+describe("flat manifest wire schema", () => {
+  it("accepts a flat claim shape with the union of optional per-kind fields", () => {
+    const flatUserFact: FlatManifestClaim = {
+      kind: "user_fact",
+      rendered_span: "You prefer direct answers.",
+      exact_values: ["direct answers"],
+      evidence: [evidenceRef],
+      confidence: "direct",
+    };
+
+    const wire = flatEmitManifestResponseSchema.safeParse({
+      final_text: "You prefer direct answers.",
+      discourse_act: "answer",
+      claims: [flatUserFact],
+    });
+
+    expect(wire.success).toBe(true);
+  });
+
+  it("tightens a wire response into the strict discriminated union", () => {
+    const wireResponse = {
+      final_text: "Acknowledged.",
+      discourse_act: "continue_task" as const,
+      claims: [
+        {
+          kind: "hedge" as const,
+          rendered_span: "Acknowledged.",
+          evidence: undefined,
+        },
+      ],
+    };
+
+    const wire = flatEmitManifestResponseSchema.safeParse(wireResponse);
+    expect(wire.success).toBe(true);
+
+    if (!wire.success) {
+      throw new Error("wire parse failed");
+    }
+
+    const tightened = tightenManifestResponse(wire.data);
+
+    expect(tightened.ok).toBe(true);
+    if (tightened.ok) {
+      expect(tightened.manifest.claims[0]?.kind).toBe("hedge");
+      const claim = tightened.manifest.claims[0] as ManifestClaim;
+      expect("evidence" in claim).toBe(false);
+    }
+  });
+
+  it("rejects per-kind violations during tightening", () => {
+    const wire = flatEmitManifestResponseSchema.safeParse({
+      final_text: "Will check that for you.",
+      discourse_act: "answer",
+      claims: [
+        {
+          kind: "user_fact",
+          rendered_span: "You prefer concise answers.",
+        },
+      ],
+    });
+
+    expect(wire.success).toBe(true);
+    if (!wire.success) {
+      throw new Error("wire parse failed");
+    }
+
+    const tightened = tightenManifestResponse(wire.data);
+
+    expect(tightened.ok).toBe(false);
+    if (!tightened.ok) {
+      expect(tightened.offending_claim_index).toBe(0);
+      expect(tightened.offending_claim?.kind).toBe("user_fact");
+    }
+  });
+
+  it("strips fields that do not belong to a kind before strict parsing", () => {
+    const wire = flatEmitManifestResponseSchema.safeParse({
+      final_text: "Hedge wins.",
+      discourse_act: "answer",
+      claims: [
+        {
+          kind: "hedge",
+          rendered_span: "Hedge wins.",
+          confidence: "low",
+          callback_scope: "prior_session",
+          evidence: [evidenceRef],
+        },
+      ],
+    });
+
+    expect(wire.success).toBe(true);
+    if (!wire.success) {
+      throw new Error("wire parse failed");
+    }
+
+    const tightened = tightenManifestResponse(wire.data);
+
+    expect(tightened.ok).toBe(true);
+    if (tightened.ok) {
+      const claim = tightened.manifest.claims[0];
+      expect(claim?.kind).toBe("hedge");
+      expect("confidence" in (claim ?? {})).toBe(false);
+      expect("evidence" in (claim ?? {})).toBe(false);
+    }
+  });
+
+  it("preserves addresses_audience_by_name across the tighten transformation", () => {
+    const wire = flatEmitManifestResponseSchema.safeParse({
+      final_text: "Goodnight, Tom.",
+      discourse_act: "acknowledge",
+      claims: [
+        {
+          kind: "discourse_only",
+          rendered_span: "Goodnight, Tom.",
+          addresses_audience_by_name: true,
+        },
+      ],
+    });
+
+    expect(wire.success).toBe(true);
+    if (!wire.success) {
+      throw new Error("wire parse failed");
+    }
+
+    const tightened = tightenManifestResponse(wire.data);
+
+    expect(tightened.ok).toBe(true);
+    if (tightened.ok) {
+      const claim = tightened.manifest.claims[0];
+      expect(claim?.addresses_audience_by_name).toBe(true);
+    }
   });
 });
