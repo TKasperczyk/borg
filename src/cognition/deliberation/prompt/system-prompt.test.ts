@@ -353,9 +353,13 @@ describe("buildBaseSystemPrompt", () => {
     );
     const block = extractBlock(prompt, "borg_discourse_control");
 
-    expect(block).toContain("Closure pressure has been observed in recent turns");
+    // Sprint 8d.2 strengthened the closure-pressure rendering to be a
+    // HARD CONSTRAINT and enumerate forbidden sentence shapes.
+    expect(block).toContain("HARD CONSTRAINT - CLOSURE PRESSURE");
     expect(block).toContain("turn-a:span_removed");
-    expect(block).toContain("Do not produce closing sentences");
+    expect(block).toContain("Sign-offs");
+    expect(block).toContain("Valedictions");
+    expect(block).toContain("Weather/atmosphere observations");
   });
 
   it("renders recent suppression reasons in trusted discourse control", () => {

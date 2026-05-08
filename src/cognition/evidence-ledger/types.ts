@@ -108,6 +108,7 @@ export type EvidenceLedger = {
 
 export type EvidenceLedgerTraceSummary = {
   entryCountsBySection: Record<EvidenceLedgerSectionId, number>;
+  estimatedTokensBySection: Record<EvidenceLedgerSectionId, number>;
   transcriptIncluded: boolean;
   transcriptOmittedReason?: EvidenceLedgerTranscriptOmittedReason;
   totalEstimatedTokens: number;

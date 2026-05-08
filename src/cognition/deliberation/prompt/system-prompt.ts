@@ -389,7 +389,16 @@ function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null 
       .join(", ");
 
     lines.push(
-      `Closure pressure has been observed in recent turns: ${rendered}. The user has signaled they don't want this pattern. Do not produce closing sentences, valedictions, or sleep/leave-taking content unless the user explicitly asks for closure now.`,
+      [
+        `HARD CONSTRAINT - CLOSURE PRESSURE: ${closurePressureHistory.length} recent turn(s) hit the closure-pressure guard (${rendered}). The user has objected to closure-beat patterns; the norm overrides any natural closure tendency in this response.`,
+        "Do NOT emit any of the following in final_text:",
+        "  - Sign-offs ('goodnight', 'until next time', 'take care', 'sleep well', 'rest well')",
+        "  - Valedictions or farewells of any kind",
+        "  - Weather/atmosphere observations as endings ('rain on a skylight is a good sound', 'a quiet evening')",
+        "  - 'Holding' or 'noted' single-line acknowledgments that function as scene endings",
+        "  - Any final sentence that reads as a coda or scene-ending",
+        "If you reach a natural pause and have nothing substantive to add, end on the substantive content -- do not append a coda. To emit nothing, set discourse_act to no_output. The bypass for explicit user-requested closure ('let's wrap up', 'goodnight') still applies but ONLY when the current user message contains that explicit request.",
+      ].join("\n"),
     );
   }
 

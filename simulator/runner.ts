@@ -233,11 +233,67 @@ async function autoAcceptNewInsightReviews(transport: BorgTransport, turn: numbe
   }
 }
 
+type MaintenanceBandSnapshot = {
+  episode_count: number;
+  semantic_node_count: number;
+  semantic_edge_count: number;
+  open_question_count: number;
+  active_goal_count: number;
+};
+
+function flattenGoalCount(nodes: ReadonlyArray<{ children?: ReadonlyArray<unknown> }>): number {
+  let count = 0;
+  for (const node of nodes) {
+    count += 1;
+    const children = node.children;
+    if (children !== undefined && children.length > 0) {
+      count += flattenGoalCount(
+        children as ReadonlyArray<{ children?: ReadonlyArray<unknown> }>,
+      );
+    }
+  }
+  return count;
+}
+
+async function captureMaintenanceBandSnapshot(
+  transport: BorgTransport,
+): Promise<MaintenanceBandSnapshot> {
+  const borg = transport.getBorg();
+  const episodes = await borg.episodic.list({ limit: 9_999 });
+  const semanticNodes = await borg.semantic.nodes.list({ limit: 9_999 });
+  const semanticEdges = borg.semantic.edges.list({ includeInvalid: true });
+  const openQuestions = borg.self.openQuestions.list({ status: "open", limit: 9_999 });
+  const goals = borg.self.goals.list({ status: "active" });
+  return {
+    episode_count: episodes.items.length,
+    semantic_node_count: semanticNodes.length,
+    semantic_edge_count: semanticEdges.length,
+    open_question_count: openQuestions.length,
+    active_goal_count: flattenGoalCount(goals),
+  };
+}
+
 async function runMaintenanceTick(
   transport: BorgTransport,
   turn: number,
   cadence: MaintenanceCadence,
 ): Promise<void> {
+  // Sprint 8d.4: capture pre/post snapshots so per-tick deltas surface in
+  // the trace. Per-turn metrics already reflect post-maintenance state
+  // by the next turn boundary, but they don't isolate the delta and
+  // they hide ticks that fail or no-op. Snapshotting here lets v* runs
+  // attribute semantic-graph movement (or stagnation) directly to
+  // maintenance work.
+  let before: MaintenanceBandSnapshot | null = null;
+  try {
+    before = await captureMaintenanceBandSnapshot(transport);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[simulator] ${cadence} pre-maintenance snapshot at turn ${turn} failed: ${formatErrorChain(error)}`,
+    );
+  }
+
   try {
     await transport.getBorg().maintenance.scheduler.tick(cadence);
   } catch (error) {
@@ -249,6 +305,38 @@ async function runMaintenanceTick(
   }
 
   await autoAcceptNewInsightReviews(transport, turn);
+
+  if (before !== null) {
+    try {
+      const after = await captureMaintenanceBandSnapshot(transport);
+      appendJsonlLine(
+        transport.tracePath,
+        `${JSON.stringify({
+          ts: Date.now(),
+          wallMs: performance.now(),
+          turnId: `simulator_maintenance_${turn}_${cadence}`,
+          event: "maintenance_snapshot",
+          artifact: "simulator",
+          turn_counter: turn,
+          cadence,
+          before,
+          after,
+          delta: {
+            episode_count: after.episode_count - before.episode_count,
+            semantic_node_count: after.semantic_node_count - before.semantic_node_count,
+            semantic_edge_count: after.semantic_edge_count - before.semantic_edge_count,
+            open_question_count: after.open_question_count - before.open_question_count,
+            active_goal_count: after.active_goal_count - before.active_goal_count,
+          },
+        })}\n`,
+      );
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[simulator] ${cadence} post-maintenance snapshot at turn ${turn} failed: ${formatErrorChain(error)}`,
+      );
+    }
+  }
 }
 
 export class SimulatorRunner {

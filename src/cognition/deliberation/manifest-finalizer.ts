@@ -96,6 +96,8 @@ const MANIFEST_COVERAGE_INSTRUCTIONS = [
   "",
   "A manifest with too few claims is invalid even if the prose sounds good.",
   "",
+  "Closure-beat preemption: if the discourse-state section of this prompt declares a HARD CONSTRAINT - CLOSURE PRESSURE, treat that as binding on final_text. Do not append a sign-off, valediction, weather observation, single-line 'noted/held' acknowledgment, or any sentence that reads as a coda. End on substantive content or set discourse_act to no_output. This rule overrides any natural-conversation tendency to wind down a turn.",
+  "",
   "Required fields per kind. If you cannot provide every required field for a kind, use a permissive kind (discourse_only or hedge) instead. Do NOT emit a kind with missing required fields.",
   "  - discourse_only: kind, rendered_span (no other fields required)",
   "  - hedge: kind, rendered_span (no other fields required)",
