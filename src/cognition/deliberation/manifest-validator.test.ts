@@ -243,21 +243,25 @@ describe("ManifestValidator", () => {
     expect(result.verdict).toBe("passed");
   });
 
-  it("allows topic mentions of the audience label when the manifest does not mark vocative address", async () => {
-    const tom = "ent_tomtomtomtomtomt" as EntityId;
+  it("does not flag final text that does not contain the unconfirmed audience name", async () => {
+    // Sprint 8d.1 final-text scan only fires when the audience entity's
+    // restrictive-provenance canonical_name actually appears in
+    // final_text. Topic-only prose that does not literally contain that
+    // name still passes.
+    const maya = "ent_mayamayamayamayam" as EntityId;
     const result = await validate({
       validator: makeValidator({
         entities: [
           {
-            id: tom,
-            canonical_name: "Tom",
+            id: maya,
+            canonical_name: "Maya",
             aliases: [],
             name_provenance: "transport_audience_label",
             created_at: NOW_MS,
           },
         ],
       }),
-      audienceEntityId: tom,
+      audienceEntityId: maya,
       finalText: "Tom Bombadil is from Tolkien.",
       claims: [
         {
@@ -270,7 +274,11 @@ describe("ManifestValidator", () => {
     expect(result.verdict).toBe("passed");
   });
 
-  it("allows unflagged vocative use for now, documenting the Sprint 8c audit gap", async () => {
+  it("rejects unflagged vocative use of the unconfirmed audience name (Sprint 8d.1)", async () => {
+    // Pre-Sprint-8d.1 this case passed because the manifest did not mark
+    // addresses_audience_by_name, so the existing check skipped it. v36
+    // surfaced the leak class ("Monday-Tom"). The final-text scan now
+    // catches the audience name regardless of which claim covers it.
     const tom = "ent_tomtomtomtomtomt" as EntityId;
     const result = await validate({
       validator: makeValidator({
@@ -294,7 +302,66 @@ describe("ManifestValidator", () => {
       ],
     });
 
-    expect(result.verdict).toBe("passed");
+    // Final-text scan added a synthetic failed claim with claim_index: -1.
+    // deleteSpans removes "Tom" so the response either rewrites to
+    // "Goodnight" (preferred -- name silently stripped, still coherent)
+    // or fails critical if too little remains. Either way the v36
+    // Monday-Tom path is closed because the leak is detected.
+    expect(result.failed_claims).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          claim_index: -1,
+          reasons: ["final_text_uses_non_speakable_name: Tom"],
+        }),
+      ]),
+    );
+    expect(["no_output", "rewritten"]).toContain(result.verdict);
+    if (result.verdict === "rewritten") {
+      expect(result.final_text).not.toContain("Tom");
+    }
+  });
+
+  it("catches a compound leak like Monday-Tom even when the model never flagged it", async () => {
+    // Direct v36 regression case. The simulator persona seeds the
+    // audience entity with canonical_name "Tom" + transport_audience_label
+    // provenance. The model invented "Monday-Tom" as a discourse-only
+    // span. Because no claim flagged addresses_audience_by_name, the
+    // pre-Sprint-8d.1 validator passed it through.
+    const tom = "ent_tomtomtomtomtomt" as EntityId;
+    const result = await validate({
+      validator: makeValidator({
+        entities: [
+          {
+            id: tom,
+            canonical_name: "Tom",
+            aliases: [],
+            name_provenance: "transport_audience_label",
+            created_at: NOW_MS,
+          },
+        ],
+      }),
+      audienceEntityId: tom,
+      finalText: "Monday-Tom is going to be looking for any excuse to soften this.",
+      claims: [
+        {
+          kind: "discourse_only",
+          rendered_span:
+            "Monday-Tom is going to be looking for any excuse to soften this.",
+        },
+      ],
+    });
+
+    expect(result.failed_claims).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          claim_index: -1,
+          reasons: ["final_text_uses_non_speakable_name: Tom"],
+        }),
+      ]),
+    );
+    // Verdict is no_output or rewritten depending on coherence after
+    // deletion -- both are acceptable; the key is the leak is caught.
+    expect(["no_output", "rewritten"]).toContain(result.verdict);
   });
 
   it.each([

@@ -412,6 +412,8 @@ export class ManifestValidator {
       const nameSpeakable = provenance === "user_declared" || provenance === "user_confirmed";
 
       if (audienceEntity !== null && !nameSpeakable) {
+        let nameAlreadyFlagged = false;
+
         for (const [claimIndex, claim] of input.manifest.claims.entries()) {
           if (claim.addresses_audience_by_name !== true) {
             continue;
@@ -423,6 +425,28 @@ export class ManifestValidator {
             rendered_span: claim.rendered_span,
             reasons: [`final_text_uses_non_speakable_name: ${audienceEntity.canonical_name}`],
             claim,
+          });
+          nameAlreadyFlagged = true;
+        }
+
+        // Final-text scan independent of the manifest's
+        // addresses_audience_by_name flag. v36 surfaced "Monday-Tom" leaks
+        // where the audience handle appeared in final_text without any
+        // claim setting the flag -- the manifest validator passed because
+        // it relied on the model's self-report. Treat the audience name as
+        // an internal handle and reject any literal occurrence in
+        // final_text when provenance is restrictive, regardless of which
+        // claim covers that span.
+        if (!nameAlreadyFlagged && valueAppearsIn(input.manifest.final_text, audienceEntity.canonical_name)) {
+          failedClaims.push({
+            claim_index: -1,
+            kind: "discourse_only",
+            rendered_span: audienceEntity.canonical_name,
+            reasons: [`final_text_uses_non_speakable_name: ${audienceEntity.canonical_name}`],
+            claim: {
+              kind: "discourse_only",
+              rendered_span: audienceEntity.canonical_name,
+            },
           });
         }
       }
