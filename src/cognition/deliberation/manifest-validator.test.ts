@@ -14,10 +14,7 @@ import {
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import type { EmitManifestResponse, EvidenceRef, ManifestClaim } from "./manifest-schema.js";
-import {
-  MANIFEST_VALIDATION_FAILED_CRITICAL_REASON,
-  ManifestValidator,
-} from "./manifest-validator.js";
+import { ManifestValidator } from "./manifest-validator.js";
 
 const NOW_MS = 1_800_000_000_000;
 const CURRENT_USER_STREAM_ID = "strm_aaaaaaaaaaaaaaaa" as StreamEntryId;
@@ -520,7 +517,12 @@ describe("ManifestValidator", () => {
     ]);
   });
 
-  it("rejects any claim whose rendered span is absent from final_text", async () => {
+  it("treats a phantom rendered_span as a non-critical drop", async () => {
+    // Sprint 8c-4: when a claim's rendered_span isn't actually in
+    // final_text, deleteSpans cannot delete it, so the validator no
+    // longer routes to critical. Phantom claims are silently dropped --
+    // tracked in trace via phantom_claim_count -- so a single
+    // misshapen claim doesn't suppress the turn.
     const result = await validate({
       finalText: "This text does not contain the declared span.",
       claims: [
@@ -531,10 +533,7 @@ describe("ManifestValidator", () => {
       ],
     });
 
-    expect(result).toMatchObject({
-      verdict: "no_output",
-      reason: MANIFEST_VALIDATION_FAILED_CRITICAL_REASON,
-    });
+    expect(result.verdict).toBe("passed");
   });
 
   it("validates user_fact exact values against the span and cited evidence", async () => {
@@ -1434,13 +1433,26 @@ describe("ManifestValidator", () => {
   });
 
   it("requests legacy fallback for critical failures when configured", async () => {
+    // Trigger a real critical failure (not a phantom-span drop): a
+    // user_fact claim whose rendered_span is the entire final_text but
+    // whose evidence is missing -- deleteSpans wipes the prose, leaving
+    // an empty result that fails the coherent-text floor.
+    const entry = makeEntry({
+      id: CURRENT_USER_EVIDENCE_ID,
+      source_type: "current_user_message",
+      text: "Marta prefers direct answers.",
+    });
     const result = await validate({
       validator: makeValidator({ onCriticalFailure: "legacy_fallback" }),
-      finalText: "Missing rendered span.",
+      finalText: "Luis.",
+      entries: [entry],
       claims: [
         {
-          kind: "hedge",
-          rendered_span: "not present",
+          kind: "user_fact",
+          rendered_span: "Luis.",
+          exact_values: ["Luis"],
+          evidence: [makeEvidenceRef(entry)],
+          confidence: "direct",
         },
       ],
     });

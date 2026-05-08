@@ -13,6 +13,7 @@ import type { EmitManifestResponse, EvidenceRef, ManifestClaim } from "./manifes
 export const MIN_COHERENT_TEXT_LENGTH = 8;
 export const MANIFEST_VALIDATION_FAILED_CRITICAL_REASON =
   "manifest_validation_failed_critical" as const;
+const RENDERED_SPAN_MISSING_REASON = "rendered_span does not appear in final_text" as const;
 
 export type ManifestValidatorConfig = Config["generation"]["manifestValidator"];
 
@@ -445,9 +446,35 @@ export class ManifestValidator {
       return result;
     }
 
+    // Claims whose rendered_span does not appear in final_text are
+    // "phantom" claims -- the model declared a claim about prose that
+    // does not actually exist in the response. There is no span to
+    // delete, so treat the claim as if it had been dropped from the
+    // manifest. Keep them in failed_claims for trace observability so we
+    // can monitor the rate. v34 showed phantom-span failures dominating
+    // critical suppressions because deleteSpans cannot delete what isn't
+    // there, leaving the validator with no rewrite path.
+    const phantomClaims = failedClaims.filter((failed) =>
+      failed.reasons.includes(RENDERED_SPAN_MISSING_REASON),
+    );
+    const realFailedClaims = failedClaims.filter(
+      (failed) => !failed.reasons.includes(RENDERED_SPAN_MISSING_REASON),
+    );
+
+    if (realFailedClaims.length === 0) {
+      const result: ManifestValidationResult = {
+        verdict: "passed",
+        final_text: input.manifest.final_text,
+        passed_claims: passedClaims,
+        failed_claims: [],
+      };
+      this.trace(input, result, { phantomClaims });
+      return result;
+    }
+
     const deletion = deleteSpans(
       input.manifest.final_text,
-      failedClaims.map((failed) => failed.rendered_span),
+      realFailedClaims.map((failed) => failed.rendered_span),
     );
     const nonCriticalRemovable =
       deletion.allRemoved &&
@@ -460,9 +487,9 @@ export class ManifestValidator {
         final_text: deletion.result,
         removed_spans: deletion.removedSpans,
         passed_claims: passedClaims,
-        failed_claims: failedClaims,
+        failed_claims: realFailedClaims,
       };
-      this.trace(input, result);
+      this.trace(input, result, { phantomClaims });
       return result;
     }
 
@@ -471,15 +498,15 @@ export class ManifestValidator {
         ? {
             verdict: "legacy_fallback_requested",
             passed_claims: passedClaims,
-            failed_claims: failedClaims,
+            failed_claims: realFailedClaims,
           }
         : {
             verdict: "no_output",
             reason: MANIFEST_VALIDATION_FAILED_CRITICAL_REASON,
             passed_claims: passedClaims,
-            failed_claims: failedClaims,
+            failed_claims: realFailedClaims,
           };
-    this.trace(input, result);
+    this.trace(input, result, { phantomClaims });
     return result;
   }
 
@@ -729,10 +756,15 @@ export class ManifestValidator {
     }
   }
 
-  private trace(input: ManifestValidatorInput, result: ManifestValidationResult): void {
+  private trace(
+    input: ManifestValidatorInput,
+    result: ManifestValidationResult,
+    extras: { phantomClaims?: readonly ManifestValidationFailedClaim[] } = {},
+  ): void {
     if (this.options.tracer?.enabled !== true || input.turnId === undefined) {
       return;
     }
+    const phantomClaims = extras.phantomClaims ?? [];
 
     const finalText = resultFinalText({
       result,
@@ -761,6 +793,12 @@ export class ManifestValidator {
       ),
       failed_claims_by_kind: failedClaimsByKind(result.failed_claims),
       failed_claim_reasons: failedClaimReasons(result.failed_claims),
+      phantom_claim_count: phantomClaims.length,
+      ...(phantomClaims.length === 0
+        ? {}
+        : {
+            phantom_claims_by_kind: failedClaimsByKind(phantomClaims),
+          }),
       spans_removed: removedSpans(result),
       final_text_changed: finalTextChanged,
       ...(this.options.tracer.includePayloads
