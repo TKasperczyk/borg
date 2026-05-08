@@ -290,26 +290,53 @@ const STRUCTURED_OUTPUT_CLAIM_SCHEMA = {
   },
   required: ["kind", "rendered_span"],
   additionalProperties: false,
+  // Per-kind required-field, value-enum, and min-length constraints. Each
+  // branch's then clause merges with the parent schema, so e.g. an interpretation
+  // claim must have evidence/confidence/persistence_allowed AND its confidence
+  // must be one of {low, medium, high} (the strict schema's interpretation
+  // enum), not a user_fact-style confidence value.
   allOf: [
     {
       if: { properties: { kind: { const: "user_fact" } } },
-      then: { required: ["evidence", "exact_values", "confidence"] },
+      then: {
+        required: ["evidence", "exact_values", "confidence"],
+        properties: {
+          evidence: { minItems: 1 },
+          exact_values: { minItems: 1 },
+          confidence: { enum: ["direct", "inferred", "uncertain"] },
+        },
+      },
     },
     {
       if: { properties: { kind: { const: "prior_callback" } } },
-      then: { required: ["evidence", "callback_scope"] },
+      then: {
+        required: ["evidence", "callback_scope"],
+        properties: { evidence: { minItems: 1 } },
+      },
     },
     {
       if: { properties: { kind: { const: "action_state" } } },
-      then: { required: ["evidence", "action_record_id", "asserted_state"] },
+      then: {
+        required: ["evidence", "action_record_id", "asserted_state"],
+        properties: { evidence: { minItems: 1 } },
+      },
     },
     {
       if: { properties: { kind: { const: "slot_fact" } } },
-      then: { required: ["evidence", "exact_values", "slot_id"] },
+      then: {
+        required: ["evidence", "exact_values", "slot_id"],
+        properties: {
+          evidence: { minItems: 1 },
+          exact_values: { minItems: 1 },
+        },
+      },
     },
     {
       if: { properties: { kind: { const: "agent_self_provenance" } } },
-      then: { required: ["evidence"] },
+      then: {
+        required: ["evidence"],
+        properties: { evidence: { minItems: 1 } },
+      },
     },
     {
       if: { properties: { kind: { const: "self_report" } } },
@@ -317,7 +344,12 @@ const STRUCTURED_OUTPUT_CLAIM_SCHEMA = {
     },
     {
       if: { properties: { kind: { const: "interpretation" } } },
-      then: { required: ["evidence", "confidence", "persistence_allowed"] },
+      then: {
+        required: ["evidence", "confidence", "persistence_allowed"],
+        properties: {
+          confidence: { enum: ["low", "medium", "high"] },
+        },
+      },
     },
   ],
 } as const;
