@@ -5,7 +5,6 @@ import {
   type LLMCompleteResult,
   type LLMMessage,
   type LLMOutputConfig,
-  toStructuredOutputFormat,
 } from "../../llm/index.js";
 import type { EvidenceLedger } from "../evidence-ledger/index.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
@@ -14,17 +13,21 @@ import { LLMError } from "../../util/errors.js";
 import type { DeliberationUsage } from "./types.js";
 import {
   flatEmitManifestResponseSchema,
+  MANIFEST_STRUCTURED_OUTPUT_FORMAT,
   tightenManifestResponse,
   type EmitManifestResponse,
   type FlatManifestClaim,
   type ManifestClaim,
 } from "./manifest-schema.js";
 
-// The wire schema is intentionally flatter than the strict discriminated
-// union (see manifest-schema.ts for why). The result is tightened via
-// tightenManifestResponse before any downstream code sees it.
+// The wire schema uses a flat parent property bag plus allOf+if/then
+// conditionals so Anthropic enforces per-kind required fields without
+// blowing up the compiled grammar (see manifest-schema.ts for why).
+// tightenManifestResponse runs as defense-in-depth: it strips kind-irrelevant
+// fields the parent bag still allows and re-parses with the strict per-kind
+// schemas before downstream code sees the manifest.
 const MANIFEST_RESPONSE_OUTPUT_CONFIG = {
-  format: toStructuredOutputFormat(flatEmitManifestResponseSchema),
+  format: MANIFEST_STRUCTURED_OUTPUT_FORMAT,
 } satisfies LLMOutputConfig;
 
 const MANIFEST_COVERAGE_INSTRUCTIONS = [

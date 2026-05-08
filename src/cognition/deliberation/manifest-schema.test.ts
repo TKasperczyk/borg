@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   emitManifestResponseSchema,
   flatEmitManifestResponseSchema,
+  MANIFEST_STRUCTURED_OUTPUT_FORMAT,
   manifestClaimSchema,
   tightenManifestResponse,
   type FlatManifestClaim,
@@ -335,5 +336,53 @@ describe("flat manifest wire schema", () => {
       const claim = tightened.manifest.claims[0];
       expect(claim?.addresses_audience_by_name).toBe(true);
     }
+  });
+});
+
+describe("MANIFEST_STRUCTURED_OUTPUT_FORMAT (Anthropic wire schema)", () => {
+  it("declares json_schema with a flat claim parent", () => {
+    expect(MANIFEST_STRUCTURED_OUTPUT_FORMAT.type).toBe("json_schema");
+    const claimSchema = (
+      MANIFEST_STRUCTURED_OUTPUT_FORMAT.schema.properties as { claims: { items: unknown } }
+    ).claims.items as Record<string, unknown>;
+    expect(claimSchema.type).toBe("object");
+    expect((claimSchema.properties as { kind: { enum: string[] } }).kind.enum).toContain(
+      "user_fact",
+    );
+  });
+
+  it("encodes per-kind required fields via allOf + if/then conditionals", () => {
+    const serialized = JSON.stringify(MANIFEST_STRUCTURED_OUTPUT_FORMAT);
+
+    // Each grounded kind enforces evidence at the API level.
+    expect(serialized).toContain('"const":"user_fact"');
+    expect(serialized).toContain('"const":"prior_callback"');
+    expect(serialized).toContain('"const":"action_state"');
+    expect(serialized).toContain('"const":"slot_fact"');
+    expect(serialized).toContain('"const":"agent_self_provenance"');
+    expect(serialized).toContain('"const":"interpretation"');
+    expect(serialized).toContain('"const":"self_report"');
+
+    // Defensive: persistence_class is required only on self_report, asserted
+    // via const so the wire enforces it instead of treating it as a
+    // descriptive string.
+    expect(serialized).toContain('"const":"assistant_self_report"');
+
+    // Every if/then branch has an "if" with the discriminator constant.
+    const claimSchema = (
+      MANIFEST_STRUCTURED_OUTPUT_FORMAT.schema.properties as { claims: { items: unknown } }
+    ).claims.items as { allOf: Array<{ if: unknown; then: { required: string[] } }> };
+    expect(claimSchema.allOf).toHaveLength(7);
+
+    const userFactBranch = claimSchema.allOf.find(
+      (entry) =>
+        ((entry.if as { properties: { kind: { const: string } } }).properties.kind.const) ===
+        "user_fact",
+    );
+    expect(userFactBranch?.then.required).toEqual([
+      "evidence",
+      "exact_values",
+      "confidence",
+    ]);
   });
 });

@@ -207,6 +207,147 @@ export const flatEmitManifestResponseSchema = z.object({
 
 export type FlatEmitManifestResponse = z.infer<typeof flatEmitManifestResponseSchema>;
 
+// JSON Schema sent to Anthropic's structured-outputs API. Built manually so we
+// can use allOf + if/then conditionals to push per-kind required-field
+// enforcement back to the API. The flat single-shape parent keeps the compiled
+// grammar small enough to fit Anthropic's grammar size limit; the conditionals
+// add per-kind required-field constraints additively rather than via a
+// 9-branch discriminated union.
+//
+// The local Zod tighten step (tightenManifestResponse) is still used as
+// defense-in-depth: it strips kind-irrelevant fields the parent bag still
+// allows and re-parses with the strict per-kind schemas.
+const STRUCTURED_OUTPUT_EVIDENCE_REF_SCHEMA = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    source_type: {
+      type: "string",
+      enum: [
+        "current_user_message",
+        "current_session_stream",
+        "prior_session_stream",
+        "episode",
+        "semantic_node",
+        "semantic_edge",
+        "action_record",
+        "relational_slot",
+        "commitment",
+        "assistant_stream",
+        "system_metadata",
+      ],
+    },
+  },
+  required: ["id", "source_type"],
+  additionalProperties: false,
+} as const;
+
+const STRUCTURED_OUTPUT_CLAIM_SCHEMA = {
+  type: "object",
+  properties: {
+    kind: {
+      type: "string",
+      enum: [
+        "discourse_only",
+        "user_fact",
+        "prior_callback",
+        "action_state",
+        "slot_fact",
+        "agent_self_provenance",
+        "self_report",
+        "interpretation",
+        "hedge",
+      ],
+    },
+    rendered_span: { type: "string" },
+    addresses_audience_by_name: { type: "boolean" },
+    exact_values: { type: "array", items: { type: "string" } },
+    evidence: { type: "array", items: STRUCTURED_OUTPUT_EVIDENCE_REF_SCHEMA },
+    confidence: {
+      type: "string",
+      enum: ["direct", "inferred", "uncertain", "low", "medium", "high"],
+    },
+    scope_disclosure_span: { type: "string" },
+    callback_scope: {
+      type: "string",
+      enum: ["current_turn", "current_session_prior", "prior_session"],
+    },
+    action_record_id: { type: "string" },
+    asserted_state: {
+      type: "string",
+      enum: [
+        "considering",
+        "committed_to_do",
+        "scheduled",
+        "completed",
+        "not_done",
+        "unknown",
+      ],
+    },
+    slot_id: { type: "string" },
+    persistence_class: { type: "string", const: "assistant_self_report" },
+    persistence_allowed: { type: "boolean", const: false },
+  },
+  required: ["kind", "rendered_span"],
+  additionalProperties: false,
+  allOf: [
+    {
+      if: { properties: { kind: { const: "user_fact" } } },
+      then: { required: ["evidence", "exact_values", "confidence"] },
+    },
+    {
+      if: { properties: { kind: { const: "prior_callback" } } },
+      then: { required: ["evidence", "callback_scope"] },
+    },
+    {
+      if: { properties: { kind: { const: "action_state" } } },
+      then: { required: ["evidence", "action_record_id", "asserted_state"] },
+    },
+    {
+      if: { properties: { kind: { const: "slot_fact" } } },
+      then: { required: ["evidence", "exact_values", "slot_id"] },
+    },
+    {
+      if: { properties: { kind: { const: "agent_self_provenance" } } },
+      then: { required: ["evidence"] },
+    },
+    {
+      if: { properties: { kind: { const: "self_report" } } },
+      then: { required: ["persistence_class"] },
+    },
+    {
+      if: { properties: { kind: { const: "interpretation" } } },
+      then: { required: ["evidence", "confidence", "persistence_allowed"] },
+    },
+  ],
+} as const;
+
+export const MANIFEST_STRUCTURED_OUTPUT_FORMAT = {
+  type: "json_schema" as const,
+  schema: {
+    type: "object",
+    properties: {
+      final_text: { type: "string" },
+      discourse_act: {
+        type: "string",
+        enum: [
+          "answer",
+          "clarify",
+          "challenge_frame",
+          "acknowledge",
+          "continue_task",
+          "boundary",
+          "no_output",
+        ],
+      },
+      claims: { type: "array", items: STRUCTURED_OUTPUT_CLAIM_SCHEMA },
+      no_output_reason: { type: "string" },
+    },
+    required: ["final_text", "discourse_act", "claims"],
+    additionalProperties: false,
+  },
+};
+
 function pickStrictClaimInput(flat: FlatManifestClaim): Record<string, unknown> {
   const base: Record<string, unknown> = {
     kind: flat.kind,
