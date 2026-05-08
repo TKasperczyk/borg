@@ -363,7 +363,8 @@ function buildExtractorPrompt(
       timestamp: entry.timestamp,
       kind: entry.kind,
       content: entry.content,
-      audience: entry.audience,
+      audience:
+        entry.audience === undefined ? undefined : `(audience routing label) ${entry.audience}`,
     }),
   );
   const perceptionLines = perceptionContextEntries.flatMap((entry) => {
@@ -382,6 +383,7 @@ function buildExtractorPrompt(
     "Also emit relational_slot_updates for user-asserted relational attributes whose subject_entity_id appears in the supplied relational slot subject manifest.",
     "Use relational_slot_updates only for direct user assertions, not assistant statements, guesses, corrections, denials, or uncertainty.",
     "If an assistant introduced a person name and a later user merely reuses that name, do not emit a relational_slot_update for the name. Bare adoption is not explicit confirmation.",
+    "Stream entry audience fields are audience routing labels, not evidence that the user self-declared the label as their name.",
     'Explicit confirmation can support a relational_slot_update, for example "her name is Marta", "yes, Marta", or "Marta is the tutor".',
     'For every relational_slot_update, emit confirmation_kind as "direct" for an ordinary user assertion or "explicit" when the user is explicitly confirming a previously uncertain, assistant-seeded, or contested value.',
     "relational_slot_updates.source_stream_entry_ids MUST reference user_msg ids present in the chunk.",
@@ -393,7 +395,7 @@ function buildExtractorPrompt(
   if (relationalSlotSubjects.length > 0) {
     promptLines.push(
       "<relational_slot_subjects>",
-      ...relationalSlotSubjects.map((subject) => JSON.stringify(subject)),
+      ...relationalSlotSubjects.map((subject) => JSON.stringify(subjectForPrompt(subject))),
       "</relational_slot_subjects>",
     );
   }
@@ -403,6 +405,24 @@ function buildExtractorPrompt(
   }
 
   return promptLines.join("\n");
+}
+
+function subjectForPrompt(subject: RelationalSlotSubject): RelationalSlotSubject & {
+  routing_label?: string;
+} {
+  if (subject.source === "audience") {
+    return {
+      ...subject,
+      label: `(audience routing label) ${subject.label}`,
+      routing_label: subject.label,
+    };
+  }
+
+  return {
+    ...subject,
+    label: `(config default user) ${subject.label}`,
+    routing_label: subject.label,
+  };
 }
 
 function parseLlmResponse(result: LLMCompleteResult): ExtractorResponse {
@@ -706,7 +726,9 @@ export class EpisodicExtractor {
     }
 
     return {
-      audience_entity_id: this.options.entityRepository.resolve(audiences[0] ?? ""),
+      audience_entity_id: this.options.entityRepository.resolve(audiences[0] ?? "", {
+        provenance: "transport_audience_label",
+      }),
       shared: false,
     };
   }
@@ -721,7 +743,9 @@ export class EpisodicExtractor {
 
     if (defaultUser.length > 0) {
       subjects.push({
-        entity_id: this.options.entityRepository.resolve(defaultUser),
+        entity_id: this.options.entityRepository.resolve(defaultUser, {
+          provenance: "config_default_user",
+        }),
         label: defaultUser,
         source: "default_user",
       });
@@ -733,7 +757,9 @@ export class EpisodicExtractor {
       ),
     )) {
       subjects.push({
-        entity_id: this.options.entityRepository.resolve(audience),
+        entity_id: this.options.entityRepository.resolve(audience, {
+          provenance: "transport_audience_label",
+        }),
         label: audience,
         source: "audience",
       });

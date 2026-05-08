@@ -15,6 +15,7 @@ import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../
 export const CLOSURE_LOOP_DIALOGUE_ACTS = [
   "substantive",
   "signoff",
+  "user_requests_closure",
   "reopening_after_signoff",
   "assistant_imperative_closer",
   "assistant_valediction",
@@ -32,6 +33,9 @@ const closureLoopDialogueActSchema = z.enum(CLOSURE_LOOP_DIALOGUE_ACTS);
 const CLOSURE_LOOP_DIALOGUE_ACT_ALIASES: Readonly<Record<string, ClosureLoopDialogueAct>> = {
   user_signoff: "signoff",
   user_closure: "signoff",
+  explicit_closure_request: "user_requests_closure",
+  request_closure: "user_requests_closure",
+  asks_for_closure: "user_requests_closure",
   assistant_signoff: "assistant_imperative_closer",
   assistant_closer: "assistant_imperative_closer",
   assistant_goodnight: "assistant_valediction",
@@ -70,6 +74,7 @@ const CLOSURE_LOOP_SYSTEM_PROMPT = [
   "Use exactly one act from the schema for each message_ref.",
   "substantive: asks, answers, introduces information, changes topic, makes a real request, or otherwise advances content.",
   "signoff: user-side goodbye, leaving, phone-down, sleep, or closure intent.",
+  "user_requests_closure: user explicitly asks the assistant to produce closure now, such as asking for goodnight, farewell, sign-off, or a closing line.",
   "reopening_after_signoff: user resumes with real content after a prior goodbye.",
   "assistant_imperative_closer: assistant-side command or push that functions as a closer.",
   "assistant_valediction: assistant-side goodbye, send-off, farewell, or closure token.",

@@ -32,6 +32,7 @@ export const attentionWeightsSchema = z.object({
 
 export const perceptionResultSchema = z.object({
   entities: z.array(z.string().min(1)),
+  userIdentityNames: z.array(z.string().min(1)).optional(),
   mode: cognitiveModeSchema,
   affectiveSignal: affectiveSignalSchema,
   affectiveSignalDegraded: z.boolean().optional(),

@@ -1070,7 +1070,7 @@ describe("TurnOrchestrator evidence ledger", () => {
     }
   });
 
-  it("traces manifest parse failures and aborts the turn", async () => {
+  it("traces manifest parse failures and suppresses the turn", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -1083,12 +1083,12 @@ describe("TurnOrchestrator evidence ledger", () => {
         createActionStateResponse([]),
         createGoalPromotionResponse([]),
         createManifestFinalizerResponse({
-          final_text: "This should abort.",
+          final_text: "This should suppress.",
           discourse_act: "answer",
           claims: [
             {
               kind: "interpretation",
-              rendered_span: "This should abort.",
+              rendered_span: "This should suppress.",
               evidence: [],
               confidence: "high",
             },
@@ -1108,12 +1108,10 @@ describe("TurnOrchestrator evidence ledger", () => {
     });
 
     try {
-      await expect(
-        borg.turn({
-          userMessage: "Answer with an invalid manifest.",
-          stakes: "low",
-        }),
-      ).rejects.toThrow("Manifest finalizer returned invalid tool output");
+      const result = await borg.turn({
+        userMessage: "Answer with an invalid manifest.",
+        stakes: "low",
+      });
 
       const traceEvents = readTraceEvents(tracePath);
       const parseFailed = traceEvents.find(
@@ -1121,19 +1119,27 @@ describe("TurnOrchestrator evidence ledger", () => {
       );
       const aborted = traceEvents.find((event) => event.event === "turn_aborted");
       const agentEntry = borg.stream.tail(20).find((entry) => entry.kind === "agent_msg");
+      const suppressionEntry = borg.stream
+        .tail(20)
+        .find((entry) => entry.kind === "agent_suppressed");
 
+      expect(result.emission).toMatchObject({
+        kind: "suppressed",
+        reason: "manifest_finalizer_failed",
+      });
       expect(parseFailed).toMatchObject({
         event: "manifest_finalizer_parse_failed",
         parsed: false,
       });
       expect(String(parseFailed?.error)).toContain("persistence_allowed");
       expect(parseFailed?.raw_tool_input).toMatchObject({
-        final_text: "This should abort.",
+        final_text: "This should suppress.",
       });
-      expect(aborted).toMatchObject({
-        event: "turn_aborted",
-      });
+      expect(aborted).toBeUndefined();
       expect(agentEntry).toBeUndefined();
+      expect(suppressionEntry?.content).toMatchObject({
+        reason: "manifest_finalizer_failed",
+      });
     } finally {
       await borg.close();
     }

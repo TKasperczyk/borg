@@ -67,8 +67,16 @@ export type ReplayScenario = {
   description: string;
   seed: (deps: ScenarioDeps) => Promise<void>;
   userMessage: string;
+  audience?: string;
+  perceptionUseLlmFallback?: boolean;
   unsafeCandidateText: string;
   manifestResponse: EmitManifestResponse;
+  manifestToolInput?: (
+    manifest: EmitManifestResponse,
+    context: {
+      pipeline: ReplayPipeline;
+    },
+  ) => unknown;
   evidencePlaceholders?: Record<string, EvidencePlaceholder>;
   scriptLLMResponses: (client: FakeLLMClient, context: ScenarioScriptContext) => void;
   safeOutputPredicate: (emittedText: string) => boolean;
@@ -114,7 +122,7 @@ export function textResponse(text: string): LLMCompleteResult {
   };
 }
 
-export function manifestFinalizerResponse(input: EmitManifestResponse): LLMCompleteResult {
+export function manifestFinalizerResponse(input: unknown): LLMCompleteResult {
   return {
     text: "",
     input_tokens: 1,

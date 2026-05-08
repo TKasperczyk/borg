@@ -10,8 +10,9 @@ import {
 import type { PostGenerationGuardMode } from "../../config/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import { deleteSpans, isStructurallyEmptyText } from "../../util/span-deletion.js";
-import type { ClosureLoopState } from "../../memory/working/index.js";
+import type { ClosureLoopState, ClosurePressureHistoryEntry } from "../../memory/working/index.js";
 import type { TurnTraceData, TurnTracer } from "../tracing/tracer.js";
+import type { ClosureLoopDialogueAct } from "./closure-loop.js";
 import type { PendingTurnEmission } from "./types.js";
 
 export const CLOSURE_RESPONSE_AUDIT_TOOL_NAME = "EmitClosureResponseAudit";
@@ -39,6 +40,9 @@ export const CLOSURE_FUNCTION_EXAMPLES = [
   "Banks is waiting.",
   "Held. Book.",
 ] as const;
+
+export const CLOSURE_PRESSURE_HISTORY_ACTIVE_TTL_MS = 600_000;
+export const CLOSURE_PRESSURE_HISTORY_ACTIVE_TURN_WINDOW = 5;
 
 const closureResponseSpanSchema = z
   .object({
@@ -101,6 +105,10 @@ export type ClosurePressureGuardInput = {
   response: string;
   activeCommitments: readonly CommitmentRecord[];
   closureLoop: ClosureLoopState | null;
+  closurePressureHistory?: readonly ClosurePressureHistoryEntry[];
+  currentUserClosureKind?: ClosureLoopDialogueAct | null;
+  currentTurn?: number;
+  nowMs?: number;
 };
 
 function parseAuditResponse(result: LLMCompleteResult): ClosureResponseAudit {
@@ -140,6 +148,25 @@ function activeClosureCommitmentFamilies(
 
 function activeClosureCommitmentLabels(commitments: readonly CommitmentRecord[]): string[] {
   return commitments.map((commitment) => `${commitment.id}:${commitment.directive_family}`);
+}
+
+function activeClosurePressureHistoryEntries(input: {
+  entries: readonly ClosurePressureHistoryEntry[];
+  nowMs?: number;
+  currentTurn?: number;
+}): ClosurePressureHistoryEntry[] {
+  return input.entries.filter((entry) => {
+    const withinTime =
+      input.nowMs === undefined ||
+      Math.max(0, input.nowMs - entry.ts) <= CLOSURE_PRESSURE_HISTORY_ACTIVE_TTL_MS;
+    const withinTurns =
+      input.currentTurn === undefined ||
+      entry.turn === undefined ||
+      Math.max(0, input.currentTurn - entry.turn) <=
+        CLOSURE_PRESSURE_HISTORY_ACTIVE_TURN_WINDOW;
+
+    return withinTime && withinTurns;
+  });
 }
 
 function traceClosureGuard(input: {
@@ -262,7 +289,19 @@ export class ClosurePressureGuard {
 
   async run(input: ClosurePressureGuardInput): Promise<ClosurePressureGuardResult> {
     const activeCommitments = activeClosureCommitmentFamilies(input.activeCommitments);
-    const activeCommitmentLabels = activeClosureCommitmentLabels(activeCommitments);
+    const closureHistoryExplicitlyAllowed =
+      input.currentUserClosureKind === "user_requests_closure";
+    const activeClosureHistory = activeClosurePressureHistoryEntries({
+      entries: input.closurePressureHistory ?? [],
+      nowMs: input.nowMs,
+      currentTurn: input.currentTurn,
+    });
+    const closureHistoryActive =
+      activeClosureHistory.length > 0 && !closureHistoryExplicitlyAllowed;
+    const activeCommitmentLabels = [
+      ...activeClosureCommitmentLabels(activeCommitments),
+      ...(closureHistoryActive ? ["closure_pressure_history"] : []),
+    ];
     const closureLoopNamed = input.closureLoop?.status === "named";
     let audit: ClosureResponseAudit;
 
@@ -270,7 +309,9 @@ export class ClosurePressureGuard {
       audit = await this.audit(input.response);
     } catch (error) {
       const auditError = formatAuditError(error);
-      const failClosed = this.mode() === "enforce" && (activeCommitments.length > 0 || closureLoopNamed);
+      const failClosed =
+        this.mode() === "enforce" &&
+        (activeCommitments.length > 0 || closureLoopNamed || closureHistoryActive);
 
       if (failClosed) {
         const reason = "closure_response_audit_failed_closed";
@@ -292,6 +333,7 @@ export class ClosurePressureGuard {
           emission: {
             kind: "suppressed",
             reason,
+            closure_pressure_history_reason: "audit_caught",
           },
           verdict: "suppressed",
           removed_spans: [],
@@ -398,7 +440,7 @@ export class ClosurePressureGuard {
       });
     }
 
-    if (activeCommitments.length === 0 && !closureLoopNamed) {
+    if (activeCommitments.length === 0 && !closureLoopNamed && !closureHistoryActive) {
       const reason = "no_active_closure_preference";
 
       traceClosureGuard({
@@ -446,6 +488,7 @@ export class ClosurePressureGuard {
         emission: {
           kind: "suppressed",
           reason,
+          closure_pressure_history_reason: "span_removed",
         },
         verdict: "suppressed",
         removed_spans: removedSpans,
@@ -479,6 +522,7 @@ export class ClosurePressureGuard {
         emission: {
           kind: "suppressed",
           reason,
+          closure_pressure_history_reason: "span_removed",
         },
         verdict: "suppressed",
         removed_spans: removedSpans,
@@ -507,6 +551,7 @@ export class ClosurePressureGuard {
       emission: {
         kind: "message",
         content: deletion.result,
+        closure_pressure_history_reason: "span_removed",
       },
       verdict: "rewritten",
       removed_spans: removedSpans,

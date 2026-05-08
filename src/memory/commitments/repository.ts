@@ -24,6 +24,7 @@ import {
   commitmentPatchSchema,
   commitmentSchema,
   entityRecordSchema,
+  nameProvenanceSchema,
   normalizeDirectiveFamily,
   type CommitmentApplicableOptions,
   type CommitmentListOptions,
@@ -31,6 +32,7 @@ import {
   type CommitmentRecord,
   type CommitmentType,
   type EntityRecord,
+  type NameProvenance,
 } from "./types.js";
 
 function normalizeName(value: string): string {
@@ -39,6 +41,24 @@ function normalizeName(value: string): string {
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+const NAME_PROVENANCE_RANK: Record<NameProvenance, number> = {
+  unknown: 0,
+  assistant_seeded: 1,
+  config_default_user: 2,
+  transport_audience_label: 2,
+  user_confirmed: 3,
+  user_declared: 4,
+};
+
+function strongerNameProvenance(
+  current: NameProvenance | undefined,
+  next: NameProvenance,
+): NameProvenance {
+  const currentValue = current ?? "unknown";
+
+  return NAME_PROVENANCE_RANK[next] > NAME_PROVENANCE_RANK[currentValue] ? next : currentValue;
 }
 
 const COMMITMENT_JSON_ARRAY_CODEC = {
@@ -54,6 +74,7 @@ function mapEntityRow(row: Record<string, unknown>): EntityRecord {
     aliases: uniqueStrings(
       parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases", COMMITMENT_JSON_ARRAY_CODEC),
     ),
+    name_provenance: nameProvenanceSchema.parse(row.name_provenance ?? "unknown"),
     created_at: Number(row.created_at),
   });
 }
@@ -150,7 +171,7 @@ export class EntityRepository {
     const rows = this.db
       .prepare(
         `
-          SELECT id, canonical_name, aliases, created_at
+          SELECT id, canonical_name, aliases, name_provenance, created_at
           FROM entities
           ORDER BY created_at ASC
         `,
@@ -178,8 +199,9 @@ export class EntityRepository {
     return null;
   }
 
-  resolve(name: string): EntityId {
+  resolve(name: string, options: { provenance?: NameProvenance } = {}): EntityId {
     const normalized = normalizeName(name);
+    const provenance = options.provenance ?? "unknown";
 
     if (normalized.length === 0) {
       throw new CommitmentError("Entity name is required", {
@@ -190,6 +212,15 @@ export class EntityRepository {
     const existing = this.findByName(name);
 
     if (existing !== null) {
+      const current = this.get(existing);
+      const nextProvenance = strongerNameProvenance(current?.name_provenance, provenance);
+
+      if (current !== null && nextProvenance !== (current.name_provenance ?? "unknown")) {
+        this.db
+          .prepare("UPDATE entities SET name_provenance = ? WHERE id = ?")
+          .run(nextProvenance, existing);
+      }
+
       return existing;
     }
 
@@ -197,17 +228,24 @@ export class EntityRepository {
       id: createEntityId(),
       canonical_name: name.trim(),
       aliases: [],
+      name_provenance: provenance,
       created_at: this.clock.now(),
     });
 
     this.db
       .prepare(
         `
-          INSERT INTO entities (id, canonical_name, aliases, created_at)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO entities (id, canonical_name, aliases, name_provenance, created_at)
+          VALUES (?, ?, ?, ?, ?)
         `,
       )
-      .run(entity.id, entity.canonical_name, serializeJsonValue(entity.aliases), entity.created_at);
+      .run(
+        entity.id,
+        entity.canonical_name,
+        serializeJsonValue(entity.aliases),
+        entity.name_provenance,
+        entity.created_at,
+      );
 
     return entity.id;
   }

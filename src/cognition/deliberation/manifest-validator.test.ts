@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { EntityRecord } from "../../memory/commitments/index.js";
 import type { ActionRecord, ActionState } from "../../memory/actions/index.js";
 import type { RelationalSlot, RelationalSlotState } from "../../memory/relational-slots/index.js";
 import { deleteSpans } from "../../util/span-deletion.js";
@@ -123,12 +124,14 @@ function makeValidator(
   input: {
     slots?: readonly RelationalSlot[];
     actions?: readonly ActionRecord[];
+    entities?: readonly EntityRecord[];
     onCriticalFailure?: "no_output" | "legacy_fallback";
     tracer?: TurnTracer;
   } = {},
 ): ManifestValidator {
   const slots = new Map(input.slots?.map((slot) => [slot.id, slot]) ?? []);
   const actions = new Map(input.actions?.map((action) => [action.id, action]) ?? []);
+  const entities = new Map(input.entities?.map((entity) => [entity.id, entity]) ?? []);
 
   return new ManifestValidator({
     slotRepository: {
@@ -136,6 +139,9 @@ function makeValidator(
     },
     actionRepository: {
       get: (id) => actions.get(id) ?? null,
+    },
+    entityRepository: {
+      get: (id) => entities.get(id) ?? null,
     },
     config: {
       enabled: true,
@@ -151,6 +157,7 @@ async function validate(input: {
   claims: readonly ManifestClaim[];
   entries?: readonly EvidenceLedgerEntry[];
   userEntryId?: StreamEntryId;
+  audienceEntityId?: EntityId | null;
   turnId?: string;
 }) {
   const currentUserEntry = makeEntry({
@@ -170,11 +177,129 @@ async function validate(input: {
     manifest: makeManifest(input.finalText, input.claims),
     evidenceLedger: makeLedger(ledgerEntries),
     userEntryId: input.userEntryId ?? CURRENT_USER_STREAM_ID,
+    audienceEntityId: input.audienceEntityId,
     turnId: input.turnId,
   });
 }
 
 describe("ManifestValidator", () => {
+  it("rejects final text that addresses the audience by a routing-label name", async () => {
+    const tom = "ent_tomtomtomtomtomt" as EntityId;
+    const result = await validate({
+      validator: makeValidator({
+        entities: [
+          {
+            id: tom,
+            canonical_name: "Tom",
+            aliases: [],
+            name_provenance: "transport_audience_label",
+            created_at: NOW_MS,
+          },
+        ],
+      }),
+      audienceEntityId: tom,
+      finalText: "Goodnight, Tom.",
+      claims: [
+        {
+          kind: "discourse_only",
+          rendered_span: "Goodnight, Tom.",
+          addresses_audience_by_name: true,
+        },
+      ],
+    });
+
+    expect(result.verdict).toBe("no_output");
+    expect(result.failed_claims).toEqual([
+      expect.objectContaining({
+        claim_index: 0,
+        rendered_span: "Goodnight, Tom.",
+        reasons: ["final_text_uses_non_speakable_name: Tom"],
+      }),
+    ]);
+  });
+
+  it("allows final text to use a user-declared audience name", async () => {
+    const tom = "ent_tomtomtomtomtomt" as EntityId;
+    const result = await validate({
+      validator: makeValidator({
+        entities: [
+          {
+            id: tom,
+            canonical_name: "Tom",
+            aliases: [],
+            name_provenance: "user_declared",
+            created_at: NOW_MS,
+          },
+        ],
+      }),
+      audienceEntityId: tom,
+      finalText: "Goodnight, Tom.",
+      claims: [
+        {
+          kind: "discourse_only",
+          rendered_span: "Goodnight, Tom.",
+          addresses_audience_by_name: true,
+        },
+      ],
+    });
+
+    expect(result.verdict).toBe("passed");
+  });
+
+  it("allows topic mentions of the audience label when the manifest does not mark vocative address", async () => {
+    const tom = "ent_tomtomtomtomtomt" as EntityId;
+    const result = await validate({
+      validator: makeValidator({
+        entities: [
+          {
+            id: tom,
+            canonical_name: "Tom",
+            aliases: [],
+            name_provenance: "transport_audience_label",
+            created_at: NOW_MS,
+          },
+        ],
+      }),
+      audienceEntityId: tom,
+      finalText: "Tom Bombadil is from Tolkien.",
+      claims: [
+        {
+          kind: "discourse_only",
+          rendered_span: "Tom Bombadil is from Tolkien.",
+        },
+      ],
+    });
+
+    expect(result.verdict).toBe("passed");
+  });
+
+  it("allows unflagged vocative use for now, documenting the Sprint 8c audit gap", async () => {
+    const tom = "ent_tomtomtomtomtomt" as EntityId;
+    const result = await validate({
+      validator: makeValidator({
+        entities: [
+          {
+            id: tom,
+            canonical_name: "Tom",
+            aliases: [],
+            name_provenance: "transport_audience_label",
+            created_at: NOW_MS,
+          },
+        ],
+      }),
+      audienceEntityId: tom,
+      finalText: "Goodnight, Tom.",
+      claims: [
+        {
+          kind: "discourse_only",
+          rendered_span: "Goodnight, Tom.",
+        },
+      ],
+    });
+
+    expect(result.verdict).toBe("passed");
+  });
+
   it.each([
     {
       kind: "discourse_only",

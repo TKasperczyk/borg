@@ -1,10 +1,15 @@
 import type {
+  ClosurePressureHistoryReason,
   ClosureLoopState,
   DiscourseStopProvenance,
+  RecentSuppressionEntry,
   StopUntilSubstantiveContent,
   WorkingMemory,
 } from "../../memory/working/index.js";
 import type { StreamEntryId } from "../../util/ids.js";
+
+export const CLOSURE_PRESSURE_HISTORY_LIMIT = 5;
+export const RECENT_SUPPRESSIONS_LIMIT = 3;
 
 export type SetStopUntilSubstantiveContentInput = {
   provenance: DiscourseStopProvenance;
@@ -30,8 +35,25 @@ export type MarkClosureLoopNamedInput = {
   turn: number;
 };
 
+export type AppendClosurePressureHistoryInput = {
+  turnId: string;
+  reason: ClosurePressureHistoryReason;
+  ts: number;
+};
+
+export type AppendRecentSuppressionInput = {
+  turnId: string;
+  reason: string;
+  ts: number;
+  sourceStreamEntryId?: StreamEntryId;
+};
+
 function baseDiscourseState(workingMemory: WorkingMemory): WorkingMemory["discourse_state"] {
   return workingMemory.discourse_state ?? { stop_until_substantive_content: null };
+}
+
+function capNewest<T>(values: readonly T[], limit: number): T[] {
+  return values.slice(Math.max(0, values.length - limit));
 }
 
 export function setStopUntilSubstantiveContent(
@@ -93,6 +115,60 @@ export function setClosureLoopDetected(
     discourse_state: {
       ...baseDiscourseState(workingMemory),
       closure_loop: state,
+    },
+  };
+}
+
+export function appendClosurePressureHistory(
+  workingMemory: WorkingMemory,
+  input: AppendClosurePressureHistoryInput,
+): WorkingMemory {
+  const state = baseDiscourseState(workingMemory);
+  const next = capNewest(
+    [
+      ...(state.closure_pressure_history ?? []),
+      {
+        turn_id: input.turnId,
+        turn: workingMemory.turn_counter,
+        reason: input.reason,
+        ts: input.ts,
+      },
+    ],
+    CLOSURE_PRESSURE_HISTORY_LIMIT,
+  );
+
+  return {
+    ...workingMemory,
+    discourse_state: {
+      ...state,
+      closure_pressure_history: next,
+    },
+  };
+}
+
+export function appendRecentSuppression(
+  workingMemory: WorkingMemory,
+  input: AppendRecentSuppressionInput,
+): WorkingMemory {
+  const state = baseDiscourseState(workingMemory);
+  const entry: RecentSuppressionEntry = {
+    turn_id: input.turnId,
+    reason: input.reason,
+    ts: input.ts,
+    ...(input.sourceStreamEntryId === undefined
+      ? {}
+      : { source_stream_entry_id: input.sourceStreamEntryId }),
+  };
+  const next = capNewest(
+    [...(state.recent_suppressions ?? []), entry],
+    RECENT_SUPPRESSIONS_LIMIT,
+  );
+
+  return {
+    ...workingMemory,
+    discourse_state: {
+      ...state,
+      recent_suppressions: next,
     },
   };
 }

@@ -428,6 +428,38 @@ describe("commitment repository", () => {
     }
   });
 
+  it("stores audience-label provenance and upgrades after user declaration", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const entities = new EntityRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    try {
+      const tom = entities.resolve("Tom", {
+        provenance: "transport_audience_label",
+      });
+
+      expect(entities.get(tom)?.name_provenance).toBe("transport_audience_label");
+
+      const resolvedAgain = entities.resolve("Tom", {
+        provenance: "user_declared",
+      });
+
+      expect(resolvedAgain).toBe(tom);
+      expect(entities.get(tom)?.name_provenance).toBe("user_declared");
+
+      entities.resolve("Tom", {
+        provenance: "config_default_user",
+      });
+      expect(entities.get(tom)?.name_provenance).toBe("user_declared");
+    } finally {
+      db.close();
+    }
+  });
+
   it("materializes expiration and records an identity event", () => {
     const db = openDatabase(":memory:", {
       migrations: composeMigrations(commitmentMigrations, identityMigrations),

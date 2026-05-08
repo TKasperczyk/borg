@@ -1,7 +1,8 @@
 import type { Config } from "../../config/index.js";
 import type { ActionRepository } from "../../memory/actions/index.js";
+import type { EntityRepository } from "../../memory/commitments/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
-import { parseActionId, parseRelationalSlotId } from "../../util/ids.js";
+import { parseActionId, parseRelationalSlotId, type EntityId } from "../../util/ids.js";
 import { deleteSpans, isStructurallyEmptyText } from "../../util/span-deletion.js";
 import { valueAppearsIn } from "../../util/text-presence.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
@@ -52,6 +53,7 @@ export type ManifestValidationResult =
 export type ManifestValidatorOptions = {
   slotRepository: Pick<RelationalSlotRepository, "get">;
   actionRepository: Pick<ActionRepository, "get">;
+  entityRepository?: Pick<EntityRepository, "get">;
   config: ManifestValidatorConfig;
   tracer?: TurnTracer;
 };
@@ -60,6 +62,7 @@ export type ManifestValidatorInput = {
   manifest: EmitManifestResponse;
   evidenceLedger: EvidenceLedger;
   userEntryId?: string;
+  audienceEntityId?: EntityId | null;
   turnId?: string;
 };
 
@@ -399,7 +402,37 @@ export class ManifestValidator {
       }
     }
 
-    const passedClaims = input.manifest.claims.length - failedClaims.length;
+    if (this.options.entityRepository !== undefined && input.audienceEntityId !== null) {
+      const audienceEntity =
+        input.audienceEntityId === undefined
+          ? null
+          : await this.options.entityRepository.get(input.audienceEntityId);
+      const provenance = audienceEntity?.name_provenance ?? "unknown";
+      const nameSpeakable = provenance === "user_declared" || provenance === "user_confirmed";
+
+      if (audienceEntity !== null && !nameSpeakable) {
+        for (const [claimIndex, claim] of input.manifest.claims.entries()) {
+          if (claim.addresses_audience_by_name !== true) {
+            continue;
+          }
+
+          failedClaims.push({
+            claim_index: claimIndex,
+            kind: claim.kind,
+            rendered_span: claim.rendered_span,
+            reasons: [`final_text_uses_non_speakable_name: ${audienceEntity.canonical_name}`],
+            claim,
+          });
+        }
+      }
+    }
+
+    const actualFailedIndexes = new Set(
+      failedClaims
+        .map((failed) => failed.claim_index)
+        .filter((index): index is number => index >= 0),
+    );
+    const passedClaims = input.manifest.claims.length - actualFailedIndexes.size;
 
     if (failedClaims.length === 0) {
       const result: ManifestValidationResult = {

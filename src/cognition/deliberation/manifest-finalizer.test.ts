@@ -113,6 +113,7 @@ describe("manifest finalizer parser", () => {
     expect(llm.requests[0]?.system).toContain(
       "Use self_report for first-person expression of interior states, identity reflection, voice, or boundary -- the model's own perspective.",
     );
+    expect(llm.requests[0]?.system).toContain("addresses_audience_by_name: true");
     expect(llm.requests[0]?.system).toContain(
       "When the entity is referenced by pronoun (she/he/they/it) or descriptive noun phrase",
     );
@@ -124,17 +125,33 @@ describe("manifest finalizer parser", () => {
   it.each([
     {
       wrapper: "input",
+      expectedTrace: "input_wrapper",
       input: {
         input: validManifestInput,
       },
     },
     {
       wrapper: "arguments",
+      expectedTrace: "arguments_wrapper",
       input: {
         arguments: validManifestInput,
       },
     },
-  ])("unwraps a single $wrapper manifest tool input wrapper", async ({ input }) => {
+    {
+      wrapper: "$PARAMETER_VALUE",
+      expectedTrace: "parameter_value_wrapper",
+      input: {
+        $PARAMETER_VALUE: validManifestInput,
+      },
+    },
+    {
+      wrapper: "response",
+      expectedTrace: "response_wrapper",
+      input: {
+        response: validManifestInput,
+      },
+    },
+  ])("unwraps a single $wrapper manifest tool input wrapper", async ({ input, expectedTrace }) => {
     const tracer = new CapturingTracer();
 
     const result = await runWithToolCalls(
@@ -153,8 +170,62 @@ describe("manifest finalizer parser", () => {
       tracer.events.find((entry) => entry.event === "manifest_finalizer_emitted")?.data,
     ).toMatchObject({
       parsed: true,
-      manifest_finalizer_unwrapped: true,
+      manifest_finalizer_unwrapped: expectedTrace,
     });
+  });
+
+  it("drops leaked tool metadata before strict manifest parsing", async () => {
+    const tracer = new CapturingTracer();
+
+    const result = await runWithToolCalls(
+      [
+        {
+          id: "toolu_manifest",
+          name: "EmitManifestResponse",
+          input: {
+            ...validManifestInput,
+            $FUNCTION_NAME: "EmitManifestResponse",
+          },
+        },
+      ],
+      tracer,
+    );
+
+    expect(result.manifest).toEqual(validManifestInput);
+    expect(
+      tracer.events.find((entry) => entry.event === "manifest_finalizer_emitted")?.data,
+    ).toMatchObject({
+      parsed: true,
+      manifest_finalizer_unwrapped: "function_name_dropped",
+    });
+  });
+
+  it("still rejects leaked tool metadata when required claims are missing", async () => {
+    const tracer = new CapturingTracer();
+
+    await expect(
+      runWithToolCalls(
+        [
+          {
+            id: "toolu_manifest",
+            name: "EmitManifestResponse",
+            input: {
+              final_text: "Done.",
+              discourse_act: "answer",
+              $FUNCTION_NAME: "EmitManifestResponse",
+            },
+          },
+        ],
+        tracer,
+      ),
+    ).rejects.toThrow("Manifest finalizer returned invalid tool output");
+
+    const parseFailed = tracer.events.find(
+      (entry) => entry.event === "manifest_finalizer_parse_failed",
+    );
+
+    expect(parseFailed?.data.parsed).toBe(false);
+    expect(JSON.stringify(parseFailed?.data.issues)).toContain("claims");
   });
 
   it.each([

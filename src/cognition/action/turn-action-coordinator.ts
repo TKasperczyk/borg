@@ -8,6 +8,7 @@ import type { EntityId, SessionId } from "../../util/ids.js";
 import type { AutonomyTriggerContext } from "../autonomy-trigger.js";
 import type { CommitmentGuardRunner } from "../commitments/guard-runner.js";
 import type { DeliberationResult } from "../deliberation/deliberator.js";
+import type { ClosureLoopDialogueAct } from "../generation/closure-loop.js";
 import type { PendingTurnEmission } from "../generation/types.js";
 import type { TurnRelationalGuardRunner } from "../generation/turn-relational-guard.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
@@ -42,6 +43,7 @@ export type RunTurnActionInput = {
   perceptionEntities: PerceptionResult["entities"];
   persistedUserEntry?: Parameters<TurnRelationalGuardRunner["run"]>[0]["persistedUserEntry"];
   retrievedEpisodes: readonly RetrievedEpisode[];
+  currentUserClosureKind?: ClosureLoopDialogueAct | null;
   audienceEntityId: EntityId | null;
 };
 
@@ -162,6 +164,10 @@ export class TurnActionCoordinator {
               retrievedEpisodes: input.retrievedEpisodes,
               activeCommitments: input.applicableCommitments,
               closureLoop: input.workingMemory.discourse_state?.closure_loop ?? null,
+              closurePressureHistory:
+                input.workingMemory.discourse_state?.closure_pressure_history ?? [],
+              currentUserClosureKind: input.currentUserClosureKind,
+              currentTurn: input.workingMemory.turn_counter,
               audienceEntityId: input.audienceEntityId,
             }),
             input.deliberationEmission.persistence_class,

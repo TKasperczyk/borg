@@ -42,7 +42,7 @@ function invalidModeResponse() {
   };
 }
 
-function entityResponse(entities: readonly string[]) {
+function entityResponse(entities: readonly string[], userIdentityNames: readonly string[] = []) {
   return {
     text: "",
     input_tokens: 1,
@@ -50,10 +50,10 @@ function entityResponse(entities: readonly string[]) {
     stop_reason: "tool_use",
     tool_calls: [
       {
-        id: "toolu_entity",
-        name: ENTITY_TOOL_NAME,
-        input: { entities },
-      },
+              id: "toolu_entity",
+              name: ENTITY_TOOL_NAME,
+              input: { entities, user_identity_names: userIdentityNames },
+            },
     ],
   };
 }
@@ -267,6 +267,21 @@ describe("perception", () => {
       "bicycles",
     ]);
     expect(llm.requests).toHaveLength(1);
+  });
+
+  it("surfaces LLM-declared user identity names separately from entity mentions", async () => {
+    const llm = new FakeLLMClient({
+      responses: [entityResponse(["Tom"], ["Tom"])],
+    });
+    const extractor = new EntityExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    expect(await extractor.extract("I'm Tom")).toEqual({
+      entities: ["Tom"],
+      userIdentityNames: ["Tom"],
+    });
   });
 
   it("falls back to the configured neutral mode when mode detection throws", async () => {

@@ -35,7 +35,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       return null;
     }
 
-    return deps.entityRepository.resolve(options.audience);
+    return deps.entityRepository.resolve(options.audience, {
+      provenance: "transport_audience_label",
+    });
   };
 
   const resolveEpisodeAudienceTerms = (

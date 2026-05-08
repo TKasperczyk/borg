@@ -170,7 +170,9 @@ export class TurnPhaseCoordinator {
     const audienceEntityId =
       turnInput.audience === undefined || isSelfAudience
         ? null
-        : this.options.entityRepository.resolve(turnInput.audience);
+        : this.options.entityRepository.resolve(turnInput.audience, {
+            provenance: "transport_audience_label",
+          });
     const audienceEntity =
       audienceEntityId === null ? null : this.options.entityRepository.get(audienceEntityId);
     let audienceProfile =
@@ -183,6 +185,11 @@ export class TurnPhaseCoordinator {
       workingMemory,
     });
     const perception = perceptionResult.perception;
+    for (const userIdentityName of perception.userIdentityNames ?? []) {
+      this.options.entityRepository.resolve(userIdentityName, {
+        provenance: "user_declared",
+      });
+    }
     const recencyWindow = perceptionResult.recencyWindow;
     const workingMood = perceptionResult.workingMood;
     workingMemory = perceptionResult.workingMemory;
@@ -527,6 +534,7 @@ export class TurnPhaseCoordinator {
       perceptionEntities: perception.entities,
       persistedUserEntry: persistedUserEntry ?? undefined,
       retrievedEpisodes,
+      currentUserClosureKind: closureLoopAssessment?.currentUserAct ?? null,
       audienceEntityId,
     });
     const actionResult = actionCoordinatorResult.actionResult;
@@ -576,6 +584,13 @@ export class TurnPhaseCoordinator {
         : { persistence_class: actionEmission.persistence_class }),
     };
     let postActionWorkingMemory = actionResult.workingMemory;
+    if (actionEmission.closure_pressure_history_reason !== undefined) {
+      postActionWorkingMemory = this.options.discourseStateService.appendClosurePressureHistory({
+        workingMemory: postActionWorkingMemory,
+        turnId,
+        reason: actionEmission.closure_pressure_history_reason,
+      });
+    }
     const stopCommitmentExtractor = new StopCommitmentExtractor({
       llmClient,
       model: this.options.config.anthropic.models.background,
@@ -753,8 +768,10 @@ export class TurnPhaseCoordinator {
     }
 
     const activeClosureLoop = input.workingMemory.discourse_state?.closure_loop ?? null;
+    const closurePressureHistory =
+      input.workingMemory.discourse_state?.closure_pressure_history ?? [];
 
-    if (activeClosureLoop === null && input.recentHistory.length < 4) {
+    if (activeClosureLoop === null && closurePressureHistory.length === 0 && input.recentHistory.length < 4) {
       return null;
     }
 
@@ -906,6 +923,14 @@ export class TurnPhaseCoordinator {
       reason: "no_output_tool",
       markerEntryId: suppressionMarker.id,
     };
+    const suppressedWorkingMemory = this.options.discourseStateService.applySuppressedEmissionState(
+      {
+        workingMemory: suppressionActionResult.workingMemory,
+        reason: "no_output_tool",
+        sourceStreamEntryId: suppressionMarker.id,
+        turnId: input.turnId,
+      },
+    );
 
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("generation_suppressed", {
@@ -918,7 +943,7 @@ export class TurnPhaseCoordinator {
     }
 
     this.options.workingMemoryStore.save({
-      ...suppressionActionResult.workingMemory,
+      ...suppressedWorkingMemory,
       updated_at: this.options.clock.now(),
     });
     await this.persistCorrectiveCommitment(input.streamWriter, input.correctiveCommitment);

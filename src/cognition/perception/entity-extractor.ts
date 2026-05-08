@@ -10,6 +10,7 @@ import { CognitionError, LLMError } from "../../util/errors.js";
 
 const entityFallbackSchema = z.object({
   entities: z.array(z.string().min(1)),
+  user_identity_names: z.array(z.string().min(1)).optional(),
 });
 const ENTITY_FALLBACK_TOOL_NAME = "EmitEntityExtraction";
 export const ENTITY_FALLBACK_TOOL = {
@@ -32,6 +33,8 @@ const ENTITY_LLM_SYSTEM_PROMPT = [
   "- Verbatim phrases longer than ~6 words",
   "",
   "If the text contains no specific named entities, return an empty list. An empty list is the correct output for most casual text. Do not invent entities to fill the list.",
+  "",
+  "Also populate user_identity_names only when the user explicitly states or confirms that a name is their own name in this message. Do not copy audience labels, metadata names, addressed names, or names merely mentioned as topics.",
 ].join("\n");
 
 // Output sanitization: keep only language-neutral structural checks.
@@ -55,7 +58,12 @@ function isAcceptableEntity(value: string): boolean {
   return true;
 }
 
-function parseEntityFallback(result: LLMCompleteResult): string[] {
+export type EntityExtractionResult = {
+  entities: string[];
+  userIdentityNames: string[];
+};
+
+function parseEntityFallback(result: LLMCompleteResult): EntityExtractionResult {
   const call = result.tool_calls.find((toolCall) => toolCall.name === ENTITY_FALLBACK_TOOL_NAME);
 
   if (call === undefined) {
@@ -73,7 +81,10 @@ function parseEntityFallback(result: LLMCompleteResult): string[] {
     });
   }
 
-  return sanitizeEntities(parsed.data.entities);
+  return {
+    entities: sanitizeEntities(parsed.data.entities),
+    userIdentityNames: sanitizeEntities(parsed.data.user_identity_names ?? []),
+  };
 }
 
 function sanitizeEntities(values: readonly string[]): string[] {
@@ -108,11 +119,14 @@ export type EntityExtractorOptions = {
 export class EntityExtractor {
   constructor(private readonly options: EntityExtractorOptions = {}) {}
 
-  async extractEntities(text: string): Promise<string[]> {
+  async extract(text: string): Promise<EntityExtractionResult> {
     const normalizedText = text.trim();
 
     if (normalizedText.length === 0) {
-      return [];
+      return {
+        entities: [],
+        userIdentityNames: [],
+      };
     }
 
     if (this.options.llmClient === undefined || this.options.model === undefined) {
@@ -121,7 +135,10 @@ export class EntityExtractor {
       // entities at high rates ('Good', 'If', '[End.]'), and those
       // entities then poisoned downstream retrieval. Empty is better
       // than wrong.
-      return [];
+      return {
+        entities: [],
+        userIdentityNames: [],
+      };
     }
 
     try {
@@ -150,5 +167,9 @@ export class EntityExtractor {
         code: "ENTITY_EXTRACTION_FAILED",
       });
     }
+  }
+
+  async extractEntities(text: string): Promise<string[]> {
+    return (await this.extract(text)).entities;
   }
 }

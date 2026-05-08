@@ -25,6 +25,7 @@ export type EvidenceRef = z.infer<typeof evidenceRefSchema>;
 
 const renderedSpanSchema = z.object({
   rendered_span: z.string(),
+  addresses_audience_by_name: z.boolean().optional(),
 });
 
 const evidenceArraySchema = z.array(evidenceRefSchema);
@@ -92,6 +93,7 @@ export const selfReportClaimSchema = z
   .object({
     kind: z.literal("self_report"),
     rendered_span: z.string().min(1),
+    addresses_audience_by_name: z.boolean().optional(),
     persistence_class: z.literal("assistant_self_report"),
   })
   .strict();

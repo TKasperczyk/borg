@@ -37,6 +37,8 @@ const MANIFEST_COVERAGE_INSTRUCTIONS = [
   "",
   "Use discourse_only only for connective tissue, acknowledgments, non-factual conversational moves, and imperatives without factual content.",
   "",
+  "When final_text addresses the user vocatively by name (e.g., 'Goodnight, Tom', 'Tom, what do you think?'), set addresses_audience_by_name: true on the claim containing that span. Do NOT set this flag for topic mentions, third-person references, or quotes (e.g., 'Tom is the name we discussed', 'Tom Bombadil from Tolkien', 'You said \"Tom is here\"').",
+  "",
   "Use self_report for first-person expression of interior states, identity reflection, voice, or boundary -- the model's own perspective. Self-reports are accepted as expression and persisted with persistence_class: assistant_self_report. They are not factual evidence about the external world.",
   "",
   "Use user_fact for exact user-specific details: names, places, dates, numbers, itinerary items, counts, durations, concrete preferences, and other sourced specifics.",
@@ -86,12 +88,20 @@ export type ManifestFinalizerResult = {
   usage: DeliberationUsage;
 };
 
+export type ManifestFinalizerUnwrapped =
+  | false
+  | "input_wrapper"
+  | "arguments_wrapper"
+  | "parameter_value_wrapper"
+  | "response_wrapper"
+  | "function_name_dropped";
+
 type ManifestExtractionResult =
   | {
       ok: true;
       manifest: EmitManifestResponse;
       rawToolInput: unknown;
-      unwrapped: boolean;
+      unwrapped: ManifestFinalizerUnwrapped;
     }
   | {
       ok: false;
@@ -101,25 +111,59 @@ type ManifestExtractionResult =
       rawToolCalls: readonly LLMToolCall[];
     };
 
-function wrappedManifestInput(input: unknown): unknown | null {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) {
-    return null;
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeManifestInput(input: unknown): {
+  value: unknown;
+  unwrapped: ManifestFinalizerUnwrapped;
+} {
+  if (!isObjectRecord(input)) {
+    return {
+      value: input,
+      unwrapped: false,
+    };
   }
 
-  const record = input as Record<string, unknown>;
-  const keys = Object.keys(record);
+  const wrapperReasons = {
+    input: "input_wrapper",
+    arguments: "arguments_wrapper",
+    $PARAMETER_VALUE: "parameter_value_wrapper",
+    response: "response_wrapper",
+  } as const satisfies Record<string, Exclude<ManifestFinalizerUnwrapped, false | "function_name_dropped">>;
+  const keys = Object.keys(input);
+  const wrapperKey = keys.length === 1 ? keys[0] : undefined;
+  const wrapperReason =
+    wrapperKey === undefined
+      ? undefined
+      : wrapperReasons[wrapperKey as keyof typeof wrapperReasons];
+  let value: unknown = input;
+  let unwrapped: ManifestFinalizerUnwrapped = false;
 
-  if (keys.length !== 1 || (keys[0] !== "input" && keys[0] !== "arguments")) {
-    return null;
+  if (wrapperReason !== undefined) {
+    const inner = input[wrapperKey as keyof typeof input];
+
+    if (isObjectRecord(inner)) {
+      value = inner;
+      unwrapped = wrapperReason;
+    }
   }
 
-  const value = record[keys[0] as "input" | "arguments"];
-
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return null;
+  if (!isObjectRecord(value) || typeof value.$FUNCTION_NAME !== "string") {
+    return {
+      value,
+      unwrapped,
+    };
   }
 
-  return value;
+  // API leakage of tool-call metadata into payload; the manifest itself remains strict.
+  const { $FUNCTION_NAME: _droppedFunctionName, ...normalized } = value;
+
+  return {
+    value: normalized,
+    unwrapped: unwrapped === false ? "function_name_dropped" : unwrapped,
+  };
 }
 
 function buildManifestSystemPrompt(options: RunManifestFinalizerOptions): string {
@@ -185,22 +229,8 @@ function extractManifestResponse(toolCalls: readonly LLMToolCall[]): ManifestExt
     };
   }
 
-  const wrapperInput = wrappedManifestInput(call.input);
-
-  if (wrapperInput !== null) {
-    const unwrapped = emitManifestResponseSchema.safeParse(wrapperInput);
-
-    if (unwrapped.success) {
-      return {
-        ok: true,
-        manifest: unwrapped.data,
-        rawToolInput: call.input,
-        unwrapped: true,
-      };
-    }
-  }
-
-  const parsed = emitManifestResponseSchema.safeParse(call.input);
+  const normalized = normalizeManifestInput(call.input);
+  const parsed = emitManifestResponseSchema.safeParse(normalized.value);
 
   if (!parsed.success) {
     return {
@@ -216,7 +246,7 @@ function extractManifestResponse(toolCalls: readonly LLMToolCall[]): ManifestExt
     ok: true,
     manifest: parsed.data,
     rawToolInput: call.input,
-    unwrapped: false,
+    unwrapped: normalized.unwrapped,
   };
 }
 
@@ -265,7 +295,7 @@ function emitParseFailedTrace(
 function emitManifestTrace(
   options: RunManifestFinalizerOptions,
   manifest: EmitManifestResponse,
-  unwrapped: boolean,
+  unwrapped: ManifestFinalizerUnwrapped,
 ): void {
   if (options.tracer?.enabled !== true || options.turnId === undefined) {
     return;
@@ -279,7 +309,7 @@ function emitManifestTrace(
     claim_kinds: summarizeClaimKinds(manifest.claims),
     claim_counts_by_kind: claimCountsByKind(manifest.claims),
     parsed: true,
-    ...(unwrapped ? { manifest_finalizer_unwrapped: true } : {}),
+    ...(unwrapped === false ? {} : { manifest_finalizer_unwrapped: unwrapped }),
     ...(manifest.no_output_reason === undefined
       ? {}
       : { no_output_reason: manifest.no_output_reason }),

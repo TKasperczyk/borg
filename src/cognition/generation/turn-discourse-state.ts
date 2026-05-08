@@ -1,8 +1,11 @@
 import type { StreamWriter } from "../../stream/index.js";
+import { SystemClock, type Clock } from "../../util/clock.js";
 import type { StreamEntryId } from "../../util/ids.js";
-import type { WorkingMemory } from "../../memory/working/index.js";
+import type { ClosurePressureHistoryReason, WorkingMemory } from "../../memory/working/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import {
+  appendClosurePressureHistory,
+  appendRecentSuppression,
   clearClosureLoop,
   clearStopUntilSubstantiveContent,
   markClosureLoopNamed,
@@ -33,6 +36,7 @@ function isRelationalGuardSuppressionReason(reason: SuppressionReason): boolean 
 
 export type TurnDiscourseStateServiceOptions = {
   tracer: TurnTracer;
+  clock?: Clock;
 };
 
 export type SetTurnDiscourseStopStateInput = {
@@ -52,7 +56,11 @@ export type AppendSuppressionMarkerInput = {
 };
 
 export class TurnDiscourseStateService {
-  constructor(private readonly options: TurnDiscourseStateServiceOptions) {}
+  private readonly clock: Clock;
+
+  constructor(private readonly options: TurnDiscourseStateServiceOptions) {
+    this.clock = options.clock ?? new SystemClock();
+  }
 
   setStopState(input: SetTurnDiscourseStopStateInput): WorkingMemory {
     const next = setStopUntilSubstantiveContent(input.workingMemory, {
@@ -103,10 +111,15 @@ export class TurnDiscourseStateService {
     reason: string;
     turnId: string;
   }): WorkingMemory {
-    const next = setClosureLoopDetected(input.workingMemory, {
+    const detected = setClosureLoopDetected(input.workingMemory, {
       sourceStreamEntryIds: input.sourceStreamEntryIds,
       reason: input.reason,
       sinceTurn: input.workingMemory.turn_counter,
+    });
+    const next = appendClosurePressureHistory(detected, {
+      turnId: input.turnId,
+      reason: "loop_detected",
+      ts: this.clock.now(),
     });
 
     if (this.options.tracer.enabled) {
@@ -120,6 +133,18 @@ export class TurnDiscourseStateService {
     }
 
     return next;
+  }
+
+  appendClosurePressureHistory(input: {
+    workingMemory: WorkingMemory;
+    turnId: string;
+    reason: ClosurePressureHistoryReason;
+  }): WorkingMemory {
+    return appendClosurePressureHistory(input.workingMemory, {
+      turnId: input.turnId,
+      reason: input.reason,
+      ts: this.clock.now(),
+    });
   }
 
   markClosureLoopNamed(input: {
@@ -221,7 +246,26 @@ export class TurnDiscourseStateService {
     sourceStreamEntryId: StreamEntryId;
     turnId: string;
   }): WorkingMemory {
-    let workingMemory = input.workingMemory;
+    let workingMemory = appendRecentSuppression(input.workingMemory, {
+      turnId: input.turnId,
+      reason: input.reason,
+      sourceStreamEntryId: input.sourceStreamEntryId,
+      ts: this.clock.now(),
+    });
+
+    if (input.reason === "closure_pressure_only") {
+      workingMemory = appendClosurePressureHistory(workingMemory, {
+        turnId: input.turnId,
+        reason: "span_removed",
+        ts: this.clock.now(),
+      });
+    } else if (input.reason === "closure_response_audit_failed_closed") {
+      workingMemory = appendClosurePressureHistory(workingMemory, {
+        turnId: input.turnId,
+        reason: "audit_caught",
+        ts: this.clock.now(),
+      });
+    }
 
     if (input.reason === "no_output_tool" || input.reason === "manifest_no_output") {
       workingMemory = this.setStopState({

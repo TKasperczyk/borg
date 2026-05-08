@@ -3,7 +3,7 @@ import type { PostGenerationGuardMode, RelationalClaimGuardMode } from "../../co
 import type { ActionRecord, ActionRepository } from "../../memory/actions/index.js";
 import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
-import type { ClosureLoopState } from "../../memory/working/index.js";
+import type { ClosureLoopState, ClosurePressureHistoryEntry } from "../../memory/working/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import {
   loadActiveSessionTranscriptEntries,
@@ -13,6 +13,7 @@ import {
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import type { ClosureLoopDialogueAct } from "./closure-loop.js";
 import { ClosurePressureGuard } from "./closure-pressure-guard.js";
 import type { PendingTurnEmission } from "./types.js";
 import {
@@ -53,6 +54,9 @@ export type RunTurnRelationalGuardInput = {
   retrievedEpisodes: readonly RetrievedEpisode[];
   activeCommitments: readonly CommitmentRecord[];
   closureLoop: ClosureLoopState | null;
+  closurePressureHistory?: readonly ClosurePressureHistoryEntry[];
+  currentUserClosureKind?: ClosureLoopDialogueAct | null;
+  currentTurn?: number;
   audienceEntityId: EntityId | null;
 };
 
@@ -113,6 +117,10 @@ export class TurnRelationalGuardRunner {
       response: result.emission.content,
       activeCommitments: input.activeCommitments,
       closureLoop: input.closureLoop,
+      closurePressureHistory: input.closurePressureHistory,
+      currentUserClosureKind: input.currentUserClosureKind,
+      currentTurn: input.currentTurn,
+      nowMs: this.options.clock.now(),
     });
 
     return closureResult.emission;

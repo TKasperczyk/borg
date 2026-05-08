@@ -8,6 +8,7 @@ import {
   type RelationalSlotId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { nameProvenanceSchema, type NameProvenance } from "../commitments/types.js";
 
 export const RELATIONAL_SLOT_STATES = [
   "established",
@@ -59,6 +60,7 @@ export const relationalSlotSchema = z
     evidence_stream_entry_ids: z.array(relationalSlotStreamEntryIdSchema),
     contradicted_by_stream_entry_ids: z.array(relationalSlotStreamEntryIdSchema),
     alternate_values: z.array(relationalSlotAlternateValueSchema),
+    name_provenance: nameProvenanceSchema.optional(),
     created_at: z.number().finite(),
     updated_at: z.number().finite(),
   })
@@ -71,6 +73,7 @@ export const relationalSlotAssertionSchema = z
     asserted_value: z.string().min(1),
     source_stream_entry_ids: z.array(relationalSlotStreamEntryIdSchema).min(1),
     confirmation: relationalSlotAssertionConfirmationSchema,
+    name_provenance: nameProvenanceSchema.optional(),
   })
   .strict();
 
@@ -91,3 +94,4 @@ export type RelationalSlotAssertionConfirmation = z.infer<
   typeof relationalSlotAssertionConfirmationSchema
 >;
 export type RelationalSlotNegation = z.infer<typeof relationalSlotNegationSchema>;
+export type RelationalSlotNameProvenance = NameProvenance;

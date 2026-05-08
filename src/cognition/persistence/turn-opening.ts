@@ -64,6 +64,7 @@ export class TurnOpeningPersistence {
       content: {
         mode: input.perception.mode,
         entities: input.perception.entities,
+        userIdentityNames: input.perception.userIdentityNames ?? [],
         temporalCue: input.perception.temporalCue,
         affectiveSignal: input.perception.affectiveSignal,
         affectiveSignalDegraded: input.perception.affectiveSignalDegraded === true,

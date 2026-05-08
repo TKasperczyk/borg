@@ -129,10 +129,36 @@ export const closureLoopStateSchema = z
   })
   .strict();
 
+export const closurePressureHistoryReasonSchema = z.enum([
+  "span_removed",
+  "loop_detected",
+  "audit_caught",
+]);
+
+export const closurePressureHistoryEntrySchema = z
+  .object({
+    turn_id: z.string().min(1),
+    turn: z.number().int().nonnegative().optional(),
+    reason: closurePressureHistoryReasonSchema,
+    ts: z.number().finite(),
+  })
+  .strict();
+
+export const recentSuppressionEntrySchema = z
+  .object({
+    turn_id: z.string().min(1),
+    reason: z.string().min(1),
+    ts: z.number().finite(),
+    source_stream_entry_id: workingStreamEntryIdSchema.optional(),
+  })
+  .strict();
+
 export const discourseStateSchema = z
   .object({
     stop_until_substantive_content: stopUntilSubstantiveContentSchema.nullable(),
     closure_loop: closureLoopStateSchema.nullable().optional(),
+    closure_pressure_history: z.array(closurePressureHistoryEntrySchema).optional(),
+    recent_suppressions: z.array(recentSuppressionEntrySchema).optional(),
   })
   .strict();
 
@@ -175,6 +201,9 @@ export type DiscourseState = z.infer<typeof discourseStateSchema>;
 export type DiscourseStopProvenance = z.infer<typeof discourseStopProvenanceSchema>;
 export type StopUntilSubstantiveContent = z.infer<typeof stopUntilSubstantiveContentSchema>;
 export type ClosureLoopState = z.infer<typeof closureLoopStateSchema>;
+export type ClosurePressureHistoryEntry = z.infer<typeof closurePressureHistoryEntrySchema>;
+export type ClosurePressureHistoryReason = z.infer<typeof closurePressureHistoryReasonSchema>;
+export type RecentSuppressionEntry = z.infer<typeof recentSuppressionEntrySchema>;
 
 /**
  * Derived live-state only. Phase E removed `scratchpad` (S2 planner output
@@ -197,6 +226,8 @@ export function createWorkingMemory(sessionId: SessionId, timestamp: number): Wo
     pending_procedural_attempts: [],
     discourse_state: {
       stop_until_substantive_content: null,
+      closure_pressure_history: [],
+      recent_suppressions: [],
     },
     mode: null,
     updated_at: timestamp,

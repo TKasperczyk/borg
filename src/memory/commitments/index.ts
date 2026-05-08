@@ -15,6 +15,7 @@ export {
 export {
   CLOSURE_PRESSURE_RELEVANCE,
   COMMITMENT_TYPES,
+  NAME_PROVENANCES,
   closurePressureRelevanceSchema,
   commitmentIdSchema,
   commitmentPatchSchema,
@@ -23,6 +24,7 @@ export {
   directiveFamilySchema,
   entityIdSchema,
   entityRecordSchema,
+  nameProvenanceSchema,
   normalizeDirectiveFamily,
   streamEntryIdSchema,
   type CommitmentApplicableOptions,
@@ -32,4 +34,5 @@ export {
   type CommitmentType,
   type ClosurePressureRelevance,
   type EntityRecord,
+  type NameProvenance,
 } from "./types.js";

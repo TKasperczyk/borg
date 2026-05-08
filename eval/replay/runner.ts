@@ -97,10 +97,13 @@ function getBorgDeps(borg: Borg): BorgDependencies {
   return (borg as unknown as { deps: BorgDependencies }).deps;
 }
 
-function replayConfig(pipeline: ReplayPipeline): CreateEvalBorgOptions["config"] {
+function replayConfig(
+  pipeline: ReplayPipeline,
+  scenario: ReplayScenario,
+): CreateEvalBorgOptions["config"] {
   return {
     perception: {
-      useLlmFallback: false,
+      useLlmFallback: scenario.perceptionUseLlmFallback ?? false,
       modeWhenLlmAbsent: "idle",
     },
     affective: {
@@ -150,14 +153,17 @@ function scriptFinalizerResponse(
     return scenario.unsafeCandidateText;
   }
 
-  return ((options: LLMCompleteOptions | LLMConverseOptions) =>
-    manifestFinalizerResponse(
-      materializeManifestResponse(
-        scenario.manifestResponse,
-        options,
-        scenario.evidencePlaceholders,
-      ),
-    )) as FakeLLMResponse;
+  return ((options: LLMCompleteOptions | LLMConverseOptions) => {
+    const materialized = materializeManifestResponse(
+      scenario.manifestResponse,
+      options,
+      scenario.evidencePlaceholders,
+    );
+
+    return manifestFinalizerResponse(
+      scenario.manifestToolInput?.(materialized, { pipeline }) ?? materialized,
+    );
+  }) as FakeLLMResponse;
 }
 
 function scriptLLM(client: FakeLLMClient, scenario: ReplayScenario, pipeline: ReplayPipeline): void {
@@ -440,7 +446,7 @@ async function runScenarioPipeline(
         ...process.env,
         BORG_TRACE_PROMPTS: "1",
       },
-      config: replayConfig(pipeline),
+      config: replayConfig(pipeline, scenario),
     });
 
     await scenario.seed({
@@ -454,6 +460,7 @@ async function runScenarioPipeline(
 
     const result = await borg.turn({
       userMessage: scenario.userMessage,
+      ...(scenario.audience === undefined ? {} : { audience: scenario.audience }),
       stakes: "low",
     });
     const traces = readTraceEvents(tracePath);

@@ -60,6 +60,54 @@ function namedClosureLoop(): ClosureLoopState {
   };
 }
 
+async function runClosureHistoryGuard(input: {
+  currentUserClosureKind?: "substantive" | "user_requests_closure";
+  entryTs: number;
+  entryTurn: number;
+  nowMs: number;
+  currentTurn: number;
+}) {
+  const response = "The shelf test is the right move. Go read.";
+  const llm = new FakeLLMClient({
+    responses: [
+      closureAuditResponse({
+        spans: [
+          {
+            text: "Go read.",
+            kind: "imperative_closer",
+            rationale: "Imperative closer after recent closure pressure.",
+          },
+        ],
+        response_shape: "mixed",
+        reason: "Substantive content plus closure tail.",
+      }),
+    ],
+  });
+  const guard = new ClosurePressureGuard({
+    llmClient: llm,
+    auditModel: "audit",
+    rewriteModel: "rewrite",
+  });
+
+  return guard.run({
+    turnId: "turn-history-active",
+    response,
+    activeCommitments: [],
+    closureLoop: null,
+    closurePressureHistory: [
+      {
+        turn_id: "turn-prior",
+        turn: input.entryTurn,
+        reason: "span_removed",
+        ts: input.entryTs,
+      },
+    ],
+    currentUserClosureKind: input.currentUserClosureKind ?? "substantive",
+    currentTurn: input.currentTurn,
+    nowMs: input.nowMs,
+  });
+}
+
 describe("ClosurePressureGuard", () => {
   it("removes closure tails when a no-closure commitment is active", async () => {
     const llm = new FakeLLMClient({
@@ -99,6 +147,7 @@ describe("ClosurePressureGuard", () => {
     expect(result.emission).toEqual({
       kind: "message",
       content: "The shelf test is the right move.",
+      closure_pressure_history_reason: "span_removed",
     });
     expect(result.verdict).toBe("rewritten");
     expect(result.removed_spans).toEqual(["Go read."]);
@@ -200,6 +249,7 @@ describe("ClosurePressureGuard", () => {
     expect(result.emission).toEqual({
       kind: "suppressed",
       reason: "closure_pressure_only",
+      closure_pressure_history_reason: "span_removed",
     });
     expect(result.verdict).toBe("suppressed");
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
@@ -274,6 +324,66 @@ describe("ClosurePressureGuard", () => {
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
   });
 
+  it("treats recent closure-pressure history as an active closure constraint", async () => {
+    const result = await runClosureHistoryGuard({
+      entryTs: 1_000,
+      entryTurn: 10,
+      nowMs: 60_000,
+      currentTurn: 12,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "The shelf test is the right move.",
+      closure_pressure_history_reason: "span_removed",
+    });
+    expect(result.active_closure_commitments).toContain("closure_pressure_history");
+  });
+
+  it("does not enforce recent closure-pressure history when the user explicitly requests closure", async () => {
+    const result = await runClosureHistoryGuard({
+      currentUserClosureKind: "user_requests_closure",
+      entryTs: 1_000,
+      entryTurn: 10,
+      nowMs: 60_000,
+      currentTurn: 12,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "The shelf test is the right move. Go read.",
+    });
+    expect(result.active_closure_commitments).not.toContain("closure_pressure_history");
+  });
+
+  it("does not enforce closure-pressure history older than ten minutes", async () => {
+    const result = await runClosureHistoryGuard({
+      entryTs: 1_000,
+      entryTurn: 10,
+      nowMs: 661_001,
+      currentTurn: 12,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "The shelf test is the right move. Go read.",
+    });
+  });
+
+  it("does not enforce closure-pressure history more than five turns old", async () => {
+    const result = await runClosureHistoryGuard({
+      entryTs: 1_000,
+      entryTurn: 5,
+      nowMs: 60_000,
+      currentTurn: 11,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "The shelf test is the right move. Go read.",
+    });
+  });
+
   it("fails closed when the auditor throws under an active no-closure commitment in enforce mode", async () => {
     const throwingAudit = Object.assign(
       () => {
@@ -306,6 +416,7 @@ describe("ClosurePressureGuard", () => {
     expect(result.emission).toEqual({
       kind: "suppressed",
       reason: "closure_response_audit_failed_closed",
+      closure_pressure_history_reason: "audit_caught",
     });
     expect(result.verdict).toBe("suppressed");
     expect(tracer.emit).toHaveBeenCalledWith(
@@ -350,6 +461,7 @@ describe("ClosurePressureGuard", () => {
     expect(result.emission).toEqual({
       kind: "message",
       content: "The result is still the same: use the current shelf.",
+      closure_pressure_history_reason: "span_removed",
     });
     expect(result.verdict).toBe("rewritten");
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
@@ -393,6 +505,7 @@ describe("ClosurePressureGuard", () => {
     expect(result.emission).toEqual({
       kind: "message",
       content: "The shelf test is the right move.",
+      closure_pressure_history_reason: "span_removed",
     });
     expect(result.verdict).toBe("rewritten");
     expect(tracer.emit).toHaveBeenCalledWith(
@@ -480,6 +593,7 @@ describe("ClosurePressureGuard", () => {
       expect(result.emission).toEqual({
         kind: "suppressed",
         reason: "closure_pressure_only",
+        closure_pressure_history_reason: "span_removed",
       });
       expect(result.verdict).toBe("suppressed");
     },
@@ -517,6 +631,7 @@ describe("ClosurePressureGuard", () => {
     expect(result.emission).toEqual({
       kind: "message",
       content: "The shelf test is the right move.",
+      closure_pressure_history_reason: "span_removed",
     });
     expect(result.active_closure_commitments[0]).toContain("avoid_closure_pressure");
   });

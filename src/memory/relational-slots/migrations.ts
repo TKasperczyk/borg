@@ -27,4 +27,16 @@ export const relationalSlotMigrations = [
         ON relational_slots(state, updated_at DESC);
     `,
   },
+  {
+    id: 2,
+    name: "relational_slot_name_provenance",
+    up: `
+      ALTER TABLE relational_slots
+        ADD COLUMN name_provenance TEXT NOT NULL DEFAULT 'unknown';
+
+      UPDATE relational_slots
+      SET name_provenance = 'unknown'
+      WHERE name_provenance IS NULL;
+    `,
+  },
 ] as const satisfies readonly Migration[];

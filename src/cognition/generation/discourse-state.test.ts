@@ -6,6 +6,8 @@ import { NOOP_TRACER } from "../tracing/tracer.js";
 import {
   clearClosureLoop,
   clearStopUntilSubstantiveContent,
+  appendClosurePressureHistory,
+  appendRecentSuppression,
   markClosureLoopNamed,
   reviewStopHardCap,
   setClosureLoopDetected,
@@ -30,9 +32,9 @@ describe("discourse state", () => {
       reason: "Agent committed to stop responding to minimal inputs.",
       since_turn: 12,
     });
-    expect(clearStopUntilSubstantiveContent(stopped).discourse_state).toEqual({
-      stop_until_substantive_content: null,
-    });
+    expect(
+      clearStopUntilSubstantiveContent(stopped).discourse_state?.stop_until_substantive_content,
+    ).toBeNull();
   });
 
   it("marks hard-cap review due without clearing the state", () => {
@@ -87,6 +89,62 @@ describe("discourse state", () => {
     expect(clearClosureLoop(named).discourse_state?.closure_loop).toBeNull();
   });
 
+  it("preserves closure pressure history when closure-loop state is cleared", () => {
+    const workingMemory = appendClosurePressureHistory(
+      setClosureLoopDetected(createWorkingMemory(DEFAULT_SESSION_ID, 100), {
+        sourceStreamEntryIds: [createStreamEntryId()],
+        reason: "Two mutual closure cycles detected.",
+        sinceTurn: 12,
+      }),
+      {
+        turnId: "turn-history",
+        reason: "span_removed",
+        ts: 1_000,
+      },
+    );
+    const cleared = clearClosureLoop(workingMemory);
+
+    expect(cleared.discourse_state?.closure_loop).toBeNull();
+    expect(cleared.discourse_state?.closure_pressure_history).toEqual([
+      {
+        turn_id: "turn-history",
+        turn: 0,
+        reason: "span_removed",
+        ts: 1_000,
+      },
+    ]);
+  });
+
+  it("caps closure pressure history at the five most recent entries", () => {
+    let workingMemory = createWorkingMemory(DEFAULT_SESSION_ID, 100);
+
+    for (let index = 0; index < 7; index += 1) {
+      workingMemory = appendClosurePressureHistory(workingMemory, {
+        turnId: `turn-${index}`,
+        reason: "span_removed",
+        ts: index,
+      });
+    }
+
+    expect(workingMemory.discourse_state?.closure_pressure_history?.map((entry) => entry.turn_id))
+      .toEqual(["turn-2", "turn-3", "turn-4", "turn-5", "turn-6"]);
+  });
+
+  it("caps recent suppression visibility at the three most recent entries", () => {
+    let workingMemory = createWorkingMemory(DEFAULT_SESSION_ID, 100);
+
+    for (let index = 0; index < 5; index += 1) {
+      workingMemory = appendRecentSuppression(workingMemory, {
+        turnId: `turn-${index}`,
+        reason: "manifest_validation_failed_critical",
+        ts: index,
+      });
+    }
+
+    expect(workingMemory.discourse_state?.recent_suppressions?.map((entry) => entry.turn_id))
+      .toEqual(["turn-2", "turn-3", "turn-4"]);
+  });
+
   it("marks a detected closure loop named after S2 planner no-output", () => {
     const sourceStreamEntryId = createStreamEntryId();
     const suppressionStreamEntryId = createStreamEntryId();
@@ -101,6 +159,7 @@ describe("discourse state", () => {
     });
     const service = new TurnDiscourseStateService({
       tracer: NOOP_TRACER,
+      clock: { now: () => 2_000 },
     });
 
     const named = service.applySuppressedEmissionState({
@@ -115,5 +174,13 @@ describe("discourse state", () => {
       source_stream_entry_ids: [sourceStreamEntryId, suppressionStreamEntryId],
       named_at_turn: 14,
     });
+    expect(named.discourse_state?.recent_suppressions).toEqual([
+      {
+        turn_id: "turn-s2-no-output",
+        reason: "s2_planner_no_output",
+        source_stream_entry_id: suppressionStreamEntryId,
+        ts: 2_000,
+      },
+    ]);
   });
 });

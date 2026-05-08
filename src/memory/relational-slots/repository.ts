@@ -16,10 +16,12 @@ import {
   relationalSlotNegationSchema,
   relationalSlotSchema,
   relationalSlotStateSchema,
+  type RelationalSlotAssertionConfirmation,
   type RelationalSlot,
   type RelationalSlotAlternateValue,
   type RelationalSlotAssertion,
   type RelationalSlotNegation,
+  type RelationalSlotNameProvenance,
   type RelationalSlotState,
 } from "./types.js";
 
@@ -83,6 +85,42 @@ function uniqueStreamEntryIds(values: readonly StreamEntryId[]): StreamEntryId[]
   return unique;
 }
 
+const NAME_PROVENANCE_RANK: Record<RelationalSlotNameProvenance, number> = {
+  unknown: 0,
+  assistant_seeded: 1,
+  config_default_user: 2,
+  transport_audience_label: 2,
+  user_confirmed: 3,
+  user_declared: 4,
+};
+
+function nameProvenanceForAssertion(
+  confirmation: RelationalSlotAssertionConfirmation,
+  explicit?: RelationalSlotNameProvenance,
+): RelationalSlotNameProvenance {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+
+  switch (confirmation) {
+    case "assistant_seeded":
+      return "assistant_seeded";
+    case "explicit":
+      return "user_confirmed";
+    case "direct":
+      return "user_declared";
+  }
+}
+
+function strongerNameProvenance(
+  current: RelationalSlotNameProvenance | undefined,
+  next: RelationalSlotNameProvenance,
+): RelationalSlotNameProvenance {
+  const currentValue = current ?? "unknown";
+
+  return NAME_PROVENANCE_RANK[next] > NAME_PROVENANCE_RANK[currentValue] ? next : currentValue;
+}
+
 function mapRelationalSlotRow(row: Record<string, unknown>): RelationalSlot {
   const parsed = relationalSlotSchema.safeParse({
     id: row.id,
@@ -105,6 +143,7 @@ function mapRelationalSlotRow(row: Record<string, unknown>): RelationalSlot {
       "alternate_values",
       RELATIONAL_SLOT_JSON_CODEC,
     ),
+    name_provenance: row.name_provenance ?? "unknown",
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
   });
@@ -248,14 +287,15 @@ export class RelationalSlotRepository {
           INSERT INTO relational_slots (
             id, subject_entity_id, slot_key, value, state,
             evidence_stream_entry_ids, contradicted_by_stream_entry_ids,
-            alternate_values, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            alternate_values, name_provenance, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(subject_entity_id, slot_key) DO UPDATE SET
             value = excluded.value,
             state = excluded.state,
             evidence_stream_entry_ids = excluded.evidence_stream_entry_ids,
             contradicted_by_stream_entry_ids = excluded.contradicted_by_stream_entry_ids,
             alternate_values = excluded.alternate_values,
+            name_provenance = excluded.name_provenance,
             updated_at = excluded.updated_at
         `,
       )
@@ -268,6 +308,7 @@ export class RelationalSlotRepository {
         serializeJsonValue(slot.evidence_stream_entry_ids),
         serializeJsonValue(slot.contradicted_by_stream_entry_ids),
         serializeJsonValue(slot.alternate_values),
+        slot.name_provenance ?? "unknown",
         slot.created_at,
         slot.updated_at,
       );
@@ -373,6 +414,10 @@ export class RelationalSlotRepository {
     return this.runSlotWrite(() => {
       const current = this.findBySubjectAndKey(parsed.subject_entity_id, parsed.slot_key);
       const nowMs = this.clock.now();
+      const assertionNameProvenance = nameProvenanceForAssertion(
+        parsed.confirmation,
+        parsed.name_provenance,
+      );
 
       if (current === null) {
         const slot = relationalSlotSchema.parse({
@@ -384,6 +429,7 @@ export class RelationalSlotRepository {
           evidence_stream_entry_ids: parsed.source_stream_entry_ids,
           contradicted_by_stream_entry_ids: [],
           alternate_values: [],
+          name_provenance: assertionNameProvenance,
           created_at: nowMs,
           updated_at: nowMs,
         });
@@ -398,6 +444,10 @@ export class RelationalSlotRepository {
         next = relationalSlotSchema.parse({
           ...current,
           state: parsed.confirmation === "explicit" ? "established" : current.state,
+          name_provenance: strongerNameProvenance(
+            current.name_provenance,
+            assertionNameProvenance,
+          ),
           evidence_stream_entry_ids: uniqueStreamEntryIds([
             ...current.evidence_stream_entry_ids,
             ...parsed.source_stream_entry_ids,
@@ -421,6 +471,7 @@ export class RelationalSlotRepository {
             state: "established",
             evidence_stream_entry_ids: promotedEvidence,
             alternate_values: alternateValues,
+            name_provenance: assertionNameProvenance,
             contradicted_by_stream_entry_ids: uniqueStreamEntryIds([
               ...current.contradicted_by_stream_entry_ids,
               ...parsed.source_stream_entry_ids,
@@ -446,6 +497,10 @@ export class RelationalSlotRepository {
                 : current.state === "revoked"
                   ? "established"
                   : current.state,
+          name_provenance: strongerNameProvenance(
+            current.name_provenance,
+            assertionNameProvenance,
+          ),
           alternate_values: alternateValues,
           contradicted_by_stream_entry_ids: uniqueStreamEntryIds([
             ...current.contradicted_by_stream_entry_ids,

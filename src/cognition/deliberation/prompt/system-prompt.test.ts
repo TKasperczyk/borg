@@ -332,6 +332,58 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("either call no_output or name the loop once");
   });
 
+  it("renders recent closure pressure history in trusted discourse control", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: null,
+            closure_pressure_history: [
+              {
+                turn_id: "turn-a",
+                reason: "span_removed",
+                ts: NOW_MS,
+              },
+            ],
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_discourse_control");
+
+    expect(block).toContain("Closure pressure has been observed in recent turns");
+    expect(block).toContain("turn-a:span_removed");
+    expect(block).toContain("Do not produce closing sentences");
+  });
+
+  it("renders recent suppression reasons in trusted discourse control", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          discourse_state: {
+            stop_until_substantive_content: null,
+            recent_suppressions: [
+              {
+                turn_id: "turn-b",
+                reason: "manifest_validation_failed_critical",
+                ts: NOW_MS,
+              },
+            ],
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_discourse_control");
+
+    expect(block).toContain("Recent silences from your side");
+    expect(block).toContain("turn-b:manifest_validation_failed_critical");
+    expect(block).toContain("Do not invent network failures");
+  });
+
   it("renders contested and quarantined relational slot constraints only", () => {
     const subject = createEntityId();
     const prompt = buildBaseSystemPrompt(

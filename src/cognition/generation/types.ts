@@ -1,4 +1,5 @@
 import type { StreamEntryPersistenceClass } from "../../stream/index.js";
+import type { ClosurePressureHistoryReason } from "../../memory/working/index.js";
 import type { StreamEntryId } from "../../util/ids.js";
 
 export type GenerationSuppressionReason =
@@ -44,11 +45,13 @@ export type PendingTurnEmission =
       kind: "message";
       content: string;
       persistence_class?: StreamEntryPersistenceClass;
+      closure_pressure_history_reason?: ClosurePressureHistoryReason;
     }
   | {
       kind: "suppressed";
       reason: GenerationSuppressionReason;
       markerEntryId?: StreamEntryId;
+      closure_pressure_history_reason?: ClosurePressureHistoryReason;
     };
 
 export type TurnEmission =

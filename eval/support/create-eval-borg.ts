@@ -93,7 +93,7 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
     perception: {
       ...DEFAULT_CONFIG.perception,
       ...options.config?.perception,
-      useLlmFallback: false,
+      useLlmFallback: options.config?.perception?.useLlmFallback ?? false,
       modeWhenLlmAbsent: options.config?.perception?.modeWhenLlmAbsent ?? "problem_solving",
     },
     affective: {

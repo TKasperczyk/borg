@@ -380,6 +380,31 @@ function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null 
     );
   }
 
+  const closurePressureHistory =
+    workingMemory.discourse_state?.closure_pressure_history?.slice(-5) ?? [];
+
+  if (closurePressureHistory.length > 0) {
+    const rendered = closurePressureHistory
+      .map((entry) => `${entry.turn_id}:${entry.reason}`)
+      .join(", ");
+
+    lines.push(
+      `Closure pressure has been observed in recent turns: ${rendered}. The user has signaled they don't want this pattern. Do not produce closing sentences, valedictions, or sleep/leave-taking content unless the user explicitly asks for closure now.`,
+    );
+  }
+
+  const recentSuppressions = workingMemory.discourse_state?.recent_suppressions?.slice(-3) ?? [];
+
+  if (recentSuppressions.length > 0) {
+    const rendered = recentSuppressions
+      .map((entry) => `${entry.turn_id}:${entry.reason}`)
+      .join(", ");
+
+    lines.push(
+      `Recent silences from your side: ${rendered}. If asked about going quiet, attribute to the actual reason -- a guard rejected the response, a validator caught an unsupported claim, a no_output decision was made. Do not invent network failures, latency spikes, or technical errors.`,
+    );
+  }
+
   return lines.length === 0 ? null : lines.join("\n");
 }
 

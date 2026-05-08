@@ -90,4 +90,18 @@ export const commitmentMigrations = [
       `);
     },
   },
+  {
+    id: 5,
+    name: "entity_name_provenance",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE entities
+          ADD COLUMN name_provenance TEXT NOT NULL DEFAULT 'unknown';
+
+        UPDATE entities
+        SET name_provenance = 'unknown'
+        WHERE name_provenance IS NULL;
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

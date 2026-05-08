@@ -185,16 +185,19 @@ export class Perceiver {
     }
 
     const nowMs = this.clock.now();
-    const [entities, mode, affective, temporalCue] = await Promise.all([
+    const [entityExtraction, mode, affective, temporalCue] = await Promise.all([
       runPerceptionClassifierSafely({
         classifier: "entity_extractor",
-        run: () => this.entityExtractor.extractEntities(text),
+        run: () => this.entityExtractor.extract(text),
         // Fallback returns empty entities. Previous regex-heuristic
         // fallback produced false-positive entities at high rates
         // ('Good', 'If', '[End.]') that poisoned downstream
         // retrieval. Empty is the honest signal when the LLM call
         // fails -- the turn proceeds with no entities for this turn.
-        fallback: () => [],
+        fallback: () => ({
+          entities: [],
+          userIdentityNames: [],
+        }),
         onFailure: this.onClassifierFailure,
       }),
       runPerceptionClassifierSafely({
@@ -234,7 +237,8 @@ export class Perceiver {
     ]);
 
     const perception = perceptionResultSchema.parse({
-      entities,
+      entities: entityExtraction.entities,
+      userIdentityNames: entityExtraction.userIdentityNames,
       mode,
       affectiveSignal: affective.signal,
       affectiveSignalDegraded: affective.degraded,

@@ -56,11 +56,59 @@ function streamKindToRole(kind: StreamEntry["kind"]): RecencyMessage["role"] | n
     return "user";
   }
 
-  if (kind === "agent_msg") {
+  if (kind === "agent_msg" || kind === "agent_suppressed") {
     return "assistant";
   }
 
   return null;
+}
+
+function suppressionReason(entry: StreamEntry): string {
+  if (entry.kind !== "agent_suppressed") {
+    return "unknown";
+  }
+
+  const content = entry.content;
+
+  if (content !== null && typeof content === "object" && !Array.isArray(content)) {
+    const reason = (content as Record<string, unknown>).reason;
+
+    if (typeof reason === "string" && reason.length > 0) {
+      return reason;
+    }
+  }
+
+  return "unknown";
+}
+
+function suppressionCategoryContext(reason: string): string {
+  if (reason === "manifest_validation_failed_critical") {
+    return "validator caught an unsupported or unsafe manifest claim";
+  }
+
+  if (reason.startsWith("relational_guard_")) {
+    return "relational guard rejected the response";
+  }
+
+  if (reason === "closure_pressure_only" || reason === "closure_response_audit_failed_closed") {
+    return "closure pressure guard rejected the response";
+  }
+
+  if (reason === "manifest_no_output" || reason === "no_output_tool") {
+    return "no_output decision";
+  }
+
+  return "guard or finalizer suppression";
+}
+
+function renderEntryContent(entry: StreamEntry): string {
+  if (entry.kind === "agent_suppressed") {
+    const reason = suppressionReason(entry);
+
+    return `[system: prior turn suppressed -- reason: ${reason}; category: ${suppressionCategoryContext(reason)}; no user-visible response was emitted]`;
+  }
+
+  return entryContentToString(entry);
 }
 
 /**
@@ -77,7 +125,7 @@ function streamKindToRole(kind: StreamEntry["kind"]): RecencyMessage["role"] | n
  *   - Roles alternate.
  *
  * Non-conversational entries (`thought`, `internal_event`, `tool_call`,
- * `tool_result`, `perception`, `agent_suppressed`, `dream_report`) are
+ * `tool_result`, `perception`, `dream_report`) are
  * ignored here. The stream keeps them, but they are not part of the dialogue
  * layer the LLM sees.
  */
@@ -107,7 +155,7 @@ export class TurnContextCompiler {
     }> = [];
 
     for (const entry of recent) {
-      if (!isNarrativeStreamEntry(entry)) {
+      if (!isNarrativeStreamEntry(entry) && entry.kind !== "agent_suppressed") {
         continue;
       }
 
@@ -136,7 +184,7 @@ export class TurnContextCompiler {
         continue;
       }
 
-      const content = entryContentToString(item.entry);
+      const content = renderEntryContent(item.entry);
       const contentLength = content.length;
 
       if (reversed.length > 0 && totalChars + contentLength > this.maxChars) {

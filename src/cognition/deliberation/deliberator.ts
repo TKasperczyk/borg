@@ -1,6 +1,7 @@
 // Thin deliberation orchestrator: selects S1/S2, calls planner/finalizer, and assembles results.
 import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import type { StreamWriter } from "../../stream/index.js";
+import { LLMError } from "../../util/errors.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { LLMCompleteOptions } from "../../llm/index.js";
 import {
@@ -182,6 +183,10 @@ function buildManifestFinalizerEmission(
   };
 }
 
+function isManifestFinalizerOutputInvalid(error: unknown): boolean {
+  return error instanceof LLMError && error.code === "MANIFEST_FINALIZER_OUTPUT_INVALID";
+}
+
 export class Deliberator {
   private readonly tracer: TurnTracer;
   private readonly clock: Clock;
@@ -213,6 +218,7 @@ export class Deliberator {
     const validator = new ManifestValidator({
       slotRepository: this.options.relationalSlotRepository,
       actionRepository: this.options.actionRepository,
+      entityRepository: context.entityRepository,
       config: {
         enabled: true,
         onCriticalFailure: this.options.manifestValidatorOnCriticalFailure ?? "no_output",
@@ -224,6 +230,7 @@ export class Deliberator {
       manifest: result.manifest,
       evidenceLedger: context.evidenceLedger,
       userEntryId: context.userEntryId,
+      audienceEntityId: context.audienceEntityId,
       turnId: context.turnId,
     });
   }
@@ -284,21 +291,53 @@ export class Deliberator {
 
     if (decision.path === "system_1") {
       if (useManifestFinalizer) {
-        const response = await runManifestFinalizer({
-          llmClient: this.options.llmClient,
-          model: this.options.cognitionModel,
-          baseSystemPrompt,
-          dialogueMessages,
-          evidenceLedger: context.evidenceLedger ?? null,
-          maxTokens: systemOneMaxTokens,
-          ...(thinking === undefined ? {} : { thinking }),
-          path: "system_1",
-          ...(evidenceLedgerPromptSections === null
-            ? {}
-            : { additionalPromptSections: evidenceLedgerPromptSections }),
-          tracer: this.tracer,
-          turnId: context.turnId,
-        });
+        let response: ManifestFinalizerResult;
+
+        try {
+          response = await runManifestFinalizer({
+            llmClient: this.options.llmClient,
+            model: this.options.cognitionModel,
+            baseSystemPrompt,
+            dialogueMessages,
+            evidenceLedger: context.evidenceLedger ?? null,
+            maxTokens: systemOneMaxTokens,
+            ...(thinking === undefined ? {} : { thinking }),
+            path: "system_1",
+            ...(evidenceLedgerPromptSections === null
+              ? {}
+              : { additionalPromptSections: evidenceLedgerPromptSections }),
+            tracer: this.tracer,
+            turnId: context.turnId,
+          });
+        } catch (error) {
+          if (!isManifestFinalizerOutputInvalid(error)) {
+            throw error;
+          }
+
+          return {
+            path: "system_1",
+            response: "",
+            emitted: false,
+            emission: {
+              kind: "suppressed",
+              reason: "manifest_finalizer_failed",
+            },
+            emissionRecommendation: "emit",
+            thoughtStreamEntryIds: [],
+            thoughts: [],
+            tool_calls: [],
+            usage: {
+              input_tokens: 0,
+              output_tokens: 0,
+              stop_reason: "tool_error",
+            },
+            decision_reason: decision.reason,
+            retrievedEpisodes: [...context.retrievalResult],
+            referencedEpisodeIds: null,
+            intents: [],
+            thoughtsPersisted: false,
+          };
+        }
         const validationResult = await this.validateManifestFinalizerResult(response, context);
 
         if (validationResult?.verdict === "legacy_fallback_requested") {
@@ -501,19 +540,55 @@ export class Deliberator {
     let finalToolCallsMade: FinalizerResult["toolCallsMade"] = [];
 
     if (useManifestFinalizer) {
-      const manifestResponse = await runManifestFinalizer({
-        llmClient: this.options.llmClient,
-        model: this.options.cognitionModel,
-        baseSystemPrompt,
-        dialogueMessages,
-        evidenceLedger: context.evidenceLedger ?? null,
-        maxTokens: systemTwoMaxTokens,
-        ...(thinking === undefined ? {} : { thinking }),
-        path: "system_2",
-        additionalPromptSections,
-        tracer: this.tracer,
-        turnId: context.turnId,
-      });
+      let manifestResponse: ManifestFinalizerResult;
+
+      try {
+        manifestResponse = await runManifestFinalizer({
+          llmClient: this.options.llmClient,
+          model: this.options.cognitionModel,
+          baseSystemPrompt,
+          dialogueMessages,
+          evidenceLedger: context.evidenceLedger ?? null,
+          maxTokens: systemTwoMaxTokens,
+          ...(thinking === undefined ? {} : { thinking }),
+          path: "system_2",
+          additionalPromptSections,
+          tracer: this.tracer,
+          turnId: context.turnId,
+        });
+      } catch (error) {
+        if (!isManifestFinalizerOutputInvalid(error)) {
+          throw error;
+        }
+
+        finalized = {
+          response: "",
+          emitted: false,
+          emission: {
+            kind: "suppressed",
+            reason: "manifest_finalizer_failed",
+          },
+        };
+        return {
+          path: "system_2",
+          response: finalized.response,
+          emitted: finalized.emitted,
+          emission: finalized.emission,
+          emissionRecommendation: "emit",
+          thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),
+          thoughts,
+          tool_calls: [],
+          usage,
+          decision_reason: decision.reason,
+          retrievedEpisodes: dedupeRetrievedEpisodes([
+            ...context.retrievalResult,
+            ...(secondaryRetrieval?.episodes ?? []),
+          ]),
+          referencedEpisodeIds: plan?.referenced_episode_ids ?? null,
+          intents: plan === null ? [] : [...plan.intents],
+          thoughtsPersisted,
+        };
+      }
       usage = aggregateUsage(usage, manifestResponse.usage);
 
       const validationResult = await this.validateManifestFinalizerResult(

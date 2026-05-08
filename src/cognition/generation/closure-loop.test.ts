@@ -299,6 +299,29 @@ describe("ClosureLoopClassifier", () => {
     );
   });
 
+  it("accepts explicit user closure requests as their own dialogue act", async () => {
+    const supplied = [message({ role: "user", content: "Please say goodnight.", ts: 1 })];
+    const llm = new FakeLLMClient({
+      responses: [closureLoopResponse([classified(supplied[0]!, "user_requests_closure")])],
+    });
+    const classifier = new ClosureLoopClassifier({
+      llmClient: llm,
+      model: "test-recall",
+    });
+
+    const result = await classifier.classify({
+      messages: supplied,
+    });
+    const assessment = assessClosureLoopClassification({
+      classification: result,
+      suppliedMessages: supplied,
+      currentUserRef: supplied[0]!.message_ref,
+    });
+
+    expect(assessment.currentUserAct).toBe("user_requests_closure");
+    expect(assessment.currentUserClosureShaped).toBe(false);
+  });
+
   it("emits raw classifier output shape without full payloads on normalization", async () => {
     const tracer = new TestTracer(false);
     const supplied = [

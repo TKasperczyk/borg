@@ -232,6 +232,7 @@ export class TurnOrchestrator {
     });
     const discourseStateService = new TurnDiscourseStateService({
       tracer: this.tracer,
+      clock: this.clock,
     });
     const relationalGuardRunner = new TurnRelationalGuardRunner({
       auditModel: options.config.anthropic.models.background,
