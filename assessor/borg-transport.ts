@@ -630,12 +630,15 @@ export class BorgTransport {
   private readonly seededGoals = new Map<string, GoalRecord>();
   private borg?: Borg;
 
+  private readonly tracePathExternallySupplied: boolean;
+
   constructor(options: BorgTransportOptions) {
     const scenarioPart = sanitizePathPart(options.scenario.name);
     const basePath = join(tmpdir(), `borg-assessor-${options.runId}-${scenarioPart}`);
 
     this.dataDir = options.dataDir ?? basePath;
     this.tracePath = options.tracePath ?? `${basePath}.trace.jsonl`;
+    this.tracePathExternallySupplied = options.tracePath !== undefined;
     this.keep = options.keep ?? false;
     this.scenario = options.scenario;
     this.env = options.env ?? process.env;
@@ -895,7 +898,13 @@ export class BorgTransport {
 
     if (!this.keep) {
       rmSync(this.dataDir, { recursive: true, force: true });
-      rmSync(this.tracePath, { force: true });
+      // Only remove the trace if it was auto-generated under tmpdir(). When
+      // the caller passes an explicit tracePath, they want to inspect it
+      // after the run -- removing it forces them to also pass --keep, which
+      // is conflated with retaining the data dir.
+      if (!this.tracePathExternallySupplied) {
+        rmSync(this.tracePath, { force: true });
+      }
     }
   }
 }
