@@ -225,6 +225,8 @@ describe("flat manifest wire schema", () => {
   });
 
   it("tightens a wire response into the strict discriminated union", () => {
+    // Sprint 8d.6.6: evidence is required at the wire schema level. The
+    // model emits evidence: [] for ungrounded kinds.
     const wireResponse = {
       final_text: "Acknowledged.",
       discourse_act: "continue_task" as const,
@@ -232,7 +234,7 @@ describe("flat manifest wire schema", () => {
         {
           kind: "hedge" as const,
           rendered_span: "Acknowledged.",
-          evidence: undefined,
+          evidence: [],
         },
       ],
     };
@@ -255,6 +257,8 @@ describe("flat manifest wire schema", () => {
   });
 
   it("demotes per-kind violations to discourse_only and records them", () => {
+    // user_fact requires evidence min:1 + exact_values + confidence on the
+    // strict side. Empty evidence here triggers the demotion path.
     const wire = flatEmitManifestResponseSchema.safeParse({
       final_text: "Will check that for you.",
       discourse_act: "answer",
@@ -262,6 +266,7 @@ describe("flat manifest wire schema", () => {
         {
           kind: "user_fact",
           rendered_span: "You prefer concise answers.",
+          evidence: [],
         },
       ],
     });
@@ -340,6 +345,7 @@ describe("flat manifest wire schema", () => {
           kind: "discourse_only",
           rendered_span: "Goodnight, Tom.",
           addresses_audience_by_name: true,
+          evidence: [],
         },
       ],
     });

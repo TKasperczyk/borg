@@ -38,7 +38,23 @@ const evidenceLedger: EvidenceLedger = {
   estimatedTokens: 12,
 };
 
-const validManifestInput = {
+// Sprint 8d.6.6: every claim must include an evidence array on the wire.
+// For ungrounded kinds (hedge, discourse_only, self_report) it's [].
+// validManifestWireInput is the FLAT wire shape (with evidence: []);
+// validManifestStrictExpected is what the strict tighten step produces
+// after stripping kind-irrelevant fields.
+const validManifestWireInput = {
+  final_text: "Done.",
+  discourse_act: "answer",
+  claims: [
+    {
+      kind: "hedge",
+      rendered_span: "Done.",
+      evidence: [],
+    },
+  ],
+};
+const validManifestStrictExpected: EmitManifestResponse = {
   final_text: "Done.",
   discourse_act: "answer",
   claims: [
@@ -47,7 +63,7 @@ const validManifestInput = {
       rendered_span: "Done.",
     },
   ],
-} satisfies EmitManifestResponse;
+};
 
 function structuredOutputResponse(output: unknown): LLMCompleteResult {
   return {
@@ -95,7 +111,7 @@ async function runWithStructuredOutput(output: unknown, tracer: CapturingTracer)
 describe("manifest finalizer parser", () => {
   it("injects manifest coverage instructions into the structured-output prompt", async () => {
     const llm = new FakeLLMClient({
-      responses: [structuredOutputResponse(validManifestInput)],
+      responses: [structuredOutputResponse(validManifestWireInput)],
     });
 
     await runManifestFinalizer({
@@ -147,14 +163,14 @@ describe("manifest finalizer parser", () => {
   it("parses the structured output value directly", async () => {
     const tracer = new CapturingTracer();
 
-    const result = await runWithStructuredOutput(validManifestInput, tracer);
+    const result = await runWithStructuredOutput(validManifestWireInput, tracer);
 
-    expect(result.manifest).toEqual(validManifestInput);
+    expect(result.manifest).toEqual(validManifestStrictExpected);
     expect(
       tracer.events.find((entry) => entry.event === "manifest_finalizer_emitted")?.data,
     ).toMatchObject({
       parsed: true,
-      final_text_length: validManifestInput.final_text.length,
+      final_text_length: validManifestStrictExpected.final_text.length,
     });
   });
 

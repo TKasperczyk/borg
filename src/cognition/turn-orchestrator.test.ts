@@ -978,6 +978,7 @@ describe("TurnOrchestrator evidence ledger", () => {
               kind: "self_report",
               rendered_span: finalText,
               persistence_class: "assistant_self_report",
+              evidence: [],
             },
           ],
         }),

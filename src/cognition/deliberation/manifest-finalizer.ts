@@ -99,16 +99,18 @@ const MANIFEST_COVERAGE_INSTRUCTIONS = [
   "",
   "Closure-beat preemption: if the discourse-state section of this prompt declares a HARD CONSTRAINT - CLOSURE PRESSURE, treat that as binding on final_text. Do not append a sign-off, valediction, weather observation, single-line 'noted/held' acknowledgment, or any sentence that reads as a coda. End on substantive content or set discourse_act to no_output. This rule overrides any natural-conversation tendency to wind down a turn.",
   "",
-  "Required fields per kind. If you cannot provide every required field for a kind, use a permissive kind (discourse_only or hedge) instead. Do NOT emit a kind with missing required fields.",
-  "  - discourse_only: kind, rendered_span (no other fields required)",
-  "  - hedge: kind, rendered_span (no other fields required)",
-  "  - self_report: kind, rendered_span, persistence_class: \"assistant_self_report\"",
+  "Every claim MUST include an evidence array. For kinds that don't ground in evidence (discourse_only, hedge, self_report), emit evidence: []. For grounded kinds, emit evidence with at least one entry that you can actually cite from the EvidenceLedger.",
+  "",
+  "Required fields per kind. If you cannot provide every required field for a kind, use a permissive kind (discourse_only or hedge) with evidence: [] instead. Do NOT emit a grounded kind with empty evidence -- pick a different kind.",
+  "  - discourse_only: kind, rendered_span, evidence: [] (always empty)",
+  "  - hedge: kind, rendered_span, evidence: [] (always empty)",
+  "  - self_report: kind, rendered_span, evidence: [] (always empty), persistence_class: \"assistant_self_report\"",
   "  - user_fact: kind, rendered_span, evidence (>=1 ledger entry), exact_values (>=1 string), confidence in {direct, inferred, uncertain}",
   "  - prior_callback: kind, rendered_span, evidence (>=1 ledger entry), callback_scope in {current_turn, current_session_prior, prior_session}",
   "  - action_state: kind, rendered_span, evidence (>=1 ledger entry), action_record_id, asserted_state in {considering, committed_to_do, scheduled, completed, not_done, unknown}",
   "  - slot_fact: kind, rendered_span, evidence (>=1 ledger entry), exact_values (>=1 string), slot_id",
   "  - agent_self_provenance: kind, rendered_span, evidence (>=1 ledger entry)",
-  "  - interpretation: kind, rendered_span, evidence (any length), confidence in {low, medium, high}, persistence_allowed: false",
+  "  - interpretation: kind, rendered_span, evidence (any length, can be empty), confidence in {low, medium, high}, persistence_allowed: false",
 ].join("\n");
 
 const MANIFEST_FINALIZER_INSTRUCTIONS = [

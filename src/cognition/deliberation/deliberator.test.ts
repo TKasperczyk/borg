@@ -470,6 +470,7 @@ describe("deliberator", () => {
                 kind: "self_report",
                 rendered_span: selfReport,
                 persistence_class: "assistant_self_report",
+                evidence: [],
               },
             ],
           },

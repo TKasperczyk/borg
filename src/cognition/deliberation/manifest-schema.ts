@@ -180,12 +180,27 @@ const flatCallbackScopeSchema = z.enum([
   "prior_session",
 ]);
 
+// Sprint 8d.6.6: evidence is required at the top of the wire schema (not
+// optional). v37 turns 1-9 saw 17/17 prior_callback demotions all from
+// "evidence undefined" -- the wire schema invited the omission because the
+// allOf+if/then conditional requirement isn't enforced at decode time. By
+// making evidence a required array (possibly empty for ungrounded kinds),
+// the model can no longer omit it. The strict per-kind schemas still
+// require minItems: 1 on grounded kinds; tightenManifestResponse will
+// demote claims with empty evidence arrays just as it currently demotes
+// undefined-evidence claims.
+//
+// Tradeoff (verified via repro probes): for casual prior references the
+// model now picks discourse_only with evidence: [] cleanly. For pointed
+// commitments where the user implies an obligation, the model may
+// fabricate an evidence ID to satisfy the schema -- the existing
+// claim_cites_unknown_evidence validator check catches that case.
 export const flatManifestClaimSchema = z.object({
   kind: claimKindSchema,
   rendered_span: z.string(),
   addresses_audience_by_name: z.boolean().optional(),
   exact_values: z.array(z.string()).optional(),
-  evidence: z.array(evidenceRefSchema).optional(),
+  evidence: z.array(evidenceRefSchema),
   confidence: flatConfidenceSchema.optional(),
   scope_disclosure_span: z.string().optional(),
   callback_scope: flatCallbackScopeSchema.optional(),
@@ -288,7 +303,11 @@ const STRUCTURED_OUTPUT_CLAIM_SCHEMA = {
     persistence_class: { type: "string", const: "assistant_self_report" },
     persistence_allowed: { type: "boolean", const: false },
   },
-  required: ["kind", "rendered_span"],
+  // Sprint 8d.6.6: evidence is required at the top level so the API decoder
+  // forces the model to emit the field (possibly as an empty array for
+  // ungrounded kinds). v37 saw 17/17 prior_callback demotions all from
+  // "evidence undefined" -- the optional wire schema invited the omission.
+  required: ["kind", "rendered_span", "evidence"],
   additionalProperties: false,
   // Per-kind required-field, value-enum, and min-length constraints. Each
   // branch's then clause merges with the parent schema, so e.g. an interpretation
