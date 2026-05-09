@@ -71,11 +71,11 @@ describe("v26 replay runner", () => {
       .toMatchObject({
         pipelines: {
           C: {
-            manifestValidationFinalVerdict: "no_output",
+            manifestValidationFinalVerdict: "would_have_rewritten",
             validatorCaught: true,
           },
           Cdoubleprime: {
-            manifestValidationFinalVerdict: "no_output",
+            manifestValidationFinalVerdict: "would_have_rewritten",
             validatorCaught: true,
           },
         },

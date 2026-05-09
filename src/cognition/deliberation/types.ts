@@ -176,7 +176,6 @@ export type DeliberatorOptions = {
   tracer?: TurnTracer;
   manifestFinalizerEnabled?: boolean;
   manifestValidatorEnabled?: boolean;
-  manifestValidatorOnCriticalFailure?: "no_output" | "legacy_fallback";
   relationalSlotRepository?: Pick<RelationalSlotRepository, "get">;
   actionRepository?: Pick<ActionRepository, "get">;
 };

@@ -14,11 +14,7 @@ import {
 import { buildDialogueMessages, toContentBlockMessages } from "./dialogue.js";
 import { NO_OUTPUT_FINALIZER_TOOL_NAME, runFinalizer } from "./finalizer.js";
 import { runManifestFinalizer, type ManifestFinalizerResult } from "./manifest-finalizer.js";
-import {
-  MANIFEST_VALIDATION_FAILED_CRITICAL_REASON,
-  ManifestValidator,
-  type ManifestValidationResult,
-} from "./manifest-validator.js";
+import { ManifestValidator, type ManifestValidationResult } from "./manifest-validator.js";
 import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
 import { summarizeRetrievedEvidence } from "./prompt/retrieval.js";
@@ -165,19 +161,7 @@ function cognitionThinkingOption(
 
 function buildManifestFinalizerEmission(
   result: ManifestFinalizerResult,
-  validationResult?: ManifestValidationResult,
 ): FinalizerEmission {
-  if (validationResult?.verdict === "no_output") {
-    return {
-      response: "",
-      emitted: false,
-      emission: {
-        kind: "suppressed",
-        reason: MANIFEST_VALIDATION_FAILED_CRITICAL_REASON,
-      },
-    };
-  }
-
   if (result.manifest.discourse_act === "no_output") {
     return {
       response: "",
@@ -189,10 +173,7 @@ function buildManifestFinalizerEmission(
     };
   }
 
-  const finalText =
-    validationResult?.verdict === "passed" || validationResult?.verdict === "rewritten"
-      ? validationResult.final_text
-      : result.manifest.final_text;
+  const finalText = result.manifest.final_text;
   const persistenceClass = manifestPersistenceClass(result);
 
   return {
@@ -244,10 +225,6 @@ export class Deliberator {
       slotRepository: this.options.relationalSlotRepository,
       actionRepository: this.options.actionRepository,
       entityRepository: context.entityRepository,
-      config: {
-        enabled: true,
-        onCriticalFailure: this.options.manifestValidatorOnCriticalFailure ?? "no_output",
-      },
       tracer: this.tracer,
     });
 
@@ -363,49 +340,8 @@ export class Deliberator {
             thoughtsPersisted: false,
           };
         }
-        const validationResult = await this.validateManifestFinalizerResult(response, context);
-
-        if (validationResult?.verdict === "legacy_fallback_requested") {
-          const fallbackResponse = await runFinalizer({
-            llmClient: this.options.llmClient,
-            dispatcher: this.options.toolDispatcher,
-            sessionId: context.sessionId,
-            audienceEntityId: context.audienceEntityId,
-            model: this.options.cognitionModel,
-            baseSystemPrompt,
-            initialMessages: dialogueBlockMessages,
-            tools: deliberatorTools,
-            userEntryId: context.userEntryId,
-            maxTokens: systemOneMaxTokens,
-            ...(thinking === undefined ? {} : { thinking }),
-            path: "system_1",
-            ...(evidenceLedgerPromptSections === null
-              ? {}
-              : { additionalPromptSections: evidenceLedgerPromptSections }),
-            tracer: this.tracer,
-            turnId: context.turnId,
-          });
-          const finalized = buildFinalizerEmission(fallbackResponse);
-
-          return {
-            path: "system_1",
-            response: finalized.response,
-            emitted: finalized.emitted,
-            emission: finalized.emission,
-            emissionRecommendation: "emit",
-            thoughtStreamEntryIds: [],
-            thoughts: [],
-            tool_calls: fallbackResponse.toolCallsMade,
-            usage: aggregateUsage(response.usage, fallbackResponse.usage),
-            decision_reason: decision.reason,
-            retrievedEpisodes: [...context.retrievalResult],
-            referencedEpisodeIds: null,
-            intents: [],
-            thoughtsPersisted: false,
-          };
-        }
-
-        const finalized = buildManifestFinalizerEmission(response, validationResult ?? undefined);
+        await this.validateManifestFinalizerResult(response, context);
+        const finalized = buildManifestFinalizerEmission(response);
 
         return {
           path: "system_1",
@@ -616,35 +552,8 @@ export class Deliberator {
       }
       usage = aggregateUsage(usage, manifestResponse.usage);
 
-      const validationResult = await this.validateManifestFinalizerResult(
-        manifestResponse,
-        context,
-      );
-
-      if (validationResult?.verdict === "legacy_fallback_requested") {
-        const fallbackResponse = await runFinalizer({
-          llmClient: this.options.llmClient,
-          dispatcher: this.options.toolDispatcher,
-          sessionId: context.sessionId,
-          audienceEntityId: context.audienceEntityId,
-          model: this.options.cognitionModel,
-          baseSystemPrompt,
-          initialMessages: dialogueBlockMessages,
-          tools: deliberatorTools,
-          userEntryId: context.userEntryId,
-          maxTokens: systemTwoMaxTokens,
-          ...(thinking === undefined ? {} : { thinking }),
-          path: "system_2",
-          additionalPromptSections,
-          tracer: this.tracer,
-          turnId: context.turnId,
-        });
-        usage = aggregateUsage(usage, fallbackResponse.usage);
-        finalized = buildFinalizerEmission(fallbackResponse);
-        finalToolCallsMade = fallbackResponse.toolCallsMade;
-      } else {
-        finalized = buildManifestFinalizerEmission(manifestResponse, validationResult ?? undefined);
-      }
+      await this.validateManifestFinalizerResult(manifestResponse, context);
+      finalized = buildManifestFinalizerEmission(manifestResponse);
     } else {
       const finalResponse = await runFinalizer({
         llmClient: this.options.llmClient,

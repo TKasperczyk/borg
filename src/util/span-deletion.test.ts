@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { deleteSpansSentenceAware } from "./span-deletion.js";
+import { deleteSpans, deleteSpansSentenceAware } from "./span-deletion.js";
 
 describe("deleteSpansSentenceAware", () => {
   it("removes the enclosing sentence when a span is embedded in prose", () => {
@@ -154,5 +154,35 @@ describe("deleteSpansSentenceAware", () => {
       rewrittenText: "",
       outcome: "empty",
     });
+  });
+});
+
+describe("deleteSpans", () => {
+  it("removes spans at the start and trims trailing removal junk", () => {
+    expect(deleteSpans("Remove me, keep this.", ["Remove me,"]).result).toBe("keep this.");
+  });
+
+  it("removes spans at the end", () => {
+    expect(deleteSpans("Keep this. Remove me.", ["Remove me."]).result).toBe("Keep this.");
+  });
+
+  it("removes spans with surrounding punctuation when the span includes it", () => {
+    expect(deleteSpans("Keep this, remove me; done.", ["remove me;"]).result).toBe(
+      "Keep this,  done.",
+    );
+  });
+
+  it("does not remove duplicate spans ambiguously", () => {
+    const result = deleteSpans("Repeat claim. Repeat claim.", ["Repeat claim."]);
+
+    expect(result.allRemoved).toBe(false);
+    expect(result.result).toBe("Repeat claim. Repeat claim.");
+  });
+
+  it("does not remove overlapping spans", () => {
+    const result = deleteSpans("Keep the bad span here.", ["bad span", "span"]);
+
+    expect(result.allRemoved).toBe(false);
+    expect(result.result).toBe("Keep the bad span here.");
   });
 });

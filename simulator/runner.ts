@@ -79,7 +79,7 @@ export const PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES = {
   generation: {
     evidenceLedger: { enabled: true },
     manifestFinalizer: { enabled: true },
-    manifestValidator: { enabled: true, onCriticalFailure: "no_output" },
+    manifestValidator: { enabled: true },
     postGenerationGuards: {
       commitment: { mode: "shadow" },
       closurePressure: { mode: "enforce" },

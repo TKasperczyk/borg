@@ -461,8 +461,6 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       manifestFinalizerEnabled: this.options.config.generation.manifestFinalizer.enabled,
       manifestValidatorEnabled: this.options.config.generation.manifestValidator.enabled,
-      manifestValidatorOnCriticalFailure:
-        this.options.config.generation.manifestValidator.onCriticalFailure,
       relationalSlotRepository: this.options.relationalSlotRepository,
       actionRepository: this.options.actionRepository,
     });

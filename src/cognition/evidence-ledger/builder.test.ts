@@ -541,10 +541,6 @@ describe("EvidenceLedgerBuilder", () => {
         actionRepository: {
           get: () => null,
         },
-        config: {
-          enabled: true,
-          onCriticalFailure: "no_output",
-        },
       });
       const result = await validator.validate({
         manifest: {
@@ -730,10 +726,6 @@ describe("EvidenceLedgerBuilder", () => {
       actionRepository: {
         get: () => null,
       },
-      config: {
-        enabled: true,
-        onCriticalFailure: "no_output",
-      },
     });
     const result = await validator.validate({
       manifest: {
@@ -839,10 +831,6 @@ describe("EvidenceLedgerBuilder", () => {
       actionRepository: {
         get: () => null,
       },
-      config: {
-        enabled: true,
-        onCriticalFailure: "no_output",
-      },
     });
     const result = await validator.validate({
       manifest: {
@@ -865,7 +853,7 @@ describe("EvidenceLedgerBuilder", () => {
       userEntryId: userEntry.id,
     });
 
-    expect(result.verdict).toBe("passed");
+    expect(result.would_have_verdict).toBe("passed");
     expect(result.failed_claims).toEqual([]);
   });
 

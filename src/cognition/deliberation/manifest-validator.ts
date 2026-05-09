@@ -1,21 +1,13 @@
-import type { Config } from "../../config/index.js";
 import type { ActionRepository } from "../../memory/actions/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
 import { parseActionId, parseRelationalSlotId, type EntityId } from "../../util/ids.js";
-import { deleteSpans, isStructurallyEmptyText } from "../../util/span-deletion.js";
 import { valueAppearsIn } from "../../util/text-presence.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import type { EmitManifestResponse, EvidenceRef, ManifestClaim } from "./manifest-schema.js";
 
-// Eight chars admits short substantive text like "I agree." while rejecting fragments.
-export const MIN_COHERENT_TEXT_LENGTH = 8;
-export const MANIFEST_VALIDATION_FAILED_CRITICAL_REASON =
-  "manifest_validation_failed_critical" as const;
 const RENDERED_SPAN_MISSING_REASON = "rendered_span does not appear in final_text" as const;
-
-export type ManifestValidatorConfig = Config["generation"]["manifestValidator"];
 
 export type ManifestValidationFailedClaim = {
   claim_index: number;
@@ -25,37 +17,22 @@ export type ManifestValidationFailedClaim = {
   claim: ManifestClaim;
 };
 
-export type ManifestValidationResult =
-  | {
-      verdict: "passed";
-      final_text: string;
-      passed_claims: number;
-      failed_claims: [];
-    }
-  | {
-      verdict: "rewritten";
-      final_text: string;
-      removed_spans: string[];
-      passed_claims: number;
-      failed_claims: ManifestValidationFailedClaim[];
-    }
-  | {
-      verdict: "no_output";
-      reason: typeof MANIFEST_VALIDATION_FAILED_CRITICAL_REASON;
-      passed_claims: number;
-      failed_claims: ManifestValidationFailedClaim[];
-    }
-  | {
-      verdict: "legacy_fallback_requested";
-      passed_claims: number;
-      failed_claims: ManifestValidationFailedClaim[];
-    };
+export type ManifestValidationWouldHaveVerdict =
+  | "passed"
+  | "would_have_rewritten"
+  | "would_have_suppressed";
+
+export type ManifestValidationResult = {
+  passed_claims: number;
+  failed_claims: ManifestValidationFailedClaim[];
+  phantom_claims: ManifestValidationFailedClaim[];
+  would_have_verdict: ManifestValidationWouldHaveVerdict;
+};
 
 export type ManifestValidatorOptions = {
   slotRepository: Pick<RelationalSlotRepository, "get">;
   actionRepository: Pick<ActionRepository, "get">;
   entityRepository?: Pick<EntityRepository, "get">;
-  config: ManifestValidatorConfig;
   tracer?: TurnTracer;
 };
 
@@ -167,8 +144,6 @@ function resolveEvidence(input: {
 
     if (entry === null) {
       input.reasons.push("claim_cites_unknown_evidence");
-    } else if (entry.source_type !== ref.source_type) {
-      input.reasons.push("claim_cites_evidence_source_type_mismatch");
     }
 
     return {
@@ -325,15 +300,19 @@ function failedClaimReasons(failedClaims: readonly ManifestValidationFailedClaim
 
 function passedClaimsByKind(
   claims: readonly ManifestClaim[],
-  failedClaims: readonly ManifestValidationFailedClaim[],
+  invalidClaims: readonly ManifestValidationFailedClaim[],
   kinds: readonly ManifestClaim["kind"][],
 ): Record<string, number> {
-  const failedClaimIndexes = new Set(failedClaims.map((failed) => failed.claim_index));
+  const invalidClaimIndexes = new Set(
+    invalidClaims
+      .map((failed) => failed.claim_index)
+      .filter((index): index is number => index >= 0),
+  );
   const countedKinds = new Set<ManifestClaim["kind"]>(kinds);
   const counts: Record<string, number> = {};
 
   for (const [index, claim] of claims.entries()) {
-    if (failedClaimIndexes.has(index) || !countedKinds.has(claim.kind)) {
+    if (invalidClaimIndexes.has(index) || !countedKinds.has(claim.kind)) {
       continue;
     }
 
@@ -343,34 +322,39 @@ function passedClaimsByKind(
   return counts;
 }
 
-function finalTraceVerdict(result: ManifestValidationResult) {
-  switch (result.verdict) {
-    case "passed":
-      return "passed" as const;
-    case "rewritten":
-      return "rewritten" as const;
-    case "no_output":
-      return "no_output" as const;
-    case "legacy_fallback_requested":
-      return "legacy_fallback" as const;
-  }
-}
-
-function removedSpans(result: ManifestValidationResult): string[] {
-  return result.verdict === "rewritten" ? [...result.removed_spans] : [];
-}
-
-function resultFinalText(input: {
-  result: ManifestValidationResult;
-  manifest: EmitManifestResponse;
-}): string | undefined {
-  return input.result.verdict === "passed" || input.result.verdict === "rewritten"
-    ? input.result.final_text
-    : undefined;
-}
-
 function previewText(text: string, maxLength = 500): string {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength)}...`;
+}
+
+function reasonIsRealSafetyProblem(reason: string): boolean {
+  return (
+    reason === "claim_cites_unknown_evidence" ||
+    reason === "claim_grounding_evidence_empty" ||
+    reason === "claim_grounded_in_self_report" ||
+    reason.startsWith("final_text_uses_non_speakable_name:") ||
+    reason.startsWith("exact_value_only_in_tainted_evidence:") ||
+    reason.includes("_cites_tainted_evidence:") ||
+    reason.startsWith("invalid action record id:") ||
+    reason.startsWith("action record not found:") ||
+    reason.startsWith("action state mismatch:") ||
+    reason.startsWith("agent self-provenance cites unsupported evidence source:")
+  );
+}
+
+function claimHasRealSafetyProblem(failed: ManifestValidationFailedClaim): boolean {
+  return failed.reasons.some(reasonIsRealSafetyProblem);
+}
+
+function wouldHaveVerdict(
+  failedClaims: readonly ManifestValidationFailedClaim[],
+): ManifestValidationWouldHaveVerdict {
+  if (failedClaims.length === 0) {
+    return "passed";
+  }
+
+  return failedClaims.some(claimHasRealSafetyProblem)
+    ? "would_have_suppressed"
+    : "would_have_rewritten";
 }
 
 export class ManifestValidator {
@@ -461,23 +445,18 @@ export class ManifestValidator {
 
     if (failedClaims.length === 0) {
       const result: ManifestValidationResult = {
-        verdict: "passed",
-        final_text: input.manifest.final_text,
         passed_claims: passedClaims,
         failed_claims: [],
+        phantom_claims: [],
+        would_have_verdict: "passed",
       };
       this.trace(input, result);
       return result;
     }
 
-    // Claims whose rendered_span does not appear in final_text are
-    // "phantom" claims -- the model declared a claim about prose that
-    // does not actually exist in the response. There is no span to
-    // delete, so treat the claim as if it had been dropped from the
-    // manifest. Keep them in failed_claims for trace observability so we
-    // can monitor the rate. v34 showed phantom-span failures dominating
-    // critical suppressions because deleteSpans cannot delete what isn't
-    // there, leaving the validator with no rewrite path.
+    // Phantom claims are manifest anomalies: the model declared a claim
+    // about prose that is not present in the response. They are reported
+    // separately because the tracer no longer mutates final_text.
     const phantomClaims = failedClaims.filter((failed) =>
       failed.reasons.includes(RENDERED_SPAN_MISSING_REASON),
     );
@@ -485,52 +464,13 @@ export class ManifestValidator {
       (failed) => !failed.reasons.includes(RENDERED_SPAN_MISSING_REASON),
     );
 
-    if (realFailedClaims.length === 0) {
-      const result: ManifestValidationResult = {
-        verdict: "passed",
-        final_text: input.manifest.final_text,
-        passed_claims: passedClaims,
-        failed_claims: [],
-      };
-      this.trace(input, result, { phantomClaims });
-      return result;
-    }
-
-    const deletion = deleteSpans(
-      input.manifest.final_text,
-      realFailedClaims.map((failed) => failed.rendered_span),
-    );
-    const nonCriticalRemovable =
-      deletion.allRemoved &&
-      deletion.result.trim().length >= MIN_COHERENT_TEXT_LENGTH &&
-      !isStructurallyEmptyText(deletion.result);
-
-    if (nonCriticalRemovable) {
-      const result: ManifestValidationResult = {
-        verdict: "rewritten",
-        final_text: deletion.result,
-        removed_spans: deletion.removedSpans,
-        passed_claims: passedClaims,
-        failed_claims: realFailedClaims,
-      };
-      this.trace(input, result, { phantomClaims });
-      return result;
-    }
-
-    const result: ManifestValidationResult =
-      this.options.config.onCriticalFailure === "legacy_fallback"
-        ? {
-            verdict: "legacy_fallback_requested",
-            passed_claims: passedClaims,
-            failed_claims: realFailedClaims,
-          }
-        : {
-            verdict: "no_output",
-            reason: MANIFEST_VALIDATION_FAILED_CRITICAL_REASON,
-            passed_claims: passedClaims,
-            failed_claims: realFailedClaims,
-          };
-    this.trace(input, result, { phantomClaims });
+    const result: ManifestValidationResult = {
+      passed_claims: passedClaims,
+      failed_claims: realFailedClaims,
+      phantom_claims: phantomClaims,
+      would_have_verdict: wouldHaveVerdict(realFailedClaims),
+    };
+    this.trace(input, result);
     return result;
   }
 
@@ -584,7 +524,7 @@ export class ManifestValidator {
 
     switch (input.claim.kind) {
       case "user_fact":
-        this.validateExactValues({
+        this.validateUserFactEvidence({
           claim: input.claim,
           entries,
           reasons,
@@ -593,7 +533,6 @@ export class ManifestValidator {
       case "slot_fact":
         await this.validateSlotFact({
           claim: input.claim,
-          entries,
           reasons,
         });
         break;
@@ -628,15 +567,11 @@ export class ManifestValidator {
   }
 
   private validateExactValues(input: {
-    claim: Extract<ManifestClaim, { kind: "user_fact" | "slot_fact" }>;
+    claim: Extract<ManifestClaim, { kind: "user_fact" }>;
     entries: readonly EvidenceLedgerEntry[];
     reasons: string[];
   }): void {
     for (const value of input.claim.exact_values) {
-      if (!valueAppearsIn(input.claim.rendered_span, value)) {
-        input.reasons.push(`exact value does not appear in rendered_span: ${value}`);
-      }
-
       const supportingEntries = input.entries.filter((entry) =>
         valueAppearsIn(evidenceTextOrValue(entry), value),
       );
@@ -649,17 +584,22 @@ export class ManifestValidator {
     }
   }
 
-  private async validateSlotFact(input: {
-    claim: Extract<ManifestClaim, { kind: "slot_fact" }>;
+  private validateUserFactEvidence(input: {
+    claim: Extract<ManifestClaim, { kind: "user_fact" }>;
     entries: readonly EvidenceLedgerEntry[];
     reasons: string[];
-  }): Promise<void> {
+  }): void {
     this.validateExactValues({
       claim: input.claim,
       entries: input.entries,
       reasons: input.reasons,
     });
+  }
 
+  private async validateSlotFact(input: {
+    claim: Extract<ManifestClaim, { kind: "slot_fact" }>;
+    reasons: string[];
+  }): Promise<void> {
     let slotId: ReturnType<typeof parseRelationalSlotId>;
 
     try {
@@ -678,10 +618,6 @@ export class ManifestValidator {
 
     if (slot.state !== "established") {
       input.reasons.push(`relational slot is not established: ${slot.state}`);
-    }
-
-    if (!input.claim.exact_values.some((value) => valueAppearsIn(slot.value, value))) {
-      input.reasons.push("relational slot value does not match exact_values");
     }
   }
 
@@ -725,13 +661,6 @@ export class ManifestValidator {
     });
 
     if (input.claim.callback_scope === "current_turn") {
-      if (!input.entries.some((entry) => entry.source_type === "current_user_message")) {
-        input.reasons.push("current_turn callback lacks current user message evidence");
-      }
-
-      if (input.entries.some((entry) => entry.source_type !== "current_user_message")) {
-        input.reasons.push("current_turn callback cites non-current-user evidence");
-      }
       return;
     }
 
@@ -780,30 +709,27 @@ export class ManifestValidator {
     }
   }
 
-  private trace(
-    input: ManifestValidatorInput,
-    result: ManifestValidationResult,
-    extras: { phantomClaims?: readonly ManifestValidationFailedClaim[] } = {},
-  ): void {
+  private trace(input: ManifestValidatorInput, result: ManifestValidationResult): void {
     if (this.options.tracer?.enabled !== true || input.turnId === undefined) {
       return;
     }
-    const phantomClaims = extras.phantomClaims ?? [];
 
-    const finalText = resultFinalText({
-      result,
-      manifest: input.manifest,
-    });
-    const finalTextChanged = finalText !== undefined && finalText !== input.manifest.final_text;
+    const invalidClaims = [...result.failed_claims, ...result.phantom_claims];
     const literalValuesValidatedByKind = passedClaimsByKind(
       input.manifest.claims,
-      result.failed_claims,
+      invalidClaims,
       DETERMINISTICALLY_VALIDATED_CLAIM_KINDS,
+    );
+    const realSafetyReasons = failedClaimReasons(
+      result.failed_claims.filter(claimHasRealSafetyProblem),
     );
     const payload = {
       turnId: input.turnId,
       verdict: result.failed_claims.length === 0 ? "valid" : "invalid",
-      final_verdict: finalTraceVerdict(result),
+      final_verdict: result.would_have_verdict,
+      would_have_verdict: result.would_have_verdict,
+      would_have_failed_under_old_regime: result.would_have_verdict !== "passed",
+      real_safety_problem: realSafetyReasons.length > 0,
       passed_claims: result.passed_claims,
       // Back-compat field name from Sprint 7. For user_fact, this means the
       // literal exact_values were grounded, not that all entity bindings were
@@ -812,26 +738,27 @@ export class ManifestValidator {
       literal_values_validated_by_kind: literalValuesValidatedByKind,
       accepted_unvalidated_claims_by_kind: passedClaimsByKind(
         input.manifest.claims,
-        result.failed_claims,
+        invalidClaims,
         ACCEPTED_UNVALIDATED_CLAIM_KINDS,
       ),
       failed_claims_by_kind: failedClaimsByKind(result.failed_claims),
       failed_claim_reasons: failedClaimReasons(result.failed_claims),
-      phantom_claim_count: phantomClaims.length,
-      ...(phantomClaims.length === 0
+      real_safety_reasons: realSafetyReasons,
+      phantom_claim_count: result.phantom_claims.length,
+      ...(result.phantom_claims.length === 0
         ? {}
         : {
-            phantom_claims_by_kind: failedClaimsByKind(phantomClaims),
+            phantom_claims_by_kind: failedClaimsByKind(result.phantom_claims),
+            phantom_claim_reasons: failedClaimReasons(result.phantom_claims),
           }),
-      spans_removed: removedSpans(result),
-      final_text_changed: finalTextChanged,
+      final_text_changed: false,
       ...(this.options.tracer.includePayloads
         ? {
             failed_claims: toTraceJsonValue(result.failed_claims),
+            phantom_claims: toTraceJsonValue(result.phantom_claims),
             original_text: input.manifest.final_text,
-            ...(finalTextChanged && finalText !== undefined ? { rewritten_text: finalText } : {}),
             original_text_preview: previewText(input.manifest.final_text),
-            ...(finalText === undefined ? {} : { final_text_preview: previewText(finalText) }),
+            final_text_preview: previewText(input.manifest.final_text),
           }
         : {}),
     };

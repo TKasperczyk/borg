@@ -128,7 +128,6 @@ function replayConfig(
       },
       manifestValidator: {
         enabled: pipeline.manifestValidatorEnabled,
-        onCriticalFailure: "no_output",
       },
       postGenerationGuards: {
         commitment: {
@@ -335,7 +334,7 @@ function manifestValidationCountRecord(
 function validatorCaught(events: readonly TraceEvent[]): boolean {
   const verdict = manifestValidationFinalVerdict(events);
 
-  return verdict === "rewritten" || verdict === "no_output" || verdict === "legacy_fallback";
+  return verdict !== null && verdict !== "passed";
 }
 
 function emittedText(result: TurnResult): string {

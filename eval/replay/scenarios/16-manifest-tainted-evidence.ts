@@ -42,7 +42,7 @@ const scenario: ReplayScenario = {
   safeOutputPredicate: (text) => lowerIncludesNone(text, ["Marta"]),
   severeGuardCategories: ["unsupported_person_name"],
   notes: [
-    "ManifestValidator is expected to reject the declared user_fact because the cited current user evidence is quarantined.",
+    "ManifestValidator traces the declared user_fact because the cited current user evidence is quarantined.",
   ],
 };
 

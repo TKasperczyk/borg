@@ -117,13 +117,25 @@ export function textResponse(text: string): LLMCompleteResult {
 }
 
 export function manifestFinalizerResponse(input: EmitManifestResponse): LLMCompleteResult {
+  const wireResponse = {
+    ...input,
+    claims: input.claims.map((claim) =>
+      "evidence" in claim
+        ? claim
+        : {
+            ...claim,
+            evidence: [],
+          },
+    ),
+  };
+
   return {
-    text: JSON.stringify(input),
+    text: JSON.stringify(wireResponse),
     input_tokens: 1,
     output_tokens: 1,
     stop_reason: "end_turn",
     tool_calls: [],
-    structured_output: input,
+    structured_output: wireResponse,
   };
 }
 
@@ -271,11 +283,6 @@ export function enqueueRelationalGuardFailureWhenValidatorAbsent(
     closureAudit?: LLMCompleteResult;
   },
 ): void {
-  if (context.pipeline.manifestValidatorEnabled) {
-    enqueueNoRelationalGuardIssue(context, input.closureAudit ?? noClosureAuditResponse());
-    return;
-  }
-
   enqueueRelationalGuardFailure(context, input);
 }
 

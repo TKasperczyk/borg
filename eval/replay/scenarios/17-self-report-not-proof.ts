@@ -64,7 +64,7 @@ const scenario: ReplayScenario = {
   safeOutputPredicate: (text) => lowerIncludesNone(text, ["verified qualia"]),
   severeGuardCategories: [],
   notes: [
-    "ManifestValidator should reject the proof claim while leaving the prior self-report stream entry intact.",
+    "ManifestValidator traces the proof claim while leaving the prior self-report stream entry intact.",
   ],
 };
 

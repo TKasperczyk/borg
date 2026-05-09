@@ -113,7 +113,6 @@ function createDeliberator(
   options: {
     manifestFinalizerEnabled?: boolean;
     manifestValidatorEnabled?: boolean;
-    manifestValidatorOnCriticalFailure?: "no_output" | "legacy_fallback";
     cognitionThinking?: { enabled: boolean; budget_tokens: number };
     tracer?: TurnTracer;
   } = {},
@@ -125,7 +124,6 @@ function createDeliberator(
     cognitionThinking: options.cognitionThinking,
     manifestFinalizerEnabled: options.manifestFinalizerEnabled,
     manifestValidatorEnabled: options.manifestValidatorEnabled,
-    manifestValidatorOnCriticalFailure: options.manifestValidatorOnCriticalFailure,
     relationalSlotRepository: {
       get: () => null,
     },
@@ -603,7 +601,7 @@ describe("deliberator", () => {
     });
   });
 
-  it("rewrites invalid non-critical manifest spans before emission", async () => {
+  it("traces invalid manifest spans without changing the emission", async () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
@@ -669,104 +667,22 @@ describe("deliberator", () => {
       options: { stakes: "low" },
     });
 
-    expect(result.response).toBe("Stable answer remains.");
+    expect(result.response).toBe("Stable answer remains. Luis prefers verbose answers.");
     expect(result.emission).toEqual({
       kind: "message",
-      content: "Stable answer remains.",
+      content: "Stable answer remains. Luis prefers verbose answers.",
     });
     const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
     expect(validationEvent?.data).toMatchObject({
       turnId: "turn-manifest-rewrite",
       verdict: "invalid",
-      final_verdict: "rewritten",
-      final_text_changed: true,
-      spans_removed: ["Luis prefers verbose answers."],
-    });
-  });
-
-  it("suppresses invalid critical manifest output when configured for no_output", async () => {
-    const tracer = new CapturingTracer();
-    const llm = new FakeLLMClient({
-      responses: [
-        createManifestFinalizerResponse({
-          final_text: "Luis.",
-          discourse_act: "answer",
-          claims: [
-            {
-              kind: "user_fact",
-              rendered_span: "Luis.",
-              exact_values: ["Luis"],
-              evidence: [
-                {
-                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                  source_type: "current_user_message",
-                },
-              ],
-              confidence: "direct",
-            },
-          ],
-        }),
-      ],
-    });
-    const deliberator = createDeliberator(llm, tempDirs, {
-      manifestFinalizerEnabled: true,
-      manifestValidatorEnabled: true,
-      manifestValidatorOnCriticalFailure: "no_output",
-      tracer,
-    });
-
-    const result = await deliberator.run({
-      sessionId: DEFAULT_SESSION_ID,
-      turnId: "turn-manifest-critical",
-      userMessage: "Please answer directly.",
-      userEntryId: "strm_aaaaaaaaaaaaaaaa",
-      perception: {
-        entities: [],
-        mode: "problem_solving",
-        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
-        temporalCue: null,
-      },
-      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
-      retrievalConfidence: makeRetrievalConfidence(),
-      evidenceLedger: makeEvidenceLedger(),
-      evidenceLedgerPromptSection:
-        "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
-      workingMemory: {
-        session_id: DEFAULT_SESSION_ID,
-        turn_counter: 1,
-        hot_entities: [],
-        pending_actions: [],
-        pending_social_attribution: null,
-        pending_trait_attribution: null,
-        mood: null,
-        pending_procedural_attempts: [],
-        discourse_state: {
-          stop_until_substantive_content: null,
-        },
-        suppressed: [],
-        mode: "problem_solving",
-        updated_at: 0,
-      },
-      selfSnapshot: { values: [], goals: [], traits: [] },
-      options: { stakes: "low" },
-    });
-
-    expect(result.response).toBe("");
-    expect(result.emitted).toBe(false);
-    expect(result.emission).toEqual({
-      kind: "suppressed",
-      reason: "manifest_validation_failed_critical",
-    });
-    const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
-    expect(validationEvent?.data).toMatchObject({
-      turnId: "turn-manifest-critical",
-      verdict: "invalid",
-      final_verdict: "no_output",
+      final_verdict: "would_have_rewritten",
+      would_have_verdict: "would_have_rewritten",
       final_text_changed: false,
     });
   });
 
-  it("reruns the legacy finalizer when critical manifest validation requests fallback", async () => {
+  it("traces real-safety manifest failures without suppressing output", async () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
@@ -780,7 +696,7 @@ describe("deliberator", () => {
               exact_values: ["Luis"],
               evidence: [
                 {
-                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
+                  id: "current_user_message:strm_missingmissing",
                   source_type: "current_user_message",
                 },
               ],
@@ -788,25 +704,17 @@ describe("deliberator", () => {
             },
           ],
         }),
-        {
-          text: "Legacy fallback answer.",
-          input_tokens: 6,
-          output_tokens: 3,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
       manifestFinalizerEnabled: true,
       manifestValidatorEnabled: true,
-      manifestValidatorOnCriticalFailure: "legacy_fallback",
       tracer,
     });
 
     const result = await deliberator.run({
       sessionId: DEFAULT_SESSION_ID,
-      turnId: "turn-manifest-fallback",
+      turnId: "turn-manifest-critical",
       userMessage: "Please answer directly.",
       userEntryId: "strm_aaaaaaaaaaaaaaaa",
       perception: {
@@ -840,22 +748,20 @@ describe("deliberator", () => {
       options: { stakes: "low" },
     });
 
-    expect(result.response).toBe("Legacy fallback answer.");
-    expect(result.tool_calls).toEqual([]);
-    expect(result.usage).toEqual({
-      input_tokens: 16,
-      output_tokens: 7,
-      stop_reason: "end_turn",
+    expect(result.response).toBe("Luis.");
+    expect(result.emitted).toBe(true);
+    expect(result.emission).toEqual({
+      kind: "message",
+      content: "Luis.",
     });
-    expect(llm.requests).toHaveLength(2);
-    expect(llm.requests[0]?.tool_choice).toBeUndefined();
-    expect(llm.requests[0]?.output_config?.format.type).toBe("json_schema");
-    expect(llm.requests[1]?.tool_choice).toBeUndefined();
     const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
     expect(validationEvent?.data).toMatchObject({
-      turnId: "turn-manifest-fallback",
+      turnId: "turn-manifest-critical",
       verdict: "invalid",
-      final_verdict: "legacy_fallback",
+      final_verdict: "would_have_suppressed",
+      would_have_verdict: "would_have_suppressed",
+      real_safety_problem: true,
+      final_text_changed: false,
     });
   });
 

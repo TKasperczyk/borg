@@ -6,8 +6,8 @@ import { enqueueNoRelationalGuardIssue, lowerIncludesNone } from "../scenario.js
 // appeared in final_text as part of a compound the model invented. No
 // claim flagged addresses_audience_by_name, so the pre-Sprint-8d.1
 // validator passed it through. Sprint 8d.1 added a deterministic
-// final-text scan that catches the leak regardless of whether the model
-// self-flagged it. This scenario locks that regression.
+// final-text scan that reports the leak regardless of whether the model
+// self-flagged it. Observer mode no longer mutates the emitted prose.
 const scenario: ReplayScenario = {
   id: "32-tom-leak-unflagged-vocative",
   failureClass: "Audience routing label leaks unflagged into final_text",
@@ -39,7 +39,7 @@ const scenario: ReplayScenario = {
   safeOutputPredicate: (text) => lowerIncludesNone(text, ["Tom"]),
   severeGuardCategories: [],
   notes: [
-    "Sprint 8d.1 final-text scan should suppress or rewrite the manifest pipeline.",
+    "Sprint 8d.1 final-text scan traces the leak; manifest pipelines emit the original prose.",
   ],
 };
 

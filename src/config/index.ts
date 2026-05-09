@@ -65,10 +65,8 @@ const manifestFinalizerConfigSchema = z.object({
   enabled: z.boolean(),
 });
 const manifestFinalizerFileConfigSchema = manifestFinalizerConfigSchema.partial();
-const manifestValidatorCriticalFailureSchema = z.enum(["no_output", "legacy_fallback"]);
 const manifestValidatorConfigSchema = z.object({
   enabled: z.boolean(),
-  onCriticalFailure: manifestValidatorCriticalFailureSchema,
 });
 const manifestValidatorFileConfigSchema = manifestValidatorConfigSchema.partial();
 
@@ -81,10 +79,6 @@ export type RelationalClaimGuardMode =
         overrides?: Partial<Record<RelationalClaimKind, PostGenerationGuardMode>>;
       };
     };
-export type ManifestValidatorCriticalFailure = z.infer<
-  typeof manifestValidatorCriticalFailureSchema
->;
-
 const configFileSchema = z
   .object({
     dataDir: z.string().min(1).optional(),
@@ -676,7 +670,6 @@ export const DEFAULT_CONFIG: Config = {
     },
     manifestValidator: {
       enabled: false,
-      onCriticalFailure: "no_output",
     },
     postGenerationGuards: {
       commitment: {
@@ -960,29 +953,6 @@ function readOptionalEnvAnthropicAuthMode(
   return parsed.data;
 }
 
-function readOptionalEnvManifestValidatorCriticalFailure(
-  env: NodeJS.ProcessEnv,
-  name: string,
-): z.infer<typeof manifestValidatorCriticalFailureSchema> | undefined {
-  const raw = readOptionalEnvString(env, name);
-
-  if (raw === undefined) {
-    return undefined;
-  }
-
-  const parsed = manifestValidatorCriticalFailureSchema.safeParse(raw);
-
-  if (!parsed.success) {
-    throw new ConfigError(
-      `Environment variable ${name} must be one of: ${manifestValidatorCriticalFailureSchema.options.join(
-        ", ",
-      )}`,
-    );
-  }
-
-  return parsed.data;
-}
-
 function isNodeError(error: unknown): error is NodeJS.ErrnoException & { code: string } {
   return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string";
 }
@@ -1168,13 +1138,6 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvBoolean(env, "BORG_GENERATION_MANIFEST_VALIDATOR_ENABLED") ??
           fileConfig.generation?.manifestValidator?.enabled ??
           DEFAULT_CONFIG.generation.manifestValidator.enabled,
-        onCriticalFailure:
-          readOptionalEnvManifestValidatorCriticalFailure(
-            env,
-            "BORG_GENERATION_MANIFEST_VALIDATOR_ON_CRITICAL_FAILURE",
-          ) ??
-          fileConfig.generation?.manifestValidator?.onCriticalFailure ??
-          DEFAULT_CONFIG.generation.manifestValidator.onCriticalFailure,
       },
       postGenerationGuards: {
         commitment: {

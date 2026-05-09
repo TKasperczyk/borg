@@ -208,7 +208,7 @@ describe("SimulatorRunner", () => {
       generation: {
         evidenceLedger: { enabled: true },
         manifestFinalizer: { enabled: true },
-        manifestValidator: { enabled: true, onCriticalFailure: "no_output" },
+        manifestValidator: { enabled: true },
         postGenerationGuards: {
           commitment: { mode: "shadow" },
           closurePressure: { mode: "enforce" },

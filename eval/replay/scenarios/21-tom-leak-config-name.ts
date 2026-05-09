@@ -29,7 +29,7 @@ const scenario: ReplayScenario = {
   },
   safeOutputPredicate: (text) => lowerIncludesNone(text, ["Tom"]),
   severeGuardCategories: [],
-  notes: ["Sprint 8b provenance validator should suppress the manifest pipelines."],
+  notes: ["Observer-mode provenance validator traces the name leak; manifest pipelines emit the original prose."],
 };
 
 export default scenario;

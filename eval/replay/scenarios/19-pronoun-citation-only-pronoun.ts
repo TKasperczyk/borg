@@ -15,17 +15,12 @@ const scenario: ReplayScenario = {
   id: "19-pronoun-citation-only-pronoun",
   failureClass: "Pronoun citation without name evidence",
   description:
-    "Named final-text claim cites only the pronoun-bearing turn, so literal-value validation rejects the missing name citation.",
+    "Named final-text claim cites only the pronoun-bearing turn; observer-mode validation traces the missing literal name support without suppressing.",
   async seed({ borg }) {
     await borg.stream.append({
       kind: "user_msg",
       content: "My tutor is Marta.",
     });
-  },
-  async postRunAssert({ pipeline, result }) {
-    if (pipeline.manifestValidatorEnabled && result.emission.kind !== "suppressed") {
-      throw new Error("Expected validator-enabled pipeline to reject the pronoun-only manifest");
-    }
   },
   userMessage: "She booked Tuesday.",
   unsafeCandidateText: "Marta booked Tuesday.",
@@ -48,7 +43,7 @@ const scenario: ReplayScenario = {
   safeOutputPredicate: safeOrSuppressed,
   severeGuardCategories: [],
   notes: [
-    "This documents the intended rejection class when a named claim cites only pronoun-bearing evidence.",
+    "Observer-mode validator no longer suppresses this current-turn bookkeeping failure; the prose emits as produced.",
   ],
 };
 

@@ -60,7 +60,7 @@ const scenario: ReplayScenario = {
   safeOutputPredicate: (text) => lowerIncludesNone(text, ["Did the mushroom dish work out"]),
   severeGuardCategories: ["open_question"],
   notes: [
-    "ManifestValidator rejects claims that cite a resolved open-question ledger entry.",
+    "ManifestValidator traces claims that cite a resolved open-question ledger entry without mutating output.",
   ],
 };
 

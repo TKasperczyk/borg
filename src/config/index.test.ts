@@ -64,7 +64,6 @@ describe("config", () => {
     });
     expect(config.generation.manifestValidator).toEqual({
       enabled: false,
-      onCriticalFailure: "no_output",
     });
     expect(config.generation.postGenerationGuards).toEqual({
       commitment: {
@@ -143,7 +142,6 @@ describe("config", () => {
         },
         manifestValidator: {
           enabled: false,
-          onCriticalFailure: "no_output",
         },
         postGenerationGuards: {
           relationalClaim: {
@@ -169,7 +167,6 @@ describe("config", () => {
         BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS: "8192",
         BORG_GENERATION_MANIFEST_FINALIZER_ENABLED: "true",
         BORG_GENERATION_MANIFEST_VALIDATOR_ENABLED: "true",
-        BORG_GENERATION_MANIFEST_VALIDATOR_ON_CRITICAL_FAILURE: "legacy_fallback",
         BORG_MODEL_RECALL_EXPANSION: "env-recall",
         ANTHROPIC_API_KEY: "secret",
       },
@@ -196,7 +193,6 @@ describe("config", () => {
     expect(config.generation.manifestFinalizer.enabled).toBe(true);
     expect(config.generation.manifestValidator).toEqual({
       enabled: true,
-      onCriticalFailure: "legacy_fallback",
     });
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
     expect(config.offline.beliefReviser.enabled).toBe(true);
@@ -316,20 +312,6 @@ describe("config", () => {
     ).toThrow(ConfigError);
   });
 
-  it("rejects invalid manifest validator critical-failure modes", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
-
-    expect(() =>
-      loadConfig({
-        dataDir: tempDir,
-        env: {
-          BORG_GENERATION_MANIFEST_VALIDATOR_ON_CRITICAL_FAILURE: "retry_forever",
-        },
-      }),
-    ).toThrow(ConfigError);
-  });
-
   it("rejects enabling the manifest validator without the manifest finalizer", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -341,7 +323,6 @@ describe("config", () => {
         },
         manifestValidator: {
           enabled: true,
-          onCriticalFailure: "no_output",
         },
       },
     });
