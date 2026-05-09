@@ -333,13 +333,16 @@ describe("EvidenceLedgerBuilder", () => {
         persistence_class: "assistant_self_report",
       }),
     ]);
+    // Sprint 8d.6.3: the retrieved raw stream item points at a stream id
+    // already covered by the current_session_transcript section, so the
+    // duplicate retrieved_raw_stream_evidence row is dropped. The
+    // underlying assistantEntry is rendered exactly once (in the
+    // transcript section above), with persistence_class preserved.
     expect(
       ledger.sections
         .find((section) => section.id === "retrieved_raw_stream_evidence")
         ?.entries.find((entry) => entry.id === "retrieved_stream:raw-current"),
-    ).toMatchObject({
-      persistence_class: "assistant_self_report",
-    });
+    ).toBeUndefined();
     expect(
       ledger.sections.find((section) => section.id === "action_states")?.entries[0],
     ).toMatchObject({
@@ -971,8 +974,14 @@ describe("EvidenceLedgerBuilder", () => {
     });
     const allEntries = ledger.sections.flatMap((section) => section.entries);
 
+    // Sprint 8d.6.3: raw-all-current points at currentEntry.id which is
+    // already in the current_session_transcript section, so it is deduped.
+    // Its scope info still appears -- on the transcript entry itself.
     expect(
       allEntries.find((entry) => entry.id === "retrieved_stream:raw-all-current"),
+    ).toBeUndefined();
+    expect(
+      allEntries.find((entry) => entry.id === `current_session_stream:${currentEntry.id}`),
     ).toMatchObject({
       source_type: "current_session_stream",
       session_scope: "current_session",
@@ -994,5 +1003,118 @@ describe("EvidenceLedgerBuilder", () => {
       source_type: "system_metadata",
       session_scope: "global",
     });
+  });
+
+  it("dedupes retrieved raw stream evidence against current_session_transcript by stream id", async () => {
+    // Sprint 8d.6.3 regression: same underlying stream entry must not
+    // appear twice (once in transcript, once in retrieved_raw_stream_evidence).
+    // v36/v37 manifest finalizer prompts had ~25k duplicate tokens from
+    // this class.
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Transcript-covered evidence.",
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [
+        {
+          id: "raw-duplicate",
+          source: "raw_stream",
+          text: String(userEntry.content),
+          provenance: { streamIds: [userEntry.id] },
+          recallIntentId: "intent-dup",
+          matchedTerms: [],
+          score: 0.9,
+          scoreBreakdown: {},
+        },
+      ],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+
+    const transcriptEntry = ledger.sections
+      .find((section) => section.id === "current_session_transcript")
+      ?.entries.find((entry) => entry.id === `current_session_stream:${userEntry.id}`);
+    const retrievedEntry = ledger.sections
+      .find((section) => section.id === "retrieved_raw_stream_evidence")
+      ?.entries.find((entry) => entry.id === "retrieved_stream:raw-duplicate");
+
+    expect(transcriptEntry).toBeDefined();
+    expect(retrievedEntry).toBeUndefined();
+  });
+
+  it("keeps retrieved raw stream evidence whose stream id is not in the transcript", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Transcript message.",
+    });
+    const otherStreamId = createStreamEntryId();
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [
+        {
+          id: "raw-other",
+          source: "raw_stream",
+          text: "non-transcript text",
+          provenance: { streamIds: [otherStreamId] },
+          recallIntentId: "intent-other",
+          matchedTerms: [],
+          score: 0.7,
+          scoreBreakdown: {},
+        },
+      ],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+
+    expect(
+      ledger.sections
+        .find((section) => section.id === "retrieved_raw_stream_evidence")
+        ?.entries.find((entry) => entry.id === "retrieved_stream:raw-other"),
+    ).toBeDefined();
   });
 });

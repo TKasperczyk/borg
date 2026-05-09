@@ -722,7 +722,15 @@ export class EvidenceLedgerBuilder {
     this.addContradictionsAndQuarantines(sections, input, streamEntries, resolver);
     this.addActionStates(sections, input, resolver);
     this.addRelationalSlots(sections, resolver);
-    this.addRetrievedRawStreamEvidence(sections, input, resolver);
+    // Sprint 8d.6.3: stream IDs covered by the current_session_transcript
+    // section don't need to be re-rendered as retrieved_raw_stream_evidence.
+    // The same underlying entry's text was duplicated across both sections
+    // (~25k tokens on heavy v37 turns) because dedupe only matched on
+    // rendered ledger entry IDs, not provenance stream IDs.
+    const transcriptStreamIds = new Set<string>(
+      transcriptIncluded ? transcriptEntries.map((entry) => entry.id) : [],
+    );
+    this.addRetrievedRawStreamEvidence(sections, input, resolver, transcriptStreamIds);
     this.addEpisodes(sections, input, resolver);
     this.addSemanticGraph(sections, input, resolver);
     this.addOpenQuestions(sections, input, resolver);
@@ -1026,15 +1034,29 @@ export class EvidenceLedgerBuilder {
     sections: SectionBuckets,
     input: EvidenceLedgerBuildInput,
     resolver: ScopeResolver,
+    transcriptStreamIds: ReadonlySet<string>,
   ): void {
     for (const item of input.retrievedEvidence) {
       if (item.source !== "raw_stream" && item.source !== "recent_raw_stream") {
         continue;
       }
 
-      const scope = scopeFromStreamIds(item.provenance?.streamIds ?? [], resolver);
+      const itemStreamIds = item.provenance?.streamIds ?? [];
+
+      // If every stream ID this retrieval item points to is already in the
+      // current_session_transcript section, skip emitting the duplicate
+      // retrieved_raw_stream_evidence row. The transcript renders the same
+      // underlying content with higher trust rank.
+      if (
+        itemStreamIds.length > 0 &&
+        itemStreamIds.every((id) => transcriptStreamIds.has(id))
+      ) {
+        continue;
+      }
+
+      const scope = scopeFromStreamIds(itemStreamIds, resolver);
       const streamIndex = streamIndexFromSingleCurrentSessionStreamId(
-        item.provenance?.streamIds,
+        itemStreamIds,
         resolver,
       );
       addEntry(
@@ -1044,7 +1066,7 @@ export class EvidenceLedgerBuilder {
           id: `retrieved_stream:${item.id}`,
           source_type: rawStreamSourceType(scope),
           session_scope: scope,
-          actor: rawStreamActor(item.provenance?.streamIds, resolver),
+          actor: rawStreamActor(itemStreamIds, resolver),
           trust_rank: RAW_STREAM_TRUST_RANK,
           text: item.text,
           value: item.source,
@@ -1052,7 +1074,7 @@ export class EvidenceLedgerBuilder {
           state: `score=${item.score.toFixed(2)}`,
           taint: "none",
           via_retrieval: true,
-          ...persistenceClassFromStreamIds(item.provenance?.streamIds, resolver),
+          ...persistenceClassFromStreamIds(itemStreamIds, resolver),
         }),
       );
     }
