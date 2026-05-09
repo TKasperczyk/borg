@@ -7,7 +7,11 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { episodeIdSchema, isEpisodeInGlobalIdentityScope } from "../../memory/episodic/index.js";
+import {
+  episodeIdSchema,
+  isEpisodeInGlobalIdentityScope,
+  isEpisodeVisibleToAudience,
+} from "../../memory/episodic/index.js";
 import {
   growthMarkerCategorySchema,
   growthMarkerIdSchema,
@@ -17,6 +21,7 @@ import {
   type OpenQuestion,
 } from "../../memory/self/index.js";
 import { createOpenQuestionReopener } from "../../memory/self/open-questions.js";
+import type { RetrievedEpisode } from "../../retrieval/index.js";
 import { createGrowthMarkerId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
@@ -79,6 +84,12 @@ const ruminatorPlanItemSchema = z.discriminatedUnion("action", [
     previous: openQuestionSchema,
     reason: z.string().min(1),
   }),
+  z.object({
+    action: z.literal("mark_unresolved"),
+    question_id: openQuestionIdSchema,
+    previous: openQuestionSchema,
+    next_unresolved_rumination_ticks: z.number().int().nonnegative(),
+  }),
 ]);
 
 export const ruminatorPlanSchema = z.object({
@@ -132,7 +143,11 @@ function parseResolutionResponse(result: LLMCompleteResult) {
   return resolutionResponseSchema.parse(call.input);
 }
 
-function buildChange(item: RuminatorPlan["items"][number]): OfflineChange {
+function isOfflineChange(change: OfflineChange | null): change is OfflineChange {
+  return change !== null;
+}
+
+function buildChange(item: RuminatorPlan["items"][number]): OfflineChange | null {
   if (item.action === "resolve") {
     return {
       process: "ruminator",
@@ -161,6 +176,10 @@ function buildChange(item: RuminatorPlan["items"][number]): OfflineChange {
     };
   }
 
+  if (item.action === "mark_unresolved") {
+    return null;
+  }
+
   return {
     process: "ruminator",
     action: "bump_urgency",
@@ -171,6 +190,111 @@ function buildChange(item: RuminatorPlan["items"][number]): OfflineChange {
       delta: item.delta,
       next_urgency: item.next_urgency,
     },
+  };
+}
+
+function isGlobalIdentityQuestion(
+  question: OpenQuestion,
+  selfAudienceEntityId: ReturnType<OfflineContext["entityRepository"]["findByName"]>,
+): boolean {
+  return (
+    question.audience_entity_id === null ||
+    (selfAudienceEntityId !== null &&
+      selfAudienceEntityId !== undefined &&
+      question.audience_entity_id === selfAudienceEntityId)
+  );
+}
+
+function isResolutionEvidenceVisibleToQuestion(
+  episode: RetrievedEpisode["episode"],
+  question: OpenQuestion,
+  selfAudienceEntityId: ReturnType<OfflineContext["entityRepository"]["findByName"]>,
+): boolean {
+  if (isEpisodeInGlobalIdentityScope(episode, selfAudienceEntityId)) {
+    return true;
+  }
+
+  if (question.audience_entity_id === null) {
+    return false;
+  }
+
+  return isEpisodeVisibleToAudience(episode, question.audience_entity_id);
+}
+
+function mergeRetrievedEpisodes(episodeSets: readonly (readonly RetrievedEpisode[])[]) {
+  const byId = new Map<RetrievedEpisode["episode"]["id"], RetrievedEpisode>();
+
+  for (const episodes of episodeSets) {
+    for (const result of episodes) {
+      const current = byId.get(result.episode.id);
+
+      if (
+        current === undefined ||
+        result.score > current.score ||
+        (result.score === current.score && result.episode.updated_at > current.episode.updated_at)
+      ) {
+        byId.set(result.episode.id, result);
+      }
+    }
+  }
+
+  return [...byId.values()].sort(
+    (left, right) => right.score - left.score || right.episode.updated_at - left.episode.updated_at,
+  );
+}
+
+async function searchResolutionEvidence(
+  ctx: OfflineContext,
+  question: OpenQuestion,
+  maxQuestionsPerRun: number,
+): Promise<{
+  episodes: RetrievedEpisode[];
+  confidenceOverall: number;
+}> {
+  const selfAudienceEntityId = ctx.entityRepository.findByName("self");
+  const baseOptions = {
+    limit: Math.max(3, maxQuestionsPerRun),
+    attentionWeights: buildReflectionWeights(ctx),
+    goalDescriptions: ctx.goalsRepository
+      .list({ status: "active" })
+      .map((goal) => goal.description),
+    includeOpenQuestions: false,
+  };
+  const globalRetrieval = await ctx.retrievalPipeline.searchWithContext(question.question, {
+    ...baseOptions,
+    globalIdentitySelfAudienceEntityId: selfAudienceEntityId,
+  });
+  const globalIdentityEpisodes = globalRetrieval.episodes.filter((result) =>
+    isEpisodeInGlobalIdentityScope(result.episode, selfAudienceEntityId),
+  );
+
+  if (isGlobalIdentityQuestion(question, selfAudienceEntityId)) {
+    return {
+      episodes: globalIdentityEpisodes,
+      confidenceOverall: globalRetrieval.confidence.overall,
+    };
+  }
+
+  // Reuse the retrieval pipeline's audienceEntityId path so the episodic layer
+  // applies its existing audience-visible retrieval lanes in addition to the
+  // global/self search above.
+  const audienceRetrieval = await ctx.retrievalPipeline.searchWithContext(question.question, {
+    ...baseOptions,
+    audienceEntityId: question.audience_entity_id,
+  });
+  const episodes = mergeRetrievedEpisodes([
+    globalIdentityEpisodes,
+    audienceRetrieval.episodes.filter((result) =>
+      isResolutionEvidenceVisibleToQuestion(result.episode, question, selfAudienceEntityId),
+    ),
+  ]);
+
+  return {
+    episodes,
+    confidenceOverall: Math.max(
+      globalRetrieval.confidence.overall,
+      audienceRetrieval.confidence.overall,
+    ),
   };
 }
 
@@ -210,22 +334,9 @@ async function planResolution(
   question: OpenQuestion,
   maxQuestionsPerRun: number,
 ): Promise<RuminatorPlan["items"][number] | null> {
-  const selfAudienceEntityId = ctx.entityRepository.findByName("self");
-  // Open questions are global self-band records, so resolution evidence is
-  // limited to public/self episodes rather than audience-specific material.
-  const retrieval = await ctx.retrievalPipeline.searchWithContext(question.question, {
-    limit: Math.max(3, maxQuestionsPerRun),
-    globalIdentitySelfAudienceEntityId: selfAudienceEntityId,
-    attentionWeights: buildReflectionWeights(ctx),
-    goalDescriptions: ctx.goalsRepository
-      .list({ status: "active" })
-      .map((goal) => goal.description),
-    includeOpenQuestions: false,
-  });
-  const globalIdentityEpisodes = retrieval.episodes.filter((result) =>
-    isEpisodeInGlobalIdentityScope(result.episode, selfAudienceEntityId),
-  );
-  if (retrieval.confidence.overall < ctx.config.offline.ruminator.resolveConfidenceThreshold) {
+  const retrieval = await searchResolutionEvidence(ctx, question, maxQuestionsPerRun);
+
+  if (retrieval.confidenceOverall < ctx.config.offline.ruminator.resolveConfidenceThreshold) {
     emitOpenQuestionResolutionAttempt(ctx, {
       oqId: question.id,
       sourcePath: "retrieval_evidence_match",
@@ -238,7 +349,7 @@ async function planResolution(
   // The confidence gate above decides whether evidence can resolve the
   // question. Score is only a relevance ranking signal for choosing the
   // anchor episode and ordering evidence for the prompt.
-  const strongEvidence = globalIdentityEpisodes
+  const strongEvidence = retrieval.episodes
     .filter((result) => result.episode.updated_at > question.last_touched)
     .sort(
       (left, right) =>
@@ -250,7 +361,7 @@ async function planResolution(
       oqId: question.id,
       sourcePath: "retrieval_evidence_match",
       decision: "rejected",
-      decisionReason: "no_new_global_identity_evidence",
+      decisionReason: "no_new_visible_evidence",
     });
     return null;
   }
@@ -262,7 +373,7 @@ async function planResolution(
     decisionReason: "confidence_and_fresh_evidence",
   });
 
-  const evidenceBlock = globalIdentityEpisodes
+  const evidenceBlock = retrieval.episodes
     .slice(0, 3)
     .map((result) =>
       JSON.stringify({
@@ -331,10 +442,16 @@ async function planResolution(
 function planFallbackAction(
   ctx: OfflineContext,
   question: OpenQuestion,
+  nextUnresolvedRuminationTicks: number,
 ): RuminatorPlan["items"][number] | null {
   const ageMs = Math.max(0, ctx.clock.now() - question.last_touched);
+  const stalenessTicks = ctx.config.offline.ruminator.stalenessTicks;
 
-  if (ageMs >= ctx.config.offline.ruminator.stalenessDays * DAY_MS && question.urgency < 0.2) {
+  if (
+    (ageMs >= ctx.config.offline.ruminator.stalenessDays * DAY_MS ||
+      (stalenessTicks !== null && nextUnresolvedRuminationTicks >= stalenessTicks)) &&
+    question.urgency < 0.2
+  ) {
     return {
       action: "abandon",
       question_id: question.id,
@@ -439,10 +556,21 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               continue;
             }
 
-            const fallback = planFallbackAction(ctx, question);
+            const nextUnresolvedRuminationTicks = question.unresolved_rumination_ticks + 1;
+            const fallback = planFallbackAction(ctx, question, nextUnresolvedRuminationTicks);
 
             if (fallback !== null) {
               items.push(fallback);
+              continue;
+            }
+
+            if (ctx.config.offline.ruminator.stalenessTicks !== null) {
+              items.push({
+                action: "mark_unresolved",
+                question_id: question.id,
+                previous: question,
+                next_unresolved_rumination_ticks: nextUnresolvedRuminationTicks,
+              });
             }
           } catch (error) {
             if (error instanceof BudgetExceededError) {
@@ -484,7 +612,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
     return {
       process: this.name,
       dryRun: true,
-      changes: parsed.items.map((item) => buildChange(item)),
+      changes: parsed.items.map((item) => buildChange(item)).filter(isOfflineChange),
       tokens_used: parsed.tokens_used,
       errors: parsed.errors,
       budget_exhausted: parsed.budget_exhausted,
@@ -500,6 +628,14 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
     };
 
     for (const item of plan.items) {
+      if (item.action === "mark_unresolved") {
+        ctx.openQuestionsRepository.markRuminated(
+          item.question_id,
+          item.next_unresolved_rumination_ticks,
+        );
+        continue;
+      }
+
       if (item.action === "resolve") {
         const current = ctx.openQuestionsRepository.get(item.question_id);
 
@@ -579,7 +715,11 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           });
         }
 
-        changes.push(buildChange(item));
+        const change = buildChange(item);
+
+        if (change !== null) {
+          changes.push(change);
+        }
         continue;
       }
 
@@ -614,7 +754,11 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             previous: item.previous,
           } satisfies RuminatorReversal,
         });
-        changes.push(buildChange(item));
+        const change = buildChange(item);
+
+        if (change !== null) {
+          changes.push(change);
+        }
         continue;
       }
 
@@ -648,7 +792,11 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           previous: item.previous,
         } satisfies RuminatorReversal,
       });
-      changes.push(buildChange(item));
+      const change = buildChange(item);
+
+      if (change !== null) {
+        changes.push(change);
+      }
     }
 
     return {

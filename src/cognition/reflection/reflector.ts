@@ -1498,6 +1498,7 @@ export class Reflector {
         "Use strength_delta 0.01-0.1 for grounded trait demonstrations, and omit weak or generic traits.",
         "If pending_actions are present, mark only prior pending actions completed or abandoned when the current user message and agent response give clear evidence. Set actor=user when the action was for the user to do, and actor=borg when it was for Borg to do. Otherwise omit them.",
         "For open_questions, emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. Preserve the user's language in the question text.",
+        "Open questions should be answerable from current or near-future evidence: the answer should be able to land within a few days of additional context, not predictions about long-arc behavior or whether the user will follow through.",
         "For resolved_open_questions, resolve only active open questions that the just-completed turn clearly answered. Do not speculate. Cite evidence_episode_ids only from available_evidence_episodes, and evidence_stream_entry_ids only from current_turn_stream_entry_ids. Use question_id only from active_open_questions, and include at least one evidence id.",
       ].join("\n"),
       messages: [

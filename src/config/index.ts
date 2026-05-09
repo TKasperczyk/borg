@@ -243,6 +243,7 @@ const configFileSchema = z
             maxQuestionsPerRun: z.number().int().positive().optional(),
             resolveConfidenceThreshold: z.number().min(0).max(1).optional(),
             stalenessDays: z.number().positive().optional(),
+            stalenessTicks: z.number().int().positive().nullable().optional(),
             budget: z.number().int().positive().optional(),
             perQuestionBudget: z.number().int().positive().optional(),
           })
@@ -519,6 +520,7 @@ export const configSchema = z.object({
       maxQuestionsPerRun: z.number().int().positive(),
       resolveConfidenceThreshold: z.number().min(0).max(1),
       stalenessDays: z.number().positive(),
+      stalenessTicks: z.number().int().positive().nullable(),
       budget: z.number().int().positive(),
       perQuestionBudget: z.number().int().positive(),
     }),
@@ -758,6 +760,7 @@ export const DEFAULT_CONFIG: Config = {
       // epistemic evidence-quality signal, not the relevance ranking score.
       resolveConfidenceThreshold: 0.55,
       stalenessDays: 30,
+      stalenessTicks: null,
       budget: 6_000,
       perQuestionBudget: 8_000,
     },
@@ -1373,6 +1376,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_STALENESS_DAYS") ??
           fileConfig.offline?.ruminator?.stalenessDays ??
           DEFAULT_CONFIG.offline.ruminator.stalenessDays,
+        stalenessTicks:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_STALENESS_TICKS") ??
+          fileConfig.offline?.ruminator?.stalenessTicks ??
+          DEFAULT_CONFIG.offline.ruminator.stalenessTicks,
         budget:
           readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_BUDGET") ??
           fileConfig.offline?.ruminator?.budget ??

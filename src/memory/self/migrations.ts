@@ -167,7 +167,9 @@ export const selfMigrations = [
           provenance_kind TEXT,
           provenance_episode_ids TEXT,
           provenance_process TEXT,
-          audience_entity_id TEXT
+          audience_entity_id TEXT,
+          unresolved_rumination_ticks INTEGER NOT NULL DEFAULT 0,
+          last_ruminated_at INTEGER
         );
 
         CREATE INDEX IF NOT EXISTS idx_open_questions_status_urgency
@@ -288,7 +290,9 @@ export const selfMigrations = [
           provenance_kind TEXT,
           provenance_episode_ids TEXT,
           provenance_process TEXT,
-          audience_entity_id TEXT
+          audience_entity_id TEXT,
+          unresolved_rumination_ticks INTEGER NOT NULL DEFAULT 0,
+          last_ruminated_at INTEGER
         );
 
         INSERT INTO open_questions (
@@ -296,7 +300,7 @@ export const selfMigrations = [
           source, created_at, last_touched, resolution_evidence_episode_ids,
           resolution_evidence_stream_entry_ids, resolution_note, resolved_at, abandoned_reason,
           abandoned_at, dedupe_key, provenance_kind, provenance_episode_ids, provenance_process,
-          audience_entity_id
+          audience_entity_id, unresolved_rumination_ticks, last_ruminated_at
         )
         SELECT
           id, question, urgency, status, related_episode_ids, related_semantic_node_ids,
@@ -307,7 +311,8 @@ export const selfMigrations = [
           END,
           '[]',
           resolution_note, resolved_at, abandoned_reason, abandoned_at, dedupe_key,
-          provenance_kind, provenance_episode_ids, provenance_process, audience_entity_id
+          provenance_kind, provenance_episode_ids, provenance_process, audience_entity_id,
+          0, NULL
         FROM open_questions_before_resolution_evidence_arrays;
 
         DROP TABLE open_questions_before_resolution_evidence_arrays;
@@ -319,6 +324,29 @@ export const selfMigrations = [
         CREATE INDEX IF NOT EXISTS idx_open_questions_audience_status_urgency
           ON open_questions (audience_entity_id, status, urgency DESC, last_touched DESC);
       `);
+    },
+  },
+  {
+    id: 4,
+    name: "open_question_rumination_ticks",
+    up: (db) => {
+      if (!tableExists(db, "open_questions")) {
+        return;
+      }
+
+      if (!columnExists(db, "open_questions", "unresolved_rumination_ticks")) {
+        db.exec(`
+          ALTER TABLE open_questions
+            ADD COLUMN unresolved_rumination_ticks INTEGER NOT NULL DEFAULT 0;
+        `);
+      }
+
+      if (!columnExists(db, "open_questions", "last_ruminated_at")) {
+        db.exec(`
+          ALTER TABLE open_questions
+            ADD COLUMN last_ruminated_at INTEGER;
+        `);
+      }
     },
   },
   {

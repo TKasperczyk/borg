@@ -312,6 +312,8 @@ function openQuestion(id: OpenQuestionId, question: string): OpenQuestion {
     resolved_at: null,
     abandoned_reason: null,
     abandoned_at: null,
+    unresolved_rumination_ticks: 0,
+    last_ruminated_at: null,
   };
 }
 

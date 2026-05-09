@@ -294,6 +294,69 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("abandons by unresolved rumination ticks when the day clock has not advanced", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(1_000_000),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            stalenessTicks: 2,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const question = harness.openQuestionsRepository.add({
+        question: "What should happen with the unresolved Sunday ritual question?",
+        urgency: 0.1,
+        source: "reflection",
+        created_at: harness.clock.now(),
+        last_touched: harness.clock.now(),
+        provenance: { kind: "manual" },
+      });
+
+      const firstPlan = await process.plan(harness.createContext(), {});
+
+      expect(firstPlan.items).toEqual([
+        expect.objectContaining({
+          action: "mark_unresolved",
+          question_id: question.id,
+          next_unresolved_rumination_ticks: 1,
+        }),
+      ]);
+      expect(process.preview(firstPlan).changes).toEqual([]);
+
+      await process.apply(harness.createContext(), firstPlan);
+
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        status: "open",
+        unresolved_rumination_ticks: 1,
+      });
+
+      const secondPlan = await process.plan(harness.createContext(), {});
+
+      expect(harness.clock.now() - question.last_touched).toBe(0);
+      expect(secondPlan.items).toEqual([
+        expect.objectContaining({
+          action: "abandon",
+          question_id: question.id,
+        }),
+      ]);
+
+      await process.apply(harness.createContext(), secondPlan);
+
+      expect(harness.openQuestionsRepository.get(question.id)?.status).toBe("abandoned");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("resolves global open questions only from public or self evidence", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -370,6 +433,79 @@ describe("RuminatorProcess", () => {
       });
       expect(llm.requests[0]?.messages[0]?.content).toContain("Public planning resolution");
       expect(llm.requests[0]?.messages[0]?.content).not.toContain("Sam private planning");
+      expect(llm.requests[0]?.messages[0]?.content).not.toContain("Alex private planning");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("resolves audience-tagged open questions from audience-visible evidence", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createRuminatorResponse({
+          resolution_note: "Sam-scoped evidence resolved the planning question.",
+          growth_marker: null,
+        }),
+      ],
+    });
+    const questionText = "What resolved Sam's planning uncertainty?";
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [0, 1, 0, 0]]])),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const sam = harness.entityRepository.resolve("Sam");
+      const alex = harness.entityRepository.resolve("Alex");
+      const samEpisode = createEpisodeFixture(
+        {
+          title: "Sam private planning resolution",
+          narrative: "Sam shared the private planning resolution.",
+          tags: ["planning"],
+          audience_entity_id: sam,
+          shared: false,
+          created_at: 2_000_000,
+          updated_at: 2_000_000,
+        },
+        [0, 1, 0, 0],
+      );
+      const alexEpisode = createEpisodeFixture(
+        {
+          title: "Alex private planning resolution",
+          narrative: "Alex shared a different private planning resolution.",
+          tags: ["planning"],
+          audience_entity_id: alex,
+          shared: false,
+          created_at: 3_000_000,
+          updated_at: 3_000_000,
+        },
+        [0, 1, 0, 0],
+      );
+      await harness.episodicRepository.insert(samEpisode);
+      await harness.episodicRepository.insert(alexEpisode);
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.7,
+        source: "reflection",
+        audience_entity_id: sam,
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items[0]).toMatchObject({
+        action: "resolve",
+        question_id: question.id,
+        resolution_evidence_episode_ids: [samEpisode.id],
+      });
+      expect(llm.requests[0]?.messages[0]?.content).toContain("Sam private planning resolution");
       expect(llm.requests[0]?.messages[0]?.content).not.toContain("Alex private planning");
     } finally {
       await harness.cleanup();

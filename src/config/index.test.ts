@@ -49,6 +49,7 @@ describe("config", () => {
       maxEpisodesPerRun: 8,
       budget: 60_000,
     });
+    expect(config.offline.ruminator.stalenessTicks).toBeNull();
     expect(config.maintenance.lightProcesses).toEqual([
       "consolidator",
       "semantic-extractor",
@@ -127,6 +128,9 @@ describe("config", () => {
         semanticExtractor: {
           maxEpisodesPerRun: 3,
         },
+        ruminator: {
+          stalenessTicks: 6,
+        },
       },
       executive: {
         goalFocusThreshold: 0.4,
@@ -168,6 +172,7 @@ describe("config", () => {
         BORG_OFFLINE_BELIEF_REVISER_ENABLED: "true",
         BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS: "7",
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET: "12000",
+        BORG_OFFLINE_RUMINATOR_STALENESS_TICKS: "4",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
         BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES: "8",
         BORG_GENERATION_EVIDENCE_LEDGER_CURRENT_SESSION_TRANSCRIPT_TOKEN_BUDGET: "16000",
@@ -203,6 +208,7 @@ describe("config", () => {
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);
     expect(config.offline.semanticExtractor.maxEpisodesPerRun).toBe(3);
     expect(config.offline.semanticExtractor.budget).toBe(12_000);
+    expect(config.offline.ruminator.stalenessTicks).toBe(4);
   });
 
   it("accepts relational claim guard per-category mode while keeping simple modes", () => {

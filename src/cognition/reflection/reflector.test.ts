@@ -2080,6 +2080,28 @@ describe("reflector", () => {
     ]);
   });
 
+  it("instructs reflection open questions toward answerable near-future evidence", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-4-7",
+    });
+
+    await reflector.reflect(createOpenQuestionReflectionContext(), harness.streamWriter);
+
+    expect(llm.requests[0]?.system).toContain(
+      "the answer should be able to land within a few days of additional context",
+    );
+    expect(llm.requests[0]?.system).toContain("not predictions about long-arc behavior");
+  });
+
   it("logs and skips LLM-emitted open questions when identity service is unavailable", async () => {
     const harness = await createOfflineTestHarness({
       llmClient: new FakeLLMClient({

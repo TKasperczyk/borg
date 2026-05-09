@@ -90,6 +90,8 @@ export const openQuestionSchema = z
     resolved_at: z.number().finite().nullable(),
     abandoned_reason: z.string().nullable(),
     abandoned_at: z.number().finite().nullable(),
+    unresolved_rumination_ticks: z.number().int().nonnegative().default(0),
+    last_ruminated_at: z.number().finite().nullable().default(null),
   })
   .refine(
     (value) =>
@@ -372,6 +374,14 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
         : String(row.abandoned_reason),
     abandoned_at:
       row.abandoned_at === null || row.abandoned_at === undefined ? null : Number(row.abandoned_at),
+    unresolved_rumination_ticks:
+      row.unresolved_rumination_ticks === null || row.unresolved_rumination_ticks === undefined
+        ? 0
+        : Number(row.unresolved_rumination_ticks),
+    last_ruminated_at:
+      row.last_ruminated_at === null || row.last_ruminated_at === undefined
+        ? null
+        : Number(row.last_ruminated_at),
   });
 
   if (!parsed.success) {
@@ -712,6 +722,8 @@ export class OpenQuestionsRepository {
       resolved_at: null,
       abandoned_reason: null,
       abandoned_at: null,
+      unresolved_rumination_ticks: 0,
+      last_ruminated_at: null,
     });
     const key = buildOpenQuestionDedupeKey({
       question: question.question,
@@ -735,8 +747,8 @@ export class OpenQuestionsRepository {
             related_semantic_node_ids, provenance_kind, provenance_episode_ids,
             provenance_process, source, created_at, last_touched, resolution_evidence_episode_ids,
             resolution_evidence_stream_entry_ids, resolution_note, resolved_at, abandoned_reason,
-            abandoned_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            abandoned_at, unresolved_rumination_ticks, last_ruminated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -760,6 +772,8 @@ export class OpenQuestionsRepository {
         question.resolved_at,
         question.abandoned_reason,
         question.abandoned_at,
+        question.unresolved_rumination_ticks,
+        question.last_ruminated_at,
       );
 
     this.scheduleQuestionVectorUpsert(question, "insert", {
@@ -781,7 +795,9 @@ export class OpenQuestionsRepository {
     const values: unknown[] = [];
 
     if (options.statuses !== undefined) {
-      const statuses = [...new Set(options.statuses.map((status) => openQuestionStatusSchema.parse(status)))];
+      const statuses = [
+        ...new Set(options.statuses.map((status) => openQuestionStatusSchema.parse(status))),
+      ];
 
       if (statuses.length === 0) {
         return [];
@@ -848,8 +864,10 @@ export class OpenQuestionsRepository {
           ${limitClause}
         `,
       )
-      .all(...values, ...(options.limit === undefined ? [] : [Math.max(1, options.limit)])) as
-      Record<string, unknown>[];
+      .all(
+        ...values,
+        ...(options.limit === undefined ? [] : [Math.max(1, options.limit)]),
+      ) as Record<string, unknown>[];
 
     return rows.map((row) => mapOpenQuestionRow(row));
   }
@@ -942,7 +960,7 @@ export class OpenQuestionsRepository {
               provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
               resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
               resolution_note = ?, resolved_at = ?, abandoned_reason = ?, abandoned_at = ?,
-              dedupe_key = ?
+              dedupe_key = ?, unresolved_rumination_ticks = ?, last_ruminated_at = ?
           WHERE id = ?
         `,
       )
@@ -965,6 +983,8 @@ export class OpenQuestionsRepository {
         next.abandoned_reason,
         next.abandoned_at,
         dedupeKey,
+        next.unresolved_rumination_ticks,
+        next.last_ruminated_at,
         id,
       );
 
@@ -996,7 +1016,8 @@ export class OpenQuestionsRepository {
               provenance_episode_ids = ?, provenance_process = ?, source = ?, created_at = ?,
               last_touched = ?, resolution_evidence_episode_ids = ?,
               resolution_evidence_stream_entry_ids = ?, resolution_note = ?, resolved_at = ?,
-              abandoned_reason = ?, abandoned_at = ?
+              abandoned_reason = ?, abandoned_at = ?, unresolved_rumination_ticks = ?,
+              last_ruminated_at = ?
           WHERE id = ?
         `,
       )
@@ -1020,6 +1041,8 @@ export class OpenQuestionsRepository {
         parsed.resolved_at,
         parsed.abandoned_reason,
         parsed.abandoned_at,
+        parsed.unresolved_rumination_ticks,
+        parsed.last_ruminated_at,
         parsed.id,
       );
 
@@ -1244,6 +1267,43 @@ export class OpenQuestionsRepository {
       urgency: nextUrgency,
       last_touched: nowMs,
     };
+
+    this.scheduleQuestionVectorUpsert(updated, "metadata_sync", {
+      skipIfMissing: true,
+    });
+
+    return updated;
+  }
+
+  markRuminated(id: OpenQuestionId, nextUnresolvedRuminationTicks: number): OpenQuestion {
+    const existing = this.get(id);
+
+    if (existing === null) {
+      throw new StorageError(`Unknown open question id: ${id}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
+      });
+    }
+
+    const parsedTicks = z.number().int().nonnegative().parse(nextUnresolvedRuminationTicks);
+    const nowMs = this.clock.now();
+
+    this.db
+      .prepare(
+        `
+          UPDATE open_questions
+          SET unresolved_rumination_ticks = ?, last_ruminated_at = ?
+          WHERE id = ? AND status = 'open' AND unresolved_rumination_ticks < ?
+        `,
+      )
+      .run(parsedTicks, nowMs, id, parsedTicks);
+
+    const updated = this.get(id);
+
+    if (updated === null) {
+      throw new StorageError(`Unknown open question id after rumination update: ${id}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
+      });
+    }
 
     this.scheduleQuestionVectorUpsert(updated, "metadata_sync", {
       skipIfMissing: true,

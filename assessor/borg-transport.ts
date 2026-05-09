@@ -95,6 +95,7 @@ export type BorgTransportOptions = {
 const MOCK_RESPONSE_COUNT = 20_000;
 const DEFAULT_BORG_STAKES = "low";
 const OPEN_HOOK_SETTLE_MS = 100;
+const DEFAULT_SIMULATOR_RUMINATOR_STALENESS_TICKS = 8;
 type EvalConfigOverrides = NonNullable<CreateEvalBorgOptions["config"]>;
 
 function sleep(ms: number): Promise<void> {
@@ -171,6 +172,16 @@ function maintenanceDisabledOverrides(): DeepPartial<Config> {
   };
 }
 
+function simulatorRuminatorOverrides(): DeepPartial<Config> {
+  return {
+    offline: {
+      ruminator: {
+        stalenessTicks: DEFAULT_SIMULATOR_RUMINATOR_STALENESS_TICKS,
+      },
+    },
+  };
+}
+
 function createRealConfig(input: {
   dataDir: string;
   env: NodeJS.ProcessEnv;
@@ -186,7 +197,11 @@ function createRealConfig(input: {
     },
   });
   const withAutonomyDisabled = deepMerge(loaded, autonomyDisabledOverrides());
-  const withScenarioOverrides = deepMerge(withAutonomyDisabled, {
+  const withSimulatorRuminatorDefaults = deepMerge(
+    withAutonomyDisabled,
+    simulatorRuminatorOverrides(),
+  );
+  const withScenarioOverrides = deepMerge(withSimulatorRuminatorDefaults, {
     ...input.scenario.borgConfigOverrides,
     dataDir: input.dataDir,
     ...(input.defaultUser === undefined ? {} : { defaultUser: input.defaultUser }),
@@ -671,7 +686,10 @@ export class BorgTransport {
 
     if (this.mock) {
       const mockConfig: EvalConfigOverrides = {
-        ...(this.scenario.borgConfigOverrides as EvalConfigOverrides),
+        ...deepMerge(
+          simulatorRuminatorOverrides() as EvalConfigOverrides,
+          this.scenario.borgConfigOverrides as EvalConfigOverrides,
+        ),
         dataDir: this.dataDir,
         ...(this.defaultUser === undefined ? {} : { defaultUser: this.defaultUser }),
         autonomy: deepMerge(
