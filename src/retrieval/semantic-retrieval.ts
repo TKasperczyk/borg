@@ -28,6 +28,8 @@ export type RetrievedSemanticNode = SemanticNode & {
   base_retrieval_score?: number;
   retrieval_score?: number;
   under_review?: RetrievedSemanticUnderReview;
+  partial_source_visibility?: boolean;
+  source_visibility_fraction?: number;
 };
 
 export type RetrievedSemanticHit = {
@@ -82,6 +84,11 @@ type MatchedNodeCandidate = {
   baseScore: number;
 };
 
+type SemanticNodeSourceVisibility = {
+  visibleSourceEpisodeIds: SemanticNode["source_episode_ids"];
+  partial: boolean;
+};
+
 function emptySemanticRetrieval(): ResolvedSemanticRetrieval {
   return {
     context: {
@@ -132,9 +139,57 @@ function isSemanticNodeVisible(
   visibleEpisodeIds: ReadonlySet<string> | null,
 ): boolean {
   return (
-    visibleEpisodeIds === null ||
-    node.source_episode_ids.every((episodeId) => visibleEpisodeIds.has(episodeId))
+    resolveSemanticNodeSourceVisibility(node, visibleEpisodeIds).visibleSourceEpisodeIds.length > 0
   );
+}
+
+function resolveSemanticNodeSourceVisibility(
+  node: SemanticNode,
+  visibleEpisodeIds: ReadonlySet<string> | null,
+): SemanticNodeSourceVisibility {
+  if (visibleEpisodeIds === null) {
+    return {
+      visibleSourceEpisodeIds: [...node.source_episode_ids],
+      partial: false,
+    };
+  }
+
+  const visibleSourceEpisodeIds = node.source_episode_ids.filter((episodeId) =>
+    visibleEpisodeIds.has(episodeId),
+  );
+
+  return {
+    visibleSourceEpisodeIds,
+    partial:
+      visibleSourceEpisodeIds.length > 0 &&
+      visibleSourceEpisodeIds.length < node.source_episode_ids.length,
+  };
+}
+
+function withVisibleSemanticSources<T extends SemanticNode>(
+  node: T,
+  visibleEpisodeIds: ReadonlySet<string> | null,
+): T & Pick<RetrievedSemanticNode, "partial_source_visibility" | "source_visibility_fraction"> {
+  const sourceVisibility = resolveSemanticNodeSourceVisibility(node, visibleEpisodeIds);
+
+  if (
+    visibleEpisodeIds === null ||
+    sourceVisibility.visibleSourceEpisodeIds.length === node.source_episode_ids.length
+  ) {
+    return node;
+  }
+
+  return {
+    ...node,
+    source_episode_ids: sourceVisibility.visibleSourceEpisodeIds,
+    ...(sourceVisibility.partial
+      ? {
+          partial_source_visibility: true,
+          source_visibility_fraction:
+            sourceVisibility.visibleSourceEpisodeIds.length / node.source_episode_ids.length,
+        }
+      : {}),
+  };
 }
 
 export async function isSemanticNodeVisibleToAudience(
@@ -159,6 +214,7 @@ function isSemanticWalkStepVisible(
     isSemanticNodeVisible(step.node, visibleEpisodeIds) &&
     (visibleEpisodeIds === null ||
       step.edgePath.every((edge) =>
+        // Edge evidence remains all-or-nothing for Sprint 9.3; partial edge evidence is follow-up work.
         edge.evidence_episode_ids.every((episodeId) => visibleEpisodeIds.has(episodeId)),
       ))
   );
@@ -178,7 +234,12 @@ export async function filterSemanticWalkStepsByAudience(
     visibility,
   );
 
-  return steps.filter((step) => isSemanticWalkStepVisible(step, visibleEpisodeIds));
+  return steps
+    .filter((step) => isSemanticWalkStepVisible(step, visibleEpisodeIds))
+    .map((step) => ({
+      ...step,
+      node: withVisibleSemanticSources(step.node, visibleEpisodeIds),
+    }));
 }
 
 function normalizeUnderReviewMultiplier(value: number | undefined): number {
@@ -231,17 +292,19 @@ function annotateSemanticNode(
     baseScore?: number;
     underReviewByNodeId: ReadonlyMap<string, OpenBeliefRevisionStatus>;
     underReviewMultiplier: number;
+    visibleEpisodeIds: ReadonlySet<string> | null;
   },
 ): RetrievedSemanticNode {
   const status = buildUnderReviewStatus(
     input.underReviewByNodeId.get(semanticNodeTargetKey(node.id)),
   );
+  const visibleNode = withVisibleSemanticSources(node, input.visibleEpisodeIds);
 
   if (input.baseScore === undefined) {
     return status === undefined
-      ? node
+      ? visibleNode
       : {
-          ...node,
+          ...visibleNode,
           under_review: status,
         };
   }
@@ -250,7 +313,7 @@ function annotateSemanticNode(
     status === undefined ? input.baseScore : input.baseScore * input.underReviewMultiplier;
 
   return {
-    ...node,
+    ...visibleNode,
     base_retrieval_score: input.baseScore,
     retrieval_score: retrievalScore,
     ...(status === undefined ? {} : { under_review: status }),
@@ -473,6 +536,7 @@ export async function resolveSemanticContext(
           baseScore: candidate.baseScore,
           underReviewByNodeId,
           underReviewMultiplier,
+          visibleEpisodeIds: semanticVisibility,
         });
 
         if (await isHistoricalPropositionMatch(candidate.node, semanticGraph, options.asOf)) {
@@ -497,6 +561,7 @@ export async function resolveSemanticContext(
     const node = annotateSemanticNode(item.step.node, {
       underReviewByNodeId,
       underReviewMultiplier,
+      visibleEpisodeIds: semanticVisibility,
     });
     supports.set(item.step.node.id, node);
     supportHits.push({
@@ -512,6 +577,7 @@ export async function resolveSemanticContext(
       node: annotateSemanticNode(item.step.node, {
         underReviewByNodeId,
         underReviewMultiplier,
+        visibleEpisodeIds: semanticVisibility,
       }),
       edgePath: item.step.edgePath,
     });
@@ -521,6 +587,7 @@ export async function resolveSemanticContext(
     const node = annotateSemanticNode(item.step.node, {
       underReviewByNodeId,
       underReviewMultiplier,
+      visibleEpisodeIds: semanticVisibility,
     });
     contradicts.set(item.step.node.id, node);
     contradictionHits.push({
@@ -534,6 +601,7 @@ export async function resolveSemanticContext(
     const node = annotateSemanticNode(item.step.node, {
       underReviewByNodeId,
       underReviewMultiplier,
+      visibleEpisodeIds: semanticVisibility,
     });
     categories.set(item.step.node.id, node);
     categoryHits.push({

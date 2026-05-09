@@ -700,6 +700,7 @@ export class RetrievalPipeline {
         .map((episode) => episode.id),
     );
 
+    // Edge evidence remains all-or-nothing for Sprint 9.3; partial edge evidence is follow-up work.
     return edge.evidence_episode_ids.every((episodeId) => visibleEpisodeIds.has(episodeId));
   }
 
@@ -1997,6 +1998,13 @@ function semanticRetrievalToEvidence(
         vector: node.base_retrieval_score,
         exactTerm: intent.kind === "known_term" ? 1 : undefined,
       },
+      source_episode_ids: [...node.source_episode_ids],
+      ...(node.partial_source_visibility === true
+        ? {
+            partial_source_visibility: true,
+            source_visibility_fraction: node.source_visibility_fraction,
+          }
+        : {}),
     }),
   );
   const edgeEvidence = [
@@ -2022,6 +2030,13 @@ function semanticRetrievalToEvidence(
       scoreBreakdown: {
         provenance: hit.edgePath.length > 0 ? 1 : 0,
       },
+      source_episode_ids: [...hit.node.source_episode_ids],
+      ...(hit.node.partial_source_visibility === true
+        ? {
+            partial_source_visibility: true,
+            source_visibility_fraction: hit.node.source_visibility_fraction,
+          }
+        : {}),
     };
   });
 

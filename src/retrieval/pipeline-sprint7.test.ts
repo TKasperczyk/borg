@@ -328,7 +328,7 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
     expect(results.map((result) => result.episode.id)).toContain(publicEpisode.id);
   });
 
-  it("filters semantic nodes whose source episodes include hidden evidence", async () => {
+  it("keeps semantic nodes whose source episodes include visible evidence", async () => {
     harness = await createOfflineTestHarness();
     const sam = harness.entityRepository.resolve("Sam");
     const alex = harness.entityRepository.resolve("Alex");
@@ -361,8 +361,15 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       maxGraphNodes: 4,
     });
 
-    expect(result.semantic.matched_node_ids).not.toContain(mixedNode.id);
-    expect(result.semantic.matched_nodes).toEqual([]);
+    expect(result.semantic.matched_node_ids).toContain(mixedNode.id);
+    expect(result.semantic.matched_nodes).toEqual([
+      expect.objectContaining({
+        id: mixedNode.id,
+        partial_source_visibility: true,
+        source_visibility_fraction: 0.5,
+        source_episode_ids: [publicEpisode.id],
+      }),
+    ]);
     expect(result.semantic.supports).toEqual([]);
     expect(result.semantic.contradicts).toEqual([]);
     expect(result.semantic.categories).toEqual([]);

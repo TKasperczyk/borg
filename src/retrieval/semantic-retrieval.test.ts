@@ -11,6 +11,33 @@ import { ManualClock } from "../util/clock.js";
 import type { EntityId } from "../util/ids.js";
 import { resolveSemanticContext, toRetrievedSemantic } from "./semantic-retrieval.js";
 
+type OfflineTestHarness = Awaited<ReturnType<typeof createOfflineTestHarness>>;
+
+async function resolveVisibilityProbe(harness: OfflineTestHarness, audienceEntityId: EntityId) {
+  const semanticGraph = new SemanticGraph({
+    nodeRepository: harness.semanticNodeRepository,
+    edgeRepository: harness.semanticEdgeRepository,
+  });
+
+  return toRetrievedSemantic(
+    await resolveSemanticContext(
+      "Atlas visibility probe",
+      {
+        audienceEntityId,
+        graphWalkDepth: 1,
+        maxGraphNodes: 4,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
+      },
+      {
+        embeddingClient: harness.embeddingClient,
+        episodicRepository: harness.episodicRepository,
+        semanticNodeRepository: harness.semanticNodeRepository,
+        semanticGraph,
+      },
+    ),
+  );
+}
+
 describe("resolveSemanticContext temporal validity", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;
 
@@ -573,5 +600,176 @@ describe("resolveSemanticContext temporal validity", () => {
         invalidated_edge_id: invalidatedEdge.id,
       }),
     );
+  });
+
+  it("surfaces a multi-source node with all visible sources rendered", async () => {
+    const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    harness = await createOfflineTestHarness();
+    const publicEpisode = createEpisodeFixture({
+      title: "Atlas public source",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    const privateEpisodeA = createEpisodeFixture({
+      title: "Atlas audience A source",
+      tags: ["atlas"],
+      audience_entity_id: audienceA,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.insert(privateEpisodeA);
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas all visible",
+          description: "Atlas node backed by public and audience-visible evidence.",
+          source_episode_ids: [publicEpisode.id, privateEpisodeA.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const result = await resolveVisibilityProbe(harness, audienceA);
+    const match = result.matched_nodes.find((candidate) => candidate.id === node.id);
+    const prompt = summarizeSemanticContext(result, 1_000);
+
+    expect(match?.source_episode_ids).toEqual([publicEpisode.id, privateEpisodeA.id]);
+    expect(match?.partial_source_visibility).toBeUndefined();
+    expect(prompt).toContain(publicEpisode.id);
+    expect(prompt).toContain(privateEpisodeA.id);
+    expect(prompt).not.toContain("partial sources");
+  });
+
+  it("surfaces a mixed-visibility multi-source node with only visible sources rendered", async () => {
+    const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    harness = await createOfflineTestHarness();
+    const publicEpisode = createEpisodeFixture({
+      title: "Atlas public source",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    const hiddenEpisode = createEpisodeFixture({
+      title: "Atlas audience B source",
+      tags: ["atlas"],
+      audience_entity_id: audienceB,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.insert(hiddenEpisode);
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas mixed visibility",
+          description: "Atlas node backed by public and hidden evidence.",
+          source_episode_ids: [publicEpisode.id, hiddenEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const result = await resolveVisibilityProbe(harness, audienceA);
+    const match = result.matched_nodes.find((candidate) => candidate.id === node.id);
+    const prompt = summarizeSemanticContext(result, 1_000);
+
+    expect(match?.source_episode_ids).toEqual([publicEpisode.id]);
+    expect(match?.partial_source_visibility).toBe(true);
+    expect(match?.source_visibility_fraction).toBe(0.5);
+    expect(prompt).toContain(publicEpisode.id);
+    expect(prompt).toContain("partial sources");
+    expect(prompt).not.toContain(hiddenEpisode.id);
+  });
+
+  it("does not surface a multi-source node when all sources are hidden", async () => {
+    const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    harness = await createOfflineTestHarness();
+    const firstHiddenEpisode = createEpisodeFixture({
+      title: "Atlas first audience B source",
+      tags: ["atlas"],
+      audience_entity_id: audienceB,
+      shared: false,
+    });
+    const secondHiddenEpisode = createEpisodeFixture({
+      title: "Atlas second audience B source",
+      tags: ["atlas"],
+      audience_entity_id: audienceB,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(firstHiddenEpisode);
+    await harness.episodicRepository.insert(secondHiddenEpisode);
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas all hidden",
+          description: "Atlas node backed only by hidden evidence.",
+          source_episode_ids: [firstHiddenEpisode.id, secondHiddenEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const result = await resolveVisibilityProbe(harness, audienceA);
+
+    expect(result.matched_node_ids).not.toContain(node.id);
+    expect(result.matched_nodes.find((candidate) => candidate.id === node.id)).toBeUndefined();
+  });
+
+  it("surfaces a visible single-source node", async () => {
+    const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    harness = await createOfflineTestHarness();
+    const publicEpisode = createEpisodeFixture({
+      title: "Atlas public single source",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    await harness.episodicRepository.insert(publicEpisode);
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas single visible",
+          description: "Atlas node backed by one visible source.",
+          source_episode_ids: [publicEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const result = await resolveVisibilityProbe(harness, audienceA);
+    const match = result.matched_nodes.find((candidate) => candidate.id === node.id);
+
+    expect(match?.source_episode_ids).toEqual([publicEpisode.id]);
+    expect(match?.partial_source_visibility).toBeUndefined();
+  });
+
+  it("does not surface a hidden single-source node", async () => {
+    const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    harness = await createOfflineTestHarness();
+    const hiddenEpisode = createEpisodeFixture({
+      title: "Atlas hidden single source",
+      tags: ["atlas"],
+      audience_entity_id: audienceB,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(hiddenEpisode);
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas single hidden",
+          description: "Atlas node backed by one hidden source.",
+          source_episode_ids: [hiddenEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const result = await resolveVisibilityProbe(harness, audienceA);
+
+    expect(result.matched_node_ids).not.toContain(node.id);
+    expect(result.matched_nodes.find((candidate) => candidate.id === node.id)).toBeUndefined();
   });
 });

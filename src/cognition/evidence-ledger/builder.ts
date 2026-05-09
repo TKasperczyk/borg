@@ -50,8 +50,10 @@ const PRIOR_SESSION_TRUST_RANK_CAP = 30;
 
 const RELATIONAL_SLOT_LEDGER_LIMIT = 64;
 const ACTION_LEDGER_LIMIT = 64;
-const LIFECYCLE_OPEN_QUESTION_STATUSES = ["resolved", "abandoned"] as const satisfies readonly
-  OpenQuestionStatus[];
+const LIFECYCLE_OPEN_QUESTION_STATUSES = [
+  "resolved",
+  "abandoned",
+] as const satisfies readonly OpenQuestionStatus[];
 
 export type EvidenceLedgerBuilderOptions = {
   createStreamReader: (sessionId: SessionId) => StreamReader;
@@ -377,6 +379,22 @@ function semanticTaint(input: {
   return "none";
 }
 
+function semanticNodeStateMetadata(node: {
+  partial_source_visibility?: boolean;
+  source_visibility_fraction?: number;
+}): Record<string, unknown> | undefined {
+  if (node.partial_source_visibility !== true) {
+    return undefined;
+  }
+
+  return {
+    partial_source_visibility: true,
+    ...(node.source_visibility_fraction === undefined
+      ? {}
+      : { source_visibility_fraction: node.source_visibility_fraction }),
+  };
+}
+
 function commitmentScope(
   commitment: CommitmentRecord,
   resolver: ScopeResolver,
@@ -557,8 +575,7 @@ function persistenceClassFromStreamIds(
 
   return streamEntryIds.some(
     (streamEntryId) =>
-      resolver.streamEntriesById.get(streamEntryId)?.persistence_class ===
-      "assistant_self_report",
+      resolver.streamEntriesById.get(streamEntryId)?.persistence_class === "assistant_self_report",
   )
     ? { persistence_class: "assistant_self_report" as const }
     : {};
@@ -1047,18 +1064,12 @@ export class EvidenceLedgerBuilder {
       // current_session_transcript section, skip emitting the duplicate
       // retrieved_raw_stream_evidence row. The transcript renders the same
       // underlying content with higher trust rank.
-      if (
-        itemStreamIds.length > 0 &&
-        itemStreamIds.every((id) => transcriptStreamIds.has(id))
-      ) {
+      if (itemStreamIds.length > 0 && itemStreamIds.every((id) => transcriptStreamIds.has(id))) {
         continue;
       }
 
       const scope = scopeFromStreamIds(itemStreamIds, resolver);
-      const streamIndex = streamIndexFromSingleCurrentSessionStreamId(
-        itemStreamIds,
-        resolver,
-      );
+      const streamIndex = streamIndexFromSingleCurrentSessionStreamId(itemStreamIds, resolver);
       addEntry(
         sections,
         "retrieved_raw_stream_evidence",
@@ -1135,6 +1146,7 @@ export class EvidenceLedgerBuilder {
           text: node.description,
           value: node.label,
           state: node.under_review === undefined ? node.kind : `under_review:${node.kind}`,
+          state_metadata: semanticNodeStateMetadata(node),
           taint: semanticTaint({ underReview: node.under_review }),
           ...persistenceClassFromProvenance({ episodeIds: node.source_episode_ids }, resolver),
         }),
@@ -1160,6 +1172,7 @@ export class EvidenceLedgerBuilder {
           value: hit.node.label,
           state:
             hit.node.under_review === undefined ? hit.node.kind : `under_review:${hit.node.kind}`,
+          state_metadata: semanticNodeStateMetadata(hit.node),
           taint: semanticTaint({ underReview: hit.node.under_review }),
           ...persistenceClassFromProvenance({ episodeIds: hit.node.source_episode_ids }, resolver),
         }),
@@ -1182,10 +1195,7 @@ export class EvidenceLedgerBuilder {
               validTo: edge.valid_to,
               invalidatedAt: edge.invalidated_at,
             }),
-            ...persistenceClassFromProvenance(
-              { episodeIds: edge.evidence_episode_ids },
-              resolver,
-            ),
+            ...persistenceClassFromProvenance({ episodeIds: edge.evidence_episode_ids }, resolver),
           }),
         );
       }

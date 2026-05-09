@@ -24,7 +24,10 @@ export type ComputeRetrievalConfidenceInput = {
   contradictionPresent: boolean;
   contradictionEdges?: readonly Pick<SemanticEdge, "valid_from" | "valid_to">[];
   semanticEvidence?: {
-    matched_nodes: readonly Pick<SemanticNode, "id" | "confidence" | "source_episode_ids">[];
+    matched_nodes: readonly (Pick<SemanticNode, "id" | "confidence" | "source_episode_ids"> & {
+      partial_source_visibility?: boolean;
+      source_visibility_fraction?: number;
+    })[];
     support_hits: readonly {
       root_node_id: SemanticNode["id"];
       edgePath: readonly Pick<SemanticEdge, "evidence_episode_ids">[];
@@ -63,6 +66,18 @@ function sigmoid(value: number): number {
 
 function hasEpisodeOverlap(left: readonly string[], right: ReadonlySet<string>): boolean {
   return left.some((value) => right.has(value));
+}
+
+function semanticConfidenceContribution(
+  node: Pick<SemanticNode, "confidence"> & {
+    partial_source_visibility?: boolean;
+    source_visibility_fraction?: number;
+  },
+): number {
+  const visibleSourceFraction =
+    node.partial_source_visibility === true ? clamp01(node.source_visibility_fraction ?? 1) : 1;
+
+  return clamp01(node.confidence) * visibleSourceFraction;
 }
 
 function computeSemanticEvidence(input: ComputeRetrievalConfidenceInput): {
@@ -116,7 +131,7 @@ function computeSemanticEvidence(input: ComputeRetrievalConfidenceInput): {
   }
 
   const meanConfidence =
-    supportedMatches.reduce((sum, node) => sum + clamp01(node.confidence), 0) /
+    supportedMatches.reduce((sum, node) => sum + semanticConfidenceContribution(node), 0) /
     supportedMatches.length;
   const positiveHitCount = supportedMatches.reduce(
     (sum, node) => sum + (positiveHitCountByRoot.get(node.id) ?? 0),

@@ -102,6 +102,56 @@ describe("computeRetrievalConfidence", () => {
     expect(confidence.overall).toBeGreaterThan(0);
   });
 
+  it("downweights partial semantic node evidence strength without changing coverage or diversity", () => {
+    const rootNodeId = "semn_aaaaaaaaaaaaaaaa" as never;
+    const semanticEvidence = {
+      matched_nodes: [
+        {
+          id: rootNodeId,
+          confidence: 0.9,
+          source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+        },
+      ],
+      support_hits: [
+        {
+          root_node_id: rootNodeId,
+          edgePath: [
+            {
+              evidence_episode_ids: ["ep_bbbbbbbbbbbbbbbb" as never],
+            },
+          ],
+        },
+      ],
+    };
+    const full = computeRetrievalConfidence({
+      episodes: [],
+      contradictionPresent: false,
+      semanticEvidence,
+      nowMs: NOW_MS,
+      expectedCount: 1,
+    });
+    const partial = computeRetrievalConfidence({
+      episodes: [],
+      contradictionPresent: false,
+      semanticEvidence: {
+        ...semanticEvidence,
+        matched_nodes: [
+          {
+            ...semanticEvidence.matched_nodes[0]!,
+            partial_source_visibility: true,
+            source_visibility_fraction: 0.5,
+          },
+        ],
+      },
+      nowMs: NOW_MS,
+      expectedCount: 1,
+    });
+
+    expect(partial.evidenceStrength).toBeLessThan(full.evidenceStrength);
+    expect(partial.coverage).toBe(full.coverage);
+    expect(partial.sourceDiversity).toBe(full.sourceDiversity);
+  });
+
   it("produces high confidence for strong, diverse, uncontested evidence", () => {
     const episodes = [
       makeEpisode({ id: "epi_aaaaaaaaaaaaaaaa", decayedSalience: 0.9, participants: ["alice"] }),

@@ -169,11 +169,26 @@ function summarizeEvidenceItem(item: EvidenceItem): string {
   const text = truncatePromptText(item.text, 360);
   const provenance = summarizeEvidenceProvenance(item);
   const terms = item.matchedTerms.length === 0 ? "" : ` terms=${item.matchedTerms.join(", ")}`;
+  const sourceVisibility = summarizeEvidenceSourceVisibility(item);
 
   return [
-    `- ${item.source} [score=${item.score.toFixed(2)} intent=${item.recallIntentId}${terms}]${provenance}`,
+    `- ${item.source} [score=${item.score.toFixed(2)} intent=${item.recallIntentId}${terms}${sourceVisibility}]${provenance}`,
     `  ${text}`,
   ].join("\n");
+}
+
+function summarizeEvidenceSourceVisibility(item: EvidenceItem): string {
+  const parts = [
+    item.source_episode_ids === undefined || item.source_episode_ids.length === 0
+      ? null
+      : `sources=${summarizeEpisodeIds(item.source_episode_ids)}`,
+    item.partial_source_visibility === true ? "partial_sources=true" : null,
+    item.source_visibility_fraction === undefined
+      ? null
+      : `visible_fraction=${item.source_visibility_fraction.toFixed(2)}`,
+  ].filter((part): part is string => part !== null);
+
+  return parts.length === 0 ? "" : ` ${parts.join(" ")}`;
 }
 
 function summarizeEvidenceProvenance(item: EvidenceItem): string {
@@ -263,10 +278,19 @@ function summarizeUnderReviewPrefix(node: {
   return `[under re-evaluation: ${node.under_review.reason_code}] `;
 }
 
+function summarizePartialSourceTag(node: {
+  partial_source_visibility?: RetrievedSemanticNode["partial_source_visibility"];
+}): string {
+  return node.partial_source_visibility === true ? ", partial sources" : "";
+}
+
 function summarizeSemanticNode(
-  node: SemanticNode & { under_review?: RetrievedSemanticNode["under_review"] },
+  node: SemanticNode & {
+    partial_source_visibility?: RetrievedSemanticNode["partial_source_visibility"];
+    under_review?: RetrievedSemanticNode["under_review"];
+  },
 ): string {
-  return `${summarizeUnderReviewPrefix(node)}${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)})`;
+  return `${summarizeUnderReviewPrefix(node)}${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}${summarizePartialSourceTag(node)})`;
 }
 
 function summarizeSemanticNodeWithSources(
@@ -277,7 +301,7 @@ function summarizeSemanticNodeWithSources(
     node.historical === true ? " [historical]" : "",
   ].join("");
 
-  return `${label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(node.source_episode_ids)})`;
+  return `${label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(node.source_episode_ids)}${summarizePartialSourceTag(node)})`;
 }
 
 function summarizeSemanticHit(
@@ -309,12 +333,15 @@ function summarizeSemanticHit(
     pathParts.push("...");
   }
 
-  return `${summarizeUnderReviewPrefix(hit.node)}${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}; path ${pathParts.join(" ")})`;
+  return `${summarizeUnderReviewPrefix(hit.node)}${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}${summarizePartialSourceTag(hit.node)}; path ${pathParts.join(" ")})`;
 }
 
 function summarizeSemanticBucket(
   label: string,
-  nodes: readonly (SemanticNode & { under_review?: RetrievedSemanticNode["under_review"] })[],
+  nodes: readonly (SemanticNode & {
+    partial_source_visibility?: RetrievedSemanticNode["partial_source_visibility"];
+    under_review?: RetrievedSemanticNode["under_review"];
+  })[],
   limit = 3,
 ): string | null {
   if (nodes.length === 0) {

@@ -18,9 +18,14 @@ const semanticWalkInputSchema = z.object({
   asOf: z.number().finite().optional(),
 });
 
-const semanticWalkNodeOutputSchema = semanticNodeSchema.omit({
-  embedding: true,
-});
+const semanticWalkNodeOutputSchema = semanticNodeSchema
+  .omit({
+    embedding: true,
+  })
+  .extend({
+    partial_source_visibility: z.boolean().optional(),
+    source_visibility_fraction: z.number().min(0).max(1).optional(),
+  });
 
 const semanticWalkOutputSchema = z.object({
   steps: z.array(
@@ -32,7 +37,10 @@ const semanticWalkOutputSchema = z.object({
 });
 
 function toSemanticWalkNodeOutput(
-  node: SemanticWalkStep["node"],
+  node: SemanticWalkStep["node"] & {
+    partial_source_visibility?: boolean;
+    source_visibility_fraction?: number;
+  },
 ): z.infer<typeof semanticWalkNodeOutputSchema> {
   return {
     id: node.id,
@@ -48,6 +56,12 @@ function toSemanticWalkNodeOutput(
     last_verified_at: node.last_verified_at,
     archived: node.archived,
     superseded_by: node.superseded_by,
+    ...(node.partial_source_visibility === undefined
+      ? {}
+      : { partial_source_visibility: node.partial_source_visibility }),
+    ...(node.source_visibility_fraction === undefined
+      ? {}
+      : { source_visibility_fraction: node.source_visibility_fraction }),
   };
 }
 

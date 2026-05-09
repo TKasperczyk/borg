@@ -91,6 +91,9 @@ export type EvidenceItem = {
   matchedTerms: string[];
   score: number;
   scoreBreakdown: EvidenceScoreBreakdown;
+  source_episode_ids?: EpisodeId[];
+  partial_source_visibility?: boolean;
+  source_visibility_fraction?: number;
 };
 
 export type EvidencePool = {

@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import type { SemanticEdge, SemanticNode } from "../../../memory/semantic/index.js";
-import type { RetrievalConfidence, RetrievedSemantic } from "../../../retrieval/index.js";
+import type {
+  EvidenceItem,
+  RetrievalConfidence,
+  RetrievedSemantic,
+} from "../../../retrieval/index.js";
 import { ManualClock } from "../../../util/clock.js";
 import {
   summarizeRetrievalConfidence,
   summarizeRetrievedEpisodes,
+  summarizeRetrievedEvidence,
   summarizeSemanticContext,
 } from "./retrieval.js";
 
@@ -108,6 +113,34 @@ describe("retrieval confidence prompt rendering", () => {
     const summary = summarizeRetrievedEpisodes("Retrieved context", []);
 
     expect(summary).toBe("No episodes retrieved for this turn.");
+  });
+
+  it("renders partial-source metadata on semantic evidence items", () => {
+    const evidence: EvidenceItem = {
+      id: "evidence_semantic_node_semn_aaaaaaaaaaaaaaaa_intent",
+      source: "semantic_node",
+      text: "Atlas mixed visibility: Atlas node backed by visible and hidden sources.",
+      provenance: {
+        nodeId: "semn_aaaaaaaaaaaaaaaa" as never,
+      },
+      recallIntentId: "intent",
+      matchedTerms: [],
+      score: 0.8,
+      scoreBreakdown: {},
+      source_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+      partial_source_visibility: true,
+      source_visibility_fraction: 0.5,
+    };
+
+    const summary = summarizeRetrievedEvidence(
+      "Retrieved context",
+      { evidence: [evidence] },
+      1_000,
+    );
+
+    expect(summary).toContain("sources=ep_aaaaaaaaaaaaaaaa");
+    expect(summary).toContain("partial_sources=true");
+    expect(summary).toContain("visible_fraction=0.50");
   });
 });
 
