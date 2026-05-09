@@ -158,10 +158,20 @@ function aggregatePlannerUsage(
   current: DeliberationUsage,
   next: DeliberationUsage,
 ): DeliberationUsage {
+  const cacheCreation =
+    current.cache_creation_input_tokens === undefined && next.cache_creation_input_tokens === undefined
+      ? undefined
+      : (current.cache_creation_input_tokens ?? 0) + (next.cache_creation_input_tokens ?? 0);
+  const cacheRead =
+    current.cache_read_input_tokens === undefined && next.cache_read_input_tokens === undefined
+      ? undefined
+      : (current.cache_read_input_tokens ?? 0) + (next.cache_read_input_tokens ?? 0);
   return {
     input_tokens: current.input_tokens + next.input_tokens,
     output_tokens: current.output_tokens + next.output_tokens,
     stop_reason: next.stop_reason,
+    ...(cacheCreation === undefined ? {} : { cache_creation_input_tokens: cacheCreation }),
+    ...(cacheRead === undefined ? {} : { cache_read_input_tokens: cacheRead }),
   };
 }
 
@@ -242,6 +252,12 @@ async function callPlannerAttempt(
       input_tokens: planner.input_tokens,
       output_tokens: planner.output_tokens,
       stop_reason: planner.stop_reason,
+      ...(planner.cache_creation_input_tokens === undefined
+        ? {}
+        : { cache_creation_input_tokens: planner.cache_creation_input_tokens }),
+      ...(planner.cache_read_input_tokens === undefined
+        ? {}
+        : { cache_read_input_tokens: planner.cache_read_input_tokens }),
     },
   };
 }
