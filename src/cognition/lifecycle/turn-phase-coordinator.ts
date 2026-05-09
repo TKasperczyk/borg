@@ -242,9 +242,12 @@ export class TurnPhaseCoordinator {
       ? frameAnomalyClassification
       : null;
 
-    const correctivePreferenceTurn =
+    const activeGoalsForPromotion = isUserTurn
+      ? await this.options.selfContextBuilder.listActiveGoalsVisibleToAudience(audienceEntityId)
+      : [];
+    const [correctivePreferenceTurn, createdActionIds, persistedPromotions] = await Promise.all([
       currentTurnFrameAnomaly === null
-        ? await this.options.correctivePreferenceTurnService.extractAndApply({
+        ? this.options.correctivePreferenceTurnService.extractAndApply({
             llmClient,
             turnId,
             userMessage: turnInput.userMessage,
@@ -256,29 +259,22 @@ export class TurnPhaseCoordinator {
               this.appendHookFailureEvent(streamWriter, hook, error, details),
             trackAppliedSlotNegation: (slot) => lifecycleTracker.trackAppliedSlotNegation(slot),
           })
-        : {
+        : Promise.resolve({
             commitment: null,
             workingMemory,
-          };
-    const correctiveCommitment = correctivePreferenceTurn.commitment;
-    workingMemory = correctivePreferenceTurn.workingMemory;
-    const createdActionIds = await this.options.turnActionStateService.extract({
-      llmClient,
-      turnId,
-      isUserTurn,
-      userMessage: turnInput.userMessage,
-      persistedUserEntryId,
-      recentHistory: recencyWindow.messages,
-      audienceEntityId,
-      frameAnomaly: frameAnomalyClassification,
-    });
-    lifecycleTracker.trackCreatedActionIds(createdActionIds);
-    const activeGoalsForPromotion = isUserTurn
-      ? await this.options.selfContextBuilder.listActiveGoalsVisibleToAudience(audienceEntityId)
-      : [];
-    const persistedPromotions =
+          }),
+      this.options.turnActionStateService.extract({
+        llmClient,
+        turnId,
+        isUserTurn,
+        userMessage: turnInput.userMessage,
+        persistedUserEntryId,
+        recentHistory: recencyWindow.messages,
+        audienceEntityId,
+        frameAnomaly: frameAnomalyClassification,
+      }),
       currentTurnFrameAnomaly === null
-        ? await this.options.turnGoalPromotionService.extractAndPersist({
+        ? this.options.turnGoalPromotionService.extractAndPersist({
             llmClient,
             turnId,
             isUserTurn,
@@ -291,10 +287,14 @@ export class TurnPhaseCoordinator {
             onHookFailure: (hook, error, details) =>
               this.appendHookFailureEvent(streamWriter, hook, error, details),
           })
-        : {
+        : Promise.resolve({
             goalIds: [],
             executiveStepIds: [],
-          };
+          }),
+    ]);
+    const correctiveCommitment = correctivePreferenceTurn.commitment;
+    workingMemory = correctivePreferenceTurn.workingMemory;
+    lifecycleTracker.trackCreatedActionIds(createdActionIds);
     lifecycleTracker.trackCreatedGoalIds(persistedPromotions.goalIds);
     lifecycleTracker.trackCreatedExecutiveStepIds(persistedPromotions.executiveStepIds);
 
@@ -771,7 +771,11 @@ export class TurnPhaseCoordinator {
     const closurePressureHistory =
       input.workingMemory.discourse_state?.closure_pressure_history ?? [];
 
-    if (activeClosureLoop === null && closurePressureHistory.length === 0 && input.recentHistory.length < 4) {
+    if (
+      activeClosureLoop === null &&
+      closurePressureHistory.length === 0 &&
+      input.recentHistory.length < 4
+    ) {
       return null;
     }
 
