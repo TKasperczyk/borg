@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { computeWeights } from "../../cognition/attention/index.js";
 import { FakeLLMClient } from "../../llm/index.js";
-import { FixedClock } from "../../util/clock.js";
+import { FixedClock, ManualClock } from "../../util/clock.js";
 import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
 
 import {
@@ -13,6 +13,7 @@ import {
 import { RuminatorProcess } from "./index.js";
 
 const RUMINATOR_TOOL_NAME = "EmitRuminatorDecisions";
+const DAY_MS = 24 * 60 * 60 * 1_000;
 
 function createRuminatorResponse(input: {
   resolution_note: string;
@@ -222,6 +223,91 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("gates audience-scoped resolution on merged fresh evidence confidence", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createRuminatorResponse({
+          resolution_note: "Sam-scoped evidence resolved the planning question.",
+          growth_marker: null,
+        }),
+      ],
+    });
+    const questionText = "What resolved Sam's planning uncertainty?";
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [0, 1, 0, 0]]])),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const sam = harness.entityRepository.resolve("Sam");
+      const oldGlobalEpisode = createEpisodeFixture(
+        {
+          title: "Public planning evidence",
+          narrative: "Public planning evidence is strong but predates the open question.",
+          tags: ["planning"],
+          significance: 0.95,
+          participants: ["public-planning-group"],
+          created_at: 900_000,
+          updated_at: 900_000,
+        },
+        [0, 1, 0, 0],
+      );
+      const weakAudienceEpisode = createEpisodeFixture(
+        {
+          title: "Sam weak private planning update",
+          narrative: "Sam mentioned a possible planning resolution without settled evidence.",
+          tags: ["planning"],
+          audience_entity_id: sam,
+          shared: false,
+          significance: 0.05,
+          participants: ["sam"],
+          created_at: 2_000_000,
+          updated_at: 2_000_000,
+        },
+        [0, 1, 0, 0],
+      );
+      await harness.episodicRepository.insert(oldGlobalEpisode);
+      await harness.episodicRepository.insert(weakAudienceEpisode);
+      harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.7,
+        source: "reflection",
+        audience_entity_id: sam,
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+
+      const globalRetrieval = await harness.retrievalPipeline.searchWithContext(questionText, {
+        limit: 3,
+        globalIdentitySelfAudienceEntityId: harness.entityRepository.findByName("self"),
+        attentionWeights: computeWeights("reflective", {
+          currentGoals: [],
+          hasActiveValues: false,
+          hasTemporalCue: false,
+        }),
+        goalDescriptions: [],
+        includeOpenQuestions: false,
+      });
+
+      expect(globalRetrieval.confidence.overall).toBeGreaterThan(
+        harness.config.offline.ruminator.resolveConfidenceThreshold,
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items).toEqual([]);
+      expect(llm.requests).toHaveLength(0);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("plans urgency bumps and abandonments without LLM calls when evidence is weak", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(40 * 24 * 60 * 60 * 1_000),
@@ -269,6 +355,10 @@ describe("RuminatorProcess", () => {
 
       expect(harness.openQuestionsRepository.get(staleQuestion.id)?.status).toBe("abandoned");
       expect(harness.openQuestionsRepository.get(agingQuestion.id)?.urgency).toBe(0.45);
+      expect(harness.openQuestionsRepository.get(agingQuestion.id)).toMatchObject({
+        unresolved_rumination_ticks: 1,
+        last_ruminated_at: harness.clock.now(),
+      });
       expect(harness.identityEventRepository.list({ recordType: "open_question" })).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -344,14 +434,203 @@ describe("RuminatorProcess", () => {
       expect(harness.clock.now() - question.last_touched).toBe(0);
       expect(secondPlan.items).toEqual([
         expect.objectContaining({
-          action: "abandon",
+          action: "mark_unresolved",
           question_id: question.id,
+          next_unresolved_rumination_ticks: 2,
         }),
       ]);
 
       await process.apply(harness.createContext(), secondPlan);
 
-      expect(harness.openQuestionsRepository.get(question.id)?.status).toBe("abandoned");
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        status: "open",
+        unresolved_rumination_ticks: 2,
+      });
+
+      const thirdPlan = await process.plan(harness.createContext(), {});
+
+      expect(thirdPlan.items).toEqual([
+        expect.objectContaining({
+          action: "abandon",
+          question_id: question.id,
+        }),
+      ]);
+
+      await process.apply(harness.createContext(), thirdPlan);
+
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        status: "abandoned",
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("increments unresolved ticks on urgency bumps and resets them on resolution", async () => {
+    const clock = new ManualClock(8 * DAY_MS);
+    const questionText = "Why does Atlas deploy fail?";
+    const llm = new FakeLLMClient({
+      responses: [
+        createRuminatorResponse({
+          resolution_note: "Atlas now succeeds after the rollback rehearsal.",
+          growth_marker: null,
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock,
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            stalenessTicks: 10,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.2,
+        source: "reflection",
+        created_at: 0,
+        last_touched: 0,
+        provenance: { kind: "manual" },
+      });
+
+      for (let tick = 1; tick <= 4; tick += 1) {
+        const plan = await process.plan(harness.createContext(), {});
+
+        expect(plan.items).toEqual([
+          expect.objectContaining({
+            action: "bump_urgency",
+            question_id: question.id,
+            next_unresolved_rumination_ticks: tick,
+          }),
+        ]);
+
+        await process.apply(harness.createContext(), plan);
+
+        expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+          status: "open",
+          unresolved_rumination_ticks: tick,
+          last_ruminated_at: clock.now(),
+        });
+
+        clock.advance(8 * DAY_MS);
+      }
+
+      expect(llm.requests).toHaveLength(0);
+
+      const resolutionEpisode = createEpisodeFixture(
+        {
+          title: "Atlas rollback rehearsal",
+          narrative: "Atlas stabilized after a rollback rehearsal.",
+          tags: ["atlas", "deploy"],
+          significance: 0.95,
+          created_at: clock.now(),
+          updated_at: clock.now(),
+        },
+        [1, 0, 0, 0],
+      );
+      await harness.episodicRepository.insert(resolutionEpisode);
+
+      const resolutionPlan = await process.plan(harness.createContext(), {});
+
+      expect(resolutionPlan.items).toEqual([
+        expect.objectContaining({
+          action: "resolve",
+          question_id: question.id,
+          resolution_evidence_episode_ids: [resolutionEpisode.id],
+        }),
+      ]);
+
+      await process.apply(harness.createContext(), resolutionPlan);
+
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        status: "resolved",
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("abandons by tick staleness after repeated urgency bumps", async () => {
+    const clock = new ManualClock(8 * DAY_MS);
+    const harness = await createOfflineTestHarness({
+      clock,
+      configOverrides: {
+        offline: {
+          ruminator: {
+            stalenessTicks: 4,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const question = harness.openQuestionsRepository.add({
+        question: "Should the Sunday ritual question stay open?",
+        urgency: 0,
+        source: "reflection",
+        created_at: 0,
+        last_touched: 0,
+        provenance: { kind: "manual" },
+      });
+
+      for (let tick = 1; tick <= 4; tick += 1) {
+        const plan = await process.plan(harness.createContext(), {});
+
+        expect(plan.items).toEqual([
+          expect.objectContaining({
+            action: "bump_urgency",
+            question_id: question.id,
+            next_unresolved_rumination_ticks: tick,
+          }),
+        ]);
+
+        await process.apply(harness.createContext(), plan);
+
+        expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+          status: "open",
+          unresolved_rumination_ticks: tick,
+        });
+
+        clock.advance(8 * DAY_MS);
+      }
+
+      const stalePlan = await process.plan(harness.createContext(), {});
+
+      expect(stalePlan.items).toEqual([
+        expect.objectContaining({
+          action: "abandon",
+          question_id: question.id,
+        }),
+      ]);
+
+      await process.apply(harness.createContext(), stalePlan);
+
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        status: "abandoned",
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+      });
     } finally {
       await harness.cleanup();
     }

@@ -1134,13 +1134,16 @@ export class OpenQuestionsRepository {
     }
 
     const resolvedAt = this.clock.now();
+    // Rumination counters describe the active open lifecycle. Terminal states
+    // keep their own timestamps/events, so reset the active-loop metadata.
     this.db
       .prepare(
         `
           UPDATE open_questions
           SET status = 'resolved', resolution_evidence_episode_ids = ?,
               resolution_evidence_stream_entry_ids = ?, resolution_note = ?, resolved_at = ?,
-              abandoned_reason = NULL, abandoned_at = NULL, last_touched = ?
+              abandoned_reason = NULL, abandoned_at = NULL, last_touched = ?,
+              unresolved_rumination_ticks = 0, last_ruminated_at = NULL
           WHERE id = ?
         `,
       )
@@ -1163,6 +1166,8 @@ export class OpenQuestionsRepository {
       abandoned_reason: null,
       abandoned_at: null,
       last_touched: resolvedAt,
+      unresolved_rumination_ticks: 0,
+      last_ruminated_at: null,
     };
 
     this.scheduleQuestionVectorUpsert(resolved, "metadata_sync", {
@@ -1188,13 +1193,16 @@ export class OpenQuestionsRepository {
     }
 
     const abandonedAt = this.clock.now();
+    // Rumination counters describe the active open lifecycle. Terminal states
+    // keep their own timestamps/events, so reset the active-loop metadata.
     this.db
       .prepare(
         `
           UPDATE open_questions
           SET status = 'abandoned', abandoned_reason = ?, abandoned_at = ?,
               resolution_evidence_episode_ids = '[]', resolution_evidence_stream_entry_ids = '[]',
-              resolution_note = NULL, resolved_at = NULL, last_touched = ?
+              resolution_note = NULL, resolved_at = NULL, last_touched = ?,
+              unresolved_rumination_ticks = 0, last_ruminated_at = NULL
           WHERE id = ?
         `,
       )
@@ -1210,6 +1218,8 @@ export class OpenQuestionsRepository {
       abandoned_reason: reason,
       abandoned_at: abandonedAt,
       last_touched: abandonedAt,
+      unresolved_rumination_ticks: 0,
+      last_ruminated_at: null,
     };
 
     this.scheduleQuestionVectorUpsert(abandoned, "metadata_sync", {
@@ -1323,6 +1333,8 @@ export class OpenQuestionsRepository {
 
     const nowMs = this.clock.now();
     const nextUrgency = clamp(urgency ?? existing.urgency, 0, 1);
+    // A reversal/reopen starts a new active open lifecycle, so stale
+    // unresolved-attempt metadata should not carry into the revived question.
     this.db
       .prepare(
         `
@@ -1330,7 +1342,8 @@ export class OpenQuestionsRepository {
           SET status = 'open', urgency = ?, last_touched = ?,
               resolution_evidence_episode_ids = '[]',
               resolution_evidence_stream_entry_ids = '[]', resolution_note = NULL,
-              resolved_at = NULL, abandoned_reason = NULL, abandoned_at = NULL
+              resolved_at = NULL, abandoned_reason = NULL, abandoned_at = NULL,
+              unresolved_rumination_ticks = 0, last_ruminated_at = NULL
           WHERE id = ?
         `,
       )
@@ -1347,6 +1360,8 @@ export class OpenQuestionsRepository {
       resolved_at: null,
       abandoned_reason: null,
       abandoned_at: null,
+      unresolved_rumination_ticks: 0,
+      last_ruminated_at: null,
     };
 
     this.scheduleQuestionVectorUpsert(reopened, "update");

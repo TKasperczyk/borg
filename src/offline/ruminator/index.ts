@@ -21,7 +21,7 @@ import {
   type OpenQuestion,
 } from "../../memory/self/index.js";
 import { createOpenQuestionReopener } from "../../memory/self/open-questions.js";
-import type { RetrievedEpisode } from "../../retrieval/index.js";
+import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import { createGrowthMarkerId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
@@ -77,6 +77,7 @@ const ruminatorPlanItemSchema = z.discriminatedUnion("action", [
     previous: openQuestionSchema,
     delta: z.number().finite(),
     next_urgency: z.number().min(0).max(1),
+    next_unresolved_rumination_ticks: z.number().int().nonnegative(),
   }),
   z.object({
     action: z.literal("abandon"),
@@ -249,7 +250,7 @@ async function searchResolutionEvidence(
   maxQuestionsPerRun: number,
 ): Promise<{
   episodes: RetrievedEpisode[];
-  confidenceOverall: number;
+  expectedCount: number;
 }> {
   const selfAudienceEntityId = ctx.entityRepository.findByName("self");
   const baseOptions = {
@@ -271,7 +272,7 @@ async function searchResolutionEvidence(
   if (isGlobalIdentityQuestion(question, selfAudienceEntityId)) {
     return {
       episodes: globalIdentityEpisodes,
-      confidenceOverall: globalRetrieval.confidence.overall,
+      expectedCount: baseOptions.limit,
     };
   }
 
@@ -291,10 +292,7 @@ async function searchResolutionEvidence(
 
   return {
     episodes,
-    confidenceOverall: Math.max(
-      globalRetrieval.confidence.overall,
-      audienceRetrieval.confidence.overall,
-    ),
+    expectedCount: baseOptions.limit,
   };
 }
 
@@ -335,22 +333,10 @@ async function planResolution(
   maxQuestionsPerRun: number,
 ): Promise<RuminatorPlan["items"][number] | null> {
   const retrieval = await searchResolutionEvidence(ctx, question, maxQuestionsPerRun);
-
-  if (retrieval.confidenceOverall < ctx.config.offline.ruminator.resolveConfidenceThreshold) {
-    emitOpenQuestionResolutionAttempt(ctx, {
-      oqId: question.id,
-      sourcePath: "retrieval_evidence_match",
-      decision: "rejected",
-      decisionReason: "confidence_below_threshold",
-    });
-    return null;
-  }
-
-  // The confidence gate above decides whether evidence can resolve the
-  // question. Score is only a relevance ranking signal for choosing the
-  // anchor episode and ordering evidence for the prompt.
-  const strongEvidence = retrieval.episodes
-    .filter((result) => result.episode.updated_at > question.last_touched)
+  const freshEvidence = retrieval.episodes.filter(
+    (result) => result.episode.updated_at > question.last_touched,
+  );
+  const strongEvidence = freshEvidence
     .sort(
       (left, right) =>
         right.score - left.score || right.episode.updated_at - left.episode.updated_at,
@@ -362,6 +348,26 @@ async function planResolution(
       sourcePath: "retrieval_evidence_match",
       decision: "rejected",
       decisionReason: "no_new_visible_evidence",
+    });
+    return null;
+  }
+
+  // Recompute over the merged fresh visible evidence set instead of trusting
+  // either retrieval lane's confidence. This prevents a strong global/self lane
+  // from authorizing a weaker audience-scoped anchor after the lanes are merged.
+  const mergedFreshConfidence = computeRetrievalConfidence({
+    episodes: freshEvidence,
+    contradictionPresent: false,
+    nowMs: ctx.clock.now(),
+    expectedCount: retrieval.expectedCount,
+  });
+
+  if (mergedFreshConfidence.overall < ctx.config.offline.ruminator.resolveConfidenceThreshold) {
+    emitOpenQuestionResolutionAttempt(ctx, {
+      oqId: question.id,
+      sourcePath: "retrieval_evidence_match",
+      decision: "rejected",
+      decisionReason: "confidence_below_threshold",
     });
     return null;
   }
@@ -446,12 +452,14 @@ function planFallbackAction(
 ): RuminatorPlan["items"][number] | null {
   const ageMs = Math.max(0, ctx.clock.now() - question.last_touched);
   const stalenessTicks = ctx.config.offline.ruminator.stalenessTicks;
+  const dayStalenessReached =
+    ageMs >= ctx.config.offline.ruminator.stalenessDays * DAY_MS && question.urgency < 0.2;
+  // Tick staleness is an observed count of unresolved maintenance passes; once
+  // it reaches the configured threshold it should not wait for the urgency gate.
+  const tickStalenessReached =
+    stalenessTicks !== null && question.unresolved_rumination_ticks >= stalenessTicks;
 
-  if (
-    (ageMs >= ctx.config.offline.ruminator.stalenessDays * DAY_MS ||
-      (stalenessTicks !== null && nextUnresolvedRuminationTicks >= stalenessTicks)) &&
-    question.urgency < 0.2
-  ) {
+  if (dayStalenessReached || tickStalenessReached) {
     return {
       action: "abandon",
       question_id: question.id,
@@ -470,6 +478,7 @@ function planFallbackAction(
         previous: question,
         delta: Number((nextUrgency - question.urgency).toFixed(3)),
         next_urgency: nextUrgency,
+        next_unresolved_rumination_ticks: nextUnresolvedRuminationTicks,
       };
     }
   }
@@ -780,6 +789,11 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           },
         );
       }
+
+      ctx.openQuestionsRepository.markRuminated(
+        item.question_id,
+        item.next_unresolved_rumination_ticks,
+      );
 
       ctx.auditLog.record({
         run_id: ctx.runId,
