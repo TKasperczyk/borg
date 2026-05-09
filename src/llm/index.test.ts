@@ -833,6 +833,38 @@ describe("llm", () => {
     });
   });
 
+  it("routes requests through ANTHROPIC_BASE_URL when set", async () => {
+    const requestedUrls: string[] = [];
+    const fetchMock = vi.fn(
+      async (input: Parameters<typeof fetch>[0]) => {
+        const url = input instanceof Request ? input.url : String(input);
+        requestedUrls.push(url);
+        return jsonResponse(createMessageBody());
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+        ANTHROPIC_BASE_URL: "https://aiproxy.example.com",
+      },
+    });
+
+    await client.complete({
+      model: "claude-sonnet-4-5",
+      system: "be concise",
+      messages: [{ role: "user", content: "hello" }],
+      max_tokens: 32,
+      budget: "test",
+    });
+
+    expect(requestedUrls.length).toBeGreaterThan(0);
+    for (const url of requestedUrls) {
+      expect(url.startsWith("https://aiproxy.example.com")).toBe(true);
+    }
+  });
+
   it("builds an OAuth client from the shared credentials file", async () => {
     const credentialsPath = createTempCredentialsPath(tempDirs);
     writeJsonFileAtomic(credentialsPath, {

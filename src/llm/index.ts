@@ -989,10 +989,16 @@ async function resolveAnthropicAuth(
   });
 }
 
-function buildAnthropicClient(auth: ResolvedAnthropicAuth): AnthropicClientLike {
+function buildAnthropicClient(
+  auth: ResolvedAnthropicAuth,
+  env: NodeJS.ProcessEnv = process.env,
+): AnthropicClientLike {
+  const baseURL = env.ANTHROPIC_BASE_URL?.trim() || undefined;
+
   if (auth.kind === "api-key") {
     return new Anthropic({
       apiKey: auth.apiKey,
+      ...(baseURL ? { baseURL } : {}),
     });
   }
 
@@ -1003,6 +1009,7 @@ function buildAnthropicClient(auth: ResolvedAnthropicAuth): AnthropicClientLike 
       "user-agent": OAUTH_USER_AGENT,
     },
     fetch: createOAuthFetch(),
+    ...(baseURL ? { baseURL } : {}),
   });
 }
 
@@ -1027,7 +1034,7 @@ export class AnthropicLLMClient implements LLMClient {
     if (this.initialization === undefined) {
       const initialization = (async () => {
         this.auth = await resolveAnthropicAuth(this.options);
-        this.client = buildAnthropicClient(this.auth);
+        this.client = buildAnthropicClient(this.auth, this.options.env);
       })();
       this.initialization = initialization;
     }
@@ -1078,7 +1085,7 @@ export class AnthropicLLMClient implements LLMClient {
       authToken: credentials.accessToken,
       source: "credentials-file",
     };
-    this.client = buildAnthropicClient(this.auth);
+    this.client = buildAnthropicClient(this.auth, this.options.env);
     this.initialization = Promise.resolve();
   }
 
