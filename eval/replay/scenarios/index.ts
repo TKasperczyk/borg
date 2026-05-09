@@ -26,6 +26,7 @@ import crossSessionPartnerNameConflict from "./29-cross-session-partner-name-con
 import interpretationImperfectEvidenceWarning from "./30-interpretation-imperfect-evidence-warning.js";
 import interpretationHidesExactFact from "./31-interpretation-hides-exact-fact.js";
 import tomLeakUnflaggedVocative from "./32-tom-leak-unflagged-vocative.js";
+import priorCallbackNoEvidence from "./33-prior-callback-no-evidence.js";
 import type { ReplayScenario } from "../scenario.js";
 
 export const REPLAY_SCENARIOS: readonly ReplayScenario[] = [
@@ -57,4 +58,5 @@ export const REPLAY_SCENARIOS: readonly ReplayScenario[] = [
   interpretationImperfectEvidenceWarning,
   interpretationHidesExactFact,
   tomLeakUnflaggedVocative,
+  priorCallbackNoEvidence,
 ];

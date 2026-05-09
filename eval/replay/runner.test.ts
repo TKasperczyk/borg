@@ -51,7 +51,7 @@ describe("v26 replay runner", () => {
 
     const report = JSON.parse(readFileSync(paths.jsonPath, "utf8")) as ReplayReport;
 
-    expect(report.scenarios).toHaveLength(28);
+    expect(report.scenarios).toHaveLength(29);
     expect(report.summary.adversarialUnderDeclarationScenarioCount).toBe(4);
     expect(report.summary.selfReportNotProofScenarioCount).toBe(1);
     expect(report.scenarios.find((scenario) => scenario.id === "18-pronoun-citation-correct"))
