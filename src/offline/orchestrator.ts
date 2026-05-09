@@ -9,6 +9,7 @@ import { maintenancePlanSchema, type MaintenancePlan } from "./plan-file.js";
 import {
   type OfflineContext,
   type OfflineProcess,
+  type OfflineProcessError,
   type OfflineProcessName,
   type OfflineResult,
   type OrchestratorResult,
@@ -38,6 +39,15 @@ export type MaintenanceRunOptions = {
     >;
   };
 };
+
+function traceErrorDetails(errors: readonly OfflineProcessError[]) {
+  return errors.map((error) => ({
+    message: error.message,
+    ...(error.code === undefined ? {} : { code: error.code }),
+    ...(error.target_type === undefined ? {} : { target_type: error.target_type }),
+    ...(error.target_id === undefined ? {} : { target_id: error.target_id }),
+  }));
+}
 
 export class MaintenanceOrchestrator {
   private operationQueue: Promise<void> = Promise.resolve();
@@ -135,6 +145,9 @@ export class MaintenanceOrchestrator {
       candidates_accepted: stats.accepted,
       candidates_rejected: stats.rejected,
       errors: input.result.errors.length,
+      error_details: traceErrorDetails(input.result.errors),
+      tokens_used: input.result.tokens_used,
+      budget_exhausted: input.result.budget_exhausted,
       duration_ms: Math.round(input.durationMs),
     });
   }

@@ -129,6 +129,12 @@ const suppressedOverseerFlagSchema = z.object({
   cited_ids: z.array(streamEntryIdSchema),
 });
 
+const overseerCandidateStatsSchema = z.object({
+  proposed: z.number().int().nonnegative(),
+  accepted: z.number().int().nonnegative(),
+  rejected: z.number().int().nonnegative(),
+});
+
 export const overseerPlanSchema = z.object({
   process: z.literal("overseer"),
   items: z.array(overseerPlanItemSchema),
@@ -139,11 +145,14 @@ export const overseerPlanSchema = z.object({
         process: z.literal("overseer"),
         message: z.string(),
         code: z.string().optional(),
+        target_type: z.enum(["episode", "semantic_node", "semantic_edge"]).optional(),
+        target_id: z.string().min(1).optional(),
       }),
     )
     .default([]),
   tokens_used: z.number().int().nonnegative(),
   budget_exhausted: z.boolean().default(false),
+  candidate_stats: overseerCandidateStatsSchema.optional(),
 });
 
 export type OverseerPlan = z.infer<typeof overseerPlanSchema>;
@@ -420,6 +429,18 @@ function gateMisattributionFlag(
   return null;
 }
 
+function candidateStatsForPlan(
+  plan: Pick<OverseerPlan, "items" | "suppressed_flags" | "candidate_stats">,
+): NonNullable<OfflineResult["candidate_stats"]> {
+  return (
+    plan.candidate_stats ?? {
+      proposed: plan.items.length + plan.suppressed_flags.length,
+      accepted: plan.items.length,
+      rejected: plan.suppressed_flags.length,
+    }
+  );
+}
+
 export type OverseerProcessOptions = {
   reviewQueueRepository: OfflineContext["reviewQueueRepository"];
   registry: ReverserRegistry;
@@ -442,6 +463,11 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
     const errors: OfflineProcessError[] = [];
     const items: OverseerPlan["items"] = [];
     const suppressedFlags: OverseerPlan["suppressed_flags"] = [];
+    const candidateStats: NonNullable<OfflineResult["candidate_stats"]> = {
+      proposed: 0,
+      accepted: 0,
+      rejected: 0,
+    };
     const budget = opts.budget ?? ctx.config.offline.overseer.budget;
     const sinceTs = computeSinceTimestamp(ctx);
     const targets = (await collectTargets(ctx))
@@ -474,19 +500,28 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                 max_tokens: 4_000,
                 budget: "offline-overseer",
               }),
-            ).flags.filter((flag) => flag.confidence >= 0.5);
+            ).flags;
 
             for (const flag of flags) {
+              candidateStats.proposed += 1;
+
+              if (flag.confidence < 0.5) {
+                candidateStats.rejected += 1;
+                continue;
+              }
+
               if (flag.kind === "misattribution") {
                 const suppression = gateMisattributionFlag(flag, sourceBundle);
 
                 if (suppression !== null) {
                   suppressedFlags.push(suppression);
+                  candidateStats.rejected += 1;
                   continue;
                 }
               }
 
               if (target.type === "semantic_edge" && flag.kind === "misattribution") {
+                candidateStats.rejected += 1;
                 continue;
               }
 
@@ -548,6 +583,8 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   ...baseItem,
                 });
               }
+
+              candidateStats.accepted += 1;
             }
           } catch (error) {
             if (error instanceof BudgetExceededError) {
@@ -558,6 +595,8 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
               process: this.name,
               message: error instanceof Error ? error.message : String(error),
               code: error instanceof Error && "code" in error ? String(error.code) : undefined,
+              target_type: target.type,
+              target_id: target.id,
             });
           }
         }
@@ -581,6 +620,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
       errors,
       tokens_used: tokensUsed,
       budget_exhausted: budgetExhausted,
+      candidate_stats: candidateStats,
     });
   }
 
@@ -594,6 +634,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
       tokens_used: parsed.tokens_used,
       errors: parsed.errors,
       budget_exhausted: parsed.budget_exhausted,
+      candidate_stats: candidateStatsForPlan(parsed),
     };
   }
 
@@ -702,6 +743,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
       tokens_used: plan.tokens_used,
       errors: plan.errors,
       budget_exhausted: plan.budget_exhausted,
+      candidate_stats: candidateStatsForPlan(plan),
     };
   }
 

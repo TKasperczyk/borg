@@ -152,6 +152,11 @@ describe("overseer process", () => {
     await harness.flushHookLogs();
 
     expect(result.errors).toEqual([]);
+    expect(result.candidate_stats).toEqual({
+      proposed: 1,
+      accepted: 1,
+      rejected: 0,
+    });
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
       name: OVERSEER_TOOL_NAME,
@@ -214,7 +219,54 @@ describe("overseer process", () => {
     });
 
     expect(result.changes).toEqual([]);
+    expect(result.candidate_stats).toEqual({
+      proposed: 0,
+      accepted: 0,
+      rejected: 0,
+    });
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+  });
+
+  it("keeps per-target errors separate from rejected candidate stats", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const episode = createEpisodeFixture(
+      {
+        title: "Error target",
+        created_at: nowMs - 1_000,
+        updated_at: nowMs - 1_000,
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.insert(episode);
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const result = await process.run(harness.createContext(), {
+      dryRun: false,
+    });
+
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        message: "FakeLLMClient has no scripted response available",
+        target_type: "episode",
+        target_id: episode.id,
+      }),
+    ]);
+    expect(result.candidate_stats).toEqual({
+      proposed: 0,
+      accepted: 0,
+      rejected: 0,
+    });
   });
 
   it("includes raw source entries for episode targets", async () => {
@@ -523,7 +575,7 @@ describe("overseer process", () => {
     });
     const ctx = harness.createContext();
     const plan = await process.plan(ctx, {});
-    await process.apply(ctx, plan);
+    const result = await process.apply(ctx, plan);
 
     expect(plan.items).toEqual([]);
     expect(plan.suppressed_flags).toEqual([
@@ -532,6 +584,11 @@ describe("overseer process", () => {
         cited_ids: [source.id],
       }),
     ]);
+    expect(result.candidate_stats).toEqual({
+      proposed: 1,
+      accepted: 0,
+      rejected: 1,
+    });
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
   });
 
