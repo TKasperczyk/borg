@@ -9,7 +9,7 @@ import {
 } from "../../llm/index.js";
 import type { PostGenerationGuardMode } from "../../config/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
-import { deleteSpans, isStructurallyEmptyText } from "../../util/span-deletion.js";
+import { deleteSpansSentenceAware } from "../../util/span-deletion.js";
 import type { ClosureLoopState, ClosurePressureHistoryEntry } from "../../memory/working/index.js";
 import type { TurnTraceData, TurnTracer } from "../tracing/tracer.js";
 import type { ClosureLoopDialogueAct } from "./closure-loop.js";
@@ -498,12 +498,13 @@ export class ClosurePressureGuard {
       });
     }
 
-    const deletion = deleteSpans(
+    // Auditor spans can be phrase-only, so sentence-aware deletion prevents closure gap residue.
+    const deletion = deleteSpansSentenceAware(
       input.response,
       audit.spans.map((span) => span.text),
     );
 
-    if (!deletion.allRemoved || isStructurallyEmptyText(deletion.result)) {
+    if (deletion.outcome !== "clean") {
       const reason = "closure_pressure_only";
 
       traceClosureGuard({
@@ -544,13 +545,13 @@ export class ClosurePressureGuard {
       reason,
       audit,
       originalResponse: input.response,
-      rewrittenResponse: deletion.result,
+      rewrittenResponse: deletion.rewrittenText,
     });
 
     return this.applyMode(input, {
       emission: {
         kind: "message",
-        content: deletion.result,
+        content: deletion.rewrittenText,
         closure_pressure_history_reason: "span_removed",
       },
       verdict: "rewritten",

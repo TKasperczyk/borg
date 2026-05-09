@@ -162,6 +162,44 @@ describe("ClosurePressureGuard", () => {
     );
   });
 
+  it("suppresses phrase-only closure spans instead of emitting setup-sentence gaps", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        closureAuditResponse({
+          spans: [
+            {
+              text: "go read",
+              kind: "imperative_closer",
+              rationale: "Phrase-only closer inside a setup sentence.",
+            },
+          ],
+          response_shape: "mixed",
+          reason: "The response is only a setup plus closure phrase.",
+        }),
+      ],
+    });
+    const guard = new ClosurePressureGuard({
+      llmClient: llm,
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+    });
+
+    const result = await guard.run({
+      turnId: "turn-closure-phrase-gap",
+      response: "Anyway, go read.",
+      activeCommitments: [makeCommitment()],
+      closureLoop: null,
+    });
+
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "closure_pressure_only",
+      closure_pressure_history_reason: "span_removed",
+    });
+    expect(result.verdict).toBe("suppressed");
+    expect(result.removed_spans).toEqual(["go read"]);
+  });
+
   it("audits and computes deletion but emits the original response in shadow mode", async () => {
     const original = "The shelf test is the right move. Go read.";
     const llm = new FakeLLMClient({
