@@ -148,6 +148,10 @@ export type BorgDreamRunner = ((options?: BorgDreamOptions) => Promise<Orchestra
   apply: (plan: MaintenancePlan) => Promise<OrchestratorResult>;
   consolidate: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
   reflect: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
+  extractSemantics: (options?: {
+    dryRun?: boolean;
+    budget?: number;
+  }) => Promise<OrchestratorResult>;
   curate: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
   oversee: (options?: { dryRun?: boolean; budget?: number }) => Promise<OrchestratorResult>;
   ruminate: (options?: {

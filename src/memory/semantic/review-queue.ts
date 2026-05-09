@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { NOOP_TRACER, type TurnTracer } from "../../cognition/tracing/tracer.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { SemanticError } from "../../util/errors.js";
@@ -89,6 +90,16 @@ export type ReviewQueueInsertInput = {
   kind: ReviewKind;
   refs: Record<string, unknown>;
   reason: string;
+  sourceProcess?: string;
+  traceTurnId?: string;
+};
+
+export type ReviewResolutionSource = "manual" | "auto";
+
+export type ReviewResolveOptions = {
+  source?: ReviewResolutionSource;
+  sourceProcess?: string;
+  traceTurnId?: string;
 };
 
 export type ReviewQueueRepositoryOptions = {
@@ -111,6 +122,7 @@ export type ReviewQueueRepositoryOptions = {
     item: ReviewQueueItem,
     input: ReviewQueueInsertInput,
   ) => void | Promise<void>;
+  tracer?: TurnTracer;
 };
 
 const beliefRevisionRefsSchema = z.discriminatedUnion("target_type", [
@@ -304,10 +316,12 @@ export class ReviewQueueRepository {
   private readonly clock: Clock;
   private readonly handlers: ReviewQueueHandlerRegistry;
   private readonly pendingEnqueueHooks = new Set<Promise<void>>();
+  private readonly tracer: TurnTracer;
 
   constructor(private readonly options: ReviewQueueRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
     this.handlers = options.handlers ?? new ReviewQueueHandlerRegistry();
+    this.tracer = options.tracer ?? NOOP_TRACER;
   }
 
   private get db(): SqliteDatabase {
@@ -367,6 +381,73 @@ export class ReviewQueueRepository {
     this.handlers.register(handler);
   }
 
+  private sourceProcessForReview(
+    itemOrInput: Pick<ReviewQueueItem, "kind" | "refs"> | ReviewQueueInsertInput,
+    explicit: string | undefined,
+  ): string {
+    if (explicit !== undefined) {
+      return explicit;
+    }
+
+    if (itemOrInput.kind === "new_insight" && "reflector_pending_insight" in itemOrInput.refs) {
+      return "reflector";
+    }
+
+    if (itemOrInput.kind === "belief_revision") {
+      return "belief-reviser";
+    }
+
+    if (itemOrInput.kind === "skill_split") {
+      return "procedural-synthesizer";
+    }
+
+    if (itemOrInput.kind === "correction") {
+      return "correction";
+    }
+
+    if (
+      itemOrInput.kind === "misattribution" ||
+      itemOrInput.kind === "temporal_drift" ||
+      itemOrInput.kind === "identity_inconsistency"
+    ) {
+      return "overseer";
+    }
+
+    if (itemOrInput.kind === "contradiction" || itemOrInput.kind === "duplicate") {
+      return "semantic-extractor";
+    }
+
+    return "unknown";
+  }
+
+  private traceReviewQueueDecision(input: {
+    item: Pick<ReviewQueueItem, "id" | "kind" | "refs">;
+    decision:
+      | "enqueued"
+      | "auto_accepted"
+      | "manually_accepted"
+      | "rejected"
+      | "rejected_by_handler";
+    decisionReason: string;
+    sourceProcess?: string;
+    traceTurnId?: string;
+    resolution?: string;
+  }): void {
+    if (!this.tracer.enabled) {
+      return;
+    }
+
+    this.tracer.emit("review_queue_decision", {
+      turnId: input.traceTurnId ?? "review_queue",
+      item_id: input.item.id,
+      item_kind: input.item.kind,
+      decision: input.decision,
+      decision_reason: input.decisionReason,
+      source_process: this.sourceProcessForReview(input.item, input.sourceProcess),
+      resolution: input.resolution,
+    });
+  }
+
   enqueue(input: ReviewQueueInsertInput): ReviewQueueItem {
     const parsed = reviewKindSchema.parse(input.kind);
     const timestamp = this.clock.now();
@@ -390,6 +471,14 @@ export class ReviewQueueRepository {
     }
 
     const item = mapReviewRow(row);
+
+    this.traceReviewQueueDecision({
+      item,
+      decision: "enqueued",
+      decisionReason: input.reason,
+      sourceProcess: input.sourceProcess,
+      traceTurnId: input.traceTurnId,
+    });
 
     try {
       const hookResult = this.options.onEnqueue?.(item, input);
@@ -938,7 +1027,11 @@ export class ReviewQueueRepository {
     return this.resolveWithExternalHandler(handler, item, refs, resolution);
   }
 
-  async resolve(itemId: number, decision: ReviewResolutionInput): Promise<ReviewQueueItem | null> {
+  async resolve(
+    itemId: number,
+    decision: ReviewResolutionInput,
+    options: ReviewResolveOptions = {},
+  ): Promise<ReviewQueueItem | null> {
     const parsedResolution = reviewResolutionInputSchema.parse(decision);
     const resolution: ResolvedReviewDecision =
       typeof parsedResolution === "string" ? { decision: parsedResolution } : parsedResolution;
@@ -959,12 +1052,48 @@ export class ReviewQueueRepository {
     const handler = this.handlers.get(item.kind);
 
     if (handler === null) {
+      this.traceReviewQueueDecision({
+        item,
+        decision: "rejected_by_handler",
+        decisionReason: `No review queue handler registered for kind "${item.kind}"`,
+        sourceProcess: options.sourceProcess,
+        traceTurnId: options.traceTurnId,
+        resolution: resolution.decision,
+      });
       throw new SemanticError(`No review queue handler registered for kind "${item.kind}"`, {
         code: "REVIEW_QUEUE_HANDLER_UNREGISTERED",
         cause: { kind: item.kind },
       });
     }
 
-    return this.resolveWithRegisteredHandler(handler, item, resolution);
+    try {
+      const resolved = await this.resolveWithRegisteredHandler(handler, item, resolution);
+
+      this.traceReviewQueueDecision({
+        item,
+        decision:
+          resolution.decision === "accept"
+            ? options.source === "auto"
+              ? "auto_accepted"
+              : "manually_accepted"
+            : "rejected",
+        decisionReason: resolution.reason ?? resolution.decision,
+        sourceProcess: options.sourceProcess,
+        traceTurnId: options.traceTurnId,
+        resolution: resolved.resolution ?? resolution.decision,
+      });
+
+      return resolved;
+    } catch (error) {
+      this.traceReviewQueueDecision({
+        item,
+        decision: "rejected_by_handler",
+        decisionReason: error instanceof Error ? error.message : String(error),
+        sourceProcess: options.sourceProcess,
+        traceTurnId: options.traceTurnId,
+        resolution: resolution.decision,
+      });
+      throw error;
+    }
   }
 }

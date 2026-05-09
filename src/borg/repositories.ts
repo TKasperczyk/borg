@@ -309,6 +309,7 @@ export async function buildBorgRepositories(
     commitmentRepository,
     identityService,
     identityEventRepository,
+    tracer: options.tracer,
     onEnqueue: (item) =>
       enqueueOpenQuestionForReview(identityService, item, {
         extractor: reviewOpenQuestionExtractor,

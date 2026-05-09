@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { StreamWriter } from "../stream/index.js";
 import { createMaintenanceRunId } from "../util/ids.js";
 import { BorgError } from "../util/errors.js";
@@ -111,6 +113,32 @@ export class MaintenanceOrchestrator {
     } satisfies OrchestratorResult;
   }
 
+  private emitProcessCompleted(input: {
+    context: OfflineContext;
+    result: OfflineResult;
+    durationMs: number;
+  }): void {
+    if (input.context.tracer?.enabled !== true) {
+      return;
+    }
+
+    const stats = input.result.candidate_stats ?? {
+      proposed: input.result.changes.length,
+      accepted: input.result.changes.length,
+      rejected: input.result.errors.length,
+    };
+
+    input.context.tracer.emit("offline_process_completed", {
+      turnId: input.context.runId,
+      process_name: input.result.process,
+      candidates_proposed: stats.proposed,
+      candidates_accepted: stats.accepted,
+      candidates_rejected: stats.rejected,
+      errors: input.result.errors.length,
+      duration_ms: Math.round(input.durationMs),
+    });
+  }
+
   private async planUnlocked(input: MaintenanceRunOptions): Promise<MaintenancePlan> {
     const runId = createMaintenanceRunId();
     const streamWriter = this.options.createStreamWriter();
@@ -165,12 +193,22 @@ export class MaintenanceOrchestrator {
       for (const processPlan of plan.processes) {
         const process = this.options.processRegistry[processPlan.process];
         const context = this.createContext(runId, streamWriter);
+        const startedAt = performance.now();
+        let result: OfflineResult | null = null;
 
         try {
-          results.push(await process.apply(context, processPlan));
+          result = await process.apply(context, processPlan);
         } catch (error) {
-          results.push(this.createFailureResult(process.name, false, error));
+          result = this.createFailureResult(process.name, false, error);
         } finally {
+          if (result !== null) {
+            results.push(result);
+            this.emitProcessCompleted({
+              context,
+              result,
+              durationMs: performance.now() - startedAt,
+            });
+          }
           await context.reviewQueueRepository.flushEnqueueHooks();
         }
       }

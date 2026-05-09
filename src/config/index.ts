@@ -189,6 +189,14 @@ const configFileSchema = z
           })
           .partial()
           .optional(),
+        semanticExtractor: z
+          .object({
+            enabled: z.boolean().optional(),
+            maxEpisodesPerRun: z.number().int().positive().optional(),
+            budget: z.number().int().positive().optional(),
+          })
+          .partial()
+          .optional(),
         proceduralSynthesizer: z
           .object({
             enabled: z.boolean().optional(),
@@ -278,6 +286,7 @@ const configFileSchema = z
             z.enum([
               "consolidator",
               "reflector",
+              "semantic-extractor",
               "curator",
               "overseer",
               "ruminator",
@@ -292,6 +301,7 @@ const configFileSchema = z
             z.enum([
               "consolidator",
               "reflector",
+              "semantic-extractor",
               "curator",
               "overseer",
               "ruminator",
@@ -468,6 +478,11 @@ export const configSchema = z.object({
       maxInsightsPerRun: z.number().int().positive(),
       budget: z.number().int().positive(),
     }),
+    semanticExtractor: z.object({
+      enabled: z.boolean(),
+      maxEpisodesPerRun: z.number().int().positive(),
+      budget: z.number().int().positive(),
+    }),
     proceduralSynthesizer: z.object({
       enabled: z.boolean(),
       minSupport: z.number().int().positive(),
@@ -535,6 +550,7 @@ export const configSchema = z.object({
       z.enum([
         "consolidator",
         "reflector",
+        "semantic-extractor",
         "curator",
         "overseer",
         "ruminator",
@@ -547,6 +563,7 @@ export const configSchema = z.object({
       z.enum([
         "consolidator",
         "reflector",
+        "semantic-extractor",
         "curator",
         "overseer",
         "ruminator",
@@ -698,6 +715,11 @@ export const DEFAULT_CONFIG: Config = {
       maxInsightsPerRun: 2,
       budget: 60_000,
     },
+    semanticExtractor: {
+      enabled: true,
+      maxEpisodesPerRun: 8,
+      budget: 60_000,
+    },
     proceduralSynthesizer: {
       enabled: true,
       minSupport: 2,
@@ -768,7 +790,7 @@ export const DEFAULT_CONFIG: Config = {
     enabled: true,
     lightIntervalMs: 14_400_000,
     heavyIntervalMs: 86_400_000,
-    lightProcesses: ["consolidator", "curator"],
+    lightProcesses: ["consolidator", "semantic-extractor", "curator"],
     heavyProcesses: [
       "reflector",
       "overseer",
@@ -1204,6 +1226,20 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_BUDGET") ??
           fileConfig.offline?.reflector?.budget ??
           DEFAULT_CONFIG.offline.reflector.budget,
+      },
+      semanticExtractor: {
+        enabled:
+          readOptionalEnvBoolean(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_ENABLED") ??
+          fileConfig.offline?.semanticExtractor?.enabled ??
+          DEFAULT_CONFIG.offline.semanticExtractor.enabled,
+        maxEpisodesPerRun:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_EPISODES_PER_RUN") ??
+          fileConfig.offline?.semanticExtractor?.maxEpisodesPerRun ??
+          DEFAULT_CONFIG.offline.semanticExtractor.maxEpisodesPerRun,
+        budget:
+          readOptionalEnvNumber(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET") ??
+          fileConfig.offline?.semanticExtractor?.budget ??
+          DEFAULT_CONFIG.offline.semanticExtractor.budget,
       },
       proceduralSynthesizer: {
         enabled:

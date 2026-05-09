@@ -1168,9 +1168,42 @@ export class Reflector {
       return;
     }
 
+    if (typeof details.question_id === "string") {
+      tracer.emit("open_question_resolution_attempt", {
+        turnId: context.turnId,
+        oq_id: details.question_id,
+        source_path: "online_reflection",
+        decision: "rejected",
+        decision_reason: typeof details.reason === "string" ? details.reason : "degraded",
+      });
+    }
+
     tracer.emit("open_question_resolution_degraded", {
       turnId: context.turnId,
       ...details,
+    });
+  }
+
+  private emitOpenQuestionResolutionAttempt(
+    context: ReflectionContext,
+    input: {
+      oqId: string;
+      decision: string;
+      decisionReason: string;
+    },
+  ): void {
+    const tracer = this.options.tracer;
+
+    if (tracer?.enabled !== true || context.turnId === undefined) {
+      return;
+    }
+
+    tracer.emit("open_question_resolution_attempt", {
+      turnId: context.turnId,
+      oq_id: input.oqId,
+      source_path: "online_reflection",
+      decision: input.decision,
+      decision_reason: input.decisionReason,
     });
   }
 
@@ -1315,6 +1348,11 @@ export class Reflector {
             question_id: resolution.question_id,
           });
         } else {
+          this.emitOpenQuestionResolutionAttempt(context, {
+            oqId: resolution.question_id,
+            decision: "resolved",
+            decisionReason: "evidence_accepted",
+          });
           effects.resolvedOpenQuestions.push(current);
         }
       } catch (error) {

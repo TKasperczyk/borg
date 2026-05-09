@@ -111,6 +111,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     Object.entries({
       consolidator: deps.config.offline.consolidator.enabled,
       reflector: deps.config.offline.reflector.enabled,
+      "semantic-extractor": deps.config.offline.semanticExtractor.enabled,
       curator: deps.config.offline.curator.enabled,
       overseer: deps.config.offline.overseer.enabled,
       ruminator: deps.config.offline.ruminator.enabled,
@@ -417,7 +418,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     review: {
       list: (options = {}) => deps.reviewQueueRepository.list(options),
-      resolve: (id, decision) => deps.reviewQueueRepository.resolve(id, decision),
+      resolve: (id, decision, options) => deps.reviewQueueRepository.resolve(id, decision, options),
     },
     audit: {
       list: (options = {}) =>
@@ -438,6 +439,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         apply: (plan: MaintenancePlan) => deps.maintenanceOrchestrator.apply(plan),
         consolidate: (options = {}) => runDream(["consolidator"], options),
         reflect: (options = {}) => runDream(["reflector"], options),
+        extractSemantics: (options = {}) => runDream(["semantic-extractor"], options),
         curate: (options = {}) => runDream(["curator"], options),
         oversee: (options = {}) => runDream(["overseer"], options),
         ruminate: (

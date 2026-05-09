@@ -26,6 +26,11 @@ export type SemanticReviewServiceOptions = {
   onDuplicateReviewError?: (error: unknown, node: SemanticNode) => void | Promise<void>;
 };
 
+export type SemanticReviewQueueOptions = {
+  sourceProcess?: string;
+  traceTurnId?: string;
+};
+
 async function judgeContradiction(
   left: Pick<SemanticNode, "label" | "description">,
   right: Pick<SemanticNode, "label" | "description">,
@@ -76,8 +81,8 @@ async function judgeContradiction(
 export class SemanticReviewService {
   constructor(private readonly options: SemanticReviewServiceOptions) {}
 
-  queueDuplicateReview(node: SemanticNode): void {
-    void this.reviewDuplicateCandidate(node).catch((error) => {
+  queueDuplicateReview(node: SemanticNode, options: SemanticReviewQueueOptions = {}): void {
+    void this.reviewDuplicateCandidate(node, options).catch((error) => {
       try {
         void Promise.resolve(this.options.onDuplicateReviewError?.(error, node)).catch(
           () => undefined,
@@ -88,7 +93,10 @@ export class SemanticReviewService {
     });
   }
 
-  async reviewDuplicateCandidate(node: SemanticNode): Promise<void> {
+  async reviewDuplicateCandidate(
+    node: SemanticNode,
+    options: SemanticReviewQueueOptions = {},
+  ): Promise<void> {
     if (
       this.options.enqueueReview === undefined ||
       this.options.llmClient === undefined ||
@@ -135,6 +143,8 @@ export class SemanticReviewService {
           node_ids: [node.id, match.node.id],
         },
         reason: `Nearby proposition appears to conflict with ${match.node.label}`,
+        sourceProcess: options.sourceProcess,
+        traceTurnId: options.traceTurnId,
       });
       break;
     }

@@ -52,6 +52,7 @@ describe("maintenance orchestrator", () => {
       processRegistry: {
         consolidator: process,
         reflector: process,
+        "semantic-extractor": process,
         curator: process,
         overseer: process,
         ruminator: process,

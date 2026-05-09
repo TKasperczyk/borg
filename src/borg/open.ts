@@ -88,6 +88,7 @@ export async function openBorgDependencies(
       semanticNodeRepository: repositories.semanticNodeRepository,
       semanticEdgeRepository: repositories.semanticEdgeRepository,
       semanticBeliefDependencyRepository: repositories.semanticBeliefDependencyRepository,
+      semanticReviewService: repositories.semanticReviewService,
       reviewQueueRepository: repositories.reviewQueueRepository,
       identityService: repositories.identityService,
       valuesRepository: repositories.valuesRepository,
@@ -105,6 +106,7 @@ export async function openBorgDependencies(
       workingMemoryStore: repositories.workingMemoryStore,
       retrievalPipeline: repositories.retrievalPipeline,
       createStreamWriter: repositories.createStreamWriter,
+      tracer,
     });
     const streamIngestionCoordinator = buildStreamIngestionCoordinator({
       enabled: options.liveExtraction ?? true,

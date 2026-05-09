@@ -59,6 +59,7 @@ function createFakeProcessRegistry(): Record<OfflineProcessName, OfflineProcess>
   const names: OfflineProcessName[] = [
     "consolidator",
     "reflector",
+    "semantic-extractor",
     "curator",
     "overseer",
     "ruminator",
@@ -286,6 +287,7 @@ describe("MaintenanceScheduler", () => {
     const processNames: OfflineProcessName[] = [
       "consolidator",
       "reflector",
+      "semantic-extractor",
       "curator",
       "overseer",
       "ruminator",

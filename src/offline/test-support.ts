@@ -291,6 +291,10 @@ export function createTestConfig(
         ...DEFAULT_CONFIG.offline.beliefReviser,
         ...overrides.offline?.beliefReviser,
       },
+      semanticExtractor: {
+        ...DEFAULT_CONFIG.offline.semanticExtractor,
+        ...overrides.offline?.semanticExtractor,
+      },
     },
     maintenance: {
       ...DEFAULT_CONFIG.maintenance,
@@ -391,6 +395,7 @@ export async function createOfflineTestHarness(
     embeddingDimensions?: number;
     configOverrides?: DeepPartial<Config>;
     reviewOpenQuestionExtractor?: ReviewOpenQuestionExtractorLike | null;
+    tracer?: import("../cognition/tracing/tracer.js").TurnTracer;
   } = {},
 ): Promise<OfflineTestHarness> {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -562,6 +567,7 @@ export async function createOfflineTestHarness(
     commitmentRepository,
     identityService,
     identityEventRepository,
+    tracer: options.tracer,
     onEnqueue: (item) =>
       enqueueOpenQuestionForReview(identityService, item, {
         extractor: options.reviewOpenQuestionExtractor ?? null,
@@ -710,6 +716,7 @@ export async function createOfflineTestHarness(
       auditLog,
       streamWriter,
       embeddingClient,
+      tracer: options.tracer,
       llm: {
         cognition: llmClient,
         background: llmClient,
@@ -719,6 +726,7 @@ export async function createOfflineTestHarness(
       semanticNodeRepository,
       semanticEdgeRepository,
       semanticBeliefDependencyRepository,
+      semanticReviewService: undefined,
       reviewQueueRepository,
       identityService,
       identityEventRepository,

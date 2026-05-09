@@ -27,7 +27,9 @@ export {
   type ReviewQueueHandler,
   type ReviewQueueInsertInput,
   type ReviewQueueItem,
+  type ReviewResolveOptions,
   type ReviewResolution,
+  type ReviewResolutionSource,
   type ReviewResolutionInput,
   type ReviewTransactionScope,
 } from "./review-queue.js";
@@ -76,7 +78,11 @@ export {
   temporalDriftReviewRefsSchema,
   type TemporalDriftReviewRefs,
 } from "./review-handlers/temporal-drift.js";
-export { SemanticReviewService, type SemanticReviewServiceOptions } from "./review-service.js";
+export {
+  SemanticReviewService,
+  type SemanticReviewQueueOptions,
+  type SemanticReviewServiceOptions,
+} from "./review-service.js";
 export {
   SemanticBeliefDependencyRepository,
   semanticBeliefDependencyInputSchema,

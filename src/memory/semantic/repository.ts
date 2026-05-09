@@ -1198,7 +1198,10 @@ export class SemanticEdgeRepository {
     this.db.transaction(write)();
   }
 
-  addEdge(input: SemanticEdgeInsertInput): SemanticEdge {
+  addEdge(
+    input: SemanticEdgeInsertInput,
+    options: { enqueueReview?: (input: ReviewQueueInsertInput) => unknown } = {},
+  ): SemanticEdge {
     const now = this.clock.now();
     const edge = semanticEdgeSchema.parse({
       ...input,
@@ -1235,12 +1238,14 @@ export class SemanticEdgeRepository {
 
     this.insertEdgeWithDependencies(edge);
 
-    if (edge.relation === "contradicts" && this.options.enqueueReview !== undefined) {
+    const enqueueReview = options.enqueueReview ?? this.options.enqueueReview;
+
+    if (edge.relation === "contradicts" && enqueueReview !== undefined) {
       const conflictsWithSupportChain =
         this.hasSupportPath(edge.from_node_id, edge.to_node_id) ||
         this.hasSupportPath(edge.to_node_id, edge.from_node_id);
 
-      this.options.enqueueReview({
+      enqueueReview({
         kind: "contradiction",
         refs: {
           node_ids: [edge.from_node_id, edge.to_node_id],
@@ -1376,7 +1381,19 @@ export class SemanticEdgeRepository {
   }
 
   delete(id: SemanticEdgeId): boolean {
-    const result = this.db.prepare("DELETE FROM semantic_edges WHERE id = ?").run(id);
+    const remove = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+            DELETE FROM semantic_belief_dependencies
+            WHERE source_edge_id = ?
+               OR (target_type = 'semantic_edge' AND target_id = ?)
+          `,
+        )
+        .run(id, id);
+      return this.db.prepare("DELETE FROM semantic_edges WHERE id = ?").run(id);
+    });
+    const result = remove();
     return result.changes > 0;
   }
 

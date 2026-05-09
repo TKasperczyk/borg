@@ -1,6 +1,7 @@
 // Wires Borg's offline maintenance processes into the maintenance orchestrator.
 
 import type { Config } from "../config/index.js";
+import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
@@ -21,6 +22,7 @@ import type {
   SemanticBeliefDependencyRepository,
   SemanticEdgeRepository,
   SemanticNodeRepository,
+  SemanticReviewService,
 } from "../memory/semantic/index.js";
 import { createSkillSplitReviewQueueHandler } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
@@ -36,6 +38,7 @@ import {
   ReflectorProcess,
   ReverserRegistry,
   RuminatorProcess,
+  SemanticExtractorProcess,
   SelfNarratorProcess,
   createSkillSplitReviewHandler,
   type OfflineProcess,
@@ -63,6 +66,7 @@ export type BuildOfflineSetupOptions = {
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
   semanticBeliefDependencyRepository: SemanticBeliefDependencyRepository;
+  semanticReviewService?: SemanticReviewService;
   reviewQueueRepository: ReviewQueueRepository;
   identityService: IdentityService;
   valuesRepository: ValuesRepository;
@@ -80,6 +84,7 @@ export type BuildOfflineSetupOptions = {
   workingMemoryStore?: WorkingMemoryStore;
   retrievalPipeline: RetrievalPipeline;
   createStreamWriter: BorgStreamWriterFactory;
+  tracer?: TurnTracer;
 };
 
 export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflineSetup {
@@ -98,6 +103,12 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       semanticNodeRepository: options.semanticNodeRepository,
       semanticEdgeRepository: options.semanticEdgeRepository,
       reviewQueueRepository: options.reviewQueueRepository,
+      registry: reverserRegistry,
+      clock: options.clock,
+    }),
+    "semantic-extractor": new SemanticExtractorProcess({
+      semanticNodeRepository: options.semanticNodeRepository,
+      semanticEdgeRepository: options.semanticEdgeRepository,
       registry: reverserRegistry,
       clock: options.clock,
     }),
@@ -157,6 +168,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       config: options.config,
       clock: options.clock,
       embeddingClient: options.embeddingClient,
+      tracer: options.tracer,
       llm: {
         cognition: options.lazyLlmClient,
         background: options.lazyLlmClient,
@@ -166,6 +178,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       semanticNodeRepository: options.semanticNodeRepository,
       semanticEdgeRepository: options.semanticEdgeRepository,
       semanticBeliefDependencyRepository: options.semanticBeliefDependencyRepository,
+      semanticReviewService: options.semanticReviewService,
       reviewQueueRepository: options.reviewQueueRepository,
       identityService: options.identityService,
       valuesRepository: options.valuesRepository,

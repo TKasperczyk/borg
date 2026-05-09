@@ -220,10 +220,18 @@ async function autoAcceptNewInsightReviews(transport: BorgTransport, turn: numbe
 
   for (const review of reviews) {
     try {
-      await borg.review.resolve(review.id, {
-        decision: "accept",
-        reason: "auto-accept (long-horizon harness)",
-      });
+      await borg.review.resolve(
+        review.id,
+        {
+          decision: "accept",
+          reason: "auto-accept (long-horizon harness)",
+        },
+        {
+          source: "auto",
+          sourceProcess: "reflector",
+          traceTurnId: `simulator_maintenance_${turn}_review`,
+        },
+      );
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn(
@@ -275,6 +283,7 @@ async function runMaintenanceTick(
   transport: BorgTransport,
   turn: number,
   cadence: MaintenanceCadence,
+  options: { final?: boolean } = {},
 ): Promise<void> {
   // Sprint 8d.4: capture pre/post snapshots so per-tick deltas surface in
   // the trace. Per-turn metrics already reflect post-maintenance state
@@ -307,27 +316,35 @@ async function runMaintenanceTick(
   if (before !== null) {
     try {
       const after = await captureMaintenanceBandSnapshot(transport);
-      appendJsonlLine(
-        transport.tracePath,
-        `${JSON.stringify({
-          ts: Date.now(),
-          wallMs: performance.now(),
-          turnId: `simulator_maintenance_${turn}_${cadence}`,
-          event: "maintenance_snapshot",
-          artifact: "simulator",
-          turn_counter: turn,
-          cadence,
-          before,
-          after,
-          delta: {
-            episode_count: after.episode_count - before.episode_count,
-            semantic_node_count: after.semantic_node_count - before.semantic_node_count,
-            semantic_edge_count: after.semantic_edge_count - before.semantic_edge_count,
-            open_question_count: after.open_question_count - before.open_question_count,
-            active_goal_count: after.active_goal_count - before.active_goal_count,
-          },
-        })}\n`,
-      );
+      const snapshot = {
+        ts: Date.now(),
+        wallMs: performance.now(),
+        turnId: `simulator_maintenance_${turn}_${cadence}`,
+        event: "maintenance_snapshot",
+        artifact: "simulator",
+        turn_counter: turn,
+        cadence,
+        before,
+        after,
+        delta: {
+          episode_count: after.episode_count - before.episode_count,
+          semantic_node_count: after.semantic_node_count - before.semantic_node_count,
+          semantic_edge_count: after.semantic_edge_count - before.semantic_edge_count,
+          open_question_count: after.open_question_count - before.open_question_count,
+          active_goal_count: after.active_goal_count - before.active_goal_count,
+        },
+      };
+      appendJsonlLine(transport.tracePath, `${JSON.stringify(snapshot)}\n`);
+
+      if (options.final === true) {
+        appendJsonlLine(
+          transport.tracePath,
+          `${JSON.stringify({
+            ...snapshot,
+            event: "maintenance_snapshot_finalized",
+          })}\n`,
+        );
+      }
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn(
@@ -601,11 +618,15 @@ export class SimulatorRunner {
         let heavyMaintenanceRan = false;
 
         if (turn % maintenanceEvery === 0) {
-          await runMaintenanceTick(transport, turn, "light");
+          await runMaintenanceTick(transport, turn, "light", {
+            final: turn === this.options.totalTurns,
+          });
         }
 
         if (overseerDue) {
-          await runMaintenanceTick(transport, turn, "heavy");
+          await runMaintenanceTick(transport, turn, "heavy", {
+            final: turn === this.options.totalTurns,
+          });
           heavyMaintenanceRan = true;
           overseerCheckpoints.push(
             await overseerRunner({
@@ -648,7 +669,9 @@ export class SimulatorRunner {
           }
 
           if (!heavyMaintenanceRan) {
-            await runMaintenanceTick(transport, turn, "heavy");
+            await runMaintenanceTick(transport, turn, "heavy", {
+              final: turn === this.options.totalTurns,
+            });
             heavyMaintenanceRan = true;
           }
 

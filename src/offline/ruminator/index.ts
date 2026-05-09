@@ -182,6 +182,28 @@ function buildReflectionWeights(ctx: OfflineContext) {
   });
 }
 
+function emitOpenQuestionResolutionAttempt(
+  ctx: OfflineContext,
+  input: {
+    oqId: OpenQuestion["id"];
+    sourcePath: "offline_ruminator" | "retrieval_evidence_match";
+    decision: string;
+    decisionReason: string;
+  },
+): void {
+  if (ctx.tracer?.enabled !== true) {
+    return;
+  }
+
+  ctx.tracer.emit("open_question_resolution_attempt", {
+    turnId: ctx.runId,
+    oq_id: input.oqId,
+    source_path: input.sourcePath,
+    decision: input.decision,
+    decision_reason: input.decisionReason,
+  });
+}
+
 async function planResolution(
   ctx: OfflineContext,
   llmClient: LLMClient,
@@ -204,6 +226,12 @@ async function planResolution(
     isEpisodeInGlobalIdentityScope(result.episode, selfAudienceEntityId),
   );
   if (retrieval.confidence.overall < ctx.config.offline.ruminator.resolveConfidenceThreshold) {
+    emitOpenQuestionResolutionAttempt(ctx, {
+      oqId: question.id,
+      sourcePath: "retrieval_evidence_match",
+      decision: "rejected",
+      decisionReason: "confidence_below_threshold",
+    });
     return null;
   }
 
@@ -218,8 +246,21 @@ async function planResolution(
     )[0];
 
   if (strongEvidence === undefined) {
+    emitOpenQuestionResolutionAttempt(ctx, {
+      oqId: question.id,
+      sourcePath: "retrieval_evidence_match",
+      decision: "rejected",
+      decisionReason: "no_new_global_identity_evidence",
+    });
     return null;
   }
+
+  emitOpenQuestionResolutionAttempt(ctx, {
+    oqId: question.id,
+    sourcePath: "retrieval_evidence_match",
+    decision: "matched",
+    decisionReason: "confidence_and_fresh_evidence",
+  });
 
   const evidenceBlock = globalIdentityEpisodes
     .slice(0, 3)
@@ -268,6 +309,13 @@ async function planResolution(
           },
           created_at: ctx.clock.now(),
         });
+
+  emitOpenQuestionResolutionAttempt(ctx, {
+    oqId: question.id,
+    sourcePath: "offline_ruminator",
+    decision: "planned_resolution",
+    decisionReason: "llm_resolution_candidate",
+  });
 
   return {
     action: "resolve",
@@ -484,6 +532,19 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               throughReview: true,
             },
           );
+          emitOpenQuestionResolutionAttempt(ctx, {
+            oqId: item.question_id,
+            sourcePath: "offline_ruminator",
+            decision: "applied",
+            decisionReason: "through_review",
+          });
+        } else {
+          emitOpenQuestionResolutionAttempt(ctx, {
+            oqId: item.question_id,
+            sourcePath: "offline_ruminator",
+            decision: "already_applied",
+            decisionReason: "matching_resolution_present",
+          });
         }
 
         ctx.auditLog.record({

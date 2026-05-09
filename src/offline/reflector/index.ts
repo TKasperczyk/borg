@@ -620,6 +620,12 @@ export class ReflectorProcess implements OfflineProcess {
             }
 
             const existing = eligibleByLabel[0] ?? eligibleByVector[0];
+            const dedupeDecision =
+              existing === undefined
+                ? "none"
+                : eligibleByLabel.length > 0
+                  ? "exact_label_or_alias"
+                  : "vector_similarity";
             const timestamp = ctx.clock.now();
             const target =
               existing === undefined
@@ -676,6 +682,15 @@ export class ReflectorProcess implements OfflineProcess {
                     : `Existing insight revisited from ${cluster.key}`,
               },
             });
+            if (ctx.tracer?.enabled === true) {
+              ctx.tracer.emit("reflector_candidate_emitted", {
+                turnId: ctx.runId,
+                kind: "new_insight",
+                dedupe_decision: dedupeDecision,
+                support_count: cluster.episodes.length,
+                persistence_decision: "review_queue_enqueue_planned",
+              });
+            }
           } catch (error) {
             if (error instanceof BudgetExceededError) {
               throw error;
@@ -720,6 +735,11 @@ export class ReflectorProcess implements OfflineProcess {
       tokens_used: parsed.tokens_used,
       errors: parsed.errors,
       budget_exhausted: parsed.budget_exhausted,
+      candidate_stats: {
+        proposed: parsed.items.length + parsed.errors.length,
+        accepted: 0,
+        rejected: parsed.errors.length,
+      },
     };
   }
 
@@ -769,6 +789,8 @@ export class ReflectorProcess implements OfflineProcess {
           },
         },
         reason: item.review.reason,
+        sourceProcess: this.name,
+        traceTurnId: ctx.runId,
       });
 
       ctx.auditLog.record({
@@ -797,6 +819,11 @@ export class ReflectorProcess implements OfflineProcess {
       tokens_used: plan.tokens_used,
       errors: plan.errors,
       budget_exhausted: plan.budget_exhausted,
+      candidate_stats: {
+        proposed: plan.items.length + plan.errors.length,
+        accepted: changes.length,
+        rejected: plan.errors.length,
+      },
     };
   }
 

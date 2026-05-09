@@ -22,6 +22,7 @@ import type {
 import type {
   ReviewKind,
   ReviewQueueItem,
+  ReviewResolveOptions,
   ReviewResolutionInput,
   SemanticEdgeRepository,
   SemanticGraph,
@@ -348,7 +349,11 @@ export type BorgFacades = {
   correction: BorgCorrectionFacade;
   review: {
     list: (options?: { kind?: ReviewKind; openOnly?: boolean }) => ReviewQueueItem[];
-    resolve: (id: number, decision: ReviewResolutionInput) => Promise<ReviewQueueItem | null>;
+    resolve: (
+      id: number,
+      decision: ReviewResolutionInput,
+      options?: ReviewResolveOptions,
+    ) => Promise<ReviewQueueItem | null>;
   };
   audit: {
     list: (options?: {

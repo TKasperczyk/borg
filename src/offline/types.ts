@@ -1,4 +1,5 @@
 import type { Config } from "../config/index.js";
+import type { TurnTracer } from "../cognition/tracing/tracer.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
@@ -19,6 +20,7 @@ import type {
   ReviewQueueRepository,
   SemanticEdgeRepository,
   SemanticNodeRepository,
+  SemanticReviewService,
 } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
@@ -32,6 +34,7 @@ import type { AuditLog } from "./audit-log.js";
 export const OFFLINE_PROCESS_NAMES = [
   "consolidator",
   "reflector",
+  "semantic-extractor",
   "curator",
   "overseer",
   "ruminator",
@@ -62,6 +65,11 @@ export type OfflineResult = {
   tokens_used: number;
   errors: OfflineProcessError[];
   budget_exhausted: boolean;
+  candidate_stats?: {
+    proposed: number;
+    accepted: number;
+    rejected: number;
+  };
 };
 
 export type OfflineProcessPlan = {
@@ -78,6 +86,7 @@ export type OfflineContext = {
   auditLog: AuditLog;
   streamWriter: StreamWriter;
   embeddingClient: EmbeddingClient;
+  tracer?: TurnTracer;
   llm: {
     cognition: LLMClient;
     background: LLMClient;
@@ -87,6 +96,7 @@ export type OfflineContext = {
   semanticNodeRepository: SemanticNodeRepository;
   semanticEdgeRepository: SemanticEdgeRepository;
   semanticBeliefDependencyRepository: SemanticBeliefDependencyRepository;
+  semanticReviewService?: SemanticReviewService;
   reviewQueueRepository: ReviewQueueRepository;
   identityService: IdentityService;
   valuesRepository: ValuesRepository;

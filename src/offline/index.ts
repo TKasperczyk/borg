@@ -35,6 +35,12 @@ export {
 } from "./plan-file.js";
 export { ReflectorProcess, type ReflectorProcessOptions } from "./reflector/index.js";
 export {
+  SemanticExtractorProcess,
+  semanticExtractorProcessPlanSchema,
+  type SemanticExtractorProcessOptions,
+  type SemanticExtractorProcessPlan,
+} from "./semantic-extractor/index.js";
+export {
   ProceduralSynthesizerProcess,
   proceduralSynthesizerPlanSchema,
   type ProceduralSynthesizerPlan,

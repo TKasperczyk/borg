@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
+import type { TurnTracer } from "../../cognition/tracing/tracer.js";
 import {
   type LLMClient,
   type LLMCompleteResult,
@@ -14,6 +15,7 @@ import { episodeAccessScopeKey } from "../episodic/access.js";
 import type { Episode, EpisodicRepository } from "../episodic/index.js";
 import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import type { SemanticReviewService } from "./review-service.js";
+import type { ReviewQueueInsertInput } from "./review-queue.js";
 import { canonicalizeDomain } from "./domain.js";
 import { semanticNodeKindSchema, semanticRelationSchema, type SemanticNode } from "./types.js";
 
@@ -62,7 +64,10 @@ export type SemanticExtractorOptions = {
   llmClient: LLMClient;
   model: string;
   semanticReviewService?: Pick<SemanticReviewService, "queueDuplicateReview">;
+  reviewEnqueue?: (input: ReviewQueueInsertInput) => unknown;
   clock?: Clock;
+  tracer?: TurnTracer;
+  traceTurnId?: string;
   dedupThreshold?: number;
   confidenceCeiling?: number;
 };
@@ -74,6 +79,13 @@ export type ExtractSemanticResult = {
   insertedEdges: number;
   skippedEdges: number;
 };
+
+type SemanticInsertSkipReason =
+  | "dedupe_match"
+  | "invalid_endpoint"
+  | "validity_window_conflict"
+  | "episode_archived_post_plan"
+  | "other";
 
 function buildPrompt(episodes: readonly Episode[]): string {
   return [
@@ -163,6 +175,45 @@ export class SemanticExtractor {
     this.confidenceCeiling = options.confidenceCeiling ?? DEFAULT_CONFIDENCE_CEILING;
   }
 
+  private traceInsertSkipped(input: {
+    kind: "node" | "edge";
+    reason: SemanticInsertSkipReason;
+  }): void {
+    if (this.options.tracer?.enabled !== true) {
+      return;
+    }
+
+    this.options.tracer.emit("semantic_insert_skipped", {
+      turnId: this.options.traceTurnId ?? "semantic_extractor",
+      kind: input.kind,
+      reason: input.reason,
+    });
+  }
+
+  private traceExtractorInvoked(input: {
+    inputEpisodeCount: number;
+    parsedNodeCount: number;
+    parsedEdgeCount: number;
+    acceptedNodeCount: number;
+    acceptedEdgeCount: number;
+    skipReasons: readonly string[];
+  }): void {
+    if (this.options.tracer?.enabled !== true) {
+      return;
+    }
+
+    this.options.tracer.emit("semantic_extractor_invoked", {
+      turnId: this.options.traceTurnId ?? "semantic_extractor",
+      input_episode_count: input.inputEpisodeCount,
+      prompt_label: "semantic-extraction",
+      parsed_node_count: input.parsedNodeCount,
+      parsed_edge_count: input.parsedEdgeCount,
+      accepted_node_count: input.acceptedNodeCount,
+      accepted_edge_count: input.acceptedEdgeCount,
+      skip_reasons: [...input.skipReasons],
+    });
+  }
+
   private validateEpisodeRefs(
     candidateIds: readonly string[],
     episodeIds: ReadonlySet<string>,
@@ -181,7 +232,11 @@ export class SemanticExtractor {
     candidate: ExtractorNode,
     allowedEpisodeIds: ReadonlySet<string>,
     episodeById: ReadonlyMap<Episode["id"], Episode>,
-  ): Promise<{ status: "inserted" | "updated" | "skipped"; node?: SemanticNode }> {
+  ): Promise<{
+    status: "inserted" | "updated" | "skipped";
+    node?: SemanticNode;
+    reason?: SemanticInsertSkipReason;
+  }> {
     const sourceEpisodeIds = this.validateEpisodeRefs(
       candidate.source_episode_ids,
       allowedEpisodeIds,
@@ -300,15 +355,18 @@ export class SemanticExtractor {
       return updated === null
         ? {
             status: "skipped",
+            reason: "other",
           }
         : {
             status: "updated",
             node: updated,
+            reason: "dedupe_match",
           };
     } catch (error) {
       if (error instanceof StorageError || error instanceof SemanticError) {
         return {
           status: "skipped",
+          reason: "other",
         };
       }
 
@@ -378,6 +436,18 @@ export class SemanticExtractor {
     return undefined;
   }
 
+  private edgeSkipReason(error: SemanticError): SemanticInsertSkipReason {
+    if (error.code === "SEMANTIC_EDGE_DUPLICATE") {
+      return "dedupe_match";
+    }
+
+    if (error.code === "SEMANTIC_EDGE_DANGLING") {
+      return "invalid_endpoint";
+    }
+
+    return "other";
+  }
+
   async extractFromEpisodes(episodes: readonly Episode[]): Promise<ExtractSemanticResult> {
     if (episodes.length === 0) {
       return {
@@ -389,132 +459,221 @@ export class SemanticExtractor {
       };
     }
 
-    const result = await this.options.llmClient.complete({
-      model: this.options.model,
-      system: "Extract semantic nodes and edges grounded only in the provided episodes.",
-      messages: [
-        {
-          role: "user",
-          content: buildPrompt(episodes),
-        },
-      ],
-      tools: [EXTRACT_SEMANTIC_TOOL],
-      tool_choice: { type: "tool", name: EXTRACT_SEMANTIC_TOOL_NAME },
-      max_tokens: 12_000,
-      budget: "semantic-extraction",
-    });
-    const parsed = parseResponse(result);
+    let result: LLMCompleteResult;
+
+    try {
+      result = await this.options.llmClient.complete({
+        model: this.options.model,
+        system: "Extract semantic nodes and edges grounded only in the provided episodes.",
+        messages: [
+          {
+            role: "user",
+            content: buildPrompt(episodes),
+          },
+        ],
+        tools: [EXTRACT_SEMANTIC_TOOL],
+        tool_choice: { type: "tool", name: EXTRACT_SEMANTIC_TOOL_NAME },
+        max_tokens: 12_000,
+        budget: "semantic-extraction",
+      });
+    } catch (error) {
+      this.traceExtractorInvoked({
+        inputEpisodeCount: episodes.length,
+        parsedNodeCount: 0,
+        parsedEdgeCount: 0,
+        acceptedNodeCount: 0,
+        acceptedEdgeCount: 0,
+        skipReasons: ["llm_failed"],
+      });
+      throw error;
+    }
+    let parsed: ReturnType<typeof parseResponse>;
+
+    try {
+      parsed = parseResponse(result);
+    } catch (error) {
+      this.traceExtractorInvoked({
+        inputEpisodeCount: episodes.length,
+        parsedNodeCount: 0,
+        parsedEdgeCount: 0,
+        acceptedNodeCount: 0,
+        acceptedEdgeCount: 0,
+        skipReasons: ["parse_failed"],
+      });
+      throw error;
+    }
+
     const allowedEpisodeIds = new Set(episodes.map((episode) => episode.id));
     const episodeById = new Map(episodes.map((episode) => [episode.id, episode]));
     const existingNodes = new Map<string, SemanticNode>();
     const batchNodes = new Map<string, SemanticNode>();
+    const skipReasons = new Set<string>();
     let insertedNodes = 0;
     let updatedNodes = 0;
     let skippedNodes = 0;
     let insertedEdges = 0;
     let skippedEdges = 0;
 
-    for (const candidate of parsed.nodes) {
-      const outcome = await this.upsertNode(candidate, allowedEpisodeIds, episodeById);
+    try {
+      for (const candidate of parsed.nodes) {
+        const outcome = await this.upsertNode(candidate, allowedEpisodeIds, episodeById);
 
-      if (outcome.status === "inserted") {
-        insertedNodes += 1;
-      } else if (outcome.status === "updated") {
-        updatedNodes += 1;
-      } else {
-        skippedNodes += 1;
-      }
-
-      if (outcome.node !== undefined) {
-        const key = outcome.node.label.toLowerCase();
-        batchNodes.set(key, outcome.node);
-
-        for (const alias of outcome.node.aliases) {
-          batchNodes.set(alias.toLowerCase(), outcome.node);
-        }
-      }
-    }
-
-    for (const candidate of parsed.nodes) {
-      const matches = await this.options.nodeRepository.findByExactLabelOrAlias(
-        candidate.label,
-        3,
-        {
-          includeArchived: true,
-        },
-      );
-
-      for (const match of matches) {
-        if (!existingNodes.has(match.label.toLowerCase())) {
-          existingNodes.set(match.label.toLowerCase(), match);
+        if (outcome.status === "inserted") {
+          insertedNodes += 1;
+        } else if (outcome.status === "updated") {
+          updatedNodes += 1;
+          if (outcome.reason !== undefined) {
+            skipReasons.add(outcome.reason);
+            this.traceInsertSkipped({
+              kind: "node",
+              reason: outcome.reason,
+            });
+          }
+        } else {
+          skippedNodes += 1;
+          const reason = outcome.reason ?? "other";
+          skipReasons.add(reason);
+          this.traceInsertSkipped({
+            kind: "node",
+            reason,
+          });
         }
 
-        for (const alias of match.aliases) {
-          if (!existingNodes.has(alias.toLowerCase())) {
-            existingNodes.set(alias.toLowerCase(), match);
+        if (outcome.node !== undefined) {
+          const key = outcome.node.label.toLowerCase();
+          batchNodes.set(key, outcome.node);
+
+          for (const alias of outcome.node.aliases) {
+            batchNodes.set(alias.toLowerCase(), outcome.node);
           }
         }
       }
-    }
 
-    // Insert/update nodes before edges so endpoint validation never sees
-    // dangling in-batch references.
-    for (const candidate of parsed.edges) {
-      const evidenceEpisodeIds = this.validateEpisodeRefs(
-        candidate.evidence_episode_ids,
-        allowedEpisodeIds,
-        "evidence_episode_ids",
-      );
-      const evidenceEpisodes = evidenceEpisodeIds
-        .map((episodeId) => episodeById.get(episodeId))
-        .filter((episode): episode is Episode => episode !== undefined);
-      const evidenceScopeKeys = resolveEpisodeScopeKeys(evidenceEpisodes);
-      const fromNode = await this.resolveEdgeNode(
-        candidate.from_label,
-        batchNodes,
-        existingNodes,
-        evidenceScopeKeys,
-      );
-      const toNode = await this.resolveEdgeNode(
-        candidate.to_label,
-        batchNodes,
-        existingNodes,
-        evidenceScopeKeys,
-      );
+      for (const candidate of parsed.nodes) {
+        const matches = await this.options.nodeRepository.findByExactLabelOrAlias(
+          candidate.label,
+          3,
+          {
+            includeArchived: true,
+          },
+        );
 
-      if (fromNode === undefined || toNode === undefined) {
-        throw new SemanticError("Semantic extractor referenced an unknown edge node", {
-          code: "SEMANTIC_EXTRACTOR_INVALID_REF",
-        });
+        for (const match of matches) {
+          if (!existingNodes.has(match.label.toLowerCase())) {
+            existingNodes.set(match.label.toLowerCase(), match);
+          }
+
+          for (const alias of match.aliases) {
+            if (!existingNodes.has(alias.toLowerCase())) {
+              existingNodes.set(alias.toLowerCase(), match);
+            }
+          }
+        }
       }
 
-      if (fromNode.id === toNode.id) {
-        skippedEdges += 1;
-        continue;
-      }
+      // Insert/update nodes before edges so endpoint validation never sees
+      // dangling in-batch references.
+      for (const candidate of parsed.edges) {
+        const evidenceEpisodeIds = this.validateEpisodeRefs(
+          candidate.evidence_episode_ids,
+          allowedEpisodeIds,
+          "evidence_episode_ids",
+        );
+        const evidenceEpisodes = evidenceEpisodeIds
+          .map((episodeId) => episodeById.get(episodeId))
+          .filter((episode): episode is Episode => episode !== undefined);
+        const evidenceScopeKeys = resolveEpisodeScopeKeys(evidenceEpisodes);
+        const fromNode = await this.resolveEdgeNode(
+          candidate.from_label,
+          batchNodes,
+          existingNodes,
+          evidenceScopeKeys,
+        );
+        const toNode = await this.resolveEdgeNode(
+          candidate.to_label,
+          batchNodes,
+          existingNodes,
+          evidenceScopeKeys,
+        );
 
-      try {
-        this.options.edgeRepository.addEdge({
-          from_node_id: fromNode.id,
-          to_node_id: toNode.id,
-          relation: candidate.relation,
-          confidence: Math.min(candidate.confidence, this.confidenceCeiling),
-          evidence_episode_ids: evidenceEpisodeIds,
-          created_at: this.clock.now(),
-          last_verified_at: this.clock.now(),
-          ...(candidate.valid_from_ts === null ? {} : { valid_from: candidate.valid_from_ts }),
-          ...(candidate.valid_to_ts === null ? {} : { valid_to: candidate.valid_to_ts }),
-        });
-        insertedEdges += 1;
-      } catch (error) {
-        if (error instanceof SemanticError) {
+        if (fromNode === undefined || toNode === undefined) {
+          skipReasons.add("invalid_endpoint");
+          this.traceInsertSkipped({
+            kind: "edge",
+            reason: "invalid_endpoint",
+          });
+          throw new SemanticError("Semantic extractor referenced an unknown edge node", {
+            code: "SEMANTIC_EXTRACTOR_INVALID_REF",
+          });
+        }
+
+        if (fromNode.id === toNode.id) {
           skippedEdges += 1;
+          skipReasons.add("invalid_endpoint");
+          this.traceInsertSkipped({
+            kind: "edge",
+            reason: "invalid_endpoint",
+          });
           continue;
         }
 
-        throw error;
+        try {
+          this.options.edgeRepository.addEdge(
+            {
+              from_node_id: fromNode.id,
+              to_node_id: toNode.id,
+              relation: candidate.relation,
+              confidence: Math.min(candidate.confidence, this.confidenceCeiling),
+              evidence_episode_ids: evidenceEpisodeIds,
+              created_at: this.clock.now(),
+              last_verified_at: this.clock.now(),
+              ...(candidate.valid_from_ts === null ? {} : { valid_from: candidate.valid_from_ts }),
+              ...(candidate.valid_to_ts === null ? {} : { valid_to: candidate.valid_to_ts }),
+            },
+            this.options.reviewEnqueue === undefined
+              ? undefined
+              : { enqueueReview: this.options.reviewEnqueue },
+          );
+          insertedEdges += 1;
+        } catch (error) {
+          if (error instanceof SemanticError) {
+            const reason = this.edgeSkipReason(error);
+            skippedEdges += 1;
+            skipReasons.add(reason);
+            this.traceInsertSkipped({
+              kind: "edge",
+              reason,
+            });
+            continue;
+          }
+
+          throw error;
+        }
       }
+    } catch (error) {
+      if (error instanceof SemanticError && error.code === "SEMANTIC_EXTRACTOR_INVALID_REF") {
+        skipReasons.add("invalid_ref");
+      }
+
+      this.traceExtractorInvoked({
+        inputEpisodeCount: episodes.length,
+        parsedNodeCount: parsed.nodes.length,
+        parsedEdgeCount: parsed.edges.length,
+        acceptedNodeCount: insertedNodes + updatedNodes,
+        acceptedEdgeCount: insertedEdges,
+        skipReasons: [...skipReasons],
+      });
+      throw error;
     }
+
+    this.traceExtractorInvoked({
+      inputEpisodeCount: episodes.length,
+      parsedNodeCount: parsed.nodes.length,
+      parsedEdgeCount: parsed.edges.length,
+      acceptedNodeCount: insertedNodes + updatedNodes,
+      acceptedEdgeCount: insertedEdges,
+      skipReasons: [...skipReasons],
+    });
 
     return {
       insertedNodes,
