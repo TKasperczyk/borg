@@ -67,12 +67,15 @@ const TURN_PLAN_TOOL: LLMToolDefinition = {
   description:
     "Emit a structured plan for this reflective/high-stakes turn before the final response. The plan is passed back to you in the final-response call so you can execute against it. List the episode_ids from borg_retrieved_evidence that you actually used as evidence; empty if none were drawn on. Emit follow-up intents only for concrete future actions worth carrying in working memory.",
   inputSchema: toToolInputSchema(turnPlanSchema),
-  // Sprint 8d.6.5: the planner tool schema is stable across turns. Cache
-  // it for 1 hour so repeated planner invocations within a session don't
-  // re-prefill the schema portion of the prompt. The planner's system
-  // prompt itself is mostly dynamic (baseSystemPrompt + voice anchors),
-  // so the tool schema is the only meaningful cache target here.
-  cache_control: { type: "ephemeral", ttl: "1h" },
+  // Sprint 8d.6.5 placed cache_control here, but v39 traces (codex
+  // 1b0384c3) showed it was a no-op: TURN_PLAN_TOOL JSON is ~2.2KB,
+  // well under Opus 4.7's 4096-token minimum cacheable prefix. The
+  // single 6505-token cache_create observed on call 1 was actually
+  // the retry path's per-turn prefix, which never gets reused because
+  // the planner's baseSystemPrompt is fully dynamic. Removing the
+  // marker eliminates the wasted 1.25x cache write on retries. The
+  // planner has no stable >=4096-token prefix to cache today, so it
+  // doesn't get caching until that changes.
 };
 
 const PLANNER_RETRY_HINT =
