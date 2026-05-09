@@ -423,7 +423,9 @@ describe("deliberator", () => {
     });
     expect(llm.requests[0]?.tools).toBeUndefined();
     expect(llm.requests[0]?.output_config?.format.type).toBe("json_schema");
-    const system = llm.requests[0]?.system as string;
+    // Sprint 8d.6.5: system is now an array of blocks ([stable, dynamic]).
+    const systemBlocks = llm.requests[0]?.system as readonly { text: string }[];
+    const system = systemBlocks.map((block) => block.text).join("\n\n");
     expect(system).toContain("Return exactly one structured response matching the provided schema.");
     expect(system).toContain("<borg_evidence_ledger>");
     expect(system).toContain("id=current_user_message:strm_aaaaaaaaaaaaaaaa");
@@ -1361,9 +1363,10 @@ describe("deliberator", () => {
       expect(llm.requests[0]?.tool_choice).toEqual({ type: "tool", name: "EmitTurnPlan" });
       expect(llm.requests[1]?.tool_choice).toBeUndefined();
       expect(llm.requests[1]?.output_config?.format.type).toBe("json_schema");
-      expect(String(llm.requests[1]?.system)).toContain(
-        "Emission recommendation: no assistant message",
-      );
+      // Sprint 8d.6.5: system is an array of blocks for cache_control plumbing.
+      const finalizerSystemBlocks = llm.requests[1]?.system as readonly { text: string }[];
+      const finalizerSystem = finalizerSystemBlocks.map((block) => block.text).join("\n\n");
+      expect(finalizerSystem).toContain("Emission recommendation: no assistant message");
       expect(tracer.events.some((entry) => entry.event === "plan_extraction")).toBe(true);
       expect(tracer.events.some((entry) => entry.event === "manifest_finalizer_emitted")).toBe(
         true,

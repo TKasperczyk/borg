@@ -108,25 +108,37 @@ describe("manifest finalizer parser", () => {
       path: "system_1",
     });
 
-    expect(llm.requests[0]?.system).toContain(
-      "The claim manifest is the source contract for final_text.",
-    );
-    expect(llm.requests[0]?.system).toContain(
+    // Sprint 8d.6.5 split system into blocks: [stable_with_cache_control, dynamic].
+    const systemBlocks = llm.requests[0]?.system;
+    expect(Array.isArray(systemBlocks)).toBe(true);
+    if (!Array.isArray(systemBlocks)) {
+      throw new Error("system is not an array");
+    }
+    expect(systemBlocks).toHaveLength(2);
+    const stableBlock = systemBlocks[0];
+    const dynamicBlock = systemBlocks[1];
+    expect(stableBlock?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(dynamicBlock?.cache_control).toBeUndefined();
+
+    const stableText = stableBlock?.text ?? "";
+    expect(stableText).toContain("The claim manifest is the source contract for final_text.");
+    expect(stableText).toContain(
       "Do not hide factual or source-sensitive content under discourse_only, hedge, interpretation, or self_report.",
     );
-    expect(llm.requests[0]?.system).toContain(
+    expect(stableText).toContain(
       "Use self_report for first-person expression of interior states, identity reflection, voice, or boundary -- the model's own perspective.",
     );
-    expect(llm.requests[0]?.system).toContain("addresses_audience_by_name: true");
-    expect(llm.requests[0]?.system).toContain(
+    expect(stableText).toContain("addresses_audience_by_name: true");
+    expect(stableText).toContain(
       "When the entity is referenced by pronoun (she/he/they/it) or descriptive noun phrase",
     );
-    expect(llm.requests[0]?.system).toContain(
+    expect(stableText).toContain(
       "A manifest with too few claims is invalid even if the prose sounds good.",
     );
-    expect(llm.requests[0]?.system).toContain(
+    expect(stableText).toContain(
       "Return exactly one structured response matching the provided schema.",
     );
+    expect(dynamicBlock?.text).toContain("Base prompt.");
     expect(llm.requests[0]?.tools).toBeUndefined();
     expect(llm.requests[0]?.tool_choice).toBeUndefined();
     expect(llm.requests[0]?.output_config?.format.type).toBe("json_schema");

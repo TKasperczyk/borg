@@ -5,6 +5,7 @@ import {
   type LLMCompleteResult,
   type LLMMessage,
   type LLMOutputConfig,
+  type LLMSystemBlock,
 } from "../../llm/index.js";
 import type { EvidenceLedger } from "../evidence-ledger/index.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
@@ -169,19 +170,44 @@ function structuredOutputParseCauseMessage(error: LLMError): string {
   return error.cause === undefined ? error.message : errorMessage(error.cause);
 }
 
-function buildManifestSystemPrompt(options: RunManifestFinalizerOptions): string {
-  const sections =
+// Sprint 8d.6.5: split the system prompt into a stable cacheable prefix
+// and a dynamic suffix. The stable prefix is MANIFEST_FINALIZER_INSTRUCTIONS
+// alone (the manifest contract + per-kind required-fields enumeration),
+// which is identical across turns. Putting it first lets Anthropic cache
+// it; everything after the cache breakpoint is per-turn dynamic content
+// (baseSystemPrompt with retrieval/working state, evidence ledger, etc).
+//
+// Cache TTL is 1h because typical Borg sessions run longer than the
+// 5-minute default and we don't want the cache to evict between turns.
+//
+// Note on ordering: MANIFEST_FINALIZER_INSTRUCTIONS now appears BEFORE
+// baseSystemPrompt instead of after it. The model reads top-to-bottom
+// and the manifest contract's semantic meaning ("emit a manifest of
+// claims grounded in the evidence ledger you'll see below") is preserved.
+function buildManifestSystemBlocks(
+  options: RunManifestFinalizerOptions,
+): readonly LLMSystemBlock[] {
+  const dynamicSections =
     options.additionalPromptSections === undefined
-      ? [options.baseSystemPrompt, MANIFEST_FINALIZER_INSTRUCTIONS]
+      ? [options.baseSystemPrompt]
       : [
           options.baseSystemPrompt,
           ...options.additionalPromptSections.filter(
             (section): section is string => section !== null,
           ),
-          MANIFEST_FINALIZER_INSTRUCTIONS,
         ];
 
-  return sections.join("\n\n");
+  return [
+    {
+      type: "text",
+      text: MANIFEST_FINALIZER_INSTRUCTIONS,
+      cache_control: { type: "ephemeral", ttl: "1h" },
+    },
+    {
+      type: "text",
+      text: dynamicSections.join("\n\n"),
+    },
+  ];
 }
 
 function countCompletePromptChars(systemPrompt: string, messages: readonly LLMMessage[]): number {
@@ -364,7 +390,8 @@ export async function runManifestFinalizer(
     });
   }
 
-  const systemPrompt = buildManifestSystemPrompt(options);
+  const systemBlocks = buildManifestSystemBlocks(options);
+  const systemPromptForTrace = systemBlocks.map((block) => block.text).join("\n\n");
   const traceEnabled = options.tracer?.enabled === true && options.turnId !== undefined;
   const traceLabel = `${options.path}_manifest_finalizer`;
 
@@ -373,12 +400,12 @@ export async function runManifestFinalizer(
       turnId: options.turnId,
       label: traceLabel,
       model: options.model,
-      promptCharCount: countCompletePromptChars(systemPrompt, options.dialogueMessages),
+      promptCharCount: countCompletePromptChars(systemPromptForTrace, options.dialogueMessages),
       outputConfig: summarizeOutputConfig(MANIFEST_RESPONSE_OUTPUT_CONFIG),
       ...(options.tracer?.includePayloads
         ? {
             prompt: toTraceJsonValue({
-              system: systemPrompt,
+              system: systemBlocks,
               messages: options.dialogueMessages,
               output_config: MANIFEST_RESPONSE_OUTPUT_CONFIG,
             }),
@@ -392,7 +419,7 @@ export async function runManifestFinalizer(
   try {
     result = await options.llmClient.complete({
       model: options.model,
-      system: systemPrompt,
+      system: systemBlocks,
       messages: options.dialogueMessages,
       output_config: MANIFEST_RESPONSE_OUTPUT_CONFIG,
       max_tokens: options.maxTokens,
@@ -450,6 +477,12 @@ export async function runManifestFinalizer(
       input_tokens: result.input_tokens,
       output_tokens: result.output_tokens,
       stop_reason: result.stop_reason,
+      ...(result.cache_creation_input_tokens === undefined
+        ? {}
+        : { cache_creation_input_tokens: result.cache_creation_input_tokens }),
+      ...(result.cache_read_input_tokens === undefined
+        ? {}
+        : { cache_read_input_tokens: result.cache_read_input_tokens }),
     },
   };
 }

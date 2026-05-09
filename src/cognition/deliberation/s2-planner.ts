@@ -67,6 +67,12 @@ const TURN_PLAN_TOOL: LLMToolDefinition = {
   description:
     "Emit a structured plan for this reflective/high-stakes turn before the final response. The plan is passed back to you in the final-response call so you can execute against it. List the episode_ids from borg_retrieved_evidence that you actually used as evidence; empty if none were drawn on. Emit follow-up intents only for concrete future actions worth carrying in working memory.",
   inputSchema: toToolInputSchema(turnPlanSchema),
+  // Sprint 8d.6.5: the planner tool schema is stable across turns. Cache
+  // it for 1 hour so repeated planner invocations within a session don't
+  // re-prefill the schema portion of the prompt. The planner's system
+  // prompt itself is mostly dynamic (baseSystemPrompt + voice anchors),
+  // so the tool schema is the only meaningful cache target here.
+  cache_control: { type: "ephemeral", ttl: "1h" },
 };
 
 const PLANNER_RETRY_HINT =
