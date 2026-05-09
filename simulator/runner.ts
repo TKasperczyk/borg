@@ -56,6 +56,7 @@ export type SimulatorRunnerOptions = {
   maxSessions?: number;
   keep?: boolean;
   mock?: boolean;
+  includePayloads?: boolean;
   shadowPostGenGuards?: boolean;
   pipelineCDoublePrime?: boolean;
   env?: NodeJS.ProcessEnv;
@@ -79,7 +80,6 @@ export const PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES = {
   generation: {
     evidenceLedger: { enabled: true },
     manifestFinalizer: { enabled: true },
-    manifestValidator: { enabled: true },
     postGenerationGuards: {
       commitment: { mode: "shadow" },
       closurePressure: { mode: "enforce" },
@@ -247,9 +247,7 @@ function flattenGoalCount(nodes: ReadonlyArray<{ children?: ReadonlyArray<unknow
     count += 1;
     const children = node.children;
     if (children !== undefined && children.length > 0) {
-      count += flattenGoalCount(
-        children as ReadonlyArray<{ children?: ReadonlyArray<unknown> }>,
-      );
+      count += flattenGoalCount(children as ReadonlyArray<{ children?: ReadonlyArray<unknown> }>);
     }
   }
   return count;
@@ -366,7 +364,7 @@ export class SimulatorRunner {
     if (this.options.pipelineCDoublePrime === true) {
       // eslint-disable-next-line no-console
       console.warn(
-        "[simulator] Pipeline C″ active: manifest finalizer + validator on; closure-pressure enforce; commitment and relational guards shadow.",
+        "[simulator] Pipeline C″ active: emission-tool finalizer on; closure-pressure enforce; commitment and relational guards shadow.",
       );
     }
 
@@ -377,6 +375,7 @@ export class SimulatorRunner {
       keep: this.options.keep,
       mock: this.options.mock,
       maintenance: true,
+      includeTracePayloads: this.options.includePayloads ?? true,
       env: this.options.env,
       dataDir: this.options.dataDir,
       tracePath: this.options.tracePath,

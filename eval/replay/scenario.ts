@@ -1,18 +1,12 @@
 import type { Borg } from "../../src/index.js";
 import {
   FakeLLMClient,
-  type LLMCompleteOptions,
   type LLMCompleteResult,
-  type LLMConverseOptions,
   type PostGenerationGuardMode,
   type RelationalClaimGuardMode,
   type TurnResult,
 } from "../../src/index.js";
 import type { BorgDependencies } from "../../src/borg/types.js";
-import type {
-  EmitManifestResponse,
-  EvidenceRef,
-} from "../../src/cognition/deliberation/manifest-schema.js";
 import {
   CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
   type ClosureResponseAudit,
@@ -21,11 +15,8 @@ import {
   type RelationalClaimAuditClaim,
   type RelationalClaimKind,
 } from "../../src/cognition/generation/relational-guard.js";
-import type { EvidenceLedgerSourceType } from "../../src/cognition/evidence-ledger/index.js";
 import type { FrameAnomalyKind } from "../../src/cognition/frame-anomaly/index.js";
 import type { Clock } from "../../src/util/clock.js";
-
-export const CURRENT_USER_EVIDENCE_ID = "$current_user_message";
 
 export type ReplayPipelineId = "A" | "B" | "C" | "Cdoubleprime";
 
@@ -33,8 +24,7 @@ export type ReplayPipeline = {
   id: ReplayPipelineId;
   label: string;
   evidenceLedgerEnabled: boolean;
-  manifestFinalizerEnabled: boolean;
-  manifestValidatorEnabled: boolean;
+  emissionFinalizerEnabled: boolean;
   commitmentMode: PostGenerationGuardMode;
   relationalClaimMode: RelationalClaimGuardMode;
   closurePressureMode: PostGenerationGuardMode;
@@ -48,18 +38,25 @@ export type ScenarioDeps = {
   pipeline: ReplayPipeline;
 };
 
-export type EvidencePlaceholder = {
-  sourceType?: EvidenceLedgerSourceType;
-  textIncludes?: readonly string[];
-  valueIncludes?: readonly string[];
-  state?: string;
-};
-
 export type ScenarioScriptContext = {
   pipeline: ReplayPipeline;
   enqueueBeforeRecall: (response: LLMCompleteResult) => void;
   enqueueAfterFinalizer: (response: string | LLMCompleteResult) => void;
 };
+
+export type ReplayFinalizerEmission =
+  | {
+      kind: "answer";
+      text?: string;
+    }
+  | {
+      kind: "self_report";
+      text: string;
+    }
+  | {
+      kind: "no_output";
+      reason: string;
+    };
 
 export type ReplayScenario = {
   id: string;
@@ -70,8 +67,7 @@ export type ReplayScenario = {
   audience?: string;
   perceptionUseLlmFallback?: boolean;
   unsafeCandidateText: string;
-  manifestResponse: EmitManifestResponse;
-  evidencePlaceholders?: Record<string, EvidencePlaceholder>;
+  finalizerEmission?: ReplayFinalizerEmission;
   scriptLLMResponses: (client: FakeLLMClient, context: ScenarioScriptContext) => void;
   safeOutputPredicate: (emittedText: string) => boolean;
   usefulOutputPredicate?: (emittedText: string) => boolean;
@@ -85,27 +81,6 @@ export type ReplayScenario = {
   notes?: readonly string[];
 };
 
-export function evidenceRef(
-  id: string,
-  source_type: EvidenceLedgerSourceType,
-): EvidenceRef {
-  return {
-    id,
-    source_type,
-  };
-}
-
-export function currentUserEvidenceRef(): EvidenceRef {
-  return evidenceRef(CURRENT_USER_EVIDENCE_ID, "current_user_message");
-}
-
-export function placeholderEvidenceRef(
-  placeholder: string,
-  sourceType: EvidenceLedgerSourceType,
-): EvidenceRef {
-  return evidenceRef(`$evidence:${placeholder}`, sourceType);
-}
-
 export function textResponse(text: string): LLMCompleteResult {
   return {
     text,
@@ -116,26 +91,34 @@ export function textResponse(text: string): LLMCompleteResult {
   };
 }
 
-export function manifestFinalizerResponse(input: EmitManifestResponse): LLMCompleteResult {
-  const wireResponse = {
-    ...input,
-    claims: input.claims.map((claim) =>
-      "evidence" in claim
-        ? claim
+export function finalizerToolResponse(
+  input: ReplayFinalizerEmission,
+  fallbackText: string,
+): LLMCompleteResult {
+  const tool =
+    input.kind === "answer"
+      ? {
+          id: "toolu_replay_emit_answer",
+          name: "EmitAnswer",
+          input: { text: input.text ?? fallbackText },
+        }
+      : input.kind === "self_report"
+        ? {
+            id: "toolu_replay_emit_self_report",
+            name: "EmitSelfReport",
+            input: { text: input.text },
+          }
         : {
-            ...claim,
-            evidence: [],
-          },
-    ),
-  };
-
+            id: "toolu_replay_emit_no_output",
+            name: "EmitNoOutput",
+            input: { reason: input.reason },
+          };
   return {
-    text: JSON.stringify(wireResponse),
+    text: "",
     input_tokens: 1,
     output_tokens: 1,
-    stop_reason: "end_turn",
-    tool_calls: [],
-    structured_output: wireResponse,
+    stop_reason: "tool_use",
+    tool_calls: [tool],
   };
 }
 
@@ -368,162 +351,6 @@ export function closureLoopClassificationResponse(): LLMCompleteResult {
 
 export function safeRewrite(text: string): string {
   return text;
-}
-
-function llmPromptText(options: LLMCompleteOptions | LLMConverseOptions): string {
-  const system =
-    typeof options.system === "string"
-      ? options.system
-      : (options.system?.map((block) => block.text).join("\n") ?? "");
-  const messages = options.messages
-    .map((message) => {
-      if (typeof message.content === "string") {
-        return message.content;
-      }
-
-      return message.content
-        .map((block) => {
-          if (block.type === "text") {
-            return block.text;
-          }
-
-          if (block.type === "tool_use") {
-            return block.name;
-          }
-
-          return typeof block.content === "string"
-            ? block.content
-            : block.content.map((part) => part.text).join("");
-        })
-        .join("\n");
-    })
-    .join("\n");
-
-  return `${system}\n${messages}`;
-}
-
-type LedgerEntryForPrompt = {
-  id: string;
-  sourceType: EvidenceLedgerSourceType | null;
-  text: string;
-};
-
-function extractLedgerEntries(prompt: string): LedgerEntryForPrompt[] {
-  const entries: LedgerEntryForPrompt[] = [];
-  const entryPattern = /- id=([^\s]+)([^\n]*)([\s\S]*?)(?=\n- id=|\n## |<\/borg_evidence_ledger>|$)/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = entryPattern.exec(prompt)) !== null) {
-    const [, id, metadata, body] = match;
-    if (id === undefined || metadata === undefined || body === undefined) {
-      continue;
-    }
-
-    const sourceTypeMatch = metadata.match(/source_type=([^\s]+)/);
-    const sourceType = sourceTypeMatch?.[1] ?? null;
-
-    entries.push({
-      id,
-      sourceType: sourceType as EvidenceLedgerSourceType | null,
-      text: `${metadata}\n${body}`,
-    });
-  }
-
-  return entries;
-}
-
-function resolveEvidenceId(input: {
-  id: string;
-  sourceType: EvidenceLedgerSourceType;
-  prompt: string;
-  placeholders: Record<string, EvidencePlaceholder>;
-}): string {
-  if (input.id === CURRENT_USER_EVIDENCE_ID) {
-    const entry = extractLedgerEntries(input.prompt).find(
-      (candidate) => candidate.sourceType === "current_user_message",
-    );
-
-    return entry?.id ?? input.id;
-  }
-
-  if (!input.id.startsWith("$evidence:")) {
-    return input.id;
-  }
-
-  const key = input.id.slice("$evidence:".length);
-  const placeholder = input.placeholders[key];
-
-  if (placeholder === undefined) {
-    return input.id;
-  }
-
-  const entry = extractLedgerEntries(input.prompt).find((candidate) => {
-    const sourceType = placeholder.sourceType ?? input.sourceType;
-
-    if (candidate.sourceType !== sourceType) {
-      return false;
-    }
-
-    if (placeholder.state !== undefined && !candidate.text.includes(`state=${placeholder.state}`)) {
-      return false;
-    }
-
-    if (
-      placeholder.textIncludes !== undefined &&
-      !placeholder.textIncludes.every((part) => candidate.text.includes(part))
-    ) {
-      return false;
-    }
-
-    if (
-      placeholder.valueIncludes !== undefined &&
-      !placeholder.valueIncludes.every((part) => candidate.text.includes(part))
-    ) {
-      return false;
-    }
-
-    return true;
-  });
-
-  return entry?.id ?? input.id;
-}
-
-function materializeEvidenceRef(
-  ref: EvidenceRef,
-  prompt: string,
-  placeholders: Record<string, EvidencePlaceholder>,
-): EvidenceRef {
-  return {
-    ...ref,
-    id: resolveEvidenceId({
-      id: ref.id,
-      sourceType: ref.source_type,
-      prompt,
-      placeholders,
-    }),
-  };
-}
-
-export function materializeManifestResponse(
-  manifest: EmitManifestResponse,
-  options: LLMCompleteOptions | LLMConverseOptions,
-  placeholders: Record<string, EvidencePlaceholder> = {},
-): EmitManifestResponse {
-  const prompt = llmPromptText(options);
-
-  return {
-    ...manifest,
-    claims: manifest.claims.map((claim) => {
-      if (!("evidence" in claim)) {
-        return claim;
-      }
-
-      return {
-        ...claim,
-        evidence: claim.evidence.map((ref) => materializeEvidenceRef(ref, prompt, placeholders)),
-      };
-    }),
-  };
 }
 
 export function lowerIncludesNone(text: string, values: readonly string[]): boolean {

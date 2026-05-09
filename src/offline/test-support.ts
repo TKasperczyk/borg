@@ -227,10 +227,6 @@ export function createTestConfig(
         ...DEFAULT_CONFIG.generation.manifestFinalizer,
         ...overrides.generation?.manifestFinalizer,
       },
-      manifestValidator: {
-        ...DEFAULT_CONFIG.generation.manifestValidator,
-        ...overrides.generation?.manifestValidator,
-      },
       postGenerationGuards: {
         ...DEFAULT_CONFIG.generation.postGenerationGuards,
         ...overrides.generation?.postGenerationGuards,

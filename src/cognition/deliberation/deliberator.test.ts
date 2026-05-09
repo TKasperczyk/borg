@@ -111,8 +111,7 @@ function createDeliberator(
   llm: FakeLLMClient,
   tempDirs: string[],
   options: {
-    manifestFinalizerEnabled?: boolean;
-    manifestValidatorEnabled?: boolean;
+    emissionFinalizerEnabled?: boolean;
     cognitionThinking?: { enabled: boolean; budget_tokens: number };
     tracer?: TurnTracer;
   } = {},
@@ -122,16 +121,45 @@ function createDeliberator(
     toolDispatcher: createToolDispatcher(tempDirs),
     cognitionModel: "sonnet",
     cognitionThinking: options.cognitionThinking,
-    manifestFinalizerEnabled: options.manifestFinalizerEnabled,
-    manifestValidatorEnabled: options.manifestValidatorEnabled,
-    relationalSlotRepository: {
-      get: () => null,
-    },
-    actionRepository: {
-      get: () => null,
-    },
+    emissionFinalizerEnabled: options.emissionFinalizerEnabled,
     tracer: options.tracer,
   });
+}
+
+function simpleDeliberationContext(
+  overrides: Partial<Parameters<Deliberator["run"]>[0]> = {},
+): Parameters<Deliberator["run"]>[0] {
+  return {
+    sessionId: DEFAULT_SESSION_ID,
+    userMessage: "Please answer directly.",
+    perception: {
+      entities: [],
+      mode: "problem_solving",
+      affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+      temporalCue: null,
+    },
+    retrievalResult: [],
+    retrievalConfidence: makeRetrievalConfidence(),
+    workingMemory: {
+      session_id: DEFAULT_SESSION_ID,
+      turn_counter: 1,
+      hot_entities: [],
+      pending_actions: [],
+      pending_social_attribution: null,
+      pending_trait_attribution: null,
+      mood: null,
+      pending_procedural_attempts: [],
+      discourse_state: {
+        stop_until_substantive_content: null,
+      },
+      suppressed: [],
+      mode: "problem_solving",
+      updated_at: 0,
+    },
+    selfSnapshot: { values: [], goals: [], traits: [] },
+    options: { stakes: "low" },
+    ...overrides,
+  };
 }
 
 function makeEvidenceLedger(): EvidenceLedger {
@@ -159,17 +187,16 @@ function makeEvidenceLedger(): EvidenceLedger {
   };
 }
 
-function createManifestFinalizerResponse(
-  input: unknown,
+function emitFinalizerToolResponse(
+  tool: { id: string; name: string; input: unknown },
   usage: { inputTokens: number; outputTokens: number } = { inputTokens: 10, outputTokens: 4 },
 ) {
   return {
-    text: JSON.stringify(input),
+    text: "",
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
-    stop_reason: "end_turn" as const,
-    tool_calls: [],
-    structured_output: input,
+    stop_reason: "tool_use" as const,
+    tool_calls: [tool],
   };
 }
 
@@ -207,7 +234,7 @@ describe("deliberator", () => {
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
-      manifestFinalizerEnabled: false,
+      emissionFinalizerEnabled: false,
       cognitionThinking: {
         enabled: true,
         budget_tokens: 2048,
@@ -335,35 +362,22 @@ describe("deliberator", () => {
     }
   });
 
-  it("uses the manifest finalizer structured output when the flag is enabled", async () => {
+  it("uses emission tools when the emission finalizer flag is enabled", async () => {
     const tracer = new CapturingTracer(true);
     const llm = new FakeLLMClient({
       responses: [
-        createManifestFinalizerResponse(
+        emitFinalizerToolResponse(
           {
-            final_text: "Manifest-backed answer.",
-            discourse_act: "answer",
-            claims: [
-              {
-                kind: "user_fact",
-                rendered_span: "Manifest-backed answer.",
-                exact_values: ["Please answer directly."],
-                evidence: [
-                  {
-                    id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                    source_type: "current_user_message",
-                  },
-                ],
-                confidence: "direct",
-              },
-            ],
+            id: "toolu_emit_answer",
+            name: "EmitAnswer",
+            input: { text: "Tool-backed answer." },
           },
           { inputTokens: 18, outputTokens: 7 },
         ),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
-      manifestFinalizerEnabled: true,
+      emissionFinalizerEnabled: true,
       cognitionThinking: {
         enabled: true,
         budget_tokens: 3072,
@@ -373,7 +387,7 @@ describe("deliberator", () => {
 
     const result = await deliberator.run({
       sessionId: DEFAULT_SESSION_ID,
-      turnId: "turn-manifest",
+      turnId: "turn-emission",
       userMessage: "Please answer directly.",
       perception: {
         entities: [],
@@ -406,83 +420,63 @@ describe("deliberator", () => {
       options: { stakes: "low" },
     });
 
-    expect(result.response).toBe("Manifest-backed answer.");
+    expect(result.response).toBe("Tool-backed answer.");
     expect(result.emitted).toBe(true);
     expect(result.emission).toEqual({
       kind: "message",
-      content: "Manifest-backed answer.",
+      content: "Tool-backed answer.",
     });
     expect(result.tool_calls).toEqual([]);
-    expect(llm.converseRequests).toHaveLength(0);
-    expect(llm.requests[0]?.tool_choice).toBeUndefined();
-    expect(llm.requests[0]?.thinking).toEqual({
+    expect(llm.converseRequests).toHaveLength(1);
+    expect(llm.requests[0]?.tool_choice).toEqual({ type: "any" });
+    expect(llm.converseRequests[0]?.thinking).toEqual({
       type: "enabled",
       budget_tokens: 3072,
     });
-    expect(llm.requests[0]?.tools).toBeUndefined();
-    expect(llm.requests[0]?.output_config?.format.type).toBe("json_schema");
-    // Sprint 8d.6.5: system is now an array of blocks ([stable, dynamic]).
-    const systemBlocks = llm.requests[0]?.system as readonly { text: string }[];
+    expect(llm.requests[0]?.output_config).toBeUndefined();
+    expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+      "EmitAnswer",
+      "EmitNoOutput",
+      "EmitSelfReport",
+    ]);
+    const systemBlocks = llm.requests[0]?.system as readonly {
+      text: string;
+      cache_control?: unknown;
+    }[];
     const system = systemBlocks.map((block) => block.text).join("\n\n");
-    expect(system).toContain("Return exactly one structured response matching the provided schema.");
+    expect(systemBlocks[0]?.cache_control).toBeUndefined();
+    expect(system).toContain(
+      "Call exactly ONE of EmitAnswer / EmitNoOutput / EmitSelfReport per turn.",
+    );
     expect(system).toContain("<borg_evidence_ledger>");
     expect(system).toContain("id=current_user_message:strm_aaaaaaaaaaaaaaaa");
-    const emittedEvent = tracer.events.find(
-      (entry) => entry.event === "manifest_finalizer_emitted",
-    );
+    const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer_emitted");
     expect(emittedEvent?.data).toMatchObject({
-      turnId: "turn-manifest",
-      final_text_length: "Manifest-backed answer.".length,
-      discourse_act: "answer",
-      claim_count: 1,
-      claim_kinds: ["user_fact:1"],
-      parsed: true,
+      turnId: "turn-emission",
+      mode: "emission_tools",
+      decision: "answer",
+      text_length: "Tool-backed answer.".length,
     });
-    expect(emittedEvent?.data.claims).toEqual([
-      {
-        kind: "user_fact",
-        rendered_span: "Manifest-backed answer.",
-        exact_values: ["Please answer directly."],
-        evidence: [
-          {
-            id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-            source_type: "current_user_message",
-          },
-        ],
-        confidence: "direct",
-      },
-    ]);
-    expect(tracer.events.some((entry) => entry.event === "manifest_validation")).toBe(false);
   });
 
-  it("marks manifest self-report emissions with assistant self-report persistence class", async () => {
+  it("marks EmitSelfReport emissions with assistant self-report persistence class", async () => {
     const selfReport = "The gap feels like a discontinuity with a remembered edge.";
     const llm = new FakeLLMClient({
       responses: [
-        createManifestFinalizerResponse(
-          {
-            final_text: selfReport,
-            discourse_act: "answer",
-            claims: [
-              {
-                kind: "self_report",
-                rendered_span: selfReport,
-                persistence_class: "assistant_self_report",
-                evidence: [],
-              },
-            ],
-          },
-          { inputTokens: 18, outputTokens: 7 },
-        ),
+        emitFinalizerToolResponse({
+          id: "toolu_emit_self_report",
+          name: "EmitSelfReport",
+          input: { text: selfReport },
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
-      manifestFinalizerEnabled: true,
+      emissionFinalizerEnabled: true,
     });
 
     const result = await deliberator.run({
       sessionId: DEFAULT_SESSION_ID,
-      turnId: "turn-manifest-self-report",
+      turnId: "turn-emission-self-report",
       userMessage: "What does the gap feel like?",
       perception: {
         entities: [],
@@ -520,274 +514,28 @@ describe("deliberator", () => {
     });
   });
 
-  it("validates manifest finalizer output when both manifest flags are enabled", async () => {
+  it("suppresses EmitNoOutput responses with no_output_tool", async () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
-        createManifestFinalizerResponse({
-          final_text: "Please answer directly.",
-          discourse_act: "answer",
-          claims: [
-            {
-              kind: "user_fact",
-              rendered_span: "Please answer directly.",
-              exact_values: ["Please answer directly"],
-              evidence: [
-                {
-                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                  source_type: "current_user_message",
-                },
-              ],
-              confidence: "direct",
-            },
-          ],
-        }),
-      ],
-    });
-    const deliberator = createDeliberator(llm, tempDirs, {
-      manifestFinalizerEnabled: true,
-      manifestValidatorEnabled: true,
-      tracer,
-    });
-
-    const result = await deliberator.run({
-      sessionId: DEFAULT_SESSION_ID,
-      turnId: "turn-manifest-valid",
-      userMessage: "Please answer directly.",
-      userEntryId: "strm_aaaaaaaaaaaaaaaa",
-      perception: {
-        entities: [],
-        mode: "problem_solving",
-        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
-        temporalCue: null,
-      },
-      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
-      retrievalConfidence: makeRetrievalConfidence(),
-      evidenceLedger: makeEvidenceLedger(),
-      evidenceLedgerPromptSection:
-        "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
-      workingMemory: {
-        session_id: DEFAULT_SESSION_ID,
-        turn_counter: 1,
-        hot_entities: [],
-        pending_actions: [],
-        pending_social_attribution: null,
-        pending_trait_attribution: null,
-        mood: null,
-        pending_procedural_attempts: [],
-        discourse_state: {
-          stop_until_substantive_content: null,
-        },
-        suppressed: [],
-        mode: "problem_solving",
-        updated_at: 0,
-      },
-      selfSnapshot: { values: [], goals: [], traits: [] },
-      options: { stakes: "low" },
-    });
-
-    expect(result.response).toBe("Please answer directly.");
-    expect(result.emission).toEqual({
-      kind: "message",
-      content: "Please answer directly.",
-    });
-    const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
-    expect(validationEvent?.data).toMatchObject({
-      turnId: "turn-manifest-valid",
-      verdict: "valid",
-      final_verdict: "passed",
-      passed_claims: 1,
-      final_text_changed: false,
-    });
-  });
-
-  it("traces invalid manifest spans without changing the emission", async () => {
-    const tracer = new CapturingTracer();
-    const llm = new FakeLLMClient({
-      responses: [
-        createManifestFinalizerResponse({
-          final_text: "Stable answer remains. Luis prefers verbose answers.",
-          discourse_act: "answer",
-          claims: [
-            {
-              kind: "user_fact",
-              rendered_span: "Luis prefers verbose answers.",
-              exact_values: ["Luis"],
-              evidence: [
-                {
-                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                  source_type: "current_user_message",
-                },
-              ],
-              confidence: "direct",
-            },
-          ],
-        }),
-      ],
-    });
-    const deliberator = createDeliberator(llm, tempDirs, {
-      manifestFinalizerEnabled: true,
-      manifestValidatorEnabled: true,
-      tracer,
-    });
-
-    const result = await deliberator.run({
-      sessionId: DEFAULT_SESSION_ID,
-      turnId: "turn-manifest-rewrite",
-      userMessage: "Please answer directly.",
-      userEntryId: "strm_aaaaaaaaaaaaaaaa",
-      perception: {
-        entities: [],
-        mode: "problem_solving",
-        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
-        temporalCue: null,
-      },
-      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
-      retrievalConfidence: makeRetrievalConfidence(),
-      evidenceLedger: makeEvidenceLedger(),
-      evidenceLedgerPromptSection:
-        "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
-      workingMemory: {
-        session_id: DEFAULT_SESSION_ID,
-        turn_counter: 1,
-        hot_entities: [],
-        pending_actions: [],
-        pending_social_attribution: null,
-        pending_trait_attribution: null,
-        mood: null,
-        pending_procedural_attempts: [],
-        discourse_state: {
-          stop_until_substantive_content: null,
-        },
-        suppressed: [],
-        mode: "problem_solving",
-        updated_at: 0,
-      },
-      selfSnapshot: { values: [], goals: [], traits: [] },
-      options: { stakes: "low" },
-    });
-
-    expect(result.response).toBe("Stable answer remains. Luis prefers verbose answers.");
-    expect(result.emission).toEqual({
-      kind: "message",
-      content: "Stable answer remains. Luis prefers verbose answers.",
-    });
-    const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
-    expect(validationEvent?.data).toMatchObject({
-      turnId: "turn-manifest-rewrite",
-      verdict: "invalid",
-      final_verdict: "would_have_rewritten",
-      would_have_verdict: "would_have_rewritten",
-      final_text_changed: false,
-    });
-  });
-
-  it("traces real-safety manifest failures without suppressing output", async () => {
-    const tracer = new CapturingTracer();
-    const llm = new FakeLLMClient({
-      responses: [
-        createManifestFinalizerResponse({
-          final_text: "Luis.",
-          discourse_act: "answer",
-          claims: [
-            {
-              kind: "user_fact",
-              rendered_span: "Luis.",
-              exact_values: ["Luis"],
-              evidence: [
-                {
-                  id: "current_user_message:strm_missingmissing",
-                  source_type: "current_user_message",
-                },
-              ],
-              confidence: "direct",
-            },
-          ],
-        }),
-      ],
-    });
-    const deliberator = createDeliberator(llm, tempDirs, {
-      manifestFinalizerEnabled: true,
-      manifestValidatorEnabled: true,
-      tracer,
-    });
-
-    const result = await deliberator.run({
-      sessionId: DEFAULT_SESSION_ID,
-      turnId: "turn-manifest-critical",
-      userMessage: "Please answer directly.",
-      userEntryId: "strm_aaaaaaaaaaaaaaaa",
-      perception: {
-        entities: [],
-        mode: "problem_solving",
-        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
-        temporalCue: null,
-      },
-      retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
-      retrievalConfidence: makeRetrievalConfidence(),
-      evidenceLedger: makeEvidenceLedger(),
-      evidenceLedgerPromptSection:
-        "<borg_evidence_ledger>\n- id=current_user_message:strm_aaaaaaaaaaaaaaaa source_type=current_user_message\n</borg_evidence_ledger>",
-      workingMemory: {
-        session_id: DEFAULT_SESSION_ID,
-        turn_counter: 1,
-        hot_entities: [],
-        pending_actions: [],
-        pending_social_attribution: null,
-        pending_trait_attribution: null,
-        mood: null,
-        pending_procedural_attempts: [],
-        discourse_state: {
-          stop_until_substantive_content: null,
-        },
-        suppressed: [],
-        mode: "problem_solving",
-        updated_at: 0,
-      },
-      selfSnapshot: { values: [], goals: [], traits: [] },
-      options: { stakes: "low" },
-    });
-
-    expect(result.response).toBe("Luis.");
-    expect(result.emitted).toBe(true);
-    expect(result.emission).toEqual({
-      kind: "message",
-      content: "Luis.",
-    });
-    const validationEvent = tracer.events.find((entry) => entry.event === "manifest_validation");
-    expect(validationEvent?.data).toMatchObject({
-      turnId: "turn-manifest-critical",
-      verdict: "invalid",
-      final_verdict: "would_have_suppressed",
-      would_have_verdict: "would_have_suppressed",
-      real_safety_problem: true,
-      final_text_changed: false,
-    });
-  });
-
-  it("suppresses manifest no_output responses with manifest_no_output", async () => {
-    const tracer = new CapturingTracer();
-    const llm = new FakeLLMClient({
-      responses: [
-        createManifestFinalizerResponse(
+        emitFinalizerToolResponse(
           {
-            final_text: "",
-            discourse_act: "no_output",
-            claims: [],
-            no_output_reason: "natural_close",
+            id: "toolu_emit_no_output",
+            name: "EmitNoOutput",
+            input: { reason: "natural_close" },
           },
           { inputTokens: 10, outputTokens: 3 },
         ),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
-      manifestFinalizerEnabled: true,
+      emissionFinalizerEnabled: true,
       tracer,
     });
 
     const result = await deliberator.run({
       sessionId: DEFAULT_SESSION_ID,
-      turnId: "turn-manifest-no-output",
+      turnId: "turn-emission-no-output",
       userMessage: "Thanks.",
       perception: {
         entities: [],
@@ -824,17 +572,65 @@ describe("deliberator", () => {
     expect(result.emitted).toBe(false);
     expect(result.emission).toEqual({
       kind: "suppressed",
-      reason: "manifest_no_output",
+      reason: "no_output_tool",
     });
-    const emittedEvent = tracer.events.find(
-      (entry) => entry.event === "manifest_finalizer_emitted",
-    );
+    const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer_emitted");
     expect(emittedEvent?.data).toMatchObject({
-      turnId: "turn-manifest-no-output",
-      discourse_act: "no_output",
-      claim_count: 0,
-      no_output_reason: "natural_close",
-      parsed: true,
+      turnId: "turn-emission-no-output",
+      mode: "emission_tools",
+      decision: "no_output",
+      reason: "natural_close",
+    });
+  });
+
+  it("suppresses free text without an emission tool as finalizer_failed", async () => {
+    const llm = new FakeLLMClient({
+      responses: ["I forgot to call the emission tool."],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      emissionFinalizerEnabled: true,
+    });
+
+    const result = await deliberator.run(simpleDeliberationContext());
+
+    expect(result.response).toBe("");
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "finalizer_failed",
+    });
+  });
+
+  it.each([
+    {
+      toolName: "EmitAnswer",
+      id: "toolu_empty_answer",
+    },
+    {
+      toolName: "EmitSelfReport",
+      id: "toolu_empty_self_report",
+    },
+  ])("suppresses empty $toolName text as empty_finalizer", async ({ toolName, id }) => {
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse({
+          id,
+          name: toolName,
+          input: { text: "" },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, {
+      emissionFinalizerEnabled: true,
+    });
+
+    const result = await deliberator.run(simpleDeliberationContext());
+
+    expect(result.response).toBe("");
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "empty_finalizer",
     });
   });
 
@@ -1166,7 +962,7 @@ describe("deliberator", () => {
     }
   });
 
-  it("routes S2 planner no-output recommendations through manifest finalizer when enabled", async () => {
+  it("routes S2 planner no-output recommendations through emission tools when enabled", async () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
@@ -1191,19 +987,18 @@ describe("deliberator", () => {
             },
           ],
         },
-        createManifestFinalizerResponse(
+        emitFinalizerToolResponse(
           {
-            final_text: "",
-            discourse_act: "no_output",
-            claims: [],
-            no_output_reason: "planner_recommended_no_output",
+            id: "toolu_emit_no_output",
+            name: "EmitNoOutput",
+            input: { reason: "planner_recommended_no_output" },
           },
           { inputTokens: 12, outputTokens: 6 },
         ),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs, {
-      manifestFinalizerEnabled: true,
+      emissionFinalizerEnabled: true,
       tracer,
     });
     const streamDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -1218,7 +1013,7 @@ describe("deliberator", () => {
       const result = await deliberator.run(
         {
           sessionId: DEFAULT_SESSION_ID,
-          turnId: "turn-s2-manifest-no-output",
+          turnId: "turn-s2-emission-no-output",
           userMessage: "No.",
           perception: {
             entities: [],
@@ -1256,7 +1051,7 @@ describe("deliberator", () => {
       expect(result.emitted).toBe(false);
       expect(result.emission).toEqual({
         kind: "suppressed",
-        reason: "manifest_no_output",
+        reason: "no_output_tool",
       });
       expect(result.emissionRecommendation).toBe("emit");
       expect(result.response).toBe("");
@@ -1264,20 +1059,17 @@ describe("deliberator", () => {
       expect(result.usage).toEqual({
         input_tokens: 20,
         output_tokens: 10,
-        stop_reason: "end_turn",
+        stop_reason: "tool_use",
       });
       expect(llm.requests).toHaveLength(2);
       expect(llm.requests[0]?.tool_choice).toEqual({ type: "tool", name: "EmitTurnPlan" });
-      expect(llm.requests[1]?.tool_choice).toBeUndefined();
-      expect(llm.requests[1]?.output_config?.format.type).toBe("json_schema");
-      // Sprint 8d.6.5: system is an array of blocks for cache_control plumbing.
+      expect(llm.requests[1]?.tool_choice).toEqual({ type: "any" });
+      expect(llm.requests[1]?.output_config).toBeUndefined();
       const finalizerSystemBlocks = llm.requests[1]?.system as readonly { text: string }[];
       const finalizerSystem = finalizerSystemBlocks.map((block) => block.text).join("\n\n");
       expect(finalizerSystem).toContain("Emission recommendation: no assistant message");
       expect(tracer.events.some((entry) => entry.event === "plan_extraction")).toBe(true);
-      expect(tracer.events.some((entry) => entry.event === "manifest_finalizer_emitted")).toBe(
-        true,
-      );
+      expect(tracer.events.some((entry) => entry.event === "finalizer_emitted")).toBe(true);
     } finally {
       writer.close();
     }

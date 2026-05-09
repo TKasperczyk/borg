@@ -62,9 +62,6 @@ describe("config", () => {
     expect(config.generation.manifestFinalizer).toEqual({
       enabled: false,
     });
-    expect(config.generation.manifestValidator).toEqual({
-      enabled: false,
-    });
     expect(config.generation.postGenerationGuards).toEqual({
       commitment: {
         mode: "enforce",
@@ -140,9 +137,6 @@ describe("config", () => {
         manifestFinalizer: {
           enabled: false,
         },
-        manifestValidator: {
-          enabled: false,
-        },
         postGenerationGuards: {
           relationalClaim: {
             mode: "shadow",
@@ -166,7 +160,6 @@ describe("config", () => {
         BORG_GENERATION_COGNITION_THINKING_ENABLED: "true",
         BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS: "8192",
         BORG_GENERATION_MANIFEST_FINALIZER_ENABLED: "true",
-        BORG_GENERATION_MANIFEST_VALIDATOR_ENABLED: "true",
         BORG_MODEL_RECALL_EXPANSION: "env-recall",
         ANTHROPIC_API_KEY: "secret",
       },
@@ -191,9 +184,6 @@ describe("config", () => {
       budget_tokens: 8192,
     });
     expect(config.generation.manifestFinalizer.enabled).toBe(true);
-    expect(config.generation.manifestValidator).toEqual({
-      enabled: true,
-    });
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(45);
     expect(config.offline.beliefReviser.enabled).toBe(true);
     expect(config.offline.beliefReviser.maxLlmCalls).toBe(7);
@@ -310,31 +300,6 @@ describe("config", () => {
         },
       }),
     ).toThrow(ConfigError);
-  });
-
-  it("rejects enabling the manifest validator without the manifest finalizer", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
-
-    writeJsonFileAtomic(join(tempDir, "config.json"), {
-      generation: {
-        manifestFinalizer: {
-          enabled: false,
-        },
-        manifestValidator: {
-          enabled: true,
-        },
-      },
-    });
-
-    expect(() =>
-      loadConfig({
-        dataDir: tempDir,
-        env: {},
-      }),
-    ).toThrow(
-      "manifestValidator.enabled requires manifestFinalizer.enabled (validator runs inside the manifest path)",
-    );
   });
 
   it("rejects reflector confidence ceilings above the hard cap", () => {

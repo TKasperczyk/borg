@@ -7,15 +7,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ActionRecord } from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
-import {
-  OpenQuestionsRepository,
-  type OpenQuestion,
-} from "../../memory/self/index.js";
+import { OpenQuestionsRepository, type OpenQuestion } from "../../memory/self/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import type { RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
 import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
-import { ManifestValidator } from "../deliberation/manifest-validator.js";
 import { StreamReader, StreamWriter, type StreamEntry } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
@@ -74,12 +70,10 @@ function makeRetrievedEpisode(input: {
   };
 }
 
-function makeSemanticNode(
-  input: {
-    episodeId: ReturnType<typeof createEpisodeId>;
-    label?: string;
-  },
-): RetrievedSemantic["matched_nodes"][number] {
+function makeSemanticNode(input: {
+  episodeId: ReturnType<typeof createEpisodeId>;
+  label?: string;
+}): RetrievedSemantic["matched_nodes"][number] {
   return {
     id: createSemanticNodeId(),
     kind: "proposition",
@@ -445,7 +439,7 @@ describe("EvidenceLedgerBuilder", () => {
     ]);
   });
 
-  it("includes old resolved open questions by handle before repository limits and lets the validator reject them", async () => {
+  it("includes old resolved open questions by handle before repository limits", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
@@ -533,42 +527,6 @@ describe("EvidenceLedgerBuilder", () => {
           }),
         ]),
       );
-
-      const validator = new ManifestValidator({
-        slotRepository: {
-          get: () => null,
-        },
-        actionRepository: {
-          get: () => null,
-        },
-      });
-      const result = await validator.validate({
-        manifest: {
-          final_text: "Did the old mushroom dish work out?",
-          discourse_act: "answer",
-          claims: [
-            {
-              kind: "interpretation",
-              rendered_span: "Did the old mushroom dish work out?",
-              evidence: [
-                {
-                  id: `open_question:${resolvedTarget.id}`,
-                  source_type: "system_metadata",
-                },
-              ],
-              confidence: "medium",
-              persistence_allowed: false,
-            },
-          ],
-        },
-        evidenceLedger: ledger,
-      });
-
-      expect(result.failed_claims).toEqual([
-        expect.objectContaining({
-          reasons: expect.arrayContaining(["claim_cites_resolved_open_question"]),
-        }),
-      ]);
     } finally {
       db.close();
     }
@@ -703,61 +661,26 @@ describe("EvidenceLedgerBuilder", () => {
     expect(allEntries.find((entry) => entry.id === `episode:${episodeId}`)).toMatchObject({
       persistence_class: "assistant_self_report",
     });
-    expect(allEntries.find((entry) => entry.id === `semantic_node:${matchedNode.id}`)).toMatchObject(
-      {
-        persistence_class: "assistant_self_report",
-      },
-    );
-    expect(allEntries.find((entry) => entry.id === `semantic_node:${supportNode.id}`)).toMatchObject(
-      {
-        persistence_class: "assistant_self_report",
-      },
-    );
-    expect(allEntries.find((entry) => entry.id === `semantic_edge:${supportEdge.id}`)).toMatchObject(
-      {
-        persistence_class: "assistant_self_report",
-      },
-    );
-
-    const validator = new ManifestValidator({
-      slotRepository: {
-        get: () => null,
-      },
-      actionRepository: {
-        get: () => null,
-      },
+    expect(
+      allEntries.find((entry) => entry.id === `semantic_node:${matchedNode.id}`),
+    ).toMatchObject({
+      persistence_class: "assistant_self_report",
     });
-    const result = await validator.validate({
-      manifest: {
-        final_text: "I have verified qualia.",
-        discourse_act: "answer",
-        claims: [
-          {
-            kind: "user_fact",
-            rendered_span: "I have verified qualia",
-            exact_values: ["verified qualia"],
-            evidence: [
-              {
-                id: `episode:${episodeId}`,
-                source_type: "episode",
-              },
-            ],
-            confidence: "direct",
-          },
-        ],
-      },
-      evidenceLedger: ledger,
-      userEntryId: userEntry.id,
+    expect(
+      allEntries.find((entry) => entry.id === `semantic_node:${supportNode.id}`),
+    ).toMatchObject({
+      persistence_class: "assistant_self_report",
+    });
+    expect(
+      allEntries.find((entry) => entry.id === `semantic_edge:${supportEdge.id}`),
+    ).toMatchObject({
+      persistence_class: "assistant_self_report",
     });
 
-    expect(result.failed_claims).toEqual([
-      expect.objectContaining({
-        reasons: expect.arrayContaining(["claim_grounded_in_self_report"]),
-      }),
-    ]);
+    expect(userEntry.kind).toBe("user_msg");
   });
 
-  it("allows agent self-provenance from retrieved assistant self-report raw stream evidence", async () => {
+  it("labels retrieved assistant self-report raw stream evidence", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
@@ -824,37 +747,7 @@ describe("EvidenceLedgerBuilder", () => {
       via_retrieval: true,
     });
 
-    const validator = new ManifestValidator({
-      slotRepository: {
-        get: () => null,
-      },
-      actionRepository: {
-        get: () => null,
-      },
-    });
-    const result = await validator.validate({
-      manifest: {
-        final_text: "Earlier I described it as a discontinuity with a remembered edge.",
-        discourse_act: "answer",
-        claims: [
-          {
-            kind: "agent_self_provenance",
-            rendered_span: "Earlier I described it as a discontinuity with a remembered edge",
-            evidence: [
-              {
-                id: "retrieved_stream:raw-self-report",
-                source_type: "current_session_stream",
-              },
-            ],
-          },
-        ],
-      },
-      evidenceLedger: ledger,
-      userEntryId: userEntry.id,
-    });
-
-    expect(result.would_have_verdict).toBe("passed");
-    expect(result.failed_claims).toEqual([]);
+    expect(userEntry.kind).toBe("user_msg");
   });
 
   it("labels raw stream evidence scope only when every provenance handle resolves consistently", async () => {
@@ -996,8 +889,7 @@ describe("EvidenceLedgerBuilder", () => {
   it("dedupes retrieved raw stream evidence against current_session_transcript by stream id", async () => {
     // Sprint 8d.6.3 regression: same underlying stream entry must not
     // appear twice (once in transcript, once in retrieved_raw_stream_evidence).
-    // v36/v37 manifest finalizer prompts had ~25k duplicate tokens from
-    // this class.
+    // v36/v37 finalizer prompts had ~25k duplicate tokens from this class.
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({

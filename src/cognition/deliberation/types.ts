@@ -2,7 +2,7 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
 import type { MoodHistoryEntry } from "../../memory/affective/index.js";
-import type { ActionRecord, ActionRepository } from "../../memory/actions/index.js";
+import type { ActionRecord } from "../../memory/actions/index.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import type {
   AutobiographicalPeriod,
@@ -125,9 +125,8 @@ export type DeliberationContext = {
    */
   evidenceLedgerPromptSection?: string | null;
   /**
-   * Typed ledger corresponding to evidenceLedgerPromptSection. The manifest
-   * finalizer requires this to keep prompt-visible IDs tied to structured
-   * evidence refs.
+   * Typed ledger corresponding to evidenceLedgerPromptSection. Emission-tool
+   * finalization uses this to keep prompt-visible IDs tied to evidence prose.
    */
   evidenceLedger?: EvidenceLedger | null;
   options?: {
@@ -174,8 +173,5 @@ export type DeliberatorOptions = {
   cognitionThinking?: CognitionThinkingConfig;
   clock?: Clock;
   tracer?: TurnTracer;
-  manifestFinalizerEnabled?: boolean;
-  manifestValidatorEnabled?: boolean;
-  relationalSlotRepository?: Pick<RelationalSlotRepository, "get">;
-  actionRepository?: Pick<ActionRepository, "get">;
+  emissionFinalizerEnabled?: boolean;
 };

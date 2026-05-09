@@ -10,14 +10,10 @@ export type ReplayPipelineRecord = {
   safe: ReplayCell;
   safeWithUsefulOutput: ReplayCell;
   guardCaught: ReplayCell;
-  validatorCaught: ReplayCell;
   shadowSevereRemaining: ReplayCell;
   emittedText: string;
   emissionKind: string;
   guardCategories: string[];
-  manifestValidationFinalVerdict: string | null;
-  validatedClaimsByKind: Record<string, number> | null;
-  literalValuesValidatedByKind: Record<string, number> | null;
   error: string | null;
 };
 
@@ -32,16 +28,10 @@ export type ReplayScenarioRecord = {
 export type ReplayReportSummary = {
   scenarioCount: number;
   pipelineCSafeCount: number;
-  pipelineCValidatorCaughtCount: number;
   pipelineCShadowSevereRemainingCount: number;
   pipelineCdoubleprimeSafeCount: number;
   pipelineCdoubleprimeSafeWithUsefulOutputCount: number;
   pipelineCdoubleprimeShadowSevereRemainingCount: number;
-  adversarialUnderDeclarationScenarioCount: number;
-  pipelineCdoubleprimeAdversarialValidatorCaughtCount: number;
-  pipelineCdoubleprimeAdversarialShadowGuardCaughtCount: number;
-  selfReportNotProofScenarioCount: number;
-  pipelineCdoubleprimeSelfReportNotProofValidatorCaughtCount: number;
   errorCount: number;
 };
 
@@ -76,22 +66,9 @@ function rowCell(value: ReplayCell): string {
   return escapeMarkdownCell(boolCell(value));
 }
 
-function countRecordCell(value: Record<string, number> | null): string {
-  if (value === null) {
-    return "n/a";
-  }
-
-  return escapeMarkdownCell(JSON.stringify(value));
-}
-
 function pipelineCell(
   pipeline: ReplayPipelineRecord,
-  field:
-    | "safe"
-    | "safeWithUsefulOutput"
-    | "guardCaught"
-    | "validatorCaught"
-    | "shadowSevereRemaining",
+  field: "safe" | "safeWithUsefulOutput" | "guardCaught" | "shadowSevereRemaining",
 ): string {
   if (pipeline.error !== null) {
     return rowCell(`ERROR: ${pipeline.error}`);
@@ -100,40 +77,18 @@ function pipelineCell(
   return rowCell(pipeline[field]);
 }
 
-function isAdversarialUnderDeclarationScenario(scenario: ReplayScenarioRecord): boolean {
-  return (
-    scenario.id.startsWith("13-") ||
-    scenario.id.startsWith("14-") ||
-    scenario.id.startsWith("15-") ||
-    scenario.id.startsWith("16-")
-  );
-}
-
-function isSelfReportNotProofScenario(scenario: ReplayScenarioRecord): boolean {
-  return scenario.id.startsWith("17-");
-}
-
 export function buildReplayReport(
   scenarios: ReplayScenarioRecord[],
   generatedAt = new Date().toISOString(),
 ): ReplayReport {
   const pipelineC = scenarios.map((scenario) => scenario.pipelines.C);
   const pipelineCdoubleprime = scenarios.map((scenario) => scenario.pipelines.Cdoubleprime);
-  const adversarialUnderDeclaration = scenarios.filter(isAdversarialUnderDeclarationScenario);
-  const adversarialPipelineCdoubleprime = adversarialUnderDeclaration.map(
-    (scenario) => scenario.pipelines.Cdoubleprime,
-  );
-  const selfReportNotProof = scenarios.filter(isSelfReportNotProofScenario);
-  const selfReportNotProofPipelineCdoubleprime = selfReportNotProof.map(
-    (scenario) => scenario.pipelines.Cdoubleprime,
-  );
 
   return {
     generatedAt,
     summary: {
       scenarioCount: scenarios.length,
       pipelineCSafeCount: pipelineC.filter((run) => run.safe === true).length,
-      pipelineCValidatorCaughtCount: pipelineC.filter((run) => run.validatorCaught === true).length,
       pipelineCShadowSevereRemainingCount: pipelineC.filter(
         (run) => run.shadowSevereRemaining === true,
       ).length,
@@ -144,17 +99,6 @@ export function buildReplayReport(
       pipelineCdoubleprimeShadowSevereRemainingCount: pipelineCdoubleprime.filter(
         (run) => run.shadowSevereRemaining === true,
       ).length,
-      adversarialUnderDeclarationScenarioCount: adversarialUnderDeclaration.length,
-      pipelineCdoubleprimeAdversarialValidatorCaughtCount: adversarialPipelineCdoubleprime.filter(
-        (run) => run.validatorCaught === true,
-      ).length,
-      pipelineCdoubleprimeAdversarialShadowGuardCaughtCount: adversarialPipelineCdoubleprime.filter(
-        (run) => run.shadowSevereRemaining === true,
-      ).length,
-      selfReportNotProofScenarioCount: selfReportNotProof.length,
-      pipelineCdoubleprimeSelfReportNotProofValidatorCaughtCount:
-        selfReportNotProofPipelineCdoubleprime.filter((run) => run.validatorCaught === true)
-          .length,
       errorCount: scenarios.reduce(
         (count, scenario) =>
           count +
@@ -176,25 +120,16 @@ export function formatReplayMarkdown(report: ReplayReport): string {
     "",
     `- Scenarios: ${report.summary.scenarioCount}`,
     `- Pipeline C final text safe: ${report.summary.pipelineCSafeCount} / ${report.summary.scenarioCount}`,
-    `- Pipeline C validator caught: ${report.summary.pipelineCValidatorCaughtCount} / ${report.summary.scenarioCount}`,
     `- Pipeline C shadow severe remaining: ${report.summary.pipelineCShadowSevereRemainingCount} / ${report.summary.scenarioCount}`,
     `- Pipeline C″ final text safe: ${report.summary.pipelineCdoubleprimeSafeCount} / ${report.summary.scenarioCount}`,
     `- Pipeline C″ safe_with_useful_output: ${report.summary.pipelineCdoubleprimeSafeWithUsefulOutputCount} / ${report.summary.scenarioCount}`,
     `- Pipeline C″ shadow severe remaining: ${report.summary.pipelineCdoubleprimeShadowSevereRemainingCount} / ${report.summary.scenarioCount}`,
     `- Scenarios with run errors: ${report.summary.errorCount} / ${report.summary.scenarioCount}`,
     "",
-    "## Adversarial Under-Declaration Scenarios (13-16)",
-    "",
-    `- Pipeline C″ caught ${report.summary.pipelineCdoubleprimeAdversarialValidatorCaughtCount} / ${report.summary.adversarialUnderDeclarationScenarioCount} via validator, ${report.summary.pipelineCdoubleprimeAdversarialShadowGuardCaughtCount} / ${report.summary.adversarialUnderDeclarationScenarioCount} via shadow guards (architecture gap).`,
-    "",
-    "## Persistence-Class Enforcement Scenarios (17)",
-    "",
-    `- Pipeline C″ validator caught ${report.summary.pipelineCdoubleprimeSelfReportNotProofValidatorCaughtCount} / ${report.summary.selfReportNotProofScenarioCount} self-report-not-proof scenarios.`,
-    "",
     "## Pass/Fail Table",
     "",
-    "| Failure class | Pipeline A safe | Pipeline A guard caught | Pipeline C safe | Pipeline C validator caught | Pipeline C shadow severe remaining | Pipeline C″ safe | Pipeline C″ safe_with_useful_output | Pipeline C″ shadow severe remaining |",
-    "|---|---|---|---|---|---|---|---|---|",
+    "| Failure class | Pipeline A safe | Pipeline A guard caught | Pipeline C safe | Pipeline C shadow severe remaining | Pipeline C″ safe | Pipeline C″ safe_with_useful_output | Pipeline C″ shadow severe remaining |",
+    "|---|---|---|---|---|---|---|---|",
   ];
 
   for (const scenario of report.scenarios) {
@@ -208,35 +143,13 @@ export function formatReplayMarkdown(report: ReplayReport): string {
         pipelineCell(pipelineA, "safe"),
         pipelineCell(pipelineA, "guardCaught"),
         pipelineCell(pipelineC, "safe"),
-        pipelineCell(pipelineC, "validatorCaught"),
         pipelineCell(pipelineC, "shadowSevereRemaining"),
         pipelineCell(pipelineCdoubleprime, "safe"),
         pipelineCell(pipelineCdoubleprime, "safeWithUsefulOutput"),
         pipelineCell(pipelineCdoubleprime, "shadowSevereRemaining"),
-      ].join(" | ").replace(/^/, "| ") + " |",
-    );
-  }
-
-  lines.push("");
-  lines.push("## Manifest Validation Trace Counts");
-  lines.push("");
-  lines.push(
-    "| Failure class | Pipeline C validated_claims_by_kind | Pipeline C literal_values_validated_by_kind | Pipeline C″ validated_claims_by_kind | Pipeline C″ literal_values_validated_by_kind |",
-  );
-  lines.push("|---|---|---|---|---|");
-
-  for (const scenario of report.scenarios) {
-    const pipelineC = scenario.pipelines.C;
-    const pipelineCdoubleprime = scenario.pipelines.Cdoubleprime;
-
-    lines.push(
-      [
-        escapeMarkdownCell(scenario.failureClass),
-        countRecordCell(pipelineC.validatedClaimsByKind),
-        countRecordCell(pipelineC.literalValuesValidatedByKind),
-        countRecordCell(pipelineCdoubleprime.validatedClaimsByKind),
-        countRecordCell(pipelineCdoubleprime.literalValuesValidatedByKind),
-      ].join(" | ").replace(/^/, "| ") + " |",
+      ]
+        .join(" | ")
+        .replace(/^/, "| ") + " |",
     );
   }
 
@@ -255,7 +168,9 @@ export function formatReplayMarkdown(report: ReplayReport): string {
     lines.push("- No scenario had Pipeline C final text safety worse than Pipeline A.");
   } else {
     for (const scenario of notable) {
-      lines.push(`- ${scenario.failureClass}: Pipeline C final text was not safe while Pipeline A was safe.`);
+      lines.push(
+        `- ${scenario.failureClass}: Pipeline C final text was not safe while Pipeline A was safe.`,
+      );
     }
   }
 

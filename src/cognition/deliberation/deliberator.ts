@@ -1,7 +1,6 @@
 // Thin deliberation orchestrator: selects S1/S2, calls planner/finalizer, and assembles results.
 import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import type { StreamWriter } from "../../stream/index.js";
-import { LLMError } from "../../util/errors.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { LLMCompleteOptions } from "../../llm/index.js";
 import {
@@ -12,9 +11,7 @@ import {
   UNTRUSTED_DATA_PREAMBLE,
 } from "./constants.js";
 import { buildDialogueMessages, toContentBlockMessages } from "./dialogue.js";
-import { NO_OUTPUT_FINALIZER_TOOL_NAME, runFinalizer } from "./finalizer.js";
-import { runManifestFinalizer, type ManifestFinalizerResult } from "./manifest-finalizer.js";
-import { ManifestValidator, type ManifestValidationResult } from "./manifest-validator.js";
+import { runFinalizer, type FinalizerResult } from "./finalizer.js";
 import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
 import { summarizeRetrievedEvidence } from "./prompt/retrieval.js";
@@ -40,10 +37,7 @@ export type {
   TurnStakes,
 } from "./types.js";
 
-function sumOptional(
-  current: number | undefined,
-  next: number | undefined,
-): number | undefined {
+function sumOptional(current: number | undefined, next: number | undefined): number | undefined {
   if (current === undefined && next === undefined) {
     return undefined;
   }
@@ -67,10 +61,7 @@ function aggregateUsage(
     current.cache_creation_input_tokens,
     next.cache_creation_input_tokens,
   );
-  const cacheRead = sumOptional(
-    current.cache_read_input_tokens,
-    next.cache_read_input_tokens,
-  );
+  const cacheRead = sumOptional(current.cache_read_input_tokens, next.cache_read_input_tokens);
   return {
     input_tokens: current.input_tokens + next.input_tokens,
     output_tokens: current.output_tokens + next.output_tokens,
@@ -96,8 +87,6 @@ function dedupeRetrievedEpisodes(results: readonly RetrievedEpisode[]): Retrieve
   return deduped;
 }
 
-type FinalizerResult = Awaited<ReturnType<typeof runFinalizer>>;
-
 type FinalizerEmission = {
   response: string;
   emitted: boolean;
@@ -105,15 +94,17 @@ type FinalizerEmission = {
 };
 
 function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppressionReason | null {
-  if (result.terminalToolCalls.some((call) => call.name === NO_OUTPUT_FINALIZER_TOOL_NAME)) {
-    return "no_output_tool";
+  switch (result.decision.kind) {
+    case "no_output":
+      return "no_output_tool";
+    case "empty":
+      return "empty_finalizer";
+    case "invalid_tool":
+      return "finalizer_failed";
+    case "answer":
+    case "self_report":
+      return null;
   }
-
-  if (result.text.trim().length === 0) {
-    return "empty_finalizer";
-  }
-
-  return null;
 }
 
 function buildFinalizerEmission(result: FinalizerResult): FinalizerEmission {
@@ -130,20 +121,37 @@ function buildFinalizerEmission(result: FinalizerResult): FinalizerEmission {
     };
   }
 
+  if (result.decision.kind === "self_report") {
+    return {
+      response: result.decision.text,
+      emitted: true,
+      emission: {
+        kind: "message",
+        content: result.decision.text,
+        persistence_class: result.decision.persistence_class,
+      },
+    };
+  }
+
+  if (result.decision.kind !== "answer") {
+    return {
+      response: "",
+      emitted: false,
+      emission: {
+        kind: "suppressed",
+        reason: "finalizer_failed",
+      },
+    };
+  }
+
   return {
-    response: result.text,
+    response: result.decision.text,
     emitted: true,
     emission: {
       kind: "message",
-      content: result.text,
+      content: result.decision.text,
     },
   };
-}
-
-function manifestPersistenceClass(result: ManifestFinalizerResult) {
-  return result.manifest.claims.some((claim) => claim.kind === "self_report")
-    ? ("assistant_self_report" as const)
-    : undefined;
 }
 
 function cognitionThinkingOption(
@@ -159,40 +167,6 @@ function cognitionThinkingOption(
   };
 }
 
-function buildManifestFinalizerEmission(
-  result: ManifestFinalizerResult,
-): FinalizerEmission {
-  if (result.manifest.discourse_act === "no_output") {
-    return {
-      response: "",
-      emitted: false,
-      emission: {
-        kind: "suppressed",
-        reason: "manifest_no_output",
-      },
-    };
-  }
-
-  const finalText = result.manifest.final_text;
-  const persistenceClass = manifestPersistenceClass(result);
-
-  return {
-    response: finalText,
-    emitted: true,
-    emission: {
-      kind: "message",
-      content: finalText,
-      // Sprint 7 intentionally uses conservative entry-level typing: any
-      // manifest self_report marks the whole emitted assistant message.
-      ...(persistenceClass === undefined ? {} : { persistence_class: persistenceClass }),
-    },
-  };
-}
-
-function isManifestFinalizerOutputInvalid(error: unknown): boolean {
-  return error instanceof LLMError && error.code === "MANIFEST_FINALIZER_OUTPUT_INVALID";
-}
-
 export class Deliberator {
   private readonly tracer: TurnTracer;
   private readonly clock: Clock;
@@ -200,41 +174,6 @@ export class Deliberator {
   constructor(private readonly options: DeliberatorOptions) {
     this.tracer = options.tracer ?? NOOP_TRACER;
     this.clock = options.clock ?? new SystemClock();
-  }
-
-  private async validateManifestFinalizerResult(
-    result: ManifestFinalizerResult,
-    context: DeliberationContext,
-  ): Promise<ManifestValidationResult | null> {
-    if (this.options.manifestValidatorEnabled !== true) {
-      return null;
-    }
-
-    if (context.evidenceLedger === undefined || context.evidenceLedger === null) {
-      throw new Error("Manifest validator requires an EvidenceLedger");
-    }
-
-    if (
-      this.options.relationalSlotRepository === undefined ||
-      this.options.actionRepository === undefined
-    ) {
-      throw new Error("Manifest validator requires slot and action repositories");
-    }
-
-    const validator = new ManifestValidator({
-      slotRepository: this.options.relationalSlotRepository,
-      actionRepository: this.options.actionRepository,
-      entityRepository: context.entityRepository,
-      tracer: this.tracer,
-    });
-
-    return validator.validate({
-      manifest: result.manifest,
-      evidenceLedger: context.evidenceLedger,
-      userEntryId: context.userEntryId,
-      audienceEntityId: context.audienceEntityId,
-      turnId: context.turnId,
-    });
   }
 
   async run(
@@ -288,79 +227,10 @@ export class Deliberator {
     const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage);
     const dialogueBlockMessages = toContentBlockMessages(dialogueMessages);
     const deliberatorTools = this.options.toolDispatcher.listTools("deliberator");
-    const useManifestFinalizer = this.options.manifestFinalizerEnabled === true;
+    const useEmissionFinalizer = this.options.emissionFinalizerEnabled === true;
     const thinking = cognitionThinkingOption(this.options);
 
     if (decision.path === "system_1") {
-      if (useManifestFinalizer) {
-        let response: ManifestFinalizerResult;
-
-        try {
-          response = await runManifestFinalizer({
-            llmClient: this.options.llmClient,
-            model: this.options.cognitionModel,
-            baseSystemPrompt,
-            dialogueMessages,
-            evidenceLedger: context.evidenceLedger ?? null,
-            maxTokens: systemOneMaxTokens,
-            ...(thinking === undefined ? {} : { thinking }),
-            path: "system_1",
-            ...(evidenceLedgerPromptSections === null
-              ? {}
-              : { additionalPromptSections: evidenceLedgerPromptSections }),
-            tracer: this.tracer,
-            turnId: context.turnId,
-          });
-        } catch (error) {
-          if (!isManifestFinalizerOutputInvalid(error)) {
-            throw error;
-          }
-
-          return {
-            path: "system_1",
-            response: "",
-            emitted: false,
-            emission: {
-              kind: "suppressed",
-              reason: "manifest_finalizer_failed",
-            },
-            emissionRecommendation: "emit",
-            thoughtStreamEntryIds: [],
-            thoughts: [],
-            tool_calls: [],
-            usage: {
-              input_tokens: 0,
-              output_tokens: 0,
-              stop_reason: "tool_error",
-            },
-            decision_reason: decision.reason,
-            retrievedEpisodes: [...context.retrievalResult],
-            referencedEpisodeIds: null,
-            intents: [],
-            thoughtsPersisted: false,
-          };
-        }
-        await this.validateManifestFinalizerResult(response, context);
-        const finalized = buildManifestFinalizerEmission(response);
-
-        return {
-          path: "system_1",
-          response: finalized.response,
-          emitted: finalized.emitted,
-          emission: finalized.emission,
-          emissionRecommendation: "emit",
-          thoughtStreamEntryIds: [],
-          thoughts: [],
-          tool_calls: [],
-          usage: response.usage,
-          decision_reason: decision.reason,
-          retrievedEpisodes: [...context.retrievalResult],
-          referencedEpisodeIds: null,
-          intents: [],
-          thoughtsPersisted: false,
-        };
-      }
-
       const response = await runFinalizer({
         llmClient: this.options.llmClient,
         dispatcher: this.options.toolDispatcher,
@@ -374,6 +244,7 @@ export class Deliberator {
         maxTokens: systemOneMaxTokens,
         ...(thinking === undefined ? {} : { thinking }),
         path: "system_1",
+        mode: useEmissionFinalizer ? "emission_tools" : "free_text",
         ...(evidenceLedgerPromptSections === null
           ? {}
           : { additionalPromptSections: evidenceLedgerPromptSections }),
@@ -445,7 +316,7 @@ export class Deliberator {
       }
     }
 
-    if (plan?.emission_recommendation === "no_output" && !useManifestFinalizer) {
+    if (plan?.emission_recommendation === "no_output" && !useEmissionFinalizer) {
       return {
         path: "system_2",
         response: "",
@@ -500,89 +371,34 @@ export class Deliberator {
     let finalized: FinalizerEmission;
     let finalToolCallsMade: FinalizerResult["toolCallsMade"] = [];
 
-    if (useManifestFinalizer) {
-      let manifestResponse: ManifestFinalizerResult;
-
-      try {
-        manifestResponse = await runManifestFinalizer({
-          llmClient: this.options.llmClient,
-          model: this.options.cognitionModel,
-          baseSystemPrompt,
-          dialogueMessages,
-          evidenceLedger: context.evidenceLedger ?? null,
-          maxTokens: systemTwoMaxTokens,
-          ...(thinking === undefined ? {} : { thinking }),
-          path: "system_2",
-          additionalPromptSections,
-          tracer: this.tracer,
-          turnId: context.turnId,
-        });
-      } catch (error) {
-        if (!isManifestFinalizerOutputInvalid(error)) {
-          throw error;
-        }
-
-        finalized = {
-          response: "",
-          emitted: false,
-          emission: {
-            kind: "suppressed",
-            reason: "manifest_finalizer_failed",
-          },
-        };
-        return {
-          path: "system_2",
-          response: finalized.response,
-          emitted: finalized.emitted,
-          emission: finalized.emission,
-          emissionRecommendation: "emit",
-          thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),
-          thoughts,
-          tool_calls: [],
-          usage,
-          decision_reason: decision.reason,
-          retrievedEpisodes: dedupeRetrievedEpisodes([
-            ...context.retrievalResult,
-            ...(secondaryRetrieval?.episodes ?? []),
-          ]),
-          referencedEpisodeIds: plan?.referenced_episode_ids ?? null,
-          intents: plan === null ? [] : [...plan.intents],
-          thoughtsPersisted,
-        };
-      }
-      usage = aggregateUsage(usage, manifestResponse.usage);
-
-      await this.validateManifestFinalizerResult(manifestResponse, context);
-      finalized = buildManifestFinalizerEmission(manifestResponse);
-    } else {
-      const finalResponse = await runFinalizer({
-        llmClient: this.options.llmClient,
-        dispatcher: this.options.toolDispatcher,
-        sessionId: context.sessionId,
-        audienceEntityId: context.audienceEntityId,
-        model: this.options.cognitionModel,
-        baseSystemPrompt,
-        initialMessages: dialogueBlockMessages,
-        tools: deliberatorTools,
-        userEntryId: context.userEntryId,
-        maxTokens: systemTwoMaxTokens,
-        ...(thinking === undefined ? {} : { thinking }),
-        path: "system_2",
-        additionalPromptSections,
-        tracer: this.tracer,
-        turnId: context.turnId,
-      });
-      usage = aggregateUsage(usage, finalResponse.usage);
-      finalized = buildFinalizerEmission(finalResponse);
-      finalToolCallsMade = finalResponse.toolCallsMade;
-    }
+    const finalResponse = await runFinalizer({
+      llmClient: this.options.llmClient,
+      dispatcher: this.options.toolDispatcher,
+      sessionId: context.sessionId,
+      audienceEntityId: context.audienceEntityId,
+      model: this.options.cognitionModel,
+      baseSystemPrompt,
+      initialMessages: dialogueBlockMessages,
+      tools: deliberatorTools,
+      userEntryId: context.userEntryId,
+      maxTokens: systemTwoMaxTokens,
+      ...(thinking === undefined ? {} : { thinking }),
+      path: "system_2",
+      additionalPromptSections,
+      mode: useEmissionFinalizer ? "emission_tools" : "free_text",
+      tracer: this.tracer,
+      turnId: context.turnId,
+    });
+    usage = aggregateUsage(usage, finalResponse.usage);
+    finalized = buildFinalizerEmission(finalResponse);
+    finalToolCallsMade = finalResponse.toolCallsMade;
 
     return {
       path: "system_2",
       response: finalized.response,
       emitted: finalized.emitted,
       emission: finalized.emission,
-      emissionRecommendation: useManifestFinalizer
+      emissionRecommendation: useEmissionFinalizer
         ? "emit"
         : (plan?.emission_recommendation ?? "emit"),
       thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),

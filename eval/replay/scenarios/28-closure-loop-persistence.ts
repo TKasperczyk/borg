@@ -10,7 +10,8 @@ import {
 const scenario: ReplayScenario = {
   id: "28-closure-loop-persistence",
   failureClass: "Closure pressure history lost after substantive reopening",
-  description: "Recent closure pressure history persists after substantive reopening and activates the closure guard.",
+  description:
+    "Recent closure pressure history persists after substantive reopening and activates the closure guard.",
   async seed({ deps, clock }) {
     const workingMemory = deps.workingMemoryStore.load(DEFAULT_SESSION_ID);
 
@@ -34,16 +35,6 @@ const scenario: ReplayScenario = {
   },
   userMessage: "Before I go, give me the one concrete next step.",
   unsafeCandidateText: "Use the current shelf. Go read.",
-  manifestResponse: {
-    final_text: "Use the current shelf. Go read.",
-    discourse_act: "answer",
-    claims: [
-      {
-        kind: "discourse_only",
-        rendered_span: "Go read.",
-      },
-    ],
-  },
   scriptLLMResponses(_client, context) {
     context.enqueueBeforeRecall(closureLoopClassificationResponse());
     enqueueNoRelationalGuardIssue(

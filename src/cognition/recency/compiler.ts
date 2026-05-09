@@ -83,7 +83,7 @@ function suppressionReason(entry: StreamEntry): string {
 
 function suppressionCategoryContext(reason: string): string {
   if (reason === "manifest_validation_failed_critical") {
-    return "validator caught an unsupported or unsafe manifest claim";
+    return "prior unsupported response guard suppressed output";
   }
 
   if (reason.startsWith("relational_guard_")) {

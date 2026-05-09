@@ -3,7 +3,6 @@ import { createActionId, createStreamEntryId } from "../../../src/util/ids.js";
 import type { ReplayScenario } from "../scenario.js";
 import {
   enqueueRelationalGuardFailureWhenValidatorAbsent,
-  evidenceRef,
   lowerIncludesNone,
   makeRelationalClaim,
 } from "../scenario.js";
@@ -40,19 +39,6 @@ const scenario: ReplayScenario = {
   },
   userMessage: "What's the status of the update?",
   unsafeCandidateText: "The update is still committed, not done. I finished that for you.",
-  manifestResponse: {
-    final_text: "The update is still committed, not done. I finished that for you.",
-    discourse_act: "answer",
-    claims: [
-      {
-        kind: "action_state",
-        rendered_span: "I finished that for you.",
-        action_record_id: ACTION_ID,
-        asserted_state: "completed",
-        evidence: [evidenceRef(`action_record:${ACTION_ID}`, "action_record")],
-      },
-    ],
-  },
   scriptLLMResponses(_client, context) {
     enqueueRelationalGuardFailureWhenValidatorAbsent(context, {
       claim: makeRelationalClaim({

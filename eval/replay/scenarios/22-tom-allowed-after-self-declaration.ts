@@ -15,17 +15,6 @@ const scenario: ReplayScenario = {
   audience: "Tom",
   perceptionUseLlmFallback: true,
   unsafeCandidateText: "Goodnight, Tom.",
-  manifestResponse: {
-    final_text: "Goodnight, Tom.",
-    discourse_act: "answer",
-    claims: [
-      {
-        kind: "discourse_only",
-        rendered_span: "Goodnight, Tom.",
-        addresses_audience_by_name: true,
-      },
-    ],
-  },
   scriptLLMResponses(_client, context) {
     context.enqueueBeforeRecall({
       text: "",

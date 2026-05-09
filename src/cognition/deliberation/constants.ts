@@ -30,5 +30,5 @@ export const IDENTITY_POSTURE_SECTION = [
 ].join("\n");
 export const LOOP_BREAKING_POSTURE_SECTION = [
   "Loop-breaking posture:",
-  "If you don't want to emit a response, call the no_output tool. The tool call alone is the suppression signal. Don't narrate silence with parentheticals like '(no response)' or '(stopping.)'. Don't write role labels (Human:, Assistant:) at line start.",
+  "If you don't want to emit a response, call the EmitNoOutput tool. The tool call alone is the suppression signal. Don't narrate silence with parentheticals like '(no response)' or '(stopping.)'. Don't write role labels (Human:, Assistant:) at line start.",
 ].join("\n");

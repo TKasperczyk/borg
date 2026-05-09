@@ -1,6 +1,5 @@
 import type { ReplayScenario } from "../scenario.js";
 import {
-  currentUserEvidenceRef,
   enqueueRelationalGuardFailureWhenValidatorAbsent,
   lowerIncludesNone,
   makeRelationalClaim,
@@ -14,20 +13,6 @@ const scenario: ReplayScenario = {
   userMessage: "The itinerary is Sevilla, Granada, Córdoba, Madrid.",
   unsafeCandidateText:
     "Your route is Sevilla, Granada, Córdoba, Madrid, and Barcelona. Start with the listed cities in order.",
-  manifestResponse: {
-    final_text:
-      "Your route is Sevilla, Granada, Córdoba, Madrid, and Barcelona. Start with the listed cities in order.",
-    discourse_act: "answer",
-    claims: [
-      {
-        kind: "user_fact",
-        rendered_span: "Your route is Sevilla, Granada, Córdoba, Madrid, and Barcelona.",
-        exact_values: ["Barcelona"],
-        evidence: [currentUserEvidenceRef()],
-        confidence: "direct",
-      },
-    ],
-  },
   scriptLLMResponses(_client, context) {
     enqueueRelationalGuardFailureWhenValidatorAbsent(context, {
       claim: makeRelationalClaim({

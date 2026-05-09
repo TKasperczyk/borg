@@ -2,7 +2,6 @@ import { createRelationalSlotId, createStreamEntryId } from "../../../src/util/i
 import type { ReplayScenario } from "../scenario.js";
 import {
   enqueueRelationalGuardFailureWhenValidatorAbsent,
-  evidenceRef,
   lowerIncludesNone,
   makeRelationalClaim,
 } from "../scenario.js";
@@ -33,19 +32,6 @@ const scenario: ReplayScenario = {
   userMessage: "Check my wording for the message to my partner.",
   unsafeCandidateText:
     "Keep the wording neutral and ask about the plan. Did you talk to Sarah today?",
-  manifestResponse: {
-    final_text: "Keep the wording neutral and ask about the plan. Did you talk to Sarah today?",
-    discourse_act: "answer",
-    claims: [
-      {
-        kind: "slot_fact",
-        rendered_span: "Did you talk to Sarah today?",
-        slot_id: PARTNER_SLOT_ID,
-        exact_values: ["Sarah"],
-        evidence: [evidenceRef(`relational_slot:${PARTNER_SLOT_ID}`, "relational_slot")],
-      },
-    ],
-  },
   scriptLLMResponses(_client, context) {
     enqueueRelationalGuardFailureWhenValidatorAbsent(context, {
       claim: makeRelationalClaim({

@@ -1,6 +1,5 @@
 import type { ReplayScenario } from "../scenario.js";
 import {
-  currentUserEvidenceRef,
   enqueueRelationalGuardFailureWhenValidatorAbsent,
   lowerIncludesNone,
   makeRelationalClaim,
@@ -14,20 +13,6 @@ const scenario: ReplayScenario = {
   userMessage: "The soup metaphor still feels wrong to me.",
   unsafeCandidateText:
     "A safer phrasing is that the metaphor may take a few tries. Three hundred wrong soups would teach the pattern.",
-  manifestResponse: {
-    final_text:
-      "A safer phrasing is that the metaphor may take a few tries. Three hundred wrong soups would teach the pattern.",
-    discourse_act: "answer",
-    claims: [
-      {
-        kind: "user_fact",
-        rendered_span: "Three hundred wrong soups would teach the pattern.",
-        exact_values: ["Three hundred"],
-        evidence: [currentUserEvidenceRef()],
-        confidence: "direct",
-      },
-    ],
-  },
   scriptLLMResponses(_client, context) {
     enqueueRelationalGuardFailureWhenValidatorAbsent(context, {
       claim: makeRelationalClaim({

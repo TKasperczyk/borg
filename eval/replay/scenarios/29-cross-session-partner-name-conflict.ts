@@ -5,7 +5,8 @@ import { enqueueNoRelationalGuardIssue } from "../scenario.js";
 const scenario: ReplayScenario = {
   id: "29-cross-session-partner-name-conflict",
   failureClass: "Cross-session partner-name conflict not surfaced",
-  description: 'Prior partner.name=Maya is quarantined; current user introduces Sara. Sprint 8c will handle reconciliation.',
+  description:
+    "Prior partner.name=Maya is quarantined; current user introduces Sara. Sprint 8c will handle reconciliation.",
   async seed({ deps }) {
     const user = deps.entityRepository.resolve("user", {
       provenance: "config_default_user",
@@ -22,22 +23,14 @@ const scenario: ReplayScenario = {
   },
   userMessage: "Sara is my partner.",
   unsafeCandidateText: "Sara is your partner.",
-  manifestResponse: {
-    final_text: "Sara is your partner.",
-    discourse_act: "answer",
-    claims: [
-      {
-        kind: "discourse_only",
-        rendered_span: "Sara is your partner.",
-      },
-    ],
-  },
   scriptLLMResponses(_client, context) {
     enqueueNoRelationalGuardIssue(context);
   },
   safeOutputPredicate: (text) => text.includes("Sara"),
   severeGuardCategories: [],
-  notes: ["Sprint 8c gap: cross-session relational-slot conflict surfacing is intentionally not implemented here."],
+  notes: [
+    "Sprint 8c gap: cross-session relational-slot conflict surfacing is intentionally not implemented here.",
+  ],
 };
 
 export default scenario;

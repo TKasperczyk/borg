@@ -25,6 +25,8 @@ const DEFAULT_MAX_TOOL_CALLS_PER_ITERATION = 3;
 export type ToolLoopUsage = {
   input_tokens: number;
   output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
   stop_reason: string | null;
 };
 
@@ -52,6 +54,7 @@ export type ExecuteToolLoopOptions = {
   maxTokens?: number;
   temperature?: number;
   thinking?: LLMConverseOptions["thinking"];
+  toolChoice?: LLMConverseOptions["tool_choice"];
   maxIterations?: number;
   maxToolCallsPerIteration?: number;
   terminalToolNames?: readonly string[];
@@ -69,11 +72,27 @@ export type ToolLoopResult = {
   usage: ToolLoopUsage;
 };
 
+function sumOptional(current: number | undefined, next: number | undefined): number | undefined {
+  if (current === undefined && next === undefined) {
+    return undefined;
+  }
+
+  return (current ?? 0) + (next ?? 0);
+}
+
 function aggregateUsage(current: ToolLoopUsage, next: ToolLoopUsage): ToolLoopUsage {
+  const cacheCreation = sumOptional(
+    current.cache_creation_input_tokens,
+    next.cache_creation_input_tokens,
+  );
+  const cacheRead = sumOptional(current.cache_read_input_tokens, next.cache_read_input_tokens);
+
   return {
     input_tokens: current.input_tokens + next.input_tokens,
     output_tokens: current.output_tokens + next.output_tokens,
     stop_reason: next.stop_reason,
+    ...(cacheCreation === undefined ? {} : { cache_creation_input_tokens: cacheCreation }),
+    ...(cacheRead === undefined ? {} : { cache_read_input_tokens: cacheRead }),
   };
 }
 
@@ -234,7 +253,12 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
       model: options.model,
       system: options.systemPrompt,
       messages,
-      ...(toolsEnabled ? { tools: anthropicTools } : {}),
+      ...(toolsEnabled
+        ? {
+            tools: anthropicTools,
+            ...(options.toolChoice === undefined ? {} : { tool_choice: options.toolChoice }),
+          }
+        : {}),
       max_tokens: options.maxTokens,
       ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
       ...(options.thinking === undefined ? {} : { thinking: options.thinking }),

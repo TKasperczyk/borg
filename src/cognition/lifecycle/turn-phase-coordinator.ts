@@ -459,10 +459,7 @@ export class TurnPhaseCoordinator {
       cognitionThinking: this.options.config.generation.cognition.thinking,
       clock: this.options.clock,
       tracer: this.options.tracer,
-      manifestFinalizerEnabled: this.options.config.generation.manifestFinalizer.enabled,
-      manifestValidatorEnabled: this.options.config.generation.manifestValidator.enabled,
-      relationalSlotRepository: this.options.relationalSlotRepository,
-      actionRepository: this.options.actionRepository,
+      emissionFinalizerEnabled: this.options.config.generation.manifestFinalizer.enabled,
     });
     const deliberation = await deliberator.run(
       {

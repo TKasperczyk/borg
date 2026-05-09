@@ -329,7 +329,7 @@ describe("buildBaseSystemPrompt", () => {
     const block = extractBlock(prompt, "borg_discourse_control");
 
     expect(block).toContain("closure_loop_detected");
-    expect(block).toContain("either call no_output or name the loop once");
+    expect(block).toContain("either call EmitNoOutput or name the loop once");
   });
 
   it("renders recent closure pressure history in trusted discourse control", () => {
@@ -372,7 +372,7 @@ describe("buildBaseSystemPrompt", () => {
             recent_suppressions: [
               {
                 turn_id: "turn-b",
-                reason: "manifest_validation_failed_critical",
+                reason: "no_output_tool",
                 ts: NOW_MS,
               },
             ],
@@ -384,7 +384,7 @@ describe("buildBaseSystemPrompt", () => {
     const block = extractBlock(prompt, "borg_discourse_control");
 
     expect(block).toContain("Recent silences from your side");
-    expect(block).toContain("turn-b:manifest_validation_failed_critical");
+    expect(block).toContain("turn-b:no_output_tool");
     expect(block).toContain("Do not invent network failures");
   });
 
@@ -675,7 +675,7 @@ describe("buildBaseSystemPrompt", () => {
     const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
 
     expect(prompt).toContain("Loop-breaking posture:");
-    expect(prompt).toContain("call the no_output tool");
+    expect(prompt).toContain("call the EmitNoOutput tool");
     expect(prompt).toContain("tool call alone is the suppression signal");
     expect(prompt).toContain("Don't write role labels (Human:, Assistant:) at line start.");
   });

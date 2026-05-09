@@ -243,35 +243,13 @@ function createTurnPlanResponse(intents: readonly IntentRecord[] = []) {
   };
 }
 
-function createManifestFinalizerResponse(input: unknown) {
+function createFinalizerToolResponse(tool: { id: string; name: string; input: unknown }) {
   return {
-    text: JSON.stringify(input),
+    text: "",
     input_tokens: 12,
     output_tokens: 6,
-    stop_reason: "end_turn" as const,
-    tool_calls: [],
-    structured_output: input,
-  };
-}
-
-function createMissingStructuredManifestResponse(text = ""): LLMCompleteResult {
-  return {
-    text,
-    input_tokens: 12,
-    output_tokens: 6,
-    stop_reason: "end_turn",
-    tool_calls: [],
-    structured_output: undefined,
-  };
-}
-
-function createUnparsedStructuredManifestResponse(text: string): LLMCompleteResult {
-  return {
-    text,
-    input_tokens: 12,
-    output_tokens: 6,
-    stop_reason: "end_turn",
-    tool_calls: [],
+    stop_reason: "tool_use" as const,
+    tool_calls: [tool],
   };
 }
 
@@ -849,7 +827,7 @@ describe("TurnOrchestrator evidence ledger", () => {
     }
   });
 
-  it("uses manifest finalizer output as the agent response and traces claims", async () => {
+  it("uses emission-tool finalizer output as the agent response and traces the decision", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -862,23 +840,10 @@ describe("TurnOrchestrator evidence ledger", () => {
         }),
         createActionStateResponse([]),
         createGoalPromotionResponse([]),
-        createManifestFinalizerResponse({
-          final_text: finalText,
-          discourse_act: "answer",
-          claims: [
-            {
-              kind: "user_fact",
-              rendered_span: "Marta is the tutor",
-              exact_values: ["Marta is the tutor"],
-              evidence: [
-                {
-                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                  source_type: "current_user_message",
-                },
-              ],
-              confidence: "direct",
-            },
-          ],
+        createFinalizerToolResponse({
+          id: "toolu_emit_answer",
+          name: "EmitAnswer",
+          input: { text: finalText },
         }),
         createClaimAuditResponse([]),
         createClosureResponseAuditResponse(),
@@ -908,18 +873,20 @@ describe("TurnOrchestrator evidence ledger", () => {
       const finalizerRequest = firstFinalizerRequest(llm.requests);
       const finalizerSystem = systemText(finalizerRequest);
       const traceEvents = readTraceEvents(tracePath);
-      const manifestEvent = traceEvents.find(
-        (event) => event.event === "manifest_finalizer_emitted",
-      );
+      const finalizerEvent = traceEvents.find((event) => event.event === "finalizer_emitted");
       const ledgerEvent = traceEvents.find((event) => event.event === "evidence_ledger_built");
       const agentEntry = borg.stream.tail(20).find((entry) => entry.kind === "agent_msg");
 
       expect(result.response).toBe(finalText);
       expect(result.emitted).toBe(true);
       expect(agentEntry?.content).toBe(finalText);
-      expect(finalizerRequest?.tool_choice).toBeUndefined();
-      expect(finalizerRequest?.tools).toBeUndefined();
-      expect(finalizerRequest?.output_config?.format.type).toBe("json_schema");
+      expect(finalizerRequest?.tool_choice).toEqual({ type: "any" });
+      expect(finalizerRequest?.output_config).toBeUndefined();
+      expect(finalizerRequest?.tools?.map((tool) => tool.name)).toEqual([
+        "EmitAnswer",
+        "EmitNoOutput",
+        "EmitSelfReport",
+      ]);
       expect(finalizerSystem).toContain("<borg_evidence_ledger>");
       expect(finalizerSystem).toContain("id=current_user_message:");
       expect(llm.requests.some((request) => request.budget === "relational-claim-auditor")).toBe(
@@ -931,34 +898,18 @@ describe("TurnOrchestrator evidence ledger", () => {
       expect(ledgerEvent).toMatchObject({
         event: "evidence_ledger_built",
       });
-      expect(manifestEvent).toMatchObject({
-        event: "manifest_finalizer_emitted",
-        final_text_length: finalText.length,
-        discourse_act: "answer",
-        claim_count: 1,
-        claim_kinds: ["user_fact:1"],
-        parsed: true,
+      expect(finalizerEvent).toMatchObject({
+        event: "finalizer_emitted",
+        decision: "answer",
+        text_length: finalText.length,
+        mode: "emission_tools",
       });
-      expect(manifestEvent?.claims).toEqual([
-        {
-          kind: "user_fact",
-          rendered_span: "Marta is the tutor",
-          exact_values: ["Marta is the tutor"],
-          evidence: [
-            {
-              id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-              source_type: "current_user_message",
-            },
-          ],
-          confidence: "direct",
-        },
-      ]);
     } finally {
       await borg.close();
     }
   });
 
-  it("persists manifest self-report responses as assistant self-report stream entries", async () => {
+  it("persists EmitSelfReport responses as assistant self-report stream entries", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_800_000_182_500);
@@ -970,17 +921,10 @@ describe("TurnOrchestrator evidence ledger", () => {
         }),
         createActionStateResponse([]),
         createGoalPromotionResponse([]),
-        createManifestFinalizerResponse({
-          final_text: finalText,
-          discourse_act: "answer",
-          claims: [
-            {
-              kind: "self_report",
-              rendered_span: finalText,
-              persistence_class: "assistant_self_report",
-              evidence: [],
-            },
-          ],
+        createFinalizerToolResponse({
+          id: "toolu_emit_self_report",
+          name: "EmitSelfReport",
+          input: { text: finalText },
         }),
         createClaimAuditResponse([]),
         createClosureResponseAuditResponse(),
@@ -1020,7 +964,7 @@ describe("TurnOrchestrator evidence ledger", () => {
     }
   });
 
-  it("suppresses manifest no_output with a manifest_no_output marker", async () => {
+  it("suppresses EmitNoOutput with a no_output_tool marker", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -1032,11 +976,10 @@ describe("TurnOrchestrator evidence ledger", () => {
         }),
         createActionStateResponse([]),
         createGoalPromotionResponse([]),
-        createManifestFinalizerResponse({
-          final_text: "",
-          discourse_act: "no_output",
-          claims: [],
-          no_output_reason: "natural_close",
+        createFinalizerToolResponse({
+          id: "toolu_emit_no_output",
+          name: "EmitNoOutput",
+          input: { reason: "natural_close" },
         }),
       ],
     });
@@ -1058,9 +1001,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       });
 
       const traceEvents = readTraceEvents(tracePath);
-      const manifestEvent = traceEvents.find(
-        (event) => event.event === "manifest_finalizer_emitted",
-      );
+      const finalizerEvent = traceEvents.find((event) => event.event === "finalizer_emitted");
       const suppressedEntry = borg.stream
         .tail(20)
         .find((entry) => entry.kind === "agent_suppressed");
@@ -1069,198 +1010,20 @@ describe("TurnOrchestrator evidence ledger", () => {
       expect(result.emitted).toBe(false);
       expect(result.emission).toMatchObject({
         kind: "suppressed",
-        reason: "manifest_no_output",
+        reason: "no_output_tool",
       });
       expect(suppressedEntry?.content).toMatchObject({
-        reason: "manifest_no_output",
+        reason: "no_output_tool",
       });
-      expect(manifestEvent).toMatchObject({
-        event: "manifest_finalizer_emitted",
-        discourse_act: "no_output",
-        claim_count: 0,
-        no_output_reason: "natural_close",
-        parsed: true,
+      expect(finalizerEvent).toMatchObject({
+        event: "finalizer_emitted",
+        decision: "no_output",
+        reason: "natural_close",
       });
     } finally {
       await borg.close();
     }
   });
-
-  it("demotes per-kind violations to discourse_only without suppressing the turn", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
-    const tracePath = join(tempDir, "trace.jsonl");
-    const clock = new ManualClock(1_800_000_184_000);
-    const llm = new FakeLLMClient({
-      responses: [
-        createCorrectivePreferenceResponse({
-          classification: "none",
-        }),
-        createActionStateResponse([]),
-        createGoalPromotionResponse([]),
-        createManifestFinalizerResponse({
-          final_text: "This will be demoted.",
-          discourse_act: "answer",
-          claims: [
-            {
-              // interpretation is missing persistence_allowed -- a per-kind
-              // requirement that Anthropic does not enforce at the API level.
-              // Locally, tighten now demotes to discourse_only instead of
-              // failing the whole turn.
-              kind: "interpretation",
-              rendered_span: "This will be demoted.",
-              evidence: [],
-              confidence: "high",
-            },
-          ],
-        }),
-      ],
-    });
-    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
-      tracerPath: tracePath,
-      configOverrides: {
-        generation: {
-          manifestFinalizer: {
-            enabled: true,
-          },
-        },
-      },
-    });
-
-    try {
-      const result = await borg.turn({
-        userMessage: "Answer with a per-kind violation.",
-        stakes: "low",
-      });
-
-      const traceEvents = readTraceEvents(tracePath);
-      const emitted = traceEvents.find(
-        (event) => event.event === "manifest_finalizer_emitted",
-      );
-      const parseFailed = traceEvents.find(
-        (event) => event.event === "manifest_finalizer_parse_failed",
-      );
-      const aborted = traceEvents.find((event) => event.event === "turn_aborted");
-
-      // No suppression -- the turn proceeds with a demoted claim.
-      expect(parseFailed).toBeUndefined();
-      expect(aborted).toBeUndefined();
-      expect(emitted).toMatchObject({
-        parsed: true,
-        demotion_count: 1,
-      });
-      const demotions = emitted?.demotions as Array<{ original_kind: string }> | undefined;
-      expect(demotions?.[0]?.original_kind).toBe("interpretation");
-      expect(result.emission?.kind).not.toBe("suppressed");
-    } finally {
-      await borg.close();
-    }
-  });
-
-  it.each([
-    {
-      name: "missing structured output",
-      response: () => createMissingStructuredManifestResponse(),
-      expectedTrace: "invalid_type",
-    },
-    {
-      name: "invalid JSON text",
-      response: () => createUnparsedStructuredManifestResponse("{"),
-      expectedTrace: "JSON",
-    },
-    {
-      name: "claim kind typo",
-      response: () =>
-        createManifestFinalizerResponse({
-          final_text: "This should suppress.",
-          discourse_act: "answer",
-          claims: [
-            {
-              kind: "user_face",
-              rendered_span: "This should suppress.",
-              exact_values: ["This should suppress."],
-              evidence: [
-                {
-                  id: "current_user_message:strm_aaaaaaaaaaaaaaaa",
-                  source_type: "current_user_message",
-                },
-              ],
-              confidence: "direct",
-            },
-          ],
-        }),
-      expectedTrace: "user_face",
-    },
-    {
-      name: "invalid discourse act",
-      response: () =>
-        createManifestFinalizerResponse({
-          final_text: "This should suppress.",
-          discourse_act: "invalid_act",
-          claims: [
-            {
-              kind: "hedge",
-              rendered_span: "This should suppress.",
-            },
-          ],
-        }),
-      expectedTrace: "invalid_act",
-    },
-  ])(
-    "suppresses manifest finalizer $name without aborting the turn",
-    async ({ response, expectedTrace }) => {
-      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-      tempDirs.push(tempDir);
-      const tracePath = join(tempDir, "trace.jsonl");
-      const clock = new ManualClock(1_800_000_184_500);
-      const llm = new FakeLLMClient({
-        responses: [
-          createCorrectivePreferenceResponse({
-            classification: "none",
-          }),
-          createActionStateResponse([]),
-          createGoalPromotionResponse([]),
-          response(),
-        ],
-      });
-      const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
-        tracerPath: tracePath,
-        configOverrides: {
-          generation: {
-            manifestFinalizer: {
-              enabled: true,
-            },
-          },
-        },
-      });
-
-      try {
-        const result = await borg.turn({
-          userMessage: "Answer with a malformed manifest.",
-          stakes: "low",
-        });
-
-        const traceEvents = readTraceEvents(tracePath);
-        const parseFailed = traceEvents.find(
-          (event) => event.event === "manifest_finalizer_parse_failed",
-        );
-        const aborted = traceEvents.find((event) => event.event === "turn_aborted");
-
-        expect(result.emission).toMatchObject({
-          kind: "suppressed",
-          reason: "manifest_finalizer_failed",
-        });
-        expect(parseFailed).toMatchObject({
-          event: "manifest_finalizer_parse_failed",
-          parsed: false,
-        });
-        expect(JSON.stringify(parseFailed)).toContain(expectedTrace);
-        expect(aborted).toBeUndefined();
-      } finally {
-        await borg.close();
-      }
-    },
-  );
 });
 
 describe("TurnOrchestrator self snapshot audience visibility", () => {

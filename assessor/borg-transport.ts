@@ -82,6 +82,7 @@ export type BorgTransportOptions = {
   keep?: boolean;
   mock?: boolean;
   maintenance?: boolean;
+  includeTracePayloads?: boolean;
   env?: NodeJS.ProcessEnv;
   dataDir?: string;
   tracePath?: string;
@@ -623,6 +624,7 @@ export class BorgTransport {
   private readonly env: NodeJS.ProcessEnv;
   private readonly mock: boolean;
   private readonly maintenance: boolean;
+  private readonly includeTracePayloads?: boolean;
   private readonly llmClient?: BorgOpenOptions["llmClient"];
   private readonly embeddingClient?: BorgOpenOptions["embeddingClient"];
   private readonly clock: ManualClock;
@@ -644,6 +646,7 @@ export class BorgTransport {
     this.env = options.env ?? process.env;
     this.mock = options.mock ?? false;
     this.maintenance = options.maintenance ?? false;
+    this.includeTracePayloads = options.includeTracePayloads;
     this.llmClient = options.llmClient;
     this.embeddingClient = options.embeddingClient;
     this.clock = options.clock ?? new ManualClock(Date.now());
@@ -655,11 +658,15 @@ export class BorgTransport {
       return;
     }
 
+    const includePayloads =
+      this.includeTracePayloads === true ||
+      (this.includeTracePayloads !== false && this.scenario.tracePrompts === true);
     const env = {
       ...this.env,
       BORG_DATA_DIR: this.dataDir,
       BORG_TRACE: this.tracePath,
-      ...(this.scenario.tracePrompts === true ? { BORG_TRACE_PROMPTS: "1" } : {}),
+      ...(includePayloads ? { BORG_TRACE_PROMPTS: "1" } : {}),
+      ...(this.includeTracePayloads === false ? { BORG_TRACE_PROMPTS: "0" } : {}),
     };
 
     if (this.mock) {

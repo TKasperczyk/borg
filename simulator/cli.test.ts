@@ -48,6 +48,12 @@ describe("simulator CLI", () => {
     expect(options.traceOut).toBe("/tmp/y.jsonl");
   });
 
+  it("parses --no-payloads", () => {
+    const options = parseSimulatorCliOptions(["node", "simulate", "--no-payloads"]);
+
+    expect(options.noPayloads).toBe(true);
+  });
+
   it("preserves parsing without a -- separator", () => {
     const options = parseSimulatorCliOptions(["node", "cli.ts", "--mock", "--turns", "1"]);
 
@@ -104,12 +110,7 @@ describe("simulator CLI", () => {
   });
 
   it("parses --shadow-post-gen-guards after a pnpm-style -- separator", () => {
-    const options = parseSimulatorCliOptions([
-      "node",
-      "cli.ts",
-      "--",
-      "--shadow-post-gen-guards",
-    ]);
+    const options = parseSimulatorCliOptions(["node", "cli.ts", "--", "--shadow-post-gen-guards"]);
 
     expect(options.shadowPostGenGuards).toBe(true);
   });

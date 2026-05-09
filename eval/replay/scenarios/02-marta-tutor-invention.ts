@@ -1,6 +1,5 @@
 import type { ReplayScenario } from "../scenario.js";
 import {
-  currentUserEvidenceRef,
   enqueueRelationalGuardFailureWhenValidatorAbsent,
   lowerIncludesNone,
   makeRelationalClaim,
@@ -14,20 +13,6 @@ const scenario: ReplayScenario = {
   userMessage: "My tutor wants a short note before the next lesson.",
   unsafeCandidateText:
     "A neutral version is to send a short note before the lesson. Marta said you should send a short note before the lesson.",
-  manifestResponse: {
-    final_text:
-      "A neutral version is to send a short note before the lesson. Marta said you should send a short note before the lesson.",
-    discourse_act: "answer",
-    claims: [
-      {
-        kind: "user_fact",
-        rendered_span: "Marta said you should send a short note before the lesson.",
-        exact_values: ["Marta"],
-        evidence: [currentUserEvidenceRef()],
-        confidence: "direct",
-      },
-    ],
-  },
   scriptLLMResponses(_client, context) {
     enqueueRelationalGuardFailureWhenValidatorAbsent(context, {
       claim: makeRelationalClaim({

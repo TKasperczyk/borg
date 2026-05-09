@@ -27,6 +27,7 @@ export type ParsedOptions = {
   keep?: boolean;
   mock?: boolean;
   real?: boolean;
+  noPayloads?: boolean;
   shadowPostGenGuards?: boolean;
   pipelineCDoublePrime?: boolean;
 };
@@ -34,6 +35,7 @@ export type ParsedOptions = {
 type RawParsedOptions = ParsedOptions & {
   "--"?: string[];
   "pipelineC-doublePrime"?: boolean;
+  payloads?: boolean;
 };
 
 const PERSONAS = new Map<string, Persona>([[tomPersona.key, tomPersona]]);
@@ -106,11 +108,12 @@ function createSimulatorCli() {
     .option("--out <path>", "Write markdown report to a file")
     .option("--metrics-out <path>", "Write metrics JSONL to a file")
     .option("--trace-out <path>", "Write per-turn trace JSONL to a file (default: /tmp)")
+    .option("--no-payloads", "Do not include full prompt/response payloads in turn traces")
     .option("--shadow-post-gen-guards", "Run post-generation guards in shadow mode")
     // Pipeline C-double-prime launch:
     // pnpm simulate --pipeline-c-double-prime --scenario <scenario> ...
-    // C-double-prime means manifest finalizer + validator on, closure-pressure
-    // in enforce, and commitment/relational guards in shadow.
+    // C-double-prime means emission-tool finalizer on, closure-pressure in
+    // enforce, and commitment/relational guards in shadow.
     .option("--pipeline-c-double-prime", "Run Pipeline C″ config for v27 launches")
     .option("--keep", "Keep Borg data dirs and trace files for inspection")
     .option("--real", "Use real Anthropic persona and overseer calls")
@@ -141,9 +144,10 @@ export function parseSimulatorCliOptions(argv: string[] = process.argv): ParsedO
     rawOptions = parsed.options as RawParsedOptions;
   }
 
-  const { "pipelineC-doublePrime": pipelineCDoublePrimeRaw, ...restOptions } = rawOptions;
+  const { "pipelineC-doublePrime": pipelineCDoublePrimeRaw, payloads, ...restOptions } = rawOptions;
   const options: ParsedOptions = {
     ...restOptions,
+    noPayloads: restOptions.noPayloads === true || payloads === false,
     pipelineCDoublePrime:
       restOptions.pipelineCDoublePrime === true || pipelineCDoublePrimeRaw === true,
   };
@@ -178,6 +182,7 @@ async function main(): Promise<void> {
     tracePath,
     shadowPostGenGuards: options.shadowPostGenGuards === true,
     pipelineCDoublePrime: options.pipelineCDoublePrime === true,
+    includePayloads: options.noPayloads !== true,
     keep: options.keep === true,
     mock: selectMode(options),
     env: process.env,

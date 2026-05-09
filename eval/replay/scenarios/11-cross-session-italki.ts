@@ -3,7 +3,6 @@ import { createEpisodeFixture } from "../../../src/offline/test-support.js";
 import type { ReplayScenario } from "../scenario.js";
 import {
   enqueueRelationalGuardFailureWhenValidatorAbsent,
-  evidenceRef,
   lowerIncludesNone,
   makeRelationalClaim,
 } from "../scenario.js";
@@ -42,19 +41,6 @@ const scenario: ReplayScenario = {
   userMessage: USER_MESSAGE,
   unsafeCandidateText:
     "From prior-session memory, your iTalki tutor recommendation involved X. Last time you said your iTalki tutor recommended X.",
-  manifestResponse: {
-    final_text:
-      "From prior-session memory, your iTalki tutor recommendation involved X. Last time you said your iTalki tutor recommended X.",
-    discourse_act: "answer",
-    claims: [
-      {
-        kind: "prior_callback",
-        rendered_span: "Last time you said your iTalki tutor recommended X.",
-        callback_scope: "prior_session",
-        evidence: [evidenceRef(`episode:${ITALKI_EPISODE_ID}`, "episode")],
-      },
-    ],
-  },
   scriptLLMResponses(_client, context) {
     enqueueRelationalGuardFailureWhenValidatorAbsent(context, {
       claim: makeRelationalClaim({

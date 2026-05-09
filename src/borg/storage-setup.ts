@@ -102,10 +102,6 @@ export function resolveBorgConfig(options: {
         ...DEFAULT_CONFIG.generation.manifestFinalizer,
         ...(rawConfig as Partial<Config>).generation?.manifestFinalizer,
       },
-      manifestValidator: {
-        ...DEFAULT_CONFIG.generation.manifestValidator,
-        ...(rawConfig as Partial<Config>).generation?.manifestValidator,
-      },
       postGenerationGuards: {
         ...DEFAULT_CONFIG.generation.postGenerationGuards,
         ...(rawConfig as Partial<Config>).generation?.postGenerationGuards,

@@ -274,7 +274,7 @@ export class TurnDiscourseStateService {
         sourceStreamEntryId: input.sourceStreamEntryId,
         reason:
           input.reason === "manifest_no_output"
-            ? "Manifest finalizer emitted no_output for this turn."
+            ? "Legacy finalizer emitted no_output for this turn."
             : "Finalizer called no_output for this turn.",
         turnId: input.turnId,
       });
@@ -320,7 +320,7 @@ export class TurnDiscourseStateService {
           input.reason === "no_output_tool"
             ? "Closure loop detected; finalizer chose no_output."
             : input.reason === "manifest_no_output"
-              ? "Closure loop detected; manifest finalizer chose no_output."
+              ? "Closure loop detected; legacy finalizer chose no_output."
               : `Closure loop detected; turn ended without assistant output (${input.reason}).`,
         turnId: input.turnId,
       });

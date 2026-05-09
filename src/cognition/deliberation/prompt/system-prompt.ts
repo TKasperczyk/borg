@@ -370,13 +370,13 @@ function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null 
 
   if (closureLoop?.status === "detected") {
     lines.push(
-      'Discourse control: closure_loop_detected. The recent exchange is repeated mutual goodbye/closure beats. For this turn, either call no_output or name the loop once, then stop adding send-offs: "We keep doing goodbye and continuing. I\'m going to stop adding send-offs unless you bring a substantive question."',
+      'Discourse control: closure_loop_detected. The recent exchange is repeated mutual goodbye/closure beats. For this turn, either call EmitNoOutput or name the loop once, then stop adding send-offs: "We keep doing goodbye and continuing. I\'m going to stop adding send-offs unless you bring a substantive question."',
     );
   }
 
   if (closureLoop?.status === "named") {
     lines.push(
-      "Discourse control: closure loop already named. If the current user turn is another closure-shaped beat, call no_output. Do not add another goodbye, acknowledgment, imperative closer, or loop explanation unless the user brings substantive content.",
+      "Discourse control: closure loop already named. If the current user turn is another closure-shaped beat, call EmitNoOutput. Do not add another goodbye, acknowledgment, imperative closer, or loop explanation unless the user brings substantive content.",
     );
   }
 
@@ -397,7 +397,7 @@ function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null 
         "  - Weather/atmosphere observations as endings ('rain on a skylight is a good sound', 'a quiet evening')",
         "  - 'Holding' or 'noted' single-line acknowledgments that function as scene endings",
         "  - Any final sentence that reads as a coda or scene-ending",
-        "If you reach a natural pause and have nothing substantive to add, end on the substantive content -- do not append a coda. To emit nothing, set discourse_act to no_output. The bypass for explicit user-requested closure ('let's wrap up', 'goodnight') still applies but ONLY when the current user message contains that explicit request.",
+        "If you reach a natural pause and have nothing substantive to add, end on the substantive content -- do not append a coda. To emit nothing, call EmitNoOutput. The bypass for explicit user-requested closure ('let's wrap up', 'goodnight') still applies but ONLY when the current user message contains that explicit request.",
       ].join("\n"),
     );
   }
@@ -410,7 +410,7 @@ function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null 
       .join(", ");
 
     lines.push(
-      `Recent silences from your side: ${rendered}. If asked about going quiet, attribute to the actual reason -- a guard rejected the response, a validator caught an unsupported claim, a no_output decision was made. Do not invent network failures, latency spikes, or technical errors.`,
+      `Recent silences from your side: ${rendered}. If asked about going quiet, attribute to the actual reason -- a guard rejected the response, a finalizer/tool decision emitted no output, or the response was suppressed. Do not invent network failures, latency spikes, or technical errors.`,
     );
   }
 

@@ -26,6 +26,8 @@ type ChatOptions = {
   stakes: TurnStakes;
   clientMode: ScriptClientSelectionMode;
   verbose: boolean;
+  tracePayloads: boolean;
+  help: boolean;
 };
 
 const ansi = createAnsi();
@@ -85,11 +87,18 @@ function parseStartupArgs(argv: readonly string[]): ChatOptions {
   let stakes: TurnStakes = "medium";
   let clientMode: ScriptClientSelectionMode = "auto";
   let verbose = process.env.BORG_VERBOSE === "1";
+  let tracePayloads = true;
+  let help = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
 
     if (arg === undefined || arg === "--") {
+      continue;
+    }
+
+    if (arg === "--help" || arg === "-h") {
+      help = true;
       continue;
     }
 
@@ -144,6 +153,11 @@ function parseStartupArgs(argv: readonly string[]): ChatOptions {
       continue;
     }
 
+    if (arg === "--no-payloads") {
+      tracePayloads = false;
+      continue;
+    }
+
     throw new Error(`Unknown argument: ${arg}`);
   }
 
@@ -153,6 +167,8 @@ function parseStartupArgs(argv: readonly string[]): ChatOptions {
     stakes,
     clientMode,
     verbose,
+    tracePayloads,
+    help,
   };
 }
 
@@ -392,16 +408,40 @@ function printHelp(): void {
   writeLine("/save                          Force working-memory save.");
 }
 
+function printStartupHelp(): void {
+  writeLine("Usage: pnpm chat -- [options]");
+  writeLine("");
+  writeLine("Options:");
+  writeLine("  --session <id>        Session id or label (default: chat).");
+  writeLine("  --audience <name>     Audience label for turns (default: user).");
+  writeLine("  --stakes <level>      low, medium, or high (default: medium).");
+  writeLine("  --real                Use real clients.");
+  writeLine("  --fakes               Use fake clients.");
+  writeLine("  --verbose             Show verbose turn metadata.");
+  writeLine("  --no-payloads         Do not include full prompt/response payloads in traces.");
+  writeLine("  --help                Show this help.");
+}
+
 async function main(): Promise<void> {
   const options = parseStartupArgs(process.argv.slice(2));
+  if (options.help) {
+    printStartupHelp();
+    return;
+  }
+
+  const borgEnv = {
+    ...process.env,
+    BORG_TRACE_PROMPTS: options.tracePayloads ? "1" : "0",
+  };
   const extractEvery = parseExtractEvery(process.env.BORG_CHAT_EXTRACT_EVERY);
   const selection = await selectScriptClients({
-    dataDir: process.env.BORG_DATA_DIR,
+    dataDir: borgEnv.BORG_DATA_DIR,
     mode: options.clientMode,
     warn: (message) => writeWarn(message),
   });
   const borg = await Borg.open({
     config: selection.config,
+    env: borgEnv,
     embeddingDimensions: selection.embeddingDimensions,
     embeddingClient: selection.embeddings,
     llmClient: selection.llm,
@@ -432,11 +472,11 @@ async function main(): Promise<void> {
   writeLine(
     `borg chat ready. session=${state.session.label} audience=${state.audience} stakes=${state.stakes} (${selection.llmMode} llm, ${selection.embeddingMode} embeddings). /help for commands.`,
   );
-  const tracePath = process.env.BORG_TRACE?.trim();
+  const tracePath = borgEnv.BORG_TRACE?.trim();
   if (tracePath !== undefined && tracePath.length > 0) {
     writeLine(
       ansi.dim(
-        `turn tracing enabled: ${tracePath}${process.env.BORG_TRACE_PROMPTS === "1" ? " (full prompts/responses)" : ""}`,
+        `turn tracing enabled: ${tracePath}${options.tracePayloads ? " (full prompts/responses)" : ""}`,
       ),
     );
   }

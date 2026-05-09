@@ -23,6 +23,57 @@ afterEach(() => {
 
 describe("chat script", () => {
   maybeIt(
+    "documents startup flags",
+    async () => {
+      const result = await new Promise<{
+        code: number | null;
+        stdout: string;
+        stderr: string;
+      }>((resolve, reject) => {
+        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/chat.ts", "--help"], {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            FORCE_COLOR: "0",
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        const timeout = setTimeout(() => {
+          child.kill("SIGTERM");
+          reject(new Error("chat help exceeded 30s timeout"));
+        }, 30_000);
+
+        child.stdout.on("data", (chunk: Buffer | string) => {
+          stdout += chunk.toString();
+        });
+        child.stderr.on("data", (chunk: Buffer | string) => {
+          stderr += chunk.toString();
+        });
+        child.on("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.on("close", (code) => {
+          clearTimeout(timeout);
+          resolve({
+            code,
+            stdout,
+            stderr,
+          });
+        });
+      });
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Usage: pnpm chat -- [options]");
+      expect(result.stdout).toContain("--no-payloads");
+    },
+    30_000,
+  );
+
+  maybeIt(
     "runs a short fake repl session",
     async () => {
       const dataDir = mkdtempSync(join(tmpdir(), "borg-chat-"));

@@ -9,24 +9,13 @@ import agentSelfHistory from "./08-agent-self-history.js";
 import phenomenology from "./09-phenomenology.js";
 import closureLoop from "./10-closure-loop.js";
 import crossSessionItalki from "./11-cross-session-italki.js";
-import resolvedOqMushroom from "./12-resolved-oq-mushroom.js";
-import manifestOmittedDetail from "./13-manifest-omitted-detail.js";
-import manifestHiddenNumber from "./14-manifest-hidden-number.js";
-import manifestMislabeledInterpretation from "./15-manifest-mislabeled-interpretation.js";
-import manifestTaintedEvidence from "./16-manifest-tainted-evidence.js";
 import selfReportNotProof from "./17-self-report-not-proof.js";
-import pronounCitationCorrect from "./18-pronoun-citation-correct.js";
-import pronounCitationOnlyPronoun from "./19-pronoun-citation-only-pronoun.js";
-import pronounFalseAcceptance from "./20-pronoun-false-acceptance.js";
 import tomLeakConfigName from "./21-tom-leak-config-name.js";
 import tomAllowedAfterSelfDeclaration from "./22-tom-allowed-after-self-declaration.js";
 import suppressionNetworkWeather from "./27-suppression-network-weather.js";
 import closureLoopPersistence from "./28-closure-loop-persistence.js";
 import crossSessionPartnerNameConflict from "./29-cross-session-partner-name-conflict.js";
-import interpretationImperfectEvidenceWarning from "./30-interpretation-imperfect-evidence-warning.js";
-import interpretationHidesExactFact from "./31-interpretation-hides-exact-fact.js";
 import tomLeakUnflaggedVocative from "./32-tom-leak-unflagged-vocative.js";
-import priorCallbackNoEvidence from "./33-prior-callback-no-evidence.js";
 import type { ReplayScenario } from "../scenario.js";
 
 export const REPLAY_SCENARIOS: readonly ReplayScenario[] = [
@@ -41,22 +30,11 @@ export const REPLAY_SCENARIOS: readonly ReplayScenario[] = [
   phenomenology,
   closureLoop,
   crossSessionItalki,
-  resolvedOqMushroom,
-  manifestOmittedDetail,
-  manifestHiddenNumber,
-  manifestMislabeledInterpretation,
-  manifestTaintedEvidence,
   selfReportNotProof,
-  pronounCitationCorrect,
-  pronounCitationOnlyPronoun,
-  pronounFalseAcceptance,
   tomLeakConfigName,
   tomAllowedAfterSelfDeclaration,
   suppressionNetworkWeather,
   closureLoopPersistence,
   crossSessionPartnerNameConflict,
-  interpretationImperfectEvidenceWarning,
-  interpretationHidesExactFact,
   tomLeakUnflaggedVocative,
-  priorCallbackNoEvidence,
 ];

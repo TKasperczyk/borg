@@ -333,6 +333,7 @@ describe("TurnTracer", () => {
       "tool_call_completed",
       "llm_call_started",
       "llm_call_response",
+      "finalizer_emitted",
       "commitment_check",
       "relational_claim_guard",
       "closure_response_guard",

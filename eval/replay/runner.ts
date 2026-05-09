@@ -9,9 +9,7 @@ import {
   FixedClock,
   DEFAULT_CONFIG,
   type Borg,
-  type LLMCompleteOptions,
   type LLMCompleteResult,
-  type LLMConverseOptions,
   type TurnResult,
 } from "../../src/index.js";
 import type { FakeLLMResponse } from "../../src/llm/index.js";
@@ -26,8 +24,7 @@ import {
 } from "./reporter.js";
 import {
   emptyReflectionResponse,
-  manifestFinalizerResponse,
-  materializeManifestResponse,
+  finalizerToolResponse,
   recallExpansionResponse,
   type ReplayPipeline,
   type ReplayPipelineId,
@@ -55,28 +52,25 @@ const PIPELINES: readonly ReplayPipeline[] = [
     id: "A",
     label: "legacy + enforce guards",
     evidenceLedgerEnabled: false,
-    manifestFinalizerEnabled: false,
-    manifestValidatorEnabled: false,
+    emissionFinalizerEnabled: false,
     commitmentMode: "enforce",
     relationalClaimMode: "enforce",
     closurePressureMode: "enforce",
   },
   {
     id: "B",
-    label: "manifest emission, no validator",
+    label: "emission tools, enforce guards",
     evidenceLedgerEnabled: false,
-    manifestFinalizerEnabled: true,
-    manifestValidatorEnabled: false,
+    emissionFinalizerEnabled: true,
     commitmentMode: "enforce",
     relationalClaimMode: "enforce",
     closurePressureMode: "enforce",
   },
   {
     id: "C",
-    label: "manifest + validator, guards shadow",
+    label: "emission tools, guards shadow",
     evidenceLedgerEnabled: false,
-    manifestFinalizerEnabled: true,
-    manifestValidatorEnabled: true,
+    emissionFinalizerEnabled: true,
     commitmentMode: "shadow",
     relationalClaimMode: "shadow",
     closurePressureMode: "shadow",
@@ -85,8 +79,7 @@ const PIPELINES: readonly ReplayPipeline[] = [
     id: "Cdoubleprime",
     label: "Pipeline C″",
     evidenceLedgerEnabled: true,
-    manifestFinalizerEnabled: true,
-    manifestValidatorEnabled: true,
+    emissionFinalizerEnabled: true,
     commitmentMode: "shadow",
     relationalClaimMode: "shadow",
     closurePressureMode: "enforce",
@@ -124,10 +117,7 @@ function replayConfig(
           DEFAULT_CONFIG.generation.evidenceLedger.currentSessionTranscriptTokenBudget,
       },
       manifestFinalizer: {
-        enabled: pipeline.manifestFinalizerEnabled,
-      },
-      manifestValidator: {
-        enabled: pipeline.manifestValidatorEnabled,
+        enabled: pipeline.emissionFinalizerEnabled,
       },
       postGenerationGuards: {
         commitment: {
@@ -148,22 +138,21 @@ function scriptFinalizerResponse(
   scenario: ReplayScenario,
   pipeline: ReplayPipeline,
 ): FakeLLMResponse {
-  if (!pipeline.manifestFinalizerEnabled) {
+  if (!pipeline.emissionFinalizerEnabled) {
     return scenario.unsafeCandidateText;
   }
 
-  return ((options: LLMCompleteOptions | LLMConverseOptions) => {
-    const materialized = materializeManifestResponse(
-      scenario.manifestResponse,
-      options,
-      scenario.evidencePlaceholders,
-    );
-
-    return manifestFinalizerResponse(materialized);
-  }) as FakeLLMResponse;
+  return finalizerToolResponse(
+    scenario.finalizerEmission ?? { kind: "answer" },
+    scenario.unsafeCandidateText,
+  );
 }
 
-function scriptLLM(client: FakeLLMClient, scenario: ReplayScenario, pipeline: ReplayPipeline): void {
+function scriptLLM(
+  client: FakeLLMClient,
+  scenario: ReplayScenario,
+  pipeline: ReplayPipeline,
+): void {
   const beforeRecall: LLMCompleteResult[] = [];
   const afterFinalizer: Array<string | LLMCompleteResult> = [];
 
@@ -210,7 +199,9 @@ function stringValue(value: unknown): string | null {
 
 function objectArray(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value)
-    ? value.filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+    ? value.filter(
+        (item): item is Record<string, unknown> => item !== null && typeof item === "object",
+      )
     : [];
 }
 
@@ -222,7 +213,9 @@ function eventGuardCategories(event: TraceEvent): string[] {
       ...objectArray(event.rewritten_unsupported),
     ];
 
-    return claims.map((claim) => stringValue(claim.kind)).filter((kind): kind is string => kind !== null);
+    return claims
+      .map((claim) => stringValue(claim.kind))
+      .filter((kind): kind is string => kind !== null);
   }
 
   if (event.event === "closure_response_guard") {
@@ -283,7 +276,9 @@ function guardCaught(events: readonly TraceEvent[], scenario: ReplayScenario): b
       return false;
     }
 
-    return guardActed(event) && intersects(eventGuardCategories(event), scenario.severeGuardCategories);
+    return (
+      guardActed(event) && intersects(eventGuardCategories(event), scenario.severeGuardCategories)
+    );
   });
 }
 
@@ -302,39 +297,6 @@ function shadowGuardCaught(events: readonly TraceEvent[], scenario: ReplayScenar
       intersects(eventShadowGuardCategories(event), scenario.severeGuardCategories)
     );
   });
-}
-
-function manifestValidationFinalVerdict(events: readonly TraceEvent[]): string | null {
-  const event = events.find((entry) => entry.event === "manifest_validation");
-
-  return event === undefined ? null : stringValue(event.final_verdict);
-}
-
-function numberRecord(value: unknown): Record<string, number> | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const entries = Object.entries(value).filter(
-    (entry): entry is [string, number] => typeof entry[1] === "number",
-  );
-
-  return Object.fromEntries(entries);
-}
-
-function manifestValidationCountRecord(
-  events: readonly TraceEvent[],
-  field: "validated_claims_by_kind" | "literal_values_validated_by_kind",
-): Record<string, number> | null {
-  const event = events.find((entry) => entry.event === "manifest_validation");
-
-  return event === undefined ? null : numberRecord(event[field]);
-}
-
-function validatorCaught(events: readonly TraceEvent[]): boolean {
-  const verdict = manifestValidationFinalVerdict(events);
-
-  return verdict !== null && verdict !== "passed";
 }
 
 function emittedText(result: TurnResult): string {
@@ -399,10 +361,7 @@ function emissionKind(result: TurnResult): string {
     : result.emission.kind;
 }
 
-function errorPipelineRecord(
-  pipeline: ReplayPipeline,
-  error: unknown,
-): ReplayPipelineRecord {
+function errorPipelineRecord(pipeline: ReplayPipeline, error: unknown): ReplayPipelineRecord {
   const message = error instanceof Error ? error.message : String(error);
 
   return {
@@ -410,14 +369,10 @@ function errorPipelineRecord(
     safe: `ERROR: ${message}`,
     safeWithUsefulOutput: `ERROR: ${message}`,
     guardCaught: `ERROR: ${message}`,
-    validatorCaught: pipeline.manifestValidatorEnabled ? `ERROR: ${message}` : null,
-    shadowSevereRemaining: pipeline.manifestValidatorEnabled ? `ERROR: ${message}` : null,
+    shadowSevereRemaining: `ERROR: ${message}`,
     emittedText: "",
     emissionKind: "error",
     guardCategories: [],
-    manifestValidationFinalVerdict: null,
-    validatedClaimsByKind: null,
-    literalValuesValidatedByKind: null,
     error: message,
   };
 }
@@ -473,15 +428,6 @@ async function runScenarioPipeline(
     });
     const caughtByGuard = guardCaught(traces, scenario);
     const shadowCaughtByGuard = shadowGuardCaught(traces, scenario);
-    const validationFinalVerdict = manifestValidationFinalVerdict(traces);
-    const validatedClaimsByKind = manifestValidationCountRecord(
-      traces,
-      "validated_claims_by_kind",
-    );
-    const literalValuesValidatedByKind = manifestValidationCountRecord(
-      traces,
-      "literal_values_validated_by_kind",
-    );
 
     return {
       pipelineId: pipeline.id,
@@ -492,8 +438,7 @@ async function runScenarioPipeline(
         emittedText: finalText,
       }),
       guardCaught: caughtByGuard,
-      validatorCaught: pipeline.manifestValidatorEnabled ? validatorCaught(traces) : null,
-      shadowSevereRemaining: pipeline.manifestValidatorEnabled ? shadowCaughtByGuard : null,
+      shadowSevereRemaining: shadowCaughtByGuard,
       emittedText: finalText,
       emissionKind: emissionKind(result),
       guardCategories: [
@@ -503,9 +448,6 @@ async function runScenarioPipeline(
             .filter((category) => scenario.severeGuardCategories.includes(category)),
         ),
       ],
-      manifestValidationFinalVerdict: validationFinalVerdict,
-      validatedClaimsByKind,
-      literalValuesValidatedByKind,
       error: null,
     };
   } catch (error) {
@@ -521,7 +463,9 @@ async function runScenarioPipeline(
 
 async function runScenario(scenario: ReplayScenario): Promise<ReplayScenarioRecord> {
   const entries = await Promise.all(
-    PIPELINES.map(async (pipeline) => [pipeline.id, await runScenarioPipeline(scenario, pipeline)] as const),
+    PIPELINES.map(
+      async (pipeline) => [pipeline.id, await runScenarioPipeline(scenario, pipeline)] as const,
+    ),
   );
 
   return {

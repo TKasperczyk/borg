@@ -1,5 +1,5 @@
 // Frozen taxonomy as of Sprint 7. 10 kinds; ai_phenomenology was removed because
-// expressive self-claims now flow through the manifest self_report kind.
+// expressive self-claims now flow through EmitSelfReport finalization.
 export const RELATIONAL_CLAIM_KINDS = [
   "relational_identity",
   "unsupported_person_name",

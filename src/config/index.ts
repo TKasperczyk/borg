@@ -65,10 +65,6 @@ const manifestFinalizerConfigSchema = z.object({
   enabled: z.boolean(),
 });
 const manifestFinalizerFileConfigSchema = manifestFinalizerConfigSchema.partial();
-const manifestValidatorConfigSchema = z.object({
-  enabled: z.boolean(),
-});
-const manifestValidatorFileConfigSchema = manifestValidatorConfigSchema.partial();
 
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
 export type RelationalClaimGuardMode =
@@ -149,7 +145,6 @@ const configFileSchema = z
         cognition: cognitionFileConfigSchema.optional(),
         evidenceLedger: evidenceLedgerFileConfigSchema.optional(),
         manifestFinalizer: manifestFinalizerFileConfigSchema.optional(),
-        manifestValidator: manifestValidatorFileConfigSchema.optional(),
         postGenerationGuards: postGenerationGuardsFileConfigSchema.optional(),
       })
       .partial()
@@ -443,7 +438,6 @@ export const configSchema = z.object({
     cognition: cognitionConfigSchema,
     evidenceLedger: evidenceLedgerConfigSchema,
     manifestFinalizer: manifestFinalizerConfigSchema,
-    manifestValidator: manifestValidatorConfigSchema,
     postGenerationGuards: z.object({
       commitment: postGenerationGuardConfigSchema,
       relationalClaim: relationalClaimGuardConfigSchema,
@@ -666,9 +660,6 @@ export const DEFAULT_CONFIG: Config = {
       currentSessionTranscriptTokenBudget: 50_000,
     },
     manifestFinalizer: {
-      enabled: false,
-    },
-    manifestValidator: {
       enabled: false,
     },
     postGenerationGuards: {
@@ -1133,12 +1124,6 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
           fileConfig.generation?.manifestFinalizer?.enabled ??
           DEFAULT_CONFIG.generation.manifestFinalizer.enabled,
       },
-      manifestValidator: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_GENERATION_MANIFEST_VALIDATOR_ENABLED") ??
-          fileConfig.generation?.manifestValidator?.enabled ??
-          DEFAULT_CONFIG.generation.manifestValidator.enabled,
-      },
       postGenerationGuards: {
         commitment: {
           mode:
@@ -1578,15 +1563,6 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
       },
     },
   };
-
-  if (
-    candidate.generation.manifestValidator.enabled &&
-    !candidate.generation.manifestFinalizer.enabled
-  ) {
-    throw new ConfigError(
-      "manifestValidator.enabled requires manifestFinalizer.enabled (validator runs inside the manifest path)",
-    );
-  }
 
   const parsed = configSchema.safeParse(candidate);
 

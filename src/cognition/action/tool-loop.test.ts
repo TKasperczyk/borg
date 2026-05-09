@@ -262,6 +262,79 @@ describe("executeToolLoop", () => {
     expect(entries.map((entry) => entry.kind)).toEqual(["tool_call", "tool_result"]);
   });
 
+  it("aggregates cache token fields across tool-loop iterations", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const dispatcher = createDispatcher(tempDir);
+    dispatcher.register({
+      name: "tool.test.echo",
+      description: "Echo test input.",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({
+        value: z.string().min(1),
+      }),
+      outputSchema: z.object({
+        echoed: z.string().min(1),
+      }),
+      async invoke(input: { value: string }) {
+        return { echoed: input.value };
+      },
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_1",
+              name: "tool.test.echo",
+              input: { value: "hello" },
+            },
+          ],
+          input_tokens: 10,
+          output_tokens: 2,
+          cache_creation_input_tokens: 3,
+          cache_read_input_tokens: 5,
+          stop_reason: "tool_use",
+        },
+        {
+          messageBlocks: [
+            {
+              type: "text",
+              text: "final answer",
+            },
+          ],
+          input_tokens: 20,
+          output_tokens: 4,
+          cache_creation_input_tokens: 7,
+          cache_read_input_tokens: 11,
+          stop_reason: "end_turn",
+        },
+      ],
+    });
+
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      systemPrompt: "be concise",
+      initialMessages: baseMessages(),
+      tools: dispatcher.listTools("deliberator"),
+      origin: "deliberator",
+      budget: "test",
+    });
+
+    expect(result.usage).toEqual({
+      input_tokens: 30,
+      output_tokens: 6,
+      cache_creation_input_tokens: 10,
+      cache_read_input_tokens: 16,
+      stop_reason: "end_turn",
+    });
+  });
+
   it("re-transforms prior assistant tool_use names in OAuth transport history", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -293,9 +366,7 @@ describe("executeToolLoop", () => {
           },
         ],
         (options: LLMConverseOptions) => {
-          const assistantMessage = options.messages.find(
-            (message) => message.role === "assistant",
-          );
+          const assistantMessage = options.messages.find((message) => message.role === "assistant");
 
           expect(assistantMessage?.content).toContainEqual({
             type: "tool_use",
