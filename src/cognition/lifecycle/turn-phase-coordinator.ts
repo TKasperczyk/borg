@@ -1156,6 +1156,7 @@ export class TurnPhaseCoordinator {
         transcript_included: traceSummary.transcriptIncluded,
         transcript_omitted_reason: traceSummary.transcriptOmittedReason ?? null,
         total_estimated_tokens: traceSummary.totalEstimatedTokens,
+        estimated_tokens_by_section: toTraceJsonValue(traceSummary.estimatedTokensBySection),
       });
     }
 
