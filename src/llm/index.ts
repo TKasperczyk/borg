@@ -61,9 +61,18 @@ export type LLMContentBlockMessage = {
   content: readonly LLMContentBlock[];
 };
 
+// Anthropic prompt caching: a content block carrying cache_control marks the
+// end of a cacheable prefix that includes that block. Sprint 8d.6.4 adds the
+// plumbing; Sprint 8d.6.5 places the breakpoints.
+export type LLMCacheControl = {
+  type: "ephemeral";
+  ttl?: "5m" | "1h";
+};
+
 export type LLMSystemBlock = {
   type: "text";
   text: string;
+  cache_control?: LLMCacheControl;
 };
 
 export type LLMToolDefinition = {
@@ -75,6 +84,7 @@ export type LLMToolDefinition = {
     required?: string[];
     [key: string]: unknown;
   };
+  cache_control?: LLMCacheControl;
 };
 
 export type LLMToolCall = {
@@ -181,6 +191,8 @@ export type LLMCompleteResult = {
   text: string;
   input_tokens: number;
   output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
   stop_reason: string | null;
   tool_calls: LLMToolCall[];
   structured_output?: unknown;
@@ -194,6 +206,8 @@ export type LLMConverseResult = {
   messageBlocks: LLMContentBlock[];
   input_tokens: number;
   output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
   stop_reason: string | null;
   structured_output?: unknown;
 };
@@ -203,6 +217,8 @@ export type TokenUsageEvent = {
   model: string;
   input_tokens: number;
   output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 };
 
 export type TokenUsageSink = (event: TokenUsageEvent) => void | Promise<void>;
@@ -324,6 +340,7 @@ function toAnthropicTools(tools: readonly LLMToolDefinition[] | undefined): Tool
     name: tool.name,
     description: tool.description,
     input_schema: tool.inputSchema,
+    ...(tool.cache_control === undefined ? {} : { cache_control: tool.cache_control }),
   }));
 }
 
@@ -345,6 +362,26 @@ function extractToolCalls(message: Message): LLMToolCall[] {
     name: block.name,
     input: block.input,
   }));
+}
+
+function extractCacheUsage(message: Message): {
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+} {
+  // Anthropic surfaces prompt-cache accounting in usage. Both fields are
+  // optional in the SDK type and absent when caching is unused.
+  const usage = message.usage as {
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  };
+  const out: { cache_creation_input_tokens?: number; cache_read_input_tokens?: number } = {};
+  if (typeof usage.cache_creation_input_tokens === "number") {
+    out.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+  }
+  if (typeof usage.cache_read_input_tokens === "number") {
+    out.cache_read_input_tokens = usage.cache_read_input_tokens;
+  }
+  return out;
 }
 
 function extractText(message: Message): string {
@@ -872,6 +909,7 @@ function normalizeSystemBlocks(
   return system.map((block) => ({
     type: "text",
     text: block.text,
+    ...(block.cache_control === undefined ? {} : { cache_control: block.cache_control }),
   }));
 }
 
@@ -1113,7 +1151,10 @@ export class AnthropicLLMClient implements LLMClient {
 
   private async emitUsage(
     options: Pick<LLMCallOptions, "budget" | "model">,
-    result: Pick<LLMCompleteResult, "input_tokens" | "output_tokens">,
+    result: Pick<
+      LLMCompleteResult,
+      "input_tokens" | "output_tokens" | "cache_creation_input_tokens" | "cache_read_input_tokens"
+    >,
   ): Promise<void> {
     if (this.usageSink === undefined) {
       return;
@@ -1124,6 +1165,12 @@ export class AnthropicLLMClient implements LLMClient {
       model: options.model,
       input_tokens: result.input_tokens,
       output_tokens: result.output_tokens,
+      ...(result.cache_creation_input_tokens === undefined
+        ? {}
+        : { cache_creation_input_tokens: result.cache_creation_input_tokens }),
+      ...(result.cache_read_input_tokens === undefined
+        ? {}
+        : { cache_read_input_tokens: result.cache_read_input_tokens }),
     });
   }
 
@@ -1148,6 +1195,7 @@ export class AnthropicLLMClient implements LLMClient {
       text: extractText(response),
       input_tokens: response.usage.input_tokens,
       output_tokens: response.usage.output_tokens,
+      ...extractCacheUsage(response),
       stop_reason: response.stop_reason,
       tool_calls: extractToolCalls(response),
       ...(options.output_config === undefined ? {} : { structured_output: structuredOutput }),
@@ -1180,6 +1228,7 @@ export class AnthropicLLMClient implements LLMClient {
       messageBlocks: extractMessageBlocks(response),
       input_tokens: response.usage.input_tokens,
       output_tokens: response.usage.output_tokens,
+      ...extractCacheUsage(response),
       stop_reason: response.stop_reason,
       ...(options.output_config === undefined ? {} : { structured_output: structuredOutput }),
     } satisfies LLMConverseResult;
