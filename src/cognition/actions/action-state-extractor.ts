@@ -17,7 +17,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { createActionId, type EntityId, type StreamEntryId } from "../../util/ids.js";
 import type { RecencyMessage } from "../recency/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
 
@@ -273,10 +273,7 @@ function traceLlmCallResponse(options: {
       label: "action_state_extractor",
       responseShape: summarizeActionStateResponseShape(options.response),
       stopReason: options.response.stop_reason,
-      usage: {
-        inputTokens: options.response.input_tokens,
-        outputTokens: options.response.output_tokens,
-      },
+      usage: buildUsageTraceBlock(options.response),
     });
   }
 }

@@ -8,7 +8,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../llm/index.js";
-import type { TurnTracer } from "../cognition/tracing/tracer.js";
+import { buildUsageTraceBlock, type TurnTracer } from "../cognition/tracing/tracer.js";
 import type { JsonValue } from "../util/json-value.js";
 
 const recallExpansionFacetKindSchema = z.enum([
@@ -126,10 +126,7 @@ export async function expandRecall(
       label: "recall_expansion",
       responseShape: summarizeRecallExpansionResponseShape(response),
       stopReason: response.stop_reason,
-      usage: {
-        inputTokens: response.input_tokens,
-        outputTokens: response.output_tokens,
-      },
+      usage: buildUsageTraceBlock(response),
     });
   }
 

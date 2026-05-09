@@ -132,6 +132,38 @@ export function summarizeTraceValueShape(value: unknown): JsonValue {
   return summarizeTraceValueShapeInternal(value, 0);
 }
 
+// Usage block builder that surfaces Anthropic prompt-cache token counts
+// alongside fresh input/output tokens. Per Sprint 8d.6.4 cache fields
+// (cache_creation_input_tokens / cache_read_input_tokens) live on the
+// LLM result; callers should pass them through to the trace as separate
+// keys, not summed into inputTokens. Cache reads cost ~0.1x fresh input
+// and don't count against rate limits, so observability has to keep
+// them in dedicated columns to be meaningful.
+export type UsageTraceInput = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+};
+
+export function buildUsageTraceBlock(input: UsageTraceInput): {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+} {
+  return {
+    inputTokens: input.input_tokens,
+    outputTokens: input.output_tokens,
+    ...(input.cache_creation_input_tokens === undefined
+      ? {}
+      : { cacheCreationInputTokens: input.cache_creation_input_tokens }),
+    ...(input.cache_read_input_tokens === undefined
+      ? {}
+      : { cacheReadInputTokens: input.cache_read_input_tokens }),
+  };
+}
+
 export type JsonlTracerOptions = {
   path: string;
   clock?: Clock;

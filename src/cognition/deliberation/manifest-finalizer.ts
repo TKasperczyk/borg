@@ -8,7 +8,7 @@ import {
   type LLMSystemBlock,
 } from "../../llm/index.js";
 import type { EvidenceLedger } from "../evidence-ledger/index.js";
-import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { LLMError } from "../../util/errors.js";
 import type { DeliberationUsage } from "./types.js";
@@ -446,10 +446,7 @@ export async function runManifestFinalizer(
       label: traceLabel,
       responseShape: summarizeResponseShape(result),
       stopReason: result.stop_reason,
-      usage: {
-        inputTokens: result.input_tokens,
-        outputTokens: result.output_tokens,
-      },
+      usage: buildUsageTraceBlock(result),
       ...(options.tracer?.includePayloads
         ? {
             response: toTraceJsonValue({

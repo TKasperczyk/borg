@@ -12,7 +12,7 @@ import { goalIdSchema, type GoalRecord } from "../../memory/self/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { EntityId } from "../../util/ids.js";
 import type { RecencyMessage } from "../recency/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROMOTIONS_PER_TURN = 3;
@@ -296,10 +296,7 @@ function traceLlmCallResponse(options: {
       label: "goal_promotion_extractor",
       responseShape: summarizeGoalPromotionResponseShape(options.response),
       stopReason: options.response.stop_reason,
-      usage: {
-        inputTokens: options.response.input_tokens,
-        outputTokens: options.response.output_tokens,
-      },
+      usage: buildUsageTraceBlock(options.response),
     });
   }
 }

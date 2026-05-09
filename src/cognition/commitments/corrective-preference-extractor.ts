@@ -22,7 +22,7 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import type { RecencyMessage } from "../recency/index.js";
-import type { TurnTracer } from "../tracing/tracer.js";
+import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.8;
 const CORRECTIVE_PREFERENCE_TOOL_NAME = "EmitCorrectivePreference";
@@ -380,10 +380,7 @@ function traceLlmCallResponse(options: {
       label: "corrective_preference_extractor",
       responseShape: summarizeCorrectivePreferenceResponseShape(options.response),
       stopReason: options.response.stop_reason,
-      usage: {
-        inputTokens: options.response.input_tokens,
-        outputTokens: options.response.output_tokens,
-      },
+      usage: buildUsageTraceBlock(options.response),
     });
   }
 }

@@ -11,7 +11,7 @@ import {
 } from "../../llm/index.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { TurnTracer } from "../tracing/tracer.js";
-import { toTraceJsonValue } from "../tracing/tracer.js";
+import { buildUsageTraceBlock, toTraceJsonValue } from "../tracing/tracer.js";
 import { intentRecordSchema } from "../types.js";
 import type { EmissionRecommendation } from "../generation/types.js";
 import type { DeliberationUsage, SelfSnapshot } from "./types.js";
@@ -218,10 +218,7 @@ async function callPlannerAttempt(
       label: "s2_planner",
       responseShape: summarizePlannerResponseShape(planner),
       stopReason: planner.stop_reason,
-      usage: {
-        inputTokens: planner.input_tokens,
-        outputTokens: planner.output_tokens,
-      },
+      usage: buildUsageTraceBlock(planner),
       ...(options.tracer.includePayloads
         ? {
             response: toTraceJsonValue({

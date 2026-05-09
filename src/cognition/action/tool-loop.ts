@@ -14,7 +14,7 @@ import type {
   ToolOrigin,
 } from "../../tools/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
-import { toTraceJsonValue } from "../tracing/tracer.js";
+import { buildUsageTraceBlock, toTraceJsonValue } from "../tracing/tracer.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { serializeJsonValue } from "../../util/json-value.js";
@@ -254,10 +254,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         iteration: iterations + 1,
         responseShape: summarizeResponseShape(response.messageBlocks),
         stopReason: response.stop_reason,
-        usage: {
-          inputTokens: response.input_tokens,
-          outputTokens: response.output_tokens,
-        },
+        usage: buildUsageTraceBlock(response),
         ...(options.tracer.includePayloads
           ? {
               response: toTraceJsonValue({

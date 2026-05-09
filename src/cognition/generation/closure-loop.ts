@@ -10,7 +10,12 @@ import {
 import type { StreamEntryId } from "../../util/ids.js";
 import type { JsonValue } from "../../util/json-value.js";
 import type { RecencyMessage } from "../recency/index.js";
-import { summarizeTraceValueShape, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import {
+  buildUsageTraceBlock,
+  summarizeTraceValueShape,
+  toTraceJsonValue,
+  type TurnTracer,
+} from "../tracing/tracer.js";
 
 export const CLOSURE_LOOP_DIALOGUE_ACTS = [
   "substantive",
@@ -610,10 +615,7 @@ function traceLlmCallResponse(options: {
       label: "closure_loop_classifier",
       responseShape: summarizeClosureLoopResponseShape(options.response),
       stopReason: options.response.stop_reason,
-      usage: {
-        inputTokens: options.response.input_tokens,
-        outputTokens: options.response.output_tokens,
-      },
+      usage: buildUsageTraceBlock(options.response),
     });
   }
 }
