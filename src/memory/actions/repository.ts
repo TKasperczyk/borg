@@ -121,6 +121,41 @@ function vectorRowFromAction(record: ActionRecord, embedding: Float32Array) {
   };
 }
 
+function embeddingFromRow(row: Record<string, unknown>): Float32Array | null {
+  const value = row.embedding;
+
+  if (value instanceof Float32Array) {
+    return value;
+  }
+
+  if (Array.isArray(value) && value.every((item) => typeof item === "number")) {
+    return Float32Array.from(value);
+  }
+
+  if (ArrayBuffer.isView(value) && "length" in value) {
+    return Float32Array.from(Array.from(value as ArrayLike<number>));
+  }
+
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "toArray" in value &&
+    typeof value.toArray === "function"
+  ) {
+    const array = value.toArray() as unknown;
+
+    if (Array.isArray(array) && array.every((item) => typeof item === "number")) {
+      return Float32Array.from(array);
+    }
+
+    if (ArrayBuffer.isView(array) && "length" in array) {
+      return Float32Array.from(Array.from(array as ArrayLike<number>));
+    }
+  }
+
+  return null;
+}
+
 type ActionStateTimestampField =
   | "considering_at"
   | "committed_at"
@@ -536,21 +571,18 @@ export class ActionRepository {
     records: readonly ActionRecord[],
     threshold: number,
   ): Promise<ActionDescriptionSimilarityPair[]> {
-    const embeddingClient = this.embeddingClient;
     const uniqueRecords = [...new Map(records.map((record) => [record.id, record])).values()];
 
-    if (embeddingClient === undefined || uniqueRecords.length < 2) {
+    if (uniqueRecords.length < 2) {
       return [];
     }
 
-    const vectors = await embeddingClient.embedBatch(
-      uniqueRecords.map((record) => record.description),
-    );
+    const vectorsById = await this.loadActionVectors(uniqueRecords);
     const pairs: ActionDescriptionSimilarityPair[] = [];
 
     for (let leftIndex = 0; leftIndex < uniqueRecords.length; leftIndex += 1) {
       const left = uniqueRecords[leftIndex];
-      const leftVector = vectors[leftIndex];
+      const leftVector = left === undefined ? undefined : vectorsById.get(left.id);
 
       if (left === undefined || leftVector === undefined) {
         continue;
@@ -558,7 +590,7 @@ export class ActionRepository {
 
       for (let rightIndex = leftIndex + 1; rightIndex < uniqueRecords.length; rightIndex += 1) {
         const right = uniqueRecords[rightIndex];
-        const rightVector = vectors[rightIndex];
+        const rightVector = right === undefined ? undefined : vectorsById.get(right.id);
 
         if (right === undefined || rightVector === undefined) {
           continue;
@@ -577,6 +609,52 @@ export class ActionRepository {
     }
 
     return pairs;
+  }
+
+  private async loadActionVectors(
+    records: readonly ActionRecord[],
+  ): Promise<Map<ActionId, Float32Array>> {
+    const vectors = new Map<ActionId, Float32Array>();
+    const table = this.table;
+
+    if (table !== undefined && records.length > 0) {
+      const rows = await table.list({
+        where: `id IN (${records.map((record) => quoteSqlString(record.id)).join(", ")})`,
+        columns: ["id", "embedding"],
+        limit: records.length,
+      });
+
+      for (const row of rows) {
+        if (typeof row.id !== "string") {
+          continue;
+        }
+
+        const embedding = embeddingFromRow(row);
+
+        if (embedding !== null) {
+          vectors.set(parseActionId(row.id), embedding);
+        }
+      }
+    }
+
+    const missing = records.filter((record) => !vectors.has(record.id));
+    const embeddingClient = this.embeddingClient;
+
+    if (missing.length === 0 || embeddingClient === undefined) {
+      return vectors;
+    }
+
+    const embedded = await embeddingClient.embedBatch(missing.map((record) => record.description));
+
+    for (const [index, record] of missing.entries()) {
+      const vector = embedded[index];
+
+      if (vector !== undefined) {
+        vectors.set(record.id, vector);
+      }
+    }
+
+    return vectors;
   }
 
   async delete(id: ActionId): Promise<boolean> {

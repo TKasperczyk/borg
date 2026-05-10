@@ -19,9 +19,13 @@ import { ActionRepository, createActionRecordsTableSchema } from "./repository.j
 import type { ActionRecord } from "./types.js";
 
 class MapEmbeddingClient implements EmbeddingClient {
+  readonly embedTexts: string[] = [];
+  readonly embedBatchTexts: string[][] = [];
+
   constructor(private readonly vectors: ReadonlyMap<string, readonly number[]>) {}
 
   async embed(text: string): Promise<Float32Array> {
+    this.embedTexts.push(text);
     const vector = this.vectors.get(text);
 
     if (vector === undefined) {
@@ -32,7 +36,13 @@ class MapEmbeddingClient implements EmbeddingClient {
   }
 
   async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+    this.embedBatchTexts.push([...texts]);
     return Promise.all(texts.map((text) => this.embed(text)));
+  }
+
+  clearCalls(): void {
+    this.embedTexts.length = 0;
+    this.embedBatchTexts.length = 0;
   }
 }
 
@@ -198,5 +208,42 @@ describe("ActionRepository", () => {
         similarity: expect.any(Number),
       },
     ]);
+  });
+
+  it("uses stored action embeddings for description similarity pairs", async () => {
+    const embeddingClient = new MapEmbeddingClient(
+      new Map([
+        ["Review Atlas rollout", [1, 0, 0, 0]],
+        ["Check Atlas deployment", [0.9, 0.1, 0, 0]],
+        ["Draft billing follow-up", [0, 1, 0, 0]],
+      ]),
+    );
+    const repository = await openFixture(embeddingClient);
+    const review = makeAction({
+      description: "Review Atlas rollout",
+    });
+    const check = makeAction({
+      description: "Check Atlas deployment",
+    });
+    const billing = makeAction({
+      description: "Draft billing follow-up",
+    });
+
+    repository.add(review);
+    repository.add(check);
+    repository.add(billing);
+    await repository.waitForPendingEmbeddings();
+    embeddingClient.clearCalls();
+
+    await expect(
+      repository.findSimilarDescriptionPairs([review, check, billing], 0.85),
+    ).resolves.toEqual([
+      {
+        leftId: review.id,
+        rightId: check.id,
+        similarity: expect.any(Number),
+      },
+    ]);
+    expect(embeddingClient.embedBatchTexts).toEqual([]);
   });
 });
