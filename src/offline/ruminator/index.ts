@@ -38,6 +38,7 @@ import type {
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const GROWTH_MARKER_CONFIDENCE_CEILING = 0.6;
+const OPEN_QUESTION_ACTIVE_ACTION_STATES = ["considering", "committed_to_do", "scheduled"] as const;
 
 const resolutionResponseSchema = z.object({
   resolution_note: z.string().min(1),
@@ -87,6 +88,14 @@ const ruminatorPlanItemSchema = z.discriminatedUnion("action", [
     reason: z.string().min(1),
   }),
   z.object({
+    action: z.literal("merge_duplicate"),
+    primary_question_id: openQuestionIdSchema,
+    duplicate_question_id: openQuestionIdSchema,
+    previous_primary: openQuestionSchema,
+    previous_duplicate: openQuestionSchema,
+    similarity: z.number().min(0).max(1),
+  }),
+  z.object({
     action: z.literal("mark_unresolved"),
     question_id: openQuestionIdSchema,
     previous: openQuestionSchema,
@@ -114,6 +123,8 @@ export type RuminatorPlan = z.infer<typeof ruminatorPlanSchema>;
 
 type RuminatorReversal = {
   previous?: OpenQuestion;
+  previous_primary?: OpenQuestion;
+  previous_duplicate?: OpenQuestion;
   marker_id?: z.infer<typeof growthMarkerIdSchema>;
 };
 
@@ -174,6 +185,20 @@ function buildChange(item: RuminatorPlan["items"][number]): OfflineChange | null
       },
       preview: {
         reason: item.reason,
+      },
+    };
+  }
+
+  if (item.action === "merge_duplicate") {
+    return {
+      process: "ruminator",
+      action: "merge_duplicate",
+      targets: {
+        primary_question_id: item.primary_question_id,
+        duplicate_question_id: item.duplicate_question_id,
+      },
+      preview: {
+        similarity: item.similarity,
       },
     };
   }
@@ -243,6 +268,158 @@ function mergeRetrievedEpisodes(episodeSets: readonly (readonly RetrievedEpisode
   return [...byId.values()].sort(
     (left, right) => right.score - left.score || right.episode.updated_at - left.episode.updated_at,
   );
+}
+
+function shareOpenQuestionEntityScope(left: OpenQuestion, right: OpenQuestion): boolean {
+  const rightNodeIds = new Set(right.related_semantic_node_ids);
+
+  return left.related_semantic_node_ids.some((nodeId) => rightNodeIds.has(nodeId));
+}
+
+function olderQuestion(left: OpenQuestion, right: OpenQuestion): OpenQuestion {
+  return left.created_at < right.created_at ||
+    (left.created_at === right.created_at && left.id < right.id)
+    ? left
+    : right;
+}
+
+function newerQuestion(left: OpenQuestion, right: OpenQuestion): OpenQuestion {
+  const older = olderQuestion(left, right);
+
+  return older.id === left.id ? right : left;
+}
+
+function mergeQuestionIds(
+  left: readonly OpenQuestion["related_episode_ids"][number][],
+  right: readonly OpenQuestion["related_episode_ids"][number][],
+): OpenQuestion["related_episode_ids"] {
+  return [...new Set([...left, ...right])];
+}
+
+function mergeSemanticNodeIds(
+  left: readonly OpenQuestion["related_semantic_node_ids"][number][],
+  right: readonly OpenQuestion["related_semantic_node_ids"][number][],
+): OpenQuestion["related_semantic_node_ids"] {
+  return [...new Set([...left, ...right])];
+}
+
+function openQuestionCitationEpisodeIds(
+  question: OpenQuestion,
+): OpenQuestion["related_episode_ids"] {
+  const provenanceEpisodeIds =
+    question.provenance?.kind === "episodes"
+      ? question.provenance.episode_ids
+      : question.provenance?.kind === "online_reflector"
+        ? question.provenance.evidence_episode_ids
+        : [];
+
+  return [
+    ...new Set([
+      ...question.related_episode_ids,
+      ...question.resolution_evidence_episode_ids,
+      ...provenanceEpisodeIds,
+    ]),
+  ];
+}
+
+async function hasPostCreationCitation(
+  ctx: OfflineContext,
+  question: OpenQuestion,
+): Promise<boolean> {
+  const episodeIds = openQuestionCitationEpisodeIds(question);
+
+  if (episodeIds.length === 0) {
+    return false;
+  }
+
+  const episodes = await ctx.episodicRepository.getMany(episodeIds);
+
+  return episodes.some((episode) => episode.created_at > question.created_at);
+}
+
+function hasActiveAssociatedAction(ctx: OfflineContext, question: OpenQuestion): boolean {
+  if (
+    ctx.actionRepository.list({
+      openQuestionId: question.id,
+      states: OPEN_QUESTION_ACTIVE_ACTION_STATES,
+      limit: 1,
+    }).length > 0
+  ) {
+    return true;
+  }
+
+  return (
+    question.goal_id !== null &&
+    ctx.actionRepository.list({
+      goalId: question.goal_id,
+      states: OPEN_QUESTION_ACTIVE_ACTION_STATES,
+      limit: 1,
+    }).length > 0
+  );
+}
+
+async function shouldDismissStaleNoTraction(
+  ctx: OfflineContext,
+  question: OpenQuestion,
+): Promise<boolean> {
+  return (
+    question.unresolved_rumination_ticks >= ctx.config.offline.ruminator.staleNoTractionTicks &&
+    !(await hasPostCreationCitation(ctx, question)) &&
+    !hasActiveAssociatedAction(ctx, question)
+  );
+}
+
+async function planDuplicateMerges(
+  ctx: OfflineContext,
+  questions: readonly OpenQuestion[],
+): Promise<RuminatorPlan["items"]> {
+  const items: RuminatorPlan["items"] = [];
+  const mergedDuplicateIds = new Set<OpenQuestion["id"]>();
+  const ordered = [...questions].sort(
+    (left, right) => left.created_at - right.created_at || left.id.localeCompare(right.id),
+  );
+
+  for (const question of ordered) {
+    if (mergedDuplicateIds.has(question.id) || question.related_semantic_node_ids.length === 0) {
+      continue;
+    }
+
+    const candidates = await ctx.openQuestionsRepository.searchSimilar(question, {
+      limit: Math.max(10, ctx.config.offline.ruminator.maxQuestionsPerRun * 4),
+      minSimilarity: ctx.config.offline.ruminator.duplicateSimilarityThreshold,
+    });
+
+    for (const candidate of candidates) {
+      const match = candidate.question;
+
+      if (
+        match.status !== "open" ||
+        mergedDuplicateIds.has(match.id) ||
+        !shareOpenQuestionEntityScope(question, match)
+      ) {
+        continue;
+      }
+
+      const primary = olderQuestion(question, match);
+      const duplicate = newerQuestion(question, match);
+
+      if (primary.id !== question.id || mergedDuplicateIds.has(duplicate.id)) {
+        continue;
+      }
+
+      items.push({
+        action: "merge_duplicate",
+        primary_question_id: primary.id,
+        duplicate_question_id: duplicate.id,
+        previous_primary: primary,
+        previous_duplicate: duplicate,
+        similarity: candidate.similarity,
+      });
+      mergedDuplicateIds.add(duplicate.id);
+    }
+  }
+
+  return items;
 }
 
 async function searchResolutionEvidence(
@@ -521,6 +698,33 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         reopenForReversal(parsed.previous.id, parsed.previous.urgency);
       }
     });
+    this.options.registry.register(this.name, "merge_duplicate", async ({ reversal }) => {
+      const parsed = reversal as Partial<RuminatorReversal>;
+
+      if (parsed.previous_primary !== undefined) {
+        this.options.openQuestionsRepository.restore(parsed.previous_primary);
+      }
+
+      if (parsed.previous_duplicate !== undefined) {
+        if (this.options.openQuestionsRepository.get(parsed.previous_duplicate.id) === null) {
+          this.options.openQuestionsRepository.add({
+            id: parsed.previous_duplicate.id,
+            question: parsed.previous_duplicate.question,
+            urgency: parsed.previous_duplicate.urgency,
+            related_episode_ids: parsed.previous_duplicate.related_episode_ids,
+            related_semantic_node_ids: parsed.previous_duplicate.related_semantic_node_ids,
+            goal_id: parsed.previous_duplicate.goal_id,
+            audience_entity_id: parsed.previous_duplicate.audience_entity_id,
+            provenance: parsed.previous_duplicate.provenance,
+            source: parsed.previous_duplicate.source,
+            created_at: parsed.previous_duplicate.created_at,
+            last_touched: parsed.previous_duplicate.last_touched,
+          });
+        }
+
+        this.options.openQuestionsRepository.restore(parsed.previous_duplicate);
+      }
+    });
     this.options.registry.register(this.name, "add_growth_marker", async ({ reversal }) => {
       const parsed = reversal as Partial<RuminatorReversal>;
 
@@ -548,14 +752,32 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       status: "open",
       limit: maxQuestionsPerRun,
     });
+    const duplicateQuestionIds = new Set<OpenQuestion["id"]>();
     let tokensUsed = 0;
     let budgetExhausted = false;
+
+    try {
+      const duplicateMerges = await planDuplicateMerges(ctx, questions);
+      items.push(...duplicateMerges);
+
+      for (const item of duplicateMerges) {
+        if (item.action === "merge_duplicate") {
+          duplicateQuestionIds.add(item.duplicate_question_id);
+        }
+      }
+    } catch (error) {
+      errors.push(offlineProcessError(this.name, error));
+    }
 
     try {
       const budgeted = await withBudget(this.name, budget, async ({ wrapClient }) => {
         const llmClient = wrapClient(ctx.llm.background);
 
         for (const question of questions) {
+          if (duplicateQuestionIds.has(question.id)) {
+            continue;
+          }
+
           try {
             const resolution = await planResolution(ctx, llmClient, question, maxQuestionsPerRun);
 
@@ -565,6 +787,16 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             }
 
             const nextUnresolvedRuminationTicks = question.unresolved_rumination_ticks + 1;
+            if (await shouldDismissStaleNoTraction(ctx, question)) {
+              items.push({
+                action: "abandon",
+                question_id: question.id,
+                previous: question,
+                reason: "stale_no_traction",
+              });
+              continue;
+            }
+
             const fallback = planFallbackAction(ctx, question, nextUnresolvedRuminationTicks);
 
             if (fallback !== null) {
@@ -572,14 +804,12 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               continue;
             }
 
-            if (ctx.config.offline.ruminator.stalenessTicks !== null) {
-              items.push({
-                action: "mark_unresolved",
-                question_id: question.id,
-                previous: question,
-                next_unresolved_rumination_ticks: nextUnresolvedRuminationTicks,
-              });
-            }
+            items.push({
+              action: "mark_unresolved",
+              question_id: question.id,
+              previous: question,
+              next_unresolved_rumination_ticks: nextUnresolvedRuminationTicks,
+            });
           } catch (error) {
             if (error instanceof BudgetExceededError) {
               throw error;
@@ -743,6 +973,14 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           );
         }
 
+        if (item.reason === "stale_no_traction" && ctx.tracer?.enabled === true) {
+          ctx.tracer.emit("open_question_stale_dismissed", {
+            turnId: ctx.runId,
+            question_id: item.question_id,
+            reason: item.reason,
+          });
+        }
+
         ctx.auditLog.record({
           run_id: ctx.runId,
           process: this.name,
@@ -752,6 +990,64 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           },
           reversal: {
             previous: item.previous,
+          } satisfies RuminatorReversal,
+        });
+        const change = buildChange(item);
+
+        if (change !== null) {
+          changes.push(change);
+        }
+        continue;
+      }
+
+      if (item.action === "merge_duplicate") {
+        const primary = ctx.openQuestionsRepository.get(item.primary_question_id);
+        const duplicate = ctx.openQuestionsRepository.get(item.duplicate_question_id);
+
+        if (primary === null) {
+          throw new StorageError(
+            `Missing primary open question for ruminator plan: ${item.primary_question_id}`,
+            {
+              code: "RUMINATOR_PLAN_INVALID",
+            },
+          );
+        }
+
+        if (duplicate !== null && duplicate.status === "open") {
+          ctx.identityService.updateOpenQuestion(
+            primary.id,
+            {
+              urgency: Math.max(primary.urgency, duplicate.urgency),
+              goal_id: primary.goal_id ?? duplicate.goal_id,
+              related_episode_ids: mergeQuestionIds(
+                primary.related_episode_ids,
+                duplicate.related_episode_ids,
+              ),
+              related_semantic_node_ids: mergeSemanticNodeIds(
+                primary.related_semantic_node_ids,
+                duplicate.related_semantic_node_ids,
+              ),
+            },
+            processProvenance,
+            {
+              throughReview: true,
+              reason: "open_question_duplicate_merge",
+            },
+          );
+          await ctx.openQuestionsRepository.delete(duplicate.id);
+        }
+
+        ctx.auditLog.record({
+          run_id: ctx.runId,
+          process: this.name,
+          action: "merge_duplicate",
+          targets: {
+            primary_question_id: item.primary_question_id,
+            duplicate_question_id: item.duplicate_question_id,
+          },
+          reversal: {
+            previous_primary: item.previous_primary,
+            previous_duplicate: item.previous_duplicate,
           } satisfies RuminatorReversal,
         });
         const change = buildChange(item);

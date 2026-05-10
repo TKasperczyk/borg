@@ -263,8 +263,10 @@ const configBaseSchema = z.object({
           // Threshold applies to RetrievalConfidence.overall, a conservative
           // epistemic evidence-quality signal, not the relevance ranking score.
           resolveConfidenceThreshold: z.number().min(0).max(1).default(0.55),
+          duplicateSimilarityThreshold: z.number().min(0).max(1).default(0.9),
           stalenessDays: z.number().positive().default(30),
           stalenessTicks: z.number().int().positive().nullable().default(null),
+          staleNoTractionTicks: z.number().int().positive().default(8),
           budget: z.number().int().positive().default(6_000),
           perQuestionBudget: z.number().int().positive().default(8_000),
         })

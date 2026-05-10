@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../cognition/index.js";
 import { computeWeights } from "../../cognition/attention/index.js";
 import { FakeLLMClient } from "../../llm/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
-import { createEpisodeId, createSemanticNodeId } from "../../util/ids.js";
+import {
+  createActionId,
+  createEpisodeId,
+  createSemanticNodeId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 
 import {
   createEpisodeFixture,
@@ -14,6 +20,16 @@ import { RuminatorProcess } from "./index.js";
 
 const RUMINATOR_TOOL_NAME = "EmitRuminatorDecisions";
 const DAY_MS = 24 * 60 * 60 * 1_000;
+
+class CaptureTracer implements TurnTracer {
+  readonly enabled = true;
+  readonly includePayloads = false;
+  readonly events: Array<{ event: TurnTraceEventName; data: TurnTraceData }> = [];
+
+  emit(event: TurnTraceEventName, data: TurnTraceData): void {
+    this.events.push({ event, data });
+  }
+}
 
 function createRuminatorResponse(input: {
   resolution_note: string;
@@ -216,7 +232,13 @@ describe("RuminatorProcess", () => {
 
       const plan = await process.plan(harness.createContext(), {});
 
-      expect(plan.items).toEqual([]);
+      expect(plan.items).toEqual([
+        expect.objectContaining({
+          action: "mark_unresolved",
+          question_id: question.id,
+          next_unresolved_rumination_ticks: 1,
+        }),
+      ]);
       expect(llm.requests).toHaveLength(0);
     } finally {
       await harness.cleanup();
@@ -273,7 +295,7 @@ describe("RuminatorProcess", () => {
       );
       await harness.episodicRepository.insert(oldGlobalEpisode);
       await harness.episodicRepository.insert(weakAudienceEpisode);
-      harness.openQuestionsRepository.add({
+      const question = harness.openQuestionsRepository.add({
         question: questionText,
         urgency: 0.7,
         source: "reflection",
@@ -301,7 +323,13 @@ describe("RuminatorProcess", () => {
 
       const plan = await process.plan(harness.createContext(), {});
 
-      expect(plan.items).toEqual([]);
+      expect(plan.items).toEqual([
+        expect.objectContaining({
+          action: "mark_unresolved",
+          question_id: question.id,
+          next_unresolved_rumination_ticks: 1,
+        }),
+      ]);
       expect(llm.requests).toHaveLength(0);
     } finally {
       await harness.cleanup();
@@ -462,6 +490,98 @@ describe("RuminatorProcess", () => {
         status: "abandoned",
         unresolved_rumination_ticks: 0,
         last_ruminated_at: null,
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("dismisses stale no-traction questions but keeps ones with active actions", async () => {
+    const tracer = new CaptureTracer();
+    const harness = await createOfflineTestHarness({
+      tracer,
+      configOverrides: {
+        offline: {
+          ruminator: {
+            staleNoTractionTicks: 2,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const stale = harness.openQuestionsRepository.add({
+        question: "Should the stale Atlas question stay open?",
+        urgency: 0.2,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      const active = harness.openQuestionsRepository.add({
+        question: "Should the active Atlas action stay open?",
+        urgency: 0.2,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      harness.openQuestionsRepository.markRuminated(stale.id, 2);
+      harness.openQuestionsRepository.markRuminated(active.id, 2);
+      harness.actionRepository.add({
+        id: createActionId(),
+        description: "Follow up on the active Atlas question",
+        actor: "borg",
+        audience_entity_id: null,
+        goal_id: null,
+        open_question_id: active.id,
+        state: "committed_to_do",
+        confidence: 0.8,
+        provenance_episode_ids: [],
+        provenance_stream_entry_ids: [createStreamEntryId()],
+        created_at: harness.clock.now(),
+        updated_at: harness.clock.now(),
+        considering_at: null,
+        committed_at: harness.clock.now(),
+        scheduled_at: null,
+        completed_at: null,
+        not_done_at: null,
+        unknown_at: null,
+      });
+
+      const ctx = harness.createContext();
+      const plan = await process.plan(ctx, {});
+
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "abandon",
+            question_id: stale.id,
+            reason: "stale_no_traction",
+          }),
+          expect.objectContaining({
+            action: "mark_unresolved",
+            question_id: active.id,
+            next_unresolved_rumination_ticks: 3,
+          }),
+        ]),
+      );
+
+      await process.apply(ctx, plan);
+
+      expect(harness.openQuestionsRepository.get(stale.id)).toMatchObject({
+        status: "abandoned",
+        abandoned_reason: "stale_no_traction",
+      });
+      expect(harness.openQuestionsRepository.get(active.id)?.status).toBe("open");
+      expect(tracer.events).toContainEqual({
+        event: "open_question_stale_dismissed",
+        data: expect.objectContaining({
+          turnId: ctx.runId,
+          question_id: stale.id,
+          reason: "stale_no_traction",
+        }),
       });
     } finally {
       await harness.cleanup();
@@ -630,6 +750,80 @@ describe("RuminatorProcess", () => {
         status: "abandoned",
         unresolved_rumination_ticks: 0,
         last_ruminated_at: null,
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("merges near-duplicate open questions that share entity scope", async () => {
+    const sharedNodeId = createSemanticNodeId();
+    const firstEpisodeId = createEpisodeId();
+    const secondEpisodeId = createEpisodeId();
+    const firstQuestion = "Should Madrid practice stay attached to the trip prep goal?";
+    const secondQuestion = "Does the Madrid prep question still belong with trip practice?";
+    const harness = await createOfflineTestHarness({
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [firstQuestion, [1, 0, 0, 0]],
+          [secondQuestion, [1, 0, 0, 0]],
+        ]),
+      ),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            duplicateSimilarityThreshold: 0.9,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const older = harness.openQuestionsRepository.add({
+        question: firstQuestion,
+        urgency: 0.4,
+        related_episode_ids: [firstEpisodeId],
+        related_semantic_node_ids: [sharedNodeId],
+        source: "reflection",
+        created_at: 1_000,
+        last_touched: 1_000,
+      });
+      const newer = harness.openQuestionsRepository.add({
+        question: secondQuestion,
+        urgency: 0.8,
+        related_episode_ids: [secondEpisodeId],
+        related_semantic_node_ids: [sharedNodeId],
+        source: "reflection",
+        created_at: 2_000,
+        last_touched: 2_000,
+      });
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "merge_duplicate",
+            primary_question_id: older.id,
+            duplicate_question_id: newer.id,
+          }),
+        ]),
+      );
+
+      await process.apply(harness.createContext(), plan);
+
+      expect(harness.openQuestionsRepository.get(newer.id)).toBeNull();
+      expect(harness.openQuestionsRepository.get(older.id)).toMatchObject({
+        status: "open",
+        urgency: 0.8,
+        related_episode_ids: [firstEpisodeId, secondEpisodeId],
+        related_semantic_node_ids: [sharedNodeId],
       });
     } finally {
       await harness.cleanup();

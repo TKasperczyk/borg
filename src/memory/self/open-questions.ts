@@ -25,6 +25,7 @@ import {
   parseOpenQuestionId,
   streamEntryIdHelpers,
   type EntityId,
+  type GoalId,
   type OpenQuestionId,
   type StreamEntryId,
 } from "../../util/ids.js";
@@ -36,6 +37,7 @@ import {
   provenanceSchema,
   toStoredProvenance,
 } from "../common/provenance.js";
+import { goalIdSchema } from "./types.js";
 
 export const OPEN_QUESTION_STATUSES = ["open", "resolved", "abandoned"] as const;
 export const OPEN_QUESTION_SOURCES = [
@@ -77,6 +79,7 @@ export const openQuestionSchema = z
     question: z.string().min(1),
     urgency: z.number().min(0).max(1),
     status: openQuestionStatusSchema,
+    goal_id: goalIdSchema.nullable().default(null),
     audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().default(null),
     related_episode_ids: z.array(episodeIdSchema),
     related_semantic_node_ids: z.array(semanticNodeIdSchema),
@@ -119,6 +122,7 @@ export const openQuestionPatchSchema = z.object({
   question: z.string().min(1).optional(),
   urgency: z.number().min(0).max(1).optional(),
   status: openQuestionStatusSchema.optional(),
+  goal_id: goalIdSchema.nullable().optional(),
   audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().optional(),
   related_episode_ids: z.array(episodeIdSchema).optional(),
   related_semantic_node_ids: z.array(semanticNodeIdSchema).optional(),
@@ -163,6 +167,11 @@ export type OpenQuestionHandleLookupOptions = {
   episodeIds?: readonly string[];
   statuses?: readonly OpenQuestionStatus[];
   visibleToAudienceEntityId?: EntityId | null;
+  limit?: number;
+};
+export type OpenQuestionGoalLookupOptions = {
+  goalId: GoalId;
+  statuses?: readonly OpenQuestionStatus[];
   limit?: number;
 };
 
@@ -327,6 +336,7 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
     question: row.question,
     urgency: Number(row.urgency),
     status: row.status,
+    goal_id: row.goal_id === null || row.goal_id === undefined ? null : row.goal_id,
     audience_entity_id:
       row.audience_entity_id === null || row.audience_entity_id === undefined
         ? null
@@ -612,6 +622,33 @@ export class OpenQuestionsRepository {
     return results;
   }
 
+  async searchSimilar(
+    question: OpenQuestion,
+    options: {
+      limit?: number;
+      minSimilarity?: number;
+    } = {},
+  ): Promise<OpenQuestionSearchCandidate[]> {
+    const embeddingClient = this.embeddingClient;
+
+    if (embeddingClient === undefined) {
+      return [];
+    }
+
+    const vector =
+      (await this.readStoredEmbedding(question.id)) ??
+      (await embeddingClient.embed(question.question));
+
+    return (
+      await this.searchByVector(vector, {
+        status: "open",
+        visibleToAudienceEntityId: question.audience_entity_id,
+        limit: options.limit,
+        minSimilarity: options.minSimilarity,
+      })
+    ).filter((candidate) => candidate.question.id !== question.id);
+  }
+
   async backfillMissingEmbeddings(
     options: { limit?: number } = {},
   ): Promise<OpenQuestionEmbeddingBackfillReport> {
@@ -686,6 +723,7 @@ export class OpenQuestionsRepository {
     urgency: number;
     related_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
     related_semantic_node_ids?: readonly z.infer<typeof semanticNodeIdSchema>[];
+    goal_id?: GoalId | null;
     audience_entity_id?: EntityId | null;
     provenance?: z.infer<typeof provenanceSchema> | null;
     source: OpenQuestionSource;
@@ -709,6 +747,7 @@ export class OpenQuestionsRepository {
       question: input.question,
       urgency: input.urgency,
       status: "open",
+      goal_id: input.goal_id ?? null,
       audience_entity_id: input.audience_entity_id ?? null,
       related_episode_ids: relatedEpisodeIds,
       related_semantic_node_ids: relatedSemanticNodeIds,
@@ -743,12 +782,13 @@ export class OpenQuestionsRepository {
       .prepare(
         `
           INSERT INTO open_questions (
-            id, question, dedupe_key, urgency, status, audience_entity_id, related_episode_ids,
-            related_semantic_node_ids, provenance_kind, provenance_episode_ids,
-            provenance_process, source, created_at, last_touched, resolution_evidence_episode_ids,
-            resolution_evidence_stream_entry_ids, resolution_note, resolved_at, abandoned_reason,
-            abandoned_at, unresolved_rumination_ticks, last_ruminated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, question, dedupe_key, urgency, status, goal_id, audience_entity_id,
+            related_episode_ids, related_semantic_node_ids, provenance_kind,
+            provenance_episode_ids, provenance_process, source, created_at, last_touched,
+            resolution_evidence_episode_ids, resolution_evidence_stream_entry_ids,
+            resolution_note, resolved_at, abandoned_reason, abandoned_at,
+            unresolved_rumination_ticks, last_ruminated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -757,6 +797,7 @@ export class OpenQuestionsRepository {
         key,
         question.urgency,
         question.status,
+        question.goal_id,
         question.audience_entity_id,
         serializeJsonValue(question.related_episode_ids),
         serializeJsonValue(question.related_semantic_node_ids),
@@ -872,6 +913,39 @@ export class OpenQuestionsRepository {
     return rows.map((row) => mapOpenQuestionRow(row));
   }
 
+  listByGoal(options: OpenQuestionGoalLookupOptions): OpenQuestion[] {
+    const statuses =
+      options.statuses === undefined
+        ? undefined
+        : [...new Set(options.statuses.map((status) => openQuestionStatusSchema.parse(status)))];
+    const filters = ["goal_id = ?"];
+    const values: unknown[] = [goalIdSchema.parse(options.goalId)];
+
+    if (statuses !== undefined) {
+      if (statuses.length === 0) {
+        return [];
+      }
+
+      filters.push(`status IN (${statuses.map(() => "?").join(", ")})`);
+      values.push(...statuses);
+    }
+
+    const limit = options.limit === undefined ? 50 : Math.max(1, Math.floor(options.limit));
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM open_questions
+          WHERE ${filters.join(" AND ")}
+          ORDER BY urgency DESC, last_touched DESC, created_at DESC
+          LIMIT ?
+        `,
+      )
+      .all(...values, limit) as Record<string, unknown>[];
+
+    return rows.map((row) => mapOpenQuestionRow(row));
+  }
+
   list(
     options: {
       status?: OpenQuestionStatus;
@@ -955,7 +1029,7 @@ export class OpenQuestionsRepository {
       .prepare(
         `
           UPDATE open_questions
-          SET question = ?, urgency = ?, status = ?, audience_entity_id = ?,
+          SET question = ?, urgency = ?, status = ?, goal_id = ?, audience_entity_id = ?,
               related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
               provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
               resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
@@ -968,6 +1042,7 @@ export class OpenQuestionsRepository {
         next.question,
         next.urgency,
         next.status,
+        next.goal_id,
         next.audience_entity_id,
         serializeJsonValue(next.related_episode_ids),
         serializeJsonValue(next.related_semantic_node_ids),
@@ -1011,7 +1086,8 @@ export class OpenQuestionsRepository {
       .prepare(
         `
           UPDATE open_questions
-          SET question = ?, dedupe_key = ?, urgency = ?, status = ?, audience_entity_id = ?,
+          SET question = ?, dedupe_key = ?, urgency = ?, status = ?, goal_id = ?,
+              audience_entity_id = ?,
               related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
               provenance_episode_ids = ?, provenance_process = ?, source = ?, created_at = ?,
               last_touched = ?, resolution_evidence_episode_ids = ?,
@@ -1026,6 +1102,7 @@ export class OpenQuestionsRepository {
         dedupeKey,
         parsed.urgency,
         parsed.status,
+        parsed.goal_id,
         parsed.audience_entity_id,
         serializeJsonValue(parsed.related_episode_ids),
         serializeJsonValue(parsed.related_semantic_node_ids),

@@ -129,6 +129,7 @@ export const selfMigrations = [
           question TEXT NOT NULL,
           urgency REAL NOT NULL,
           status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'abandoned')),
+          goal_id TEXT,
           related_episode_ids TEXT NOT NULL,
           related_semantic_node_ids TEXT NOT NULL,
           source TEXT NOT NULL CHECK (
@@ -332,6 +333,22 @@ export const selfMigrations = [
         db.exec(`
           ALTER TABLE open_questions
             ADD COLUMN last_ruminated_at INTEGER;
+        `);
+      }
+    },
+  },
+  {
+    id: 5,
+    name: "open_question_goal_id",
+    up: (db) => {
+      if (!tableExists(db, "open_questions")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "open_questions", "goal_id")) {
+        db.exec(`
+          ALTER TABLE open_questions
+            ADD COLUMN goal_id TEXT;
         `);
       }
     },
