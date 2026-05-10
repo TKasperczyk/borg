@@ -242,6 +242,17 @@ export class TurnPhaseCoordinator {
       ? frameAnomalyClassification
       : null;
 
+    const actionLinkSelfContext =
+      isUserTurn && currentTurnFrameAnomaly === null
+        ? await this.options.selfContextBuilder.build({
+            turnId,
+            cognitionInput,
+            perception,
+            autonomyTrigger: turnInput.autonomyTrigger,
+            audienceEntityId,
+          })
+        : null;
+    const actionLinkGoalId = actionLinkSelfContext?.executiveFocus.selected_goal?.id ?? null;
     const activeGoalsForPromotion = isUserTurn
       ? await this.options.selfContextBuilder.listActiveGoalsVisibleToAudience(audienceEntityId)
       : [];
@@ -271,6 +282,7 @@ export class TurnPhaseCoordinator {
         persistedUserEntryId,
         recentHistory: recencyWindow.messages,
         audienceEntityId,
+        goalId: actionLinkGoalId,
         frameAnomaly: frameAnomalyClassification,
       }),
       currentTurnFrameAnomaly === null
@@ -386,13 +398,18 @@ export class TurnPhaseCoordinator {
       });
     }
 
-    const selfContext = await this.options.selfContextBuilder.build({
-      turnId,
-      cognitionInput,
-      perception,
-      autonomyTrigger: turnInput.autonomyTrigger,
-      audienceEntityId,
-    });
+    const selfContext =
+      actionLinkSelfContext !== null &&
+      persistedPromotions.goalIds.length === 0 &&
+      persistedPromotions.executiveStepIds.length === 0
+        ? actionLinkSelfContext
+        : await this.options.selfContextBuilder.build({
+            turnId,
+            cognitionInput,
+            perception,
+            autonomyTrigger: turnInput.autonomyTrigger,
+            audienceEntityId,
+          });
     const selfSnapshot = selfContext.selfSnapshot;
     const activeScoringValues = selfContext.activeScoringValues;
     const retrievalScoringFeatures = selfContext.retrievalScoringFeatures;

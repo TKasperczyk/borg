@@ -414,6 +414,23 @@ function isOpenQuestionVisibleToReflectionAudience(
   return question.audience_entity_id === null || question.audience_entity_id === audienceEntityId;
 }
 
+function focusedReflectionOpenQuestionId(
+  context: ReflectionContext,
+  selectedGoalId: GoalId | null,
+): OpenQuestionId | null {
+  const visibleQuestions = (context.activeOpenQuestions ?? []).filter((question) =>
+    isOpenQuestionVisibleToReflectionAudience(question, context.audienceEntityId),
+  );
+  const candidates =
+    selectedGoalId === null
+      ? visibleQuestions
+      : visibleQuestions.filter((question) => question.goal_id === selectedGoalId);
+
+  const candidate = candidates[0];
+
+  return candidates.length === 1 && candidate !== undefined ? candidate.id : null;
+}
+
 function summarizeExecutiveFocusForReflection(focus: ExecutiveFocus | null | undefined) {
   if (focus?.selected_goal === null || focus?.selected_goal === undefined) {
     return null;
@@ -938,6 +955,8 @@ export class Reflector {
         ? null
         : await this.options.episodicRepository.findBySourceStreamIdsContaining(sourceStreamIds);
     const provenanceEpisodeIds = currentTurnEpisode === null ? [] : [currentTurnEpisode.id];
+    const selectedGoalId = context.executiveFocus?.selected_goal?.id ?? null;
+    const selectedOpenQuestionId = focusedReflectionOpenQuestionId(context, selectedGoalId);
 
     for (const update of updates) {
       const state = actionStateFromIntentStatus(update.status);
@@ -949,8 +968,8 @@ export class Reflector {
           description: update.description.trim(),
           actor: update.actor,
           audience_entity_id: context.audienceEntityId ?? null,
-          goal_id: null,
-          open_question_id: null,
+          goal_id: selectedGoalId,
+          open_question_id: selectedOpenQuestionId,
           state,
           confidence: update.confidence,
           provenance_episode_ids: provenanceEpisodeIds,

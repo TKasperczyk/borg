@@ -15,7 +15,13 @@ import {
 } from "../../memory/actions/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
-import { createActionId, type EntityId, type StreamEntryId } from "../../util/ids.js";
+import {
+  createActionId,
+  type EntityId,
+  type GoalId,
+  type OpenQuestionId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
@@ -113,6 +119,8 @@ export type ExtractActionStatesInput = {
   currentUserStreamEntryId: StreamEntryId;
   recentHistory: readonly RecencyMessage[];
   audienceEntityId: EntityId | null;
+  goalId?: GoalId | null;
+  openQuestionId?: OpenQuestionId | null;
 };
 
 function buildActionStateMessages(input: ExtractActionStatesInput): LLMMessage[] {
@@ -193,6 +201,8 @@ function toActionRecord(input: {
   candidate: ParsedActionStateCandidate;
   currentUserStreamEntryId: StreamEntryId;
   audienceEntityId: EntityId | null;
+  goalId: GoalId | null;
+  openQuestionId: OpenQuestionId | null;
   nowMs: number;
 }): ActionRecord {
   return {
@@ -200,8 +210,8 @@ function toActionRecord(input: {
     description: input.candidate.description,
     actor: input.candidate.actor,
     audience_entity_id: input.candidate.audience_entity_id ?? input.audienceEntityId,
-    goal_id: null,
-    open_question_id: null,
+    goal_id: input.goalId,
+    open_question_id: input.openQuestionId,
     state: input.candidate.state,
     confidence: input.candidate.confidence,
     provenance_episode_ids: [],
@@ -393,6 +403,8 @@ export class ActionStateExtractor {
         candidate,
         currentUserStreamEntryId: input.currentUserStreamEntryId,
         audienceEntityId: input.audienceEntityId,
+        goalId: input.goalId ?? null,
+        openQuestionId: input.openQuestionId ?? null,
         nowMs,
       });
 

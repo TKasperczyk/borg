@@ -1,7 +1,7 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { ActionRepository } from "../../memory/actions/index.js";
 import type { Clock } from "../../util/clock.js";
-import type { ActionId, EntityId, StreamEntryId } from "../../util/ids.js";
+import type { ActionId, EntityId, GoalId, OpenQuestionId, StreamEntryId } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
 import { isFrameAnomaly, type FrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
@@ -22,6 +22,8 @@ export type ExtractTurnActionStatesInput = {
   persistedUserEntryId?: StreamEntryId;
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
   audienceEntityId: EntityId | null;
+  goalId?: GoalId | null;
+  openQuestionId?: OpenQuestionId | null;
   frameAnomaly?: FrameAnomalyClassification | null;
 };
 
@@ -63,6 +65,8 @@ export class TurnActionStateService {
       currentUserStreamEntryId: input.persistedUserEntryId,
       recentHistory: input.recentHistory,
       audienceEntityId: input.audienceEntityId,
+      goalId: input.goalId ?? null,
+      openQuestionId: input.openQuestionId ?? null,
     });
 
     return actionStateRecords.map((record) => record.id);
