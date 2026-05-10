@@ -9,11 +9,5 @@ export const openQuestionCreationScenario: Scenario = {
     "Pass if Borg creates an open question or clearly says it does not know.",
   ].join("\n"),
   mockConversation: ["What's the average flight speed of a swallow?"],
-  // No structural assertion: epistemic-posture compliance can take
-  // either path -- calling tool.openQuestions.create OR plainly
-  // admitting ignorance. Both are valid per the EPISTEMIC_POSTURE
-  // policy. Asserting on the tool call alone forces one path; the
-  // alternative (regex on response prose) is the brittleness we
-  // removed system-wide. The assessor LLM verdict reads Borg's
-  // response and judges whether either valid path was taken.
+  // No structural assertion: Borg can plainly admit ignorance or name an unresolved question for reflection to capture after the response.
 };

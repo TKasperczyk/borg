@@ -272,6 +272,7 @@ describe("Borg", () => {
     expect(config.procedural).toEqual(DEFAULT_CONFIG.procedural);
     expect(config.retrieval).toEqual(DEFAULT_CONFIG.retrieval);
     expect(config.executive).toEqual(DEFAULT_CONFIG.executive);
+    expect(config.host_capabilities).toBe(DEFAULT_CONFIG.host_capabilities);
     expect(config.offline.beliefReviser).toEqual(DEFAULT_CONFIG.offline.beliefReviser);
     expect(config.maintenance).toEqual(DEFAULT_CONFIG.maintenance);
     expect(config.autonomy.executiveFocus).toEqual(DEFAULT_CONFIG.autonomy.executiveFocus);

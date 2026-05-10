@@ -833,6 +833,8 @@ describe("TurnOrchestrator evidence ledger", () => {
     const tracePath = join(tempDir, "trace.jsonl");
     const clock = new ManualClock(1_800_000_182_000);
     const finalText = "Marta is the tutor in this current session.";
+    const hostCapabilities =
+      "Output channels available now:\n- EmitAnswer: respond\n- HostReminder: schedule user-visible reminders";
     const llm = new FakeLLMClient({
       responses: [
         createCorrectivePreferenceResponse({
@@ -856,6 +858,7 @@ describe("TurnOrchestrator evidence ledger", () => {
         BORG_TRACE_PROMPTS: "1",
       },
       configOverrides: {
+        host_capabilities: hostCapabilities,
         generation: {
           manifestFinalizer: {
             enabled: true,
@@ -889,6 +892,9 @@ describe("TurnOrchestrator evidence ledger", () => {
       ]);
       expect(finalizerSystem).toContain("<borg_evidence_ledger>");
       expect(finalizerSystem).toContain("id=current_user_message:");
+      expect(finalizerSystem).toContain("<borg_host_capabilities>");
+      expect(finalizerSystem).toContain(hostCapabilities);
+      expect(finalizerSystem).not.toContain("Real-time polling of external state");
       expect(llm.requests.some((request) => request.budget === "relational-claim-auditor")).toBe(
         true,
       );

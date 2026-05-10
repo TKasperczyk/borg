@@ -460,6 +460,7 @@ export class TurnPhaseCoordinator {
       clock: this.options.clock,
       tracer: this.options.tracer,
       emissionFinalizerEnabled: this.options.config.generation.manifestFinalizer.enabled,
+      hostCapabilities: this.options.config.host_capabilities,
     });
     const deliberation = await deliberator.run(
       {

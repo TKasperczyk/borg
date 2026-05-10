@@ -216,6 +216,7 @@ export class Deliberator {
     const baseSystemPrompt = buildBaseSystemPrompt(effectiveContext, {
       retrievalContextBudget,
       semanticContextBudget,
+      hostCapabilities: this.options.hostCapabilities,
       nowMs: this.clock.now(),
     });
     const evidenceLedgerPromptSections =

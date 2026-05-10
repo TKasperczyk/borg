@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
+import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/deliberation/constants.js";
 import {
   RELATIONAL_CLAIM_KINDS,
   type RelationalClaimKind,
@@ -79,6 +80,7 @@ const configFileSchema = z
   .object({
     dataDir: z.string().min(1).optional(),
     defaultUser: z.string().min(1).optional(),
+    host_capabilities: z.string().min(1).optional(),
     perception: z
       .object({
         useLlmFallback: z.boolean().optional(),
@@ -400,6 +402,7 @@ const configFileSchema = z
 export const configSchema = z.object({
   dataDir: z.string().min(1),
   defaultUser: z.string().min(1).optional(),
+  host_capabilities: z.string().min(1),
   perception: z.object({
     useLlmFallback: z.boolean(),
     modeWhenLlmAbsent: z.enum(["problem_solving", "relational", "reflective", "idle"]).optional(),
@@ -628,6 +631,7 @@ export type Config = z.infer<typeof configSchema>;
 export const DEFAULT_CONFIG: Config = {
   dataDir: expandPath(DEFAULT_DATA_DIR),
   defaultUser: undefined,
+  host_capabilities: DEFAULT_HOST_CAPABILITIES_SECTION,
   perception: {
     useLlmFallback: true,
   },
@@ -1027,6 +1031,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
       readOptionalEnvString(env, "BORG_DEFAULT_USER") ??
       fileConfig.defaultUser ??
       DEFAULT_CONFIG.defaultUser,
+    host_capabilities:
+      readOptionalEnvString(env, "BORG_HOST_CAPABILITIES") ??
+      fileConfig.host_capabilities ??
+      DEFAULT_CONFIG.host_capabilities,
     perception: {
       useLlmFallback:
         readOptionalEnvBoolean(env, "BORG_PERCEPTION_USE_LLM_FALLBACK") ??

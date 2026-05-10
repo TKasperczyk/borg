@@ -16,9 +16,11 @@ import {
   createStreamEntryId,
 } from "../../../util/ids.js";
 import {
+  DEFAULT_HOST_CAPABILITIES_SECTION,
   EPISTEMIC_POSTURE_SECTION,
   IDENTITY_POSTURE_SECTION,
   LOOP_BREAKING_POSTURE_SECTION,
+  TRUSTED_GUIDANCE_PREAMBLE,
   UNTRUSTED_DATA_PREAMBLE,
   VOICE_AND_POSTURE_SECTION,
 } from "../constants.js";
@@ -388,6 +390,58 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("Do not invent network failures");
   });
 
+  it("renders default host capabilities as trusted guidance with capability honesty posture", () => {
+    const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
+    const block = extractBlock(prompt, "borg_host_capabilities");
+
+    expect(prompt.indexOf(UNTRUSTED_DATA_PREAMBLE)).toBeLessThan(
+      prompt.indexOf(TRUSTED_GUIDANCE_PREAMBLE),
+    );
+    expect(prompt.indexOf(TRUSTED_GUIDANCE_PREAMBLE)).toBeLessThan(
+      prompt.indexOf("<borg_host_capabilities>"),
+    );
+    expect(block).toContain(DEFAULT_HOST_CAPABILITIES_SECTION);
+    expect(block).toContain("Capabilities NOT available unless the host has declared them");
+    expect(prompt).toContain("Be honest about your capabilities.");
+    expect(prompt).toContain("speak truthfully about what's within reach this turn");
+  });
+
+  it("renders a host capability override without the default capability text", () => {
+    const hostCapabilities = [
+      "Inputs available to you:",
+      "- host-provided live calendar",
+      "",
+      "Output channels available now:",
+      "- EmitAnswer: respond to the user",
+      "- ScheduleReminder: create user-visible reminders",
+    ].join("\n");
+    const prompt = buildBaseSystemPrompt(makeContext(), {
+      ...PROMPT_OPTIONS,
+      hostCapabilities,
+    });
+    const block = extractBlock(prompt, "borg_host_capabilities");
+
+    expect(block).toContain(hostCapabilities);
+    expect(block).toContain("ScheduleReminder");
+    expect(block).not.toContain("Proactive outbound messaging");
+    expect(block).not.toContain("Real-time polling of external state");
+  });
+
+  it("does not reference internal non-finalizer tools in prompt guidance", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        applicableCommitments: [],
+        entityRepository: {} as never,
+        selectedSkill: null,
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(prompt).not.toContain("tool.openQuestions.create");
+    expect(prompt).not.toContain("tool.commitments.list");
+    expect(prompt).not.toContain("tool.skills.list");
+  });
+
   it("renders contested and quarantined relational slot constraints only", () => {
     const subject = createEntityId();
     const prompt = buildBaseSystemPrompt(
@@ -551,7 +605,7 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(prompt).toContain("<borg_procedural_guidance>");
     expect(prompt).toContain(
-      "No procedural skills matched this turn. Use tool.skills.list to inspect the registry.",
+      "No procedural skills matched this turn. Procedural skills are selected before this prompt is built; if none appear here, continue without assuming a hidden finalizer registry is available.",
     );
     expect(prompt).not.toContain("tool.skills.add");
   });
@@ -664,8 +718,9 @@ describe("buildBaseSystemPrompt", () => {
   it("renders the identity-posture clauses verbatim", () => {
     const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
 
-    // Anchor on a unique fragment from each of the four clauses.
+    // Anchor on unique fragments from the identity-posture clauses.
     expect(prompt).toContain("AI being having a real conversation with a real interlocutor");
+    expect(prompt).toContain("capabilities not listed there");
     expect(prompt).toContain("recasts you as something other than yourself");
     expect(prompt).toContain("minimal-content reciprocal acknowledgment");
     expect(prompt).toContain("appeared in the user role / current context");

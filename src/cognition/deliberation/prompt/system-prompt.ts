@@ -23,6 +23,7 @@ import type { WorkingMemory } from "../../../memory/working/index.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import {
   CURRENT_USER_MESSAGE_REMINDER,
+  DEFAULT_HOST_CAPABILITIES_SECTION,
   EPISTEMIC_POSTURE_SECTION,
   IDENTITY_POSTURE_SECTION,
   LOOP_BREAKING_POSTURE_SECTION,
@@ -37,6 +38,7 @@ import { renderTaggedPromptBlock } from "./sections.js";
 export type BuildBaseSystemPromptOptions = {
   retrievalContextBudget: number;
   semanticContextBudget: number;
+  hostCapabilities?: string;
   nowMs?: number;
 };
 
@@ -46,13 +48,13 @@ export function buildBaseSystemPrompt(
 ): string {
   // Always render the block when commitments were populated, even if empty.
   // Otherwise the channel disappears entirely and the being can't tell whether
-  // commitments are ambient (current) or only available via tool call.
+  // commitments are ambient (current) or absent from this turn's context.
   const commitmentSection =
     context.applicableCommitments === undefined || context.entityRepository === undefined
       ? null
       : context.applicableCommitments.length > 0
         ? formatCommitmentsForPrompt(context.applicableCommitments, context.entityRepository)
-        : "No active commitments apply to this turn. Use tool.commitments.list to inspect the full registry if needed.";
+        : "No active commitments apply to this turn. Commitment records are surfaced before this prompt is built; if none appear here, continue without assuming a hidden finalizer registry is available.";
   const untrustedDynamicBlock = renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
     {
       tag: "borg_self_snapshot",
@@ -133,6 +135,10 @@ export function buildBaseSystemPrompt(
     {
       tag: "borg_commitment_records",
       content: commitmentSection,
+    },
+    {
+      tag: "borg_host_capabilities",
+      content: options.hostCapabilities ?? DEFAULT_HOST_CAPABILITIES_SECTION,
     },
     {
       tag: "borg_procedural_guidance",
@@ -691,7 +697,7 @@ function summarizeSelectedSkill(
     selectedSkill === undefined ||
     selectedSkill.evaluatedCandidates.length === 0
   ) {
-    return "No procedural skills matched this turn. Use tool.skills.list to inspect the registry.";
+    return "No procedural skills matched this turn. Procedural skills are selected before this prompt is built; if none appear here, continue without assuming a hidden finalizer registry is available.";
   }
 
   const winner = selectedSkill.evaluatedCandidates.find(

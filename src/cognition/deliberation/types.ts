@@ -174,4 +174,5 @@ export type DeliberatorOptions = {
   clock?: Clock;
   tracer?: TurnTracer;
   emissionFinalizerEnabled?: boolean;
+  hostCapabilities?: string;
 };

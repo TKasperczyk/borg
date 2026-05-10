@@ -37,6 +37,8 @@ describe("config", () => {
       extraction: "claude-opus-4-7",
       recallExpansion: "claude-haiku-4-5-20251001",
     });
+    expect(config.host_capabilities).toContain("Inputs available to you");
+    expect(config.host_capabilities).toContain("Proactive outbound messaging");
     expect(config.perception.useLlmFallback).toBe(true);
     expect(config.affective.useLlmFallback).toBe(true);
     expect(config.offline.curator.episodeDecayIntervalMs).toBe(24 * 60 * 60 * 1_000);
@@ -101,6 +103,31 @@ describe("config", () => {
 
     expect(config.autonomy.maxWakesPerWindow).toBe(9);
     expect(config.autonomy.budgetWindowMs).toBe(7_200_000);
+  });
+
+  it("loads host capabilities from the config file", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const hostCapabilities = [
+      "Inputs available to you:",
+      "- host-owned project tracker",
+      "",
+      "Output channels available now:",
+      "- EmitAnswer: respond to the user",
+      "- NotifyUserLater: send a user-visible follow-up",
+    ].join("\n");
+
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      host_capabilities: hostCapabilities,
+    });
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {},
+    });
+
+    expect(config.host_capabilities).toBe(hostCapabilities);
+    expect(config.host_capabilities).not.toContain("Proactive outbound messaging");
   });
 
   it("merges config file values with environment overrides", () => {
