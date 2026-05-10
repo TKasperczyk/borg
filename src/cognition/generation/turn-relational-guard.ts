@@ -6,7 +6,11 @@ import type {
   RelationalSlot,
   RelationalSlotRepository,
 } from "../../memory/relational-slots/index.js";
-import type { ClosureLoopState, ClosurePressureHistoryEntry } from "../../memory/working/index.js";
+import type {
+  ClosureLoopState,
+  ClosurePressureHistoryEntry,
+  RecentSuppressionEntry,
+} from "../../memory/working/index.js";
 import type { RetrievedEpisode } from "../../retrieval/index.js";
 import {
   loadActiveSessionTranscriptEntries,
@@ -34,7 +38,7 @@ import {
 const COMPLETED_ACTION_LIMIT = 8;
 const RELATIONAL_SLOT_GUARD_LIMIT = 64;
 const INTERNAL_IDENTIFIER_EXACT_PATTERN =
-  /^(?:strm|sess|ep|goal|val|trt|abp|grw|oq|semn|seme|cmt|ent|act|rslot|skl|procevi|run|exstep)_[a-z0-9]{16}$|^autonomy_wake_[a-f0-9]{16}$/;
+  /^(?:strm|sess|ep|goal|val|trt|abp|grw|oq|semn|seme|cmt|ent|act|rslot|skl|procevi|run|exstep)_[a-z0-9]{16}$|^autonomy_wake_[a-f0-9]{16}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export type TurnRelationalGuardRunnerOptions = {
   auditModel: string;
@@ -60,6 +64,7 @@ export type RunTurnRelationalGuardInput = {
   activeCommitments: readonly CommitmentRecord[];
   closureLoop: ClosureLoopState | null;
   closurePressureHistory?: readonly ClosurePressureHistoryEntry[];
+  recentSuppressions?: readonly RecentSuppressionEntry[];
   currentUserClosureKind?: ClosureLoopDialogueAct | null;
   currentTurn?: number;
   audienceEntityId: EntityId | null;
@@ -81,17 +86,21 @@ function addInternalIdentifiers(
 }
 
 function collectInternalIdentifiers(input: {
+  turnId: string;
   sessionId: SessionId;
   persistedUserEntry?: StreamEntry;
   currentSessionStreamEntries: readonly RelationalGuardStreamEvidence[];
   retrievedEpisodes: readonly RetrievedEpisode[];
   activeCommitments: readonly CommitmentRecord[];
+  closurePressureHistory: readonly ClosurePressureHistoryEntry[];
+  recentSuppressions: readonly RecentSuppressionEntry[];
   relationalSlots: readonly RelationalSlot[];
   recentCompletedActions: readonly ActionRecord[];
   audienceEntityId: EntityId | null;
 }): string[] {
   const identifiers = new Set<string>();
 
+  addInternalIdentifier(identifiers, input.turnId);
   addInternalIdentifier(identifiers, input.sessionId);
   addInternalIdentifier(identifiers, input.persistedUserEntry?.id);
   addInternalIdentifier(identifiers, input.persistedUserEntry?.session_id);
@@ -120,6 +129,14 @@ function collectInternalIdentifiers(input: {
     addInternalIdentifier(identifiers, commitment.about_entity);
     addInternalIdentifier(identifiers, commitment.superseded_by);
     addInternalIdentifiers(identifiers, commitment.source_stream_entry_ids ?? []);
+  }
+
+  for (const entry of input.closurePressureHistory) {
+    addInternalIdentifier(identifiers, entry.turn_id);
+  }
+
+  for (const entry of input.recentSuppressions) {
+    addInternalIdentifier(identifiers, entry.turn_id);
   }
 
   for (const slot of input.relationalSlots) {
@@ -259,11 +276,14 @@ export class TurnRelationalGuardRunner {
       turnId: input.turnId,
       response: closureResult.emission.content,
       knownIdentifiers: collectInternalIdentifiers({
+        turnId: input.turnId,
         sessionId: input.sessionId,
         persistedUserEntry: input.persistedUserEntry,
         currentSessionStreamEntries,
         retrievedEpisodes: input.retrievedEpisodes,
         activeCommitments: input.activeCommitments,
+        closurePressureHistory: input.closurePressureHistory ?? [],
+        recentSuppressions: input.recentSuppressions ?? [],
         relationalSlots,
         recentCompletedActions,
         audienceEntityId: input.audienceEntityId,

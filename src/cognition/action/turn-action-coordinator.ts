@@ -166,6 +166,7 @@ export class TurnActionCoordinator {
               closureLoop: input.workingMemory.discourse_state?.closure_loop ?? null,
               closurePressureHistory:
                 input.workingMemory.discourse_state?.closure_pressure_history ?? [],
+              recentSuppressions: input.workingMemory.discourse_state?.recent_suppressions ?? [],
               currentUserClosureKind: input.currentUserClosureKind,
               currentTurn: input.workingMemory.turn_counter,
               audienceEntityId: input.audienceEntityId,

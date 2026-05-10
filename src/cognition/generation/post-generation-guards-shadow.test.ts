@@ -401,4 +401,71 @@ describe("post-generation guard shadow chain", () => {
     });
     expect(emit).not.toHaveBeenCalledWith("internal_identifier_guard", expect.any(Object));
   });
+
+  it("suppresses prompt-visible discourse-state UUID turn IDs after closure guard passes", async () => {
+    const discourseTurnId = "123e4567-e89b-12d3-a456-426614174000";
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([]),
+        closureAuditResponse({
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure.",
+        }),
+      ],
+    });
+    const emit = vi.fn();
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit,
+    };
+    const relationalRunner = new TurnRelationalGuardRunner({
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      relationalClaimMode: "enforce",
+      closurePressureMode: "enforce",
+      createStreamReader: () => emptyStreamReader(),
+      actionRepository: {
+        list: vi.fn(() => []),
+      },
+      commitmentRepository: {
+        findByEvidenceStreamEntryId: vi.fn(() => false),
+      },
+      relationalSlotRepository: {
+        list: vi.fn(() => []),
+      },
+      clock: new FixedClock(2_000),
+      tracer,
+    });
+
+    const finalEmission = await relationalRunner.run({
+      llmClient: llm,
+      turnId: "turn-discourse-uuid-leak",
+      response: `The closure-pressure history entry was ${discourseTurnId}.`,
+      userMessage: "What got suppressed?",
+      sessionId: DEFAULT_SESSION_ID,
+      retrievedEpisodes: [],
+      activeCommitments: [],
+      closureLoop: null,
+      closurePressureHistory: [
+        {
+          turn_id: discourseTurnId,
+          reason: "span_removed",
+          ts: 1_000,
+        },
+      ],
+      audienceEntityId: null,
+    });
+
+    expect(finalEmission).toEqual({
+      kind: "suppressed",
+      reason: "internal_identifier_leak",
+    });
+    expect(emit).toHaveBeenCalledWith("internal_identifier_guard", {
+      turnId: "turn-discourse-uuid-leak",
+      verdict: "suppressed",
+      leaked_identifiers: [discourseTurnId],
+    });
+  });
 });
