@@ -1,7 +1,11 @@
 // Public facade property types exposed by the Borg class.
 
 import type { AutonomyScheduler, AutonomyWakesRepository } from "../autonomy/index.js";
-import type { MaintenanceScheduler } from "../offline/index.js";
+import type {
+  MaintenanceScheduler,
+  ReviewRevalidationOptions,
+  ReviewRevalidationResult,
+} from "../offline/index.js";
 import type { CorrectionService } from "../correction/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
@@ -354,6 +358,7 @@ export type BorgFacades = {
       decision: ReviewResolutionInput,
       options?: ReviewResolveOptions,
     ) => Promise<ReviewQueueItem | null>;
+    revalidate: (options: ReviewRevalidationOptions) => Promise<ReviewRevalidationResult>;
   };
   audit: {
     list: (options?: {

@@ -112,6 +112,57 @@ describe("review queue", () => {
     }
   });
 
+  it("opens review_queue schema on empty databases and databases with existing review rows", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    cleanup.push(async () => {
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+    const dbPath = join(tempDir, "borg.db");
+    const db = openDatabase(dbPath, {
+      migrations: [...semanticMigrations],
+    });
+    const columns = db.prepare("PRAGMA table_info(review_queue)").all() as Array<{
+      name: string;
+    }>;
+
+    expect(columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["id", "kind", "refs", "reason", "created_at"]),
+    );
+    db.prepare(
+      `
+        INSERT INTO review_queue (kind, refs, reason, created_at, resolved_at, resolution)
+        VALUES (?, ?, ?, ?, NULL, NULL)
+      `,
+    ).run(
+      "misattribution",
+      JSON.stringify({
+        target_type: "semantic_node",
+        target_id: createSemanticNodeId(),
+        patch: {
+          description: "Corrected description.",
+        },
+      }),
+      "existing row",
+      1_000,
+    );
+    db.close();
+
+    const reopened = openDatabase(dbPath, {
+      migrations: [...semanticMigrations],
+    });
+    const rows = reopened.prepare("SELECT kind, refs FROM review_queue").all() as Array<{
+      kind: string;
+      refs: string;
+    }>;
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.kind).toBe("misattribution");
+    expect(JSON.parse(rows[0]!.refs)).toMatchObject({
+      target_type: "semantic_node",
+    });
+    reopened.close();
+  });
+
   it("enqueues contradiction reviews on conflicting support paths and resolves them", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({

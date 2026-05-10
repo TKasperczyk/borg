@@ -5,7 +5,12 @@ import { withBorg } from "../helpers/borg.js";
 import { CliError } from "../helpers/errors.js";
 import { writeLine } from "../helpers/formatters.js";
 import { resolveSemanticNodeId } from "../helpers/id-resolvers.js";
-import { parseRequiredText, parseReviewKind, parseReviewResolution } from "../helpers/parsers.js";
+import {
+  parseOptionalPositiveInteger,
+  parseRequiredText,
+  parseReviewKind,
+  parseReviewResolution,
+} from "../helpers/parsers.js";
 import type { CliCommandDeps, CommandOptions } from "../types.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 
@@ -36,11 +41,13 @@ function renderReviewItem(
 }
 
 export function registerReviewCommands(cli: CAC, deps: CliCommandDeps): void {
-  const { stdout, options } = deps;
+  const { stdout, stderr, options } = deps;
 
   cli
     .command("review <action> [arg1] [arg2]", "Inspect and resolve review items")
     .option("--kind <kind>", "Review item kind")
+    .option("--data-dir <path>", "Borg data directory")
+    .option("--max-age-days <days>", "Only revalidate items older than this many days")
     .option("--winner-node-id <id>", "Winner node id for duplicate/contradiction resolution")
     .option("--accept", "Accept a correction review item")
     .option("--reject", "Reject a correction review item")
@@ -52,8 +59,14 @@ export function registerReviewCommands(cli: CAC, deps: CliCommandDeps): void {
         arg2: string | undefined,
         commandOptions: CommandOptions,
       ) => {
+        const dataDir =
+          commandOptions.dataDir === undefined
+            ? undefined
+            : parseRequiredText(commandOptions.dataDir, "--data-dir");
+        const borgOptions = dataDir === undefined ? options : { ...options, dataDir };
+
         if (action === "list") {
-          const items = await withBorg(options, async (borg) =>
+          const items = await withBorg(borgOptions, async (borg) =>
             borg.review.list({
               kind:
                 commandOptions.kind === undefined
@@ -70,6 +83,32 @@ export function registerReviewCommands(cli: CAC, deps: CliCommandDeps): void {
               2,
             ),
           );
+          return;
+        }
+
+        if (action === "revalidate") {
+          const kind = parseReviewKind(commandOptions.kind);
+
+          if (kind !== "misattribution") {
+            throw new CliError("review revalidate currently supports --kind misattribution");
+          }
+
+          const maxAgeDays = parseOptionalPositiveInteger(
+            commandOptions.maxAgeDays,
+            "--max-age-days",
+          );
+          const result = await withBorg(borgOptions, async (borg) =>
+            borg.review.revalidate({
+              kind,
+              ...(maxAgeDays === undefined ? {} : { maxAgeDays }),
+            }),
+          );
+
+          for (const warning of result.warnings) {
+            writeLine(stderr, `Warning: ${warning}`);
+          }
+
+          writeLine(stdout, JSON.stringify(result, null, 2));
           return;
         }
 
@@ -93,7 +132,7 @@ export function registerReviewCommands(cli: CAC, deps: CliCommandDeps): void {
           const reason =
             typeof commandOptions.reason === "string" ? commandOptions.reason.trim() : undefined;
 
-          const resolved = await withBorg(options, async (borg) =>
+          const resolved = await withBorg(borgOptions, async (borg) =>
             borg.review.resolve(
               itemId,
               typeof commandOptions.winnerNodeId === "string" || reason !== undefined

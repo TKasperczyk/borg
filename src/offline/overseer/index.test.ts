@@ -120,6 +120,7 @@ describe("overseer process", () => {
       createOverseerResponse([
         supportedMisattributionFlag([sourceEntry.id], {
           reason: "The narrative mentions Alex, but Alex is missing from participants.",
+          quoted_span: "Alex",
           patch: {
             participants: ["team", "Alex"],
           },
@@ -168,8 +169,20 @@ describe("overseer process", () => {
         kind: "misattribution",
       },
     });
-    expect(harness.reviewQueueRepository.getOpen()[0]).toMatchObject({
+    const queued = harness.reviewQueueRepository.getOpen()[0];
+    expect(queued).toMatchObject({
       kind: "misattribution",
+      refs: {
+        evidence_stream_ids: [sourceEntry.id],
+        overseer_flag: {
+          flag_kind: "misattribution",
+          kind: "misattribution",
+          quoted_span: "Alex",
+          source_assessment: "supports_flag",
+          cited_stream_ids: [sourceEntry.id],
+          audience_entities: [],
+        },
+      },
     });
     expect(harness.openQuestionsRepository.list({ status: "open" })).toEqual([
       expect.objectContaining({
@@ -180,6 +193,11 @@ describe("overseer process", () => {
     ]);
 
     const auditRow = harness.auditLog.list({ process: "overseer" })[0];
+    expect(auditRow?.targets.overseer_flag).toMatchObject({
+      flag_kind: "misattribution",
+      quoted_span: "Alex",
+      cited_stream_ids: [sourceEntry.id],
+    });
     await harness.auditLog.revert(auditRow!.id, "test");
     expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
   });
@@ -1007,6 +1025,12 @@ describe("overseer process", () => {
         target_kind: "semantic_edge",
         target_id: edge.id,
         suggested_valid_to: suggestedValidTo,
+        overseer_flag: {
+          flag_kind: "temporal_drift",
+          kind: "temporal_drift",
+          suggested_valid_to: suggestedValidTo,
+          audience_entities: [],
+        },
       },
     });
     expect(harness.semanticEdgeRepository.getEdge(edge.id)?.valid_to).toBeNull();

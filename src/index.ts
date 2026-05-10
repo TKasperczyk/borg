@@ -158,6 +158,8 @@ export {
   type OfflineProcessPlan,
   type OfflineResult,
   type OrchestratorResult,
+  type ReviewRevalidationOptions,
+  type ReviewRevalidationResult,
 } from "./offline/index.js";
 
 export { type Provenance, type ProvenanceKind } from "./memory/common/index.js";

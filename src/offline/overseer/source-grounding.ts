@@ -1,8 +1,100 @@
-import type { Episode } from "../../memory/episodic/index.js";
-import type { SemanticEdge, SemanticNode } from "../../memory/semantic/index.js";
-import type { StreamEntry } from "../../stream/index.js";
+import { z } from "zod";
+
+import { entityIdSchema } from "../../memory/commitments/index.js";
+import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
+import {
+  reviewKindSchema,
+  semanticEdgeIdSchema,
+  type SemanticEdge,
+  type SemanticNode,
+} from "../../memory/semantic/index.js";
+import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";
 import type { EntityId, EpisodeId, StreamEntryId } from "../../util/ids.js";
+import { valueAppearsIn } from "../../util/text-presence.js";
 import type { OfflineContext } from "../types.js";
+
+export type OverseerSourceGroundingContext = Pick<
+  OfflineContext,
+  "entityRepository" | "episodicRepository" | "retrievalPipeline"
+>;
+
+export const overseerFlagKindSchema = z.enum([
+  reviewKindSchema.enum.misattribution,
+  reviewKindSchema.enum.temporal_drift,
+  reviewKindSchema.enum.identity_inconsistency,
+]);
+
+export const sourceAssessmentSchema = z.enum([
+  "supports_flag",
+  "contradicts_flag",
+  "provenance_insufficient",
+]);
+
+export const overseerFlagPayloadSchema = z.object({
+  kind: overseerFlagKindSchema,
+  reason: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  patch: z.record(z.string(), z.unknown()).optional(),
+  corrected_start_time: z.number().finite().optional(),
+  corrected_end_time: z.number().finite().optional(),
+  patch_description: z.string().min(1).optional(),
+  repair_target_type: z
+    .enum(["trait", "value", "commitment", "goal", "autobiographical_period"])
+    .optional(),
+  repair_target_id: z.string().min(1).optional(),
+  repair_op: z.enum(["reinforce", "contradict", "patch"]).optional(),
+  evidence_episode_ids: z.array(z.string().min(1)).optional(),
+  suggested_valid_to: z.number().finite().optional(),
+  by_edge_id: semanticEdgeIdSchema.optional(),
+  source_assessment: sourceAssessmentSchema.optional(),
+  cited_stream_ids: z.array(streamEntryIdSchema).optional(),
+  quoted_span: z.string().min(1).optional(),
+  provenance_note: z.string().min(1).optional(),
+});
+
+export type OverseerFlagPayload = z.infer<typeof overseerFlagPayloadSchema>;
+
+export const overseerAudienceMetadataSchema = z
+  .object({
+    entity_id: entityIdSchema,
+    display_name: z.string().min(1),
+    source_episode_ids: z.array(episodeIdSchema),
+  })
+  .strict();
+
+export type OverseerAudienceMetadata = z.infer<typeof overseerAudienceMetadataSchema>;
+
+export const overseerFlagAuditPayloadSchema = overseerFlagPayloadSchema
+  .extend({
+    flag_kind: overseerFlagKindSchema,
+    audience_entities: z.array(overseerAudienceMetadataSchema),
+  })
+  .strict()
+  .superRefine((payload, ctx) => {
+    if (payload.flag_kind !== payload.kind) {
+      ctx.addIssue({
+        code: "custom",
+        message: "flag_kind must match kind",
+      });
+    }
+  });
+
+export type OverseerFlagAuditPayload = z.infer<typeof overseerFlagAuditPayloadSchema>;
+
+export const suppressedFlagReasonSchema = z.enum([
+  "PROVENANCE-INSUFFICIENT",
+  "INVALID-CITATION",
+  "SOURCE-CONTRADICTS",
+  "AUDIENCE-NAME-GROUNDED",
+]);
+
+export const suppressedOverseerFlagSchema = z.object({
+  flag: overseerFlagPayloadSchema,
+  reason: suppressedFlagReasonSchema,
+  cited_ids: z.array(streamEntryIdSchema),
+});
+
+export type SuppressedOverseerFlag = z.infer<typeof suppressedOverseerFlagSchema>;
 
 export type OverseerSourceTarget =
   | {
@@ -32,12 +124,6 @@ export type OverseerSourceEpisode = {
   shared: boolean;
 };
 
-export type OverseerAudienceMetadata = {
-  entity_id: EntityId;
-  display_name: string;
-  source_episode_ids: EpisodeId[];
-};
-
 export type OverseerSourceBundle = {
   target_type: OverseerSourceTarget["type"];
   target_id: OverseerSourceTarget["id"];
@@ -49,6 +135,86 @@ export type OverseerSourceBundle = {
   missing_episode_ids: EpisodeId[];
   missing_stream_ids: StreamEntryId[];
 };
+
+function suppressFlag(
+  flag: OverseerFlagPayload,
+  reason: z.infer<typeof suppressedFlagReasonSchema>,
+  citedIds: readonly z.infer<typeof streamEntryIdSchema>[],
+): SuppressedOverseerFlag {
+  return {
+    flag,
+    reason,
+    cited_ids: [...citedIds],
+  };
+}
+
+function gateAudienceNameGrounding(
+  flag: OverseerFlagPayload,
+  sourceBundle: OverseerSourceBundle,
+): SuppressedOverseerFlag | null {
+  if (flag.quoted_span === undefined) {
+    return null;
+  }
+
+  for (const audience of sourceBundle.audience_entities) {
+    if (
+      audience.source_episode_ids.length > 0 &&
+      valueAppearsIn(flag.quoted_span, audience.display_name)
+    ) {
+      return suppressFlag(flag, "AUDIENCE-NAME-GROUNDED", flag.cited_stream_ids ?? []);
+    }
+  }
+
+  return null;
+}
+
+export function gateMisattributionFlag(
+  flag: OverseerFlagPayload,
+  sourceBundle: OverseerSourceBundle,
+): SuppressedOverseerFlag | null {
+  const audienceNameSuppression = gateAudienceNameGrounding(flag, sourceBundle);
+
+  if (audienceNameSuppression !== null) {
+    return audienceNameSuppression;
+  }
+
+  const citedIds = flag.cited_stream_ids ?? [];
+
+  if (citedIds.length === 0) {
+    return suppressFlag(flag, "PROVENANCE-INSUFFICIENT", citedIds);
+  }
+
+  const validSourceIds = new Set(sourceBundle.entries.map((source) => source.entry.id));
+  const invalidCitations = citedIds.filter((streamId) => !validSourceIds.has(streamId));
+
+  if (invalidCitations.length > 0) {
+    return suppressFlag(flag, "INVALID-CITATION", citedIds);
+  }
+
+  if (flag.source_assessment === "contradicts_flag") {
+    return suppressFlag(flag, "SOURCE-CONTRADICTS", citedIds);
+  }
+
+  if (
+    flag.source_assessment === undefined ||
+    flag.source_assessment === "provenance_insufficient"
+  ) {
+    return suppressFlag(flag, "PROVENANCE-INSUFFICIENT", citedIds);
+  }
+
+  return null;
+}
+
+export function buildOverseerFlagAuditPayload(
+  flag: OverseerFlagPayload,
+  sourceBundle: OverseerSourceBundle,
+): OverseerFlagAuditPayload {
+  return overseerFlagAuditPayloadSchema.parse({
+    ...flag,
+    flag_kind: flag.kind,
+    audience_entities: sourceBundle.audience_entities,
+  });
+}
 
 function uniqueEpisodeIds(ids: readonly EpisodeId[]): EpisodeId[] {
   const seen = new Set<string>();
@@ -109,7 +275,7 @@ function sourceEpisodeMetadata(episodes: readonly Episode[]): OverseerSourceEpis
 
 function audienceMetadataForEpisodes(
   episodes: readonly Episode[],
-  ctx: OfflineContext,
+  ctx: OverseerSourceGroundingContext,
 ): OverseerAudienceMetadata[] {
   const byEntityId = new Map<string, OverseerAudienceMetadata>();
 
@@ -149,7 +315,7 @@ function audienceMetadataForEpisodes(
 
 async function sourceEpisodesForTarget(
   target: OverseerSourceTarget,
-  ctx: OfflineContext,
+  ctx: OverseerSourceGroundingContext,
 ): Promise<{
   episodes: Episode[];
   sourceEpisodeIds: EpisodeId[];
@@ -181,7 +347,7 @@ async function sourceEpisodesForTarget(
 
 export async function resolveTargetSourceBundle(
   target: OverseerSourceTarget,
-  ctx: OfflineContext,
+  ctx: OverseerSourceGroundingContext,
 ): Promise<OverseerSourceBundle> {
   const sourceEpisodes = await sourceEpisodesForTarget(target, ctx);
   const streamSources = new Map<string, EpisodeId[]>();

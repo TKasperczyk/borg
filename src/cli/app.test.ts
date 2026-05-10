@@ -1657,6 +1657,69 @@ describe("cli", () => {
     expect(JSON.parse(listCommitmentsAfterOut.read())).toEqual([]);
   });
 
+  it("runs review revalidation with kind, age, and data-dir options", async () => {
+    const tempDir = createCliTempDir(tempDirs);
+    const stdout = createOutputBuffer();
+    const stderr = createOutputBuffer();
+    let receivedDataDir: string | undefined;
+    let receivedMaxAgeDays: number | undefined;
+
+    const exitCode = await runCli(
+      [
+        "node",
+        "borg",
+        "review",
+        "revalidate",
+        "--kind",
+        "misattribution",
+        "--max-age-days",
+        "7",
+        "--data-dir",
+        tempDir,
+      ],
+      {
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        openBorg: async (options) => {
+          receivedDataDir = options.dataDir;
+          return {
+            review: {
+              async revalidate(revalidateOptions: { maxAgeDays?: number }) {
+                receivedMaxAgeDays = revalidateOptions.maxAgeDays;
+                return {
+                  kind: "misattribution",
+                  revalidated: 1,
+                  dismissed_as_suppressed: 1,
+                  skipped_legacy: 0,
+                  unchanged: 0,
+                  diagnostics: {
+                    "AUDIENCE-NAME-GROUNDED": 1,
+                  },
+                  warnings: ["review 4 skipped: legacy item has no overseer_flag payload"],
+                };
+              },
+            },
+            async close() {},
+          } as unknown as Borg;
+        },
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(receivedDataDir).toBe(tempDir);
+    expect(receivedMaxAgeDays).toBe(7);
+    expect(stderr.read()).toContain(
+      "Warning: review 4 skipped: legacy item has no overseer_flag payload",
+    );
+    expect(JSON.parse(stdout.read())).toMatchObject({
+      revalidated: 1,
+      dismissed_as_suppressed: 1,
+      diagnostics: {
+        "AUDIENCE-NAME-GROUNDED": 1,
+      },
+    });
+  });
+
   it("parses semantic as-of flags for edge list and graph walk", async () => {
     const tempDir = createCliTempDir(tempDirs);
     const cliOptions = {

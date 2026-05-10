@@ -25,6 +25,7 @@ const temporalDriftEpisodeRefsSchema = z
     corrected_end_time: z.number().finite().optional(),
     patch_description: z.string().min(1).optional(),
     proposed_provenance: provenanceSchema.optional(),
+    overseer_flag: z.unknown().optional(),
   })
   .strict()
   .refine(
@@ -45,6 +46,7 @@ export const temporalDriftReviewRefsSchema = z.discriminatedUnion("target_type",
       target_id: semanticNodeIdSchema,
       patch_description: z.string().min(1),
       proposed_provenance: provenanceSchema.optional(),
+      overseer_flag: z.unknown().optional(),
     })
     .strict(),
   z
@@ -56,6 +58,7 @@ export const temporalDriftReviewRefsSchema = z.discriminatedUnion("target_type",
       by_edge_id: semanticEdgeIdSchema.optional(),
       reason: z.string().min(1),
       proposed_provenance: provenanceSchema.optional(),
+      overseer_flag: z.unknown().optional(),
     })
     .strict(),
 ]);

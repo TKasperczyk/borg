@@ -28,6 +28,11 @@ export {
 } from "./orchestrator.js";
 export { OverseerProcess, type OverseerProcessOptions } from "./overseer/index.js";
 export {
+  revalidateReviewQueue,
+  type ReviewRevalidationOptions,
+  type ReviewRevalidationResult,
+} from "./overseer/revalidate.js";
+export {
   maintenancePlanSchema,
   offlineProcessPlanSchema,
   type MaintenancePlan,

@@ -2,6 +2,7 @@
 
 import { EpisodicExtractor } from "../memory/episodic/index.js";
 import { SemanticExtractor } from "../memory/semantic/index.js";
+import { revalidateReviewQueue } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
 import type { RetrievalSearchOptions } from "../retrieval/index.js";
 import { StreamReader, StreamWriter } from "../stream/index.js";
@@ -419,6 +420,18 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     review: {
       list: (options = {}) => deps.reviewQueueRepository.list(options),
       resolve: (id, decision, options) => deps.reviewQueueRepository.resolve(id, decision, options),
+      revalidate: (options) =>
+        revalidateReviewQueue(
+          {
+            clock: deps.clock,
+            entityRepository: deps.entityRepository,
+            episodicRepository: deps.episodicRepository,
+            retrievalPipeline: deps.retrievalPipeline,
+            reviewQueueRepository: deps.reviewQueueRepository,
+            semanticNodeRepository: deps.semanticNodeRepository,
+          },
+          options,
+        ),
     },
     audit: {
       list: (options = {}) =>

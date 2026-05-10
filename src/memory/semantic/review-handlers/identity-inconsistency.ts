@@ -64,6 +64,7 @@ const identityReviewBaseSchema = z
   .object({
     proposed_provenance: provenanceSchema.optional(),
     evidence_episode_ids: z.array(episodeIdSchema).min(1).optional(),
+    overseer_flag: z.unknown().optional(),
   })
   .merge(sourceTargetSchema);
 
@@ -160,6 +161,7 @@ export const identityInconsistencyReviewRefsSchema = z.union([
       proposed_provenance: provenanceSchema.optional(),
       source_target_type: z.literal("semantic_edge"),
       source_target_id: semanticEdgeIdSchema,
+      overseer_flag: z.unknown().optional(),
     })
     .strict(),
 ]);

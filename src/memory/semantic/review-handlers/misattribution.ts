@@ -49,6 +49,7 @@ export const misattributionReviewRefsSchema = z.discriminatedUnion("target_type"
       patch: misattributionEpisodePatchSchema,
       evidence_stream_ids: z.array(streamEntryIdSchema).optional(),
       proposed_provenance: provenanceSchema.optional(),
+      overseer_flag: z.unknown().optional(),
     })
     .strict(),
   z
@@ -58,6 +59,7 @@ export const misattributionReviewRefsSchema = z.discriminatedUnion("target_type"
       patch: semanticNodeMisattributionPatchSchema,
       evidence_stream_ids: z.array(streamEntryIdSchema).optional(),
       proposed_provenance: provenanceSchema.optional(),
+      overseer_flag: z.unknown().optional(),
     })
     .strict(),
 ]);
@@ -95,8 +97,20 @@ export function createMisattributionReviewQueueHandler(): ReviewQueueHandler<
       }),
       matches: (state, resolution) => state.decision === resolution.decision,
     },
-    async apply({ refs, resolution, ctx }) {
+    async apply({ item, refs, resolution, ctx }) {
       if (resolution.decision !== "accept") {
+        if (resolution.reason !== undefined) {
+          return {
+            refs: {
+              ...item.refs,
+              review_resolution: {
+                decision: resolution.decision,
+                reason: resolution.reason,
+              },
+            },
+          };
+        }
+
         return;
       }
 
@@ -142,6 +156,8 @@ export function createMisattributionReviewQueueHandler(): ReviewQueueHandler<
           },
         );
       }
+
+      return undefined;
     },
   };
 }
