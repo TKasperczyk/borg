@@ -1050,6 +1050,11 @@ export type SemanticEdgeInsertInput = Omit<SemanticEdge, "id" | SemanticEdgeVali
   Partial<Pick<SemanticEdge, SemanticEdgeValidityKey>> & {
     id?: SemanticEdgeId;
   };
+type SemanticEdgeEvidenceMergeInput = Pick<
+  SemanticEdge,
+  "from_node_id" | "to_node_id" | "relation" | "confidence" | "evidence_episode_ids"
+> &
+  Partial<Pick<SemanticEdge, "last_verified_at" | "valid_from" | "valid_to">>;
 
 export type SemanticEdgeInvalidationInput = z.input<typeof semanticEdgeInvalidationInputSchema>;
 
@@ -1143,6 +1148,62 @@ export class SemanticEdgeRepository {
             invalidated_by_process,
             invalidated_reason
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        edge.id,
+        edge.from_node_id,
+        edge.to_node_id,
+        edge.relation,
+        edge.confidence,
+        serializeJsonValue(edge.evidence_episode_ids),
+        edge.created_at,
+        edge.last_verified_at,
+        edge.valid_from,
+        edge.valid_to,
+        edge.invalidated_at,
+        edge.invalidated_by_edge_id,
+        edge.invalidated_by_review_id,
+        edge.invalidated_by_process,
+        edge.invalidated_reason,
+      );
+  }
+
+  private upsertEdgeRow(edge: SemanticEdge): void {
+    this.db
+      .prepare(
+        `
+          INSERT INTO semantic_edges (
+            id,
+            from_node_id,
+            to_node_id,
+            relation,
+            confidence,
+            evidence_episode_ids,
+            created_at,
+            last_verified_at,
+            valid_from,
+            valid_to,
+            invalidated_at,
+            invalidated_by_edge_id,
+            invalidated_by_review_id,
+            invalidated_by_process,
+            invalidated_reason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            from_node_id = excluded.from_node_id,
+            to_node_id = excluded.to_node_id,
+            relation = excluded.relation,
+            confidence = excluded.confidence,
+            evidence_episode_ids = excluded.evidence_episode_ids,
+            last_verified_at = excluded.last_verified_at,
+            valid_from = excluded.valid_from,
+            valid_to = excluded.valid_to,
+            invalidated_at = excluded.invalidated_at,
+            invalidated_by_edge_id = excluded.invalidated_by_edge_id,
+            invalidated_by_review_id = excluded.invalidated_by_review_id,
+            invalidated_by_process = excluded.invalidated_by_process,
+            invalidated_reason = excluded.invalidated_reason
         `,
       )
       .run(
@@ -1260,6 +1321,99 @@ export class SemanticEdgeRepository {
           : "Direct contradiction edge recorded for review",
       });
     }
+
+    return edge;
+  }
+
+  mergeOpenEdgeEvidence(input: SemanticEdgeEvidenceMergeInput): SemanticEdge | null {
+    const now = this.clock.now();
+    const parsed = z
+      .object({
+        from_node_id: semanticNodeIdSchema,
+        to_node_id: semanticNodeIdSchema,
+        relation: semanticRelationSchema,
+        confidence: z.number().min(0).max(1),
+        evidence_episode_ids: z.array(z.string().min(1)).min(1),
+        last_verified_at: z.number().finite().optional(),
+        valid_from: z.number().finite().optional(),
+        valid_to: z.number().finite().nullable().optional(),
+      })
+      .parse(input);
+
+    this.assertNodeExists(parsed.from_node_id, "from_node_id");
+    this.assertNodeExists(parsed.to_node_id, "to_node_id");
+
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM semantic_edges
+          WHERE from_node_id = ? AND to_node_id = ? AND relation = ? AND valid_to IS NULL
+          ORDER BY created_at ASC, id ASC
+          LIMIT 1
+        `,
+      )
+      .get(parsed.from_node_id, parsed.to_node_id, parsed.relation) as
+      | Record<string, unknown>
+      | undefined;
+
+    if (row === undefined) {
+      return null;
+    }
+
+    const current = edgeFromRow(row);
+    const merged = semanticEdgeSchema.parse({
+      ...current,
+      confidence: Math.max(current.confidence, parsed.confidence),
+      evidence_episode_ids: [
+        ...new Set([...current.evidence_episode_ids, ...parsed.evidence_episode_ids]),
+      ],
+      last_verified_at: Math.max(current.last_verified_at, parsed.last_verified_at ?? now),
+      valid_from: Math.min(current.valid_from, parsed.valid_from ?? now),
+    });
+
+    this.db
+      .prepare(
+        `
+          UPDATE semantic_edges
+          SET confidence = ?,
+              evidence_episode_ids = ?,
+              last_verified_at = ?,
+              valid_from = ?
+          WHERE id = ?
+        `,
+      )
+      .run(
+        merged.confidence,
+        serializeJsonValue(merged.evidence_episode_ids),
+        merged.last_verified_at,
+        merged.valid_from,
+        merged.id,
+      );
+
+    return merged;
+  }
+
+  restoreEdge(input: SemanticEdge): SemanticEdge {
+    const edge = semanticEdgeSchema.parse(input);
+
+    this.assertNodeExists(edge.from_node_id, "from_node_id");
+    this.assertNodeExists(edge.to_node_id, "to_node_id");
+
+    const write = () => {
+      this.db
+        .prepare("DELETE FROM semantic_belief_dependencies WHERE source_edge_id = ?")
+        .run(edge.id);
+      this.upsertEdgeRow(edge);
+      this.insertSupportDependency(edge);
+    };
+
+    if (this.db.raw.inTransaction) {
+      write();
+      return edge;
+    }
+
+    this.db.transaction(write)();
 
     return edge;
   }

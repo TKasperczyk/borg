@@ -4,6 +4,7 @@ import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
   SemanticExtractor,
   semanticEdgeIdSchema,
+  semanticEdgeSchema,
   semanticNodeIdSchema,
   semanticNodeSchema,
   type ReviewQueueInsertInput,
@@ -52,6 +53,7 @@ const semanticExtractorReversalSchema = z.object({
   created_node_ids: z.array(semanticNodeIdSchema),
   updated_nodes: z.array(serializableSemanticNodeSchema),
   created_edge_ids: z.array(semanticEdgeIdSchema),
+  updated_edges: z.array(semanticEdgeSchema).default([]),
 });
 
 type SemanticExtractorReversal = z.infer<typeof semanticExtractorReversalSchema>;
@@ -89,6 +91,7 @@ function buildChange(input: {
   updatedNodes: number;
   skippedNodes: number;
   insertedEdges: number;
+  updatedEdges: number;
   skippedEdges: number;
 }): OfflineChange {
   return {
@@ -102,9 +105,14 @@ function buildChange(input: {
       updated_nodes: input.updatedNodes,
       skipped_nodes: input.skippedNodes,
       inserted_edges: input.insertedEdges,
+      updated_edges: input.updatedEdges,
       skipped_edges: input.skippedEdges,
     },
   };
+}
+
+function semanticEdgeSnapshot(edge: SemanticEdge): string {
+  return JSON.stringify(semanticEdgeSchema.parse(edge));
 }
 
 async function snapshotSemanticNodes(
@@ -248,9 +256,11 @@ function resultCandidateStats(input: {
   updatedNodes: number;
   skippedNodes: number;
   insertedEdges: number;
+  updatedEdges: number;
   skippedEdges: number;
 }): NonNullable<OfflineResult["candidate_stats"]> {
-  const accepted = input.insertedNodes + input.updatedNodes + input.insertedEdges;
+  const accepted =
+    input.insertedNodes + input.updatedNodes + input.insertedEdges + input.updatedEdges;
   const rejected = input.skippedNodes + input.skippedEdges;
 
   return {
@@ -285,6 +295,10 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
           by_process: "maintenance",
           reason: "semantic_extractor_audit_reversal",
         });
+      }
+
+      for (const previousEdge of parsed.updated_edges) {
+        this.options.semanticEdgeRepository.restoreEdge(previousEdge);
       }
 
       for (const nodeId of parsed.created_node_ids) {
@@ -464,6 +478,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
       const createdNodeIds: SemanticNode["id"][] = [];
       const updatedNodes: Array<z.infer<typeof serializableSemanticNodeSchema>> = [];
       const createdEdgeIds: SemanticEdge["id"][] = [];
+      const updatedEdges: SemanticEdge[] = [];
 
       for (const [nodeId, node] of afterNodes) {
         const before = beforeNodes.get(nodeId);
@@ -478,9 +493,16 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
         }
       }
 
-      for (const edgeId of afterEdges.keys()) {
-        if (!beforeEdges.has(edgeId)) {
+      for (const [edgeId, edge] of afterEdges) {
+        const before = beforeEdges.get(edgeId);
+
+        if (before === undefined) {
           createdEdgeIds.push(edgeId);
+          continue;
+        }
+
+        if (semanticEdgeSnapshot(before) !== semanticEdgeSnapshot(edge)) {
+          updatedEdges.push(before);
         }
       }
 
@@ -493,11 +515,13 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
           created_node_ids: createdNodeIds,
           updated_node_count: updatedNodes.length,
           created_edge_ids: createdEdgeIds,
+          updated_edge_count: updatedEdges.length,
         },
         reversal: {
           created_node_ids: createdNodeIds,
           updated_nodes: updatedNodes,
           created_edge_ids: createdEdgeIds,
+          updated_edges: updatedEdges,
         } satisfies SemanticExtractorReversal,
       });
 
@@ -526,6 +550,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
         updatedNodes: extraction.updatedNodes,
         skippedNodes: extraction.skippedNodes,
         insertedEdges: extraction.insertedEdges,
+        updatedEdges: extraction.updatedEdges,
         skippedEdges: extraction.skippedEdges,
       });
       const candidateStats = resultCandidateStats({
@@ -533,6 +558,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
         updatedNodes: extraction.updatedNodes,
         skippedNodes: extraction.skippedNodes,
         insertedEdges: extraction.insertedEdges,
+        updatedEdges: extraction.updatedEdges,
         skippedEdges: extraction.skippedEdges,
       });
 

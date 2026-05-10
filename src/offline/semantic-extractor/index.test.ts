@@ -241,7 +241,8 @@ describe("semantic extractor process", () => {
     expect(secondPlan.episode_ids).toEqual([]);
   });
 
-  it("deletes failed-run graph artifacts and leaves source episodes retryable", async () => {
+  it("skips invalid edges while keeping valid batch candidates", async () => {
+    const tracer = new CaptureTracer();
     const episode = createEpisodeFixture({
       title: "Partial extraction failure",
       narrative: "The episode mentions a support relation before an invalid edge candidate.",
@@ -294,6 +295,7 @@ describe("semantic extractor process", () => {
     });
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      tracer,
     });
     cleanup.push(harness.cleanup);
     await harness.episodicRepository.insert(episode);
@@ -311,18 +313,30 @@ describe("semantic extractor process", () => {
     const result = await process.apply(ctx, plan);
     const retryPlan = await process.plan(harness.createContext());
 
-    expect(result.errors).toEqual([
-      expect.objectContaining({
-        code: "SEMANTIC_EXTRACTOR_INVALID_REF",
-      }),
-    ]);
+    expect(result.errors).toEqual([]);
+    expect(result.candidate_stats).toEqual({
+      proposed: 4,
+      accepted: 3,
+      rejected: 1,
+    });
     await expect(harness.semanticNodeRepository.list({ includeArchived: true })).resolves.toEqual(
-      [],
+      expect.arrayContaining([
+        expect.objectContaining({ label: "First concept" }),
+        expect.objectContaining({ label: "Second concept" }),
+      ]),
     );
-    expect(harness.semanticEdgeRepository.listEdges({ includeInvalid: true })).toEqual([]);
-    expect(harness.auditLog.list({ process: "semantic-extractor" })).toEqual([]);
-    expect(queueDuplicateReview).not.toHaveBeenCalled();
-    expect(retryPlan.episode_ids).toEqual([episode.id]);
+    expect(harness.semanticEdgeRepository.listEdges({ includeInvalid: true })).toHaveLength(1);
+    expect(harness.auditLog.list({ process: "semantic-extractor" })).toHaveLength(1);
+    expect(queueDuplicateReview).toHaveBeenCalledTimes(2);
+    expect(retryPlan.episode_ids).toEqual([]);
+    expect(tracer.events).toContainEqual({
+      event: "semantic_extractor_partial_failure",
+      data: expect.objectContaining({
+        turnId: ctx.runId,
+        skipped_edge_count: 1,
+        skip_reasons: expect.arrayContaining(["invalid_endpoint"]),
+      }),
+    });
   });
 
   it("traces node dedupe when extraction updates an existing compatible node", async () => {

@@ -211,6 +211,7 @@ describe("semantic extractor", () => {
       updatedNodes: 1,
       skippedNodes: 0,
       insertedEdges: 1,
+      updatedEdges: 0,
       skippedEdges: 0,
     });
     const nodesAfterMerge = await nodeRepository.list();
@@ -364,6 +365,228 @@ describe("semantic extractor", () => {
       to_node_id: bob.id,
       relation: "related_to",
     });
+  });
+
+  it("skips malformed and dangling edges while preserving valid candidates", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas partial edges");
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: [
+              {
+                kind: "entity",
+                label: "Atlas",
+                description: "Atlas service.",
+                domain: "tech",
+                aliases: [],
+                confidence: 0.7,
+                source_episode_ids: [episode.id],
+              },
+              {
+                kind: "concept",
+                label: "Rollback",
+                description: "Rollback plan.",
+                domain: "process",
+                aliases: [],
+                confidence: 0.6,
+                source_episode_ids: [episode.id],
+              },
+            ],
+            edges: [
+              {
+                from_label: "Atlas",
+                to_label: "Rollback",
+                relation: "supports",
+                confidence: 0.6,
+                evidence_episode_ids: [episode.id],
+              },
+              {
+                from_label: "Atlas",
+                to_label: "Rollback",
+                confidence: 0.6,
+                evidence_episode_ids: [episode.id],
+              },
+              {
+                from_label: "Atlas",
+                to_label: "Missing concept",
+                relation: "supports",
+                confidence: 0.6,
+                evidence_episode_ids: [episode.id],
+              },
+            ],
+          }),
+        ],
+      }),
+      model: "haiku",
+      clock,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+
+    expect(result).toMatchObject({
+      insertedNodes: 2,
+      insertedEdges: 1,
+      skippedEdges: 2,
+    });
+    expect(edgeRepository.listEdges()).toHaveLength(1);
+  });
+
+  it("merges duplicate edge evidence across repeated extraction", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+    const table = await store.openTable({
+      name: "semantic_nodes",
+      schema: createSemanticNodesTableSchema(4),
+    });
+    const clock = new FixedClock(1_000);
+    const nodeRepository = new SemanticNodeRepository({
+      table,
+      db,
+      clock,
+    });
+    const edgeRepository = new SemanticEdgeRepository({
+      db,
+      clock,
+    });
+    const firstEpisode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas first note");
+    const secondEpisode = buildEpisode("ep_bbbbbbbbbbbbbbbb" as Episode["id"], "Atlas second note");
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "entity",
+              label: "Atlas",
+              description: "Atlas service.",
+              domain: "tech",
+              aliases: [],
+              confidence: 0.7,
+              source_episode_ids: [firstEpisode.id],
+            },
+            {
+              kind: "concept",
+              label: "Rollback",
+              description: "Rollback plan.",
+              domain: "process",
+              aliases: [],
+              confidence: 0.6,
+              source_episode_ids: [firstEpisode.id],
+            },
+          ],
+          edges: [
+            {
+              from_label: "Atlas",
+              to_label: "Rollback",
+              relation: "supports",
+              confidence: 0.6,
+              evidence_episode_ids: [firstEpisode.id],
+            },
+          ],
+        }),
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "entity",
+              label: "Atlas",
+              description: "Atlas service with new evidence.",
+              domain: "tech",
+              aliases: [],
+              confidence: 0.7,
+              source_episode_ids: [secondEpisode.id],
+            },
+            {
+              kind: "concept",
+              label: "Rollback",
+              description: "Rollback plan with new evidence.",
+              domain: "process",
+              aliases: [],
+              confidence: 0.6,
+              source_episode_ids: [secondEpisode.id],
+            },
+          ],
+          edges: [
+            {
+              from_label: "Atlas",
+              to_label: "Rollback",
+              relation: "supports",
+              confidence: 0.65,
+              evidence_episode_ids: [secondEpisode.id],
+            },
+          ],
+        }),
+      ],
+    });
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const extractor = new SemanticExtractor({
+      nodeRepository,
+      edgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([firstEpisode, secondEpisode]),
+      llmClient: llm,
+      model: "haiku",
+      clock,
+    });
+
+    await extractor.extractFromEpisodes([firstEpisode]);
+    const result = await extractor.extractFromEpisodes([secondEpisode]);
+    const [edge] = edgeRepository.listEdges({ includeInvalid: true });
+    const atlas = (
+      await nodeRepository.findByExactLabelOrAlias("Atlas", 1, {
+        includeArchived: true,
+      })
+    )[0];
+
+    expect(result).toMatchObject({
+      insertedEdges: 0,
+      updatedEdges: 1,
+      skippedEdges: 0,
+    });
+    expect(edge?.evidence_episode_ids).toEqual([firstEpisode.id, secondEpisode.id]);
+    expect(atlas?.source_episode_ids).toEqual([firstEpisode.id, secondEpisode.id]);
   });
 
   it("sets edge valid_from from an explicit temporal relation hint", async () => {
@@ -636,8 +859,11 @@ describe("semantic extractor", () => {
       clock,
     });
 
-    await expect(extractor.extractFromEpisodes([episode])).rejects.toMatchObject({
-      code: "SEMANTIC_EXTRACTOR_INVALID_REF",
+    const result = await extractor.extractFromEpisodes([episode]);
+
+    expect(result).toMatchObject({
+      insertedEdges: 0,
+      skippedEdges: 1,
     });
     expect(edgeRepository.listEdges()).toHaveLength(0);
   });
@@ -734,8 +960,11 @@ describe("semantic extractor", () => {
       clock,
     });
 
-    await expect(extractor.extractFromEpisodes([publicEpisode])).rejects.toMatchObject({
-      code: "SEMANTIC_EXTRACTOR_INVALID_REF",
+    const result = await extractor.extractFromEpisodes([publicEpisode]);
+
+    expect(result).toMatchObject({
+      insertedEdges: 0,
+      skippedEdges: 1,
     });
     expect(edgeRepository.listEdges()).toHaveLength(0);
   });
