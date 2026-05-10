@@ -290,10 +290,9 @@ function newerQuestion(left: OpenQuestion, right: OpenQuestion): OpenQuestion {
 }
 
 function mergeQuestionIds(
-  left: readonly OpenQuestion["related_episode_ids"][number][],
-  right: readonly OpenQuestion["related_episode_ids"][number][],
+  ...groups: readonly (readonly OpenQuestion["related_episode_ids"][number][])[]
 ): OpenQuestion["related_episode_ids"] {
-  return [...new Set([...left, ...right])];
+  return [...new Set(groups.flatMap((group) => [...group]))];
 }
 
 function mergeSemanticNodeIds(
@@ -303,21 +302,42 @@ function mergeSemanticNodeIds(
   return [...new Set([...left, ...right])];
 }
 
+function mergeQuestionStreamIds(
+  ...groups: readonly (readonly OpenQuestion["resolution_evidence_stream_entry_ids"][number][])[]
+): OpenQuestion["resolution_evidence_stream_entry_ids"] {
+  return [...new Set(groups.flatMap((group) => [...group]))];
+}
+
+function openQuestionProvenanceEpisodeIds(
+  question: OpenQuestion,
+): OpenQuestion["related_episode_ids"] {
+  if (question.provenance?.kind === "episodes") {
+    return [...question.provenance.episode_ids];
+  }
+
+  if (question.provenance?.kind === "online_reflector") {
+    return [...question.provenance.evidence_episode_ids];
+  }
+
+  return [];
+}
+
+function openQuestionProvenanceStreamEntryIds(
+  question: OpenQuestion,
+): OpenQuestion["resolution_evidence_stream_entry_ids"] {
+  return question.provenance?.kind === "online_reflector"
+    ? [...question.provenance.evidence_stream_entry_ids]
+    : [];
+}
+
 function openQuestionCitationEpisodeIds(
   question: OpenQuestion,
 ): OpenQuestion["related_episode_ids"] {
-  const provenanceEpisodeIds =
-    question.provenance?.kind === "episodes"
-      ? question.provenance.episode_ids
-      : question.provenance?.kind === "online_reflector"
-        ? question.provenance.evidence_episode_ids
-        : [];
-
   return [
     ...new Set([
       ...question.related_episode_ids,
       ...question.resolution_evidence_episode_ids,
-      ...provenanceEpisodeIds,
+      ...openQuestionProvenanceEpisodeIds(question),
     ]),
   ];
 }
@@ -1021,17 +1041,30 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               goal_id: primary.goal_id ?? duplicate.goal_id,
               related_episode_ids: mergeQuestionIds(
                 primary.related_episode_ids,
+                primary.resolution_evidence_episode_ids,
                 duplicate.related_episode_ids,
+                duplicate.resolution_evidence_episode_ids,
+                openQuestionProvenanceEpisodeIds(duplicate),
               ),
               related_semantic_node_ids: mergeSemanticNodeIds(
                 primary.related_semantic_node_ids,
                 duplicate.related_semantic_node_ids,
+              ),
+              resolution_evidence_episode_ids: mergeQuestionIds(
+                primary.resolution_evidence_episode_ids,
+                duplicate.resolution_evidence_episode_ids,
+              ),
+              resolution_evidence_stream_entry_ids: mergeQuestionStreamIds(
+                primary.resolution_evidence_stream_entry_ids,
+                duplicate.resolution_evidence_stream_entry_ids,
+                openQuestionProvenanceStreamEntryIds(duplicate),
               ),
             },
             processProvenance,
             {
               throughReview: true,
               reason: "open_question_duplicate_merge",
+              preserveRecordProvenance: true,
             },
           );
           await ctx.openQuestionsRepository.delete(duplicate.id);

@@ -760,6 +760,7 @@ describe("RuminatorProcess", () => {
     const sharedNodeId = createSemanticNodeId();
     const firstEpisodeId = createEpisodeId();
     const secondEpisodeId = createEpisodeId();
+    const duplicateStreamId = createStreamEntryId();
     const firstQuestion = "Should Madrid practice stay attached to the trip prep goal?";
     const secondQuestion = "Does the Madrid prep question still belong with trip practice?";
     const harness = await createOfflineTestHarness({
@@ -789,6 +790,7 @@ describe("RuminatorProcess", () => {
         urgency: 0.4,
         related_episode_ids: [firstEpisodeId],
         related_semantic_node_ids: [sharedNodeId],
+        provenance: { kind: "episodes", episode_ids: [firstEpisodeId] },
         source: "reflection",
         created_at: 1_000,
         last_touched: 1_000,
@@ -796,11 +798,14 @@ describe("RuminatorProcess", () => {
       const newer = harness.openQuestionsRepository.add({
         question: secondQuestion,
         urgency: 0.8,
-        related_episode_ids: [secondEpisodeId],
         related_semantic_node_ids: [sharedNodeId],
+        provenance: { kind: "episodes", episode_ids: [secondEpisodeId] },
         source: "reflection",
         created_at: 2_000,
         last_touched: 2_000,
+      });
+      harness.openQuestionsRepository.update(newer.id, {
+        resolution_evidence_stream_entry_ids: [duplicateStreamId],
       });
       await harness.openQuestionsRepository.waitForPendingEmbeddings();
 
@@ -824,6 +829,8 @@ describe("RuminatorProcess", () => {
         urgency: 0.8,
         related_episode_ids: [firstEpisodeId, secondEpisodeId],
         related_semantic_node_ids: [sharedNodeId],
+        provenance: { kind: "episodes", episode_ids: [firstEpisodeId] },
+        resolution_evidence_stream_entry_ids: [duplicateStreamId],
       });
     } finally {
       await harness.cleanup();

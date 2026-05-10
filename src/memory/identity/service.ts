@@ -44,6 +44,7 @@ export type IdentityUpdateOptions = {
   throughReview?: boolean;
   reason?: string | null;
   reviewItemId?: number | null;
+  preserveRecordProvenance?: boolean;
 };
 
 export type ReflectionGoalProgressOptions = IdentityUpdateOptions & {
@@ -1113,7 +1114,7 @@ export class IdentityService {
     const record = this.options.identityEventRepository.runInTransaction(() => {
       const updated = this.options.openQuestionsRepository.update(openQuestionId, {
         ...parsedPatch,
-        provenance,
+        ...(options.preserveRecordProvenance === true ? {} : { provenance }),
       });
 
       this.options.identityEventRepository.record({
