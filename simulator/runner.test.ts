@@ -213,10 +213,20 @@ describe("SimulatorRunner", () => {
         evidenceLedger: { enabled: true },
         manifestFinalizer: { enabled: true },
         postGenerationGuards: {
-          commitment: { mode: "shadow" },
+          commitment: { mode: "enforce" },
           closurePressure: { mode: "enforce" },
           relationalClaim: {
-            mode: "shadow",
+            mode: {
+              perCategory: {
+                default: "shadow",
+                overrides: {
+                  action_completion: "enforce",
+                  authorship_claim: "enforce",
+                  frame_assignment: "enforce",
+                  self_correction: "enforce",
+                },
+              },
+            },
           },
         },
       },
