@@ -72,20 +72,24 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
     label: "8. Retrieved Raw Stream Evidence",
   },
   {
+    id: "retrieved_memory_evidence",
+    label: "9. Retrieved Memory Evidence",
+  },
+  {
     id: "episodes",
-    label: "9. Episodes",
+    label: "10. Episodes",
   },
   {
     id: "semantic_graph",
-    label: "10. Semantic Graph",
+    label: "11. Semantic Graph",
   },
   {
     id: "open_questions",
-    label: "11. Open Questions",
+    label: "12. Open Questions",
   },
   {
     id: "prior_session_memory",
-    label: "12. Prior-Session Memory",
+    label: "13. Prior-Session Memory",
   },
 ] as const;
 

@@ -51,6 +51,7 @@ const RAW_STREAM_TRUST_RANK = 68;
 const EPISODE_TRUST_RANK = 52;
 const SEMANTIC_TRUST_RANK = 42;
 const OPEN_QUESTION_TRUST_RANK = 38;
+const WARM_RECALL_TRUST_RANK = 34;
 const PRIOR_SESSION_TRUST_RANK_CAP = 30;
 
 const RELATIONAL_SLOT_LEDGER_LIMIT = 64;
@@ -759,6 +760,90 @@ function rawStreamSourceType(scope: EvidenceLedgerSessionScope): EvidenceLedgerS
   return "system_metadata";
 }
 
+function evidenceItemSourceType(
+  item: EvidenceItem,
+  scope: EvidenceLedgerSessionScope,
+): EvidenceLedgerSourceType {
+  if (item.provenance?.streamIds !== undefined && item.provenance.streamIds.length > 0) {
+    return rawStreamSourceType(scope);
+  }
+
+  if (item.provenance?.episodeId !== undefined || item.source === "episode") {
+    return "episode";
+  }
+
+  if (item.provenance?.nodeId !== undefined || item.source === "semantic_node") {
+    return "semantic_node";
+  }
+
+  if (item.provenance?.edgeId !== undefined || item.source === "semantic_edge") {
+    return "semantic_edge";
+  }
+
+  if (item.provenance?.commitmentId !== undefined || item.source === "commitment") {
+    return "commitment";
+  }
+
+  return "system_metadata";
+}
+
+function evidenceItemScope(
+  item: EvidenceItem,
+  resolver: ScopeResolver,
+): EvidenceLedgerSessionScope {
+  return combineScopes([
+    scopeFromStreamIds(item.provenance?.streamIds, resolver),
+    scopeFromEpisodeIds(
+      [
+        ...(item.provenance?.episodeId === undefined ? [] : [item.provenance.episodeId]),
+        ...(item.source_episode_ids ?? []),
+      ],
+      resolver,
+    ),
+  ]);
+}
+
+function evidenceItemState(item: EvidenceItem): string {
+  const parts = [
+    `score=${item.score.toFixed(2)}`,
+    `intent=${item.recallIntentId}`,
+    item.matchedTerms.length === 0 ? null : `terms=${item.matchedTerms.join(", ")}`,
+    item.source_episode_ids === undefined || item.source_episode_ids.length === 0
+      ? null
+      : `sources=${item.source_episode_ids.slice(0, 3).join(", ")}`,
+    item.partial_source_visibility === true ? "partial_sources=true" : null,
+    item.source_visibility_fraction === undefined
+      ? null
+      : `visible_fraction=${item.source_visibility_fraction.toFixed(2)}`,
+  ].filter((part): part is string => part !== null);
+
+  return parts.join(" ");
+}
+
+function evidenceItemProvenanceMetadata(item: EvidenceItem): Record<string, unknown> | undefined {
+  const provenance = item.provenance;
+
+  if (provenance === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(provenance.episodeId === undefined ? {} : { episode_id: provenance.episodeId }),
+    ...(provenance.parentEpisodeId === undefined
+      ? {}
+      : { parent_episode_id: provenance.parentEpisodeId }),
+    ...(provenance.nodeId === undefined ? {} : { node_id: provenance.nodeId }),
+    ...(provenance.edgeId === undefined ? {} : { edge_id: provenance.edgeId }),
+    ...(provenance.commitmentId === undefined ? {} : { commitment_id: provenance.commitmentId }),
+    ...(provenance.openQuestionId === undefined
+      ? {}
+      : { open_question_id: provenance.openQuestionId }),
+    ...(provenance.streamIds === undefined || provenance.streamIds.length === 0
+      ? {}
+      : { stream_ids: provenance.streamIds }),
+  };
+}
+
 function persistenceClassFromStreamIds(
   streamEntryIds: readonly StreamEntryId[] | readonly string[] | undefined,
   resolver: ScopeResolver,
@@ -1137,6 +1222,7 @@ export class EvidenceLedgerBuilder {
     // rendered ledger entry IDs, not provenance stream IDs.
     const transcriptStreamIds = transcript.rawStreamIds;
     this.addRetrievedRawStreamEvidence(sections, input, resolver, transcriptStreamIds);
+    this.addRetrievedStructuredEvidence(sections, input, resolver);
     this.addEpisodes(sections, input, resolver);
     this.addSemanticGraph(sections, input, resolver);
     this.addOpenQuestions(sections, input, resolver);
@@ -1504,6 +1590,70 @@ export class EvidenceLedgerBuilder {
           ...persistenceClassFromStreamIds(itemStreamIds, resolver),
         }),
       );
+    }
+  }
+
+  private addRetrievedStructuredEvidence(
+    sections: SectionBuckets,
+    input: EvidenceLedgerBuildInput,
+    resolver: ScopeResolver,
+  ): void {
+    for (const item of input.retrievedEvidence) {
+      if (item.source === "raw_stream" || item.source === "recent_raw_stream") {
+        continue;
+      }
+
+      const scope = evidenceItemScope(item, resolver);
+      const entry = cappedTrustRank({
+        id: `retrieved_evidence:${item.id}`,
+        source_type: evidenceItemSourceType(item, scope),
+        session_scope: scope,
+        actor: "memory" as const,
+        trust_rank: item.source === "warm_recall" ? WARM_RECALL_TRUST_RANK : RAW_STREAM_TRUST_RANK,
+        text: item.text,
+        value: item.source,
+        state: evidenceItemState(item),
+        state_metadata: evidenceItemProvenanceMetadata(item),
+        taint: "none" as const,
+        via_retrieval: true,
+        ...persistenceClassFromProvenance(
+          {
+            streamEntryIds: item.provenance?.streamIds ?? [],
+            episodeIds: [
+              ...(item.provenance?.episodeId === undefined ? [] : [item.provenance.episodeId]),
+              ...(item.source_episode_ids ?? []),
+            ],
+          },
+          resolver,
+        ),
+      });
+
+      if (item.source === "commitment") {
+        addEntry(sections, "commitments_and_constraints", {
+          ...entry,
+          trust_rank: COMMITMENT_TRUST_RANK,
+        });
+        continue;
+      }
+
+      if (item.source === "working_state") {
+        addEntry(sections, "closure_discourse_state", {
+          ...entry,
+          actor: "system",
+          trust_rank: DISCOURSE_TRUST_RANK,
+        });
+        continue;
+      }
+
+      if (item.source === "open_question") {
+        addEntry(sections, "open_questions", {
+          ...entry,
+          trust_rank: OPEN_QUESTION_TRUST_RANK,
+        });
+        continue;
+      }
+
+      addEntry(sections, "retrieved_memory_evidence", entry);
     }
   }
 

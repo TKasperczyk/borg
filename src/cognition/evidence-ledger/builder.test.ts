@@ -314,6 +314,7 @@ describe("EvidenceLedgerBuilder", () => {
       "action_states",
       "relational_slots",
       "retrieved_raw_stream_evidence",
+      "retrieved_memory_evidence",
       "episodes",
       "semantic_graph",
       "open_questions",
@@ -475,6 +476,107 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries[0]?.text).toContain(
       "current_intent: finished writing the harness presentation",
     );
+  });
+
+  it("renders non-raw retrieved evidence sources into ledger sections", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Use the ledger-only evidence.",
+    });
+    const commitmentId = createCommitmentId();
+    const warmEpisodeId = createEpisodeId();
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [
+        {
+          id: "warm-prior",
+          source: "warm_recall",
+          text: "Warm recall narrative from a prior session.",
+          provenance: { episodeId: warmEpisodeId },
+          recallIntentId: "warm_recall",
+          matchedTerms: ["harness"],
+          score: 0.31,
+          scoreBreakdown: {},
+        },
+        {
+          id: "commitment-boundary",
+          source: "commitment",
+          text: "boundary: Do not add terminal closures.",
+          provenance: { commitmentId },
+          recallIntentId: "intent-commitment",
+          matchedTerms: [],
+          score: 0.72,
+          scoreBreakdown: {},
+        },
+        {
+          id: "working-focus",
+          source: "working_state",
+          text: "Working state focus is the harness presentation.",
+          recallIntentId: "intent-working",
+          matchedTerms: [],
+          score: 0.44,
+          scoreBreakdown: {},
+        },
+      ],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+
+    expect(
+      ledger.sections
+        .find((section) => section.id === "retrieved_memory_evidence")
+        ?.entries.find((entry) => entry.id === "retrieved_evidence:warm-prior"),
+    ).toMatchObject({
+      source_type: "episode",
+      value: "warm_recall",
+      text: "Warm recall narrative from a prior session.",
+      state: expect.stringContaining("intent=warm_recall"),
+      via_retrieval: true,
+    });
+    expect(
+      ledger.sections
+        .find((section) => section.id === "commitments_and_constraints")
+        ?.entries.find((entry) => entry.id === "retrieved_evidence:commitment-boundary"),
+    ).toMatchObject({
+      source_type: "commitment",
+      value: "commitment",
+      text: "boundary: Do not add terminal closures.",
+      state_metadata: expect.objectContaining({ commitment_id: commitmentId }),
+      via_retrieval: true,
+    });
+    expect(
+      ledger.sections
+        .find((section) => section.id === "closure_discourse_state")
+        ?.entries.find((entry) => entry.id === "retrieved_evidence:working-focus"),
+    ).toMatchObject({
+      source_type: "system_metadata",
+      actor: "system",
+      value: "working_state",
+      text: "Working state focus is the harness presentation.",
+      via_retrieval: true,
+    });
   });
 
   it("does not collapse action threads across distinct goals or low similarity", async () => {
