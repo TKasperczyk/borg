@@ -18,6 +18,7 @@ import type { EntityId } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
   OfflineContext,
@@ -459,11 +460,11 @@ async function appendClaimOwnershipMismatchEvent(
       },
     });
   } catch (error) {
-    errors.push({
-      process: "belief-reviser",
-      message: error instanceof Error ? error.message : String(error),
-      code: "belief_reviser_claim_mismatch_log_failed",
-    });
+    errors.push(
+      offlineProcessError("belief-reviser", error, {
+        code: "belief_reviser_claim_mismatch_log_failed",
+      }),
+    );
   }
 }
 
@@ -952,11 +953,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         });
       }
     } catch (error) {
-      errors.push({
-        process: this.name,
-        message: error instanceof Error ? error.message : String(error),
-        code: input.failureCode,
-      });
+      errors.push(offlineProcessError(this.name, error, { code: input.failureCode }));
     }
   }
 
@@ -1902,11 +1899,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
               },
             });
           } catch (error) {
-            errors.push({
-              process: this.name,
-              message: error instanceof Error ? error.message : String(error),
-              code: "belief_reviser_confidence_drop_log_failed",
-            });
+            errors.push(
+              offlineProcessError(this.name, error, {
+                code: "belief_reviser_confidence_drop_log_failed",
+              }),
+            );
           }
         }
       }
@@ -1924,11 +1921,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
             },
           });
         } catch (error) {
-          errors.push({
-            process: this.name,
-            message: error instanceof Error ? error.message : String(error),
-            code: "belief_reviser_fanout_cap_log_failed",
-          });
+          errors.push(
+            offlineProcessError(this.name, error, {
+              code: "belief_reviser_fanout_cap_log_failed",
+            }),
+          );
         }
       }
     }
@@ -1947,11 +1944,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
           },
         });
       } catch (error) {
-        errors.push({
-          process: this.name,
-          message: error instanceof Error ? error.message : String(error),
-          code: "belief_reviser_run_cap_log_failed",
-        });
+        errors.push(
+          offlineProcessError(this.name, error, {
+            code: "belief_reviser_run_cap_log_failed",
+          }),
+        );
       }
     }
 
@@ -2011,11 +2008,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
               }
               nodeSyncCompleted = true;
             } catch (error) {
-              errors.push({
-                process: this.name,
-                message: error instanceof Error ? error.message : String(error),
-                code: "belief_reviser_regrade_vector_sync_failed",
-              });
+              errors.push(
+                offlineProcessError(this.name, error, {
+                  code: "belief_reviser_regrade_vector_sync_failed",
+                }),
+              );
               throw error;
             }
           }
@@ -2086,11 +2083,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
             consecutiveParseFailures += 1;
           }
           const message = error instanceof Error ? error.message : String(error);
-          errors.push({
-            process: this.name,
-            message,
-            code: "belief_reviser_regrade_failed",
-          });
+          errors.push(
+            offlineProcessError(this.name, error, {
+              code: "belief_reviser_regrade_failed",
+            }),
+          );
 
           try {
             await ctx.streamWriter.append({
@@ -2102,11 +2099,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
               },
             });
           } catch (logError) {
-            errors.push({
-              process: this.name,
-              message: logError instanceof Error ? logError.message : String(logError),
-              code: "belief_reviser_regrade_failure_log_failed",
-            });
+            errors.push(
+              offlineProcessError(this.name, logError, {
+                code: "belief_reviser_regrade_failure_log_failed",
+              }),
+            );
           }
         }
       }
@@ -2125,11 +2122,7 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       } catch (error) {
         tokensUsed += getBudgetErrorTokens(error);
         budgetExhausted = budgetExhausted || error instanceof BudgetExceededError;
-        errors.push({
-          process: this.name,
-          message: error instanceof Error ? error.message : String(error),
-          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-        });
+        errors.push(offlineProcessError(this.name, error));
       }
     }
 

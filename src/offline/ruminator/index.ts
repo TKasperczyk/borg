@@ -27,6 +27,7 @@ import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
   OfflineContext,
@@ -336,11 +337,9 @@ async function planResolution(
   const freshEvidence = retrieval.episodes.filter(
     (result) => result.episode.updated_at > question.last_touched,
   );
-  const strongEvidence = freshEvidence
-    .sort(
-      (left, right) =>
-        right.score - left.score || right.episode.updated_at - left.episode.updated_at,
-    )[0];
+  const strongEvidence = freshEvidence.sort(
+    (left, right) => right.score - left.score || right.episode.updated_at - left.episode.updated_at,
+  )[0];
 
   if (strongEvidence === undefined) {
     emitOpenQuestionResolutionAttempt(ctx, {
@@ -586,11 +585,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               throw error;
             }
 
-            errors.push({
-              process: this.name,
-              message: error instanceof Error ? error.message : String(error),
-              code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-            });
+            errors.push(offlineProcessError(this.name, error));
           }
         }
       });
@@ -599,11 +594,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
     } catch (error) {
       tokensUsed = getBudgetErrorTokens(error);
       budgetExhausted = error instanceof BudgetExceededError;
-      errors.push({
-        process: this.name,
-        message: error instanceof Error ? error.message : String(error),
-        code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-      });
+      errors.push(offlineProcessError(this.name, error));
     }
 
     return ruminatorPlanSchema.parse({

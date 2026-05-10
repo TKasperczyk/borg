@@ -23,6 +23,7 @@ import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
   OfflineContext,
@@ -400,11 +401,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               throw error;
             }
 
-            errors.push({
-              process: this.name,
-              message: error instanceof Error ? error.message : String(error),
-              code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-            });
+            errors.push(offlineProcessError(this.name, error));
           }
         });
 
@@ -412,11 +409,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       } catch (error) {
         tokensUsed = getBudgetErrorTokens(error);
         budgetExhausted = error instanceof BudgetExceededError;
-        errors.push({
-          process: this.name,
-          message: error instanceof Error ? error.message : String(error),
-          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-        });
+        errors.push(offlineProcessError(this.name, error));
       }
     }
 

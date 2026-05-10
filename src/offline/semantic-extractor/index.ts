@@ -15,6 +15,7 @@ import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
   OfflineContext,
@@ -320,11 +321,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
     try {
       episodeIds = (await selectEpisodesForExtraction(ctx)).map((episode) => episode.id);
     } catch (error) {
-      errors.push({
-        process: this.name,
-        message: error instanceof Error ? error.message : String(error),
-        code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-      });
+      errors.push(offlineProcessError(this.name, error));
     }
 
     return semanticExtractorPlanSchema.parse({
@@ -519,11 +516,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
         try {
           ctx.reviewQueueRepository.enqueue(review);
         } catch (error) {
-          errors.push({
-            process: this.name,
-            message: error instanceof Error ? error.message : String(error),
-            code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-          });
+          errors.push(offlineProcessError(this.name, error));
         }
       }
 
@@ -564,11 +557,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
       });
       tokensUsed = getBudgetErrorTokens(error);
       budgetExhausted = error instanceof BudgetExceededError;
-      errors.push({
-        process: this.name,
-        message: error instanceof Error ? error.message : String(error),
-        code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-      });
+      errors.push(offlineProcessError(this.name, error));
 
       return {
         process: this.name,

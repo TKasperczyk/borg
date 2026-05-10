@@ -25,6 +25,7 @@ import { BudgetExceededError, SemanticError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
   OfflineContext,
@@ -550,11 +551,7 @@ export class ReflectorProcess implements OfflineProcess {
           ];
         });
       } catch (error) {
-        errors.push({
-          process: this.name,
-          message: error instanceof Error ? error.message : String(error),
-          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-        });
+        errors.push(offlineProcessError(this.name, error));
       }
     }
     if (episodes.some((episode) => episode.tags.length > 0)) {
@@ -565,11 +562,7 @@ export class ReflectorProcess implements OfflineProcess {
           similarityThreshold: ctx.config.offline.reflector.goalSimilarityThreshold,
         });
       } catch (error) {
-        errors.push({
-          process: this.name,
-          message: error instanceof Error ? error.message : String(error),
-          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-        });
+        errors.push(offlineProcessError(this.name, error));
       }
     }
     const clusters = collectReflectionClusters(
@@ -696,11 +689,7 @@ export class ReflectorProcess implements OfflineProcess {
               throw error;
             }
 
-            errors.push({
-              process: this.name,
-              message: error instanceof Error ? error.message : String(error),
-              code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-            });
+            errors.push(offlineProcessError(this.name, error));
           }
         }
       });
@@ -709,11 +698,7 @@ export class ReflectorProcess implements OfflineProcess {
     } catch (error) {
       tokensUsed = getBudgetErrorTokens(error);
       budgetExhausted = error instanceof BudgetExceededError;
-      errors.push({
-        process: this.name,
-        message: error instanceof Error ? error.message : String(error),
-        code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-      });
+      errors.push(offlineProcessError(this.name, error));
     }
 
     return reflectorPlanSchema.parse({

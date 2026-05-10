@@ -1,18 +1,5 @@
 import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
-
-function tableExists(db: SqliteDatabase, tableName: string): boolean {
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(tableName) as { name: string } | undefined;
-
-  return row !== undefined;
-}
-
-function columnExists(db: SqliteDatabase, tableName: string, columnName: string): boolean {
-  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
-
-  return rows.some((row) => row.name === columnName);
-}
+import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const identityMigrations = [
   {
@@ -61,7 +48,7 @@ export const identityMigrations = [
         return;
       }
 
-      if (columnExists(db, "identity_events", "provenance_stream_entry_ids")) {
+      if (tableHasColumn(db, "identity_events", "provenance_stream_entry_ids")) {
         return;
       }
 

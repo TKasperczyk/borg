@@ -1,13 +1,6 @@
 import { StorageError } from "../../util/errors.js";
 import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
-
-function tableExists(db: SqliteDatabase, tableName: string): boolean {
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(tableName) as { name: string } | undefined;
-
-  return row !== undefined;
-}
+import { tableExists } from "../../storage/sqlite/migrations-utils.js";
 
 function ensureActionRecordsCanBeCreated(db: SqliteDatabase): void {
   if (!tableExists(db, "action_records")) {

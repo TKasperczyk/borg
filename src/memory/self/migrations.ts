@@ -1,18 +1,5 @@
 import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
-
-function tableExists(db: SqliteDatabase, tableName: string): boolean {
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(tableName) as { name: string } | undefined;
-
-  return row !== undefined;
-}
-
-function columnExists(db: SqliteDatabase, tableName: string, columnName: string): boolean {
-  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
-
-  return rows.some((row) => row.name === columnName);
-}
+import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const selfMigrations = [
   {
@@ -249,9 +236,9 @@ export const selfMigrations = [
       }
 
       if (
-        !columnExists(db, "open_questions", "resolution_episode_id") &&
-        columnExists(db, "open_questions", "resolution_evidence_episode_ids") &&
-        columnExists(db, "open_questions", "resolution_evidence_stream_entry_ids")
+        !tableHasColumn(db, "open_questions", "resolution_episode_id") &&
+        tableHasColumn(db, "open_questions", "resolution_evidence_episode_ids") &&
+        tableHasColumn(db, "open_questions", "resolution_evidence_stream_entry_ids")
       ) {
         return;
       }
@@ -334,14 +321,14 @@ export const selfMigrations = [
         return;
       }
 
-      if (!columnExists(db, "open_questions", "unresolved_rumination_ticks")) {
+      if (!tableHasColumn(db, "open_questions", "unresolved_rumination_ticks")) {
         db.exec(`
           ALTER TABLE open_questions
             ADD COLUMN unresolved_rumination_ticks INTEGER NOT NULL DEFAULT 0;
         `);
       }
 
-      if (!columnExists(db, "open_questions", "last_ruminated_at")) {
+      if (!tableHasColumn(db, "open_questions", "last_ruminated_at")) {
         db.exec(`
           ALTER TABLE open_questions
             ADD COLUMN last_ruminated_at INTEGER;
@@ -357,14 +344,14 @@ export const selfMigrations = [
         return;
       }
 
-      if (!columnExists(db, "goals", "audience_entity_id")) {
+      if (!tableHasColumn(db, "goals", "audience_entity_id")) {
         db.exec(`
           ALTER TABLE goals
             ADD COLUMN audience_entity_id TEXT;
         `);
       }
 
-      if (!columnExists(db, "goals", "source_stream_entry_ids")) {
+      if (!tableHasColumn(db, "goals", "source_stream_entry_ids")) {
         db.exec(`
           ALTER TABLE goals
             ADD COLUMN source_stream_entry_ids TEXT NULL;

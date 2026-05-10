@@ -1,0 +1,412 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  DEFAULT_CONFIG,
+  FakeLLMClient,
+  LanceDbStore,
+  SqliteDatabase,
+  ManualClock,
+  createEpisodeId,
+  createTestConfig,
+  resolveBorgConfig,
+  Borg,
+  EPISODE_TOOL_NAME,
+  ScriptedEmbeddingClient,
+  join,
+  mkdtempSync,
+  rmSync,
+  tmpdir,
+} from "./test-helpers.js";
+
+describe("Borg", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+
+    while (tempDirs.length > 0) {
+      rmSync(tempDirs.pop() as string, { recursive: true, force: true });
+    }
+  });
+
+  it("merges sparse Borg.open config with required defaults", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = resolveBorgConfig({
+      config: {
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "test-cognition",
+          },
+        },
+      } as never,
+    });
+
+    expect(config.dataDir).toBe(tempDir);
+    expect(config.perception.useLlmFallback).toBe(false);
+    expect(config.perception.modeWhenLlmAbsent).toBe("idle");
+    expect(config.embedding.dims).toBe(4);
+    expect(config.anthropic.auth).toBe("api-key");
+    expect(config.anthropic.models).toEqual({
+      ...DEFAULT_CONFIG.anthropic.models,
+      cognition: "test-cognition",
+    });
+    expect(config.affective).toEqual(DEFAULT_CONFIG.affective);
+    expect(config.procedural).toEqual(DEFAULT_CONFIG.procedural);
+    expect(config.retrieval).toEqual(DEFAULT_CONFIG.retrieval);
+    expect(config.executive).toEqual(DEFAULT_CONFIG.executive);
+    expect(config.host_capabilities).toBe(DEFAULT_CONFIG.host_capabilities);
+    expect(config.offline.beliefReviser).toEqual(DEFAULT_CONFIG.offline.beliefReviser);
+    expect(config.maintenance).toEqual(DEFAULT_CONFIG.maintenance);
+    expect(config.autonomy.executiveFocus).toEqual(DEFAULT_CONFIG.autonomy.executiveFocus);
+  });
+
+  it("omits a disabled belief reviser from default dream plans", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        offline: {
+          consolidator: { enabled: false },
+          reflector: { enabled: false },
+          curator: { enabled: false },
+          overseer: { enabled: false },
+          ruminator: { enabled: false },
+          selfNarrator: { enabled: false },
+          proceduralSynthesizer: { enabled: false },
+          beliefReviser: { enabled: false },
+          semanticExtractor: { enabled: false },
+        },
+      }),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const plan = await borg.dream.plan();
+
+      expect(plan.processes).toEqual([]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("opens the sprint 2 facade and reuses injected clients", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const llm = new FakeLLMClient();
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: llm,
+    });
+
+    try {
+      const entry = await borg.stream.append({
+        kind: "user_msg",
+        content: "planning kickoff",
+      });
+      llm.pushResponse({
+        text: "",
+        input_tokens: 1,
+        output_tokens: 1,
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_1",
+            name: EPISODE_TOOL_NAME,
+            input: {
+              episodes: [
+                {
+                  title: "Planning sync",
+                  narrative:
+                    "The team aligned on the sprint plan. They captured the first follow-up actions.",
+                  source_stream_ids: [entry.id],
+                  participants: ["team"],
+                  location: null,
+                  tags: ["planning"],
+                  confidence: 0.8,
+                  significance: 0.8,
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      const extracted = await borg.episodic.extract({
+        sinceTs: entry.timestamp,
+      });
+      const results = await borg.episodic.search("planning", {
+        limit: 1,
+      });
+      const value = borg.self.values.add({
+        label: "clarity",
+        description: "Prefer explicit, auditable state.",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+
+      expect(extracted.inserted).toBe(1);
+      expect(results[0]?.citationChain[0]?.id).toBe(entry.id);
+      expect(borg.stream.tail(1)).toHaveLength(1);
+      expect(borg.self.values.list()).toEqual([
+        expect.objectContaining({
+          id: value.id,
+        }),
+      ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("exposes self writes through the identity guard instead of raw repositories", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const value = borg.self.values.add({
+        label: "evidence-backed clarity",
+        description: "Prefer evidence-backed changes.",
+        priority: 5,
+        provenance: {
+          kind: "episodes",
+          episode_ids: [createEpisodeId(), createEpisodeId(), createEpisodeId()],
+        },
+      });
+
+      expect(value.state).toBe("established");
+      expect("remove" in (borg.self.values as Record<string, unknown>)).toBe(false);
+      expect("recordContradiction" in (borg.self.values as Record<string, unknown>)).toBe(false);
+
+      const result = borg.self.values.update(
+        value.id,
+        {
+          description: "Manual overwrite should not bypass review.",
+        },
+        {
+          kind: "manual",
+        },
+      );
+
+      expect(result).toEqual({
+        status: "requires_review",
+        current: value,
+      });
+      expect(borg.self.values.get(value.id)?.description).toBe("Prefer evidence-backed changes.");
+
+      const periodEpisodeId = createEpisodeId();
+      const period = borg.self.autobiographical.upsertPeriod({
+        label: "2026-Q2",
+        start_ts: 1_100,
+        narrative: "Episode-backed period.",
+        key_episode_ids: [periodEpisodeId],
+        themes: ["guard"],
+        provenance: {
+          kind: "episodes",
+          episode_ids: [periodEpisodeId],
+        },
+      });
+      const closeResult = borg.self.autobiographical.closePeriod(period.id, 1_200, {
+        kind: "manual",
+      });
+
+      expect(closeResult).toEqual({
+        status: "requires_review",
+        current: period,
+      });
+      expect(borg.self.autobiographical.getPeriod(period.id)?.end_ts).toBeNull();
+
+      const markerEpisodeId = createEpisodeId();
+      const marker = borg.self.growthMarkers.add({
+        ts: 1_150,
+        category: "understanding",
+        what_changed: "Facade growth marker writes are audited.",
+        evidence_episode_ids: [markerEpisodeId],
+        confidence: 0.7,
+        source_process: "manual",
+        provenance: {
+          kind: "episodes",
+          episode_ids: [markerEpisodeId],
+        },
+      });
+
+      expect(
+        borg.identity.listEvents({
+          recordType: "growth_marker",
+          recordId: marker.id,
+        })[0]?.action,
+      ).toBe("create");
+
+      const questionEpisodeId = createEpisodeId();
+      const question = borg.self.openQuestions.add({
+        question: "Does the facade guard open question state changes?",
+        urgency: 0.5,
+        related_episode_ids: [questionEpisodeId],
+        provenance: {
+          kind: "episodes",
+          episode_ids: [questionEpisodeId],
+        },
+        source: "reflection",
+      });
+      const bumpResult = borg.self.openQuestions.bumpUrgency(question.id, 0.2, {
+        kind: "manual",
+      });
+
+      expect(bumpResult).toEqual({
+        status: "requires_review",
+        current: question,
+      });
+      expect(borg.self.openQuestions.list({ status: "open" })[0]?.urgency).toBe(0.5);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("lets facade upsertPeriod update an existing autobiographical period", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const episodeId = createEpisodeId();
+      const period = borg.self.autobiographical.upsertPeriod({
+        label: "2026-Q2",
+        start_ts: 1_100,
+        narrative: "Initial period narrative.",
+        key_episode_ids: [episodeId],
+        themes: ["identity"],
+        provenance: {
+          kind: "episodes",
+          episode_ids: [episodeId],
+        },
+      });
+      const result = borg.self.autobiographical.upsertPeriod({
+        id: period.id,
+        label: "2026-Q2 revised",
+        start_ts: 1_100,
+        end_ts: 1_900,
+        narrative: "Updated period narrative.",
+        key_episode_ids: [episodeId],
+        themes: ["identity", "revision"],
+        provenance: {
+          kind: "episodes",
+          episode_ids: [episodeId],
+        },
+      });
+
+      expect(result).toEqual({
+        status: "applied",
+        record: expect.objectContaining({
+          id: period.id,
+          label: "2026-Q2 revised",
+          end_ts: 1_900,
+          narrative: "Updated period narrative.",
+          themes: ["identity", "revision"],
+        }),
+      });
+      expect(borg.self.autobiographical.getPeriod(period.id)).toMatchObject({
+        label: "2026-Q2 revised",
+        end_ts: 1_900,
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("does not bootstrap an autobiographical period before evidence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(Date.UTC(2026, 3, 22));
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      expect(borg.self.autobiographical.currentPeriod()).toBeNull();
+      expect(borg.self.autobiographical.listPeriods({ limit: 10 })).toHaveLength(0);
+    } finally {
+      await borg.close();
+    }
+
+    const reopened = await Borg.open({
+      dataDir: tempDir,
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      expect(reopened.self.autobiographical.listPeriods({ limit: 10 })).toHaveLength(0);
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it("closes opened resources if a later Borg.open step fails", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const sqliteCloseSpy = vi.spyOn(SqliteDatabase.prototype, "close");
+    const lanceCloseSpy = vi.spyOn(LanceDbStore.prototype, "close");
+    const failure = new Error("embedding init failed");
+    const openOptions = {
+      dataDir: tempDir,
+    } as {
+      dataDir: string;
+      embeddingClient?: ScriptedEmbeddingClient;
+    };
+
+    Object.defineProperty(openOptions, "embeddingClient", {
+      get() {
+        throw failure;
+      },
+    });
+
+    await expect(Borg.open(openOptions)).rejects.toThrow(failure);
+    expect(sqliteCloseSpy).toHaveBeenCalledTimes(1);
+    expect(lanceCloseSpy).toHaveBeenCalledTimes(1);
+  });
+});

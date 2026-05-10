@@ -25,6 +25,7 @@ import { BudgetExceededError, StorageError } from "../../util/errors.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
   OfflineContext,
@@ -446,11 +447,12 @@ export class ConsolidatorProcess implements OfflineProcess {
               throw error;
             }
 
-            errors.push({
-              process: this.name,
-              message: error instanceof Error ? error.message : String(error),
-              code: error instanceof StorageError ? error.code : undefined,
-            });
+            errors.push(
+              offlineProcessError(this.name, error, {
+                code: error instanceof StorageError ? error.code : undefined,
+                includeErrorCode: false,
+              }),
+            );
           }
         }
       });
@@ -459,11 +461,7 @@ export class ConsolidatorProcess implements OfflineProcess {
     } catch (error) {
       tokensUsed = getBudgetErrorTokens(error);
       budgetExhausted = error instanceof BudgetExceededError;
-      errors.push({
-        process: this.name,
-        message: error instanceof Error ? error.message : String(error),
-        code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-      });
+      errors.push(offlineProcessError(this.name, error));
     }
 
     return consolidatorPlanSchema.parse({

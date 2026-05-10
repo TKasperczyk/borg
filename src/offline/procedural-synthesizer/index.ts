@@ -32,6 +32,7 @@ import { type EntityId, type EpisodeId } from "../../util/ids.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
   OfflineContext,
@@ -709,11 +710,11 @@ async function appendSkillSplitInternalEvent(
       content,
     });
   } catch (error) {
-    errors.push({
-      process: "procedural-synthesizer",
-      message: error instanceof Error ? error.message : String(error),
-      code: "procedural_skill_split_log_failed",
-    });
+    errors.push(
+      offlineProcessError("procedural-synthesizer", error, {
+        code: "procedural_skill_split_log_failed",
+      }),
+    );
   }
 }
 
@@ -848,11 +849,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
               throw error;
             }
 
-            errors.push({
-              process: this.name,
-              message: error instanceof Error ? error.message : String(error),
-              code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-            });
+            errors.push(offlineProcessError(this.name, error));
           }
         }
 
@@ -986,11 +983,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
                 claimedAt,
               });
             }
-            errors.push({
-              process: this.name,
-              message,
-              code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-            });
+            errors.push(offlineProcessError(this.name, error));
             await appendSkillSplitInternalEvent(
               ctx,
               {
@@ -1012,11 +1005,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
     } catch (error) {
       tokensUsed += getBudgetErrorTokens(error);
       budgetExhausted = error instanceof BudgetExceededError;
-      errors.push({
-        process: this.name,
-        message: error instanceof Error ? error.message : String(error),
-        code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-      });
+      errors.push(offlineProcessError(this.name, error));
     }
 
     return proceduralSynthesizerPlanSchema.parse({
@@ -1115,11 +1104,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
         });
         changes.push(buildAppliedChange({ item, skill, deduped: !inserted }));
       } catch (error) {
-        errors.push({
-          process: this.name,
-          message: error instanceof Error ? error.message : String(error),
-          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-        });
+        errors.push(offlineProcessError(this.name, error));
       }
     }
 
@@ -1175,11 +1160,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
           attemptedAt: this.clock.now(),
           claimedAt: item.split_claimed_at ?? null,
         });
-        errors.push({
-          process: this.name,
-          message,
-          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
-        });
+        errors.push(offlineProcessError(this.name, error));
         await appendSkillSplitInternalEvent(
           ctx,
           {
