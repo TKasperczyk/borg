@@ -763,6 +763,7 @@ export async function createOfflineTestHarness(
     cleanup: async () => {
       await flushHookLogs();
       await actionRepository.waitForPendingEmbeddings();
+      await openQuestionsRepository.waitForPendingEmbeddings();
       streamWriter.close();
       db.close();
       await lance.close();
