@@ -133,7 +133,7 @@ function embeddingFromRow(row: Record<string, unknown>): Float32Array | null {
   }
 
   if (ArrayBuffer.isView(value) && "length" in value) {
-    return Float32Array.from(Array.from(value as ArrayLike<number>));
+    return Float32Array.from(Array.from(value as unknown as ArrayLike<number>));
   }
 
   if (
@@ -149,7 +149,7 @@ function embeddingFromRow(row: Record<string, unknown>): Float32Array | null {
     }
 
     if (ArrayBuffer.isView(array) && "length" in array) {
-      return Float32Array.from(Array.from(array as ArrayLike<number>));
+      return Float32Array.from(Array.from(array as unknown as ArrayLike<number>));
     }
   }
 
