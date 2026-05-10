@@ -10,7 +10,12 @@ import type {
   OpenBeliefRevisionStatus,
   ReviewQueueRepository,
 } from "../memory/semantic/review-queue.js";
-import type { SemanticContext, SemanticNode, SemanticWalkStep } from "../memory/semantic/types.js";
+import type {
+  SemanticContext,
+  SemanticEdge,
+  SemanticNode,
+  SemanticWalkStep,
+} from "../memory/semantic/types.js";
 import type { EntityId } from "../util/ids.js";
 
 const DEFAULT_UNDER_REVIEW_MULTIPLIER = 0.5;
@@ -32,10 +37,15 @@ export type RetrievedSemanticNode = SemanticNode & {
   source_visibility_fraction?: number;
 };
 
+export type RetrievedSemanticEdge = SemanticEdge & {
+  partial_source_visibility?: boolean;
+  source_visibility_fraction?: number;
+};
+
 export type RetrievedSemanticHit = {
   root_node_id: SemanticNode["id"];
   node: RetrievedSemanticNode;
-  edgePath: SemanticWalkStep["edgePath"];
+  edgePath: RetrievedSemanticEdge[];
 };
 
 export type RetrievedSemantic = SemanticContext & {
@@ -86,6 +96,11 @@ type MatchedNodeCandidate = {
 
 type SemanticNodeSourceVisibility = {
   visibleSourceEpisodeIds: SemanticNode["source_episode_ids"];
+  partial: boolean;
+};
+
+type SemanticEdgeSourceVisibility = {
+  visibleEvidenceEpisodeIds: SemanticEdge["evidence_episode_ids"];
   partial: boolean;
 };
 
@@ -192,6 +207,75 @@ function withVisibleSemanticSources<T extends SemanticNode>(
   };
 }
 
+function resolveSemanticEdgeSourceVisibility(
+  edge: SemanticEdge,
+  visibleEpisodeIds: ReadonlySet<string> | null,
+): SemanticEdgeSourceVisibility {
+  if (visibleEpisodeIds === null) {
+    return {
+      visibleEvidenceEpisodeIds: [...edge.evidence_episode_ids],
+      partial: false,
+    };
+  }
+
+  const visibleEvidenceEpisodeIds = edge.evidence_episode_ids.filter((episodeId) =>
+    visibleEpisodeIds.has(episodeId),
+  );
+
+  return {
+    visibleEvidenceEpisodeIds,
+    partial:
+      visibleEvidenceEpisodeIds.length > 0 &&
+      visibleEvidenceEpisodeIds.length < edge.evidence_episode_ids.length,
+  };
+}
+
+function isSemanticEdgeVisible(
+  edge: SemanticEdge,
+  visibleEpisodeIds: ReadonlySet<string> | null,
+): boolean {
+  return (
+    resolveSemanticEdgeSourceVisibility(edge, visibleEpisodeIds).visibleEvidenceEpisodeIds.length >
+    0
+  );
+}
+
+function withVisibleSemanticEdgeSources<T extends SemanticEdge>(
+  edge: T,
+  visibleEpisodeIds: ReadonlySet<string> | null,
+): T & Pick<RetrievedSemanticEdge, "partial_source_visibility" | "source_visibility_fraction"> {
+  const sourceVisibility = resolveSemanticEdgeSourceVisibility(edge, visibleEpisodeIds);
+
+  if (
+    visibleEpisodeIds === null ||
+    sourceVisibility.visibleEvidenceEpisodeIds.length === edge.evidence_episode_ids.length
+  ) {
+    return edge;
+  }
+
+  return {
+    ...edge,
+    evidence_episode_ids: sourceVisibility.visibleEvidenceEpisodeIds,
+    ...(sourceVisibility.partial
+      ? {
+          partial_source_visibility: true,
+          source_visibility_fraction:
+            sourceVisibility.visibleEvidenceEpisodeIds.length / edge.evidence_episode_ids.length,
+        }
+      : {}),
+  };
+}
+
+function withVisibleSemanticWalkStepEdges(
+  step: SemanticWalkStep,
+  visibleEpisodeIds: ReadonlySet<string> | null,
+): SemanticWalkStep & { edgePath: RetrievedSemanticEdge[] } {
+  return {
+    ...step,
+    edgePath: step.edgePath.map((edge) => withVisibleSemanticEdgeSources(edge, visibleEpisodeIds)),
+  };
+}
+
 export async function isSemanticNodeVisibleToAudience(
   node: SemanticNode,
   visibility: Pick<SemanticRetrievalOptions, "audienceEntityId" | "crossAudience">,
@@ -212,11 +296,7 @@ function isSemanticWalkStepVisible(
 ): boolean {
   return (
     isSemanticNodeVisible(step.node, visibleEpisodeIds) &&
-    (visibleEpisodeIds === null ||
-      step.edgePath.every((edge) =>
-        // Edge evidence remains all-or-nothing for Sprint 9.3; partial edge evidence is follow-up work.
-        edge.evidence_episode_ids.every((episodeId) => visibleEpisodeIds.has(episodeId)),
-      ))
+    step.edgePath.every((edge) => isSemanticEdgeVisible(edge, visibleEpisodeIds))
   );
 }
 
@@ -224,7 +304,7 @@ export async function filterSemanticWalkStepsByAudience(
   steps: readonly SemanticWalkStep[],
   visibility: Pick<SemanticRetrievalOptions, "audienceEntityId" | "crossAudience">,
   dependencies: Pick<SemanticRetrievalDependencies, "episodicRepository">,
-): Promise<SemanticWalkStep[]> {
+): Promise<Array<SemanticWalkStep & { edgePath: RetrievedSemanticEdge[] }>> {
   const visibleEpisodeIds = await resolveVisibleEpisodeIds(
     dependencies.episodicRepository,
     steps.flatMap((step) => [
@@ -237,7 +317,7 @@ export async function filterSemanticWalkStepsByAudience(
   return steps
     .filter((step) => isSemanticWalkStepVisible(step, visibleEpisodeIds))
     .map((step) => ({
-      ...step,
+      ...withVisibleSemanticWalkStepEdges(step, visibleEpisodeIds),
       node: withVisibleSemanticSources(step.node, visibleEpisodeIds),
     }));
 }
@@ -451,6 +531,16 @@ export async function resolveSemanticContext(
       maxNodes: maxGraphNodes,
       asOf: options.asOf,
     });
+    const walkedInboundSupports =
+      node.node.kind === "proposition"
+        ? await semanticGraph.walk(node.node.id, {
+            relations: ["supports"],
+            direction: "in",
+            depth: walkDepth,
+            maxNodes: maxGraphNodes,
+            asOf: options.asOf,
+          })
+        : [];
     const walkedCausals = await semanticGraph.walk(node.node.id, {
       relations: ["causes", "prevents"],
       direction: "out",
@@ -474,6 +564,9 @@ export async function resolveSemanticContext(
     });
 
     supportNeighbors.push(...walkedSupports.map((step) => ({ rootNodeId: node.node.id, step })));
+    supportNeighbors.push(
+      ...walkedInboundSupports.map((step) => ({ rootNodeId: node.node.id, step })),
+    );
     causalNeighbors.push(...walkedCausals.map((step) => ({ rootNodeId: node.node.id, step })));
     contradictionNeighbors.push(
       ...walkedContradictions.map((step) => ({ rootNodeId: node.node.id, step })),
@@ -505,18 +598,30 @@ export async function resolveSemanticContext(
     options,
   );
 
-  const visibleSupportNeighbors = supportNeighbors.filter(({ step }) =>
-    isSemanticWalkStepVisible(step, semanticVisibility),
-  );
-  const visibleCausalNeighbors = causalNeighbors.filter(({ step }) =>
-    isSemanticWalkStepVisible(step, semanticVisibility),
-  );
-  const visibleContradictionNeighbors = contradictionNeighbors.filter(({ step }) =>
-    isSemanticWalkStepVisible(step, semanticVisibility),
-  );
-  const visibleCategoryNeighbors = categoryNeighbors.filter(({ step }) =>
-    isSemanticWalkStepVisible(step, semanticVisibility),
-  );
+  const visibleSupportNeighbors = supportNeighbors
+    .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
+    .map((item) => ({
+      ...item,
+      step: withVisibleSemanticWalkStepEdges(item.step, semanticVisibility),
+    }));
+  const visibleCausalNeighbors = causalNeighbors
+    .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
+    .map((item) => ({
+      ...item,
+      step: withVisibleSemanticWalkStepEdges(item.step, semanticVisibility),
+    }));
+  const visibleContradictionNeighbors = contradictionNeighbors
+    .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
+    .map((item) => ({
+      ...item,
+      step: withVisibleSemanticWalkStepEdges(item.step, semanticVisibility),
+    }));
+  const visibleCategoryNeighbors = categoryNeighbors
+    .filter(({ step }) => isSemanticWalkStepVisible(step, semanticVisibility))
+    .map((item) => ({
+      ...item,
+      step: withVisibleSemanticWalkStepEdges(item.step, semanticVisibility),
+    }));
   const underReviewByNodeId = await collectUnderReviewStatuses(
     [
       ...[...uniqueNodes.values()].map(({ node }) => node),

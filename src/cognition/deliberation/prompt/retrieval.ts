@@ -284,6 +284,21 @@ function summarizePartialSourceTag(node: {
   return node.partial_source_visibility === true ? ", partial sources" : "";
 }
 
+function summarizePartialEvidenceTag(edge: {
+  partial_source_visibility?: RetrievedSemanticHit["edgePath"][number]["partial_source_visibility"];
+  source_visibility_fraction?: RetrievedSemanticHit["edgePath"][number]["source_visibility_fraction"];
+}): string {
+  if (edge.partial_source_visibility !== true) {
+    return "";
+  }
+
+  const fraction =
+    edge.source_visibility_fraction === undefined
+      ? ""
+      : ` visible_fraction=${edge.source_visibility_fraction.toFixed(2)}`;
+  return ` partial_sources=true${fraction}`;
+}
+
 function summarizeSemanticNode(
   node: SemanticNode & {
     partial_source_visibility?: RetrievedSemanticNode["partial_source_visibility"];
@@ -316,11 +331,12 @@ function summarizeSemanticHit(
 
   for (const [index, edge] of hit.edgePath.entries()) {
     const evidence = summarizeEpisodeIds(edge.evidence_episode_ids);
+    const evidenceVisibility = summarizePartialEvidenceTag(edge);
     const validityTag = options.tagClosedEdges ? summarizeValidityTag(edge) : "";
     const relation =
       edge.from_node_id === currentNodeId
-        ? `-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}]${validityTag}->`
-        : `<-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}]${validityTag}-`;
+        ? `-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}${evidenceVisibility}]${validityTag}->`
+        : `<-[${edge.relation} conf=${edge.confidence.toFixed(2)} evidence=${evidence}${evidenceVisibility}]${validityTag}-`;
 
     pathParts.push(relation);
 

@@ -653,7 +653,9 @@ export class RetrievalPipeline {
       return null;
     }
 
-    if (!(await this.isSemanticEdgeVisibleToAudience(edge, node, options))) {
+    const edgeVisibility = await this.resolveSemanticEdgeVisibility(edge, node, options);
+
+    if (edgeVisibility === null) {
       return null;
     }
 
@@ -671,24 +673,38 @@ export class RetrievalPipeline {
       scoreBreakdown: {
         provenance: 1,
       },
+      source_episode_ids: edgeVisibility.visibleEvidenceEpisodeIds,
+      ...(edgeVisibility.partial
+        ? {
+            partial_source_visibility: true,
+            source_visibility_fraction:
+              edgeVisibility.visibleEvidenceEpisodeIds.length / edge.evidence_episode_ids.length,
+          }
+        : {}),
     };
   }
 
-  private async isSemanticEdgeVisibleToAudience(
+  private async resolveSemanticEdgeVisibility(
     edge: SemanticEdge,
     node: SemanticNode,
     options: RetrievalSearchOptions,
-  ): Promise<boolean> {
+  ): Promise<{
+    visibleEvidenceEpisodeIds: Episode["id"][];
+    partial: boolean;
+  } | null> {
     if (
       !(await isSemanticNodeVisibleToAudience(node, options, {
         episodicRepository: this.options.episodicRepository,
       }))
     ) {
-      return false;
+      return null;
     }
 
     if (options.crossAudience === true) {
-      return true;
+      return {
+        visibleEvidenceEpisodeIds: [...edge.evidence_episode_ids],
+        partial: false,
+      };
     }
 
     const evidenceEpisodes = await this.options.episodicRepository.getMany(
@@ -699,9 +715,18 @@ export class RetrievalPipeline {
         .filter((episode) => isEpisodeVisibleToAudience(episode, options.audienceEntityId))
         .map((episode) => episode.id),
     );
+    const visibleEvidenceEpisodeIds = edge.evidence_episode_ids.filter((episodeId) =>
+      visibleEpisodeIds.has(episodeId),
+    );
 
-    // Edge evidence remains all-or-nothing for Sprint 9.3; partial edge evidence is follow-up work.
-    return edge.evidence_episode_ids.every((episodeId) => visibleEpisodeIds.has(episodeId));
+    if (visibleEvidenceEpisodeIds.length === 0) {
+      return null;
+    }
+
+    return {
+      visibleEvidenceEpisodeIds,
+      partial: visibleEvidenceEpisodeIds.length < edge.evidence_episode_ids.length,
+    };
   }
 
   private rehydrateCommitmentHandle(

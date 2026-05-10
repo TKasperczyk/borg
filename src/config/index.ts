@@ -233,7 +233,7 @@ const configFileSchema = z
             enabled: z.boolean().optional(),
             lookbackHours: z.number().positive().optional(),
             maxChecksPerRun: z.number().int().positive().optional(),
-            budget: z.number().int().positive().optional(),
+            budget: z.number().int().positive().nullable().optional(),
           })
           .partial()
           .optional(),
@@ -513,7 +513,7 @@ export const configSchema = z.object({
       enabled: z.boolean(),
       lookbackHours: z.number().positive(),
       maxChecksPerRun: z.number().int().positive(),
-      budget: z.number().int().positive(),
+      budget: z.number().int().positive().nullable(),
     }),
     ruminator: z.object({
       enabled: z.boolean(),
@@ -751,7 +751,7 @@ export const DEFAULT_CONFIG: Config = {
       enabled: true,
       lookbackHours: 24,
       maxChecksPerRun: 8,
-      budget: 40_000,
+      budget: null,
     },
     ruminator: {
       enabled: true,

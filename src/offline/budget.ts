@@ -4,6 +4,7 @@ import { BudgetExceededError } from "../util/errors.js";
 import type { OfflineProcessName } from "./types.js";
 
 type BudgetTotals = Partial<Record<OfflineProcessName, number>>;
+type BudgetCaps = Partial<Record<OfflineProcessName, number | null>>;
 
 type BudgetBoundError = Error & {
   tokens_used?: number;
@@ -13,12 +14,25 @@ export class BudgetTracker {
   private readonly caps: BudgetTotals;
   private readonly totals: BudgetTotals = {};
 
-  constructor(caps: BudgetTotals = {}) {
-    this.caps = { ...caps };
+  constructor(caps: BudgetCaps = {}) {
+    this.caps = {};
+
+    for (const [processName, cap] of Object.entries(caps) as Array<
+      [OfflineProcessName, number | null | undefined]
+    >) {
+      if (cap !== null && cap !== undefined) {
+        this.caps[processName] = cap;
+      }
+    }
   }
 
-  createSink(processName: OfflineProcessName, cap = this.caps[processName]): TokenUsageSink {
-    if (cap !== undefined) {
+  createSink(
+    processName: OfflineProcessName,
+    cap: number | null | undefined = this.caps[processName],
+  ): TokenUsageSink {
+    if (cap === null) {
+      delete this.caps[processName];
+    } else if (cap !== undefined) {
       this.caps[processName] = cap;
     }
 
@@ -70,7 +84,7 @@ export function wrapLlmClientWithSink(client: LLMClient, sink: TokenUsageSink): 
 
 export async function withBudget<T>(
   processName: OfflineProcessName,
-  cap: number,
+  cap: number | null,
   fn: (tools: {
     sink: TokenUsageSink;
     tracker: BudgetTracker;

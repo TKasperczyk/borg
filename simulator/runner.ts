@@ -607,13 +607,11 @@ export class SimulatorRunner {
           Number.isInteger(this.options.checkEvery) &&
           this.options.checkEvery > 0 &&
           turn % this.options.checkEvery === 0;
-
-        finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn, {
-          sessionId: currentSessionId,
-          sessionIds,
-          transportChatAttempts: success.transportChatAttempts,
-          overseerDueOnSuppressedTurn: !success.emitted && overseerDue,
-        });
+        const suppressionReason = success.emitted ? undefined : success.suppressionReason;
+        const continuesSuppressedSession =
+          !success.emitted &&
+          suppressionReason !== undefined &&
+          !isSessionEndingSuppression(suppressionReason);
 
         let heavyMaintenanceRan = false;
 
@@ -628,6 +626,23 @@ export class SimulatorRunner {
             final: turn === this.options.totalTurns,
           });
           heavyMaintenanceRan = true;
+        }
+
+        if (!success.emitted && !continuesSuppressedSession && !heavyMaintenanceRan) {
+          await runMaintenanceTick(transport, turn, "heavy", {
+            final: turn === this.options.totalTurns,
+          });
+          heavyMaintenanceRan = true;
+        }
+
+        finalMetrics = await metrics.capture(transport.getBorg(), success.turnId, turn, {
+          sessionId: currentSessionId,
+          sessionIds,
+          transportChatAttempts: success.transportChatAttempts,
+          overseerDueOnSuppressedTurn: !success.emitted && overseerDue,
+        });
+
+        if (overseerDue) {
           overseerCheckpoints.push(
             await overseerRunner({
               transport,
@@ -641,9 +656,7 @@ export class SimulatorRunner {
         }
 
         if (!success.emitted) {
-          const suppressionReason = success.suppressionReason;
-
-          if (suppressionReason !== undefined && !isSessionEndingSuppression(suppressionReason)) {
+          if (continuesSuppressedSession) {
             suppressionEvents.push({
               sessionIndex: sessions.length,
               sessionId: currentSessionId,
@@ -666,13 +679,6 @@ export class SimulatorRunner {
           if (sessions.length >= maxSessions) {
             resultState = "max_sessions_reached";
             break;
-          }
-
-          if (!heavyMaintenanceRan) {
-            await runMaintenanceTick(transport, turn, "heavy", {
-              final: turn === this.options.totalTurns,
-            });
-            heavyMaintenanceRan = true;
           }
 
           const gap =

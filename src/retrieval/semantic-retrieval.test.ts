@@ -309,6 +309,80 @@ describe("resolveSemanticContext temporal validity", () => {
     expect(fromEffect.causal_hits).toEqual([]);
   });
 
+  it("walks inbound support edges when a matched proposition is grounded as an insight", async () => {
+    const clock = new ManualClock(1_000_000);
+    harness = await createOfflineTestHarness({ clock });
+    const episode = createEpisodeFixture({
+      title: "Atlas reflection support",
+      tags: ["atlas"],
+    });
+    await harness.episodicRepository.insert(episode);
+    const support = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          kind: "proposition",
+          label: "Rollback plans were present",
+          description: "Rollback plans were present in repeated Atlas release notes.",
+          source_episode_ids: [episode.id],
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const insight = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          kind: "proposition",
+          label: "Atlas stabilizes when rollback plans are explicit",
+          description: "Atlas release stability improves when rollback planning is explicit.",
+          source_episode_ids: [episode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: support.id,
+      to_node_id: insight.id,
+      relation: "supports",
+      confidence: 0.7,
+      evidence_episode_ids: [episode.id],
+      created_at: 1_000_000,
+      last_verified_at: 1_000_000,
+    });
+    const semanticGraph = new SemanticGraph({
+      nodeRepository: harness.semanticNodeRepository,
+      edgeRepository: harness.semanticEdgeRepository,
+    });
+
+    const result = toRetrievedSemantic(
+      await resolveSemanticContext(
+        "Atlas stabilizes when rollback plans are explicit",
+        {
+          graphWalkDepth: 1,
+          maxGraphNodes: 4,
+          queryVector: Float32Array.from([1, 0, 0, 0]),
+        },
+        {
+          embeddingClient: harness.embeddingClient,
+          episodicRepository: harness.episodicRepository,
+          semanticNodeRepository: harness.semanticNodeRepository,
+          semanticGraph,
+        },
+      ),
+    );
+    const prompt = summarizeSemanticContext(result, 1_000);
+
+    expect(result.matched_node_ids).toContain(insight.id);
+    expect(result.support_hits).toEqual([
+      expect.objectContaining({
+        root_node_id: insight.id,
+        node: expect.objectContaining({ id: support.id }),
+        edgePath: [expect.objectContaining({ id: edge.id, relation: "supports" })],
+      }),
+    ]);
+    expect(result.supports.map((node) => node.id)).toContain(support.id);
+    expect(prompt).toContain("<-[supports");
+  });
+
   it("downranks direct matches that have open belief-revision reviews", async () => {
     const clock = new ManualClock(1_000_000);
     harness = await createOfflineTestHarness({ clock });
@@ -679,6 +753,67 @@ describe("resolveSemanticContext temporal validity", () => {
     expect(match?.source_visibility_fraction).toBe(0.5);
     expect(prompt).toContain(publicEpisode.id);
     expect(prompt).toContain("partial sources");
+    expect(prompt).not.toContain(hiddenEpisode.id);
+  });
+
+  it("surfaces a mixed-visibility edge with only visible evidence rendered", async () => {
+    const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;
+    const audienceB = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+    harness = await createOfflineTestHarness();
+    const publicEpisode = createEpisodeFixture({
+      title: "Atlas public edge evidence",
+      tags: ["atlas"],
+      audience_entity_id: null,
+      shared: true,
+    });
+    const hiddenEpisode = createEpisodeFixture({
+      title: "Atlas audience B edge evidence",
+      tags: ["atlas"],
+      audience_entity_id: audienceB,
+      shared: false,
+    });
+    await harness.episodicRepository.insert(publicEpisode);
+    await harness.episodicRepository.insert(hiddenEpisode);
+    const root = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas edge root",
+          description: "Atlas node backed by visible evidence.",
+          source_episode_ids: [publicEpisode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const support = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas edge support",
+          description: "Atlas support node backed by visible evidence.",
+          source_episode_ids: [publicEpisode.id],
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    harness.semanticEdgeRepository.addEdge({
+      from_node_id: root.id,
+      to_node_id: support.id,
+      relation: "supports",
+      confidence: 0.7,
+      evidence_episode_ids: [publicEpisode.id, hiddenEpisode.id],
+      created_at: 1_000_000,
+      last_verified_at: 1_000_000,
+    });
+
+    const result = await resolveVisibilityProbe(harness, audienceA);
+    const hit = result.support_hits.find((candidate) => candidate.node.id === support.id);
+    const edge = hit?.edgePath[0];
+    const prompt = summarizeSemanticContext(result, 1_000);
+
+    expect(edge?.evidence_episode_ids).toEqual([publicEpisode.id]);
+    expect(edge?.partial_source_visibility).toBe(true);
+    expect(edge?.source_visibility_fraction).toBe(0.5);
+    expect(prompt).toContain(`evidence=${publicEpisode.id}`);
+    expect(prompt).toContain("partial_sources=true");
     expect(prompt).not.toContain(hiddenEpisode.id);
   });
 

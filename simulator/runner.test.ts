@@ -12,7 +12,11 @@ import {
   type GenerationSuppressionReason,
   type SessionId,
 } from "../src/index.js";
-import { MaintenanceScheduler, type MaintenanceTickResult } from "../src/offline/scheduler.js";
+import {
+  MaintenanceScheduler,
+  type MaintenanceCadence,
+  type MaintenanceTickResult,
+} from "../src/offline/scheduler.js";
 import { BorgTransport, type ChatWithBorgResult } from "../assessor/borg-transport.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import { createSimulatorScenario, runSimulation } from "./runner.js";
@@ -584,6 +588,73 @@ describe("SimulatorRunner", () => {
 
     expect(tickSpy).toHaveBeenCalledTimes(2);
     expect(tickSpy.mock.calls.map(([cadence]) => cadence)).toEqual(["light", "light"]);
+  });
+
+  it("reports final metrics after the final maintenance tick", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const borg = fakeSimulatorBorg();
+    let semanticNodeCount = 1;
+    let chatCalls = 0;
+
+    vi.spyOn(BorgTransport.prototype, "open").mockResolvedValue(undefined);
+    vi.spyOn(BorgTransport.prototype, "close").mockResolvedValue(undefined);
+    vi.spyOn(BorgTransport.prototype, "getBorg").mockReturnValue(borg);
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) => {
+      chatCalls += 1;
+
+      return chatResult({
+        response: "Borg replied.",
+        emitted: true,
+        turnId: `turn-${chatCalls}`,
+        sessionId: options.sessionId as SessionId,
+      });
+    });
+    vi.spyOn(borg.semantic.nodes, "list").mockImplementation(async () =>
+      Array.from({ length: semanticNodeCount }, () => ({}) as never),
+    );
+    vi.spyOn(borg.maintenance.scheduler, "tick").mockImplementation(
+      async (cadence: MaintenanceCadence): Promise<MaintenanceTickResult> => {
+        semanticNodeCount += 1;
+
+        return {
+          status: "ok",
+          cadence,
+          ts: Date.now(),
+          processes: [],
+          result: null,
+        };
+      },
+    );
+
+    const report = await runSimulation({
+      runId: "sim-runner-final-maintenance-metrics-test",
+      persona: tomPersona,
+      totalTurns: 2,
+      checkEvery: 999,
+      maintenanceEvery: 2,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+    const metricsRows = readFileSync(metricsPath, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            semantic_node_count: number;
+            semantic_nodes_added_since_last_check: number;
+          },
+      );
+
+    expect(report.finalMetrics.semantic_node_count).toBe(2);
+    expect(report.finalMetrics.semantic_nodes_added_since_last_check).toBe(1);
+    expect(metricsRows.at(-1)).toMatchObject({
+      semantic_node_count: 2,
+      semantic_nodes_added_since_last_check: 1,
+    });
   });
 
   it("passes the persona display name as the stable Borg audience", async () => {

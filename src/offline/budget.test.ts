@@ -75,4 +75,36 @@ describe("offline budget", () => {
       expect(getBudgetErrorTokens(error)).toBe(20);
     }
   });
+
+  it("allows an unlimited overseer budget when the cap is null", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "large overseer pass",
+          input_tokens: 70_000,
+          output_tokens: 30_000,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+
+    const result = await withBudget("overseer", null, async ({ wrapClient }) => {
+      const client = wrapClient(llm);
+
+      await client.complete({
+        model: "opus",
+        messages: [{ role: "user", content: "review a large maintenance batch" }],
+        max_tokens: 4_000,
+        budget: "offline-overseer",
+      });
+
+      return "ok";
+    });
+
+    expect(result).toEqual({
+      result: "ok",
+      tokens_used: 100_000,
+    });
+  });
 });

@@ -49,6 +49,7 @@ describe("config", () => {
       maxEpisodesPerRun: 8,
       budget: 60_000,
     });
+    expect(config.offline.overseer.budget).toBeNull();
     expect(config.offline.ruminator.stalenessTicks).toBeNull();
     expect(config.maintenance.lightProcesses).toEqual([
       "consolidator",
