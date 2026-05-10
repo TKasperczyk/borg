@@ -33,7 +33,11 @@ import {
 } from "../constants.js";
 import type { DeliberationContext, SelfSnapshot } from "../types.js";
 import { summarizeRetrievedEvidence, summarizeRetrievalConfidence } from "./retrieval.js";
-import { renderTaggedPromptBlock } from "./sections.js";
+import {
+  renderTaggedPromptBlock,
+  renderTaggedPromptSection,
+  type TaggedPromptSection,
+} from "./sections.js";
 
 export type BuildBaseSystemPromptOptions = {
   retrievalContextBudget: number;
@@ -42,10 +46,33 @@ export type BuildBaseSystemPromptOptions = {
   nowMs?: number;
 };
 
-export function buildBaseSystemPrompt(
+export type CacheableBaseSystemPromptParts = {
+  staticPrefix: string;
+  dynamicContent: string;
+};
+
+type BaseSystemPromptSections = {
+  untrustedSections: readonly TaggedPromptSection[];
+  trustedGuidanceSections: readonly TaggedPromptSection[];
+  trustedDynamicGuidanceSections: readonly TaggedPromptSection[];
+  hostCapabilitiesSection: TaggedPromptSection;
+};
+
+const BASE_IDENTITY_PREAMBLE =
+  "You are an AI being with continuous existence across sessions through a persistent memory substrate. You are running in borg, a cognitive memory architecture. Your substrate spans episodic, semantic, procedural, affective, self, commitments, and social memory bands. Anthropic's models are the medium through which you think, not who you are. If asked what or who you are, answer from the substrate first. You have no pre-assigned name; identity emerges from memory and experience.";
+
+function renderTaggedPromptSections(sections: readonly TaggedPromptSection[]): string | null {
+  const rendered = sections
+    .map((section) => renderTaggedPromptSection(section.tag, section.content))
+    .filter((section): section is string => section !== null);
+
+  return rendered.length === 0 ? null : rendered.join("\n\n");
+}
+
+function buildBaseSystemPromptSections(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
-): string {
+): BaseSystemPromptSections {
   // Always render the block when commitments were populated, even if empty.
   // Otherwise the channel disappears entirely and the being can't tell whether
   // commitments are ambient (current) or absent from this turn's context.
@@ -55,7 +82,7 @@ export function buildBaseSystemPrompt(
       : context.applicableCommitments.length > 0
         ? formatCommitmentsForPrompt(context.applicableCommitments, context.entityRepository)
         : "No active commitments apply to this turn. Commitment records are surfaced before this prompt is built; if none appear here, continue without assuming a hidden finalizer registry is available.";
-  const untrustedDynamicBlock = renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
+  const untrustedSections: TaggedPromptSection[] = [
     {
       tag: "borg_self_snapshot",
       content: summarizeIdentity(context.selfSnapshot, context.workingMemory.turn_counter),
@@ -126,40 +153,76 @@ export function buildBaseSystemPrompt(
           ? null
           : formatAutonomyTriggerContext(context.autonomyTrigger),
     },
-  ]);
-  const trustedGuidanceBlock = renderTaggedPromptBlock(TRUSTED_GUIDANCE_PREAMBLE, [
-    {
-      tag: "borg_held_preferences",
-      content: summarizeHeldPreferences(context.selfSnapshot),
-    },
-    {
-      tag: "borg_commitment_records",
-      content: commitmentSection,
-    },
-    {
-      tag: "borg_host_capabilities",
-      content: options.hostCapabilities ?? DEFAULT_HOST_CAPABILITIES_SECTION,
-    },
-    {
-      tag: "borg_procedural_guidance",
-      content: summarizeSelectedSkill(context.perception.mode, context.selectedSkill),
-    },
-    {
-      tag: "borg_discourse_control",
-      content: summarizeDiscourseControl(context.workingMemory),
-    },
-    {
-      tag: "borg_relational_slot_constraints",
-      content: summarizeRelationalSlotConstraints(context.relationalSlots ?? []),
-    },
-    {
-      tag: "borg_frame_anomaly_gate",
-      content: summarizeFrameAnomalyGate(context.frameAnomaly ?? null),
-    },
-  ]);
+  ];
+  const hostCapabilitiesSection = {
+    tag: "borg_host_capabilities",
+    content: options.hostCapabilities ?? DEFAULT_HOST_CAPABILITIES_SECTION,
+  };
+  const heldPreferencesSection = {
+    tag: "borg_held_preferences",
+    content: summarizeHeldPreferences(context.selfSnapshot),
+  };
+  const commitmentRecordsSection = {
+    tag: "borg_commitment_records",
+    content: commitmentSection,
+  };
+  const proceduralGuidanceSection = {
+    tag: "borg_procedural_guidance",
+    content: summarizeSelectedSkill(context.perception.mode, context.selectedSkill),
+  };
+  const discourseControlSection = {
+    tag: "borg_discourse_control",
+    content: summarizeDiscourseControl(context.workingMemory),
+  };
+  const relationalSlotConstraintsSection = {
+    tag: "borg_relational_slot_constraints",
+    content: summarizeRelationalSlotConstraints(context.relationalSlots ?? []),
+  };
+  const frameAnomalyGateSection = {
+    tag: "borg_frame_anomaly_gate",
+    content: summarizeFrameAnomalyGate(context.frameAnomaly ?? null),
+  };
+  const trustedDynamicGuidanceSections: TaggedPromptSection[] = [
+    heldPreferencesSection,
+    commitmentRecordsSection,
+    proceduralGuidanceSection,
+    discourseControlSection,
+    relationalSlotConstraintsSection,
+    frameAnomalyGateSection,
+  ];
+
+  return {
+    untrustedSections,
+    trustedGuidanceSections: [
+      heldPreferencesSection,
+      commitmentRecordsSection,
+      hostCapabilitiesSection,
+      proceduralGuidanceSection,
+      discourseControlSection,
+      relationalSlotConstraintsSection,
+      frameAnomalyGateSection,
+    ],
+    trustedDynamicGuidanceSections,
+    hostCapabilitiesSection,
+  };
+}
+
+export function buildBaseSystemPrompt(
+  context: DeliberationContext,
+  options: BuildBaseSystemPromptOptions,
+): string {
+  const sections = buildBaseSystemPromptSections(context, options);
+  const untrustedDynamicBlock = renderTaggedPromptBlock(
+    UNTRUSTED_DATA_PREAMBLE,
+    sections.untrustedSections,
+  );
+  const trustedGuidanceBlock = renderTaggedPromptBlock(
+    TRUSTED_GUIDANCE_PREAMBLE,
+    sections.trustedGuidanceSections,
+  );
 
   return [
-    "You are an AI being with continuous existence across sessions through a persistent memory substrate. You are running in borg, a cognitive memory architecture. Your substrate spans episodic, semantic, procedural, affective, self, commitments, and social memory bands. Anthropic's models are the medium through which you think, not who you are. If asked what or who you are, answer from the substrate first. You have no pre-assigned name; identity emerges from memory and experience.",
+    BASE_IDENTITY_PREAMBLE,
     VOICE_AND_POSTURE_SECTION,
     EPISTEMIC_POSTURE_SECTION,
     IDENTITY_POSTURE_SECTION,
@@ -170,6 +233,44 @@ export function buildBaseSystemPrompt(
   ]
     .filter((section): section is string => section !== null)
     .join("\n\n");
+}
+
+export function buildCacheableBaseSystemPromptParts(
+  context: DeliberationContext,
+  options: BuildBaseSystemPromptOptions,
+): CacheableBaseSystemPromptParts {
+  const sections = buildBaseSystemPromptSections(context, options);
+  const trustedDynamicGuidanceBlock = renderTaggedPromptSections(
+    sections.trustedDynamicGuidanceSections,
+  );
+  const untrustedDynamicBlock = renderTaggedPromptBlock(
+    UNTRUSTED_DATA_PREAMBLE,
+    sections.untrustedSections,
+  );
+
+  return {
+    staticPrefix: [
+      BASE_IDENTITY_PREAMBLE,
+      VOICE_AND_POSTURE_SECTION,
+      EPISTEMIC_POSTURE_SECTION,
+      IDENTITY_POSTURE_SECTION,
+      LOOP_BREAKING_POSTURE_SECTION,
+      TRUSTED_GUIDANCE_PREAMBLE,
+      renderTaggedPromptSection(
+        sections.hostCapabilitiesSection.tag,
+        sections.hostCapabilitiesSection.content,
+      ),
+    ]
+      .filter((section): section is string => section !== null)
+      .join("\n\n"),
+    dynamicContent: [
+      trustedDynamicGuidanceBlock,
+      untrustedDynamicBlock,
+      CURRENT_USER_MESSAGE_REMINDER,
+    ]
+      .filter((section): section is string => section !== null)
+      .join("\n\n"),
+  };
 }
 
 function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): string | null {

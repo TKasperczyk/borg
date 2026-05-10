@@ -100,12 +100,20 @@ const EMISSION_FINALIZER_INSTRUCTIONS = [
   "If the discourse-state section declares HARD CONSTRAINT - CLOSURE PRESSURE, treat it as binding. Do not append a sign-off, valediction, weather observation, single-line noted/held acknowledgment, or any sentence that reads as a coda. End on substantive content or call EmitNoOutput.",
 ].join("\n");
 
-// Do not add cache_control here until the stable prefix is genuinely
-// cacheable. Sprint 8d.9's tool finalizer shrank the old manifest finalizer's
-// stable prefix below Opus's 4096-token prompt-cache minimum, losing roughly
-// 5,122 read tokens per call (~358k over 70 turns). A follow-up should restore
-// caching by consolidating static identity/voice anchors and tool docs into a
-// stable prefix that clears the minimum.
+// Sprint 9.9: the static prefix is currently ~1,845 estimated tokens, below
+// Opus's 4,096-token cache minimum. The marker is a no-op today but is kept
+// in place so the structural ordering is cache-aware -- whenever future
+// sprints add legitimate static self-knowledge content (evidence-ledger
+// catalog, memory-band semantics, audience invariants, richer tool
+// descriptions) and the prefix crosses the threshold, caching activates
+// without a code change. Precedent 8d.6.11 removed a dead marker on
+// TURN_PLAN_TOOL because there was no plausible content path; here there is.
+const FINALIZER_STATIC_PREFIX_CACHE_CONTROL = { type: "ephemeral", ttl: "1h" } as const;
+
+export type CacheableFinalizerSystemPrompt = {
+  staticPrefix: string;
+  dynamicContent: string;
+};
 
 export type RunFinalizerOptions = {
   llmClient: LLMClient;
@@ -121,6 +129,7 @@ export type RunFinalizerOptions = {
   thinking?: LLMConverseOptions["thinking"];
   path: "system_1" | "system_2";
   additionalPromptSections?: readonly (string | null)[];
+  cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
   mode?: "free_text" | "emission_tools";
   tracer?: TurnTracer;
   turnId?: string;
@@ -155,11 +164,22 @@ export type FinalizerResult = ToolLoopResult & {
 };
 
 function buildDynamicSystemPrompt(options: RunFinalizerOptions): string {
+  const baseSystemPrompt =
+    options.mode === "emission_tools"
+      ? (options.cacheableSystemPrompt?.dynamicContent ?? options.baseSystemPrompt)
+      : options.baseSystemPrompt;
+
   return options.additionalPromptSections === undefined
-    ? options.baseSystemPrompt
-    : [options.baseSystemPrompt, ...options.additionalPromptSections]
+    ? baseSystemPrompt
+    : [baseSystemPrompt, ...options.additionalPromptSections]
         .filter((section): section is string => section !== null)
         .join("\n\n");
+}
+
+function buildStaticSystemPrompt(options: RunFinalizerOptions): string {
+  return options.cacheableSystemPrompt === undefined
+    ? EMISSION_FINALIZER_INSTRUCTIONS
+    : [EMISSION_FINALIZER_INSTRUCTIONS, options.cacheableSystemPrompt.staticPrefix].join("\n\n");
 }
 
 function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["system"] {
@@ -172,7 +192,10 @@ function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["sy
   return [
     {
       type: "text",
-      text: EMISSION_FINALIZER_INSTRUCTIONS,
+      text: buildStaticSystemPrompt(options),
+      ...(options.cacheableSystemPrompt === undefined
+        ? {}
+        : { cache_control: FINALIZER_STATIC_PREFIX_CACHE_CONTROL }),
     },
     {
       type: "text",

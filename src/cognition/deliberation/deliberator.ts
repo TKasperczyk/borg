@@ -16,7 +16,10 @@ import { chooseDeliberationPath } from "./path-selector.js";
 import { formatTurnPlanForPrompt } from "./prompt/plan-rendering.js";
 import { summarizeRetrievedEvidence } from "./prompt/retrieval.js";
 import { renderTaggedPromptBlock } from "./prompt/sections.js";
-import { buildBaseSystemPrompt } from "./prompt/system-prompt.js";
+import {
+  buildBaseSystemPrompt,
+  buildCacheableBaseSystemPromptParts,
+} from "./prompt/system-prompt.js";
 import { runS2Planner } from "./s2-planner.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
@@ -213,12 +216,19 @@ export class Deliberator {
       retrievalConfidence,
       trace,
     );
-    const baseSystemPrompt = buildBaseSystemPrompt(effectiveContext, {
+    const baseSystemPromptOptions = {
       retrievalContextBudget,
       semanticContextBudget,
-      hostCapabilities: this.options.hostCapabilities,
       nowMs: this.clock.now(),
-    });
+      ...(this.options.hostCapabilities === undefined
+        ? {}
+        : { hostCapabilities: this.options.hostCapabilities }),
+    };
+    const baseSystemPrompt = buildBaseSystemPrompt(effectiveContext, baseSystemPromptOptions);
+    const cacheableBaseSystemPrompt = buildCacheableBaseSystemPromptParts(
+      effectiveContext,
+      baseSystemPromptOptions,
+    );
     const evidenceLedgerPromptSections =
       context.evidenceLedgerPromptSection === undefined ||
       context.evidenceLedgerPromptSection === null
@@ -239,6 +249,7 @@ export class Deliberator {
         audienceEntityId: context.audienceEntityId,
         model: this.options.cognitionModel,
         baseSystemPrompt,
+        ...(useEmissionFinalizer ? { cacheableSystemPrompt: cacheableBaseSystemPrompt } : {}),
         initialMessages: dialogueBlockMessages,
         tools: deliberatorTools,
         userEntryId: context.userEntryId,
@@ -379,6 +390,7 @@ export class Deliberator {
       audienceEntityId: context.audienceEntityId,
       model: this.options.cognitionModel,
       baseSystemPrompt,
+      ...(useEmissionFinalizer ? { cacheableSystemPrompt: cacheableBaseSystemPrompt } : {}),
       initialMessages: dialogueBlockMessages,
       tools: deliberatorTools,
       userEntryId: context.userEntryId,

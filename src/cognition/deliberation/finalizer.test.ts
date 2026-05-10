@@ -10,7 +10,7 @@ import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher, type ToolDefinition } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
-import { runFinalizer } from "./finalizer.js";
+import { runFinalizer, type CacheableFinalizerSystemPrompt } from "./finalizer.js";
 
 function createDispatcher(tempDirs: string[]): ToolDispatcher {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-finalizer-"));
@@ -43,14 +43,22 @@ const extraTool: ToolDefinition = {
 async function runEmissionFinalizer(
   llm: FakeLLMClient,
   tempDirs: string[],
-  tools: readonly ToolDefinition[] = [extraTool],
+  options: {
+    tools?: readonly ToolDefinition[];
+    cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
+    additionalPromptSections?: readonly (string | null)[];
+  } = {},
 ) {
   return runFinalizer({
     llmClient: llm,
     dispatcher: createDispatcher(tempDirs),
     sessionId: DEFAULT_SESSION_ID,
     model: "fake",
-    baseSystemPrompt: "Base dynamic prompt.",
+    baseSystemPrompt: "Legacy base dynamic prompt.",
+    cacheableSystemPrompt: options.cacheableSystemPrompt ?? {
+      staticPrefix: "Stable static prompt.",
+      dynamicContent: "Base dynamic prompt.",
+    },
     initialMessages: [
       {
         role: "user",
@@ -62,11 +70,14 @@ async function runEmissionFinalizer(
         ],
       },
     ],
-    tools,
+    tools: options.tools ?? [extraTool],
     userEntryId: undefined,
     maxTokens: 256,
     path: "system_1",
     mode: "emission_tools",
+    ...(options.additionalPromptSections === undefined
+      ? {}
+      : { additionalPromptSections: options.additionalPromptSections }),
   });
 }
 
@@ -79,7 +90,7 @@ describe("runFinalizer emission tools", () => {
     }
   });
 
-  it("exposes only emission tools without dead cache-control markers", async () => {
+  it("exposes only emission tools with a cacheable static system block", async () => {
     const llm = new FakeLLMClient({
       responses: [
         {
@@ -114,6 +125,7 @@ describe("runFinalizer emission tools", () => {
     expect(llm.requests[0]?.system).toEqual([
       expect.objectContaining({
         type: "text",
+        cache_control: { type: "ephemeral", ttl: "1h" },
         text: expect.stringContaining(
           "Call exactly ONE of EmitAnswer / EmitNoOutput / EmitSelfReport per turn.",
         ),
@@ -123,11 +135,65 @@ describe("runFinalizer emission tools", () => {
         text: "Base dynamic prompt.",
       }),
     ]);
-    expect(
-      (llm.requests[0]?.system as readonly Record<string, unknown>[]).some(
-        (block) => "cache_control" in block,
-      ),
-    ).toBe(false);
+  });
+
+  it("keeps the static system block byte-identical when dynamic context changes", async () => {
+    const firstLlm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_first",
+              name: "EmitAnswer",
+              input: { text: "First." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+    const secondLlm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_second",
+              name: "EmitAnswer",
+              input: { text: "Second." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    await runEmissionFinalizer(firstLlm, tempDirs, {
+      cacheableSystemPrompt: {
+        staticPrefix: "Stable static prompt.",
+        dynamicContent: "Dynamic context one.",
+      },
+      additionalPromptSections: ["Evidence ledger one."],
+    });
+    await runEmissionFinalizer(secondLlm, tempDirs, {
+      cacheableSystemPrompt: {
+        staticPrefix: "Stable static prompt.",
+        dynamicContent: "Dynamic context two.",
+      },
+      additionalPromptSections: ["Evidence ledger two."],
+    });
+
+    const firstSystem = firstLlm.requests[0]?.system as readonly { text: string }[];
+    const secondSystem = secondLlm.requests[0]?.system as readonly { text: string }[];
+
+    expect(firstSystem[0]?.text).toBe(secondSystem[0]?.text);
+    expect(firstSystem[1]?.text).toBe("Dynamic context one.\n\nEvidence ledger one.");
+    expect(secondSystem[1]?.text).toBe("Dynamic context two.\n\nEvidence ledger two.");
   });
 
   it("treats free text without an emission tool as a protocol failure", async () => {

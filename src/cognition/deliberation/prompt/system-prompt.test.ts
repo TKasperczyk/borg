@@ -26,7 +26,7 @@ import {
 } from "../constants.js";
 import type { DeliberationContext } from "../types.js";
 
-import { buildBaseSystemPrompt } from "./system-prompt.js";
+import { buildBaseSystemPrompt, buildCacheableBaseSystemPromptParts } from "./system-prompt.js";
 
 const NOW_MS = 1_700_000_000_000;
 const PROMPT_OPTIONS = {
@@ -404,6 +404,36 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("Capabilities NOT available unless the host has declared them");
     expect(prompt).toContain("Be honest about your capabilities.");
     expect(prompt).toContain("speak truthfully about what's within reach this turn");
+  });
+
+  it("keeps the cacheable static prefix stable while dynamic context changes", () => {
+    const first = buildCacheableBaseSystemPromptParts(makeContext(), PROMPT_OPTIONS);
+    const second = buildCacheableBaseSystemPromptParts(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          turn_counter: 9,
+          hot_entities: ["payments"],
+          mood: {
+            valence: -0.4,
+            arousal: 0.6,
+            dominant_emotion: null,
+          },
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(first.staticPrefix).toBe(second.staticPrefix);
+    expect(first.staticPrefix).toContain(TRUSTED_GUIDANCE_PREAMBLE);
+    expect(first.staticPrefix.indexOf(TRUSTED_GUIDANCE_PREAMBLE)).toBeLessThan(
+      first.staticPrefix.indexOf("<borg_host_capabilities>"),
+    );
+    expect(first.staticPrefix).toContain(DEFAULT_HOST_CAPABILITIES_SECTION);
+    expect(first.dynamicContent).not.toBe(second.dynamicContent);
+    expect(first.dynamicContent).toContain(UNTRUSTED_DATA_PREAMBLE);
+    expect(first.dynamicContent).toContain("<borg_working_state>");
+    expect(first.dynamicContent).not.toContain("<borg_host_capabilities>");
   });
 
   it("renders a host capability override without the default capability text", () => {
