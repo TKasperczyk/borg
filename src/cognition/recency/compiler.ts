@@ -94,6 +94,10 @@ function suppressionCategoryContext(reason: string): string {
     return "closure pressure guard rejected the response";
   }
 
+  if (reason === "internal_identifier_leak") {
+    return "internal identifier guard rejected the response";
+  }
+
   if (reason === "manifest_no_output" || reason === "no_output_tool") {
     return "no_output decision";
   }

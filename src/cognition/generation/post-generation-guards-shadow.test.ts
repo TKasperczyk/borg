@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
 import type { EntityRepository, CommitmentRecord } from "../../memory/commitments/index.js";
-import type { StreamReader } from "../../stream/index.js";
+import type { StreamEntry, StreamReader } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { createCommitmentId, createStreamEntryId, DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { CommitmentGuardRunner } from "../commitments/guard-runner.js";
@@ -269,5 +269,79 @@ describe("post-generation guard shadow chain", () => {
         ],
       ]),
     );
+  });
+
+  it("suppresses exact internal identifiers after closure guard passes", async () => {
+    const userEntryId = createStreamEntryId();
+    const userEntry: StreamEntry = {
+      id: userEntryId,
+      timestamp: 2_000,
+      kind: "user_msg",
+      content: "What happened?",
+      session_id: DEFAULT_SESSION_ID,
+      compressed: false,
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([]),
+        closureAuditResponse({
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure.",
+        }),
+      ],
+    });
+    const emit = vi.fn();
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit,
+    };
+    const relationalRunner = new TurnRelationalGuardRunner({
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      relationalClaimMode: "enforce",
+      closurePressureMode: "enforce",
+      createStreamReader: () => emptyStreamReader(),
+      actionRepository: {
+        list: vi.fn(() => []),
+      },
+      commitmentRepository: {
+        findByEvidenceStreamEntryId: vi.fn(() => false),
+      },
+      relationalSlotRepository: {
+        list: vi.fn(() => []),
+      },
+      clock: new FixedClock(2_000),
+      tracer,
+    });
+
+    const finalEmission = await relationalRunner.run({
+      llmClient: llm,
+      turnId: "turn-internal-id-leak",
+      response: `The source handle was ${userEntryId}.`,
+      userMessage: "What happened?",
+      sessionId: DEFAULT_SESSION_ID,
+      persistedUserEntry: userEntry,
+      retrievedEpisodes: [],
+      activeCommitments: [],
+      closureLoop: null,
+      audienceEntityId: null,
+    });
+
+    expect(finalEmission).toEqual({
+      kind: "suppressed",
+      reason: "internal_identifier_leak",
+    });
+    expect(llm.requests.map((request) => request.budget)).toEqual([
+      "relational-claim-auditor",
+      "closure-response-auditor",
+    ]);
+    expect(emit).toHaveBeenCalledWith("closure_response_guard", expect.any(Object));
+    expect(emit).toHaveBeenCalledWith("internal_identifier_guard", {
+      turnId: "turn-internal-id-leak",
+      verdict: "suppressed",
+      leaked_identifiers: [userEntryId],
+    });
   });
 });
