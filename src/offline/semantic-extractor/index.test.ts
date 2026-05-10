@@ -336,6 +336,16 @@ describe("semantic extractor process", () => {
         turnId: ctx.runId,
         skipped_edge_count: 1,
         skip_reasons: expect.arrayContaining(["invalid_endpoint"]),
+        skipped_edge_details: [
+          expect.objectContaining({
+            candidate_index: 1,
+            from_label: "First concept",
+            to_label: "Missing concept",
+            relation: "supports",
+            evidence_ids: [episode.id],
+            reason: "invalid_endpoint",
+          }),
+        ],
       }),
     });
   });

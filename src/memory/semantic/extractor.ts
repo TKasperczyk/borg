@@ -50,9 +50,22 @@ const extractorResponseToolSchema = z.object({
 
 type ExtractorNode = z.infer<typeof extractorNodeSchema>;
 type ExtractorEdge = z.infer<typeof extractorEdgeSchema>;
+type ParsedExtractorEdge = {
+  candidate: ExtractorEdge;
+  candidateIndex: number;
+};
+type SkippedEdgeTraceDetail = {
+  candidate_index: number;
+  reason: SemanticInsertSkipReason;
+  from_label?: string;
+  to_label?: string;
+  relation?: ExtractorEdge["relation"];
+  evidence_ids?: string[];
+};
 
 const DEFAULT_CONFIDENCE_CEILING = 0.7;
 const DEDUP_THRESHOLD = 0.88;
+const SKIPPED_EDGE_TRACE_DETAIL_LIMIT = 10;
 const EXTRACT_SEMANTIC_TOOL_NAME = "EmitSemanticCandidates";
 export const EXTRACT_SEMANTIC_TOOL = {
   name: EXTRACT_SEMANTIC_TOOL_NAME,
@@ -125,9 +138,10 @@ function buildPrompt(episodes: readonly Episode[]): string {
 
 function parseResponse(result: LLMCompleteResult): {
   nodes: ExtractorNode[];
-  edges: ExtractorEdge[];
+  edges: ParsedExtractorEdge[];
   rawEdgeCount: number;
   schemaInvalidEdgeCount: number;
+  schemaInvalidEdgeDetails: SkippedEdgeTraceDetail[];
 } {
   const call = result.tool_calls.find((toolCall) => toolCall.name === EXTRACT_SEMANTIC_TOOL_NAME);
 
@@ -146,18 +160,26 @@ function parseResponse(result: LLMCompleteResult): {
     });
   }
 
-  const edges: ExtractorEdge[] = [];
+  const edges: ParsedExtractorEdge[] = [];
+  const schemaInvalidEdgeDetails: SkippedEdgeTraceDetail[] = [];
   let schemaInvalidEdgeCount = 0;
 
-  for (const edge of parsed.data.edges) {
+  for (const [candidateIndex, edge] of parsed.data.edges.entries()) {
     const parsedEdge = extractorEdgeSchema.safeParse(edge);
 
     if (!parsedEdge.success) {
       schemaInvalidEdgeCount += 1;
+      pushSkippedEdgeTraceDetail(
+        schemaInvalidEdgeDetails,
+        skippedEdgeTraceDetailFromRaw(candidateIndex, "schema_invalid", edge),
+      );
       continue;
     }
 
-    edges.push(parsedEdge.data);
+    edges.push({
+      candidate: parsedEdge.data,
+      candidateIndex,
+    });
   }
 
   return {
@@ -165,6 +187,65 @@ function parseResponse(result: LLMCompleteResult): {
     edges,
     rawEdgeCount: parsed.data.edges.length,
     schemaInvalidEdgeCount,
+    schemaInvalidEdgeDetails,
+  };
+}
+
+function pushSkippedEdgeTraceDetail(
+  details: SkippedEdgeTraceDetail[],
+  detail: SkippedEdgeTraceDetail,
+): void {
+  if (details.length < SKIPPED_EDGE_TRACE_DETAIL_LIMIT) {
+    details.push(detail);
+  }
+}
+
+function skippedEdgeTraceDetailFromRaw(
+  candidateIndex: number,
+  reason: SemanticInsertSkipReason,
+  raw: unknown,
+): SkippedEdgeTraceDetail {
+  const detail: SkippedEdgeTraceDetail = {
+    candidate_index: candidateIndex,
+    reason,
+  };
+  const parsed = z
+    .object({
+      from_label: z.string().min(1).optional(),
+      to_label: z.string().min(1).optional(),
+      relation: semanticRelationSchema.optional(),
+      evidence_episode_ids: z.array(z.string().min(1)).optional(),
+    })
+    .passthrough()
+    .safeParse(raw);
+
+  if (!parsed.success) {
+    return detail;
+  }
+
+  return {
+    ...detail,
+    ...(parsed.data.from_label === undefined ? {} : { from_label: parsed.data.from_label }),
+    ...(parsed.data.to_label === undefined ? {} : { to_label: parsed.data.to_label }),
+    ...(parsed.data.relation === undefined ? {} : { relation: parsed.data.relation }),
+    ...(parsed.data.evidence_episode_ids === undefined
+      ? {}
+      : { evidence_ids: parsed.data.evidence_episode_ids }),
+  };
+}
+
+function skippedEdgeTraceDetailFromCandidate(
+  candidateIndex: number,
+  reason: SemanticInsertSkipReason,
+  candidate: ExtractorEdge,
+): SkippedEdgeTraceDetail {
+  return {
+    candidate_index: candidateIndex,
+    reason,
+    from_label: candidate.from_label,
+    to_label: candidate.to_label,
+    relation: candidate.relation,
+    evidence_ids: candidate.evidence_episode_ids,
   };
 }
 
@@ -251,6 +332,7 @@ export class SemanticExtractor {
     skippedNodeCount: number;
     skippedEdgeCount: number;
     skipReasons: readonly string[];
+    skippedEdgeDetails: readonly SkippedEdgeTraceDetail[];
   }): void {
     if (this.options.tracer?.enabled !== true) {
       return;
@@ -266,6 +348,7 @@ export class SemanticExtractor {
       skipped_node_count: input.skippedNodeCount,
       skipped_edge_count: input.skippedEdgeCount,
       skip_reasons: [...input.skipReasons],
+      skipped_edge_details: input.skippedEdgeDetails.slice(0, SKIPPED_EDGE_TRACE_DETAIL_LIMIT),
     });
   }
 
@@ -571,6 +654,7 @@ export class SemanticExtractor {
     let updatedEdges = 0;
     let skippedEdges = parsed.schemaInvalidEdgeCount;
     let invalidEdgeSkips = parsed.schemaInvalidEdgeCount;
+    const skippedEdgeDetails = [...parsed.schemaInvalidEdgeDetails];
 
     if (parsed.schemaInvalidEdgeCount > 0) {
       skipReasons.add("schema_invalid");
@@ -642,7 +726,7 @@ export class SemanticExtractor {
 
       // Insert/update nodes before edges so endpoint validation never sees
       // dangling in-batch references.
-      for (const candidate of parsed.edges) {
+      for (const { candidate, candidateIndex } of parsed.edges) {
         let evidenceEpisodeIds: Episode["id"][];
 
         try {
@@ -656,6 +740,10 @@ export class SemanticExtractor {
             skippedEdges += 1;
             invalidEdgeSkips += 1;
             skipReasons.add("invalid_ref");
+            pushSkippedEdgeTraceDetail(
+              skippedEdgeDetails,
+              skippedEdgeTraceDetailFromCandidate(candidateIndex, "invalid_ref", candidate),
+            );
             this.traceInsertSkipped({
               kind: "edge",
               reason: "invalid_ref",
@@ -687,6 +775,10 @@ export class SemanticExtractor {
           skippedEdges += 1;
           invalidEdgeSkips += 1;
           skipReasons.add("invalid_endpoint");
+          pushSkippedEdgeTraceDetail(
+            skippedEdgeDetails,
+            skippedEdgeTraceDetailFromCandidate(candidateIndex, "invalid_endpoint", candidate),
+          );
           this.traceInsertSkipped({
             kind: "edge",
             reason: "invalid_endpoint",
@@ -698,6 +790,10 @@ export class SemanticExtractor {
           skippedEdges += 1;
           invalidEdgeSkips += 1;
           skipReasons.add("invalid_endpoint");
+          pushSkippedEdgeTraceDetail(
+            skippedEdgeDetails,
+            skippedEdgeTraceDetailFromCandidate(candidateIndex, "invalid_endpoint", candidate),
+          );
           this.traceInsertSkipped({
             kind: "edge",
             reason: "invalid_endpoint",
@@ -751,6 +847,10 @@ export class SemanticExtractor {
             const reason = this.edgeSkipReason(error);
             skippedEdges += 1;
             skipReasons.add(reason);
+            pushSkippedEdgeTraceDetail(
+              skippedEdgeDetails,
+              skippedEdgeTraceDetailFromCandidate(candidateIndex, reason, candidate),
+            );
             this.traceInsertSkipped({
               kind: "edge",
               reason,
@@ -787,6 +887,7 @@ export class SemanticExtractor {
         skippedNodeCount: skippedNodes,
         skippedEdgeCount: skippedEdges,
         skipReasons: [...skipReasons],
+        skippedEdgeDetails,
       });
     }
 
