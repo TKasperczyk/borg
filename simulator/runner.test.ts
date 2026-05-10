@@ -216,17 +216,7 @@ describe("SimulatorRunner", () => {
           commitment: { mode: "enforce" },
           closurePressure: { mode: "enforce" },
           relationalClaim: {
-            mode: {
-              perCategory: {
-                default: "shadow",
-                overrides: {
-                  action_completion: "enforce",
-                  authorship_claim: "enforce",
-                  frame_assignment: "enforce",
-                  self_correction: "enforce",
-                },
-              },
-            },
+            mode: "shadow",
           },
         },
       },

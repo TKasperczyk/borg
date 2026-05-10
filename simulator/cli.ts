@@ -113,7 +113,7 @@ function createSimulatorCli() {
     // Pipeline C-double-prime launch:
     // pnpm simulate --pipeline-c-double-prime --scenario <scenario> ...
     // C-double-prime means emission-tool finalizer on, commitment and
-    // closure-pressure in enforce, and relational guard per-category enforce.
+    // closure-pressure in enforce, and relational guard in shadow.
     .option("--pipeline-c-double-prime", "Run Pipeline C″ config for v27 launches")
     .option("--keep", "Keep Borg data dirs and trace files for inspection")
     .option("--real", "Use real Anthropic persona and overseer calls")

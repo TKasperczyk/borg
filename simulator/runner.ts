@@ -84,17 +84,7 @@ export const PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES = {
       commitment: { mode: "enforce" },
       closurePressure: { mode: "enforce" },
       relationalClaim: {
-        mode: {
-          perCategory: {
-            default: "shadow",
-            overrides: {
-              action_completion: "enforce",
-              authorship_claim: "enforce",
-              frame_assignment: "enforce",
-              self_correction: "enforce",
-            },
-          },
-        },
+        mode: "shadow",
       },
     },
   },
@@ -391,7 +381,7 @@ export class SimulatorRunner {
     if (this.options.pipelineCDoublePrime === true) {
       // eslint-disable-next-line no-console
       console.warn(
-        "[simulator] Pipeline C″ active: emission-tool finalizer on; commitment and closure-pressure enforce; relational guard per-category enforce.",
+        "[simulator] Pipeline C″ active: emission-tool finalizer on; commitment and closure-pressure enforce; relational guard shadow.",
       );
     }
 

@@ -81,17 +81,7 @@ const PIPELINES: readonly ReplayPipeline[] = [
     evidenceLedgerEnabled: true,
     emissionFinalizerEnabled: true,
     commitmentMode: "enforce",
-    relationalClaimMode: {
-      perCategory: {
-        default: "shadow",
-        overrides: {
-          action_completion: "enforce",
-          authorship_claim: "enforce",
-          frame_assignment: "enforce",
-          self_correction: "enforce",
-        },
-      },
-    },
+    relationalClaimMode: "shadow",
     closurePressureMode: "enforce",
   },
 ];
