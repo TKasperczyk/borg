@@ -287,6 +287,11 @@ describe("runFinalizer emission tools", () => {
       kind: "invalid_tool",
       toolName: "EmitSelfReport",
     });
+    if (result.decision.kind !== "invalid_tool") {
+      throw new Error(`Expected invalid_tool, got ${result.decision.kind}`);
+    }
+    expect(result.decision.reason).toContain("kind");
+    expect(result.decision.reason).toContain("persistence_class");
   });
 
   it("rejects parallel terminal emission tool calls", async () => {
