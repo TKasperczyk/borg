@@ -962,6 +962,9 @@ describe("EvidenceLedgerBuilder", () => {
     expect(ledger.transcriptIncluded).toBe(true);
     expect(ledger.transcriptCompacted).toBe(true);
     expect(ledger.transcriptOmittedReason).toBeUndefined();
+    expect(ledger.originalTranscriptTokenEstimate).toBeGreaterThan(1);
+    expect(ledger.compactedTranscriptEntryCount).toBe(3);
+    expect(ledger.rawPreservedUserTranscriptEntryCount).toBe(1);
     expect(transcriptEntries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

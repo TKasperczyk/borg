@@ -205,6 +205,9 @@ function makeEvidenceLedger(): EvidenceLedger {
     transcriptIncluded: false,
     transcriptCompacted: false,
     transcriptOmittedReason: "over_budget",
+    originalTranscriptTokenEstimate: 0,
+    compactedTranscriptEntryCount: 0,
+    rawPreservedUserTranscriptEntryCount: 0,
     estimatedTokens: 24,
   };
 }

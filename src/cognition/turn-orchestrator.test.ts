@@ -817,6 +817,10 @@ describe("TurnOrchestrator evidence ledger", () => {
         transcript_included: true,
         transcript_compacted: false,
         transcript_omitted_reason: null,
+        original_transcript_token_estimate: expect.any(Number),
+        compacted_transcript_token_estimate: expect.any(Number),
+        compacted_entry_count: 0,
+        raw_preserved_user_entry_count: 1,
       });
       expect(traceEvent?.entry_counts).toMatchObject({
         current_user_message: 1,

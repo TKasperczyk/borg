@@ -8,6 +8,9 @@ function makeLedger(): EvidenceLedger {
     transcriptIncluded: false,
     transcriptCompacted: false,
     transcriptOmittedReason: "over_budget",
+    originalTranscriptTokenEstimate: 0,
+    compactedTranscriptEntryCount: 0,
+    rawPreservedUserTranscriptEntryCount: 0,
     estimatedTokens: 42,
     sections: EVIDENCE_LEDGER_SECTION_DEFINITIONS.map((definition) => ({
       id: definition.id,

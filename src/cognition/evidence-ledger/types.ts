@@ -108,6 +108,9 @@ export type EvidenceLedger = {
   transcriptIncluded: boolean;
   transcriptCompacted: boolean;
   transcriptOmittedReason?: EvidenceLedgerTranscriptOmittedReason;
+  originalTranscriptTokenEstimate: number;
+  compactedTranscriptEntryCount: number;
+  rawPreservedUserTranscriptEntryCount: number;
   estimatedTokens: number;
 };
 
@@ -117,5 +120,9 @@ export type EvidenceLedgerTraceSummary = {
   transcriptIncluded: boolean;
   transcriptCompacted: boolean;
   transcriptOmittedReason?: EvidenceLedgerTranscriptOmittedReason;
+  originalTranscriptTokenEstimate: number;
+  compactedTranscriptTokenEstimate: number;
+  compactedEntryCount: number;
+  rawPreservedUserEntryCount: number;
   totalEstimatedTokens: number;
 };

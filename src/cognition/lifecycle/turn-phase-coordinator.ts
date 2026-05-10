@@ -1173,6 +1173,10 @@ export class TurnPhaseCoordinator {
         transcript_included: traceSummary.transcriptIncluded,
         transcript_compacted: traceSummary.transcriptCompacted,
         transcript_omitted_reason: traceSummary.transcriptOmittedReason ?? null,
+        original_transcript_token_estimate: traceSummary.originalTranscriptTokenEstimate,
+        compacted_transcript_token_estimate: traceSummary.compactedTranscriptTokenEstimate,
+        compacted_entry_count: traceSummary.compactedEntryCount,
+        raw_preserved_user_entry_count: traceSummary.rawPreservedUserEntryCount,
         total_estimated_tokens: traceSummary.totalEstimatedTokens,
         estimated_tokens_by_section: toTraceJsonValue(traceSummary.estimatedTokensBySection),
       });

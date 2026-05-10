@@ -39,6 +39,7 @@ import {
   type EvidenceLedgerSessionScope,
   type EvidenceLedgerSourceType,
   type EvidenceLedgerTaint,
+  type EvidenceLedgerTraceSummary,
 } from "./types.js";
 
 const CURRENT_USER_TRUST_RANK = 100;
@@ -125,6 +126,9 @@ type TranscriptCompactionResult = {
   entries: EvidenceLedgerEntry[];
   rawStreamIds: Set<string>;
   compacted: boolean;
+  originalTokenEstimate: number;
+  compactedEntryCount: number;
+  rawPreservedUserEntryCount: number;
 };
 
 function createSectionBuckets(): SectionBuckets {
@@ -373,6 +377,9 @@ function compactTranscriptEntries(input: {
       entries: input.entries.map((entry) => transcriptRawEntry(entry, input.resolver)),
       rawStreamIds: new Set(input.entries.map((entry) => entry.id)),
       compacted: false,
+      originalTokenEstimate: transcriptTokens,
+      compactedEntryCount: 0,
+      rawPreservedUserEntryCount: input.entries.filter((entry) => entry.kind === "user_msg").length,
     };
   }
 
@@ -380,6 +387,8 @@ function compactTranscriptEntries(input: {
   const renderedEntries: EvidenceLedgerEntry[] = [];
   const rawStreamIds = new Set<string>();
   let compactedRun: TranscriptStreamEntry[] = [];
+  let compactedEntryCount = 0;
+  let rawPreservedUserEntryCount = 0;
 
   const flushCompactedRun = () => {
     if (compactedRun.length === 0) {
@@ -387,6 +396,7 @@ function compactTranscriptEntries(input: {
     }
 
     renderedEntries.push(compactedTranscriptRunEntry(compactedRun, input.resolver));
+    compactedEntryCount += compactedRun.length;
     compactedRun = [];
   };
 
@@ -395,12 +405,16 @@ function compactTranscriptEntries(input: {
       flushCompactedRun();
       renderedEntries.push(transcriptRawEntry(entry, input.resolver));
       rawStreamIds.add(entry.id);
+      if (entry.kind === "user_msg") {
+        rawPreservedUserEntryCount += 1;
+      }
       continue;
     }
 
     if (entry.id === input.currentUserEntryId) {
       flushCompactedRun();
       renderedEntries.push(compactedCurrentUserTranscriptEntry(entry, input.resolver));
+      compactedEntryCount += 1;
       continue;
     }
 
@@ -413,6 +427,9 @@ function compactTranscriptEntries(input: {
     entries: renderedEntries,
     rawStreamIds,
     compacted: true,
+    originalTokenEstimate: transcriptTokens,
+    compactedEntryCount,
+    rawPreservedUserEntryCount,
   };
 }
 
@@ -1176,22 +1193,28 @@ function estimateLedgerTokens(sections: readonly EvidenceLedgerSection[]): numbe
   return text.length === 0 ? 0 : estimatePromptTokens(text);
 }
 
-export function summarizeEvidenceLedgerTrace(ledger: EvidenceLedger) {
+export function summarizeEvidenceLedgerTrace(ledger: EvidenceLedger): EvidenceLedgerTraceSummary {
   // Sprint 8d.3: per-section token accounting. v36 mean input tokens were
   // ~113k -- without per-section breakdown there is no way to attribute
   // that load to specific bands. Surfacing it in the trace lets us tell
   // ledger-side bloat (transcript, action records) apart from
   // retrieval-side bloat (semantic walks, episodes).
+  const estimatedTokensBySection = Object.fromEntries(
+    ledger.sections.map((section) => [section.id, estimateSectionTokens(section)]),
+  ) as Record<EvidenceLedgerSectionId, number>;
+
   return {
     entryCountsBySection: Object.fromEntries(
       ledger.sections.map((section) => [section.id, section.entries.length]),
     ) as Record<EvidenceLedgerSectionId, number>,
-    estimatedTokensBySection: Object.fromEntries(
-      ledger.sections.map((section) => [section.id, estimateSectionTokens(section)]),
-    ) as Record<EvidenceLedgerSectionId, number>,
+    estimatedTokensBySection,
     transcriptIncluded: ledger.transcriptIncluded,
     transcriptCompacted: ledger.transcriptCompacted,
     transcriptOmittedReason: ledger.transcriptOmittedReason,
+    originalTranscriptTokenEstimate: ledger.originalTranscriptTokenEstimate,
+    compactedTranscriptTokenEstimate: estimatedTokensBySection.current_session_transcript,
+    compactedEntryCount: ledger.compactedTranscriptEntryCount,
+    rawPreservedUserEntryCount: ledger.rawPreservedUserTranscriptEntryCount,
     totalEstimatedTokens: ledger.estimatedTokens,
   };
 }
@@ -1271,6 +1294,9 @@ export class EvidenceLedgerBuilder {
       sections: orderedSections,
       transcriptIncluded: true,
       transcriptCompacted: transcript.compacted,
+      originalTranscriptTokenEstimate: transcript.originalTokenEstimate,
+      compactedTranscriptEntryCount: transcript.compactedEntryCount,
+      rawPreservedUserTranscriptEntryCount: transcript.rawPreservedUserEntryCount,
       estimatedTokens: estimateLedgerTokens(orderedSections),
     };
   }
