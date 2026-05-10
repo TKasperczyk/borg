@@ -12,12 +12,26 @@ import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
 
 const DEFAULT_DATA_DIR = "~/.borg";
+
+export function expandPath(pathLike: string): string {
+  if (pathLike === "~") {
+    return homedir();
+  }
+
+  if (pathLike.startsWith("~/")) {
+    return join(homedir(), pathLike.slice(2));
+  }
+
+  return isAbsolute(pathLike) ? pathLike : resolve(pathLike);
+}
+
 const anthropicAuthModeSchema = z.enum(["auto", "oauth", "api-key"]);
 export const postGenerationGuardModeSchema = z.enum(["enforce", "shadow"]);
-const postGenerationGuardConfigSchema = z.object({
-  mode: postGenerationGuardModeSchema,
-});
-const postGenerationGuardFileConfigSchema = postGenerationGuardConfigSchema.partial();
+const postGenerationGuardConfigSchema = z
+  .object({
+    mode: postGenerationGuardModeSchema.default("enforce"),
+  })
+  .prefault({});
 export const relationalClaimGuardModeSchema = z.union([
   postGenerationGuardModeSchema,
   z
@@ -33,39 +47,51 @@ export const relationalClaimGuardModeSchema = z.union([
     })
     .strict(),
 ]);
-const relationalClaimGuardConfigSchema = z.object({
-  mode: relationalClaimGuardModeSchema,
-});
-const relationalClaimGuardFileConfigSchema = relationalClaimGuardConfigSchema.partial();
-const postGenerationGuardsFileConfigSchema = z
+const relationalClaimGuardConfigSchema = z
   .object({
-    commitment: postGenerationGuardFileConfigSchema.optional(),
-    relationalClaim: relationalClaimGuardFileConfigSchema.optional(),
-    closurePressure: postGenerationGuardFileConfigSchema.optional(),
+    mode: relationalClaimGuardModeSchema.default("enforce"),
   })
-  .partial();
-const evidenceLedgerConfigSchema = z.object({
-  enabled: z.boolean(),
-  currentSessionTranscriptTokenBudget: z.number().int().positive(),
-});
-const evidenceLedgerFileConfigSchema = evidenceLedgerConfigSchema.partial();
-const cognitionThinkingConfigSchema = z.object({
-  enabled: z.boolean(),
-  budget_tokens: z.number().int().positive(),
-});
-const cognitionThinkingFileConfigSchema = cognitionThinkingConfigSchema.partial();
-const cognitionConfigSchema = z.object({
-  thinking: cognitionThinkingConfigSchema,
-});
-const cognitionFileConfigSchema = z
+  .prefault({});
+const evidenceLedgerConfigSchema = z
   .object({
-    thinking: cognitionThinkingFileConfigSchema.optional(),
+    enabled: z.boolean().default(false),
+    currentSessionTranscriptTokenBudget: z.number().int().positive().default(50_000),
   })
-  .partial();
-const manifestFinalizerConfigSchema = z.object({
-  enabled: z.boolean(),
-});
-const manifestFinalizerFileConfigSchema = manifestFinalizerConfigSchema.partial();
+  .prefault({});
+const cognitionThinkingConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    budget_tokens: z.number().int().positive().default(4096),
+  })
+  .prefault({});
+const cognitionConfigSchema = z
+  .object({
+    thinking: cognitionThinkingConfigSchema,
+  })
+  .prefault({});
+const manifestFinalizerConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+  })
+  .prefault({});
+const postGenerationGuardsConfigSchema = z
+  .object({
+    commitment: postGenerationGuardConfigSchema,
+    relationalClaim: relationalClaimGuardConfigSchema,
+    closurePressure: postGenerationGuardConfigSchema,
+  })
+  .prefault({});
+const maintenanceProcessSchema = z.enum([
+  "consolidator",
+  "reflector",
+  "semantic-extractor",
+  "curator",
+  "overseer",
+  "ruminator",
+  "self-narrator",
+  "procedural-synthesizer",
+  "belief-reviser",
+]);
 
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
 export type RelationalClaimGuardMode =
@@ -76,810 +102,338 @@ export type RelationalClaimGuardMode =
         overrides?: Partial<Record<RelationalClaimKind, PostGenerationGuardMode>>;
       };
     };
-const configFileSchema = z
+const anthropicModelsConfigSchema = z
   .object({
-    dataDir: z.string().min(1).optional(),
-    defaultUser: z.string().min(1).optional(),
-    host_capabilities: z.string().min(1).optional(),
-    perception: z
-      .object({
-        useLlmFallback: z.boolean().optional(),
-        modeWhenLlmAbsent: z
-          .enum(["problem_solving", "relational", "reflective", "idle"])
-          .optional(),
-      })
-      .partial()
-      .optional(),
-    affective: z
-      .object({
-        useLlmFallback: z.boolean().optional(),
-        incomingMoodWeight: z.number().min(0).max(1).optional(),
-        moodHistoryRetentionDays: z.number().positive().optional(),
-        moodHalfLifeHours: z.number().positive().optional(),
-      })
-      .partial()
-      .optional(),
-    embedding: z
-      .object({
-        baseUrl: z.string().url().optional(),
-        apiKey: z.string().min(1).optional(),
-        model: z.string().min(1).optional(),
-        dims: z.number().int().positive().optional(),
-      })
-      .partial()
-      .optional(),
-    anthropic: z
-      .object({
-        auth: anthropicAuthModeSchema.optional(),
-        apiKey: z.string().min(1).optional(),
-        models: z
-          .object({
-            cognition: z.string().min(1).optional(),
-            background: z.string().min(1).optional(),
-            extraction: z.string().min(1).optional(),
-            recallExpansion: z.string().min(1).optional(),
-          })
-          .partial()
-          .optional(),
-      })
-      .partial()
-      .optional(),
-    procedural: z
-      .object({
-        skillSelectionMinSimilarity: z.number().min(0).max(1).optional(),
-      })
-      .partial()
-      .optional(),
-    retrieval: z
-      .object({
-        semantic: z
-          .object({
-            underReviewMultiplier: z.number().min(0).max(1).optional(),
-          })
-          .partial()
-          .optional(),
-      })
-      .partial()
-      .optional(),
-    generation: z
-      .object({
-        discourseStateHardCapTurns: z.number().int().positive().optional(),
-        cognition: cognitionFileConfigSchema.optional(),
-        evidenceLedger: evidenceLedgerFileConfigSchema.optional(),
-        manifestFinalizer: manifestFinalizerFileConfigSchema.optional(),
-        postGenerationGuards: postGenerationGuardsFileConfigSchema.optional(),
-      })
-      .partial()
-      .optional(),
-    streamIngestion: z
-      .object({
-        preTurnCatchup: z
-          .object({
-            maxEntries: z.number().int().positive().optional(),
-          })
-          .partial()
-          .optional(),
-      })
-      .partial()
-      .optional(),
-    executive: z
-      .object({
-        goalFocusThreshold: z.number().min(0).max(1).optional(),
-      })
-      .partial()
-      .optional(),
-    offline: z
-      .object({
-        consolidator: z
-          .object({
-            enabled: z.boolean().optional(),
-            similarityThreshold: z.number().positive().optional(),
-            minClusterSize: z.number().int().positive().optional(),
-            maxClustersPerRun: z.number().int().positive().optional(),
-            budget: z.number().int().positive().optional(),
-          })
-          .partial()
-          .optional(),
-        reflector: z
-          .object({
-            enabled: z.boolean().optional(),
-            minSupport: z.number().int().positive().optional(),
-            goalSimilarityThreshold: z.number().min(0).max(1).optional(),
-            ceilingConfidence: z.number().positive().max(0.5).optional(),
-            maxInsightsPerRun: z.number().int().positive().optional(),
-            budget: z.number().int().positive().optional(),
-          })
-          .partial()
-          .optional(),
-        semanticExtractor: z
-          .object({
-            enabled: z.boolean().optional(),
-            maxEpisodesPerRun: z.number().int().positive().optional(),
-            budget: z.number().int().positive().optional(),
-          })
-          .partial()
-          .optional(),
-        proceduralSynthesizer: z
-          .object({
-            enabled: z.boolean().optional(),
-            minSupport: z.number().int().positive().optional(),
-            maxSkillsPerRun: z.number().int().positive().optional(),
-            dedupThreshold: z.number().min(0).max(1).optional(),
-            minContextAttemptsForSplit: z.number().int().positive().optional(),
-            minDivergenceForSplit: z.number().min(0).max(1).optional(),
-            splitCooldownDays: z.number().positive().optional(),
-            splitClaimStaleSec: z.number().int().positive().optional(),
-            maxSplitParseFailures: z.number().int().positive().optional(),
-            budget: z.number().int().positive().optional(),
-          })
-          .partial()
-          .optional(),
-        curator: z
-          .object({
-            enabled: z.boolean().optional(),
-            t1Heat: z.number().positive().optional(),
-            t2Heat: z.number().positive().optional(),
-            t3DemoteHeat: z.number().positive().optional(),
-            archiveAgeDays: z.number().positive().optional(),
-            archiveMinHeat: z.number().nonnegative().optional(),
-            episodeDecayIntervalMs: z.number().positive().optional(),
-            episodeSalienceHalfLifeDays: z.number().positive().optional(),
-            episodeHeatHalfLifeDays: z.number().positive().optional(),
-            traitHalfLifeDays: z.number().positive().optional(),
-            retrievalLogRetentionDays: z.number().positive().optional(),
-          })
-          .partial()
-          .optional(),
-        overseer: z
-          .object({
-            enabled: z.boolean().optional(),
-            lookbackHours: z.number().positive().optional(),
-            maxChecksPerRun: z.number().int().positive().optional(),
-            budget: z.number().int().positive().nullable().optional(),
-          })
-          .partial()
-          .optional(),
-        ruminator: z
-          .object({
-            enabled: z.boolean().optional(),
-            maxQuestionsPerRun: z.number().int().positive().optional(),
-            resolveConfidenceThreshold: z.number().min(0).max(1).optional(),
-            stalenessDays: z.number().positive().optional(),
-            stalenessTicks: z.number().int().positive().nullable().optional(),
-            budget: z.number().int().positive().optional(),
-            perQuestionBudget: z.number().int().positive().optional(),
-          })
-          .partial()
-          .optional(),
-        selfNarrator: z
-          .object({
-            enabled: z.boolean().optional(),
-            budget: z.number().int().positive().optional(),
-            maxObservationsPerRun: z.number().int().positive().optional(),
-            minSupportEpisodes: z.number().int().positive().optional(),
-            cadenceHintDays: z.number().positive().optional(),
-          })
-          .partial()
-          .optional(),
-        beliefReviser: z
-          .object({
-            enabled: z.boolean().optional(),
-            confidenceDropMultiplier: z.number().min(0).max(1).optional(),
-            confidenceFloor: z.number().min(0).max(1).optional(),
-            regradeBatchSize: z.number().int().positive().optional(),
-            maxEventsPerRun: z.number().int().positive().optional(),
-            maxReviewsPerRun: z.number().int().positive().optional(),
-            claimStaleSec: z.number().positive().optional(),
-            maxParseFailures: z.number().int().positive().optional(),
-            maxLlmCalls: z.number().int().positive().optional(),
-            consecutiveParseFailureLimit: z.number().int().positive().optional(),
-          })
-          .partial()
-          .optional(),
-      })
-      .partial()
-      .optional(),
-    maintenance: z
-      .object({
-        enabled: z.boolean().optional(),
-        lightIntervalMs: z.number().int().positive().optional(),
-        heavyIntervalMs: z.number().int().positive().optional(),
-        lightProcesses: z
-          .array(
-            z.enum([
-              "consolidator",
-              "reflector",
-              "semantic-extractor",
-              "curator",
-              "overseer",
-              "ruminator",
-              "self-narrator",
-              "procedural-synthesizer",
-              "belief-reviser",
-            ]),
-          )
-          .optional(),
-        heavyProcesses: z
-          .array(
-            z.enum([
-              "consolidator",
-              "reflector",
-              "semantic-extractor",
-              "curator",
-              "overseer",
-              "ruminator",
-              "self-narrator",
-              "procedural-synthesizer",
-              "belief-reviser",
-            ]),
-          )
-          .optional(),
-      })
-      .partial()
-      .optional(),
-    autonomy: z
-      .object({
-        enabled: z.boolean().optional(),
-        intervalMs: z.number().int().positive().optional(),
-        maxWakesPerWindow: z.number().int().positive().optional(),
-        budgetWindowMs: z.number().int().positive().optional(),
-        executiveFocus: z
-          .object({
-            enabled: z.boolean().optional(),
-            stalenessSec: z.number().int().positive().optional(),
-            dueLeadSec: z.number().int().nonnegative().optional(),
-            wakeCooldownSec: z.number().int().nonnegative().optional(),
-          })
-          .partial()
-          .optional(),
-        triggers: z
-          .object({
-            commitmentExpiring: z
-              .object({
-                enabled: z.boolean().optional(),
-                lookaheadMs: z.number().int().positive().optional(),
-              })
-              .partial()
-              .optional(),
-            openQuestionDormant: z
-              .object({
-                enabled: z.boolean().optional(),
-                dormantMs: z.number().int().positive().optional(),
-              })
-              .partial()
-              .optional(),
-            scheduledReflection: z
-              .object({
-                enabled: z.boolean().optional(),
-                intervalMs: z.number().int().positive().optional(),
-              })
-              .partial()
-              .optional(),
-            goalFollowupDue: z
-              .object({
-                enabled: z.boolean().optional(),
-                lookaheadMs: z.number().int().positive().optional(),
-                staleMs: z.number().int().positive().optional(),
-              })
-              .partial()
-              .optional(),
-          })
-          .partial()
-          .optional(),
-        conditions: z
-          .object({
-            commitmentRevoked: z
-              .object({
-                enabled: z.boolean().optional(),
-              })
-              .partial()
-              .optional(),
-            moodValenceDrop: z
-              .object({
-                enabled: z.boolean().optional(),
-                threshold: z.number().min(-1).max(1).optional(),
-                windowN: z.number().int().positive().optional(),
-                activationPeriodMs: z.number().int().positive().optional(),
-              })
-              .partial()
-              .optional(),
-            openQuestionUrgencyBump: z
-              .object({
-                enabled: z.boolean().optional(),
-                threshold: z.number().min(0).max(1).optional(),
-              })
-              .partial()
-              .optional(),
-          })
-          .partial()
-          .optional(),
-      })
-      .partial()
-      .optional(),
+    // The main cognition/extraction/background slots default to Opus 4.7.
+    // Recall expansion is a small structured fanout task and has its own
+    // Haiku slot so it can stay fast without reusing background.
+    cognition: z.string().min(1).default("claude-opus-4-7"),
+    background: z.string().min(1).default("claude-opus-4-7"),
+    extraction: z.string().min(1).default("claude-opus-4-7"),
+    recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
   })
-  .partial();
+  .prefault({});
 
-export const configSchema = z.object({
-  dataDir: z.string().min(1),
-  defaultUser: z.string().min(1).optional(),
-  host_capabilities: z.string().min(1),
-  perception: z.object({
-    useLlmFallback: z.boolean(),
-    modeWhenLlmAbsent: z.enum(["problem_solving", "relational", "reflective", "idle"]).optional(),
-  }),
-  affective: z.object({
-    useLlmFallback: z.boolean(),
-    incomingMoodWeight: z.number().min(0).max(1),
-    moodHistoryRetentionDays: z.number().positive(),
-    moodHalfLifeHours: z.number().positive(),
-  }),
-  embedding: z.object({
-    baseUrl: z.string().url(),
+const anthropicConfigSchema = z
+  .object({
+    auth: anthropicAuthModeSchema.default("auto"),
     apiKey: z.string().min(1).optional(),
-    model: z.string().min(1),
-    dims: z.number().int().positive(),
-  }),
-  anthropic: z
+    models: anthropicModelsConfigSchema,
+  })
+  .prefault({});
+
+const configBaseSchema = z.object({
+  dataDir: z.string().min(1).default(DEFAULT_DATA_DIR).transform(expandPath),
+  defaultUser: z.string().min(1).optional(),
+  host_capabilities: z.string().min(1).default(DEFAULT_HOST_CAPABILITIES_SECTION),
+  perception: z
     .object({
-      auth: anthropicAuthModeSchema,
-      apiKey: z.string().min(1).optional(),
-      models: z.object({
-        cognition: z.string().min(1),
-        background: z.string().min(1),
-        extraction: z.string().min(1),
-        recallExpansion: z.string().min(1),
-      }),
+      useLlmFallback: z.boolean().default(true),
+      modeWhenLlmAbsent: z.enum(["problem_solving", "relational", "reflective", "idle"]).optional(),
     })
-    .superRefine((value, context) => {
-      if (value.auth === "api-key" && value.apiKey === undefined) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Anthropic API key must be configured when anthropic.auth is api-key",
-          path: ["apiKey"],
-        });
-      }
-    }),
-  procedural: z.object({
-    skillSelectionMinSimilarity: z.number().min(0).max(1),
+    .prefault({}),
+  affective: z
+    .object({
+      // Affective perception uses the background model as the primary classifier
+      // when configured; heuristics are the offline/test fallback path.
+      useLlmFallback: z.boolean().default(true),
+      incomingMoodWeight: z.number().min(0).max(1).default(0.3),
+      moodHistoryRetentionDays: z.number().positive().default(90),
+      moodHalfLifeHours: z.number().positive().default(24),
+    })
+    .prefault({}),
+  embedding: z
+    .object({
+      baseUrl: z.string().url().default("http://localhost:1234/v1"),
+      apiKey: z.string().min(1).default("lm-studio"),
+      model: z.string().min(1).default("text-embedding-qwen3-embedding-8b"),
+      dims: z.number().int().positive().default(4096),
+    })
+    .prefault({}),
+  anthropic: anthropicConfigSchema,
+  procedural: z
+    .object({
+      skillSelectionMinSimilarity: z.number().min(0).max(1).default(0.5),
+    })
+    .prefault({}),
+  retrieval: z
+    .object({
+      semantic: z
+        .object({
+          underReviewMultiplier: z.number().min(0).max(1).default(0.5),
+        })
+        .prefault({}),
+    })
+    .prefault({}),
+  generation: z
+    .object({
+      discourseStateHardCapTurns: z.number().int().positive().default(50),
+      cognition: cognitionConfigSchema,
+      evidenceLedger: evidenceLedgerConfigSchema,
+      manifestFinalizer: manifestFinalizerConfigSchema,
+      postGenerationGuards: postGenerationGuardsConfigSchema,
+    })
+    .prefault({}),
+  streamIngestion: z
+    .object({
+      preTurnCatchup: z
+        .object({
+          maxEntries: z.number().int().positive().default(100),
+        })
+        .prefault({}),
+    })
+    .prefault({}),
+  executive: z
+    .object({
+      goalFocusThreshold: z.number().min(0).max(1).default(DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD),
+    })
+    .prefault({}),
+  offline: z
+    .object({
+      consolidator: z
+        .object({
+          enabled: z.boolean().default(true),
+          similarityThreshold: z.number().positive().default(0.82),
+          minClusterSize: z.number().int().positive().default(2),
+          maxClustersPerRun: z.number().int().positive().default(2),
+          budget: z.number().int().positive().default(60_000),
+        })
+        .prefault({}),
+      reflector: z
+        .object({
+          enabled: z.boolean().default(true),
+          minSupport: z.number().int().positive().default(3),
+          goalSimilarityThreshold: z.number().min(0).max(1).default(0.82),
+          ceilingConfidence: z.number().positive().max(0.5).default(0.5),
+          maxInsightsPerRun: z.number().int().positive().default(2),
+          budget: z.number().int().positive().default(60_000),
+        })
+        .prefault({}),
+      semanticExtractor: z
+        .object({
+          enabled: z.boolean().default(true),
+          maxEpisodesPerRun: z.number().int().positive().default(8),
+          budget: z.number().int().positive().default(60_000),
+        })
+        .prefault({}),
+      proceduralSynthesizer: z
+        .object({
+          enabled: z.boolean().default(true),
+          minSupport: z.number().int().positive().default(2),
+          maxSkillsPerRun: z.number().int().positive().default(3),
+          dedupThreshold: z.number().min(0).max(1).default(0.88),
+          minContextAttemptsForSplit: z.number().int().positive().default(5),
+          minDivergenceForSplit: z.number().min(0).max(1).default(0.3),
+          splitCooldownDays: z.number().positive().default(7),
+          splitClaimStaleSec: z.number().int().positive().default(1_800),
+          maxSplitParseFailures: z.number().int().positive().default(3),
+          budget: z.number().int().positive().default(4_000),
+        })
+        .prefault({}),
+      curator: z
+        .object({
+          enabled: z.boolean().default(true),
+          t1Heat: z.number().positive().default(5),
+          t2Heat: z.number().positive().default(15),
+          t3DemoteHeat: z.number().positive().default(3),
+          archiveAgeDays: z.number().positive().default(45),
+          archiveMinHeat: z.number().nonnegative().default(1),
+          episodeDecayIntervalMs: z
+            .number()
+            .positive()
+            .default(24 * 60 * 60 * 1_000),
+          episodeSalienceHalfLifeDays: z.number().positive().default(30),
+          episodeHeatHalfLifeDays: z.number().positive().default(7),
+          traitHalfLifeDays: z.number().positive().default(30),
+          retrievalLogRetentionDays: z.number().positive().default(90),
+        })
+        .prefault({}),
+      overseer: z
+        .object({
+          enabled: z.boolean().default(true),
+          lookbackHours: z.number().positive().default(24),
+          maxChecksPerRun: z.number().int().positive().default(8),
+          budget: z.number().int().positive().nullable().default(null),
+        })
+        .prefault({}),
+      ruminator: z
+        .object({
+          enabled: z.boolean().default(true),
+          maxQuestionsPerRun: z.number().int().positive().default(3),
+          // Threshold applies to RetrievalConfidence.overall, a conservative
+          // epistemic evidence-quality signal, not the relevance ranking score.
+          resolveConfidenceThreshold: z.number().min(0).max(1).default(0.55),
+          stalenessDays: z.number().positive().default(30),
+          stalenessTicks: z.number().int().positive().nullable().default(null),
+          budget: z.number().int().positive().default(6_000),
+          perQuestionBudget: z.number().int().positive().default(8_000),
+        })
+        .prefault({}),
+      selfNarrator: z
+        .object({
+          enabled: z.boolean().default(true),
+          budget: z.number().int().positive().default(80_000),
+          maxObservationsPerRun: z.number().int().positive().default(4),
+          minSupportEpisodes: z.number().int().positive().default(2),
+          cadenceHintDays: z.number().positive().default(7),
+        })
+        .prefault({}),
+      beliefReviser: z
+        .object({
+          enabled: z.boolean().default(true),
+          confidenceDropMultiplier: z.number().min(0).max(1).default(0.5),
+          confidenceFloor: z.number().min(0).max(1).default(0.05),
+          regradeBatchSize: z.number().int().positive().default(10),
+          maxEventsPerRun: z.number().int().positive().default(32),
+          maxReviewsPerRun: z.number().int().positive().default(128),
+          claimStaleSec: z.number().positive().default(600),
+          maxParseFailures: z.number().int().positive().default(3),
+          // Call-count cap for regrade LLM work; run `budget` remains token-based.
+          maxLlmCalls: z.number().int().positive().default(20),
+          consecutiveParseFailureLimit: z.number().int().positive().default(5),
+        })
+        .prefault({}),
+    })
+    .prefault({}),
+  maintenance: z
+    .object({
+      // Maintenance is core to the architecture (cold paths do real work --
+      // semantic insight extraction, contradiction sweeps, decay/promotion,
+      // belief revision). Default on so a fresh deployment actually runs the
+      // dream cycle once a runtime (daemon, etc.) calls scheduler.start().
+      enabled: z.boolean().default(true),
+      lightIntervalMs: z.number().int().positive().default(14_400_000),
+      heavyIntervalMs: z.number().int().positive().default(86_400_000),
+      lightProcesses: z
+        .array(maintenanceProcessSchema)
+        .default(["consolidator", "semantic-extractor", "curator"]),
+      heavyProcesses: z
+        .array(maintenanceProcessSchema)
+        .default([
+          "reflector",
+          "overseer",
+          "ruminator",
+          "self-narrator",
+          "procedural-synthesizer",
+          "belief-reviser",
+        ]),
+    })
+    .prefault({}),
+  autonomy: z
+    .object({
+      // Self-initiated cognition is part of the architecture's "autonomous
+      // being" framing. Default on so a fresh deployment exercises the
+      // wake-source triggers (commitment expiring, open-question dormant,
+      // goal follow-up due, executive-focus due) once a runtime (daemon, ...)
+      // calls scheduler.start(). Library callers stay in control because
+      // start() is still explicit. maxWakesPerWindow caps the cost.
+      enabled: z.boolean().default(true),
+      intervalMs: z.number().int().positive().default(60_000),
+      maxWakesPerWindow: z.number().int().positive().default(6),
+      budgetWindowMs: z.number().int().positive().default(86_400_000),
+      executiveFocus: z
+        .object({
+          // Default on alongside autonomy so a stale selected goal or due
+          // executive step actually causes a self-initiated turn instead of
+          // sitting silently until the next user message.
+          enabled: z.boolean().default(true),
+          stalenessSec: z.number().int().positive().default(86_400),
+          dueLeadSec: z.number().int().nonnegative().default(0),
+          wakeCooldownSec: z.number().int().nonnegative().default(3_600),
+        })
+        .prefault({}),
+      triggers: z
+        .object({
+          commitmentExpiring: z
+            .object({
+              enabled: z.boolean().default(true),
+              lookaheadMs: z.number().int().positive().default(86_400_000),
+            })
+            .prefault({}),
+          openQuestionDormant: z
+            .object({
+              enabled: z.boolean().default(true),
+              dormantMs: z.number().int().positive().default(604_800_000),
+            })
+            .prefault({}),
+          scheduledReflection: z
+            .object({
+              enabled: z.boolean().default(false),
+              intervalMs: z.number().int().positive().default(14_400_000),
+            })
+            .prefault({}),
+          goalFollowupDue: z
+            .object({
+              enabled: z.boolean().default(true),
+              lookaheadMs: z.number().int().positive().default(604_800_000),
+              staleMs: z.number().int().positive().default(1_209_600_000),
+            })
+            .prefault({}),
+        })
+        .prefault({}),
+      conditions: z
+        .object({
+          commitmentRevoked: z
+            .object({
+              enabled: z.boolean().default(true),
+            })
+            .prefault({}),
+          moodValenceDrop: z
+            .object({
+              enabled: z.boolean().default(false),
+              threshold: z.number().min(-1).max(1).default(-0.5),
+              windowN: z.number().int().positive().default(5),
+              activationPeriodMs: z.number().int().positive().default(86_400_000),
+            })
+            .prefault({}),
+          openQuestionUrgencyBump: z
+            .object({
+              enabled: z.boolean().default(true),
+              threshold: z.number().min(0).max(1).default(0.9),
+            })
+            .prefault({}),
+        })
+        .prefault({}),
+    })
+    .prefault({}),
+});
+
+const configOutputSchema = configBaseSchema.transform(
+  (config): z.output<typeof configBaseSchema> => ({
+    defaultUser: undefined,
+    ...config,
+    anthropic: {
+      apiKey: undefined,
+      ...config.anthropic,
+    },
   }),
-  retrieval: z.object({
-    semantic: z.object({
-      underReviewMultiplier: z.number().min(0).max(1),
-    }),
-  }),
-  generation: z.object({
-    discourseStateHardCapTurns: z.number().int().positive(),
-    cognition: cognitionConfigSchema,
-    evidenceLedger: evidenceLedgerConfigSchema,
-    manifestFinalizer: manifestFinalizerConfigSchema,
-    postGenerationGuards: z.object({
-      commitment: postGenerationGuardConfigSchema,
-      relationalClaim: relationalClaimGuardConfigSchema,
-      closurePressure: postGenerationGuardConfigSchema,
-    }),
-  }),
-  streamIngestion: z.object({
-    preTurnCatchup: z.object({
-      maxEntries: z.number().int().positive(),
-    }),
-  }),
-  executive: z.object({
-    goalFocusThreshold: z.number().min(0).max(1),
-  }),
-  offline: z.object({
-    consolidator: z.object({
-      enabled: z.boolean(),
-      similarityThreshold: z.number().positive(),
-      minClusterSize: z.number().int().positive(),
-      maxClustersPerRun: z.number().int().positive(),
-      budget: z.number().int().positive(),
-    }),
-    reflector: z.object({
-      enabled: z.boolean(),
-      minSupport: z.number().int().positive(),
-      goalSimilarityThreshold: z.number().min(0).max(1),
-      ceilingConfidence: z.number().positive().max(0.5),
-      maxInsightsPerRun: z.number().int().positive(),
-      budget: z.number().int().positive(),
-    }),
-    semanticExtractor: z.object({
-      enabled: z.boolean(),
-      maxEpisodesPerRun: z.number().int().positive(),
-      budget: z.number().int().positive(),
-    }),
-    proceduralSynthesizer: z.object({
-      enabled: z.boolean(),
-      minSupport: z.number().int().positive(),
-      maxSkillsPerRun: z.number().int().positive(),
-      dedupThreshold: z.number().min(0).max(1),
-      minContextAttemptsForSplit: z.number().int().positive(),
-      minDivergenceForSplit: z.number().min(0).max(1),
-      splitCooldownDays: z.number().positive(),
-      splitClaimStaleSec: z.number().int().positive(),
-      maxSplitParseFailures: z.number().int().positive(),
-      budget: z.number().int().positive(),
-    }),
-    curator: z.object({
-      enabled: z.boolean(),
-      t1Heat: z.number().positive(),
-      t2Heat: z.number().positive(),
-      t3DemoteHeat: z.number().positive(),
-      archiveAgeDays: z.number().positive(),
-      archiveMinHeat: z.number().nonnegative(),
-      episodeDecayIntervalMs: z.number().positive(),
-      episodeSalienceHalfLifeDays: z.number().positive(),
-      episodeHeatHalfLifeDays: z.number().positive(),
-      traitHalfLifeDays: z.number().positive(),
-      retrievalLogRetentionDays: z.number().positive(),
-    }),
-    overseer: z.object({
-      enabled: z.boolean(),
-      lookbackHours: z.number().positive(),
-      maxChecksPerRun: z.number().int().positive(),
-      budget: z.number().int().positive().nullable(),
-    }),
-    ruminator: z.object({
-      enabled: z.boolean(),
-      maxQuestionsPerRun: z.number().int().positive(),
-      resolveConfidenceThreshold: z.number().min(0).max(1),
-      stalenessDays: z.number().positive(),
-      stalenessTicks: z.number().int().positive().nullable(),
-      budget: z.number().int().positive(),
-      perQuestionBudget: z.number().int().positive(),
-    }),
-    selfNarrator: z.object({
-      enabled: z.boolean(),
-      budget: z.number().int().positive(),
-      maxObservationsPerRun: z.number().int().positive(),
-      minSupportEpisodes: z.number().int().positive(),
-      cadenceHintDays: z.number().positive(),
-    }),
-    beliefReviser: z.object({
-      enabled: z.boolean(),
-      confidenceDropMultiplier: z.number().min(0).max(1),
-      confidenceFloor: z.number().min(0).max(1),
-      regradeBatchSize: z.number().int().positive(),
-      maxEventsPerRun: z.number().int().positive(),
-      maxReviewsPerRun: z.number().int().positive(),
-      claimStaleSec: z.number().positive(),
-      maxParseFailures: z.number().int().positive(),
-      maxLlmCalls: z.number().int().positive(),
-      consecutiveParseFailureLimit: z.number().int().positive(),
-    }),
-  }),
-  maintenance: z.object({
-    enabled: z.boolean(),
-    lightIntervalMs: z.number().int().positive(),
-    heavyIntervalMs: z.number().int().positive(),
-    lightProcesses: z.array(
-      z.enum([
-        "consolidator",
-        "reflector",
-        "semantic-extractor",
-        "curator",
-        "overseer",
-        "ruminator",
-        "self-narrator",
-        "procedural-synthesizer",
-        "belief-reviser",
-      ]),
-    ),
-    heavyProcesses: z.array(
-      z.enum([
-        "consolidator",
-        "reflector",
-        "semantic-extractor",
-        "curator",
-        "overseer",
-        "ruminator",
-        "self-narrator",
-        "procedural-synthesizer",
-        "belief-reviser",
-      ]),
-    ),
-  }),
-  autonomy: z.object({
-    enabled: z.boolean(),
-    intervalMs: z.number().int().positive(),
-    maxWakesPerWindow: z.number().int().positive(),
-    budgetWindowMs: z.number().int().positive(),
-    executiveFocus: z.object({
-      enabled: z.boolean(),
-      stalenessSec: z.number().int().positive(),
-      dueLeadSec: z.number().int().nonnegative(),
-      wakeCooldownSec: z.number().int().nonnegative(),
-    }),
-    triggers: z.object({
-      commitmentExpiring: z.object({
-        enabled: z.boolean(),
-        lookaheadMs: z.number().int().positive(),
-      }),
-      openQuestionDormant: z.object({
-        enabled: z.boolean(),
-        dormantMs: z.number().int().positive(),
-      }),
-      scheduledReflection: z.object({
-        enabled: z.boolean(),
-        intervalMs: z.number().int().positive(),
-      }),
-      goalFollowupDue: z.object({
-        enabled: z.boolean(),
-        lookaheadMs: z.number().int().positive(),
-        staleMs: z.number().int().positive(),
-      }),
-    }),
-    conditions: z.object({
-      commitmentRevoked: z.object({
-        enabled: z.boolean(),
-      }),
-      moodValenceDrop: z.object({
-        enabled: z.boolean(),
-        threshold: z.number().min(-1).max(1),
-        windowN: z.number().int().positive(),
-        activationPeriodMs: z.number().int().positive(),
-      }),
-      openQuestionUrgencyBump: z.object({
-        enabled: z.boolean(),
-        threshold: z.number().min(0).max(1),
-      }),
-    }),
-  }),
+);
+
+export const configSchema = configOutputSchema.superRefine((value, context) => {
+  if (value.anthropic.auth === "api-key" && value.anthropic.apiKey === undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Anthropic API key must be configured when anthropic.auth is api-key",
+      path: ["anthropic", "apiKey"],
+    });
+  }
 });
 
 export type Config = z.infer<typeof configSchema>;
+type ConfigInput = z.input<typeof configSchema>;
+type DeepPartial<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T;
+type ConfigOverrides = DeepPartial<ConfigInput>;
 
-export const DEFAULT_CONFIG: Config = {
-  dataDir: expandPath(DEFAULT_DATA_DIR),
-  defaultUser: undefined,
-  host_capabilities: DEFAULT_HOST_CAPABILITIES_SECTION,
-  perception: {
-    useLlmFallback: true,
-  },
-  affective: {
-    // Affective perception uses the background model as the primary classifier
-    // when configured; heuristics are the offline/test fallback path.
-    useLlmFallback: true,
-    incomingMoodWeight: 0.3,
-    moodHistoryRetentionDays: 90,
-    moodHalfLifeHours: 24,
-  },
-  embedding: {
-    baseUrl: "http://localhost:1234/v1",
-    apiKey: "lm-studio",
-    model: "text-embedding-qwen3-embedding-8b",
-    dims: 4096,
-  },
-  anthropic: {
-    auth: "auto",
-    apiKey: undefined,
-    models: {
-      // The main cognition/extraction/background slots default to Opus 4.7.
-      // Recall expansion is a small structured fanout task and has its own
-      // Haiku slot so it can stay fast without reusing background.
-      cognition: "claude-opus-4-7",
-      background: "claude-opus-4-7",
-      extraction: "claude-opus-4-7",
-      recallExpansion: "claude-haiku-4-5-20251001",
-    },
-  },
-  procedural: {
-    skillSelectionMinSimilarity: 0.5,
-  },
-  retrieval: {
-    semantic: {
-      underReviewMultiplier: 0.5,
-    },
-  },
-  generation: {
-    discourseStateHardCapTurns: 50,
-    cognition: {
-      thinking: {
-        enabled: false,
-        budget_tokens: 4096,
-      },
-    },
-    evidenceLedger: {
-      enabled: false,
-      currentSessionTranscriptTokenBudget: 50_000,
-    },
-    manifestFinalizer: {
-      enabled: false,
-    },
-    postGenerationGuards: {
-      commitment: {
-        mode: "enforce",
-      },
-      relationalClaim: {
-        mode: "enforce",
-      },
-      closurePressure: {
-        mode: "enforce",
-      },
-    },
-  },
-  streamIngestion: {
-    preTurnCatchup: {
-      maxEntries: 100,
-    },
-  },
-  executive: {
-    goalFocusThreshold: DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD,
-  },
-  offline: {
-    consolidator: {
-      enabled: true,
-      similarityThreshold: 0.82,
-      minClusterSize: 2,
-      maxClustersPerRun: 2,
-      budget: 60_000,
-    },
-    reflector: {
-      enabled: true,
-      minSupport: 3,
-      goalSimilarityThreshold: 0.82,
-      ceilingConfidence: 0.5,
-      maxInsightsPerRun: 2,
-      budget: 60_000,
-    },
-    semanticExtractor: {
-      enabled: true,
-      maxEpisodesPerRun: 8,
-      budget: 60_000,
-    },
-    proceduralSynthesizer: {
-      enabled: true,
-      minSupport: 2,
-      maxSkillsPerRun: 3,
-      dedupThreshold: 0.88,
-      minContextAttemptsForSplit: 5,
-      minDivergenceForSplit: 0.3,
-      splitCooldownDays: 7,
-      splitClaimStaleSec: 1_800,
-      maxSplitParseFailures: 3,
-      budget: 4_000,
-    },
-    curator: {
-      enabled: true,
-      t1Heat: 5,
-      t2Heat: 15,
-      t3DemoteHeat: 3,
-      archiveAgeDays: 45,
-      archiveMinHeat: 1,
-      episodeDecayIntervalMs: 24 * 60 * 60 * 1_000,
-      episodeSalienceHalfLifeDays: 30,
-      episodeHeatHalfLifeDays: 7,
-      traitHalfLifeDays: 30,
-      retrievalLogRetentionDays: 90,
-    },
-    overseer: {
-      enabled: true,
-      lookbackHours: 24,
-      maxChecksPerRun: 8,
-      budget: null,
-    },
-    ruminator: {
-      enabled: true,
-      maxQuestionsPerRun: 3,
-      // Threshold applies to RetrievalConfidence.overall, a conservative
-      // epistemic evidence-quality signal, not the relevance ranking score.
-      resolveConfidenceThreshold: 0.55,
-      stalenessDays: 30,
-      stalenessTicks: null,
-      budget: 6_000,
-      perQuestionBudget: 8_000,
-    },
-    selfNarrator: {
-      enabled: true,
-      budget: 80_000,
-      maxObservationsPerRun: 4,
-      minSupportEpisodes: 2,
-      cadenceHintDays: 7,
-    },
-    beliefReviser: {
-      enabled: true,
-      confidenceDropMultiplier: 0.5,
-      confidenceFloor: 0.05,
-      regradeBatchSize: 10,
-      maxEventsPerRun: 32,
-      maxReviewsPerRun: 128,
-      claimStaleSec: 600,
-      maxParseFailures: 3,
-      // Call-count cap for regrade LLM work; run `budget` remains token-based.
-      maxLlmCalls: 20,
-      consecutiveParseFailureLimit: 5,
-    },
-  },
-  maintenance: {
-    // Maintenance is core to the architecture (cold paths do real work --
-    // semantic insight extraction, contradiction sweeps, decay/promotion,
-    // belief revision). Default on so a fresh deployment actually runs the
-    // dream cycle once a runtime (daemon, etc.) calls scheduler.start().
-    enabled: true,
-    lightIntervalMs: 14_400_000,
-    heavyIntervalMs: 86_400_000,
-    lightProcesses: ["consolidator", "semantic-extractor", "curator"],
-    heavyProcesses: [
-      "reflector",
-      "overseer",
-      "ruminator",
-      "self-narrator",
-      "procedural-synthesizer",
-      "belief-reviser",
-    ],
-  },
-  autonomy: {
-    // Self-initiated cognition is part of the architecture's "autonomous
-    // being" framing. Default on so a fresh deployment exercises the
-    // wake-source triggers (commitment expiring, open-question dormant,
-    // goal follow-up due, executive-focus due) once a runtime (daemon, ...)
-    // calls scheduler.start(). Library callers stay in control because
-    // start() is still explicit. maxWakesPerWindow caps the cost.
-    enabled: true,
-    intervalMs: 60_000,
-    maxWakesPerWindow: 6,
-    budgetWindowMs: 86_400_000,
-    executiveFocus: {
-      // Default on alongside autonomy so a stale selected goal or due
-      // executive step actually causes a self-initiated turn instead of
-      // sitting silently until the next user message.
-      enabled: true,
-      stalenessSec: 86_400,
-      dueLeadSec: 0,
-      wakeCooldownSec: 3_600,
-    },
-    triggers: {
-      commitmentExpiring: {
-        enabled: true,
-        lookaheadMs: 86_400_000,
-      },
-      openQuestionDormant: {
-        enabled: true,
-        dormantMs: 604_800_000,
-      },
-      scheduledReflection: {
-        enabled: false,
-        intervalMs: 14_400_000,
-      },
-      goalFollowupDue: {
-        enabled: true,
-        lookaheadMs: 604_800_000,
-        staleMs: 1_209_600_000,
-      },
-    },
-    conditions: {
-      commitmentRevoked: {
-        enabled: true,
-      },
-      moodValenceDrop: {
-        enabled: false,
-        threshold: -0.5,
-        windowN: 5,
-        activationPeriodMs: 86_400_000,
-      },
-      openQuestionUrgencyBump: {
-        enabled: true,
-        threshold: 0.9,
-      },
-    },
-  },
-};
+export const DEFAULT_CONFIG: Config = configSchema.parse({});
 
 export type LoadConfigOptions = {
   dataDir?: string;
   env?: NodeJS.ProcessEnv;
 };
-
-export function expandPath(pathLike: string): string {
-  if (pathLike === "~") {
-    return homedir();
-  }
-
-  if (pathLike.startsWith("~/")) {
-    return join(homedir(), pathLike.slice(2));
-  }
-
-  return isAbsolute(pathLike) ? pathLike : resolve(pathLike);
-}
 
 function readOptionalEnvString(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const value = env[name]?.trim();
@@ -977,7 +531,645 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException & { code: s
   return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string";
 }
 
-function parseConfigFile(dataDir: string): z.infer<typeof configFileSchema> {
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeConfigOverrides(base: ConfigOverrides, override: ConfigOverrides): ConfigOverrides {
+  const merged: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+
+  for (const [key, value] of Object.entries(override as Record<string, unknown>)) {
+    if (value === undefined) {
+      continue;
+    }
+
+    const existing = merged[key];
+    merged[key] =
+      isPlainRecord(existing) && isPlainRecord(value)
+        ? mergeConfigOverrides(existing as ConfigOverrides, value as ConfigOverrides)
+        : value;
+  }
+
+  return merged as ConfigOverrides;
+}
+
+function setConfigOverride(
+  overrides: ConfigOverrides,
+  path: readonly [string, ...string[]],
+  value: unknown,
+): void {
+  if (value === undefined) {
+    return;
+  }
+
+  let cursor = overrides as Record<string, unknown>;
+
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const key = path[index] as string;
+    const existing = cursor[key];
+
+    if (isPlainRecord(existing)) {
+      cursor = existing;
+      continue;
+    }
+
+    const next: Record<string, unknown> = {};
+    cursor[key] = next;
+    cursor = next;
+  }
+
+  cursor[path[path.length - 1] as string] = value;
+}
+
+function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
+  const overrides: ConfigOverrides = {};
+
+  setConfigOverride(overrides, ["dataDir"], readOptionalEnvString(env, "BORG_DATA_DIR"));
+  setConfigOverride(overrides, ["defaultUser"], readOptionalEnvString(env, "BORG_DEFAULT_USER"));
+  setConfigOverride(
+    overrides,
+    ["host_capabilities"],
+    readOptionalEnvString(env, "BORG_HOST_CAPABILITIES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["perception", "useLlmFallback"],
+    readOptionalEnvBoolean(env, "BORG_PERCEPTION_USE_LLM_FALLBACK"),
+  );
+  setConfigOverride(
+    overrides,
+    ["affective", "useLlmFallback"],
+    readOptionalEnvBoolean(env, "BORG_AFFECTIVE_USE_LLM_FALLBACK"),
+  );
+  setConfigOverride(
+    overrides,
+    ["affective", "incomingMoodWeight"],
+    readOptionalEnvUnitInterval(env, "BORG_AFFECTIVE_INCOMING_MOOD_WEIGHT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["affective", "moodHistoryRetentionDays"],
+    readOptionalEnvFloat(env, "BORG_AFFECTIVE_MOOD_HISTORY_RETENTION_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["affective", "moodHalfLifeHours"],
+    readOptionalEnvFloat(env, "BORG_AFFECTIVE_MOOD_HALF_LIFE_HOURS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["embedding", "baseUrl"],
+    readOptionalEnvString(env, "BORG_EMBEDDING_BASE_URL"),
+  );
+  setConfigOverride(
+    overrides,
+    ["embedding", "apiKey"],
+    readOptionalEnvString(env, "BORG_EMBEDDING_API_KEY"),
+  );
+  setConfigOverride(
+    overrides,
+    ["embedding", "model"],
+    readOptionalEnvString(env, "BORG_EMBEDDING_MODEL"),
+  );
+  setConfigOverride(
+    overrides,
+    ["embedding", "dims"],
+    readOptionalEnvNumber(env, "BORG_EMBEDDING_DIMS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "auth"],
+    readOptionalEnvAnthropicAuthMode(env, "BORG_ANTHROPIC_AUTH"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "apiKey"],
+    readOptionalEnvString(env, "ANTHROPIC_API_KEY"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "models", "cognition"],
+    readOptionalEnvString(env, "BORG_MODEL_COGNITION"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "models", "background"],
+    readOptionalEnvString(env, "BORG_MODEL_BACKGROUND"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "models", "extraction"],
+    readOptionalEnvString(env, "BORG_MODEL_EXTRACTION"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "models", "recallExpansion"],
+    readOptionalEnvString(env, "BORG_MODEL_RECALL_EXPANSION"),
+  );
+  setConfigOverride(
+    overrides,
+    ["procedural", "skillSelectionMinSimilarity"],
+    readOptionalEnvUnitInterval(env, "BORG_PROCEDURAL_SKILL_SELECTION_MIN_SIMILARITY"),
+  );
+  setConfigOverride(
+    overrides,
+    ["retrieval", "semantic", "underReviewMultiplier"],
+    readOptionalEnvUnitInterval(env, "BORG_RETRIEVAL_SEMANTIC_UNDER_REVIEW_MULTIPLIER"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "discourseStateHardCapTurns"],
+    readOptionalEnvNumber(env, "BORG_GENERATION_DISCOURSE_HARD_CAP_TURNS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "cognition", "thinking", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_GENERATION_COGNITION_THINKING_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "cognition", "thinking", "budget_tokens"],
+    readOptionalEnvNumber(env, "BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_GENERATION_EVIDENCE_LEDGER_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "currentSessionTranscriptTokenBudget"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_CURRENT_SESSION_TRANSCRIPT_TOKEN_BUDGET",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "manifestFinalizer", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_GENERATION_MANIFEST_FINALIZER_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["streamIngestion", "preTurnCatchup", "maxEntries"],
+    readOptionalEnvNumber(env, "BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["executive", "goalFocusThreshold"],
+    readOptionalEnvUnitInterval(env, "BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "consolidator", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_CONSOLIDATOR_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "consolidator", "similarityThreshold"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CONSOLIDATOR_SIMILARITY_THRESHOLD"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "consolidator", "minClusterSize"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_MIN_CLUSTER_SIZE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "consolidator", "maxClustersPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_MAX_CLUSTERS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "consolidator", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reflector", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_REFLECTOR_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reflector", "minSupport"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MIN_SUPPORT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reflector", "goalSimilarityThreshold"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_REFLECTOR_GOAL_SIMILARITY_THRESHOLD"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reflector", "ceilingConfidence"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_REFLECTOR_CEILING_CONFIDENCE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reflector", "maxInsightsPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MAX_INSIGHTS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reflector", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "semanticExtractor", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "semanticExtractor", "maxEpisodesPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_EPISODES_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "semanticExtractor", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "proceduralSynthesizer", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "proceduralSynthesizer", "minSupport"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MIN_SUPPORT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "proceduralSynthesizer", "maxSkillsPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MAX_SKILLS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "proceduralSynthesizer", "dedupThreshold"],
+    readOptionalEnvUnitInterval(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_DEDUP_THRESHOLD"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "proceduralSynthesizer", "minContextAttemptsForSplit"],
+    readOptionalEnvNumber(
+      env,
+      "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MIN_CONTEXT_ATTEMPTS_FOR_SPLIT",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "proceduralSynthesizer", "minDivergenceForSplit"],
+    readOptionalEnvUnitInterval(
+      env,
+      "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MIN_DIVERGENCE_FOR_SPLIT",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "proceduralSynthesizer", "splitCooldownDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SPLIT_COOLDOWN_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "proceduralSynthesizer", "splitClaimStaleSec"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SPLIT_CLAIM_STALE_SEC"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "proceduralSynthesizer", "maxSplitParseFailures"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MAX_SPLIT_PARSE_FAILURES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "proceduralSynthesizer", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_CURATOR_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "t1Heat"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_T1_HEAT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "t2Heat"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_T2_HEAT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "t3DemoteHeat"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_T3_DEMOTE_HEAT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "archiveAgeDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_ARCHIVE_AGE_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "archiveMinHeat"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_ARCHIVE_MIN_HEAT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "episodeDecayIntervalMs"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_DECAY_INTERVAL_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "episodeSalienceHalfLifeDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_SALIENCE_HALF_LIFE_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "episodeHeatHalfLifeDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_HEAT_HALF_LIFE_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "traitHalfLifeDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_TRAIT_HALF_LIFE_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "curator", "retrievalLogRetentionDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_RETRIEVAL_LOG_RETENTION_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "overseer", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_OVERSEER_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "overseer", "lookbackHours"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_OVERSEER_LOOKBACK_HOURS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "overseer", "maxChecksPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_MAX_CHECKS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "overseer", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_RUMINATOR_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "maxQuestionsPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_MAX_QUESTIONS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "resolveConfidenceThreshold"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_RESOLVE_CONFIDENCE_THRESHOLD"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "stalenessDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_STALENESS_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "stalenessTicks"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_STALENESS_TICKS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "perQuestionBudget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_PER_QUESTION_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "selfNarrator", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_SELF_NARRATOR_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "selfNarrator", "budget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "selfNarrator", "maxObservationsPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_MAX_OBSERVATIONS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "selfNarrator", "minSupportEpisodes"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_MIN_SUPPORT_EPISODES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "selfNarrator", "cadenceHintDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_SELF_NARRATOR_CADENCE_HINT_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "beliefReviser", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_OFFLINE_BELIEF_REVISER_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "beliefReviser", "confidenceDropMultiplier"],
+    readOptionalEnvUnitInterval(env, "BORG_OFFLINE_BELIEF_REVISER_CONFIDENCE_DROP_MULTIPLIER"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "beliefReviser", "confidenceFloor"],
+    readOptionalEnvUnitInterval(env, "BORG_OFFLINE_BELIEF_REVISER_CONFIDENCE_FLOOR"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "beliefReviser", "regradeBatchSize"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_REGRADE_BATCH_SIZE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "beliefReviser", "maxEventsPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_EVENTS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "beliefReviser", "maxReviewsPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_REVIEWS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "beliefReviser", "claimStaleSec"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_BELIEF_REVISER_CLAIM_STALE_SEC"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "beliefReviser", "maxParseFailures"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_PARSE_FAILURES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "beliefReviser", "maxLlmCalls"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "beliefReviser", "consecutiveParseFailureLimit"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_CONSECUTIVE_PARSE_FAILURE_LIMIT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["maintenance", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_MAINTENANCE_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["maintenance", "lightIntervalMs"],
+    readOptionalEnvNumber(env, "BORG_MAINTENANCE_LIGHT_INTERVAL_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["maintenance", "heavyIntervalMs"],
+    readOptionalEnvNumber(env, "BORG_MAINTENANCE_HEAVY_INTERVAL_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "intervalMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_INTERVAL_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "maxWakesPerWindow"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_MAX_WAKES_PER_WINDOW"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "budgetWindowMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_BUDGET_WINDOW_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "executiveFocus", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "executiveFocus", "stalenessSec"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_STALENESS_SEC"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "executiveFocus", "dueLeadSec"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_DUE_LEAD_SEC"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "executiveFocus", "wakeCooldownSec"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_WAKE_COOLDOWN_SEC"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "commitmentExpiring", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_COMMITMENT_EXPIRING_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "commitmentExpiring", "lookaheadMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_COMMITMENT_EXPIRING_LOOKAHEAD_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "openQuestionDormant", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_OPEN_QUESTION_DORMANT_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "openQuestionDormant", "dormantMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_OPEN_QUESTION_DORMANT_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "scheduledReflection", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_SCHEDULED_REFLECTION_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "scheduledReflection", "intervalMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_SCHEDULED_REFLECTION_INTERVAL_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "goalFollowupDue", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "goalFollowupDue", "lookaheadMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_LOOKAHEAD_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "goalFollowupDue", "staleMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_STALE_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "conditions", "commitmentRevoked", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_CONDITION_COMMITMENT_REVOKED_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "conditions", "moodValenceDrop", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "conditions", "moodValenceDrop", "threshold"],
+    readOptionalEnvFloat(env, "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_THRESHOLD"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "conditions", "moodValenceDrop", "windowN"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_WINDOW_N"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "conditions", "moodValenceDrop", "activationPeriodMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_ACTIVATION_PERIOD_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "conditions", "openQuestionUrgencyBump", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_AUTONOMY_CONDITION_OPEN_QUESTION_URGENCY_BUMP_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "conditions", "openQuestionUrgencyBump", "threshold"],
+    readOptionalEnvFloat(env, "BORG_AUTONOMY_CONDITION_OPEN_QUESTION_URGENCY_BUMP_THRESHOLD"),
+  );
+
+  return overrides;
+}
+
+function parseConfigFile(dataDir: string): ConfigOverrides {
   const configPath = join(dataDir, "config.json");
 
   try {
@@ -987,7 +1179,7 @@ function parseConfigFile(dataDir: string): z.infer<typeof configFileSchema> {
       return {};
     }
 
-    const parsed = configFileSchema.safeParse(rawConfig);
+    const parsed = configBaseSchema.safeParse(rawConfig);
 
     if (!parsed.success) {
       throw new ConfigError(`Invalid config file at ${configPath}`, {
@@ -996,7 +1188,7 @@ function parseConfigFile(dataDir: string): z.infer<typeof configFileSchema> {
       });
     }
 
-    return parsed.data;
+    return rawConfig as ConfigOverrides;
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       return {};
@@ -1015,605 +1207,15 @@ function parseConfigFile(dataDir: string): z.infer<typeof configFileSchema> {
 
 export function loadConfig(options: LoadConfigOptions = {}): Config {
   const env = options.env ?? process.env;
-  const lookupDataDir = expandPath(
-    options.dataDir ?? readOptionalEnvString(env, "BORG_DATA_DIR") ?? DEFAULT_DATA_DIR,
-  );
-  const fileConfig = parseConfigFile(lookupDataDir);
+  const envDataDir = readOptionalEnvString(env, "BORG_DATA_DIR");
+  const lookupDataDir = expandPath(options.dataDir ?? envDataDir ?? DEFAULT_DATA_DIR);
+  const fileOverrides = parseConfigFile(lookupDataDir);
+  const envOverrides = loadEnvOverrides(env);
+  let candidate = mergeConfigOverrides(fileOverrides, envOverrides);
 
-  const candidate = {
-    dataDir: expandPath(
-      options.dataDir ??
-        readOptionalEnvString(env, "BORG_DATA_DIR") ??
-        fileConfig.dataDir ??
-        DEFAULT_CONFIG.dataDir,
-    ),
-    defaultUser:
-      readOptionalEnvString(env, "BORG_DEFAULT_USER") ??
-      fileConfig.defaultUser ??
-      DEFAULT_CONFIG.defaultUser,
-    host_capabilities:
-      readOptionalEnvString(env, "BORG_HOST_CAPABILITIES") ??
-      fileConfig.host_capabilities ??
-      DEFAULT_CONFIG.host_capabilities,
-    perception: {
-      useLlmFallback:
-        readOptionalEnvBoolean(env, "BORG_PERCEPTION_USE_LLM_FALLBACK") ??
-        fileConfig.perception?.useLlmFallback ??
-        DEFAULT_CONFIG.perception.useLlmFallback,
-      modeWhenLlmAbsent:
-        fileConfig.perception?.modeWhenLlmAbsent ?? DEFAULT_CONFIG.perception.modeWhenLlmAbsent,
-    },
-    affective: {
-      useLlmFallback:
-        readOptionalEnvBoolean(env, "BORG_AFFECTIVE_USE_LLM_FALLBACK") ??
-        fileConfig.affective?.useLlmFallback ??
-        DEFAULT_CONFIG.affective.useLlmFallback,
-      incomingMoodWeight:
-        readOptionalEnvUnitInterval(env, "BORG_AFFECTIVE_INCOMING_MOOD_WEIGHT") ??
-        fileConfig.affective?.incomingMoodWeight ??
-        DEFAULT_CONFIG.affective.incomingMoodWeight,
-      moodHistoryRetentionDays:
-        readOptionalEnvFloat(env, "BORG_AFFECTIVE_MOOD_HISTORY_RETENTION_DAYS") ??
-        fileConfig.affective?.moodHistoryRetentionDays ??
-        DEFAULT_CONFIG.affective.moodHistoryRetentionDays,
-      moodHalfLifeHours:
-        readOptionalEnvFloat(env, "BORG_AFFECTIVE_MOOD_HALF_LIFE_HOURS") ??
-        fileConfig.affective?.moodHalfLifeHours ??
-        DEFAULT_CONFIG.affective.moodHalfLifeHours,
-    },
-    embedding: {
-      baseUrl:
-        readOptionalEnvString(env, "BORG_EMBEDDING_BASE_URL") ??
-        fileConfig.embedding?.baseUrl ??
-        DEFAULT_CONFIG.embedding.baseUrl,
-      apiKey:
-        readOptionalEnvString(env, "BORG_EMBEDDING_API_KEY") ??
-        fileConfig.embedding?.apiKey ??
-        DEFAULT_CONFIG.embedding.apiKey,
-      model:
-        readOptionalEnvString(env, "BORG_EMBEDDING_MODEL") ??
-        fileConfig.embedding?.model ??
-        DEFAULT_CONFIG.embedding.model,
-      dims:
-        readOptionalEnvNumber(env, "BORG_EMBEDDING_DIMS") ??
-        fileConfig.embedding?.dims ??
-        DEFAULT_CONFIG.embedding.dims,
-    },
-    anthropic: {
-      auth:
-        readOptionalEnvAnthropicAuthMode(env, "BORG_ANTHROPIC_AUTH") ??
-        fileConfig.anthropic?.auth ??
-        DEFAULT_CONFIG.anthropic.auth,
-      apiKey:
-        readOptionalEnvString(env, "ANTHROPIC_API_KEY") ??
-        fileConfig.anthropic?.apiKey ??
-        DEFAULT_CONFIG.anthropic.apiKey,
-      models: {
-        cognition:
-          readOptionalEnvString(env, "BORG_MODEL_COGNITION") ??
-          fileConfig.anthropic?.models?.cognition ??
-          DEFAULT_CONFIG.anthropic.models.cognition,
-        background:
-          readOptionalEnvString(env, "BORG_MODEL_BACKGROUND") ??
-          fileConfig.anthropic?.models?.background ??
-          DEFAULT_CONFIG.anthropic.models.background,
-        extraction:
-          readOptionalEnvString(env, "BORG_MODEL_EXTRACTION") ??
-          fileConfig.anthropic?.models?.extraction ??
-          DEFAULT_CONFIG.anthropic.models.extraction,
-        recallExpansion:
-          readOptionalEnvString(env, "BORG_MODEL_RECALL_EXPANSION") ??
-          fileConfig.anthropic?.models?.recallExpansion ??
-          DEFAULT_CONFIG.anthropic.models.recallExpansion,
-      },
-    },
-    procedural: {
-      skillSelectionMinSimilarity:
-        readOptionalEnvUnitInterval(env, "BORG_PROCEDURAL_SKILL_SELECTION_MIN_SIMILARITY") ??
-        fileConfig.procedural?.skillSelectionMinSimilarity ??
-        DEFAULT_CONFIG.procedural.skillSelectionMinSimilarity,
-    },
-    retrieval: {
-      semantic: {
-        underReviewMultiplier:
-          readOptionalEnvUnitInterval(env, "BORG_RETRIEVAL_SEMANTIC_UNDER_REVIEW_MULTIPLIER") ??
-          fileConfig.retrieval?.semantic?.underReviewMultiplier ??
-          DEFAULT_CONFIG.retrieval.semantic.underReviewMultiplier,
-      },
-    },
-    generation: {
-      discourseStateHardCapTurns:
-        readOptionalEnvNumber(env, "BORG_GENERATION_DISCOURSE_HARD_CAP_TURNS") ??
-        fileConfig.generation?.discourseStateHardCapTurns ??
-        DEFAULT_CONFIG.generation.discourseStateHardCapTurns,
-      cognition: {
-        thinking: {
-          enabled:
-            readOptionalEnvBoolean(env, "BORG_GENERATION_COGNITION_THINKING_ENABLED") ??
-            fileConfig.generation?.cognition?.thinking?.enabled ??
-            DEFAULT_CONFIG.generation.cognition.thinking.enabled,
-          budget_tokens:
-            readOptionalEnvNumber(env, "BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS") ??
-            fileConfig.generation?.cognition?.thinking?.budget_tokens ??
-            DEFAULT_CONFIG.generation.cognition.thinking.budget_tokens,
-        },
-      },
-      evidenceLedger: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_GENERATION_EVIDENCE_LEDGER_ENABLED") ??
-          fileConfig.generation?.evidenceLedger?.enabled ??
-          DEFAULT_CONFIG.generation.evidenceLedger.enabled,
-        currentSessionTranscriptTokenBudget:
-          readOptionalEnvNumber(
-            env,
-            "BORG_GENERATION_EVIDENCE_LEDGER_CURRENT_SESSION_TRANSCRIPT_TOKEN_BUDGET",
-          ) ??
-          fileConfig.generation?.evidenceLedger?.currentSessionTranscriptTokenBudget ??
-          DEFAULT_CONFIG.generation.evidenceLedger.currentSessionTranscriptTokenBudget,
-      },
-      manifestFinalizer: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_GENERATION_MANIFEST_FINALIZER_ENABLED") ??
-          fileConfig.generation?.manifestFinalizer?.enabled ??
-          DEFAULT_CONFIG.generation.manifestFinalizer.enabled,
-      },
-      postGenerationGuards: {
-        commitment: {
-          mode:
-            fileConfig.generation?.postGenerationGuards?.commitment?.mode ??
-            DEFAULT_CONFIG.generation.postGenerationGuards.commitment.mode,
-        },
-        relationalClaim: {
-          mode:
-            fileConfig.generation?.postGenerationGuards?.relationalClaim?.mode ??
-            DEFAULT_CONFIG.generation.postGenerationGuards.relationalClaim.mode,
-        },
-        closurePressure: {
-          mode:
-            fileConfig.generation?.postGenerationGuards?.closurePressure?.mode ??
-            DEFAULT_CONFIG.generation.postGenerationGuards.closurePressure.mode,
-        },
-      },
-    },
-    streamIngestion: {
-      preTurnCatchup: {
-        maxEntries:
-          readOptionalEnvNumber(env, "BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES") ??
-          fileConfig.streamIngestion?.preTurnCatchup?.maxEntries ??
-          DEFAULT_CONFIG.streamIngestion.preTurnCatchup.maxEntries,
-      },
-    },
-    executive: {
-      goalFocusThreshold:
-        readOptionalEnvUnitInterval(env, "BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD") ??
-        fileConfig.executive?.goalFocusThreshold ??
-        DEFAULT_CONFIG.executive.goalFocusThreshold,
-    },
-    offline: {
-      consolidator: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_OFFLINE_CONSOLIDATOR_ENABLED") ??
-          fileConfig.offline?.consolidator?.enabled ??
-          DEFAULT_CONFIG.offline.consolidator.enabled,
-        similarityThreshold:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CONSOLIDATOR_SIMILARITY_THRESHOLD") ??
-          fileConfig.offline?.consolidator?.similarityThreshold ??
-          DEFAULT_CONFIG.offline.consolidator.similarityThreshold,
-        minClusterSize:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_MIN_CLUSTER_SIZE") ??
-          fileConfig.offline?.consolidator?.minClusterSize ??
-          DEFAULT_CONFIG.offline.consolidator.minClusterSize,
-        maxClustersPerRun:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_MAX_CLUSTERS_PER_RUN") ??
-          fileConfig.offline?.consolidator?.maxClustersPerRun ??
-          DEFAULT_CONFIG.offline.consolidator.maxClustersPerRun,
-        budget:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_BUDGET") ??
-          fileConfig.offline?.consolidator?.budget ??
-          DEFAULT_CONFIG.offline.consolidator.budget,
-      },
-      reflector: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_OFFLINE_REFLECTOR_ENABLED") ??
-          fileConfig.offline?.reflector?.enabled ??
-          DEFAULT_CONFIG.offline.reflector.enabled,
-        minSupport:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MIN_SUPPORT") ??
-          fileConfig.offline?.reflector?.minSupport ??
-          DEFAULT_CONFIG.offline.reflector.minSupport,
-        goalSimilarityThreshold:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_REFLECTOR_GOAL_SIMILARITY_THRESHOLD") ??
-          fileConfig.offline?.reflector?.goalSimilarityThreshold ??
-          DEFAULT_CONFIG.offline.reflector.goalSimilarityThreshold,
-        ceilingConfidence:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_REFLECTOR_CEILING_CONFIDENCE") ??
-          fileConfig.offline?.reflector?.ceilingConfidence ??
-          DEFAULT_CONFIG.offline.reflector.ceilingConfidence,
-        maxInsightsPerRun:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MAX_INSIGHTS_PER_RUN") ??
-          fileConfig.offline?.reflector?.maxInsightsPerRun ??
-          DEFAULT_CONFIG.offline.reflector.maxInsightsPerRun,
-        budget:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_BUDGET") ??
-          fileConfig.offline?.reflector?.budget ??
-          DEFAULT_CONFIG.offline.reflector.budget,
-      },
-      semanticExtractor: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_ENABLED") ??
-          fileConfig.offline?.semanticExtractor?.enabled ??
-          DEFAULT_CONFIG.offline.semanticExtractor.enabled,
-        maxEpisodesPerRun:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_EPISODES_PER_RUN") ??
-          fileConfig.offline?.semanticExtractor?.maxEpisodesPerRun ??
-          DEFAULT_CONFIG.offline.semanticExtractor.maxEpisodesPerRun,
-        budget:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET") ??
-          fileConfig.offline?.semanticExtractor?.budget ??
-          DEFAULT_CONFIG.offline.semanticExtractor.budget,
-      },
-      proceduralSynthesizer: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_ENABLED") ??
-          fileConfig.offline?.proceduralSynthesizer?.enabled ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.enabled,
-        minSupport:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MIN_SUPPORT") ??
-          fileConfig.offline?.proceduralSynthesizer?.minSupport ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.minSupport,
-        maxSkillsPerRun:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MAX_SKILLS_PER_RUN") ??
-          fileConfig.offline?.proceduralSynthesizer?.maxSkillsPerRun ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.maxSkillsPerRun,
-        dedupThreshold:
-          readOptionalEnvUnitInterval(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_DEDUP_THRESHOLD") ??
-          fileConfig.offline?.proceduralSynthesizer?.dedupThreshold ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.dedupThreshold,
-        minContextAttemptsForSplit:
-          readOptionalEnvNumber(
-            env,
-            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MIN_CONTEXT_ATTEMPTS_FOR_SPLIT",
-          ) ??
-          fileConfig.offline?.proceduralSynthesizer?.minContextAttemptsForSplit ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.minContextAttemptsForSplit,
-        minDivergenceForSplit:
-          readOptionalEnvUnitInterval(
-            env,
-            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MIN_DIVERGENCE_FOR_SPLIT",
-          ) ??
-          fileConfig.offline?.proceduralSynthesizer?.minDivergenceForSplit ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.minDivergenceForSplit,
-        splitCooldownDays:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SPLIT_COOLDOWN_DAYS") ??
-          fileConfig.offline?.proceduralSynthesizer?.splitCooldownDays ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.splitCooldownDays,
-        splitClaimStaleSec:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_SPLIT_CLAIM_STALE_SEC") ??
-          fileConfig.offline?.proceduralSynthesizer?.splitClaimStaleSec ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.splitClaimStaleSec,
-        maxSplitParseFailures:
-          readOptionalEnvNumber(
-            env,
-            "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MAX_SPLIT_PARSE_FAILURES",
-          ) ??
-          fileConfig.offline?.proceduralSynthesizer?.maxSplitParseFailures ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.maxSplitParseFailures,
-        budget:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_BUDGET") ??
-          fileConfig.offline?.proceduralSynthesizer?.budget ??
-          DEFAULT_CONFIG.offline.proceduralSynthesizer.budget,
-      },
-      curator: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_OFFLINE_CURATOR_ENABLED") ??
-          fileConfig.offline?.curator?.enabled ??
-          DEFAULT_CONFIG.offline.curator.enabled,
-        t1Heat:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_T1_HEAT") ??
-          fileConfig.offline?.curator?.t1Heat ??
-          DEFAULT_CONFIG.offline.curator.t1Heat,
-        t2Heat:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_T2_HEAT") ??
-          fileConfig.offline?.curator?.t2Heat ??
-          DEFAULT_CONFIG.offline.curator.t2Heat,
-        t3DemoteHeat:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_T3_DEMOTE_HEAT") ??
-          fileConfig.offline?.curator?.t3DemoteHeat ??
-          DEFAULT_CONFIG.offline.curator.t3DemoteHeat,
-        archiveAgeDays:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_ARCHIVE_AGE_DAYS") ??
-          fileConfig.offline?.curator?.archiveAgeDays ??
-          DEFAULT_CONFIG.offline.curator.archiveAgeDays,
-        archiveMinHeat:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_ARCHIVE_MIN_HEAT") ??
-          fileConfig.offline?.curator?.archiveMinHeat ??
-          DEFAULT_CONFIG.offline.curator.archiveMinHeat,
-        episodeDecayIntervalMs:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_DECAY_INTERVAL_MS") ??
-          fileConfig.offline?.curator?.episodeDecayIntervalMs ??
-          DEFAULT_CONFIG.offline.curator.episodeDecayIntervalMs,
-        episodeSalienceHalfLifeDays:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_SALIENCE_HALF_LIFE_DAYS") ??
-          fileConfig.offline?.curator?.episodeSalienceHalfLifeDays ??
-          DEFAULT_CONFIG.offline.curator.episodeSalienceHalfLifeDays,
-        episodeHeatHalfLifeDays:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_EPISODE_HEAT_HALF_LIFE_DAYS") ??
-          fileConfig.offline?.curator?.episodeHeatHalfLifeDays ??
-          DEFAULT_CONFIG.offline.curator.episodeHeatHalfLifeDays,
-        traitHalfLifeDays:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_TRAIT_HALF_LIFE_DAYS") ??
-          fileConfig.offline?.curator?.traitHalfLifeDays ??
-          DEFAULT_CONFIG.offline.curator.traitHalfLifeDays,
-        retrievalLogRetentionDays:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_CURATOR_RETRIEVAL_LOG_RETENTION_DAYS") ??
-          fileConfig.offline?.curator?.retrievalLogRetentionDays ??
-          DEFAULT_CONFIG.offline.curator.retrievalLogRetentionDays,
-      },
-      overseer: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_OFFLINE_OVERSEER_ENABLED") ??
-          fileConfig.offline?.overseer?.enabled ??
-          DEFAULT_CONFIG.offline.overseer.enabled,
-        lookbackHours:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_OVERSEER_LOOKBACK_HOURS") ??
-          fileConfig.offline?.overseer?.lookbackHours ??
-          DEFAULT_CONFIG.offline.overseer.lookbackHours,
-        maxChecksPerRun:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_MAX_CHECKS_PER_RUN") ??
-          fileConfig.offline?.overseer?.maxChecksPerRun ??
-          DEFAULT_CONFIG.offline.overseer.maxChecksPerRun,
-        budget:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_BUDGET") ??
-          fileConfig.offline?.overseer?.budget ??
-          DEFAULT_CONFIG.offline.overseer.budget,
-      },
-      ruminator: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_OFFLINE_RUMINATOR_ENABLED") ??
-          fileConfig.offline?.ruminator?.enabled ??
-          DEFAULT_CONFIG.offline.ruminator.enabled,
-        maxQuestionsPerRun:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_MAX_QUESTIONS_PER_RUN") ??
-          fileConfig.offline?.ruminator?.maxQuestionsPerRun ??
-          DEFAULT_CONFIG.offline.ruminator.maxQuestionsPerRun,
-        resolveConfidenceThreshold:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_RESOLVE_CONFIDENCE_THRESHOLD") ??
-          fileConfig.offline?.ruminator?.resolveConfidenceThreshold ??
-          DEFAULT_CONFIG.offline.ruminator.resolveConfidenceThreshold,
-        stalenessDays:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_STALENESS_DAYS") ??
-          fileConfig.offline?.ruminator?.stalenessDays ??
-          DEFAULT_CONFIG.offline.ruminator.stalenessDays,
-        stalenessTicks:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_STALENESS_TICKS") ??
-          fileConfig.offline?.ruminator?.stalenessTicks ??
-          DEFAULT_CONFIG.offline.ruminator.stalenessTicks,
-        budget:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_BUDGET") ??
-          fileConfig.offline?.ruminator?.budget ??
-          DEFAULT_CONFIG.offline.ruminator.budget,
-        perQuestionBudget:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_PER_QUESTION_BUDGET") ??
-          fileConfig.offline?.ruminator?.perQuestionBudget ??
-          DEFAULT_CONFIG.offline.ruminator.perQuestionBudget,
-      },
-      selfNarrator: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_OFFLINE_SELF_NARRATOR_ENABLED") ??
-          fileConfig.offline?.selfNarrator?.enabled ??
-          DEFAULT_CONFIG.offline.selfNarrator.enabled,
-        budget:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_BUDGET") ??
-          fileConfig.offline?.selfNarrator?.budget ??
-          DEFAULT_CONFIG.offline.selfNarrator.budget,
-        maxObservationsPerRun:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_MAX_OBSERVATIONS_PER_RUN") ??
-          fileConfig.offline?.selfNarrator?.maxObservationsPerRun ??
-          DEFAULT_CONFIG.offline.selfNarrator.maxObservationsPerRun,
-        minSupportEpisodes:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_MIN_SUPPORT_EPISODES") ??
-          fileConfig.offline?.selfNarrator?.minSupportEpisodes ??
-          DEFAULT_CONFIG.offline.selfNarrator.minSupportEpisodes,
-        cadenceHintDays:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_SELF_NARRATOR_CADENCE_HINT_DAYS") ??
-          fileConfig.offline?.selfNarrator?.cadenceHintDays ??
-          DEFAULT_CONFIG.offline.selfNarrator.cadenceHintDays,
-      },
-      beliefReviser: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_OFFLINE_BELIEF_REVISER_ENABLED") ??
-          fileConfig.offline?.beliefReviser?.enabled ??
-          DEFAULT_CONFIG.offline.beliefReviser.enabled,
-        confidenceDropMultiplier:
-          readOptionalEnvUnitInterval(
-            env,
-            "BORG_OFFLINE_BELIEF_REVISER_CONFIDENCE_DROP_MULTIPLIER",
-          ) ??
-          fileConfig.offline?.beliefReviser?.confidenceDropMultiplier ??
-          DEFAULT_CONFIG.offline.beliefReviser.confidenceDropMultiplier,
-        confidenceFloor:
-          readOptionalEnvUnitInterval(env, "BORG_OFFLINE_BELIEF_REVISER_CONFIDENCE_FLOOR") ??
-          fileConfig.offline?.beliefReviser?.confidenceFloor ??
-          DEFAULT_CONFIG.offline.beliefReviser.confidenceFloor,
-        regradeBatchSize:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_REGRADE_BATCH_SIZE") ??
-          fileConfig.offline?.beliefReviser?.regradeBatchSize ??
-          DEFAULT_CONFIG.offline.beliefReviser.regradeBatchSize,
-        maxEventsPerRun:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_EVENTS_PER_RUN") ??
-          fileConfig.offline?.beliefReviser?.maxEventsPerRun ??
-          DEFAULT_CONFIG.offline.beliefReviser.maxEventsPerRun,
-        maxReviewsPerRun:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_REVIEWS_PER_RUN") ??
-          fileConfig.offline?.beliefReviser?.maxReviewsPerRun ??
-          DEFAULT_CONFIG.offline.beliefReviser.maxReviewsPerRun,
-        claimStaleSec:
-          readOptionalEnvFloat(env, "BORG_OFFLINE_BELIEF_REVISER_CLAIM_STALE_SEC") ??
-          fileConfig.offline?.beliefReviser?.claimStaleSec ??
-          DEFAULT_CONFIG.offline.beliefReviser.claimStaleSec,
-        maxParseFailures:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_PARSE_FAILURES") ??
-          fileConfig.offline?.beliefReviser?.maxParseFailures ??
-          DEFAULT_CONFIG.offline.beliefReviser.maxParseFailures,
-        maxLlmCalls:
-          readOptionalEnvNumber(env, "BORG_OFFLINE_BELIEF_REVISER_MAX_LLM_CALLS") ??
-          fileConfig.offline?.beliefReviser?.maxLlmCalls ??
-          DEFAULT_CONFIG.offline.beliefReviser.maxLlmCalls,
-        consecutiveParseFailureLimit:
-          readOptionalEnvNumber(
-            env,
-            "BORG_OFFLINE_BELIEF_REVISER_CONSECUTIVE_PARSE_FAILURE_LIMIT",
-          ) ??
-          fileConfig.offline?.beliefReviser?.consecutiveParseFailureLimit ??
-          DEFAULT_CONFIG.offline.beliefReviser.consecutiveParseFailureLimit,
-      },
-    },
-    maintenance: {
-      enabled:
-        readOptionalEnvBoolean(env, "BORG_MAINTENANCE_ENABLED") ??
-        fileConfig.maintenance?.enabled ??
-        DEFAULT_CONFIG.maintenance.enabled,
-      lightIntervalMs:
-        readOptionalEnvNumber(env, "BORG_MAINTENANCE_LIGHT_INTERVAL_MS") ??
-        fileConfig.maintenance?.lightIntervalMs ??
-        DEFAULT_CONFIG.maintenance.lightIntervalMs,
-      heavyIntervalMs:
-        readOptionalEnvNumber(env, "BORG_MAINTENANCE_HEAVY_INTERVAL_MS") ??
-        fileConfig.maintenance?.heavyIntervalMs ??
-        DEFAULT_CONFIG.maintenance.heavyIntervalMs,
-      lightProcesses:
-        fileConfig.maintenance?.lightProcesses ?? DEFAULT_CONFIG.maintenance.lightProcesses,
-      heavyProcesses:
-        fileConfig.maintenance?.heavyProcesses ?? DEFAULT_CONFIG.maintenance.heavyProcesses,
-    },
-    autonomy: {
-      enabled:
-        readOptionalEnvBoolean(env, "BORG_AUTONOMY_ENABLED") ??
-        fileConfig.autonomy?.enabled ??
-        DEFAULT_CONFIG.autonomy.enabled,
-      intervalMs:
-        readOptionalEnvNumber(env, "BORG_AUTONOMY_INTERVAL_MS") ??
-        fileConfig.autonomy?.intervalMs ??
-        DEFAULT_CONFIG.autonomy.intervalMs,
-      maxWakesPerWindow:
-        readOptionalEnvNumber(env, "BORG_AUTONOMY_MAX_WAKES_PER_WINDOW") ??
-        fileConfig.autonomy?.maxWakesPerWindow ??
-        DEFAULT_CONFIG.autonomy.maxWakesPerWindow,
-      budgetWindowMs:
-        readOptionalEnvNumber(env, "BORG_AUTONOMY_BUDGET_WINDOW_MS") ??
-        fileConfig.autonomy?.budgetWindowMs ??
-        DEFAULT_CONFIG.autonomy.budgetWindowMs,
-      executiveFocus: {
-        enabled:
-          readOptionalEnvBoolean(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_ENABLED") ??
-          fileConfig.autonomy?.executiveFocus?.enabled ??
-          DEFAULT_CONFIG.autonomy.executiveFocus.enabled,
-        stalenessSec:
-          readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_STALENESS_SEC") ??
-          fileConfig.autonomy?.executiveFocus?.stalenessSec ??
-          DEFAULT_CONFIG.autonomy.executiveFocus.stalenessSec,
-        dueLeadSec:
-          readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_DUE_LEAD_SEC") ??
-          fileConfig.autonomy?.executiveFocus?.dueLeadSec ??
-          DEFAULT_CONFIG.autonomy.executiveFocus.dueLeadSec,
-        wakeCooldownSec:
-          readOptionalEnvNumber(env, "BORG_AUTONOMY_EXECUTIVE_FOCUS_WAKE_COOLDOWN_SEC") ??
-          fileConfig.autonomy?.executiveFocus?.wakeCooldownSec ??
-          DEFAULT_CONFIG.autonomy.executiveFocus.wakeCooldownSec,
-      },
-      triggers: {
-        commitmentExpiring: {
-          enabled:
-            readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_COMMITMENT_EXPIRING_ENABLED") ??
-            fileConfig.autonomy?.triggers?.commitmentExpiring?.enabled ??
-            DEFAULT_CONFIG.autonomy.triggers.commitmentExpiring.enabled,
-          lookaheadMs:
-            readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_COMMITMENT_EXPIRING_LOOKAHEAD_MS") ??
-            fileConfig.autonomy?.triggers?.commitmentExpiring?.lookaheadMs ??
-            DEFAULT_CONFIG.autonomy.triggers.commitmentExpiring.lookaheadMs,
-        },
-        openQuestionDormant: {
-          enabled:
-            readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_OPEN_QUESTION_DORMANT_ENABLED") ??
-            fileConfig.autonomy?.triggers?.openQuestionDormant?.enabled ??
-            DEFAULT_CONFIG.autonomy.triggers.openQuestionDormant.enabled,
-          dormantMs:
-            readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_OPEN_QUESTION_DORMANT_MS") ??
-            fileConfig.autonomy?.triggers?.openQuestionDormant?.dormantMs ??
-            DEFAULT_CONFIG.autonomy.triggers.openQuestionDormant.dormantMs,
-        },
-        scheduledReflection: {
-          enabled:
-            readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_SCHEDULED_REFLECTION_ENABLED") ??
-            fileConfig.autonomy?.triggers?.scheduledReflection?.enabled ??
-            DEFAULT_CONFIG.autonomy.triggers.scheduledReflection.enabled,
-          intervalMs:
-            readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_SCHEDULED_REFLECTION_INTERVAL_MS") ??
-            fileConfig.autonomy?.triggers?.scheduledReflection?.intervalMs ??
-            DEFAULT_CONFIG.autonomy.triggers.scheduledReflection.intervalMs,
-        },
-        goalFollowupDue: {
-          enabled:
-            readOptionalEnvBoolean(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_ENABLED") ??
-            fileConfig.autonomy?.triggers?.goalFollowupDue?.enabled ??
-            DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue.enabled,
-          lookaheadMs:
-            readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_LOOKAHEAD_MS") ??
-            fileConfig.autonomy?.triggers?.goalFollowupDue?.lookaheadMs ??
-            DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue.lookaheadMs,
-          staleMs:
-            readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_STALE_MS") ??
-            fileConfig.autonomy?.triggers?.goalFollowupDue?.staleMs ??
-            DEFAULT_CONFIG.autonomy.triggers.goalFollowupDue.staleMs,
-        },
-      },
-      conditions: {
-        commitmentRevoked: {
-          enabled:
-            readOptionalEnvBoolean(env, "BORG_AUTONOMY_CONDITION_COMMITMENT_REVOKED_ENABLED") ??
-            fileConfig.autonomy?.conditions?.commitmentRevoked?.enabled ??
-            DEFAULT_CONFIG.autonomy.conditions.commitmentRevoked.enabled,
-        },
-        moodValenceDrop: {
-          enabled:
-            readOptionalEnvBoolean(env, "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_ENABLED") ??
-            fileConfig.autonomy?.conditions?.moodValenceDrop?.enabled ??
-            DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop.enabled,
-          threshold:
-            readOptionalEnvFloat(env, "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_THRESHOLD") ??
-            fileConfig.autonomy?.conditions?.moodValenceDrop?.threshold ??
-            DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop.threshold,
-          windowN:
-            readOptionalEnvNumber(env, "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_WINDOW_N") ??
-            fileConfig.autonomy?.conditions?.moodValenceDrop?.windowN ??
-            DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop.windowN,
-          activationPeriodMs:
-            readOptionalEnvNumber(
-              env,
-              "BORG_AUTONOMY_CONDITION_MOOD_VALENCE_DROP_ACTIVATION_PERIOD_MS",
-            ) ??
-            fileConfig.autonomy?.conditions?.moodValenceDrop?.activationPeriodMs ??
-            DEFAULT_CONFIG.autonomy.conditions.moodValenceDrop.activationPeriodMs,
-        },
-        openQuestionUrgencyBump: {
-          enabled:
-            readOptionalEnvBoolean(
-              env,
-              "BORG_AUTONOMY_CONDITION_OPEN_QUESTION_URGENCY_BUMP_ENABLED",
-            ) ??
-            fileConfig.autonomy?.conditions?.openQuestionUrgencyBump?.enabled ??
-            DEFAULT_CONFIG.autonomy.conditions.openQuestionUrgencyBump.enabled,
-          threshold:
-            readOptionalEnvFloat(
-              env,
-              "BORG_AUTONOMY_CONDITION_OPEN_QUESTION_URGENCY_BUMP_THRESHOLD",
-            ) ??
-            fileConfig.autonomy?.conditions?.openQuestionUrgencyBump?.threshold ??
-            DEFAULT_CONFIG.autonomy.conditions.openQuestionUrgencyBump.threshold,
-        },
-      },
-    },
-  };
+  if (options.dataDir !== undefined) {
+    candidate = mergeConfigOverrides(candidate, { dataDir: expandPath(options.dataDir) });
+  }
 
   const parsed = configSchema.safeParse(candidate);
 
@@ -1626,6 +1228,8 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
   return parsed.data;
 }
 
+function redactSecret(value: string): string;
+function redactSecret(value: string | undefined): string | undefined;
 function redactSecret(value: string | undefined): string | undefined {
   return value === undefined ? undefined : "[REDACTED]";
 }

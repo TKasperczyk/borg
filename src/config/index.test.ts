@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
-import { DEFAULT_CONFIG, loadConfig, redactConfig } from "./index.js";
+import { DEFAULT_CONFIG, configSchema, loadConfig, redactConfig } from "./index.js";
 
 describe("config", () => {
   const tempDirs: string[] = [];
@@ -87,6 +87,27 @@ describe("config", () => {
         mode: "enforce",
       },
     });
+  });
+
+  it("derives exported defaults from schema defaults", () => {
+    expect(configSchema.parse({})).toEqual(DEFAULT_CONFIG);
+  });
+
+  it("keeps schema defaults when only one env var is set", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: {
+        BORG_OFFLINE_RUMINATOR_STALENESS_TICKS: "5",
+      },
+    });
+
+    expect(config.offline.ruminator.stalenessTicks).toBe(5);
+    expect(config.offline.overseer).toEqual(DEFAULT_CONFIG.offline.overseer);
+    expect(config.generation.cognition).toEqual(DEFAULT_CONFIG.generation.cognition);
+    expect(config.maintenance).toEqual(DEFAULT_CONFIG.maintenance);
   });
 
   it("names the autonomy wake cap for the configured rolling window", () => {
