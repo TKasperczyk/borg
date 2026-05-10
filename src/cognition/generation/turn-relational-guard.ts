@@ -35,8 +35,6 @@ const COMPLETED_ACTION_LIMIT = 8;
 const RELATIONAL_SLOT_GUARD_LIMIT = 64;
 const INTERNAL_IDENTIFIER_EXACT_PATTERN =
   /^(?:strm|sess|ep|goal|val|trt|abp|grw|oq|semn|seme|cmt|ent|act|rslot|skl|procevi|run|exstep)_[a-z0-9]{16}$|^autonomy_wake_[a-f0-9]{16}$/;
-const INTERNAL_IDENTIFIER_SCAN_PATTERN =
-  /(?:strm|sess|ep|goal|val|trt|abp|grw|oq|semn|seme|cmt|ent|act|rslot|skl|procevi|run|exstep)_[a-z0-9]{16}|autonomy_wake_[a-f0-9]{16}/g;
 
 export type TurnRelationalGuardRunnerOptions = {
   auditModel: string;
@@ -155,10 +153,6 @@ function leakedInternalIdentifiers(
     if (response.includes(identifier)) {
       leaked.add(identifier);
     }
-  }
-
-  for (const match of response.matchAll(INTERNAL_IDENTIFIER_SCAN_PATTERN)) {
-    leaked.add(match[0]!);
   }
 
   return [...leaked].sort();

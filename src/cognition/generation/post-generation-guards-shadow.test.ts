@@ -344,4 +344,61 @@ describe("post-generation guard shadow chain", () => {
       leaked_identifiers: [userEntryId],
     });
   });
+
+  it("allows user-authored ID-shaped strings that are not known internal identifiers", async () => {
+    const userAuthoredId = "strm_1234567890abcdef";
+    const response = `You wrote ${userAuthoredId}.`;
+    const llm = new FakeLLMClient({
+      responses: [
+        claimAuditResponse([]),
+        closureAuditResponse({
+          spans: [],
+          response_shape: "no_closure",
+          reason: "No closure.",
+        }),
+      ],
+    });
+    const emit = vi.fn();
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit,
+    };
+    const relationalRunner = new TurnRelationalGuardRunner({
+      auditModel: "audit",
+      rewriteModel: "rewrite",
+      relationalClaimMode: "enforce",
+      closurePressureMode: "enforce",
+      createStreamReader: () => emptyStreamReader(),
+      actionRepository: {
+        list: vi.fn(() => []),
+      },
+      commitmentRepository: {
+        findByEvidenceStreamEntryId: vi.fn(() => false),
+      },
+      relationalSlotRepository: {
+        list: vi.fn(() => []),
+      },
+      clock: new FixedClock(2_000),
+      tracer,
+    });
+
+    const finalEmission = await relationalRunner.run({
+      llmClient: llm,
+      turnId: "turn-user-authored-id-shaped-string",
+      response,
+      userMessage: `Please repeat ${userAuthoredId}.`,
+      sessionId: DEFAULT_SESSION_ID,
+      retrievedEpisodes: [],
+      activeCommitments: [],
+      closureLoop: null,
+      audienceEntityId: null,
+    });
+
+    expect(finalEmission).toEqual({
+      kind: "message",
+      content: response,
+    });
+    expect(emit).not.toHaveBeenCalledWith("internal_identifier_guard", expect.any(Object));
+  });
 });
