@@ -930,7 +930,11 @@ describe("TurnOrchestrator evidence ledger", () => {
         createFinalizerToolResponse({
           id: "toolu_emit_self_report",
           name: "EmitSelfReport",
-          input: { text: finalText },
+          input: {
+            kind: "self_report",
+            text: finalText,
+            persistence_class: "assistant_self_report",
+          },
         }),
         createClaimAuditResponse([]),
         createClosureResponseAuditResponse(),

@@ -24,6 +24,14 @@ const emitNoOutputToolInputSchema = z
   })
   .strict();
 
+const emitSelfReportToolInputSchema = z
+  .object({
+    kind: z.literal("self_report"),
+    text: z.string(),
+    persistence_class: z.literal("assistant_self_report"),
+  })
+  .strict();
+
 const NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
   name: NO_OUTPUT_FINALIZER_TOOL_NAME,
   description:
@@ -66,10 +74,10 @@ const EMIT_NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_SELF_REPORT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
   description:
-    "Emit a first-person interior self-report from Borg's perspective. Put the complete user-visible response in text. The text is shown to the user like EmitAnswer and persisted as assistant_self_report.",
+    "Emit a first-person interior self-report from Borg's perspective. Set kind to self_report, persistence_class to assistant_self_report, and put the complete user-visible response in text. The text is shown to the user like EmitAnswer.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
-  inputSchema: emitTextToolInputSchema,
+  inputSchema: emitSelfReportToolInputSchema,
   outputSchema: z.object({}).strict(),
   async invoke() {
     return {};
@@ -93,7 +101,7 @@ const EMISSION_FINALIZER_INSTRUCTIONS = [
   "",
   "Use EmitAnswer for an ordinary assistant response. Put the complete user-visible response in text.",
   "Use EmitNoOutput only when the correct current-turn behavior is to emit no assistant message at all. Put a concise reason in reason.",
-  "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport is shown to the user exactly like EmitAnswer and is persisted as assistant_self_report.",
+  "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.",
   "",
   "Do not hide factual or source-sensitive content. If a name, place, number, date, callback, action state, relational/profile detail, or claim about Borg's own prior behavior cannot be grounded in prompt-visible evidence, remove it or phrase it qualitatively.",
   "When a named entity is supported by evidence that uses only a pronoun or descriptive noun phrase for the predicate, do not present the name and predicate together unless the prompt-visible evidence also establishes that the name belongs to that entity.",
@@ -240,7 +248,7 @@ function decisionFromEmissionToolResult(result: ToolLoopResult): EmissionDecisio
   }
 
   if (terminalCall.name === EMIT_SELF_REPORT_FINALIZER_TOOL_NAME) {
-    const parsed = emitTextToolInputSchema.safeParse(terminalCall.input);
+    const parsed = emitSelfReportToolInputSchema.safeParse(terminalCall.input);
 
     if (!parsed.success) {
       return invalidToolDecision(terminalCall.name, parsed.error.message);

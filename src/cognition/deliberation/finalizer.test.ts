@@ -243,7 +243,11 @@ describe("runFinalizer emission tools", () => {
               type: "tool_use",
               id: "toolu_self_report_empty",
               name: "EmitSelfReport",
-              input: { text: "" },
+              input: {
+                kind: "self_report",
+                text: "",
+                persistence_class: "assistant_self_report",
+              },
             },
           ],
           input_tokens: 4,
@@ -256,6 +260,33 @@ describe("runFinalizer emission tools", () => {
     const result = await runEmissionFinalizer(llm, tempDirs);
 
     expect(result.decision).toEqual({ kind: "empty" });
+  });
+
+  it("rejects malformed EmitSelfReport payloads", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_self_report_malformed",
+              name: "EmitSelfReport",
+              input: { text: "Text-only self report." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs);
+
+    expect(result.decision).toMatchObject({
+      kind: "invalid_tool",
+      toolName: "EmitSelfReport",
+    });
   });
 
   it("rejects parallel terminal emission tool calls", async () => {

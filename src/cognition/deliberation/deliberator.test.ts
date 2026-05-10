@@ -487,7 +487,11 @@ describe("deliberator", () => {
         emitFinalizerToolResponse({
           id: "toolu_emit_self_report",
           name: "EmitSelfReport",
-          input: { text: selfReport },
+          input: {
+            kind: "self_report",
+            text: selfReport,
+            persistence_class: "assistant_self_report",
+          },
         }),
       ],
     });
@@ -626,18 +630,24 @@ describe("deliberator", () => {
     {
       toolName: "EmitAnswer",
       id: "toolu_empty_answer",
+      input: undefined,
     },
     {
       toolName: "EmitSelfReport",
       id: "toolu_empty_self_report",
+      input: {
+        kind: "self_report",
+        text: "",
+        persistence_class: "assistant_self_report",
+      },
     },
-  ])("suppresses empty $toolName text as empty_finalizer", async ({ toolName, id }) => {
+  ])("suppresses empty $toolName text as empty_finalizer", async ({ toolName, id, input }) => {
     const llm = new FakeLLMClient({
       responses: [
         emitFinalizerToolResponse({
           id,
           name: toolName,
-          input: { text: "" },
+          input: input ?? { text: "" },
         }),
       ],
     });
