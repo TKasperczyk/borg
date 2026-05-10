@@ -6,6 +6,7 @@ import { BorgError } from "../util/errors.js";
 
 import type { AuditLog } from "./audit-log.js";
 import { maintenancePlanSchema, type MaintenancePlan } from "./plan-file.js";
+import { offlineProcessError } from "./process-errors.js";
 import {
   type OfflineContext,
   type OfflineProcess,
@@ -98,13 +99,7 @@ export class MaintenanceOrchestrator {
         error instanceof Error && "tokens_used" in error && typeof error.tokens_used === "number"
           ? error.tokens_used
           : 0,
-      errors: [
-        {
-          process: processName,
-          message: error instanceof Error ? error.message : String(error),
-          code: borgError?.code,
-        },
-      ],
+      errors: [offlineProcessError(processName, error, { code: borgError?.code })],
       budget_exhausted: borgError?.code === "OFFLINE_BUDGET_EXCEEDED",
     };
   }

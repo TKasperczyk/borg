@@ -16,10 +16,13 @@ export function offlineProcessError<ProcessName extends OfflineProcessName>(
   error: unknown,
   options: OfflineProcessErrorOptions = {},
 ): OfflineProcessError & { process: ProcessName } {
+  const resolvedCode =
+    options.code ?? (options.includeErrorCode === false ? undefined : errorCode(error));
+
   return {
     process,
     message: error instanceof Error ? error.message : String(error),
-    code: options.code ?? (options.includeErrorCode === false ? undefined : errorCode(error)),
+    ...(resolvedCode === undefined ? {} : { code: resolvedCode }),
     ...(options.target_type === undefined ? {} : { target_type: options.target_type }),
     ...(options.target_id === undefined ? {} : { target_id: options.target_id }),
   };
