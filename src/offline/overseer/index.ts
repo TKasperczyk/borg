@@ -16,6 +16,7 @@ import {
 } from "../../memory/semantic/index.js";
 import { streamEntryIdSchema } from "../../stream/index.js";
 import { BudgetExceededError } from "../../util/errors.js";
+import { valueAppearsIn } from "../../util/text-presence.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -62,6 +63,7 @@ const reviewFlagSchema = z.object({
   by_edge_id: semanticEdgeIdSchema.optional(),
   source_assessment: sourceAssessmentSchema.optional(),
   cited_stream_ids: z.array(streamEntryIdSchema).optional(),
+  quoted_span: z.string().min(1).optional(),
   provenance_note: z.string().min(1).optional(),
 });
 
@@ -97,6 +99,7 @@ const overseerPlanItemBaseSchema = z.object({
   by_edge_id: semanticEdgeIdSchema.optional(),
   source_assessment: sourceAssessmentSchema.optional(),
   cited_stream_ids: z.array(streamEntryIdSchema).optional(),
+  quoted_span: z.string().min(1).optional(),
   provenance_note: z.string().min(1).optional(),
 });
 
@@ -121,6 +124,7 @@ const suppressedFlagReasonSchema = z.enum([
   "PROVENANCE-INSUFFICIENT",
   "INVALID-CITATION",
   "SOURCE-CONTRADICTS",
+  "AUDIENCE-NAME-GROUNDED",
 ]);
 
 const suppressedOverseerFlagSchema = z.object({
@@ -286,8 +290,9 @@ function buildPrompt(
   return [
     "Check the memory item for misattribution, temporal drift, and identity inconsistency.",
     "If you flag an issue, include the concrete repair payload needed to fix it.",
-    "For misattribution, use only the resolved source entries below. Include cited_stream_ids from those entries, source_assessment, and patch fields that directly correct the target memory.",
+    "For misattribution, use only the resolved source entries below. Include quoted_span as the exact target text span being challenged, cited_stream_ids from those entries, source_assessment, and patch fields that directly correct the target memory.",
     "Set source_assessment to supports_flag only when the cited source entries support the flag, contradicts_flag when they refute the flag, and provenance_insufficient when the provided source entries are missing or inadequate.",
+    "Audience entity metadata below is legitimate grounding for the listed display_name. If the target uses that exact display_name for the audience and a source episode is tagged with that audience entity_id, do not flag the audience-name reference merely because the raw source text omits the name.",
     "For temporal drift, provide corrected timestamps and/or a replacement description.",
     "For semantic_edge temporal drift or identity inconsistency, provide suggested_valid_to and optional by_edge_id; only flag edges that should be reviewed for closure.",
     "For identity inconsistency, target a specific value, goal, trait, commitment, or autobiographical period by id and propose reinforce, contradict, or patch.",
@@ -398,10 +403,36 @@ function suppressFlag(
   };
 }
 
+function gateAudienceNameGrounding(
+  flag: ReviewFlag,
+  sourceBundle: OverseerSourceBundle,
+): SuppressedOverseerFlag | null {
+  if (flag.quoted_span === undefined) {
+    return null;
+  }
+
+  for (const audience of sourceBundle.audience_entities) {
+    if (
+      audience.source_episode_ids.length > 0 &&
+      valueAppearsIn(flag.quoted_span, audience.display_name)
+    ) {
+      return suppressFlag(flag, "AUDIENCE-NAME-GROUNDED", flag.cited_stream_ids ?? []);
+    }
+  }
+
+  return null;
+}
+
 function gateMisattributionFlag(
   flag: ReviewFlag,
   sourceBundle: OverseerSourceBundle,
 ): SuppressedOverseerFlag | null {
+  const audienceNameSuppression = gateAudienceNameGrounding(flag, sourceBundle);
+
+  if (audienceNameSuppression !== null) {
+    return audienceNameSuppression;
+  }
+
   const citedIds = flag.cited_stream_ids ?? [];
 
   if (citedIds.length === 0) {

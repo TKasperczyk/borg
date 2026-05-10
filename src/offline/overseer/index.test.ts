@@ -537,6 +537,69 @@ describe("overseer process", () => {
     expect(prompt).toContain("Private audience source names Maya.");
   });
 
+  it("includes audience entity metadata for audience-tagged semantic source episodes", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [createOverseerResponse([])],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const audienceEntityId = harness.entityRepository.resolve("Tom", {
+      provenance: "transport_audience_label",
+    });
+    const source = await appendSourceEntry(harness, "Otto is my dog.");
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Otto source episode",
+          narrative: "The user said Otto is their dog.",
+          source_stream_ids: [source.id],
+          audience_entity_id: audienceEntityId,
+          shared: false,
+          created_at: nowMs - 3_000,
+          updated_at: nowMs - 3_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Otto as Tom's dog",
+          description: "Otto is Tom's dog.",
+          source_episode_ids: [episode.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+          last_verified_at: nowMs - 1_000,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.run(harness.createContext(), {
+      dryRun: true,
+    });
+
+    const prompt = requestPrompt(llm);
+    expect(prompt).toContain("Audience entity metadata below is legitimate grounding");
+    expect(prompt).toContain("Include quoted_span as the exact target text span being challenged");
+    expect(prompt).toContain(
+      `EPISODE episode_id=${episode.id} audience_entity_id=${audienceEntityId} shared=false`,
+    );
+    expect(prompt).toContain(
+      `AUDIENCE entity_id=${audienceEntityId} display_name="Tom" source_episode_ids=${episode.id}`,
+    );
+  });
+
   it("suppresses Maya misattribution flags when source entries contradict the flag", async () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
     const llm = new FakeLLMClient();
@@ -582,6 +645,86 @@ describe("overseer process", () => {
       expect.objectContaining({
         reason: "SOURCE-CONTRADICTS",
         cited_ids: [source.id],
+      }),
+    ]);
+    expect(result.candidate_stats).toEqual({
+      proposed: 1,
+      accepted: 0,
+      rejected: 1,
+    });
+    expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+  });
+
+  it("suppresses audience display-name misattribution flags when source episodes are audience-tagged", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const audienceEntityId = harness.entityRepository.resolve("Tom", {
+      provenance: "transport_audience_label",
+    });
+    const source = await appendSourceEntry(harness, "Otto is my dog.");
+    llm.pushResponse(
+      createOverseerResponse([
+        supportedMisattributionFlag([source.id], {
+          reason: "The source text does not literally name Tom.",
+          patch: {
+            label: "Otto as the audience's dog",
+          },
+          quoted_span: "Tom",
+        }),
+      ]),
+    );
+    const episode = await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Otto audience source",
+          narrative: "The user said Otto is their dog.",
+          source_stream_ids: [source.id],
+          audience_entity_id: audienceEntityId,
+          shared: false,
+          created_at: nowMs - 3_000,
+          updated_at: nowMs - 3_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Otto as Tom's dog",
+          description: "Otto is Tom's dog.",
+          source_episode_ids: [episode.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+          last_verified_at: nowMs - 1_000,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const ctx = harness.createContext();
+    const plan = await process.plan(ctx, {});
+    const result = await process.apply(ctx, plan);
+
+    expect(plan.items).toEqual([]);
+    expect(plan.suppressed_flags).toEqual([
+      expect.objectContaining({
+        reason: "AUDIENCE-NAME-GROUNDED",
+        cited_ids: [source.id],
+        flag: expect.objectContaining({
+          quoted_span: "Tom",
+          source_assessment: "supports_flag",
+        }),
       }),
     ]);
     expect(result.candidate_stats).toEqual({

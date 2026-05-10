@@ -1,7 +1,7 @@
 import type { Episode } from "../../memory/episodic/index.js";
 import type { SemanticEdge, SemanticNode } from "../../memory/semantic/index.js";
 import type { StreamEntry } from "../../stream/index.js";
-import type { EpisodeId, StreamEntryId } from "../../util/ids.js";
+import type { EntityId, EpisodeId, StreamEntryId } from "../../util/ids.js";
 import type { OfflineContext } from "../types.js";
 
 export type OverseerSourceTarget =
@@ -26,11 +26,25 @@ export type OverseerResolvedSourceEntry = {
   entry: StreamEntry;
 };
 
+export type OverseerSourceEpisode = {
+  id: EpisodeId;
+  audience_entity_id: EntityId | null;
+  shared: boolean;
+};
+
+export type OverseerAudienceMetadata = {
+  entity_id: EntityId;
+  display_name: string;
+  source_episode_ids: EpisodeId[];
+};
+
 export type OverseerSourceBundle = {
   target_type: OverseerSourceTarget["type"];
   target_id: OverseerSourceTarget["id"];
   source_episode_ids: EpisodeId[];
   source_stream_ids: StreamEntryId[];
+  source_episodes: OverseerSourceEpisode[];
+  audience_entities: OverseerAudienceMetadata[];
   entries: OverseerResolvedSourceEntry[];
   missing_episode_ids: EpisodeId[];
   missing_stream_ids: StreamEntryId[];
@@ -83,6 +97,54 @@ function appendStreamSources(
 
     existing.push(episodeId);
   }
+}
+
+function sourceEpisodeMetadata(episodes: readonly Episode[]): OverseerSourceEpisode[] {
+  return episodes.map((episode) => ({
+    id: episode.id,
+    audience_entity_id: episode.audience_entity_id ?? null,
+    shared: episode.shared ?? (episode.audience_entity_id ?? null) === null,
+  }));
+}
+
+function audienceMetadataForEpisodes(
+  episodes: readonly Episode[],
+  ctx: OfflineContext,
+): OverseerAudienceMetadata[] {
+  const byEntityId = new Map<string, OverseerAudienceMetadata>();
+
+  for (const episode of episodes) {
+    const audienceEntityId = episode.audience_entity_id ?? null;
+
+    if (audienceEntityId === null) {
+      continue;
+    }
+
+    const entity = ctx.entityRepository.get(audienceEntityId);
+    const displayName = entity?.canonical_name.trim() ?? "";
+
+    if (displayName.length === 0) {
+      continue;
+    }
+
+    const existing = byEntityId.get(audienceEntityId);
+
+    if (existing === undefined) {
+      byEntityId.set(audienceEntityId, {
+        entity_id: audienceEntityId,
+        display_name: displayName,
+        source_episode_ids: [episode.id],
+      });
+      continue;
+    }
+
+    existing.source_episode_ids.push(episode.id);
+  }
+
+  return [...byEntityId.values()].map((metadata) => ({
+    ...metadata,
+    source_episode_ids: uniqueEpisodeIds(metadata.source_episode_ids),
+  }));
 }
 
 async function sourceEpisodesForTarget(
@@ -150,6 +212,8 @@ export async function resolveTargetSourceBundle(
     target_id: target.id,
     source_episode_ids: sourceEpisodes.sourceEpisodeIds,
     source_stream_ids: streamIds,
+    source_episodes: sourceEpisodeMetadata(sourceEpisodes.episodes),
+    audience_entities: audienceMetadataForEpisodes(sourceEpisodes.episodes, ctx),
     entries,
     missing_episode_ids: sourceEpisodes.missingEpisodeIds,
     missing_stream_ids: streamIds.filter((streamId) => !resolvedEntries.has(streamId)),
@@ -176,6 +240,30 @@ export function renderSourceBundleForPrompt(bundle: OverseerSourceBundle): strin
     `source_episode_ids: ${formatIdList(bundle.source_episode_ids)}`,
     `source_stream_ids: ${formatIdList(bundle.source_stream_ids)}`,
   ];
+
+  if (bundle.source_episodes.length === 0) {
+    lines.push("Source episode audience tags: none");
+  } else {
+    lines.push("Source episode audience tags:");
+
+    for (const episode of bundle.source_episodes) {
+      lines.push(
+        `EPISODE episode_id=${episode.id} audience_entity_id=${episode.audience_entity_id ?? "none"} shared=${String(episode.shared)}`,
+      );
+    }
+  }
+
+  if (bundle.audience_entities.length === 0) {
+    lines.push("Audience entity metadata: none");
+  } else {
+    lines.push("Audience entity metadata:");
+
+    for (const audience of bundle.audience_entities) {
+      lines.push(
+        `AUDIENCE entity_id=${audience.entity_id} display_name=${JSON.stringify(audience.display_name)} source_episode_ids=${formatIdList(audience.source_episode_ids)}`,
+      );
+    }
+  }
 
   if (bundle.missing_episode_ids.length > 0) {
     lines.push(
