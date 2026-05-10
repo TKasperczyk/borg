@@ -45,7 +45,7 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
   },
   {
     id: "current_session_transcript",
-    label: "2. Full Current-Session Raw Transcript",
+    label: "2. Current-Session Transcript",
   },
   {
     id: "commitments_and_constraints",
@@ -102,6 +102,7 @@ export type EvidenceLedgerTranscriptOmittedReason = "over_budget";
 export type EvidenceLedger = {
   sections: EvidenceLedgerSection[];
   transcriptIncluded: boolean;
+  transcriptCompacted: boolean;
   transcriptOmittedReason?: EvidenceLedgerTranscriptOmittedReason;
   estimatedTokens: number;
 };
@@ -110,6 +111,7 @@ export type EvidenceLedgerTraceSummary = {
   entryCountsBySection: Record<EvidenceLedgerSectionId, number>;
   estimatedTokensBySection: Record<EvidenceLedgerSectionId, number>;
   transcriptIncluded: boolean;
+  transcriptCompacted: boolean;
   transcriptOmittedReason?: EvidenceLedgerTranscriptOmittedReason;
   totalEstimatedTokens: number;
 };

@@ -52,7 +52,9 @@ function renderSection(section: EvidenceLedgerSection): string {
 
 export function renderEvidenceLedger(ledger: EvidenceLedger): string | null {
   const transcriptStatus = ledger.transcriptIncluded
-    ? "current_session_transcript=included"
+    ? ledger.transcriptCompacted
+      ? "current_session_transcript=included compacted=true"
+      : "current_session_transcript=included"
     : `current_session_transcript=omitted reason=${ledger.transcriptOmittedReason ?? "unknown"}`;
   const content = [
     "EvidenceLedger: prioritized evidence substrate for the final response.",

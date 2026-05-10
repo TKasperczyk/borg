@@ -112,7 +112,8 @@ export type TurnPhaseCoordinatorOptions = {
   entityRepository: EntityRepository;
   socialRepository: SocialRepository;
   relationalSlotRepository: RelationalSlotRepository;
-  actionRepository: Pick<ActionRepository, "get" | "list">;
+  actionRepository: Pick<ActionRepository, "get" | "list"> &
+    Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
   openQuestionsRepository: Pick<OpenQuestionsRepository, "findByHandles">;
   toolDispatcher: ToolDispatcher;
   createStreamReader: (sessionId: SessionId) => StreamReader;
@@ -1154,6 +1155,9 @@ export class TurnPhaseCoordinator {
       actionRepository: this.options.actionRepository,
       openQuestionsRepository: this.options.openQuestionsRepository,
       currentSessionTranscriptTokenBudget: config.currentSessionTranscriptTokenBudget,
+      actionThreadRenderLimit: config.actionThreadRenderLimit,
+      actionThreadSimilarityThreshold: config.actionThreadSimilarityThreshold,
+      actionThreadSourceRecordLimit: config.actionThreadSourceRecordLimit,
     });
     const ledger = await builder.build(input);
     const rendered = renderEvidenceLedger(ledger);
@@ -1167,6 +1171,7 @@ export class TurnPhaseCoordinator {
         turnId: input.turnId,
         entry_counts: toTraceJsonValue(traceSummary.entryCountsBySection),
         transcript_included: traceSummary.transcriptIncluded,
+        transcript_compacted: traceSummary.transcriptCompacted,
         transcript_omitted_reason: traceSummary.transcriptOmittedReason ?? null,
         total_estimated_tokens: traceSummary.totalEstimatedTokens,
         estimated_tokens_by_section: toTraceJsonValue(traceSummary.estimatedTokensBySection),

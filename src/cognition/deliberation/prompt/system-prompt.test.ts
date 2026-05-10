@@ -175,6 +175,54 @@ function extractBlock(prompt: string, tag: string): string {
 }
 
 describe("buildBaseSystemPrompt", () => {
+  it("renders legacy retrieved evidence when no evidence ledger is active", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        retrievedEvidence: [
+          {
+            id: "raw-rollout",
+            source: "raw_stream",
+            text: "Rollout evidence from legacy retrieval.",
+            recallIntentId: "intent-rollout",
+            matchedTerms: [],
+            score: 0.9,
+            scoreBreakdown: {},
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    const block = extractBlock(prompt, "borg_retrieved_evidence");
+
+    expect(block).toContain("Retrieved evidence:");
+    expect(block).toContain("Rollout evidence from legacy retrieval.");
+  });
+
+  it("omits legacy retrieved evidence when the evidence ledger is active", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        evidenceLedgerPromptSection: "<borg_evidence_ledger>ledger</borg_evidence_ledger>",
+        retrievedEvidence: [
+          {
+            id: "raw-rollout",
+            source: "raw_stream",
+            text: "Rollout evidence from legacy retrieval.",
+            recallIntentId: "intent-rollout",
+            matchedTerms: [],
+            score: 0.9,
+            scoreBreakdown: {},
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(prompt).not.toContain("<borg_retrieved_evidence>");
+    expect(prompt).not.toContain("Rollout evidence from legacy retrieval.");
+    expect(prompt).toContain("<borg_working_state>");
+  });
+
   it("renders pending actions in working state", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({

@@ -6,6 +6,7 @@ import { renderEvidenceLedger } from "./renderer.js";
 function makeLedger(): EvidenceLedger {
   return {
     transcriptIncluded: false,
+    transcriptCompacted: false,
     transcriptOmittedReason: "over_budget",
     estimatedTokens: 42,
     sections: EVIDENCE_LEDGER_SECTION_DEFINITIONS.map((definition) => ({

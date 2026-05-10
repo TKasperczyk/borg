@@ -811,10 +811,11 @@ describe("TurnOrchestrator evidence ledger", () => {
         "Current-session transcript is authoritative for what happened in this conversation.",
       );
       expect(finalizerSystem).toContain("Current session says Marta is the tutor.");
-      expect(finalizerSystem).toContain("<borg_retrieved_evidence>");
+      expect(finalizerSystem).not.toContain("<borg_retrieved_evidence>");
       expect(traceEvent).toMatchObject({
         event: "evidence_ledger_built",
         transcript_included: true,
+        transcript_compacted: false,
         transcript_omitted_reason: null,
       });
       expect(traceEvent?.entry_counts).toMatchObject({

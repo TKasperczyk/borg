@@ -112,6 +112,7 @@ function replayConfig(
     },
     generation: {
       evidenceLedger: {
+        ...DEFAULT_CONFIG.generation.evidenceLedger,
         enabled: pipeline.evidenceLedgerEnabled,
         currentSessionTranscriptTokenBudget:
           DEFAULT_CONFIG.generation.evidenceLedger.currentSessionTranscriptTokenBudget,

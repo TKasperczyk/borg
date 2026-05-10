@@ -203,6 +203,7 @@ function makeEvidenceLedger(): EvidenceLedger {
       },
     ],
     transcriptIncluded: false,
+    transcriptCompacted: false,
     transcriptOmittedReason: "over_budget",
     estimatedTokens: 24,
   };

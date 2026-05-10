@@ -73,6 +73,9 @@ function buildBaseSystemPromptSections(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
 ): BaseSystemPromptSections {
+  const evidenceLedgerActive =
+    context.evidenceLedgerPromptSection !== undefined &&
+    context.evidenceLedgerPromptSection !== null;
   // Always render the block when commitments were populated, even if empty.
   // Otherwise the channel disappears entirely and the being can't tell whether
   // commitments are ambient (current) or absent from this turn's context.
@@ -120,16 +123,18 @@ function buildBaseSystemPromptSections(
     },
     {
       tag: "borg_retrieved_evidence",
-      content: summarizeRetrievedEvidence(
-        "Retrieved evidence",
-        {
-          evidence: context.retrievedEvidence ?? [],
-          episodes: context.retrievalResult,
-          semantic: context.retrievedSemantic ?? null,
-          openQuestions: context.openQuestionsContext ?? [],
-        },
-        options.retrievalContextBudget,
-      ),
+      content: evidenceLedgerActive
+        ? null
+        : summarizeRetrievedEvidence(
+            "Retrieved evidence",
+            {
+              evidence: context.retrievedEvidence ?? [],
+              episodes: context.retrievalResult,
+              semantic: context.retrievedSemantic ?? null,
+              openQuestions: context.openQuestionsContext ?? [],
+            },
+            options.retrievalContextBudget,
+          ),
     },
     {
       tag: "borg_retrieval_confidence",
