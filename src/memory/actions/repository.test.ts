@@ -44,6 +44,8 @@ function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
     description: overrides.description ?? "Review Atlas rollout",
     actor: overrides.actor ?? "borg",
     audience_entity_id: overrides.audience_entity_id ?? null,
+    goal_id: overrides.goal_id ?? null,
+    open_question_id: overrides.open_question_id ?? null,
     state: overrides.state ?? "committed_to_do",
     confidence: overrides.confidence ?? 0.8,
     provenance_episode_ids: overrides.provenance_episode_ids ?? [],

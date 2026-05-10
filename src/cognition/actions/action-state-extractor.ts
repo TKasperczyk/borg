@@ -200,6 +200,8 @@ function toActionRecord(input: {
     description: input.candidate.description,
     actor: input.candidate.actor,
     audience_entity_id: input.candidate.audience_entity_id ?? input.audienceEntityId,
+    goal_id: null,
+    open_question_id: null,
     state: input.candidate.state,
     confidence: input.candidate.confidence,
     provenance_episode_ids: [],

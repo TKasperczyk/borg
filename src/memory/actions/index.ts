@@ -1,4 +1,5 @@
 export { actionMigrations } from "./migrations.js";
+export { resolveOpenQuestionsForCompletedAction } from "./open-question-resolution.js";
 export {
   ActionRepository,
   createActionRecordsTableSchema,

@@ -223,6 +223,8 @@ describe("buildBaseSystemPrompt", () => {
             description: completed,
             actor: "borg",
             audience_entity_id: null,
+            goal_id: null,
+            open_question_id: null,
             state: "completed",
             confidence: 0.9,
             provenance_episode_ids: [],

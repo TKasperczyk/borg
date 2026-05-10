@@ -299,6 +299,7 @@ function openQuestion(id: OpenQuestionId, question: string): OpenQuestion {
     question,
     urgency: 0.8,
     status: "open",
+    goal_id: null,
     audience_entity_id: null,
     related_episode_ids: [],
     related_semantic_node_ids: ["semn_aaaaaaaaaaaaaaaa" as SemanticNodeId],

@@ -1,6 +1,6 @@
 import { StorageError } from "../../util/errors.js";
 import type { Migration, SqliteDatabase } from "../../storage/sqlite/index.js";
-import { tableExists } from "../../storage/sqlite/migrations-utils.js";
+import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 function ensureActionRecordsCanBeCreated(db: SqliteDatabase): void {
   if (!tableExists(db, "action_records")) {
@@ -34,6 +34,8 @@ export const actionMigrations = [
           description TEXT NOT NULL,
           actor TEXT NOT NULL,
           audience_entity_id TEXT NULL,
+          goal_id TEXT NULL,
+          open_question_id TEXT NULL,
           state TEXT NOT NULL CHECK (
             state IN (
               'considering',
@@ -63,8 +65,42 @@ export const actionMigrations = [
           ON action_records(actor);
         CREATE INDEX IF NOT EXISTS action_records_audience_entity_idx
           ON action_records(audience_entity_id);
+        CREATE INDEX IF NOT EXISTS action_records_goal_idx
+          ON action_records(goal_id);
+        CREATE INDEX IF NOT EXISTS action_records_open_question_idx
+          ON action_records(open_question_id);
         CREATE INDEX IF NOT EXISTS action_records_updated_idx
           ON action_records(updated_at DESC, id ASC);
+      `);
+    },
+  },
+  {
+    id: 2,
+    name: "action_records_intent_links",
+    up: (db) => {
+      if (!tableExists(db, "action_records")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "action_records", "goal_id")) {
+        db.exec(`
+          ALTER TABLE action_records
+            ADD COLUMN goal_id TEXT NULL;
+        `);
+      }
+
+      if (!tableHasColumn(db, "action_records", "open_question_id")) {
+        db.exec(`
+          ALTER TABLE action_records
+            ADD COLUMN open_question_id TEXT NULL;
+        `);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS action_records_goal_idx
+          ON action_records(goal_id);
+        CREATE INDEX IF NOT EXISTS action_records_open_question_idx
+          ON action_records(open_question_id);
       `);
     },
   },

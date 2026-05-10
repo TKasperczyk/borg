@@ -14,6 +14,7 @@ import {
   ActionRepository,
   actionMigrations,
   createActionRecordsTableSchema,
+  resolveOpenQuestionsForCompletedAction,
 } from "../memory/actions/index.js";
 import {
   CommitmentRepository,
@@ -46,6 +47,7 @@ import {
   OpenQuestionsRepository,
   TraitsRepository,
   ValuesRepository,
+  createOpenQuestionsTableSchema,
   selfMigrations,
   type AutobiographicalPeriod,
   type GoalRecord,
@@ -440,6 +442,10 @@ export async function createOfflineTestHarness(
     name: "semantic_nodes",
     schema: createSemanticNodesTableSchema(embeddingDimensions),
   });
+  const openQuestionsTable = await lance.openTable({
+    name: "open_questions",
+    schema: createOpenQuestionsTableSchema(embeddingDimensions),
+  });
   const skillsTable = await lance.openTable({
     name: "skills",
     schema: createSkillsTableSchema(embeddingDimensions),
@@ -473,6 +479,8 @@ export async function createOfflineTestHarness(
   });
   const openQuestionsRepository = new OpenQuestionsRepository({
     db,
+    table: openQuestionsTable,
+    embeddingClient,
     clock,
   });
   const moodRepository = new MoodRepository({
@@ -606,6 +614,13 @@ export async function createOfflineTestHarness(
     db,
     embeddingClient,
     clock,
+    onCompleted: (record) => {
+      resolveOpenQuestionsForCompletedAction({
+        action: record,
+        openQuestionsRepository,
+        identityService,
+      });
+    },
   });
   const proceduralEvidenceRepository = new ProceduralEvidenceRepository({
     db,
@@ -737,6 +752,7 @@ export async function createOfflineTestHarness(
       growthMarkersRepository,
       openQuestionsRepository,
       moodRepository,
+      actionRepository,
       socialRepository,
       entityRepository,
       commitmentRepository,

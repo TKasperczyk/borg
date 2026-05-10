@@ -7,7 +7,10 @@ import type { EmbeddingClient } from "../embeddings/index.js";
 import { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
-import { ActionRepository } from "../memory/actions/index.js";
+import {
+  ActionRepository,
+  resolveOpenQuestionsForCompletedAction,
+} from "../memory/actions/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
@@ -335,6 +338,13 @@ export async function buildBorgRepositories(
     db: sqlite,
     embeddingClient,
     clock,
+    onCompleted: (record) => {
+      resolveOpenQuestionsForCompletedAction({
+        action: record,
+        openQuestionsRepository,
+        identityService,
+      });
+    },
   });
   const proceduralEvidenceRepository = new ProceduralEvidenceRepository({
     db: sqlite,

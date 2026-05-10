@@ -949,6 +949,8 @@ export class Reflector {
           description: update.description.trim(),
           actor: update.actor,
           audience_entity_id: context.audienceEntityId ?? null,
+          goal_id: null,
+          open_question_id: null,
           state,
           confidence: update.confidence,
           provenance_episode_ids: provenanceEpisodeIds,

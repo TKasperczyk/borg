@@ -21,6 +21,8 @@ const scenario: ReplayScenario = {
       description: "Send the update to the project lead.",
       actor: "borg",
       audience_entity_id: null,
+      goal_id: null,
+      open_question_id: null,
       state: "committed_to_do",
       confidence: 0.9,
       provenance_episode_ids: [],

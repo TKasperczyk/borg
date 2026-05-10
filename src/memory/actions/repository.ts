@@ -21,6 +21,8 @@ import {
   type ActionId,
   type EntityId,
   type EpisodeId,
+  type GoalId,
+  type OpenQuestionId,
   type StreamEntryId,
 } from "../../util/ids.js";
 import {
@@ -61,6 +63,11 @@ function mapActionRow(row: Record<string, unknown>): ActionRecord {
       row.audience_entity_id === null || row.audience_entity_id === undefined
         ? null
         : row.audience_entity_id,
+    goal_id: row.goal_id === null || row.goal_id === undefined ? null : row.goal_id,
+    open_question_id:
+      row.open_question_id === null || row.open_question_id === undefined
+        ? null
+        : row.open_question_id,
     state: row.state,
     confidence: Number(row.confidence),
     provenance_episode_ids: parseJsonArray<EpisodeId>(
@@ -140,8 +147,11 @@ function stateTimestampField(state: ActionState): ActionStateTimestampField {
 
 export type ActionRecordListFilter = {
   state?: ActionState;
+  states?: readonly ActionState[];
   actor?: ActionActor;
   audienceEntityId?: EntityId | null;
+  goalId?: GoalId;
+  openQuestionId?: OpenQuestionId;
   limit?: number;
 };
 
@@ -150,6 +160,7 @@ export type ActionRepositoryOptions = {
   table?: LanceDbTable;
   embeddingClient?: EmbeddingClient;
   clock?: Clock;
+  onCompleted?: (record: ActionRecord, previous: ActionRecord | null) => void;
 };
 
 export type ActionCountByState = Record<ActionState, number>;
@@ -224,14 +235,16 @@ export class ActionRepository {
       .prepare(
         `
           INSERT INTO action_records (
-            id, description, actor, audience_entity_id, state, confidence,
+            id, description, actor, audience_entity_id, goal_id, open_question_id, state, confidence,
             provenance_episode_ids, provenance_stream_entry_ids, created_at, updated_at,
             considering_at, committed_at, scheduled_at, completed_at, not_done_at, unknown_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             description = excluded.description,
             actor = excluded.actor,
             audience_entity_id = excluded.audience_entity_id,
+            goal_id = excluded.goal_id,
+            open_question_id = excluded.open_question_id,
             state = excluded.state,
             confidence = excluded.confidence,
             provenance_episode_ids = excluded.provenance_episode_ids,
@@ -250,6 +263,8 @@ export class ActionRepository {
         record.description,
         record.actor,
         record.audience_entity_id,
+        record.goal_id,
+        record.open_question_id,
         record.state,
         record.confidence,
         serializeJsonValue(record.provenance_episode_ids),
@@ -273,6 +288,9 @@ export class ActionRepository {
 
     this.upsertSqlRow(parsed);
     this.scheduleVectorUpsert(parsed);
+    if (parsed.state === "completed") {
+      this.options.onCompleted?.(parsed, null);
+    }
   }
 
   update(id: ActionId, patch: ActionRecordPatch): void {
@@ -284,7 +302,11 @@ export class ActionRepository {
       });
     }
 
-    const parsedPatch = actionRecordPatchSchema.parse(patch);
+    const parsedPatch = actionRecordPatchSchema.parse({
+      ...patch,
+      ...("goal_id" in patch ? {} : { goal_id: current.goal_id }),
+      ...("open_question_id" in patch ? {} : { open_question_id: current.open_question_id }),
+    });
     const nextState = parsedPatch.state ?? current.state;
     const nowMs = parsedPatch.updated_at ?? this.clock.now();
     const timestampField = stateTimestampField(nextState);
@@ -300,6 +322,9 @@ export class ActionRepository {
 
     this.upsertSqlRow(next);
     this.scheduleVectorUpsert(next);
+    if (current.state !== "completed" && next.state === "completed") {
+      this.options.onCompleted?.(next, current);
+    }
   }
 
   get(id: ActionId): ActionRecord | null {
@@ -332,6 +357,17 @@ export class ActionRepository {
       values.push(actionStateSchema.parse(filter.state));
     }
 
+    if (filter.states !== undefined) {
+      const states = [...new Set(filter.states.map((state) => actionStateSchema.parse(state)))];
+
+      if (states.length === 0) {
+        return [];
+      }
+
+      clauses.push(`state IN (${states.map(() => "?").join(", ")})`);
+      values.push(...states);
+    }
+
     if (filter.actor !== undefined) {
       clauses.push("actor = ?");
       values.push(filter.actor);
@@ -344,6 +380,16 @@ export class ActionRepository {
         clauses.push("audience_entity_id = ?");
         values.push(filter.audienceEntityId);
       }
+    }
+
+    if (filter.goalId !== undefined) {
+      clauses.push("goal_id = ?");
+      values.push(filter.goalId);
+    }
+
+    if (filter.openQuestionId !== undefined) {
+      clauses.push("open_question_id = ?");
+      values.push(filter.openQuestionId);
     }
 
     const limit = filter.limit === undefined ? null : Math.max(1, Math.floor(filter.limit));

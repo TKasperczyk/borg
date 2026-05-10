@@ -8,8 +8,11 @@ import {
   type ActionId,
   type EntityId,
   type EpisodeId,
+  type GoalId,
+  type OpenQuestionId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { goalIdSchema, openQuestionIdSchema } from "../self/index.js";
 
 export const ACTION_STATES = [
   "considering",
@@ -57,6 +60,8 @@ const actionRecordShape = z.object({
   description: z.string().min(1),
   actor: actionActorSchema,
   audience_entity_id: actionEntityIdSchema.nullable(),
+  goal_id: goalIdSchema.nullable().default(null),
+  open_question_id: openQuestionIdSchema.nullable().default(null),
   state: actionStateSchema,
   confidence: z.number().min(0).max(1),
   provenance_episode_ids: z.array(actionEpisodeIdSchema),
@@ -97,3 +102,5 @@ export type ActionState = z.infer<typeof actionStateSchema>;
 export type ActionActor = z.infer<typeof actionActorSchema>;
 export type ActionRecord = z.infer<typeof actionRecordSchema>;
 export type ActionRecordPatch = z.infer<typeof actionRecordPatchSchema>;
+export type ActionGoalId = GoalId;
+export type ActionOpenQuestionId = OpenQuestionId;
