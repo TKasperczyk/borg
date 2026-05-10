@@ -141,9 +141,16 @@ async function restoreSemanticSnapshot(input: {
 }): Promise<void> {
   const afterEdges = snapshotSemanticEdges(input.ctx);
 
-  for (const edgeId of afterEdges.keys()) {
-    if (!input.beforeEdges.has(edgeId)) {
+  for (const [edgeId, edge] of afterEdges) {
+    const before = input.beforeEdges.get(edgeId);
+
+    if (before === undefined) {
       input.ctx.semanticEdgeRepository.delete(edgeId);
+      continue;
+    }
+
+    if (semanticEdgeSnapshot(before) !== semanticEdgeSnapshot(edge)) {
+      input.ctx.semanticEdgeRepository.restoreEdge(before);
     }
   }
 

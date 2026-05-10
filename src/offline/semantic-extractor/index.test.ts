@@ -6,6 +6,7 @@ import { StreamWriter } from "../../stream/index.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
+  createSemanticEdgeFixture,
   createSemanticNodeFixture,
 } from "../test-support.js";
 import { MaintenanceOrchestrator } from "../orchestrator.js";
@@ -337,6 +338,95 @@ describe("semantic extractor process", () => {
         skip_reasons: expect.arrayContaining(["invalid_endpoint"]),
       }),
     });
+  });
+
+  it("restores merged edge evidence when a later batch step fails", async () => {
+    const priorEpisode = createEpisodeFixture({
+      title: "Prior edge evidence",
+      narrative: "Earlier evidence supported the existing semantic edge.",
+    });
+    const episode = createEpisodeFixture({
+      title: "Fresh edge evidence",
+      narrative: "Fresh evidence reasserts the same semantic edge before review enqueue fails.",
+    });
+    const fromNode = createSemanticNodeFixture({
+      label: "Atlas rollout",
+      description: "The Atlas rollout is tracked as a release concern.",
+      source_episode_ids: [priorEpisode.id],
+    });
+    const toNode = createSemanticNodeFixture({
+      label: "Rollback planning",
+      description: "Rollback planning is tracked as a release practice.",
+      source_episode_ids: [priorEpisode.id],
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "concept",
+              label: "Review queue trigger",
+              description: "A new concept that triggers duplicate review after extraction.",
+              domain: null,
+              aliases: [],
+              confidence: 0.61,
+              source_episode_ids: [episode.id],
+            },
+          ],
+          edges: [
+            {
+              from_label: fromNode.label,
+              to_label: toNode.label,
+              relation: "supports",
+              confidence: 0.89,
+              evidence_episode_ids: [episode.id],
+              valid_from_ts: null,
+              valid_to_ts: null,
+            },
+          ],
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(harness.cleanup);
+    await harness.episodicRepository.insert(priorEpisode);
+    await harness.episodicRepository.insert(episode);
+    await harness.semanticNodeRepository.insert(fromNode);
+    await harness.semanticNodeRepository.insert(toNode);
+    const originalEdge = harness.semanticEdgeRepository.addEdge(
+      createSemanticEdgeFixture({
+        from_node_id: fromNode.id,
+        to_node_id: toNode.id,
+        relation: "supports",
+        confidence: 0.42,
+        evidence_episode_ids: [priorEpisode.id],
+        created_at: 900_000,
+        last_verified_at: 900_000,
+        valid_from: 900_000,
+      }),
+    );
+    const process = createProcess(harness);
+    const ctx = {
+      ...harness.createContext(),
+      semanticReviewService: {
+        queueDuplicateReview: vi.fn(() => {
+          throw new Error("review enqueue failed");
+        }),
+        reviewDuplicateCandidate: vi.fn(),
+      } as unknown as OfflineContext["semanticReviewService"],
+    };
+
+    const plan = await process.plan(ctx);
+    const result = await process.apply(ctx, plan);
+
+    expect(result.changes).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    expect(harness.semanticEdgeRepository.getEdge(originalEdge.id)).toEqual(originalEdge);
+    await expect(
+      harness.semanticNodeRepository.list({ includeArchived: true }),
+    ).resolves.not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: "Review queue trigger" })]),
+    );
   });
 
   it("traces node dedupe when extraction updates an existing compatible node", async () => {
