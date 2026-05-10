@@ -1,16 +1,16 @@
 import { z } from "zod";
 
-import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
-import {
-  semanticNodeIdSchema,
-  type ReviewQueueItem,
-  type SemanticNode,
-} from "../../memory/semantic/index.js";
+import { episodeIdSchema } from "../../memory/episodic/index.js";
+import { semanticNodeIdSchema, type ReviewQueueItem } from "../../memory/semantic/index.js";
+import type { StreamEntry } from "../../stream/index.js";
+import { DEFAULT_SESSION_ID, type EpisodeId, type StreamEntryId } from "../../util/ids.js";
 import type { OfflineContext } from "../types.js";
 import {
   gateMisattributionFlag,
   overseerFlagAuditPayloadSchema,
-  resolveTargetSourceBundle,
+  type OverseerFlagAuditPayload,
+  type OverseerResolvedSourceEntry,
+  type OverseerSourceBundle,
   type SuppressedOverseerFlag,
 } from "./source-grounding.js";
 
@@ -34,25 +34,8 @@ const revalidationTargetRefsSchema = z.discriminatedUnion("target_type", [
 
 type ReviewRevalidationContext = Pick<
   OfflineContext,
-  | "clock"
-  | "entityRepository"
-  | "episodicRepository"
-  | "retrievalPipeline"
-  | "reviewQueueRepository"
-  | "semanticNodeRepository"
+  "clock" | "episodicRepository" | "retrievalPipeline" | "reviewQueueRepository"
 >;
-
-type RevalidationTarget =
-  | {
-      type: "episode";
-      id: Episode["id"];
-      content: Episode;
-    }
-  | {
-      type: "semantic_node";
-      id: SemanticNode["id"];
-      content: SemanticNode;
-    };
 
 export type ReviewRevalidationOptions = {
   kind: "misattribution";
@@ -98,11 +81,10 @@ function shouldRevalidateByAge(
   return item.created_at <= now - options.maxAgeDays * DAY_MS;
 }
 
-async function resolveRevalidationTarget(
-  ctx: ReviewRevalidationContext,
+function parseRevalidationTargetRefs(
   item: ReviewQueueItem,
   warnings: string[],
-): Promise<RevalidationTarget | null> {
+): z.infer<typeof revalidationTargetRefsSchema> | null {
   const parsedRefs = revalidationTargetRefsSchema.safeParse(item.refs);
 
   if (!parsedRefs.success) {
@@ -110,34 +92,148 @@ async function resolveRevalidationTarget(
     return null;
   }
 
-  if (parsedRefs.data.target_type === "episode") {
-    const episode = await ctx.episodicRepository.get(parsedRefs.data.target_id, {
-      includeArchived: true,
-    });
+  return parsedRefs.data;
+}
 
-    if (episode === null) {
-      warnings.push(`review ${item.id} skipped: target episode was not found`);
-      return null;
-    }
+function missingPersistedInputFields(payload: OverseerFlagAuditPayload): string[] {
+  const missing: string[] = [];
 
-    return {
-      type: "episode",
-      id: episode.id,
-      content: episode,
-    };
+  if (payload.quoted_span === undefined) {
+    missing.push("quoted_span");
   }
 
-  const node = await ctx.semanticNodeRepository.get(parsedRefs.data.target_id);
+  if (payload.cited_stream_ids === undefined) {
+    missing.push("cited_stream_ids");
+  }
 
-  if (node === null) {
-    warnings.push(`review ${item.id} skipped: target semantic node was not found`);
+  if (payload.source_assessment === undefined) {
+    missing.push("source_assessment");
+  }
+
+  return missing;
+}
+
+function uniqueEpisodeIds(ids: readonly EpisodeId[]): EpisodeId[] {
+  return [...new Set(ids)];
+}
+
+function uniqueStreamIds(ids: readonly StreamEntryId[]): StreamEntryId[] {
+  return [...new Set(ids)];
+}
+
+function sourceEpisodeIdsFromPayload(payload: OverseerFlagAuditPayload): EpisodeId[] {
+  return uniqueEpisodeIds([
+    ...(payload.source_episode_ids ?? []),
+    ...payload.audience_entities.flatMap((audience) => audience.source_episode_ids),
+  ]);
+}
+
+function sourceStreamIdsFromPayload(
+  payload: OverseerFlagAuditPayload & { cited_stream_ids: StreamEntryId[] },
+): StreamEntryId[] {
+  return uniqueStreamIds(payload.source_stream_ids ?? payload.cited_stream_ids);
+}
+
+function placeholderStreamEntry(id: StreamEntryId): StreamEntry {
+  return {
+    id,
+    timestamp: 0,
+    kind: "internal_event",
+    content: {
+      missing_persisted_citation: true,
+    },
+    session_id: DEFAULT_SESSION_ID,
+    compressed: false,
+  };
+}
+
+async function resolvePersistedSourceEntries(
+  ctx: ReviewRevalidationContext,
+  item: ReviewQueueItem,
+  sourceStreamIds: readonly StreamEntryId[],
+  sourceEpisodeIds: readonly EpisodeId[],
+  warnings: string[],
+): Promise<OverseerResolvedSourceEntry[]> {
+  const resolvedEntries = await ctx.retrievalPipeline.resolveSourceEntries(sourceStreamIds);
+  const missingStreamIds: StreamEntryId[] = [];
+  const entries = sourceStreamIds.map((streamId) => {
+    const entry = resolvedEntries.get(streamId);
+
+    if (entry !== undefined) {
+      return {
+        source_episode_ids: [...sourceEpisodeIds],
+        entry,
+      };
+    }
+
+    missingStreamIds.push(streamId);
+    return {
+      source_episode_ids: [...sourceEpisodeIds],
+      entry: placeholderStreamEntry(streamId),
+    };
+  });
+
+  if (missingStreamIds.length > 0) {
+    warnings.push(
+      `review ${item.id}: persisted source stream entries no longer resolve: ${missingStreamIds.join(", ")}`,
+    );
+  }
+
+  return entries;
+}
+
+function recordArchivedPersistedSourceEpisodes(
+  ctx: ReviewRevalidationContext,
+  item: ReviewQueueItem,
+  sourceEpisodeIds: readonly EpisodeId[],
+  warnings: string[],
+): void {
+  const stats = ctx.episodicRepository.getStatsMany(sourceEpisodeIds);
+  const archived = sourceEpisodeIds.filter((episodeId) => stats.get(episodeId)?.archived === true);
+
+  if (archived.length > 0) {
+    warnings.push(
+      `review ${item.id}: persisted source episodes are now archived: ${archived.join(", ")}`,
+    );
+  }
+}
+
+async function buildPersistedSourceBundle(
+  ctx: ReviewRevalidationContext,
+  item: ReviewQueueItem,
+  payload: OverseerFlagAuditPayload & {
+    cited_stream_ids: StreamEntryId[];
+    quoted_span: string;
+    source_assessment: NonNullable<OverseerFlagAuditPayload["source_assessment"]>;
+  },
+  warnings: string[],
+): Promise<OverseerSourceBundle | null> {
+  const targetRefs = parseRevalidationTargetRefs(item, warnings);
+
+  if (targetRefs === null) {
     return null;
   }
 
+  const sourceEpisodeIds = sourceEpisodeIdsFromPayload(payload);
+  const sourceStreamIds = sourceStreamIdsFromPayload(payload);
+  recordArchivedPersistedSourceEpisodes(ctx, item, sourceEpisodeIds, warnings);
+
   return {
-    type: "semantic_node",
-    id: node.id,
-    content: node,
+    target_type: targetRefs.target_type,
+    target_id: targetRefs.target_id,
+    source_episode_ids: sourceEpisodeIds,
+    source_stream_ids: sourceStreamIds,
+    source_episodes: [],
+    audience_entities: payload.audience_entities,
+    entries: await resolvePersistedSourceEntries(
+      ctx,
+      item,
+      sourceStreamIds,
+      sourceEpisodeIds,
+      warnings,
+    ),
+    missing_episode_ids: [],
+    missing_stream_ids: [],
   };
 }
 
@@ -180,14 +276,32 @@ export async function revalidateReviewQueue(
       continue;
     }
 
-    const target = await resolveRevalidationTarget(ctx, item, result.warnings);
+    const missingFields = missingPersistedInputFields(parsedPayload.data);
 
-    if (target === null) {
-      result.unchanged += 1;
+    if (missingFields.length > 0) {
+      result.skipped_legacy += 1;
+      result.warnings.push(
+        `review ${item.id} skipped: overseer_flag payload is missing ${missingFields.join(", ")}`,
+      );
       continue;
     }
 
-    const sourceBundle = await resolveTargetSourceBundle(target, ctx);
+    const sourceBundle = await buildPersistedSourceBundle(
+      ctx,
+      item,
+      parsedPayload.data as OverseerFlagAuditPayload & {
+        cited_stream_ids: StreamEntryId[];
+        quoted_span: string;
+        source_assessment: NonNullable<OverseerFlagAuditPayload["source_assessment"]>;
+      },
+      result.warnings,
+    );
+
+    if (sourceBundle === null) {
+      result.skipped_legacy += 1;
+      continue;
+    }
+
     const suppression = gateMisattributionFlag(parsedPayload.data, sourceBundle);
 
     result.revalidated += 1;
@@ -202,7 +316,7 @@ export async function revalidateReviewQueue(
       item.id,
       {
         decision: "dismiss",
-        reason: `revalidated -- now suppressed by current grounding logic: ${suppressionDiagnostic(suppression)}`,
+        reason: `revalidated -- now suppressed by current gate logic against persisted enqueue-time inputs: ${suppressionDiagnostic(suppression)}`,
       },
       {
         source: "auto",

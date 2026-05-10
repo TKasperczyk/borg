@@ -20,6 +20,8 @@ async function appendSourceEntry(harness: OfflineHarness, content: string) {
 
 function overseerPayload(input: {
   citedStreamIds: readonly StreamEntryId[];
+  sourceEpisodeIds?: readonly EpisodeId[];
+  sourceStreamIds?: readonly StreamEntryId[];
   quotedSpan: string;
   audienceEntities?: Array<{
     entity_id: string;
@@ -39,6 +41,8 @@ function overseerPayload(input: {
     cited_stream_ids: [...input.citedStreamIds],
     quoted_span: input.quotedSpan,
     audience_entities: input.audienceEntities ?? [],
+    source_episode_ids: [...(input.sourceEpisodeIds ?? [])],
+    source_stream_ids: [...(input.sourceStreamIds ?? input.citedStreamIds)],
   };
 }
 
@@ -128,6 +132,7 @@ describe("review queue revalidation", () => {
         evidence_stream_ids: [audienceSource.id],
         overseer_flag: overseerPayload({
           citedStreamIds: [audienceSource.id],
+          sourceEpisodeIds: [audienceEpisode.id],
           quotedSpan: "Tom",
           audienceEntities: [
             {
@@ -151,6 +156,7 @@ describe("review queue revalidation", () => {
         evidence_stream_ids: [realSource.id],
         overseer_flag: overseerPayload({
           citedStreamIds: [realSource.id],
+          sourceEpisodeIds: [realEpisode.id],
           quotedSpan: "Tom",
         }),
       },
@@ -190,16 +196,143 @@ describe("review queue revalidation", () => {
       refs: {
         review_resolution: {
           decision: "dismiss",
-          reason: expect.stringContaining("AUDIENCE-NAME-GROUNDED"),
+          reason: expect.stringContaining(
+            "suppressed by current gate logic against persisted enqueue-time inputs",
+          ),
         },
       },
     });
+    expect(harness.reviewQueueRepository.get(falsePositive.id)?.refs.review_resolution).toEqual(
+      expect.objectContaining({
+        reason: expect.stringContaining("AUDIENCE-NAME-GROUNDED"),
+      }),
+    );
     expect(harness.reviewQueueRepository.get(real.id)).toMatchObject({
       resolution: null,
     });
     expect(harness.reviewQueueRepository.get(legacy.id)).toMatchObject({
       resolution: null,
     });
+  });
+
+  it("uses persisted enqueue-time audience inputs when live target sources change", async () => {
+    const nowMs = 15 * 24 * 60 * 60 * 1_000;
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+    });
+    cleanup.push(harness.cleanup);
+
+    const audienceEntityId = harness.entityRepository.resolve("Tom", {
+      provenance: "transport_audience_label",
+    });
+    const persistedSource = await appendSourceEntry(harness, "Otto is my dog.");
+    const persistedEpisode = await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Persisted enqueue source",
+          narrative: "The user said Otto is their dog.",
+          source_stream_ids: [persistedSource.id],
+          audience_entity_id: audienceEntityId,
+          shared: false,
+          created_at: nowMs - 4_000,
+          updated_at: nowMs - 4_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Otto as Tom's dog",
+          description: "Otto is Tom's dog.",
+          source_episode_ids: [persistedEpisode.id],
+          created_at: nowMs - 3_000,
+          updated_at: nowMs - 3_000,
+          last_verified_at: nowMs - 3_000,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const liveSource = await appendSourceEntry(harness, "Riley led the workshop, not Tom.");
+    const liveEpisode = await harness.episodicRepository.insert(
+      createEpisodeFixture(
+        {
+          title: "Changed live source",
+          narrative: "The user said Riley led the workshop.",
+          source_stream_ids: [liveSource.id],
+          created_at: nowMs - 2_000,
+          updated_at: nowMs - 2_000,
+        },
+        [0, 0, 1, 0],
+      ),
+    );
+
+    const review = harness.reviewQueueRepository.enqueue({
+      kind: "misattribution",
+      refs: {
+        target_type: "semantic_node",
+        target_id: node.id,
+        patch: {
+          description: "Corrected description.",
+        },
+        evidence_stream_ids: [persistedSource.id],
+        overseer_flag: overseerPayload({
+          citedStreamIds: [persistedSource.id],
+          sourceEpisodeIds: [persistedEpisode.id],
+          quotedSpan: "Tom",
+          audienceEntities: [
+            {
+              entity_id: audienceEntityId,
+              display_name: "Tom",
+              source_episode_ids: [persistedEpisode.id],
+            },
+          ],
+        }),
+      },
+      reason: "The source text does not literally name Tom.",
+    });
+
+    await harness.semanticNodeRepository.update(node.id, {
+      description: "Otto is associated with a different live source now.",
+      source_episode_ids: [liveEpisode.id],
+      replace_source_episode_ids: true,
+    });
+    harness.episodicRepository.updateStats(persistedEpisode.id, {
+      archived: true,
+    });
+
+    const result = await revalidateReviewQueue(harness.createContext(), {
+      kind: "misattribution",
+    });
+
+    expect(result).toMatchObject({
+      revalidated: 1,
+      dismissed_as_suppressed: 1,
+      skipped_legacy: 0,
+      unchanged: 0,
+      diagnostics: {
+        "AUDIENCE-NAME-GROUNDED": 1,
+      },
+    });
+    expect(result.warnings).toEqual([
+      `review ${review.id}: persisted source episodes are now archived: ${persistedEpisode.id}`,
+    ]);
+    expect(harness.reviewQueueRepository.get(review.id)).toMatchObject({
+      resolution: "dismiss",
+      refs: {
+        review_resolution: {
+          decision: "dismiss",
+          reason: expect.stringContaining(
+            "suppressed by current gate logic against persisted enqueue-time inputs",
+          ),
+        },
+      },
+    });
+    expect(harness.reviewQueueRepository.get(review.id)?.refs.review_resolution).toEqual(
+      expect.objectContaining({
+        reason: expect.stringContaining("AUDIENCE-NAME-GROUNDED"),
+      }),
+    );
   });
 
   it("only revalidates items older than maxAgeDays when provided", async () => {
@@ -249,6 +382,7 @@ describe("review queue revalidation", () => {
       evidence_stream_ids: [source.id],
       overseer_flag: overseerPayload({
         citedStreamIds: [source.id],
+        sourceEpisodeIds: [episode.id],
         quotedSpan: "Tom",
         audienceEntities: [
           {

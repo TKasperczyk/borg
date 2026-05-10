@@ -424,11 +424,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         revalidateReviewQueue(
           {
             clock: deps.clock,
-            entityRepository: deps.entityRepository,
             episodicRepository: deps.episodicRepository,
             retrievalPipeline: deps.retrievalPipeline,
             reviewQueueRepository: deps.reviewQueueRepository,
-            semanticNodeRepository: deps.semanticNodeRepository,
           },
           options,
         ),

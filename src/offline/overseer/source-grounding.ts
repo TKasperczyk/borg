@@ -68,6 +68,8 @@ export const overseerFlagAuditPayloadSchema = overseerFlagPayloadSchema
   .extend({
     flag_kind: overseerFlagKindSchema,
     audience_entities: z.array(overseerAudienceMetadataSchema),
+    source_episode_ids: z.array(episodeIdSchema).optional(),
+    source_stream_ids: z.array(streamEntryIdSchema).optional(),
   })
   .strict()
   .superRefine((payload, ctx) => {
@@ -213,6 +215,8 @@ export function buildOverseerFlagAuditPayload(
     ...flag,
     flag_kind: flag.kind,
     audience_entities: sourceBundle.audience_entities,
+    source_episode_ids: sourceBundle.source_episode_ids,
+    source_stream_ids: sourceBundle.source_stream_ids,
   });
 }
 
