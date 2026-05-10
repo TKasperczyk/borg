@@ -653,6 +653,102 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries.map((entry) => entry.state_metadata?.["transitions"])).toEqual([1, 1, 1]);
   });
 
+  it("summarizes omitted null-goal action threads with state counts and bounded samples", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Track several independent action notes.",
+    });
+    const actions = [
+      makeAction(userEntry.id, {
+        description: "newest visible action",
+        state: "scheduled",
+        updated_at: NOW_MS + 60,
+        scheduled_at: NOW_MS + 60,
+      }),
+      makeAction(userEntry.id, {
+        description: "second visible action",
+        state: "considering",
+        updated_at: NOW_MS + 50,
+        considering_at: NOW_MS + 50,
+        scheduled_at: null,
+      }),
+      makeAction(userEntry.id, {
+        description:
+          "completed omitted thread with enough extra context to require a short bounded sample tail should not appear",
+        state: "completed",
+        updated_at: NOW_MS + 40,
+        completed_at: NOW_MS + 40,
+        scheduled_at: null,
+      }),
+      makeAction(userEntry.id, {
+        description: "scheduled omitted thread",
+        state: "scheduled",
+        updated_at: NOW_MS + 30,
+        scheduled_at: NOW_MS + 30,
+      }),
+      makeAction(userEntry.id, {
+        description: "committed omitted thread",
+        state: "committed_to_do",
+        updated_at: NOW_MS + 20,
+        committed_at: NOW_MS + 20,
+        scheduled_at: null,
+      }),
+      makeAction(userEntry.id, {
+        description: "completed older omitted thread",
+        state: "completed",
+        updated_at: NOW_MS + 10,
+        completed_at: NOW_MS + 10,
+        scheduled_at: null,
+      }),
+    ];
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => actions,
+        findSimilarDescriptionPairs: async () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      actionThreadRenderLimit: 2,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const actionEntries =
+      ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
+    const summary = actionEntries.find((entry) => entry.id === "action_threads:older_summary");
+
+    expect(actionEntries).toHaveLength(3);
+    expect(summary?.text).toContain("threads=4");
+    expect(summary?.text).toContain("records=4");
+    expect(summary?.text).toContain("committed_to_do=1");
+    expect(summary?.text).toContain("scheduled=1");
+    expect(summary?.text).toContain("completed=2");
+    expect(summary?.text).toContain("completed omitted thread with enough extra context");
+    expect(summary?.text).not.toContain("tail should not appear");
+    expect(summary?.text).toContain("scheduled omitted thread");
+    expect(summary?.text).toContain("committed omitted thread");
+  });
+
   it("renders relevant resolved open questions from the repository with state metadata", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

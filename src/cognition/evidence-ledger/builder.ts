@@ -1,8 +1,9 @@
-import type {
-  ActionDescriptionSimilarityPair,
-  ActionRecord,
-  ActionRepository,
-  ActionState,
+import {
+  ACTION_STATES,
+  type ActionDescriptionSimilarityPair,
+  type ActionRecord,
+  type ActionRepository,
+  type ActionState,
 } from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type {
@@ -58,6 +59,8 @@ const RELATIONAL_SLOT_LEDGER_LIMIT = 64;
 export const DEFAULT_ACTION_THREAD_RENDER_LIMIT = 12;
 export const DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD = 0.85;
 export const DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT = 256;
+const OLDER_ACTION_THREAD_SAMPLE_LIMIT = 4;
+const OLDER_ACTION_THREAD_SAMPLE_MAX_CHARS = 80;
 const TRANSCRIPT_RAW_TAIL_MIN_ENTRIES = 8;
 const TRANSCRIPT_RAW_TAIL_BUDGET_FRACTION = 0.6;
 const LIFECYCLE_OPEN_QUESTION_STATUSES = [
@@ -1107,6 +1110,41 @@ function actionThreadState(thread: ActionThread): ActionState {
   return thread.current.state;
 }
 
+function truncateOlderActionThreadSample(text: string): string {
+  if (text.length <= OLDER_ACTION_THREAD_SAMPLE_MAX_CHARS) {
+    return text;
+  }
+
+  return `${text.slice(0, OLDER_ACTION_THREAD_SAMPLE_MAX_CHARS - 3)}...`;
+}
+
+function renderOlderActionThreadsSummary(olderThreads: readonly ActionThread[]): string {
+  const olderRecordCount = olderThreads.reduce((count, thread) => count + thread.records.length, 0);
+  const stateCounts = new Map<ActionState, number>(ACTION_STATES.map((state) => [state, 0]));
+
+  for (const thread of olderThreads) {
+    stateCounts.set(thread.current.state, (stateCounts.get(thread.current.state) ?? 0) + 1);
+  }
+
+  const stateSummary = ACTION_STATES.map((state) => {
+    const count = stateCounts.get(state) ?? 0;
+    return count > 0 ? `${state}=${count}` : null;
+  })
+    .filter((entry): entry is string => entry !== null)
+    .join(" ");
+  const samples = olderThreads
+    .slice(0, OLDER_ACTION_THREAD_SAMPLE_LIMIT)
+    .map(
+      (thread) =>
+        `${thread.current.state}: ${JSON.stringify(
+          truncateOlderActionThreadSample(thread.current.description),
+        )}`,
+    )
+    .join(" | ");
+
+  return `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}, states=${stateSummary}, recent_samples=${samples}.`;
+}
+
 function entryFlatText(section: EvidenceLedgerSection, entry: EvidenceLedgerEntry): string {
   return [
     section.label,
@@ -1491,10 +1529,6 @@ export class EvidenceLedgerBuilder {
     }
 
     const olderThreads = threads.slice(renderLimit);
-    const olderRecordCount = olderThreads.reduce(
-      (count, thread) => count + thread.records.length,
-      0,
-    );
 
     addEntry(sections, "action_states", {
       id: "action_threads:older_summary",
@@ -1502,7 +1536,7 @@ export class EvidenceLedgerBuilder {
       session_scope: "global",
       actor: "system",
       trust_rank: ACTION_TRUST_RANK,
-      text: `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
+      text: renderOlderActionThreadsSummary(olderThreads),
       value: "older_action_threads",
       state: "omitted",
       taint: "none",
