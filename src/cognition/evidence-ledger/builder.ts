@@ -1,4 +1,9 @@
-import type { ActionRecord, ActionRepository } from "../../memory/actions/index.js";
+import type {
+  ActionDescriptionSimilarityPair,
+  ActionRecord,
+  ActionRepository,
+  ActionState,
+} from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type {
   RelationalSlot,
@@ -49,18 +54,28 @@ const OPEN_QUESTION_TRUST_RANK = 38;
 const PRIOR_SESSION_TRUST_RANK_CAP = 30;
 
 const RELATIONAL_SLOT_LEDGER_LIMIT = 64;
-const ACTION_LEDGER_LIMIT = 64;
+export const DEFAULT_ACTION_THREAD_RENDER_LIMIT = 12;
+export const DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD = 0.85;
+export const DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT = 256;
+const TRANSCRIPT_RAW_TAIL_MIN_ENTRIES = 8;
+const TRANSCRIPT_RAW_TAIL_BUDGET_FRACTION = 0.6;
 const LIFECYCLE_OPEN_QUESTION_STATUSES = [
   "resolved",
   "abandoned",
 ] as const satisfies readonly OpenQuestionStatus[];
 
+type ActionLedgerRepository = Pick<ActionRepository, "list"> &
+  Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
+
 export type EvidenceLedgerBuilderOptions = {
   createStreamReader: (sessionId: SessionId) => StreamReader;
   relationalSlotRepository: Pick<RelationalSlotRepository, "list">;
-  actionRepository: Pick<ActionRepository, "list">;
+  actionRepository: ActionLedgerRepository;
   openQuestionsRepository?: Pick<OpenQuestionsRepository, "findByHandles">;
   currentSessionTranscriptTokenBudget: number;
+  actionThreadRenderLimit?: number;
+  actionThreadSimilarityThreshold?: number;
+  actionThreadSourceRecordLimit?: number;
 };
 
 export type EvidenceLedgerBuildInput = {
@@ -92,6 +107,20 @@ type ScopeResolver = {
   streamOrderById: ReadonlyMap<string, number>;
   episodeScopesById: ReadonlyMap<string, EvidenceLedgerSessionScope>;
   episodeSourceStreamIdsById: ReadonlyMap<string, readonly string[]>;
+};
+
+type ActionThread = {
+  id: string;
+  records: ActionRecord[];
+  origin: ActionRecord;
+  current: ActionRecord;
+  scope: EvidenceLedgerSessionScope;
+};
+
+type TranscriptCompactionResult = {
+  entries: EvidenceLedgerEntry[];
+  rawStreamIds: Set<string>;
+  compacted: boolean;
 };
 
 function createSectionBuckets(): SectionBuckets {
@@ -216,6 +245,171 @@ function estimateTranscriptTokens(entries: readonly TranscriptStreamEntry[]): nu
   return estimatePromptTokens(
     entries.map((entry) => stringifyPromptContent(entry.content)).join("\n"),
   );
+}
+
+function estimateTranscriptEntryTokens(entry: TranscriptStreamEntry): number {
+  return estimatePromptTokens(stringifyPromptContent(entry.content));
+}
+
+function transcriptRawEntry(
+  entry: TranscriptStreamEntry,
+  resolver: ScopeResolver,
+): EvidenceLedgerEntry {
+  return {
+    id: `current_session_stream:${entry.id}`,
+    source_type: "current_session_stream",
+    session_scope: "current_session",
+    actor: actorForStreamEntry(entry),
+    trust_rank: TRANSCRIPT_TRUST_RANK,
+    text: stringifyPromptContent(entry.content),
+    stream_index: resolver.streamOrderById.get(entry.id),
+    state: transcriptState(entry),
+    taint: "none",
+    ...streamPersistenceClass(entry),
+  };
+}
+
+function compactedTranscriptRunEntry(
+  entries: readonly TranscriptStreamEntry[],
+  resolver: ScopeResolver,
+): EvidenceLedgerEntry {
+  const first = entries[0] as TranscriptStreamEntry;
+  const last = entries[entries.length - 1] as TranscriptStreamEntry;
+  const streamIds = entries.map((entry) => entry.id).join(", ");
+  const firstIndex = resolver.streamOrderById.get(first.id);
+  const lastIndex = resolver.streamOrderById.get(last.id);
+  const indexRange =
+    firstIndex === undefined || lastIndex === undefined ? "unknown" : `${firstIndex}..${lastIndex}`;
+
+  return {
+    id: `current_session_compacted:${first.id}`,
+    source_type: "system_metadata",
+    session_scope: "current_session",
+    actor: "system",
+    trust_rank: TRANSCRIPT_TRUST_RANK,
+    text: `Earlier assistant/system transcript entries compacted: entries=${entries.length}, stream_indexes=${indexRange}, stream_ids=${streamIds}.`,
+    stream_index: firstIndex,
+    state: "compacted",
+    taint: "none",
+  };
+}
+
+function compactedCurrentUserTranscriptEntry(
+  entry: TranscriptStreamEntry,
+  resolver: ScopeResolver,
+): EvidenceLedgerEntry {
+  return {
+    id: `current_session_compacted_current_user:${entry.id}`,
+    source_type: "system_metadata",
+    session_scope: "current_session",
+    actor: "system",
+    trust_rank: TRANSCRIPT_TRUST_RANK,
+    text: `Current user transcript duplicate compacted; full text is rendered in section 1 as current_user_message:${entry.id}.`,
+    stream_index: resolver.streamOrderById.get(entry.id),
+    state: "compacted",
+    taint: "none",
+  };
+}
+
+function rawTailStreamIds(
+  entries: readonly TranscriptStreamEntry[],
+  budget: number,
+  currentUserEntryId: string | undefined,
+): Set<string> {
+  const tailBudget = Math.max(1, Math.floor(budget * TRANSCRIPT_RAW_TAIL_BUDGET_FRACTION));
+  const ids = new Set<string>();
+  let tokens = 0;
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+
+    if (entry === undefined || entry.id === currentUserEntryId) {
+      continue;
+    }
+
+    const entryTokens = estimateTranscriptEntryTokens(entry);
+
+    if (ids.size >= TRANSCRIPT_RAW_TAIL_MIN_ENTRIES && tokens + entryTokens > tailBudget) {
+      break;
+    }
+
+    ids.add(entry.id);
+    tokens += entryTokens;
+  }
+
+  return ids;
+}
+
+function shouldKeepRawCompactedTranscriptEntry(
+  entry: TranscriptStreamEntry,
+  tailIds: ReadonlySet<string>,
+  currentUserEntryId: string | undefined,
+): boolean {
+  if (entry.id === currentUserEntryId) {
+    return false;
+  }
+
+  return (
+    tailIds.has(entry.id) ||
+    entry.kind === "user_msg" ||
+    entry.persistence_class === "assistant_self_report"
+  );
+}
+
+function compactTranscriptEntries(input: {
+  entries: readonly TranscriptStreamEntry[];
+  budget: number;
+  currentUserEntryId?: string;
+  resolver: ScopeResolver;
+}): TranscriptCompactionResult {
+  const transcriptTokens = estimateTranscriptTokens(input.entries);
+
+  if (transcriptTokens <= input.budget) {
+    return {
+      entries: input.entries.map((entry) => transcriptRawEntry(entry, input.resolver)),
+      rawStreamIds: new Set(input.entries.map((entry) => entry.id)),
+      compacted: false,
+    };
+  }
+
+  const tailIds = rawTailStreamIds(input.entries, input.budget, input.currentUserEntryId);
+  const renderedEntries: EvidenceLedgerEntry[] = [];
+  const rawStreamIds = new Set<string>();
+  let compactedRun: TranscriptStreamEntry[] = [];
+
+  const flushCompactedRun = () => {
+    if (compactedRun.length === 0) {
+      return;
+    }
+
+    renderedEntries.push(compactedTranscriptRunEntry(compactedRun, input.resolver));
+    compactedRun = [];
+  };
+
+  for (const entry of input.entries) {
+    if (shouldKeepRawCompactedTranscriptEntry(entry, tailIds, input.currentUserEntryId)) {
+      flushCompactedRun();
+      renderedEntries.push(transcriptRawEntry(entry, input.resolver));
+      rawStreamIds.add(entry.id);
+      continue;
+    }
+
+    if (entry.id === input.currentUserEntryId) {
+      flushCompactedRun();
+      renderedEntries.push(compactedCurrentUserTranscriptEntry(entry, input.resolver));
+      continue;
+    }
+
+    compactedRun.push(entry);
+  }
+
+  flushCompactedRun();
+
+  return {
+    entries: renderedEntries,
+    rawStreamIds,
+    compacted: true,
+  };
 }
 
 function scopeFromStreamIds(
@@ -619,21 +813,213 @@ function buildEpisodeSourceStreamIdMap(
   return episodeSourceStreamIds;
 }
 
+function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+  return value === undefined ? fallback : Math.max(1, Math.floor(value));
+}
+
+function normalizeUnitInterval(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.max(0, Math.min(1, value));
+}
+
 function listVisibleActions(
-  actionRepository: Pick<ActionRepository, "list">,
+  actionRepository: ActionLedgerRepository,
   audienceEntityId: EntityId | null,
+  limit: number,
 ): ActionRecord[] {
   const records =
     audienceEntityId === null
-      ? actionRepository.list({ audienceEntityId: null, limit: ACTION_LEDGER_LIMIT })
+      ? actionRepository.list({ audienceEntityId: null, limit })
       : [
-          ...actionRepository.list({ audienceEntityId: null, limit: ACTION_LEDGER_LIMIT }),
-          ...actionRepository.list({ audienceEntityId, limit: ACTION_LEDGER_LIMIT }),
+          ...actionRepository.list({ audienceEntityId: null, limit }),
+          ...actionRepository.list({ audienceEntityId, limit }),
         ];
 
   return records
     .sort((left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id))
-    .slice(0, ACTION_LEDGER_LIMIT);
+    .slice(0, limit);
+}
+
+function findParent(parents: Map<string, string>, id: string): string {
+  const parent = parents.get(id);
+
+  if (parent === undefined || parent === id) {
+    parents.set(id, id);
+    return id;
+  }
+
+  const root = findParent(parents, parent);
+  parents.set(id, root);
+  return root;
+}
+
+function unionParents(parents: Map<string, string>, leftId: string, rightId: string): void {
+  const leftRoot = findParent(parents, leftId);
+  const rightRoot = findParent(parents, rightId);
+
+  if (leftRoot === rightRoot) {
+    return;
+  }
+
+  const root = leftRoot < rightRoot ? leftRoot : rightRoot;
+  const child = root === leftRoot ? rightRoot : leftRoot;
+  parents.set(child, root);
+}
+
+function actionTimestampForState(action: ActionRecord): number {
+  switch (action.state) {
+    case "considering":
+      return action.considering_at ?? action.updated_at;
+    case "committed_to_do":
+      return action.committed_at ?? action.updated_at;
+    case "scheduled":
+      return action.scheduled_at ?? action.updated_at;
+    case "completed":
+      return action.completed_at ?? action.updated_at;
+    case "not_done":
+      return action.not_done_at ?? action.updated_at;
+    case "unknown":
+      return action.unknown_at ?? action.updated_at;
+  }
+}
+
+function combineActionScopes(
+  records: readonly ActionRecord[],
+  resolver: ScopeResolver,
+): EvidenceLedgerSessionScope {
+  return combineScopes(records.map((record) => actionScope(record, resolver)));
+}
+
+function selectThreadOrigin(records: readonly ActionRecord[]): ActionRecord {
+  return [...records].sort(
+    (left, right) => left.created_at - right.created_at || left.id.localeCompare(right.id),
+  )[0] as ActionRecord;
+}
+
+function selectThreadCurrent(records: readonly ActionRecord[]): ActionRecord {
+  return [...records].sort(
+    (left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id),
+  )[0] as ActionRecord;
+}
+
+function canThreadActions(left: ActionRecord, right: ActionRecord): boolean {
+  return (
+    left.goal_id !== null &&
+    right.goal_id !== null &&
+    left.goal_id === right.goal_id &&
+    left.actor === right.actor
+  );
+}
+
+function sameThreadablePair(
+  pair: ActionDescriptionSimilarityPair,
+  actionsById: ReadonlyMap<string, ActionRecord>,
+  threshold: number,
+): [ActionRecord, ActionRecord] | null {
+  if (pair.similarity < threshold) {
+    return null;
+  }
+
+  const left = actionsById.get(pair.leftId);
+  const right = actionsById.get(pair.rightId);
+
+  if (left === undefined || right === undefined || !canThreadActions(left, right)) {
+    return null;
+  }
+
+  return [left, right];
+}
+
+async function buildActionThreads(input: {
+  records: readonly ActionRecord[];
+  repository: ActionLedgerRepository;
+  resolver: ScopeResolver;
+  similarityThreshold: number;
+}): Promise<ActionThread[]> {
+  const parents = new Map<string, string>();
+  const actionsById = new Map(input.records.map((record) => [record.id, record]));
+
+  for (const record of input.records) {
+    parents.set(record.id, record.id);
+  }
+
+  const pairs =
+    input.repository.findSimilarDescriptionPairs === undefined
+      ? []
+      : await input.repository.findSimilarDescriptionPairs(
+          input.records.filter((record) => record.goal_id !== null),
+          input.similarityThreshold,
+        );
+
+  for (const pair of pairs) {
+    const records = sameThreadablePair(pair, actionsById, input.similarityThreshold);
+
+    if (records === null) {
+      continue;
+    }
+
+    unionParents(parents, records[0].id, records[1].id);
+  }
+
+  const groups = new Map<string, ActionRecord[]>();
+
+  for (const record of input.records) {
+    const root = findParent(parents, record.id);
+    groups.set(root, [...(groups.get(root) ?? []), record]);
+  }
+
+  return [...groups.entries()]
+    .map(([id, records]) => {
+      const origin = selectThreadOrigin(records);
+      const current = selectThreadCurrent(records);
+
+      return {
+        id,
+        records: [...records].sort(
+          (left, right) => left.updated_at - right.updated_at || left.id.localeCompare(right.id),
+        ),
+        origin,
+        current,
+        scope: combineActionScopes(records, input.resolver),
+      };
+    })
+    .sort(
+      (left, right) =>
+        right.current.updated_at - left.current.updated_at ||
+        left.current.id.localeCompare(right.current.id),
+    );
+}
+
+function renderActionThreadText(thread: ActionThread): string {
+  const currentAt = new Date(actionTimestampForState(thread.current)).toISOString();
+  const lines = [
+    `originating_intent: ${thread.origin.description}`,
+    `transitions: ${thread.records.length}, current: ${thread.current.state} at ${currentAt}`,
+  ];
+
+  if (thread.current.id !== thread.origin.id) {
+    lines.push(`current_intent: ${thread.current.description}`);
+  }
+
+  return lines.join("\n");
+}
+
+function actionThreadStateMetadata(thread: ActionThread): Record<string, unknown> {
+  return {
+    record_ids: thread.records.map((record) => record.id),
+    transitions: thread.records.length,
+    current_action_id: thread.current.id,
+    current_updated_at: thread.current.updated_at,
+    goal_id: thread.current.goal_id,
+    open_question_id: thread.current.open_question_id,
+  };
+}
+
+function actionThreadState(thread: ActionThread): ActionState {
+  return thread.current.state;
 }
 
 function entryFlatText(section: EvidenceLedgerSection, entry: EvidenceLedgerEntry): string {
@@ -681,6 +1067,7 @@ export function summarizeEvidenceLedgerTrace(ledger: EvidenceLedger) {
       ledger.sections.map((section) => [section.id, estimateSectionTokens(section)]),
     ) as Record<EvidenceLedgerSectionId, number>,
     transcriptIncluded: ledger.transcriptIncluded,
+    transcriptCompacted: ledger.transcriptCompacted,
     transcriptOmittedReason: ledger.transcriptOmittedReason,
     totalEstimatedTokens: ledger.estimatedTokens,
   };
@@ -728,25 +1115,27 @@ export class EvidenceLedgerBuilder {
       episodeSourceStreamIdsById,
     };
     const transcriptEntries = activeSessionTranscriptEntries(streamEntries);
-    const transcriptTokens = estimateTranscriptTokens(transcriptEntries);
-    const transcriptIncluded = transcriptTokens <= this.options.currentSessionTranscriptTokenBudget;
+    const transcript = compactTranscriptEntries({
+      entries: transcriptEntries,
+      budget: this.options.currentSessionTranscriptTokenBudget,
+      currentUserEntryId: input.currentUserEntry?.id,
+      resolver,
+    });
     const sections = createSectionBuckets();
 
     this.addCurrentUserMessage(sections, input, resolver);
-    this.addTranscript(sections, transcriptEntries, transcriptIncluded, resolver);
+    this.addTranscript(sections, transcript.entries);
     this.addCommitmentsAndConstraints(sections, input, resolver);
     this.addDiscourseState(sections, input, resolver);
     this.addContradictionsAndQuarantines(sections, input, streamEntries, resolver);
-    this.addActionStates(sections, input, resolver);
+    await this.addActionStates(sections, input, resolver);
     this.addRelationalSlots(sections, resolver);
     // Sprint 8d.6.3: stream IDs covered by the current_session_transcript
     // section don't need to be re-rendered as retrieved_raw_stream_evidence.
     // The same underlying entry's text was duplicated across both sections
     // (~25k tokens on heavy v37 turns) because dedupe only matched on
     // rendered ledger entry IDs, not provenance stream IDs.
-    const transcriptStreamIds = new Set<string>(
-      transcriptIncluded ? transcriptEntries.map((entry) => entry.id) : [],
-    );
+    const transcriptStreamIds = transcript.rawStreamIds;
     this.addRetrievedRawStreamEvidence(sections, input, resolver, transcriptStreamIds);
     this.addEpisodes(sections, input, resolver);
     this.addSemanticGraph(sections, input, resolver);
@@ -756,8 +1145,8 @@ export class EvidenceLedgerBuilder {
 
     return {
       sections: orderedSections,
-      transcriptIncluded,
-      ...(transcriptIncluded ? {} : { transcriptOmittedReason: "over_budget" as const }),
+      transcriptIncluded: true,
+      transcriptCompacted: transcript.compacted,
       estimatedTokens: estimateLedgerTokens(orderedSections),
     };
   }
@@ -785,29 +1174,9 @@ export class EvidenceLedgerBuilder {
     });
   }
 
-  private addTranscript(
-    sections: SectionBuckets,
-    transcriptEntries: readonly TranscriptStreamEntry[],
-    transcriptIncluded: boolean,
-    resolver: ScopeResolver,
-  ): void {
-    if (!transcriptIncluded) {
-      return;
-    }
-
-    for (const entry of transcriptEntries) {
-      addEntry(sections, "current_session_transcript", {
-        id: `current_session_stream:${entry.id}`,
-        source_type: "current_session_stream",
-        session_scope: "current_session",
-        actor: actorForStreamEntry(entry),
-        trust_rank: TRANSCRIPT_TRUST_RANK,
-        text: stringifyPromptContent(entry.content),
-        stream_index: resolver.streamOrderById.get(entry.id),
-        state: transcriptState(entry),
-        taint: "none",
-        ...streamPersistenceClass(entry),
-      });
+  private addTranscript(sections: SectionBuckets, entries: readonly EvidenceLedgerEntry[]): void {
+    for (const entry of entries) {
+      addEntry(sections, "current_session_transcript", entry);
     }
   }
 
@@ -973,38 +1342,85 @@ export class EvidenceLedgerBuilder {
     }
   }
 
-  private addActionStates(
+  private async addActionStates(
     sections: SectionBuckets,
     input: EvidenceLedgerBuildInput,
     resolver: ScopeResolver,
-  ): void {
-    for (const action of listVisibleActions(
+  ): Promise<void> {
+    const sourceRecordLimit = normalizePositiveInteger(
+      this.options.actionThreadSourceRecordLimit,
+      DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
+    );
+    const renderLimit = normalizePositiveInteger(
+      this.options.actionThreadRenderLimit,
+      DEFAULT_ACTION_THREAD_RENDER_LIMIT,
+    );
+    const similarityThreshold = normalizeUnitInterval(
+      this.options.actionThreadSimilarityThreshold,
+      DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
+    );
+    const visibleActions = listVisibleActions(
       this.options.actionRepository,
       input.audienceEntityId,
-    )) {
+      sourceRecordLimit,
+    );
+    const threads = await buildActionThreads({
+      records: visibleActions,
+      repository: this.options.actionRepository,
+      resolver,
+      similarityThreshold,
+    });
+    const renderedThreads = threads.slice(0, renderLimit);
+
+    for (const thread of renderedThreads) {
       addEntry(
         sections,
         "action_states",
         cappedTrustRank({
-          id: `action_record:${action.id}`,
+          id: `action_thread:${thread.id}`,
           source_type: "action_record",
-          session_scope: actionScope(action, resolver),
-          actor: action.actor === "borg" ? "assistant" : "user",
+          session_scope: thread.scope,
+          actor: thread.current.actor === "borg" ? "assistant" : "user",
           trust_rank: ACTION_TRUST_RANK,
-          text: action.description,
-          value: action.actor,
-          state: action.state,
+          text: renderActionThreadText(thread),
+          value: thread.current.actor,
+          state: actionThreadState(thread),
+          state_metadata: actionThreadStateMetadata(thread),
           taint: "none",
           ...persistenceClassFromProvenance(
             {
-              streamEntryIds: action.provenance_stream_entry_ids,
-              episodeIds: action.provenance_episode_ids,
+              streamEntryIds: thread.records.flatMap(
+                (record) => record.provenance_stream_entry_ids,
+              ),
+              episodeIds: thread.records.flatMap((record) => record.provenance_episode_ids),
             },
             resolver,
           ),
         }),
       );
     }
+
+    if (threads.length <= renderLimit) {
+      return;
+    }
+
+    const olderThreads = threads.slice(renderLimit);
+    const olderRecordCount = olderThreads.reduce(
+      (count, thread) => count + thread.records.length,
+      0,
+    );
+
+    addEntry(sections, "action_states", {
+      id: "action_threads:older_summary",
+      source_type: "system_metadata",
+      session_scope: "global",
+      actor: "system",
+      trust_rank: ACTION_TRUST_RANK,
+      text: `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
+      value: "older_action_threads",
+      state: "omitted",
+      taint: "none",
+    });
   }
 
   private addRelationalSlots(sections: SectionBuckets, resolver: ScopeResolver): void {

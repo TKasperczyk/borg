@@ -55,7 +55,10 @@ const relationalClaimGuardConfigSchema = z
 const evidenceLedgerConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
-    currentSessionTranscriptTokenBudget: z.number().int().positive().default(50_000),
+    currentSessionTranscriptTokenBudget: z.number().int().positive().default(2_500),
+    actionThreadRenderLimit: z.number().int().positive().default(12),
+    actionThreadSimilarityThreshold: z.number().min(0).max(1).default(0.85),
+    actionThreadSourceRecordLimit: z.number().int().positive().default(256),
   })
   .prefault({});
 const cognitionThinkingConfigSchema = z
@@ -705,6 +708,24 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
       env,
       "BORG_GENERATION_EVIDENCE_LEDGER_CURRENT_SESSION_TRANSCRIPT_TOKEN_BUDGET",
     ),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "actionThreadRenderLimit"],
+    readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_RENDER_LIMIT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "actionThreadSimilarityThreshold"],
+    readOptionalEnvUnitInterval(
+      env,
+      "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SIMILARITY_THRESHOLD",
+    ),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "actionThreadSourceRecordLimit"],
+    readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SOURCE_RECORD_LIMIT"),
   );
   setConfigOverride(
     overrides,

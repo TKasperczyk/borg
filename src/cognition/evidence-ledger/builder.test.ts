@@ -19,6 +19,7 @@ import {
   createActionId,
   createCommitmentId,
   createEpisodeId,
+  createGoalId,
   createOpenQuestionId,
   createRelationalSlotId,
   createSessionId,
@@ -116,7 +117,12 @@ function makeSemanticEdge(input: {
   };
 }
 
-function makeAction(streamEntryId: StreamEntry["id"]): ActionRecord {
+function makeAction(
+  streamEntryId: StreamEntry["id"],
+  overrides: Partial<ActionRecord> = {},
+): ActionRecord {
+  const state = overrides.state ?? "scheduled";
+
   return {
     id: createActionId(),
     description: "File the Barcelona callback note",
@@ -124,7 +130,7 @@ function makeAction(streamEntryId: StreamEntry["id"]): ActionRecord {
     audience_entity_id: null,
     goal_id: null,
     open_question_id: null,
-    state: "scheduled",
+    state,
     confidence: 0.86,
     provenance_episode_ids: [],
     provenance_stream_entry_ids: [streamEntryId],
@@ -132,10 +138,11 @@ function makeAction(streamEntryId: StreamEntry["id"]): ActionRecord {
     updated_at: NOW_MS,
     considering_at: null,
     committed_at: null,
-    scheduled_at: NOW_MS,
+    scheduled_at: state === "scheduled" ? NOW_MS : null,
     completed_at: null,
     not_done_at: null,
     unknown_at: null,
+    ...overrides,
   };
 }
 
@@ -377,6 +384,173 @@ describe("EvidenceLedgerBuilder", () => {
     ]);
   });
 
+  it("renders one action thread for same-goal similar action transitions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "I need to write the harness doc.",
+    });
+    const goalId = createGoalId();
+    const considering = makeAction(userEntry.id, {
+      description: "consider writing the harness presentation",
+      actor: "user",
+      goal_id: goalId,
+      state: "considering",
+      created_at: NOW_MS,
+      updated_at: NOW_MS,
+      considering_at: NOW_MS,
+      scheduled_at: null,
+    });
+    const committed = makeAction(userEntry.id, {
+      description: "write the harness presentation",
+      actor: "user",
+      goal_id: goalId,
+      state: "committed_to_do",
+      created_at: NOW_MS + 1,
+      updated_at: NOW_MS + 10,
+      committed_at: NOW_MS + 10,
+      scheduled_at: null,
+    });
+    const completed = makeAction(userEntry.id, {
+      description: "finished writing the harness presentation",
+      actor: "user",
+      goal_id: goalId,
+      state: "completed",
+      created_at: NOW_MS + 2,
+      updated_at: NOW_MS + 20,
+      completed_at: NOW_MS + 20,
+      scheduled_at: null,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [completed, committed, considering],
+        findSimilarDescriptionPairs: async () => [
+          { leftId: considering.id, rightId: committed.id, similarity: 0.91 },
+          { leftId: committed.id, rightId: completed.id, similarity: 0.92 },
+        ],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      actionThreadSimilarityThreshold: 0.85,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const actionEntries =
+      ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
+
+    expect(actionEntries).toHaveLength(1);
+    expect(actionEntries[0]).toMatchObject({
+      id: expect.stringMatching(/^action_thread:/),
+      state: "completed",
+      state_metadata: expect.objectContaining({
+        transitions: 3,
+        current_action_id: completed.id,
+        goal_id: goalId,
+      }),
+    });
+    expect(actionEntries[0]?.text).toContain(
+      "originating_intent: consider writing the harness presentation",
+    );
+    expect(actionEntries[0]?.text).toContain("transitions: 3, current: completed");
+    expect(actionEntries[0]?.text).toContain(
+      "current_intent: finished writing the harness presentation",
+    );
+  });
+
+  it("does not collapse action threads across distinct goals or low similarity", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "I need to write and then book flights.",
+    });
+    const docGoalId = createGoalId();
+    const travelGoalId = createGoalId();
+    const docAction = makeAction(userEntry.id, {
+      description: "write the harness presentation",
+      actor: "user",
+      goal_id: docGoalId,
+      state: "committed_to_do",
+      committed_at: NOW_MS + 10,
+      updated_at: NOW_MS + 10,
+      scheduled_at: null,
+    });
+    const docDifferentIntent = makeAction(userEntry.id, {
+      description: "ask lead for platform budget",
+      actor: "user",
+      goal_id: docGoalId,
+      state: "scheduled",
+      updated_at: NOW_MS + 20,
+      scheduled_at: NOW_MS + 20,
+    });
+    const travelAction = makeAction(userEntry.id, {
+      description: "book Spain flights",
+      actor: "user",
+      goal_id: travelGoalId,
+      state: "scheduled",
+      updated_at: NOW_MS + 30,
+      scheduled_at: NOW_MS + 30,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: {
+        list: () => [travelAction, docDifferentIntent, docAction],
+        findSimilarDescriptionPairs: async () => [
+          { leftId: docAction.id, rightId: docDifferentIntent.id, similarity: 0.7 },
+          { leftId: docAction.id, rightId: travelAction.id, similarity: 0.95 },
+        ],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      actionThreadSimilarityThreshold: 0.85,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const actionEntries =
+      ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
+
+    expect(actionEntries).toHaveLength(3);
+    expect(actionEntries.map((entry) => entry.state_metadata?.["transitions"])).toEqual([1, 1, 1]);
+  });
+
   it("renders relevant resolved open questions from the repository with state metadata", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -537,7 +711,7 @@ describe("EvidenceLedgerBuilder", () => {
     }
   });
 
-  it("omits the whole transcript when it exceeds the configured budget", async () => {
+  it("compacts older assistant transcript entries without dropping user-authored facts", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
@@ -545,9 +719,19 @@ describe("EvidenceLedgerBuilder", () => {
       sessionId: DEFAULT_SESSION_ID,
       clock: new FixedClock(NOW_MS),
     });
-    const userEntry = await writer.append({
+    const factEntry = await writer.append({
       kind: "user_msg",
-      content: "This transcript is intentionally longer than a one-token budget.",
+      content: "The launch window is Tuesday and the reviewer is Priya.",
+    });
+    for (let index = 0; index < 10; index += 1) {
+      await writer.append({
+        kind: "agent_msg",
+        content: `Assistant planning response ${index} with implementation details repeated for budget pressure.`,
+      });
+    }
+    const currentEntry = await writer.append({
+      kind: "user_msg",
+      content: "Current question should be rendered above, not duplicated in full here.",
     });
     const builder = new EvidenceLedgerBuilder({
       createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
@@ -563,8 +747,8 @@ describe("EvidenceLedgerBuilder", () => {
     const ledger = await builder.build({
       sessionId: DEFAULT_SESSION_ID,
       audienceEntityId: null,
-      currentUserMessage: String(userEntry.content),
-      currentUserEntry: userEntry,
+      currentUserMessage: String(currentEntry.content),
+      currentUserEntry: currentEntry,
       workingMemory: makeWorkingMemory(),
       applicableCommitments: [],
       retrievedEvidence: [],
@@ -574,12 +758,29 @@ describe("EvidenceLedgerBuilder", () => {
       pendingCorrections: [],
       frameAnomaly: null,
     });
+    const transcriptEntries =
+      ledger.sections.find((section) => section.id === "current_session_transcript")?.entries ?? [];
 
-    expect(ledger.transcriptIncluded).toBe(false);
-    expect(ledger.transcriptOmittedReason).toBe("over_budget");
-    expect(
-      ledger.sections.find((section) => section.id === "current_session_transcript")?.entries,
-    ).toEqual([]);
+    expect(ledger.transcriptIncluded).toBe(true);
+    expect(ledger.transcriptCompacted).toBe(true);
+    expect(ledger.transcriptOmittedReason).toBeUndefined();
+    expect(transcriptEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: `current_session_stream:${factEntry.id}`,
+          text: "The launch window is Tuesday and the reviewer is Priya.",
+        }),
+        expect.objectContaining({
+          source_type: "system_metadata",
+          state: "compacted",
+          text: expect.stringContaining("Earlier assistant/system transcript entries compacted"),
+        }),
+        expect.objectContaining({
+          id: `current_session_compacted_current_user:${currentEntry.id}`,
+          text: expect.stringContaining("full text is rendered in section 1"),
+        }),
+      ]),
+    );
   });
 
   it("propagates assistant self-report persistence through episode and semantic ledger entries", async () => {
@@ -743,14 +944,18 @@ describe("EvidenceLedgerBuilder", () => {
     const rawEntry = ledger.sections
       .find((section) => section.id === "retrieved_raw_stream_evidence")
       ?.entries.find((entry) => entry.id === "retrieved_stream:raw-self-report");
+    const transcriptEntry = ledger.sections
+      .find((section) => section.id === "current_session_transcript")
+      ?.entries.find((entry) => entry.id === `current_session_stream:${assistantEntry.id}`);
 
-    expect(ledger.transcriptIncluded).toBe(false);
-    expect(rawEntry).toMatchObject({
+    expect(ledger.transcriptIncluded).toBe(true);
+    expect(ledger.transcriptCompacted).toBe(true);
+    expect(transcriptEntry).toMatchObject({
       source_type: "current_session_stream",
       actor: "assistant",
       persistence_class: "assistant_self_report",
-      via_retrieval: true,
     });
+    expect(rawEntry).toBeUndefined();
 
     expect(userEntry.kind).toBe("user_msg");
   });

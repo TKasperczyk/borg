@@ -12,6 +12,7 @@ import {
 } from "../../storage/lancedb/index.js";
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
+import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
@@ -164,6 +165,11 @@ export type ActionRepositoryOptions = {
 };
 
 export type ActionCountByState = Record<ActionState, number>;
+export type ActionDescriptionSimilarityPair = {
+  leftId: ActionId;
+  rightId: ActionId;
+  similarity: number;
+};
 
 export function createActionRecordsTableSchema(dimensions: number) {
   return schema([
@@ -524,6 +530,53 @@ export class ActionRepository {
       .sort((left, right) => right.similarity - left.similarity)
       .slice(0, Math.max(1, limit))
       .map((item) => item.record);
+  }
+
+  async findSimilarDescriptionPairs(
+    records: readonly ActionRecord[],
+    threshold: number,
+  ): Promise<ActionDescriptionSimilarityPair[]> {
+    const embeddingClient = this.embeddingClient;
+    const uniqueRecords = [...new Map(records.map((record) => [record.id, record])).values()];
+
+    if (embeddingClient === undefined || uniqueRecords.length < 2) {
+      return [];
+    }
+
+    const vectors = await embeddingClient.embedBatch(
+      uniqueRecords.map((record) => record.description),
+    );
+    const pairs: ActionDescriptionSimilarityPair[] = [];
+
+    for (let leftIndex = 0; leftIndex < uniqueRecords.length; leftIndex += 1) {
+      const left = uniqueRecords[leftIndex];
+      const leftVector = vectors[leftIndex];
+
+      if (left === undefined || leftVector === undefined) {
+        continue;
+      }
+
+      for (let rightIndex = leftIndex + 1; rightIndex < uniqueRecords.length; rightIndex += 1) {
+        const right = uniqueRecords[rightIndex];
+        const rightVector = vectors[rightIndex];
+
+        if (right === undefined || rightVector === undefined) {
+          continue;
+        }
+
+        const similarity = cosineSimilarity(leftVector, rightVector);
+
+        if (similarity >= threshold) {
+          pairs.push({
+            leftId: left.id,
+            rightId: right.id,
+            similarity,
+          });
+        }
+      }
+    }
+
+    return pairs;
   }
 
   async delete(id: ActionId): Promise<boolean> {

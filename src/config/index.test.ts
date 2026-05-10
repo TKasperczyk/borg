@@ -65,7 +65,10 @@ describe("config", () => {
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(100);
     expect(config.generation.evidenceLedger).toEqual({
       enabled: false,
-      currentSessionTranscriptTokenBudget: 50_000,
+      currentSessionTranscriptTokenBudget: 2_500,
+      actionThreadRenderLimit: 12,
+      actionThreadSimilarityThreshold: 0.85,
+      actionThreadSourceRecordLimit: 256,
     });
     expect(config.generation.cognition).toEqual({
       thinking: {
@@ -193,6 +196,7 @@ describe("config", () => {
         evidenceLedger: {
           enabled: true,
           currentSessionTranscriptTokenBudget: 12_000,
+          actionThreadRenderLimit: 10,
         },
         cognition: {
           thinking: {
@@ -225,6 +229,9 @@ describe("config", () => {
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
         BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES: "8",
         BORG_GENERATION_EVIDENCE_LEDGER_CURRENT_SESSION_TRANSCRIPT_TOKEN_BUDGET: "16000",
+        BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_RENDER_LIMIT: "8",
+        BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SIMILARITY_THRESHOLD: "0.9",
+        BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SOURCE_RECORD_LIMIT: "128",
         BORG_GENERATION_COGNITION_THINKING_ENABLED: "true",
         BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS: "8192",
         BORG_GENERATION_MANIFEST_FINALIZER_ENABLED: "true",
@@ -247,6 +254,9 @@ describe("config", () => {
     expect(config.generation.postGenerationGuards.closurePressure.mode).toBe("enforce");
     expect(config.generation.evidenceLedger.enabled).toBe(true);
     expect(config.generation.evidenceLedger.currentSessionTranscriptTokenBudget).toBe(16_000);
+    expect(config.generation.evidenceLedger.actionThreadRenderLimit).toBe(8);
+    expect(config.generation.evidenceLedger.actionThreadSimilarityThreshold).toBe(0.9);
+    expect(config.generation.evidenceLedger.actionThreadSourceRecordLimit).toBe(128);
     expect(config.generation.cognition.thinking).toEqual({
       enabled: true,
       budget_tokens: 8192,

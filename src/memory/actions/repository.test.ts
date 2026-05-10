@@ -168,4 +168,35 @@ describe("ActionRepository", () => {
 
     await expect(repository.findByDescription("Atlas rollout", 1)).resolves.toEqual([atlas]);
   });
+
+  it("finds description similarity pairs above threshold with one embedding batch", async () => {
+    const repository = await openFixture(
+      new MapEmbeddingClient(
+        new Map([
+          ["Review Atlas rollout", [1, 0, 0, 0]],
+          ["Check Atlas deployment", [0.9, 0.1, 0, 0]],
+          ["Draft billing follow-up", [0, 1, 0, 0]],
+        ]),
+      ),
+    );
+    const review = makeAction({
+      description: "Review Atlas rollout",
+    });
+    const check = makeAction({
+      description: "Check Atlas deployment",
+    });
+    const billing = makeAction({
+      description: "Draft billing follow-up",
+    });
+
+    await expect(
+      repository.findSimilarDescriptionPairs([review, check, billing], 0.85),
+    ).resolves.toEqual([
+      {
+        leftId: review.id,
+        rightId: check.id,
+        similarity: expect.any(Number),
+      },
+    ]);
+  });
 });

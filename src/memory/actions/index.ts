@@ -4,6 +4,7 @@ export {
   ActionRepository,
   createActionRecordsTableSchema,
   type ActionCountByState,
+  type ActionDescriptionSimilarityPair,
   type ActionRecordListFilter,
   type ActionRepositoryOptions,
 } from "./repository.js";
