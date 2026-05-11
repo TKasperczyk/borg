@@ -270,7 +270,7 @@ const configBaseSchema = z.object({
           stalenessDays: z.number().positive().default(30),
           stalenessTicks: z.number().int().positive().nullable().default(null),
           staleNoTractionTicks: z.number().int().positive().default(4),
-          budget: z.number().int().positive().default(12_000),
+          budget: z.number().int().positive().default(40_000),
           perQuestionBudget: z.number().int().positive().default(8_000),
         })
         .prefault({}),
