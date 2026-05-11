@@ -271,8 +271,15 @@ function mergeRetrievedEpisodes(episodeSets: readonly (readonly RetrievedEpisode
 }
 
 function shareOpenQuestionEntityScope(left: OpenQuestion, right: OpenQuestion): boolean {
-  if (left.related_semantic_node_ids.length === 0 || right.related_semantic_node_ids.length === 0) {
+  const leftEmpty = left.related_semantic_node_ids.length === 0;
+  const rightEmpty = right.related_semantic_node_ids.length === 0;
+
+  if (leftEmpty && rightEmpty) {
     return true;
+  }
+
+  if (leftEmpty !== rightEmpty) {
+    return false;
   }
 
   const rightNodeIds = new Set(right.related_semantic_node_ids);
@@ -317,6 +324,7 @@ function countOpenQuestionEvidenceHandles(question: OpenQuestion): number {
     ...question.related_episode_ids.map((episodeId) => `episode:${episodeId}`),
     ...question.resolution_evidence_episode_ids.map((episodeId) => `episode:${episodeId}`),
     ...openQuestionProvenanceEpisodeIds(question).map((episodeId) => `episode:${episodeId}`),
+    ...question.related_semantic_node_ids.map((nodeId) => `semantic:${nodeId}`),
     ...question.resolution_evidence_stream_entry_ids.map(
       (streamEntryId) => `stream:${streamEntryId}`,
     ),
@@ -790,8 +798,12 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       status: "open",
       limit: maxQuestionsPerRun,
     });
-    const allOpenQuestions = ctx.openQuestionsRepository.list({ status: "open" });
+    const allOpenQuestions = ctx.openQuestionsRepository.list({
+      status: "open",
+      limit: 10_000,
+    });
     const duplicateQuestionIds = new Set<OpenQuestion["id"]>();
+    const mergeParticipantIds = new Set<OpenQuestion["id"]>();
     const staleDismissedIds = new Set<OpenQuestion["id"]>();
     let tokensUsed = 0;
     let budgetExhausted = false;
@@ -803,6 +815,8 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       for (const item of duplicateMerges) {
         if (item.action === "merge_duplicate") {
           duplicateQuestionIds.add(item.duplicate_question_id);
+          mergeParticipantIds.add(item.duplicate_question_id);
+          mergeParticipantIds.add(item.primary_question_id);
         }
       }
     } catch (error) {
@@ -813,7 +827,10 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
 
     try {
       for (const question of allOpenQuestions) {
-        if (duplicateQuestionIds.has(question.id) || llmWindowIds.has(question.id)) {
+        if (
+          mergeParticipantIds.has(question.id) ||
+          llmWindowIds.has(question.id)
+        ) {
           continue;
         }
 
@@ -836,7 +853,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         const llmClient = wrapClient(ctx.llm.background);
 
         for (const question of questions) {
-          if (duplicateQuestionIds.has(question.id) || staleDismissedIds.has(question.id)) {
+          if (mergeParticipantIds.has(question.id) || staleDismissedIds.has(question.id)) {
             continue;
           }
 

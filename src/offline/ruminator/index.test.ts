@@ -840,7 +840,7 @@ describe("RuminatorProcess", () => {
           kept_oq_id: older.id,
           deleted_oq_id: newer.id,
           similarity_score: 1,
-          evidence_folded_count: 2,
+          evidence_folded_count: 3,
         }),
       });
     } finally {
@@ -904,6 +904,136 @@ describe("RuminatorProcess", () => {
           }),
         ]),
       );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("does not merge a scoped OQ with an unscoped OQ", async () => {
+    const tracer = new CaptureTracer();
+    const sharedNodeId = createSemanticNodeId();
+    const scopedQuestion = "Should the scoped Madrid prep question stay open?";
+    const unscopedQuestion = "Is the unscoped Madrid prep checklist still relevant?";
+    const harness = await createOfflineTestHarness({
+      tracer,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [scopedQuestion, [1, 0, 0, 0]],
+          [unscopedQuestion, [1, 0, 0, 0]],
+        ]),
+      ),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            duplicateSimilarityThreshold: 0.9,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const scoped = harness.openQuestionsRepository.add({
+        question: scopedQuestion,
+        urgency: 0.4,
+        related_semantic_node_ids: [sharedNodeId],
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 1_000,
+        last_touched: 1_000,
+      });
+      const unscoped = harness.openQuestionsRepository.add({
+        question: unscopedQuestion,
+        urgency: 0.8,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 2_000,
+        last_touched: 2_000,
+      });
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      const mergeItems = plan.items.filter((item) => item.action === "merge_duplicate");
+      expect(mergeItems).toHaveLength(0);
+      expect(harness.openQuestionsRepository.get(scoped.id)?.status).toBe("open");
+      expect(harness.openQuestionsRepository.get(unscoped.id)?.status).toBe("open");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("does not stale-dismiss a merge primary in the same plan", async () => {
+    const tracer = new CaptureTracer();
+    const sharedNodeId = createSemanticNodeId();
+    const primaryQuestion = "Should the long-running Madrid practice question stay open?";
+    const duplicateQuestion = "Is the Madrid practice question still on the docket?";
+    const harness = await createOfflineTestHarness({
+      tracer,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [primaryQuestion, [1, 0, 0, 0]],
+          [duplicateQuestion, [1, 0, 0, 0]],
+        ]),
+      ),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            duplicateSimilarityThreshold: 0.9,
+            staleNoTractionTicks: 2,
+            maxQuestionsPerRun: 1,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const primary = harness.openQuestionsRepository.add({
+        question: primaryQuestion,
+        urgency: 0.4,
+        related_semantic_node_ids: [sharedNodeId],
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 1_000,
+        last_touched: 1_000,
+      });
+      const duplicate = harness.openQuestionsRepository.add({
+        question: duplicateQuestion,
+        urgency: 0.8,
+        related_semantic_node_ids: [sharedNodeId],
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 2_000,
+        last_touched: 2_000,
+      });
+      harness.openQuestionsRepository.markRuminated(primary.id, 2);
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "merge_duplicate",
+            primary_question_id: primary.id,
+            duplicate_question_id: duplicate.id,
+          }),
+        ]),
+      );
+      expect(
+        plan.items.some(
+          (item) => item.action === "abandon" && item.question_id === primary.id,
+        ),
+      ).toBe(false);
     } finally {
       await harness.cleanup();
     }
