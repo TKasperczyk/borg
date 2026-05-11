@@ -405,6 +405,7 @@ async function runScenarioPipeline(
     await scenario.seed({
       borg,
       deps: getBorgDeps(borg),
+      llm,
       clock,
       tempDir,
       pipeline,
@@ -421,6 +422,7 @@ async function runScenarioPipeline(
     await scenario.postRunAssert?.({
       borg,
       deps: getBorgDeps(borg),
+      llm,
       clock,
       tempDir,
       pipeline,

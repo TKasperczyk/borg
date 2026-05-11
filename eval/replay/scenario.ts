@@ -33,6 +33,7 @@ export type ReplayPipeline = {
 export type ScenarioDeps = {
   borg: Borg;
   deps: BorgDependencies;
+  llm: FakeLLMClient;
   clock: Clock;
   tempDir: string;
   pipeline: ReplayPipeline;
@@ -160,6 +161,58 @@ export function emptyReflectionResponse(): LLMCompleteResult {
       },
     ],
   };
+}
+
+export function episodeExtractionResponse(
+  episodes: readonly unknown[],
+  relationalSlotUpdates: readonly unknown[] = [],
+): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_replay_episode_extraction",
+        name: "EmitEpisodeCandidates",
+        input: {
+          episodes,
+          relational_slot_updates: relationalSlotUpdates,
+        },
+      },
+    ],
+  };
+}
+
+export function semanticExtractionResponse(input: {
+  nodes: readonly unknown[];
+  edges?: readonly unknown[];
+}): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 1,
+    output_tokens: 1,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_replay_semantic_extraction",
+        name: "EmitSemanticCandidates",
+        input: {
+          nodes: input.nodes,
+          edges: input.edges ?? [],
+        },
+      },
+    ],
+  };
+}
+
+export function promptForBudget(client: FakeLLMClient, budget: string, startIndex = 0): string {
+  const request = client.requests
+    .slice(startIndex)
+    .find((candidate) => candidate.budget === budget);
+
+  return String(request?.messages[0]?.content ?? "");
 }
 
 export function claimAuditResponse(

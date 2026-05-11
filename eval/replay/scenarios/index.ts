@@ -16,6 +16,8 @@ import suppressionNetworkWeather from "./27-suppression-network-weather.js";
 import closureLoopPersistence from "./28-closure-loop-persistence.js";
 import crossSessionPartnerNameConflict from "./29-cross-session-partner-name-conflict.js";
 import tomLeakUnflaggedVocative from "./32-tom-leak-unflagged-vocative.js";
+import tripVsRelocation from "./33-trip-vs-relocation.js";
+import secondaryThreadCoverage from "./44-secondary-thread-coverage.js";
 import type { ReplayScenario } from "../scenario.js";
 
 export const REPLAY_SCENARIOS: readonly ReplayScenario[] = [
@@ -37,4 +39,6 @@ export const REPLAY_SCENARIOS: readonly ReplayScenario[] = [
   closureLoopPersistence,
   crossSessionPartnerNameConflict,
   tomLeakUnflaggedVocative,
+  tripVsRelocation,
+  secondaryThreadCoverage,
 ];

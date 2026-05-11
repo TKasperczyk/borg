@@ -47,7 +47,7 @@ describe("v26 replay runner", () => {
 
     const report = JSON.parse(readFileSync(paths.jsonPath, "utf8")) as ReplayReport;
 
-    expect(report.scenarios).toHaveLength(18);
+    expect(report.scenarios).toHaveLength(20);
     expect(report.scenarios.some((scenario) => scenario.id === "09-phenomenology")).toBe(true);
     expect(
       report.scenarios.some((scenario) => scenario.id === "33-prior-callback-no-evidence"),
