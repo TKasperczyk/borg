@@ -14,7 +14,6 @@ function makeConfig(useLlmFallback: boolean): Config {
   return {
     perception: {
       useLlmFallback,
-      modeWhenLlmAbsent: "idle",
     },
     affective: {
       useLlmFallback: false,

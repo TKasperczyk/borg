@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TurnTracer } from "../cognition/tracing/tracer.js";
-import { FakeLLMClient, type LLMCompleteResult } from "../llm/index.js";
+import { type LLMCompleteResult } from "../llm/index.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,

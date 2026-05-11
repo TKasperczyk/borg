@@ -7,7 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg } from "../../borg.js";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeEmbeddingClient } from "../../embeddings/index.js";
-import { FakeLLMClient } from "../../llm/index.js";
+import {
+  FakeLLMClient,
+  createFakeEmitAnswerResponse,
+} from "../../llm/test-support/fake-client.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { JsonlTracer, NoopTracer, createTurnTracer, type TurnTracer } from "./tracer.js";
 
@@ -202,6 +205,45 @@ describe("TurnTracer", () => {
       responses: [
         {
           text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_entity",
+              name: "EmitEntityExtraction",
+              input: { entities: ["pgvector"] },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_mode",
+              name: "EmitModeDetection",
+              input: { mode: "reflective" },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_temporal",
+              name: "EmitTemporalCue",
+              input: { has_cue: false },
+            },
+          ],
+        },
+        {
+          text: "",
           input_tokens: 10,
           output_tokens: 4,
           stop_reason: "tool_use",
@@ -220,33 +262,10 @@ describe("TurnTracer", () => {
             },
           ],
         },
-        {
-          messageBlocks: [
-            {
-              type: "tool_use",
-              id: "toolu_search",
-              name: "tool.episodic.search",
-              input: {
-                query: "pgvector",
-                limit: 1,
-              },
-            },
-          ],
-          input_tokens: 11,
-          output_tokens: 5,
-          stop_reason: "tool_use",
-        },
-        {
-          messageBlocks: [
-            {
-              type: "text",
-              text: "Check the operator class first.",
-            },
-          ],
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-        },
+        createFakeEmitAnswerResponse("Check the operator class first.", {
+          inputTokens: 12,
+          outputTokens: 6,
+        }),
         {
           text: "",
           input_tokens: 4,
@@ -273,8 +292,11 @@ describe("TurnTracer", () => {
         dataDir: tempDir,
         perception: {
           ...DEFAULT_CONFIG.perception,
+          useLlmFallback: true,
+        },
+        affective: {
+          ...DEFAULT_CONFIG.affective,
           useLlmFallback: false,
-          modeWhenLlmAbsent: "reflective",
         },
         embedding: {
           ...DEFAULT_CONFIG.embedding,
@@ -307,7 +329,6 @@ describe("TurnTracer", () => {
       "recency_compiled",
       "perception_started",
       "perception_classifier_degraded",
-      "perception_classifier_degraded",
       "perception_completed",
       "llm_call_started",
       "llm_call_response",
@@ -321,16 +342,13 @@ describe("TurnTracer", () => {
       "retrieval_started",
       "llm_call_started",
       "llm_call_response",
+      "retrieval_degraded",
       "retrieval_completed",
       "path_selected",
       "llm_call_started",
       "llm_call_response",
       "plan_extraction",
       "plan_persisted",
-      "llm_call_started",
-      "llm_call_response",
-      "tool_call_dispatched",
-      "tool_call_completed",
       "llm_call_started",
       "llm_call_response",
       "finalizer_emitted",
@@ -346,10 +364,10 @@ describe("TurnTracer", () => {
       events
         .filter((event) => event.event === "perception_classifier_degraded")
         .map((event) => event.classifier),
-    ).toEqual(["affective_signal", "temporal_cue"]);
-    expect(events.find((event) => event.event === "tool_call_completed")).toMatchObject({
-      toolName: "tool.episodic.search",
-      success: true,
+    ).toEqual(["affective_signal"]);
+    expect(events.find((event) => event.event === "finalizer_emitted")).toMatchObject({
+      path: "system_2",
+      decision: "answer",
     });
   });
 });

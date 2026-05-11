@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { SuppressionSet } from "../attention/index.js";
 import { Reflector, type ReflectorOptions } from "./reflector.js";
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";

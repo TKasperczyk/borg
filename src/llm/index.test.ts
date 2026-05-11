@@ -12,12 +12,12 @@ import { AuthError } from "../util/errors.js";
 import {
   AnthropicLLMClient,
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
-  FakeLLMClient,
   LLMStructuredOutputParseError,
   createOAuthFetch,
   toStructuredOutputFormat,
   type TokenUsageEvent,
 } from "./index.js";
+import { FakeLLMClient } from "./test-support/fake-client.js";
 
 function createTempCredentialsPath(tempDirs: string[]): string {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-llm-"));

@@ -11,7 +11,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg } from "./borg.js";
 import { DEFAULT_CONFIG } from "./config/index.js";
 import type { EmbeddingClient } from "./embeddings/index.js";
-import { FakeLLMClient } from "./llm/index.js";
+import {
+  FakeLLMClient,
+  createFakeEmitAnswerResponse,
+} from "./llm/test-support/fake-client.js";
 import { ManualClock } from "./util/clock.js";
 
 class ConstantEmbeddingClient implements EmbeddingClient {
@@ -36,7 +39,6 @@ describe("Sprint 28 integration", () => {
   function configWith(overrides: {
     dataDir: string;
     maintenance?: Partial<typeof DEFAULT_CONFIG.maintenance>;
-    perceptionMode?: "problem_solving" | "relational" | "reflective" | "idle";
   }) {
     return {
       ...DEFAULT_CONFIG,
@@ -44,7 +46,6 @@ describe("Sprint 28 integration", () => {
       perception: {
         ...DEFAULT_CONFIG.perception,
         useLlmFallback: false,
-        modeWhenLlmAbsent: overrides.perceptionMode ?? "idle",
       },
       embedding: {
         ...DEFAULT_CONFIG.embedding,
@@ -211,12 +212,61 @@ describe("Sprint 28 integration", () => {
     // and reflective forces S2 without consulting confidence. problem_solving
     // lets the confidence signal actually decide.
     const borg = await Borg.open({
-      config: configWith({ dataDir: tempDir, perceptionMode: "problem_solving" }),
+      config: {
+        ...configWith({ dataDir: tempDir }),
+        perception: {
+          ...DEFAULT_CONFIG.perception,
+          useLlmFallback: true,
+        },
+        affective: {
+          ...DEFAULT_CONFIG.affective,
+          useLlmFallback: false,
+        },
+      },
       clock: new ManualClock(1_000_000),
       embeddingDimensions: 4,
       embeddingClient: new ConstantEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          {
+            text: "",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_entities",
+                name: "EmitEntityExtraction",
+                input: { entities: [] },
+              },
+            ],
+          },
+          {
+            text: "",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_mode",
+                name: "EmitModeDetection",
+                input: { mode: "problem_solving" },
+              },
+            ],
+          },
+          {
+            text: "",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_temporal",
+                name: "EmitTemporalCue",
+                input: { has_cue: false },
+              },
+            ],
+          },
           // S2 planner call (converse tool-use) emits EmitTurnPlan.
           [
             {
@@ -234,13 +284,10 @@ describe("Sprint 28 integration", () => {
             },
           ],
           // Finalizer text response.
-          {
-            text: "I do not have evidence on that yet.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createFakeEmitAnswerResponse("I do not have evidence on that yet.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
         ],
       }),
     });

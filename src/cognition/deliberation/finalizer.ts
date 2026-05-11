@@ -7,7 +7,6 @@ import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../action/index.js";
 
-export const NO_OUTPUT_FINALIZER_TOOL_NAME = "no_output";
 export const EMIT_ANSWER_FINALIZER_TOOL_NAME = "EmitAnswer";
 export const EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME = "EmitNoOutput";
 export const EMIT_SELF_REPORT_FINALIZER_TOOL_NAME = "EmitSelfReport";
@@ -31,19 +30,6 @@ const emitSelfReportToolInputSchema = z
     persistence_class: z.literal("assistant_self_report"),
   })
   .strict();
-
-const NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
-  name: NO_OUTPUT_FINALIZER_TOOL_NAME,
-  description:
-    "Call this tool when you don't want to emit a response this turn. The tool call alone is the suppression signal -- do not narrate silence in text alongside it. Use it when the conversation has reached a natural close, when the user input doesn't warrant a response, or when continuing would only produce ritual closure tokens.",
-  allowedOrigins: ["deliberator"],
-  writeScope: "read",
-  inputSchema: z.object({}).strict(),
-  outputSchema: z.object({}).strict(),
-  async invoke() {
-    return {};
-  },
-};
 
 const EMIT_ANSWER_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_ANSWER_FINALIZER_TOOL_NAME,
@@ -131,14 +117,12 @@ export type RunFinalizerOptions = {
   model: string;
   baseSystemPrompt: string;
   initialMessages: readonly LLMContentBlockMessage[];
-  tools: readonly ToolDefinition[];
   userEntryId: string | undefined;
   maxTokens: number;
   thinking?: LLMConverseOptions["thinking"];
   path: "system_1" | "system_2";
   additionalPromptSections?: readonly (string | null)[];
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
-  mode?: "free_text" | "emission_tools";
   tracer?: TurnTracer;
   turnId?: string;
 };
@@ -172,10 +156,7 @@ export type FinalizerResult = ToolLoopResult & {
 };
 
 function buildDynamicSystemPrompt(options: RunFinalizerOptions): string {
-  const baseSystemPrompt =
-    options.mode === "emission_tools"
-      ? (options.cacheableSystemPrompt?.dynamicContent ?? options.baseSystemPrompt)
-      : options.baseSystemPrompt;
+  const baseSystemPrompt = options.cacheableSystemPrompt?.dynamicContent ?? options.baseSystemPrompt;
 
   return options.additionalPromptSections === undefined
     ? baseSystemPrompt
@@ -192,10 +173,6 @@ function buildStaticSystemPrompt(options: RunFinalizerOptions): string {
 
 function buildSystemPrompt(options: RunFinalizerOptions): LLMConverseOptions["system"] {
   const dynamicPrompt = buildDynamicSystemPrompt(options);
-
-  if (options.mode !== "emission_tools") {
-    return dynamicPrompt;
-  }
 
   return [
     {
@@ -274,25 +251,6 @@ function decisionFromEmissionToolResult(result: ToolLoopResult): EmissionDecisio
   return invalidToolDecision(terminalCall.name, "unknown terminal emission tool");
 }
 
-function decisionFromFreeTextResult(result: ToolLoopResult): EmissionDecision {
-  if (result.terminalToolCalls.some((call) => call.name === NO_OUTPUT_FINALIZER_TOOL_NAME)) {
-    return {
-      kind: "no_output",
-      reason: "legacy_no_output_tool",
-    };
-  }
-
-  if (result.text.trim().length === 0) {
-    return { kind: "empty" };
-  }
-
-  return {
-    kind: "answer",
-    text: result.text,
-    source: "text",
-  };
-}
-
 function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDecision): void {
   if (options.tracer?.enabled !== true || options.turnId === undefined) {
     return;
@@ -301,7 +259,7 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
   options.tracer.emit("finalizer_emitted", {
     turnId: options.turnId,
     path: options.path,
-    mode: options.mode ?? "free_text",
+    mode: "emission_tools",
     decision: decision.kind,
     ...(decision.kind === "answer" || decision.kind === "self_report"
       ? { text_length: decision.text.length }
@@ -317,14 +275,7 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
 export async function runFinalizer(options: RunFinalizerOptions): Promise<FinalizerResult> {
   const toolProvenance =
     options.userEntryId === undefined ? undefined : { user_entry_id: options.userEntryId };
-  const mode = options.mode ?? "free_text";
   const systemPrompt = buildSystemPrompt(options);
-  const finalizerTools =
-    mode === "emission_tools"
-      ? [...EMISSION_FINALIZER_TOOLS]
-      : [...options.tools, NO_OUTPUT_FINALIZER_TOOL];
-  const terminalToolNames =
-    mode === "emission_tools" ? EMISSION_FINALIZER_TOOL_NAMES : [NO_OUTPUT_FINALIZER_TOOL_NAME];
 
   const result = await executeToolLoop({
     llmClient: options.llmClient,
@@ -334,22 +285,19 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     model: options.model,
     systemPrompt,
     initialMessages: options.initialMessages,
-    tools: finalizerTools,
+    tools: [...EMISSION_FINALIZER_TOOLS],
     origin: "deliberator",
     provenance: toolProvenance,
     maxTokens: options.maxTokens,
     ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
-    ...(mode === "emission_tools" ? { toolChoice: { type: "any" as const } } : {}),
+    toolChoice: { type: "any" as const },
     budget: options.path === "system_1" ? "cognition-system-1" : "cognition-system-2",
     tracer: options.tracer,
     turnId: options.turnId,
     traceLabel: `${options.path}_finalizer`,
-    terminalToolNames,
+    terminalToolNames: EMISSION_FINALIZER_TOOL_NAMES,
   });
-  const decision =
-    mode === "emission_tools"
-      ? decisionFromEmissionToolResult(result)
-      : decisionFromFreeTextResult(result);
+  const decision = decisionFromEmissionToolResult(result);
 
   emitFinalizerTrace(options, decision);
 

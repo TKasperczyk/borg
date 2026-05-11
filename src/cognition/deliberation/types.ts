@@ -174,6 +174,5 @@ export type DeliberatorOptions = {
   cognitionThinking?: CognitionThinkingConfig;
   clock?: Clock;
   tracer?: TurnTracer;
-  emissionFinalizerEnabled?: boolean;
   hostCapabilities?: string;
 };

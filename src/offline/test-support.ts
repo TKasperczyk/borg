@@ -8,7 +8,8 @@ import type { AffectiveSignal } from "../memory/affective/index.js";
 import { DEFAULT_CONFIG, type Config } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { executiveMigrations, ExecutiveStepsRepository } from "../executive/index.js";
-import { FakeLLMClient, type LLMClient } from "../llm/index.js";
+import { type LLMClient } from "../llm/index.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import { MoodRepository, affectiveMigrations } from "../memory/affective/index.js";
 import {
   ActionRepository,
@@ -224,10 +225,6 @@ export function createTestConfig(
       evidenceLedger: {
         ...DEFAULT_CONFIG.generation.evidenceLedger,
         ...overrides.generation?.evidenceLedger,
-      },
-      manifestFinalizer: {
-        ...DEFAULT_CONFIG.generation.manifestFinalizer,
-        ...overrides.generation?.manifestFinalizer,
       },
       postGenerationGuards: {
         ...DEFAULT_CONFIG.generation.postGenerationGuards,

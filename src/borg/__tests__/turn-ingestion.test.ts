@@ -9,6 +9,7 @@ import {
   ScriptedEmbeddingClient,
   borgInternals,
   createEmptyReflectionResponse,
+  createEmitAnswerResponse,
   createReviewOpenQuestionResponse,
   createEntityId,
   join,
@@ -38,7 +39,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -61,13 +61,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "Try the rollback plan.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Try the rollback plan.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -170,7 +167,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -272,7 +268,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -295,13 +290,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "Try the rollback plan.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Try the rollback plan.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -357,7 +349,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -380,13 +371,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "Try the rollback plan.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Try the rollback plan.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -418,7 +406,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -441,13 +428,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "Try the rollback plan.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Try the rollback plan.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -479,7 +463,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -502,13 +485,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "Try the rollback plan.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Try the rollback plan.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
         ],
       }),
       liveExtraction: true,
@@ -577,7 +557,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -600,13 +579,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "The turn still completes.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("The turn still completes.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
           createEmptyReflectionResponse(),
         ],
       }),

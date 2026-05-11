@@ -46,8 +46,7 @@ export type ModeDetectorOptions = {
   /**
    * If true (default) and an LLM client + model are configured, the detector
    * classifies every message by asking the LLM. If false, or if no LLM is
-   * configured, the detector returns `defaultMode` (which itself defaults
-   * to "idle") as a neutral classification.
+   * configured, the detector returns "idle" as a neutral classification.
    *
    * Rationale: a pattern-based heuristic tier existed in earlier revisions.
    * It was brittle by construction -- every novel phrasing required a new
@@ -57,22 +56,13 @@ export type ModeDetectorOptions = {
    * heuristic and lets the LLM do the work on every turn.
    */
   useLlmFallback?: boolean;
-  /**
-   * Mode returned when no LLM classification happens (either fallback
-   * disabled or no client configured). Defaults to "idle". Test harnesses
-   * that want a specific mode without wiring a scripted fake LLM can set
-   * this -- there is no production reason to override it.
-   */
-  defaultMode?: CognitiveMode;
 };
 
 export class ModeDetector {
   private readonly useLlmFallback: boolean;
-  private readonly defaultMode: CognitiveMode;
 
   constructor(private readonly options: ModeDetectorOptions = {}) {
     this.useLlmFallback = options.useLlmFallback ?? true;
-    this.defaultMode = options.defaultMode ?? "idle";
   }
 
   async detectMode(text: string, recentHistory: readonly string[] = []): Promise<CognitiveMode> {
@@ -81,7 +71,7 @@ export class ModeDetector {
       this.options.llmClient === undefined ||
       this.options.model === undefined
     ) {
-      return this.defaultMode;
+      return "idle";
     }
 
     try {

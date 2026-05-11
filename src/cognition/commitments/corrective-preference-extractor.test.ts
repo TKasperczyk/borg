@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
+import { type LLMCompleteResult } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId, createStreamEntryId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { CorrectivePreferenceExtractor } from "./corrective-preference-extractor.js";

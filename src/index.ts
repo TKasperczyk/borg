@@ -31,7 +31,6 @@ export {
 } from "./embeddings/index.js";
 export {
   AnthropicLLMClient,
-  FakeLLMClient,
   LLMStructuredOutputParseError,
   toStructuredOutputFormat,
   type LLMClient,

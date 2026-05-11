@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 
 import { z } from "zod";
 
-import { FakeLLMClient, FixedClock } from "../../src/index.js";
+import { FixedClock } from "../../src/index.js";
+import { FakeLLMClient } from "../../src/llm/test-support/fake-client.js";
 import type { LLMCompleteResult } from "../../src/index.js";
 
 import { createEvalBorg } from "../support/create-eval-borg.js";

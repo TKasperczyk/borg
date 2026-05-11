@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import type { EntityId } from "../../util/ids.js";
 import type { PerceptionResult } from "../types.js";

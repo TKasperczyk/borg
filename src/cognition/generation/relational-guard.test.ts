@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
+import { type LLMCompleteResult } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import {
   createActionId,
   createCommitmentId,

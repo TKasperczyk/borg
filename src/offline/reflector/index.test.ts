@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../config/index.js";
-import { FakeLLMClient, type LLMCompleteOptions } from "../../llm/index.js";
+import { type LLMCompleteOptions } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 
 import {
   createEpisodeFixture,

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createOfflineTestHarness } from "../../offline/test-support.js";
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { StreamWriter } from "../../stream/index.js";
 import { EpisodicExtractor } from "../episodic/index.js";
 
@@ -110,46 +110,6 @@ describe("AffectiveExtractor", () => {
     });
     expect(llm.requests).toHaveLength(1);
     expect(llm.requests[0]?.budget).toBe("perception-affective");
-  });
-
-  it("caps llm affective calls for one extractor instance", async () => {
-    const onDegraded = vi.fn();
-    const llm = new FakeLLMClient({
-      responses: [
-        {
-          text: "",
-          input_tokens: 8,
-          output_tokens: 8,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_1",
-              name: AFFECTIVE_TOOL_NAME,
-              input: {
-                valence: -0.45,
-                arousal: 0.35,
-                dominant_emotion: "anger",
-              },
-            },
-          ],
-        },
-      ],
-    });
-    const extractor = new AffectiveExtractor({
-      llmClient: llm,
-      model: "haiku",
-      onDegraded,
-    });
-
-    await extractor.analyze("Yeah great, exactly what I wanted");
-    const capped = await extractor.analyze("Sure, perfect.");
-
-    expect(llm.requests).toHaveLength(1);
-    expect(capped).toMatchObject({
-      valence: 0,
-      dominant_emotion: null,
-    });
-    expect(onDegraded).toHaveBeenCalledWith("llm_exhausted", undefined);
   });
 
   it("does not let coding-error lexicon words override the llm signal", async () => {

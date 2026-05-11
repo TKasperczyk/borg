@@ -20,7 +20,6 @@ import {
   openQuestionSchema,
   type OpenQuestion,
 } from "../../memory/self/index.js";
-import { createOpenQuestionReopener } from "../../memory/self/open-questions.js";
 import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import { createGrowthMarkerId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
@@ -673,15 +672,10 @@ function planFallbackAction(
   nextUnresolvedRuminationTicks: number,
 ): RuminatorPlan["items"][number] | null {
   const ageMs = Math.max(0, ctx.clock.now() - question.last_touched);
-  const stalenessTicks = ctx.config.offline.ruminator.stalenessTicks;
   const dayStalenessReached =
     ageMs >= ctx.config.offline.ruminator.stalenessDays * DAY_MS && question.urgency < 0.2;
-  // Tick staleness is an observed count of unresolved maintenance passes; once
-  // it reaches the configured threshold it should not wait for the urgency gate.
-  const tickStalenessReached =
-    stalenessTicks !== null && question.unresolved_rumination_ticks >= stalenessTicks;
 
-  if (dayStalenessReached || tickStalenessReached) {
+  if (dayStalenessReached) {
     return {
       action: "abandon",
       question_id: question.id,
@@ -718,13 +712,14 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
   readonly name = "ruminator" as const;
 
   constructor(private readonly options: RuminatorProcessOptions) {
-    const reopenForReversal = createOpenQuestionReopener(this.options.openQuestionsRepository);
-
     this.options.registry.register(this.name, "resolve", async ({ reversal }) => {
       const parsed = reversal as Partial<RuminatorReversal>;
 
       if (parsed.previous !== undefined) {
-        reopenForReversal(parsed.previous.id, parsed.previous.urgency);
+        this.options.openQuestionsRepository.reopenForReversal(
+          parsed.previous.id,
+          parsed.previous.urgency,
+        );
       }
     });
     this.options.registry.register(this.name, "bump_urgency", async ({ reversal }) => {
@@ -741,7 +736,10 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       const parsed = reversal as Partial<RuminatorReversal>;
 
       if (parsed.previous !== undefined) {
-        reopenForReversal(parsed.previous.id, parsed.previous.urgency);
+        this.options.openQuestionsRepository.reopenForReversal(
+          parsed.previous.id,
+          parsed.previous.urgency,
+        );
       }
     });
     this.options.registry.register(this.name, "merge_duplicate", async ({ reversal }) => {

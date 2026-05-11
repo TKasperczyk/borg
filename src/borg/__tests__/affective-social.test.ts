@@ -8,6 +8,7 @@ import {
   ScriptedEmbeddingClient,
   borgInternals,
   createEmptyReflectionResponse,
+  createEmitAnswerResponse,
   createInvalidEntityClassifierResponse,
   createInvalidModeClassifierResponse,
   createNoTemporalCueResponse,
@@ -39,7 +40,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         affective: {
           useLlmFallback: false,
@@ -68,13 +68,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "Try the rollback plan.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Try the rollback plan.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
         ],
       }),
       liveExtraction: false,
@@ -135,7 +132,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         affective: {
           useLlmFallback: false,
@@ -164,13 +160,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "We can slow down and inspect the failure.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("We can slow down and inspect the failure.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
         ],
       }),
       liveExtraction: false,
@@ -228,7 +221,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         affective: {
           useLlmFallback: false,
@@ -257,20 +249,14 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "Focus on the audience and clarify the tone first.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "I'll keep this short for Sam.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Focus on the audience and clarify the tone first.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("I'll keep this short for Sam.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
         ],
       }),
     });
@@ -325,7 +311,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "relational",
         },
         affective: {
           useLlmFallback: false,
@@ -355,35 +340,23 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createTurnPlanResponse([]),
-          {
-            text: "Warm, supportive reply for Sam.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Warm, supportive reply for Sam.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
           createTurnPlanResponse([]),
-          {
-            text: "I hear that landed badly.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "I hear that landed badly.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "I hear that landed badly.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("I hear that landed badly.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("I hear that landed badly.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("I hear that landed badly.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
         ],
       }),
       liveExtraction: false,
@@ -458,7 +431,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         affective: {
           useLlmFallback: false,
@@ -532,48 +504,30 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "First reply for Sam.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Autonomous reflection.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Follow-up reply for Sam.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("First reply for Sam.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Autonomous reflection.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Follow-up reply for Sam.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
         ],
       }),
     });
@@ -644,7 +598,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         affective: {
           useLlmFallback: false,
@@ -673,13 +626,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "Amazing, great, wonderful progress! I'm thrilled this is working!",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Amazing, great, wonderful progress! I'm thrilled this is working!", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
         ],
       }),
     });
@@ -706,7 +656,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         affective: {
           useLlmFallback: false,
@@ -735,13 +684,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "Let's inspect the deploy state first.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Let's inspect the deploy state first.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -799,7 +745,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: true,
-          modeWhenLlmAbsent: "idle",
         },
         affective: {
           useLlmFallback: false,
@@ -831,13 +776,10 @@ describe("Borg", () => {
           createInvalidEntityClassifierResponse(),
           createInvalidModeClassifierResponse(),
           createNoTemporalCueResponse(),
-          {
-            text: "The turn still completed.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("The turn still completed.", {
+              inputTokens: 10,
+              outputTokens: 5,
+            }),
           createEmptyReflectionResponse(),
         ],
       }),

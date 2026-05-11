@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Borg } from "../borg.js";
 import { DEFAULT_CONFIG } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
-import { FakeLLMClient } from "../llm/index.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
@@ -75,7 +75,6 @@ describe("correction service", () => {
         },
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         anthropic: {
           auth: "api-key",
@@ -149,7 +148,6 @@ describe("correction service", () => {
         },
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         anthropic: {
           auth: "api-key",
@@ -512,7 +510,6 @@ describe("correction service", () => {
         },
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         anthropic: {
           auth: "api-key",

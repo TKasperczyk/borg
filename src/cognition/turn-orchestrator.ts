@@ -149,10 +149,7 @@ export class TurnOrchestrator {
     this.clock = options.clock ?? new SystemClock();
     this.tracer = options.tracer ?? NOOP_TRACER;
     const turnContextCompiler =
-      options.turnContextCompiler ??
-      new TurnContextCompiler({
-        entityRepository: options.entityRepository,
-      });
+      options.turnContextCompiler ?? new TurnContextCompiler();
     this.sessionLock =
       options.sessionLock ??
       new SessionLock({

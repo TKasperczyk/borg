@@ -43,7 +43,6 @@ const AFFECTIVE_SYSTEM_PROMPT = [
   "",
   'You MUST emit valence, arousal, and dominant_emotion. Never omit fields. If the text is genuinely flat or you are uncertain, emit valence=0, arousal=0.1, dominant_emotion="neutral".',
 ].join("\n");
-const DEFAULT_MAX_LLM_FALLBACK_CALLS = 1;
 export const AFFECTIVE_FALLBACK_TOOL = {
   name: AFFECTIVE_FALLBACK_TOOL_NAME,
   description: "Emit a grounded affective signal for the input text.",
@@ -66,24 +65,19 @@ export type AffectiveExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
   useLlmFallback?: boolean;
-  maxLlmFallbackCalls?: number;
   onDegraded?: (reason: AffectiveExtractorDegradedReason, error?: unknown) => Promise<void> | void;
 };
 
 export type AffectiveExtractorDegradedReason =
   | "llm_disabled"
   | "llm_unavailable"
-  | "llm_exhausted"
   | "llm_failed";
 
 export class AffectiveExtractor {
   private readonly useLlmFallback: boolean;
-  private readonly maxLlmFallbackCalls: number;
-  private llmFallbackCalls = 0;
 
   constructor(private readonly options: AffectiveExtractorOptions = {}) {
     this.useLlmFallback = options.useLlmFallback ?? true;
-    this.maxLlmFallbackCalls = options.maxLlmFallbackCalls ?? DEFAULT_MAX_LLM_FALLBACK_CALLS;
   }
 
   private async degraded(
@@ -107,12 +101,6 @@ export class AffectiveExtractor {
     if (this.options.llmClient === undefined || this.options.model === undefined) {
       return this.degraded("llm_unavailable");
     }
-
-    if (this.llmFallbackCalls >= this.maxLlmFallbackCalls) {
-      return this.degraded("llm_exhausted");
-    }
-
-    this.llmFallbackCalls += 1;
 
     try {
       const response = await this.options.llmClient.complete({

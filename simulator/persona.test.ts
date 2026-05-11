@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { FakeLLMClient, type LLMCompleteResult } from "../src/index.js";
+import { type LLMCompleteResult } from "../src/index.js";
+import { FakeLLMClient } from "../src/llm/test-support/fake-client.js";
 import {
   classifyPersonaRoleBleed,
   detectPersonaRoleBleed,

@@ -23,7 +23,6 @@ import {
 import { runS2Planner } from "./s2-planner.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
-import { resolveSpeakerDisplayName } from "../speaker-tags.js";
 import type { GenerationSuppressionReason, PendingTurnEmission } from "../generation/types.js";
 import type {
   DeliberationContext,
@@ -236,16 +235,8 @@ export class Deliberator {
         ? null
         : [context.evidenceLedgerPromptSection];
 
-    const currentSpeakerDisplayName = resolveSpeakerDisplayName(
-      context.entityRepository,
-      context.senderEntityId,
-    );
-    const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage, {
-      currentSpeakerDisplayName,
-    });
+    const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage);
     const dialogueBlockMessages = toContentBlockMessages(dialogueMessages);
-    const deliberatorTools = this.options.toolDispatcher.listTools("deliberator");
-    const useEmissionFinalizer = this.options.emissionFinalizerEnabled === true;
     const thinking = cognitionThinkingOption(this.options);
 
     if (decision.path === "system_1") {
@@ -256,14 +247,12 @@ export class Deliberator {
         audienceEntityId: context.audienceEntityId,
         model: this.options.cognitionModel,
         baseSystemPrompt,
-        ...(useEmissionFinalizer ? { cacheableSystemPrompt: cacheableBaseSystemPrompt } : {}),
+        cacheableSystemPrompt: cacheableBaseSystemPrompt,
         initialMessages: dialogueBlockMessages,
-        tools: deliberatorTools,
         userEntryId: context.userEntryId,
         maxTokens: systemOneMaxTokens,
         ...(thinking === undefined ? {} : { thinking }),
         path: "system_1",
-        mode: useEmissionFinalizer ? "emission_tools" : "free_text",
         ...(evidenceLedgerPromptSections === null
           ? {}
           : { additionalPromptSections: evidenceLedgerPromptSections }),
@@ -335,28 +324,6 @@ export class Deliberator {
       }
     }
 
-    if (plan?.emission_recommendation === "no_output" && !useEmissionFinalizer) {
-      return {
-        path: "system_2",
-        response: "",
-        emitted: false,
-        emission: {
-          kind: "suppressed",
-          reason: "s2_planner_no_output",
-        },
-        emissionRecommendation: "no_output",
-        thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),
-        thoughts,
-        tool_calls: [],
-        usage: planner.usage,
-        decision_reason: decision.reason,
-        retrievedEpisodes: [...context.retrievalResult],
-        referencedEpisodeIds: plan.referenced_episode_ids,
-        intents: [],
-        thoughtsPersisted,
-      };
-    }
-
     // Verification steps from the plan drive any secondary retrieval. If the
     // plan didn't surface anything to double-check, we skip the re-retrieve
     // call entirely (Phase D removed the regex-on-scratchpad approach).
@@ -397,15 +364,13 @@ export class Deliberator {
       audienceEntityId: context.audienceEntityId,
       model: this.options.cognitionModel,
       baseSystemPrompt,
-      ...(useEmissionFinalizer ? { cacheableSystemPrompt: cacheableBaseSystemPrompt } : {}),
+      cacheableSystemPrompt: cacheableBaseSystemPrompt,
       initialMessages: dialogueBlockMessages,
-      tools: deliberatorTools,
       userEntryId: context.userEntryId,
       maxTokens: systemTwoMaxTokens,
       ...(thinking === undefined ? {} : { thinking }),
       path: "system_2",
       additionalPromptSections,
-      mode: useEmissionFinalizer ? "emission_tools" : "free_text",
       tracer: this.tracer,
       turnId: context.turnId,
     });
@@ -418,9 +383,7 @@ export class Deliberator {
       response: finalized.response,
       emitted: finalized.emitted,
       emission: finalized.emission,
-      emissionRecommendation: useEmissionFinalizer
-        ? "emit"
-        : (plan?.emission_recommendation ?? "emit"),
+      emissionRecommendation: "emit",
       thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),
       thoughts,
       tool_calls: finalToolCallsMade,

@@ -3,11 +3,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { z } from "zod";
 
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { StreamWriter } from "../../stream/index.js";
-import { ToolDispatcher, type ToolDefinition } from "../../tools/index.js";
+import { ToolDispatcher } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { runFinalizer, type CacheableFinalizerSystemPrompt } from "./finalizer.js";
@@ -28,23 +27,10 @@ function createDispatcher(tempDirs: string[]): ToolDispatcher {
   });
 }
 
-const extraTool: ToolDefinition = {
-  name: "tool.memory.write",
-  description: "A non-emission tool that must not be exposed to the finalizer.",
-  allowedOrigins: ["deliberator"],
-  writeScope: "write",
-  inputSchema: z.object({}).strict(),
-  outputSchema: z.object({}).strict(),
-  async invoke() {
-    return {};
-  },
-};
-
 async function runEmissionFinalizer(
   llm: FakeLLMClient,
   tempDirs: string[],
   options: {
-    tools?: readonly ToolDefinition[];
     cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
     additionalPromptSections?: readonly (string | null)[];
   } = {},
@@ -68,13 +54,11 @@ async function runEmissionFinalizer(
             text: "Please respond.",
           },
         ],
-      },
-    ],
-    tools: options.tools ?? [extraTool],
+    },
+  ],
     userEntryId: undefined,
     maxTokens: 256,
     path: "system_1",
-    mode: "emission_tools",
     ...(options.additionalPromptSections === undefined
       ? {}
       : { additionalPromptSections: options.additionalPromptSections }),

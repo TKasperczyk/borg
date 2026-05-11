@@ -14,6 +14,7 @@ import {
   createTestConfig,
   Borg,
   ScriptedEmbeddingClient,
+  createEmitAnswerResponse,
   createTraitReflectionResponse,
   createTurnPlanResponse,
   join,
@@ -83,7 +84,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "relational",
         },
         affective: {
           useLlmFallback: false,
@@ -113,38 +113,26 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
-          {
-            text: "Here is a warmer Atlas update.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Here is a warmer Atlas update.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
           createTraitReflectionResponse({
             traitLabel: "warm",
             evidence: "The response deliberately softened the Atlas update.",
           }),
-          {
-            text: "Glad that helped.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Glad that helped.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
         ],
       }),
       liveExtraction: false,
@@ -237,7 +225,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "relational",
         },
         affective: {
           useLlmFallback: false,
@@ -267,38 +254,26 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
-          {
-            text: "Here is a warmer Atlas update.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Here is a warmer Atlas update.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
           createTraitReflectionResponse({
             traitLabel: "warm",
             evidence: "The response deliberately softened the Atlas update.",
           }),
-          {
-            text: "Understood.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Understood.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
         ],
       }),
       liveExtraction: false,
@@ -371,7 +346,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "relational",
         },
         affective: {
           useLlmFallback: false,
@@ -401,38 +375,26 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
-          {
-            text: "Here is a warmer Atlas update.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Here is a warmer Atlas update.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
           createTraitReflectionResponse({
             traitLabel: "warm",
             evidence: "The response deliberately softened the Atlas update.",
           }),
-          {
-            text: "Still here.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Still here.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
         ],
       }),
       liveExtraction: false,
@@ -514,7 +476,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "relational",
         },
         affective: {
           useLlmFallback: false,
@@ -589,52 +550,34 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
-          {
-            text: "Here is a warmer Atlas update.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Here is a warmer Atlas update.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
           createTraitReflectionResponse({
             traitLabel: "warm",
             evidence: "The response deliberately softened the Atlas update.",
           }),
-          {
-            text: "Autonomous reflection.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Glad that helped.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Autonomous reflection.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Glad that helped.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
         ],
       }),
       liveExtraction: false,
@@ -722,7 +665,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "relational",
         },
         affective: {
           useLlmFallback: false,
@@ -752,38 +694,26 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
-          {
-            text: "Here is a warmer Atlas update.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Here is a warmer Atlas update.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
           createTraitReflectionResponse({
             traitLabel: "warm",
             evidence: "The response deliberately softened the Atlas update.",
           }),
-          {
-            text: "Glad that helped.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Glad that helped.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
         ],
       }),
       liveExtraction: false,
@@ -867,7 +797,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "relational",
         },
         affective: {
           useLlmFallback: false,
@@ -897,38 +826,26 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
-          {
-            text: "Here is a warmer Atlas update for Sam.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Here is a warmer Atlas update for Sam.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
           createTraitReflectionResponse({
             traitLabel: "warm",
             evidence: "The response deliberately softened the Atlas update for Sam.",
           }),
-          {
-            text: "Glad that helped.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
-          {
-            text: "Extra fallback.",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Glad that helped.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
+          createEmitAnswerResponse("Extra fallback.", {
+              inputTokens: 8,
+              outputTokens: 4,
+            }),
         ],
       }),
       liveExtraction: false,

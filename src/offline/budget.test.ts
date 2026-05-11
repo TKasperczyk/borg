@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FakeLLMClient } from "../llm/index.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import { BudgetExceededError } from "../util/errors.js";
 
 import { BudgetTracker, getBudgetErrorTokens, withBudget } from "./budget.js";

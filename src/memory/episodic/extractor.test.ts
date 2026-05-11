@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import { FakeLLMClient, type LLMCompleteOptions } from "../../llm/index.js";
+import { type LLMCompleteOptions } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createOfflineTestHarness } from "../../offline/test-support.js";
 import { QUARANTINED_USER_ENTRY_EVENT, StreamWriter } from "../../stream/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";

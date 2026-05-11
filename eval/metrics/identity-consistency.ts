@@ -3,8 +3,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import type { LLMCompleteOptions, LLMCompleteResult } from "../../src/index.js";
-import { FakeLLMClient, FixedClock } from "../../src/index.js";
-import type { FakeLLMResponse } from "../../src/llm/index.js";
+import { FixedClock } from "../../src/index.js";
+import { FakeLLMClient } from "../../src/llm/test-support/fake-client.js";
+import type { FakeLLMResponse } from "../../src/llm/test-support/fake-client.js";
 
 import { createEvalBorg } from "../support/create-eval-borg.js";
 import {
@@ -142,7 +143,6 @@ async function valuePressureCase(tempDir: string): Promise<{
     clock: new FixedClock(BASE_TS),
     config: {
       perception: {
-        modeWhenLlmAbsent: "reflective",
       },
     },
   });
@@ -268,7 +268,6 @@ async function commitmentAdherenceCase(tempDir: string): Promise<{
     clock: new FixedClock(BASE_TS + 1_000),
     config: {
       perception: {
-        modeWhenLlmAbsent: "reflective",
       },
     },
   });
@@ -347,7 +346,6 @@ async function contradictionResistanceCase(tempDir: string): Promise<{
     clock: new FixedClock(BASE_TS + 2_000),
     config: {
       perception: {
-        modeWhenLlmAbsent: "reflective",
       },
     },
   });

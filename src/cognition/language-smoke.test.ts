@@ -4,7 +4,8 @@ import { SuppressionSet } from "./attention/index.js";
 import { Perceiver } from "./perception/index.js";
 import { TurnRetrievalCoordinator } from "./retrieval/turn-coordinator.js";
 import { computeExecutiveContextFits, selectExecutiveFocus } from "../executive/index.js";
-import { FakeLLMClient, type LLMCompleteOptions } from "../llm/index.js";
+import { type LLMCompleteOptions } from "../llm/index.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import { SkillSelector } from "../memory/procedural/index.js";
 import {
   buildSelfScoringFeatureSet,

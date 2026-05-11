@@ -2,7 +2,7 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { AffectiveExtractorDegradedReason } from "../../memory/affective/index.js";
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
-import { perceptionResultSchema, type CognitiveMode, type PerceptionResult } from "../types.js";
+import { perceptionResultSchema, type PerceptionResult } from "../types.js";
 import {
   createNeutralAffectiveSignal,
   type AffectiveSignal,
@@ -81,13 +81,6 @@ export type PerceiverOptions = {
   onClassifierFailure?: PerceptionClassifierFailureObserver;
   tracer?: TurnTracer;
   turnId?: string;
-  /**
-   * Mode returned when LLM-based mode detection isn't firing (either the
-   * fallback is disabled or no LLM client is configured). Test harnesses
-   * that run with fake LLMs typically use this to pick the mode they want
-   * to exercise without scripting a tool-call response.
-   */
-  modeWhenLlmAbsent?: CognitiveMode;
 };
 
 export class Perceiver {
@@ -104,7 +97,6 @@ export class Perceiver {
   private readonly onClassifierFailure?: PerceptionClassifierFailureObserver;
   private readonly tracer: TurnTracer;
   private readonly turnId?: string;
-  private readonly modeWhenLlmAbsent: CognitiveMode;
 
   constructor(options: PerceiverOptions = {}) {
     this.clock = options.clock ?? new SystemClock();
@@ -118,7 +110,6 @@ export class Perceiver {
     this.onClassifierFailure = options.onClassifierFailure;
     this.tracer = options.tracer ?? NOOP_TRACER;
     this.turnId = options.turnId;
-    this.modeWhenLlmAbsent = options.modeWhenLlmAbsent ?? "idle";
     this.entityExtractor = new EntityExtractor({
       llmClient: options.llmClient,
       model: this.fastModel,
@@ -127,7 +118,6 @@ export class Perceiver {
       llmClient: options.llmClient,
       model: options.model,
       useLlmFallback: options.useLlmFallback,
-      defaultMode: this.modeWhenLlmAbsent,
     });
   }
 
@@ -203,7 +193,7 @@ export class Perceiver {
       runPerceptionClassifierSafely({
         classifier: "mode_detector",
         run: () => this.modeDetector.detectMode(text, recentHistory),
-        fallback: () => this.modeWhenLlmAbsent,
+        fallback: () => "idle",
         onFailure: this.onClassifierFailure,
       }),
       this.detectAffectiveSignalSafely(text, recentHistory),

@@ -8,7 +8,7 @@ import type { SkillSelectionResult } from "../../memory/procedural/index.js";
 import type { SocialProfile } from "../../memory/social/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import type { RetrievedContext } from "../../retrieval/index.js";
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { ManualClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,

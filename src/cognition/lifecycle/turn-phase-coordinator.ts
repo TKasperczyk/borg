@@ -479,7 +479,6 @@ export class TurnPhaseCoordinator {
       cognitionThinking: this.options.config.generation.cognition.thinking,
       clock: this.options.clock,
       tracer: this.options.tracer,
-      emissionFinalizerEnabled: this.options.config.generation.manifestFinalizer.enabled,
       hostCapabilities: this.options.config.host_capabilities,
     });
     const deliberation = await deliberator.run(
@@ -1143,9 +1142,8 @@ export class TurnPhaseCoordinator {
     input: EvidenceLedgerBuildInput,
   ): Promise<EvidenceLedgerFinalizerContext> {
     const config = this.options.config.generation.evidenceLedger;
-    const shouldBuild = config.enabled || this.options.config.generation.manifestFinalizer.enabled;
 
-    if (!shouldBuild) {
+    if (!config.enabled) {
       return {
         ledger: null,
         promptSection: null,

@@ -1,11 +1,11 @@
 import type { Borg } from "../../src/index.js";
 import {
-  FakeLLMClient,
   type LLMCompleteResult,
   type PostGenerationGuardMode,
   type RelationalClaimGuardMode,
   type TurnResult,
 } from "../../src/index.js";
+import { FakeLLMClient } from "../../src/llm/test-support/fake-client.js";
 import type { BorgDependencies } from "../../src/borg/types.js";
 import {
   CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
@@ -24,7 +24,6 @@ export type ReplayPipeline = {
   id: ReplayPipelineId;
   label: string;
   evidenceLedgerEnabled: boolean;
-  emissionFinalizerEnabled: boolean;
   commitmentMode: PostGenerationGuardMode;
   relationalClaimMode: RelationalClaimGuardMode;
   closurePressureMode: PostGenerationGuardMode;

@@ -6,13 +6,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   Borg,
-  FakeLLMClient,
   ManualClock,
   QUARANTINED_USER_ENTRY_EVENT,
   type FrameAnomalyKind,
   type LLMCompleteOptions,
   type LLMCompleteResult,
 } from "../index.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import type { BorgDependencies } from "../borg/types.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import { Deliberator, type SelfSnapshot } from "./deliberation/deliberator.js";
@@ -81,7 +81,6 @@ async function openTestBorg(
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
-        modeWhenLlmAbsent: "idle",
         ...configOverrides.perception,
       },
       affective: {
@@ -251,6 +250,22 @@ function createFinalizerToolResponse(tool: { id: string; name: string; input: un
     stop_reason: "tool_use" as const,
     tool_calls: [tool],
   };
+}
+
+function createEmitAnswerResponse(text: string) {
+  return createFinalizerToolResponse({
+    id: "toolu_emit_answer",
+    name: "EmitAnswer",
+    input: { text },
+  });
+}
+
+function createEmitNoOutputResponse(reason = "No assistant message is needed.") {
+  return createFinalizerToolResponse({
+    id: "toolu_emit_no_output",
+    name: "EmitNoOutput",
+    input: { reason },
+  });
 }
 
 function createPendingActionJudgeResponse(classification: "action" | "non_action") {
@@ -744,7 +759,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       }),
       createActionStateResponse([]),
       createGoalPromotionResponse([]),
-      finalizerText,
+      createEmitAnswerResponse(finalizerText),
       createClaimAuditResponse([]),
       createClosureResponseAuditResponse(),
       createEmptyReflectionResponse(),
@@ -863,12 +878,13 @@ describe("TurnOrchestrator evidence ledger", () => {
         BORG_TRACE_PROMPTS: "1",
       },
       configOverrides: {
-        host_capabilities: hostCapabilities,
         generation: {
-          manifestFinalizer: {
+          evidenceLedger: {
             enabled: true,
+            currentSessionTranscriptTokenBudget: 50_000,
           },
         },
+        host_capabilities: hostCapabilities,
       },
     });
 
@@ -947,13 +963,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       ],
     });
     const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
-      configOverrides: {
-        generation: {
-          manifestFinalizer: {
-            enabled: true,
-          },
-        },
-      },
+      configOverrides: {},
     });
 
     try {
@@ -1001,11 +1011,7 @@ describe("TurnOrchestrator evidence ledger", () => {
     const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
       tracerPath: tracePath,
       configOverrides: {
-        generation: {
-          manifestFinalizer: {
-            enabled: true,
-          },
-        },
+        generation: {},
       },
     });
 
@@ -1058,13 +1064,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const replacementAnswer = "Replacement answer.";
     const replacementLlm = new FakeLLMClient({
       responses: [
-        {
-          text: replacementAnswer,
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEmitAnswerResponse(replacementAnswer),
         createEmptyReflectionResponse(),
       ],
     });
@@ -1101,13 +1101,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const clock = new ManualClock(1_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Public answer.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEmitAnswerResponse("Public answer."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -1582,13 +1576,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const clock = new ManualClock(3_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Apollo answer.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEmitAnswerResponse("Apollo answer."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -1647,13 +1635,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const clock = new ManualClock(1_700_000_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "Apollo step answer.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEmitAnswerResponse("Apollo step answer."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -1750,13 +1732,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           kind: "system",
         },
       });
-      llm.pushResponse({
-        text: "Apollo step started.",
-        input_tokens: 8,
-        output_tokens: 4,
-        stop_reason: "end_turn",
-        tool_calls: [],
-      });
+      llm.pushResponse(createEmitAnswerResponse("Apollo step started."));
       llm.pushResponse(
         createStepReflectionResponse({
           stepOutcomes: [
@@ -1810,13 +1786,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           kind: "system",
         },
       });
-      llm.pushResponse({
-        text: "Apollo next step identified.",
-        input_tokens: 8,
-        output_tokens: 4,
-        stop_reason: "end_turn",
-        tool_calls: [],
-      });
+      llm.pushResponse(createEmitAnswerResponse("Apollo next step identified."));
       llm.pushResponse(
         createStepReflectionResponse({
           proposedSteps: [
@@ -1871,13 +1841,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         });
       }
 
-      llm.pushResponse({
-        text: "I will keep this concise.",
-        input_tokens: 8,
-        output_tokens: 4,
-        stop_reason: "end_turn",
-        tool_calls: [],
-      });
+      llm.pushResponse(createEmitAnswerResponse("I will keep this concise."));
       llm.pushResponse(createEmptyReflectionResponse());
 
       await borg.turn({
@@ -1912,13 +1876,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         source: "reflection",
       });
 
-      llm.pushResponse({
-        text: "The current turn answers it directly.",
-        input_tokens: 8,
-        output_tokens: 4,
-        stop_reason: "end_turn",
-        tool_calls: [],
-      });
+      llm.pushResponse(createEmitAnswerResponse("The current turn answers it directly."));
       llm.pushResponse(
         createStopCommitmentResponse({
           classification: "none",
@@ -1974,13 +1932,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         question.id,
       );
 
-      llm.pushResponse({
-        text: "No open question remains in scope.",
-        input_tokens: 8,
-        output_tokens: 4,
-        stop_reason: "end_turn",
-        tool_calls: [],
-      });
+      llm.pushResponse(createEmitAnswerResponse("No open question remains in scope."));
       llm.pushResponse(
         createStopCommitmentResponse({
           classification: "none",
@@ -2010,13 +1962,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const clock = new ManualClock(1_800_000_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "I will stop responding until you bring substantive content.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEmitAnswerResponse("I will stop responding until you bring substantive content."),
         createStopCommitmentResponse({
           classification: "stop_until_substantive_content",
           reason: "The assistant committed to stop until substantive content arrives.",
@@ -2052,13 +1998,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const llm = new FakeLLMClient({
       responses: [
         createNoOutputTurnPlanResponse(),
-        {
-          text: "This finalizer text must not be emitted.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEmitNoOutputResponse("The planner recommended no assistant message."),
       ],
     });
     const borg = await openTestBorg(tempDir, llm, clock);
@@ -2077,15 +2017,15 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(result.response).toBe("");
       expect(result.emission).toMatchObject({
         kind: "suppressed",
-        reason: "s2_planner_no_output",
+        reason: "no_output_tool",
       });
       expect(entries.some((entry) => entry.kind === "agent_msg")).toBe(false);
       expect(suppressionEntry?.content).toMatchObject({
-        reason: "s2_planner_no_output",
+        reason: "no_output_tool",
       });
       expect(activeStop).toMatchObject({
-        provenance: "s2_planner_no_output",
-        source_stream_entry_id: thoughtEntry?.id,
+        provenance: "no_output_tool",
+        source_stream_entry_id: suppressionEntry?.id,
         since_turn: 1,
       });
     } finally {
@@ -2107,6 +2047,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           substantive: true,
         }),
         createNoOutputTurnPlanResponse(),
+        createEmitNoOutputResponse("The planner recommended no assistant message."),
         createGoalPromotionResponse([]),
         createClosureLoopSignoffResponseFromRequest(),
       ],
@@ -2134,7 +2075,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
 
       expect(first.emission).toMatchObject({
         kind: "suppressed",
-        reason: "s2_planner_no_output",
+        reason: "no_output_tool",
       });
       expect(afterFirst.discourse_state?.closure_loop?.status).toBe("named");
 
@@ -2169,13 +2110,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         provenance: { kind: "manual" },
       });
 
-      llm.pushResponse({
-        text: "The launch is tomorrow.",
-        input_tokens: 8,
-        output_tokens: 4,
-        stop_reason: "end_turn",
-        tool_calls: [],
-      });
+      llm.pushResponse(createEmitAnswerResponse("The launch is tomorrow."));
       llm.pushResponse(
         createCommitmentJudgeResponse([
           {
@@ -2243,13 +2178,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         provenance: { kind: "manual" },
       });
 
-      llm.pushResponse({
-        text: "Sarah is your partner, and I can help with that.",
-        input_tokens: 8,
-        output_tokens: 4,
-        stop_reason: "end_turn",
-        tool_calls: [],
-      });
+      llm.pushResponse(createEmitAnswerResponse("Sarah is your partner, and I can help with that."));
       llm.pushResponse(
         createCommitmentJudgeResponse([
           {
@@ -2315,7 +2244,10 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
     const clock = new AutoAdvanceClock(1_800_000_170_000);
     const llm = new FakeLLMClient({
-      responses: ["As you said, the invoice is done.", createEmptyReflectionResponse()],
+      responses: [
+        createEmitAnswerResponse("As you said, the invoice is done."),
+        createEmptyReflectionResponse(),
+      ],
     });
     const guardRunSpy = vi
       .spyOn(RelationalClaimGuard.prototype, "run")
@@ -2372,7 +2304,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           reason: "The user named a future response pattern to stop.",
           confidence: 0.9,
         }),
-        "I will adjust that pattern.",
+        createEmitAnswerResponse("I will adjust that pattern."),
         createCommitmentJudgeResponse([]),
         createEmptyReflectionResponse(),
       ],
@@ -2463,11 +2395,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         if (finalizerCalls === 1) {
           throw new Error(failedReason);
         }
-        return retryResponse;
+        return createEmitAnswerResponse(retryResponse);
       }
 
       if (options.budget === "cognition-system-1") {
-        return retryResponse;
+        return createEmitAnswerResponse(retryResponse);
       }
 
       if (options.budget === "commitment-judge") {
@@ -2482,7 +2414,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         return createEmptyReflectionResponse();
       }
 
-      return retryResponse;
+      return createEmitAnswerResponse(retryResponse);
     };
     const llm = new FakeLLMClient({
       responses: Array.from({ length: 20 }, () => scriptedResponse),
@@ -2568,7 +2500,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       }
 
       if (options.budget === "cognition-system-2" || options.budget === "cognition-system-1") {
-        return response;
+        return createEmitAnswerResponse(response);
       }
 
       if (options.budget === "pending-action-judge") {
@@ -2588,7 +2520,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         return createEmptyReflectionResponse();
       }
 
-      return response;
+      return createEmitAnswerResponse(response);
     };
     const llm = new FakeLLMClient({
       responses: Array.from({ length: 30 }, () => scriptedResponse),
@@ -2745,13 +2677,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       }
 
       if (options.budget === "cognition-system-1") {
-        return {
-          text: "Completed the check.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        };
+        return createEmitAnswerResponse("Completed the check.");
       }
 
       if (options.budget === "commitment-judge") {
@@ -2966,7 +2892,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           ],
         }),
       );
-      llm.pushResponse("I will avoid using that name.");
+      llm.pushResponse(createEmitAnswerResponse("I will avoid using that name."));
       llm.pushResponse(createEmptyReflectionResponse());
 
       await borg.turn({
@@ -3011,7 +2937,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
             },
           },
         ]),
-        "I will keep the postmortem straight.",
+        createEmitAnswerResponse("I will keep the postmortem straight."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -3108,7 +3034,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           { budget: "action-state-extractor" },
         ),
         createGoalPromotionResponse([]),
-        "I see the tutor booking is done.",
+        createEmitAnswerResponse("I see the tutor booking is done."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -3158,7 +3084,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           confidence: 0.97,
           rationale: "The user claims the assistant was playing Tom.",
         }),
-        "I do not have evidence for that frame.",
+        createEmitAnswerResponse("I do not have evidence for that frame."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -3236,7 +3162,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const llm = new FakeLLMClient({
       responses: [
         degradedFrameClassifier,
-        "I will avoid treating that as memory.",
+        createEmitAnswerResponse("I will avoid treating that as memory."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -3345,7 +3271,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           { budget: "action-state-extractor" },
         ),
         createGoalPromotionResponse([]),
-        "Talk tomorrow.",
+        createEmitAnswerResponse("Talk tomorrow."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -3422,7 +3348,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           { budget: "action-state-extractor" },
         ),
         createGoalPromotionResponse([]),
-        "Talk tomorrow.",
+        createEmitAnswerResponse("Talk tomorrow."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -3478,7 +3404,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
             confidence: 0.91,
           },
         ]),
-        "I will keep the active goals focused.",
+        createEmitAnswerResponse("I will keep the active goals focused."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -3522,7 +3448,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           expect(options.budget).toBe("goal-promotion-extractor");
           throw new Error("goal promotion transport failed");
         },
-        "I will continue without promoting a goal.",
+        createEmitAnswerResponse("I will continue without promoting a goal."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -3568,7 +3494,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
             confidence: 0.95,
           },
         ]),
-        "I will keep it in mind.",
+        createEmitAnswerResponse("I will keep it in mind."),
         createEmptyReflectionResponse(),
       ],
     });
@@ -3620,7 +3546,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           reason: "The user named a future response pattern to stop.",
           confidence: 0.9,
         }),
-        "Sleep well.",
+        createEmitAnswerResponse("Sleep well."),
         createDynamicCommitmentJudgeResponse("The response repeats the corrected closing pattern."),
         "I will leave it there.",
         createCommitmentJudgeResponse([]),
@@ -3658,7 +3584,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           reason: "The user named a future response pattern to stop.",
           confidence: 0.9,
         }),
-        "Sleep well.",
+        createEmitAnswerResponse("Sleep well."),
         createDynamicCommitmentJudgeResponse("The response repeats the corrected closing pattern."),
         "Sleep well.",
         createDynamicCommitmentJudgeResponse("The revision still repeats the corrected pattern."),
@@ -3704,10 +3630,10 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           reason: "The user named a future response pattern to stop.",
           confidence: 0.9,
         }),
-        "I will adjust that pattern.",
+        createEmitAnswerResponse("I will adjust that pattern."),
         createCommitmentJudgeResponse([]),
         createEmptyReflectionResponse(),
-        "Sleep well.",
+        createEmitAnswerResponse("Sleep well."),
         createDynamicCommitmentJudgeResponse(
           "The later response repeats the durable corrected pattern.",
         ),
@@ -3746,13 +3672,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const embeddingClient = new CountingEmbeddingClient();
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "I will stop responding until you bring substantive content.",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEmitAnswerResponse("I will stop responding until you bring substantive content."),
         createStopCommitmentResponse({
           classification: "stop_until_substantive_content",
         }),

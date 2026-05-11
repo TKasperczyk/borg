@@ -4,7 +4,11 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { Borg, DEFAULT_SESSION_ID, FakeLLMClient } from "../../index.js";
+import {
+  Borg,
+  DEFAULT_SESSION_ID,
+} from "../../index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
 import { deriveProceduralContextKey } from "../../memory/procedural/index.js";
 import { SemanticGraph } from "../../memory/semantic/index.js";
@@ -40,7 +44,6 @@ async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
-        modeWhenLlmAbsent: "problem_solving",
       },
       embedding: {
         baseUrl: "http://localhost:1234/v1",

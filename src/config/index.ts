@@ -72,11 +72,6 @@ const cognitionConfigSchema = z
     thinking: cognitionThinkingConfigSchema,
   })
   .prefault({});
-const manifestFinalizerConfigSchema = z
-  .object({
-    enabled: z.boolean().default(false),
-  })
-  .prefault({});
 const postGenerationGuardsConfigSchema = z
   .object({
     commitment: postGenerationGuardConfigSchema,
@@ -132,7 +127,6 @@ const configBaseSchema = z.object({
   perception: z
     .object({
       useLlmFallback: z.boolean().default(true),
-      modeWhenLlmAbsent: z.enum(["problem_solving", "relational", "reflective", "idle"]).optional(),
     })
     .prefault({}),
   affective: z
@@ -173,7 +167,6 @@ const configBaseSchema = z.object({
       discourseStateHardCapTurns: z.number().int().positive().default(50),
       cognition: cognitionConfigSchema,
       evidenceLedger: evidenceLedgerConfigSchema,
-      manifestFinalizer: manifestFinalizerConfigSchema,
       postGenerationGuards: postGenerationGuardsConfigSchema,
     })
     .prefault({}),
@@ -268,7 +261,6 @@ const configBaseSchema = z.object({
           resolveConfidenceThreshold: z.number().min(0).max(1).default(0.55),
           duplicateSimilarityThreshold: z.number().min(0).max(1).default(0.9),
           stalenessDays: z.number().positive().default(30),
-          stalenessTicks: z.number().int().positive().nullable().default(null),
           staleNoTractionTicks: z.number().int().positive().default(4),
           budget: z.number().int().positive().default(40_000),
         })
@@ -728,11 +720,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
-    ["generation", "manifestFinalizer", "enabled"],
-    readOptionalEnvBoolean(env, "BORG_GENERATION_MANIFEST_FINALIZER_ENABLED"),
-  );
-  setConfigOverride(
-    overrides,
     ["streamIngestion", "preTurnCatchup", "maxEntries"],
     readOptionalEnvNumber(env, "BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES"),
   );
@@ -961,11 +948,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "ruminator", "stalenessDays"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_STALENESS_DAYS"),
-  );
-  setConfigOverride(
-    overrides,
-    ["offline", "ruminator", "stalenessTicks"],
-    readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_STALENESS_TICKS"),
   );
   setConfigOverride(
     overrides,

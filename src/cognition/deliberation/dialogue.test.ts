@@ -47,15 +47,7 @@ describe("buildDialogueMessages", () => {
     ]);
   });
 
-  it("prefixes the current user message with a speaker tag when provided", () => {
-    const messages = buildDialogueMessages([], "Please check Atlas.", {
-      currentSpeakerDisplayName: "Alice",
-    });
-
-    expect(messages).toEqual([{ role: "user", content: "[Alice]: Please check Atlas." }]);
-  });
-
-  it("keeps the current user message unchanged when no speaker is provided", () => {
+  it("keeps the current user message unchanged", () => {
     const messages = buildDialogueMessages([], "Please check Atlas.");
 
     expect(messages).toEqual([{ role: "user", content: "Please check Atlas." }]);

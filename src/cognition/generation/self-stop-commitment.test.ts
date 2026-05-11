@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { StopCommitmentExtractor } from "./self-stop-commitment.js";
 
 function commitmentResponse(classification: "stop_until_substantive_content" | "none") {

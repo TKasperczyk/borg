@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   Borg,
-  FakeLLMClient,
   ManualClock,
   type LLMCompleteOptions,
   type LLMCompleteResult,
@@ -14,6 +13,10 @@ import {
   type LLMContentBlock,
   type LLMToolCall,
 } from "../src/index.js";
+import {
+  FakeLLMClient,
+  createFakeEmitAnswerResponse,
+} from "../src/llm/test-support/fake-client.js";
 import type { BorgDependencies } from "../src/borg/types.js";
 import { createTestConfig, TestEmbeddingClient } from "../src/offline/test-support.js";
 import type { RecallStateRepository, RetrievedContext } from "../src/retrieval/index.js";
@@ -265,7 +268,7 @@ function createScriptedLlm(getKnownEpisodeId: () => EpisodeId | null): FakeLLMCl
       });
     }
 
-    return "Scripted Borg response.";
+    return createFakeEmitAnswerResponse("Scripted Borg response.");
   };
 
   return new FakeLLMClient({
@@ -316,7 +319,6 @@ describe("cross-session recall_state integration", () => {
         dataDir: dir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         affective: {
           useLlmFallback: false,

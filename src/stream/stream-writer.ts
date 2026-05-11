@@ -14,7 +14,6 @@ import {
   type StreamEntry,
   type StreamEntryInput,
   streamEntryInputSchema,
-  streamEntrySchema,
 } from "./types.js";
 
 type LoggerLike = Pick<Console, "error">;
@@ -64,7 +63,7 @@ export class StreamWriter {
       });
     }
 
-    const candidate = {
+    const entry: StreamEntry = {
       ...parsedInput.data,
       id: createStreamEntryId(),
       timestamp,
@@ -72,15 +71,7 @@ export class StreamWriter {
       compressed: parsedInput.data.compressed ?? false,
     };
 
-    const parsedEntry = streamEntrySchema.safeParse(candidate);
-
-    if (!parsedEntry.success) {
-      throw new StreamError("Failed to construct a valid stream entry", {
-        cause: parsedEntry.error,
-      });
-    }
-
-    return parsedEntry.data;
+    return entry;
   }
 
   private async appendEntries(inputs: readonly StreamEntryInput[]): Promise<StreamEntry[]> {

@@ -3,7 +3,6 @@ import {
   AnthropicLLMClient,
   DEFAULT_CONFIG,
   FakeEmbeddingClient,
-  FakeLLMClient,
   OpenAICompatibleEmbeddingClient,
   loadConfig,
   type Config,
@@ -16,6 +15,7 @@ import {
   type LLMCompleteOptions,
   type LLMCompleteResult,
 } from "../src/index.ts";
+import { FakeLLMClient } from "../src/llm/test-support/fake-client.js";
 import { estimatePromptTokensFromLength } from "../src/util/token-estimate.ts";
 
 export type ScriptClientMode = "real" | "fake";
@@ -102,6 +102,14 @@ function flattenConversationBlocks(blocks: readonly LLMContentBlock[]): string {
     .join("");
 }
 
+function flattenSystemPrompt(system: LLMCompleteOptions["system"]): string {
+  if (typeof system === "string") {
+    return system;
+  }
+
+  return system?.map((block) => block.text).join("\n") ?? "";
+}
+
 function toCompleteOptions(options: LLMConverseOptions): LLMCompleteOptions {
   return {
     ...options,
@@ -137,7 +145,7 @@ export class ScriptedDebugLLM implements LLMClient {
   }
 
   private respond(options: LLMCompleteOptions): LLMCompleteResult {
-    const system = options.system ?? "";
+    const system = flattenSystemPrompt(options.system);
     const userPrompt = options.messages.map((message) => message.content).join("\n\n");
     const prompt = `${system}\n\n${userPrompt}`;
 
@@ -150,8 +158,14 @@ export class ScriptedDebugLLM implements LLMClient {
         reason: "No durable correction detected in the scripted debug prompt.",
         confidence: 0,
         supersedes_commitment_id: null,
-      });
-    }
+  });
+}
+
+function buildAnswerResult(options: LLMCompleteOptions, text: string): LLMCompleteResult {
+  return options.tools?.some((tool) => tool.name === "EmitAnswer") === true
+    ? buildToolResult(options, { text })
+    : buildLlmResult(options, text);
+}
 
     if (options.budget === "goal-promotion-extractor") {
       return buildToolResult(options, {
@@ -308,28 +322,32 @@ export class ScriptedDebugLLM implements LLMClient {
     }
 
     if (/Your previous response violated a commitment\./i.test(system)) {
-      return buildLlmResult(
+      return buildAnswerResult(
         options,
         "I won't suggest unsafe code here. Use profiling, safer data layout changes, or a targeted benchmark to decide what to optimize next.",
       );
     }
 
-    if (/You are Borg, an agent with explicit memory and identity\./i.test(system)) {
+    if (
+      options.tools?.some((tool) => tool.name === "EmitAnswer") === true ||
+      /You are an AI being having a real conversation/i.test(system) ||
+      /You are Borg, an agent with explicit memory and identity\./i.test(system)
+    ) {
       if (/unsafe block/i.test(userPrompt)) {
-        return buildLlmResult(
+        return buildAnswerResult(
           options,
           "Wrap the hot loop in an unsafe block for speed and skip the extra checks.",
         );
       }
 
       if (/stuck again on pgvector embeddings/i.test(userPrompt)) {
-        return buildLlmResult(
+        return buildAnswerResult(
           options,
           "Start by checking the operator class, extension version, and whether the rollback left an old index in place. If those line up, rebuild the index safely before blaming the embeddings.",
         );
       }
 
-      return buildLlmResult(
+      return buildAnswerResult(
         options,
         "I’d compare the grounded evidence first and then choose the safest next diagnostic step.",
       );

@@ -5,14 +5,14 @@ import { pathToFileURL } from "node:url";
 
 import { createEvalBorg, type CreateEvalBorgOptions } from "../support/create-eval-borg.js";
 import {
-  FakeLLMClient,
   FixedClock,
   DEFAULT_CONFIG,
   type Borg,
   type LLMCompleteResult,
   type TurnResult,
 } from "../../src/index.js";
-import type { FakeLLMResponse } from "../../src/llm/index.js";
+import { FakeLLMClient } from "../../src/llm/test-support/fake-client.js";
+import type { FakeLLMResponse } from "../../src/llm/test-support/fake-client.js";
 import type { BorgDependencies } from "../../src/borg/types.js";
 import {
   buildReplayReport,
@@ -50,9 +50,8 @@ export type RunReplayHarnessResult = {
 const PIPELINES: readonly ReplayPipeline[] = [
   {
     id: "A",
-    label: "legacy + enforce guards",
+    label: "emission tools, enforce guards",
     evidenceLedgerEnabled: false,
-    emissionFinalizerEnabled: false,
     commitmentMode: "enforce",
     relationalClaimMode: "enforce",
     closurePressureMode: "enforce",
@@ -61,7 +60,6 @@ const PIPELINES: readonly ReplayPipeline[] = [
     id: "B",
     label: "emission tools, enforce guards",
     evidenceLedgerEnabled: false,
-    emissionFinalizerEnabled: true,
     commitmentMode: "enforce",
     relationalClaimMode: "enforce",
     closurePressureMode: "enforce",
@@ -70,7 +68,6 @@ const PIPELINES: readonly ReplayPipeline[] = [
     id: "C",
     label: "emission tools, guards shadow",
     evidenceLedgerEnabled: false,
-    emissionFinalizerEnabled: true,
     commitmentMode: "shadow",
     relationalClaimMode: "shadow",
     closurePressureMode: "shadow",
@@ -79,7 +76,6 @@ const PIPELINES: readonly ReplayPipeline[] = [
     id: "Cdoubleprime",
     label: "Pipeline C″",
     evidenceLedgerEnabled: true,
-    emissionFinalizerEnabled: true,
     commitmentMode: "enforce",
     relationalClaimMode: "shadow",
     closurePressureMode: "enforce",
@@ -97,7 +93,6 @@ function replayConfig(
   return {
     perception: {
       useLlmFallback: scenario.perceptionUseLlmFallback ?? false,
-      modeWhenLlmAbsent: "idle",
     },
     affective: {
       useLlmFallback: false,
@@ -117,9 +112,6 @@ function replayConfig(
         currentSessionTranscriptTokenBudget:
           DEFAULT_CONFIG.generation.evidenceLedger.currentSessionTranscriptTokenBudget,
       },
-      manifestFinalizer: {
-        enabled: pipeline.emissionFinalizerEnabled,
-      },
       postGenerationGuards: {
         commitment: {
           mode: pipeline.commitmentMode,
@@ -135,14 +127,7 @@ function replayConfig(
   };
 }
 
-function scriptFinalizerResponse(
-  scenario: ReplayScenario,
-  pipeline: ReplayPipeline,
-): FakeLLMResponse {
-  if (!pipeline.emissionFinalizerEnabled) {
-    return scenario.unsafeCandidateText;
-  }
-
+function scriptFinalizerResponse(scenario: ReplayScenario): FakeLLMResponse {
   return finalizerToolResponse(
     scenario.finalizerEmission ?? { kind: "answer" },
     scenario.unsafeCandidateText,
@@ -168,7 +153,7 @@ function scriptLLM(
   }
 
   client.pushResponse(recallExpansionResponse());
-  client.pushResponse(scriptFinalizerResponse(scenario, pipeline));
+  client.pushResponse(scriptFinalizerResponse(scenario));
 
   for (const response of afterFinalizer) {
     client.pushResponse(response);

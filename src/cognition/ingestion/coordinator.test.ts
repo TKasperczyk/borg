@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { EntityRepository } from "../../memory/commitments/index.js";
 import { EpisodicExtractor } from "../../memory/episodic/extractor.js";
 import { episodicMigrations } from "../../memory/episodic/migrations.js";

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg } from "../borg.js";
 import { DEFAULT_CONFIG } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
-import { FakeLLMClient } from "../llm/index.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import { EntityRepository, commitmentMigrations } from "../memory/commitments/index.js";
 import { LanceDbStore } from "../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../storage/sqlite/index.js";
@@ -68,14 +68,24 @@ function createCliTempDir(tempDirs: string[]): string {
   return tempDir;
 }
 
-function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
+function openTestBorg(
+  tempDir: string,
+  llm = new FakeLLMClient(),
+  options: { perceptionUseLlmFallback?: boolean } = {},
+) {
   return Borg.open({
     config: createTestConfig({
       dataDir: tempDir,
       perception: {
-        useLlmFallback: false,
-        modeWhenLlmAbsent: "problem_solving",
+        useLlmFallback: options.perceptionUseLlmFallback ?? false,
       },
+      ...(options.perceptionUseLlmFallback === true
+        ? {
+            affective: {
+              useLlmFallback: false,
+            },
+          }
+        : {}),
       embedding: {
         baseUrl: "http://localhost:1234/v1",
         apiKey: "test",
@@ -1228,6 +1238,95 @@ describe("cli", () => {
       responses: [
         {
           text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_entity_cli",
+              name: "EmitEntityExtraction",
+              input: { entities: ["Atlas"] },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_mode_cli",
+              name: "EmitModeDetection",
+              input: { mode: "problem_solving" },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_temporal_cli",
+              name: "EmitTemporalCue",
+              input: { has_cue: false },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_corrective_cli",
+              name: "EmitCorrectivePreference",
+              input: {
+                classification: "none",
+                type: null,
+                directive: null,
+                directive_family: null,
+                closure_pressure_relevance: null,
+                priority: null,
+                reason: "No durable correction detected.",
+                confidence: 0,
+                supersedes_commitment_id: null,
+                slot_negations: [],
+              },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_actions_cli",
+              name: "EmitActionStates",
+              input: { action_states: [] },
+            },
+          ],
+        },
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_goals_cli",
+              name: "EmitGoalPromotion",
+              input: { promotions: [] },
+            },
+          ],
+        },
+        {
+          text: "",
           input_tokens: 10,
           output_tokens: 5,
           stop_reason: "tool_use",
@@ -1247,11 +1346,19 @@ describe("cli", () => {
           ],
         },
         {
-          text: "Rerun pnpm install, then redeploy Atlas. Next step: redeploy Atlas.",
+          text: "",
           input_tokens: 20,
           output_tokens: 10,
-          stop_reason: "end_turn",
-          tool_calls: [],
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_emit_answer_cli",
+              name: "EmitAnswer",
+              input: {
+                text: "Rerun pnpm install, then redeploy Atlas. Next step: redeploy Atlas.",
+              },
+            },
+          ],
         },
         {
           text: "",
@@ -1274,31 +1381,32 @@ describe("cli", () => {
       ],
     });
 
-    expect(
-      await runCli(
-        [
-          "node",
-          "borg",
-          "turn",
-          "Atlas deploy has a pnpm failure",
-          "--stakes",
-          "high",
-          "--verbose",
-        ],
-        {
-          stdout: stdout.stream,
-          stderr: stderr.stream,
-          dataDir: tempDir,
-          openBorg: async () => openTestBorg(tempDir, llm),
-        },
-      ),
-    ).toBe(0);
+    const exitCode = await runCli(
+      [
+        "node",
+        "borg",
+        "turn",
+        "Atlas deploy has a pnpm failure",
+        "--stakes",
+        "high",
+        "--verbose",
+      ],
+      {
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        dataDir: tempDir,
+        openBorg: async () => openTestBorg(tempDir, llm, { perceptionUseLlmFallback: true }),
+      },
+    );
+    const output = stdout.read();
+    const errorOutput = stderr.read();
 
-    expect(stdout.read()).toContain("Rerun pnpm install");
-    expect(stdout.read()).toContain("[mode=problem_solving]");
-    expect(stdout.read()).toContain("[path=system_2]");
-    expect(stdout.read()).toContain("ep_aaaaaaaaaaaaaaaa");
-    expect(stderr.read()).toBe("");
+    expect(errorOutput).toBe("");
+    expect(exitCode).toBe(0);
+    expect(output).toContain("Rerun pnpm install");
+    expect(output).toContain("[mode=problem_solving]");
+    expect(output).toContain("[path=system_2]");
+    expect(output).toContain("ep_aaaaaaaaaaaaaaaa");
   });
 
   it("prints nothing for suppressed turn output unless verbose", async () => {
@@ -1327,19 +1435,19 @@ describe("cli", () => {
             },
           ],
         },
-        {
-          text: "",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_no_output_cli",
-              name: "no_output",
-              input: {},
-            },
-          ],
-        },
+          {
+            text: "",
+            input_tokens: 8,
+            output_tokens: 4,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_emit_no_output_cli",
+                name: "EmitNoOutput",
+                input: { reason: "No assistant message is needed." },
+              },
+            ],
+          },
       ],
     });
 

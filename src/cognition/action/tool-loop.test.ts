@@ -16,10 +16,10 @@ import {
 import { ManualClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import {
-  FakeLLMClient,
   type LLMContentBlockMessage,
   type LLMConverseOptions,
 } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { executeToolLoop } from "./tool-loop.js";
 
 function createDispatcher(tempDir: string, clock = new ManualClock(1_000)): ToolDispatcher {
@@ -54,7 +54,6 @@ async function openTestBorg(tempDir: string, llm = new FakeLLMClient()) {
       dataDir: tempDir,
       perception: {
         useLlmFallback: false,
-        modeWhenLlmAbsent: "problem_solving",
       },
       embedding: {
         baseUrl: "http://localhost:1234/v1",

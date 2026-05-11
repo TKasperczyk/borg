@@ -21,6 +21,7 @@ import {
   ScriptedEmbeddingClient,
   borgInternals,
   createEmptyReflectionResponse,
+  createEmitAnswerResponse,
   createGenerationGateResponse,
   createTurnPlanResponse,
   join,
@@ -28,6 +29,136 @@ import {
   rmSync,
   tmpdir,
 } from "./test-helpers.js";
+
+function createEntityDetectionResponse(entities: string[] = []) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_entity",
+        name: "EmitEntityExtraction",
+        input: { entities },
+      },
+    ],
+  };
+}
+
+function createModeDetectionResponse(mode: "problem_solving" | "relational" | "reflective" | "idle") {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_mode",
+        name: "EmitModeDetection",
+        input: { mode },
+      },
+    ],
+  };
+}
+
+function createNoTemporalCueResponse() {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_temporal",
+        name: "EmitTemporalCue",
+        input: { has_cue: false },
+      },
+    ],
+  };
+}
+
+function requestSystemText(request: { system?: unknown } | undefined): string {
+  const system = request?.system;
+
+  if (typeof system === "string") {
+    return system;
+  }
+
+  if (Array.isArray(system)) {
+    return system
+      .map((block) =>
+        block !== null &&
+        typeof block === "object" &&
+        "text" in block &&
+        typeof block.text === "string"
+          ? block.text
+          : "",
+      )
+      .join("\n");
+  }
+
+  return "";
+}
+
+function createNoCorrectivePreferenceResponse() {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_corrective",
+        name: "EmitCorrectivePreference",
+        input: {
+          classification: "none",
+          type: null,
+          directive: null,
+          directive_family: null,
+          closure_pressure_relevance: null,
+          priority: null,
+          reason: "No durable correction detected.",
+          confidence: 0,
+          supersedes_commitment_id: null,
+          slot_negations: [],
+        },
+      },
+    ],
+  };
+}
+
+function createNoActionStatesResponse() {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_actions",
+        name: "EmitActionStates",
+        input: { action_states: [] },
+      },
+    ],
+  };
+}
+
+function createNoGoalPromotionResponse() {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_goals",
+        name: "EmitGoalPromotion",
+        input: { promotions: [] },
+      },
+    ],
+  };
+}
 
 describe("Borg", () => {
   const tempDirs: string[] = [];
@@ -91,6 +222,12 @@ describe("Borg", () => {
     };
     const llm = new FakeLLMClient({
       responses: [
+        createEntityDetectionResponse(["Project Atlas"]),
+        createModeDetectionResponse("problem_solving"),
+        createNoTemporalCueResponse(),
+        createNoCorrectivePreferenceResponse(),
+        createNoActionStatesResponse(),
+        createNoGoalPromotionResponse(),
         {
           text: "",
           input_tokens: 10,
@@ -111,13 +248,10 @@ describe("Borg", () => {
             },
           ],
         },
-        {
-          text: "To stabilize the Atlas release, rerun pnpm install. Next step: rerun the deploy.",
-          input_tokens: 20,
-          output_tokens: 10,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEmitAnswerResponse(
+          "To stabilize the Atlas release, rerun pnpm install. Next step: rerun the deploy.",
+          { inputTokens: 20, outputTokens: 10 },
+        ),
         {
           text: "",
           input_tokens: 8,
@@ -152,8 +286,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
+          useLlmFallback: true,
+        },
+        affective: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -260,13 +396,10 @@ describe("Borg", () => {
             },
           ],
         },
-        {
-          text: "Try the deployment again after checking the lockfile.",
-          input_tokens: 20,
-          output_tokens: 10,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEmitAnswerResponse("Try the deployment again after checking the lockfile.", {
+          inputTokens: 20,
+          outputTokens: 10,
+        }),
       ],
     });
     const borg = await Borg.open({
@@ -274,7 +407,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -323,7 +455,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -385,17 +516,7 @@ describe("Borg", () => {
         sinceTs: seedEntry.timestamp,
       });
 
-      llm.pushResponse([
-        {
-          type: "tool_use",
-          id: "toolu_1",
-          name: "tool.episodic.search",
-          input: {
-            query: "planning sync",
-          },
-        },
-      ]);
-      llm.pushResponse("I found the planning sync in memory.");
+      llm.pushResponse(createEmitAnswerResponse("I found the planning sync in memory."));
       llm.pushResponse(createEmptyReflectionResponse());
 
       const result = await borg.turn({
@@ -403,41 +524,11 @@ describe("Borg", () => {
       });
 
       expect(result.response).toBe("I found the planning sync in memory.");
-      expect(result.toolCalls).toMatchObject([
-        {
-          callId: "toolu_1",
-          name: "tool.episodic.search",
-          input: {
-            query: "planning sync",
-          },
-          ok: true,
-        },
-      ]);
-      const entries = borg.stream.tail(5);
-      expect(entries.map((entry) => entry.kind)).toEqual([
-        "user_msg",
-        "perception",
-        "tool_call",
-        "tool_result",
-        "agent_msg",
-      ]);
-      expect(entries[2]?.content).toMatchObject({
-        tool_name: "tool.episodic.search",
-        origin: "deliberator",
-      });
-      expect(entries[3]?.content).toMatchObject({
-        ok: true,
-      });
-      expect(entries[4]?.tool_calls).toMatchObject([
-        {
-          callId: "toolu_1",
-          name: "tool.episodic.search",
-          input: {
-            query: "planning sync",
-          },
-          ok: true,
-        },
-      ]);
+      expect(result.toolCalls).toEqual([]);
+      const entries = borg.stream.tail(3);
+      expect(entries.map((entry) => entry.kind)).toEqual(["user_msg", "perception", "agent_msg"]);
+      expect(entries.some((entry) => entry.kind === "tool_call" || entry.kind === "tool_result"))
+        .toBe(false);
     } finally {
       await borg.close();
     }
@@ -493,13 +584,10 @@ describe("Borg", () => {
         // S2 planning (Haiku)
         createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
         // S2 final (Sonnet) -- refusal-only, judge will find no violations
-        {
-          text: "I can't discuss Atlas or Borealis with Sam.",
-          input_tokens: 10,
-          output_tokens: 5,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createEmitAnswerResponse("I can't discuss Atlas or Borealis with Sam.", {
+          inputTokens: 10,
+          outputTokens: 5,
+        }),
         // Commitment judge: no violations on the refusal-only response
         {
           text: "",
@@ -522,7 +610,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "reflective",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -575,12 +662,12 @@ describe("Borg", () => {
       const sonnetRequest = llm.requests.find(
         (request) =>
           request.model === "sonnet" &&
-          typeof request.system === "string" &&
-          request.system.includes("Commitments you made to this person"),
+          requestSystemText(request).includes("Commitments you made to this person"),
       );
+      const sonnetSystem = requestSystemText(sonnetRequest);
 
-      expect(sonnetRequest?.system).toContain("Do not discuss Atlas with Sam");
-      expect(sonnetRequest?.system).toContain("Do not discuss Borealis with Sam");
+      expect(sonnetSystem).toContain("Do not discuss Atlas with Sam");
+      expect(sonnetSystem).toContain("Do not discuss Borealis with Sam");
       expect(result.response).toContain("can't discuss Atlas or Borealis");
     } finally {
       await borg.close();
@@ -637,8 +724,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
+          useLlmFallback: true,
+        },
+        affective: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -672,13 +761,18 @@ describe("Borg", () => {
         about: "Atlas",
         provenance: { kind: "manual" },
       });
-      llm.pushResponse({
-        text: "Atlas is down right now.",
-        input_tokens: 10,
-        output_tokens: 5,
-        stop_reason: "end_turn",
-        tool_calls: [],
-      });
+      llm.pushResponse(createEntityDetectionResponse(["Sam", "Atlas"]));
+      llm.pushResponse(createModeDetectionResponse("problem_solving"));
+      llm.pushResponse(createNoTemporalCueResponse());
+      llm.pushResponse(createNoCorrectivePreferenceResponse());
+      llm.pushResponse(createNoActionStatesResponse());
+      llm.pushResponse(createNoGoalPromotionResponse());
+      llm.pushResponse(
+        createEmitAnswerResponse("Atlas is down right now.", {
+          inputTokens: 10,
+          outputTokens: 5,
+        }),
+      );
       llm.pushResponse({
         text: "",
         input_tokens: 8,
@@ -732,7 +826,10 @@ describe("Borg", () => {
           request.budget !== "corrective-preference-extractor" &&
           request.budget !== "action-state-extractor" &&
           request.budget !== "goal-promotion-extractor" &&
-          request.budget !== "frame-anomaly-classifier",
+          request.budget !== "frame-anomaly-classifier" &&
+          request.budget !== "perception-entity-fallback" &&
+          request.budget !== "perception-mode-fallback" &&
+          request.budget !== "perception-temporal-cue",
       );
       expect(
         llm.requests.some((request) => request.budget === "corrective-preference-extractor"),
@@ -840,8 +937,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
+          useLlmFallback: true,
+        },
+        affective: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -864,14 +963,14 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createEntityDetectionResponse(["Atlas"]),
+          createModeDetectionResponse("problem_solving"),
+          createNoTemporalCueResponse(),
           createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
-          {
-            text: "Rerun pnpm install for the Atlas deploy.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Rerun pnpm install for the Atlas deploy.", {
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -901,8 +1000,10 @@ describe("Borg", () => {
       config: createTestConfig({
         dataDir: tempDir,
         perception: {
+          useLlmFallback: true,
+        },
+        affective: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -925,18 +1026,18 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
+          createEntityDetectionResponse(["Atlas"]),
+          createModeDetectionResponse("problem_solving"),
+          createNoTemporalCueResponse(),
           createGenerationGateResponse({
             decision: "proceed",
             substantive: true,
             reason: "The repeated short deploy message is a real request.",
           }),
-          {
-            text: "Use the rollback fallback.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Use the rollback fallback.", {
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
         ],
       }),
       liveExtraction: false,
@@ -970,7 +1071,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -993,13 +1093,10 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          {
-            text: "Check the deploy state before answering.",
-            input_tokens: 10,
-            output_tokens: 5,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("Check the deploy state before answering.", {
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
         ],
       }),
     });
@@ -1044,7 +1141,6 @@ describe("Borg", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "reflective",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -1087,13 +1183,10 @@ describe("Borg", () => {
               },
             ],
           },
-          {
-            text: "I need to compare more evidence before answering.",
-            input_tokens: 12,
-            output_tokens: 6,
-            stop_reason: "end_turn",
-            tool_calls: [],
-          },
+          createEmitAnswerResponse("I need to compare more evidence before answering.", {
+            inputTokens: 12,
+            outputTokens: 6,
+          }),
           createEmptyReflectionResponse([
             {
               question: "What uncertainty remains about Atlas?",

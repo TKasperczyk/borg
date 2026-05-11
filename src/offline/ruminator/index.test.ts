@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../cognition/index.js";
 import { computeWeights } from "../../cognition/attention/index.js";
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import {
   createActionId,
@@ -412,90 +412,6 @@ describe("RuminatorProcess", () => {
     }
   });
 
-  it("abandons by unresolved rumination ticks when the day clock has not advanced", async () => {
-    const harness = await createOfflineTestHarness({
-      clock: new FixedClock(1_000_000),
-      configOverrides: {
-        offline: {
-          ruminator: {
-            stalenessTicks: 2,
-          },
-        },
-      },
-    });
-    const process = new RuminatorProcess({
-      openQuestionsRepository: harness.openQuestionsRepository,
-      growthMarkersRepository: harness.growthMarkersRepository,
-      registry: harness.registry,
-    });
-
-    try {
-      const question = harness.openQuestionsRepository.add({
-        question: "What should happen with the unresolved Sunday ritual question?",
-        urgency: 0.1,
-        source: "reflection",
-        created_at: harness.clock.now(),
-        last_touched: harness.clock.now(),
-        provenance: { kind: "manual" },
-      });
-
-      const firstPlan = await process.plan(harness.createContext(), {});
-
-      expect(firstPlan.items).toEqual([
-        expect.objectContaining({
-          action: "mark_unresolved",
-          question_id: question.id,
-          next_unresolved_rumination_ticks: 1,
-        }),
-      ]);
-      expect(process.preview(firstPlan).changes).toEqual([]);
-
-      await process.apply(harness.createContext(), firstPlan);
-
-      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
-        status: "open",
-        unresolved_rumination_ticks: 1,
-      });
-
-      const secondPlan = await process.plan(harness.createContext(), {});
-
-      expect(harness.clock.now() - question.last_touched).toBe(0);
-      expect(secondPlan.items).toEqual([
-        expect.objectContaining({
-          action: "mark_unresolved",
-          question_id: question.id,
-          next_unresolved_rumination_ticks: 2,
-        }),
-      ]);
-
-      await process.apply(harness.createContext(), secondPlan);
-
-      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
-        status: "open",
-        unresolved_rumination_ticks: 2,
-      });
-
-      const thirdPlan = await process.plan(harness.createContext(), {});
-
-      expect(thirdPlan.items).toEqual([
-        expect.objectContaining({
-          action: "abandon",
-          question_id: question.id,
-        }),
-      ]);
-
-      await process.apply(harness.createContext(), thirdPlan);
-
-      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
-        status: "abandoned",
-        unresolved_rumination_ticks: 0,
-        last_ruminated_at: null,
-      });
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
   it("dismisses stale no-traction questions but keeps ones with active actions", async () => {
     const tracer = new CaptureTracer();
     const harness = await createOfflineTestHarness({
@@ -606,7 +522,7 @@ describe("RuminatorProcess", () => {
       configOverrides: {
         offline: {
           ruminator: {
-            stalenessTicks: 10,
+            staleNoTractionTicks: 10,
           },
         },
       },
@@ -678,76 +594,6 @@ describe("RuminatorProcess", () => {
 
       expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
         status: "resolved",
-        unresolved_rumination_ticks: 0,
-        last_ruminated_at: null,
-      });
-    } finally {
-      await harness.cleanup();
-    }
-  });
-
-  it("abandons by tick staleness after repeated urgency bumps", async () => {
-    const clock = new ManualClock(8 * DAY_MS);
-    const harness = await createOfflineTestHarness({
-      clock,
-      configOverrides: {
-        offline: {
-          ruminator: {
-            stalenessTicks: 4,
-          },
-        },
-      },
-    });
-    const process = new RuminatorProcess({
-      openQuestionsRepository: harness.openQuestionsRepository,
-      growthMarkersRepository: harness.growthMarkersRepository,
-      registry: harness.registry,
-    });
-
-    try {
-      const question = harness.openQuestionsRepository.add({
-        question: "Should the Sunday ritual question stay open?",
-        urgency: 0,
-        source: "reflection",
-        created_at: 0,
-        last_touched: 0,
-        provenance: { kind: "manual" },
-      });
-
-      for (let tick = 1; tick <= 4; tick += 1) {
-        const plan = await process.plan(harness.createContext(), {});
-
-        expect(plan.items).toEqual([
-          expect.objectContaining({
-            action: "bump_urgency",
-            question_id: question.id,
-            next_unresolved_rumination_ticks: tick,
-          }),
-        ]);
-
-        await process.apply(harness.createContext(), plan);
-
-        expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
-          status: "open",
-          unresolved_rumination_ticks: tick,
-        });
-
-        clock.advance(8 * DAY_MS);
-      }
-
-      const stalePlan = await process.plan(harness.createContext(), {});
-
-      expect(stalePlan.items).toEqual([
-        expect.objectContaining({
-          action: "abandon",
-          question_id: question.id,
-        }),
-      ]);
-
-      await process.apply(harness.createContext(), stalePlan);
-
-      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
-        status: "abandoned",
         unresolved_rumination_ticks: 0,
         last_ruminated_at: null,
       });

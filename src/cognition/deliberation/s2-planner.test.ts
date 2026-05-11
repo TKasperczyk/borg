@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { runS2Planner } from "./s2-planner.js";
 

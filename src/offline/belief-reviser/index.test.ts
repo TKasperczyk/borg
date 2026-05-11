@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { summarizeSemanticContext } from "../../cognition/deliberation/prompt/retrieval.js";
-import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
+import { type LLMCompleteResult } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import {
   SemanticGraph,
   type ReviewQueueItem,

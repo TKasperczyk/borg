@@ -79,7 +79,6 @@ export const PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE =
 export const PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES = {
   generation: {
     evidenceLedger: { enabled: true },
-    manifestFinalizer: { enabled: true },
     postGenerationGuards: {
       commitment: { mode: "enforce" },
       closurePressure: { mode: "enforce" },

@@ -77,7 +77,6 @@ export class PerceptionGateway {
       // (Haiku) instead of background (Opus) to cut perception latency.
       fastModel: this.options.config.anthropic.models.recallExpansion,
       useLlmFallback: this.options.config.perception.useLlmFallback,
-      modeWhenLlmAbsent: this.options.config.perception.modeWhenLlmAbsent,
       affectiveUseLlmFallback: this.options.config.affective.useLlmFallback,
       // Temporal cue uses the same LLM gate as mode detection: both rely
       // on the perception-bound LLM client. Turning off perception LLM

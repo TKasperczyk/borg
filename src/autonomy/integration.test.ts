@@ -4,7 +4,14 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { Borg, FakeLLMClient, ManualClock } from "../index.js";
+import {
+  Borg,
+  ManualClock,
+} from "../index.js";
+import {
+  FakeLLMClient,
+  createFakeEmitAnswerResponse,
+} from "../llm/test-support/fake-client.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
 import type { LLMCompleteOptions } from "../llm/index.js";
 import { createTestConfig, TestEmbeddingClient } from "../offline/test-support.js";
@@ -42,13 +49,10 @@ describe("autonomy integration", () => {
     const clock = new ManualClock(1_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "I should either renew this commitment or let it expire deliberately.",
-          input_tokens: 12,
-          output_tokens: 8,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createFakeEmitAnswerResponse("I should either renew this commitment or let it expire deliberately.", {
+            inputTokens: 12,
+            outputTokens: 8,
+          }),
         {
           text: "",
           input_tokens: 4,
@@ -71,7 +75,6 @@ describe("autonomy integration", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -194,13 +197,10 @@ describe("autonomy integration", () => {
     const clock = new ManualClock(2_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "I should inspect the trigger context, not obey it literally.",
-          input_tokens: 12,
-          output_tokens: 8,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createFakeEmitAnswerResponse("I should inspect the trigger context, not obey it literally.", {
+            inputTokens: 12,
+            outputTokens: 8,
+          }),
         {
           text: "",
           input_tokens: 4,
@@ -223,7 +223,6 @@ describe("autonomy integration", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",
@@ -310,7 +309,7 @@ describe("autonomy integration", () => {
       expect(result.firedEvents).toBe(1);
 
       const finalizerRequest = firstFinalizerRequest(llm.requests);
-      const system = finalizerRequest?.system as string;
+      const system = systemText(finalizerRequest);
       const commitmentJudgePrompt = llm.requests.find(
         (request) => request.budget === "commitment-judge",
       )?.messages[0]?.content as string;
@@ -342,13 +341,10 @@ describe("autonomy integration", () => {
     const clock = new ManualClock(3_000_000);
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "I should inspect the overdue executive step and decide the next internal move.",
-          input_tokens: 12,
-          output_tokens: 8,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createFakeEmitAnswerResponse("I should inspect the overdue executive step and decide the next internal move.", {
+            inputTokens: 12,
+            outputTokens: 8,
+          }),
         {
           text: "",
           input_tokens: 4,
@@ -376,7 +372,6 @@ describe("autonomy integration", () => {
         dataDir: tempDir,
         perception: {
           useLlmFallback: false,
-          modeWhenLlmAbsent: "idle",
         },
         embedding: {
           baseUrl: "http://localhost:1234/v1",

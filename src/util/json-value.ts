@@ -55,11 +55,5 @@ export function assertJsonValue(value: unknown, path = "$"): asserts value is Js
 export function serializeJsonValue(value: unknown): string {
   assertJsonValue(value);
 
-  const serialized = JSON.stringify(value);
-
-  if (serialized === undefined) {
-    throw new TypeError("$ could not be serialized to JSON");
-  }
-
-  return serialized;
+  return JSON.stringify(value);
 }

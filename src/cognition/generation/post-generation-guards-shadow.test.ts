@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
+import { type LLMCompleteResult } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { EntityRepository, CommitmentRecord } from "../../memory/commitments/index.js";
 import type { StreamEntry, StreamReader } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";

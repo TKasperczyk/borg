@@ -1038,11 +1038,7 @@ export class RetrievalPipeline {
         namedTerms,
       };
     } catch (error) {
-      if (
-        this.tracer.enabled &&
-        options.traceTurnId !== undefined &&
-        !isUnscriptedFakeRecallExpansion(error)
-      ) {
+      if (this.tracer.enabled && options.traceTurnId !== undefined) {
         this.tracer.emit("retrieval_degraded", {
           turnId: options.traceTurnId,
           subsystem: "recall_expansion",
@@ -1765,13 +1761,6 @@ function isOpenQuestionVisibleToAudience(
   }
 
   return question.audience_entity_id === null || question.audience_entity_id === audienceEntityId;
-}
-
-function isUnscriptedFakeRecallExpansion(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.message === "FakeLLMClient has no scripted recall expansion response available"
-  );
 }
 
 function episodeVisibilityOptions(options: RetrievalSearchOptions): EpisodeSearchOptions {

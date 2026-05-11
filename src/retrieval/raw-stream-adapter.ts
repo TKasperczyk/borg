@@ -52,10 +52,6 @@ export class RawStreamAdapter {
 
     return entries.sort(compareStreamEntriesDescending).slice(0, limit);
   }
-
-  async searchText(_query: string): Promise<StreamEntry[]> {
-    throw new Error("Raw stream text search is unavailable; resolve by source id or recency only");
-  }
 }
 
 function compareStreamEntriesDescending(left: StreamEntry, right: StreamEntry): number {

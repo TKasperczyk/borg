@@ -98,10 +98,6 @@ export function resolveBorgConfig(options: {
         ...DEFAULT_CONFIG.generation.evidenceLedger,
         ...(rawConfig as Partial<Config>).generation?.evidenceLedger,
       },
-      manifestFinalizer: {
-        ...DEFAULT_CONFIG.generation.manifestFinalizer,
-        ...(rawConfig as Partial<Config>).generation?.manifestFinalizer,
-      },
       postGenerationGuards: {
         ...DEFAULT_CONFIG.generation.postGenerationGuards,
         ...(rawConfig as Partial<Config>).generation?.postGenerationGuards,

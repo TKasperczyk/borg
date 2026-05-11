@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   COGNITIVE_MODES,
   DEFAULT_SESSION_ID,
-  FakeLLMClient,
   VERSION,
   createTurnTracer,
   loadConfig,
@@ -20,6 +19,5 @@ describe("borg library entry", () => {
     expect(typeof createTurnTracer).toBe("function");
     expect(COGNITIVE_MODES).toContain("problem_solving");
     expect(parseSessionId("default")).toBe(DEFAULT_SESSION_ID);
-    expect(new FakeLLMClient()).toBeInstanceOf(FakeLLMClient);
   });
 });

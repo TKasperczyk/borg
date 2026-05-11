@@ -1446,7 +1446,3 @@ export class OpenQuestionsRepository {
     return reopened;
   }
 }
-
-export function createOpenQuestionReopener(repository: OpenQuestionsRepository) {
-  return (id: OpenQuestionId, urgency?: number) => repository.reopenForReversal(id, urgency);
-}

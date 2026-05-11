@@ -4,7 +4,11 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { Borg, FakeLLMClient, ManualClock } from "../../index.js";
+import {
+  Borg,
+  ManualClock,
+} from "../../index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createTestConfig, TestEmbeddingClient } from "../../offline/test-support.js";
 
 const tempDirs: string[] = [];
@@ -29,7 +33,6 @@ async function openRegressionBorg(llm: FakeLLMClient) {
       dataDir: dir,
       perception: {
         useLlmFallback: false,
-        modeWhenLlmAbsent: "idle",
       },
       affective: {
         useLlmFallback: false,
@@ -54,11 +57,17 @@ async function openRegressionBorg(llm: FakeLLMClient) {
 
 function textResponse(text: string) {
   return {
-    text,
+    text: "",
     input_tokens: 8,
     output_tokens: 4,
-    stop_reason: "end_turn" as const,
-    tool_calls: [],
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_emit_answer",
+        name: "EmitAnswer",
+        input: { text },
+      },
+    ],
   };
 }
 
@@ -70,9 +79,9 @@ function noOutputResponse(text = "") {
     stop_reason: "tool_use" as const,
     tool_calls: [
       {
-        id: "toolu_no_output",
-        name: "no_output",
-        input: {},
+        id: "toolu_emit_no_output",
+        name: "EmitNoOutput",
+        input: { reason: "No assistant message is needed." },
       },
     ],
   };

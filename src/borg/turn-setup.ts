@@ -118,9 +118,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     // Explicit so borg.ts wires a single compiler instance per process;
     // turn-orchestrator.ts falls back to defaults if omitted, but doing
     // it here makes the configuration visible at the composition root.
-    turnContextCompiler: new TurnContextCompiler({
-      entityRepository: options.entityRepository,
-    }),
+    turnContextCompiler: new TurnContextCompiler(),
     ...(options.streamIngestionCoordinator === undefined
       ? {}
       : { streamIngestionCoordinator: options.streamIngestionCoordinator }),

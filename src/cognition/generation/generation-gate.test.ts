@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import { TestEmbeddingClient } from "../../offline/test-support.js";
 import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";

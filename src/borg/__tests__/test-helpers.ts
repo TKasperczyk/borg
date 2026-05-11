@@ -9,7 +9,10 @@ import { Borg } from "../../borg.js";
 export { DEFAULT_CONFIG } from "../../config/index.js";
 export { Reflector } from "../../cognition/index.js";
 export type { ReflectorOptions } from "../../cognition/index.js";
-export { FakeLLMClient } from "../../llm/index.js";
+export {
+  FakeLLMClient,
+  createFakeEmitAnswerResponse as createEmitAnswerResponse,
+} from "../../llm/test-support/fake-client.js";
 export type { LLMClient } from "../../llm/index.js";
 export { EntityRepository, commitmentMigrations } from "../../memory/commitments/index.js";
 export { episodicMigrations } from "../../memory/episodic/index.js";

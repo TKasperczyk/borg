@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { SkillSelector, deriveProceduralContextKey } from "../../memory/procedural/index.js";
 import { createSkillSplitReviewQueueHandler } from "../../memory/semantic/index.js";

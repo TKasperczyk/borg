@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg } from "../borg.js";
 import { DEFAULT_CONFIG } from "../config/index.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
-import { FakeLLMClient } from "../llm/index.js";
+import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import { FixedClock } from "../util/clock.js";
 import { runCli } from "./app.js";
 
@@ -49,7 +49,6 @@ function openCorrectionBorg(tempDir: string, llm = new FakeLLMClient()) {
       },
       perception: {
         useLlmFallback: false,
-        modeWhenLlmAbsent: "problem_solving",
       },
       anthropic: {
         auth: "api-key",

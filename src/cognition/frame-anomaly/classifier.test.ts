@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { FakeLLMClient, type LLMCompleteResult } from "../../llm/index.js";
+import { type LLMCompleteResult } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createStreamEntryId } from "../../util/ids.js";
 import type { TurnTracer, TurnTraceData, TurnTraceEventName } from "../tracing/tracer.js";
 import { FrameAnomalyClassifier } from "./classifier.js";

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../config/index.js";
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { ReviewOpenQuestionExtractorLike } from "../../memory/self/index.js";
 import { StreamReader } from "../../stream/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createOfflineTestHarness } from "../../offline/test-support.js";
 import { FixedClock } from "../../util/clock.js";
 import { createStreamEntryId } from "../../util/ids.js";

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
 import { ConsolidatorProcess } from "./index.js";

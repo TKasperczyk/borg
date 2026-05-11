@@ -7,7 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg } from "./borg.js";
 import { DEFAULT_CONFIG } from "./config/index.js";
 import type { EmbeddingClient } from "./embeddings/index.js";
-import { FakeLLMClient } from "./llm/index.js";
+import {
+  FakeLLMClient,
+  createFakeEmitAnswerResponse,
+} from "./llm/test-support/fake-client.js";
 import { affectiveMigrations } from "./memory/affective/index.js";
 import { commitmentMigrations } from "./memory/commitments/index.js";
 import {
@@ -43,6 +46,54 @@ class RustEmbeddingClient implements EmbeddingClient {
 
     return Float32Array.from([0, 1, 0, 0]);
   }
+}
+
+function createEntityDetectionResponse(entities: string[] = []) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_entity",
+        name: "EmitEntityExtraction",
+        input: { entities },
+      },
+    ],
+  };
+}
+
+function createModeDetectionResponse(mode: "problem_solving" | "relational" | "reflective" | "idle") {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_mode",
+        name: "EmitModeDetection",
+        input: { mode },
+      },
+    ],
+  };
+}
+
+function createNoTemporalCueResponse() {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_temporal",
+        name: "EmitTemporalCue",
+        input: { has_cue: false },
+      },
+    ],
+  };
 }
 
 function createEpisode(overrides: Partial<Episode>): Episode {
@@ -159,6 +210,9 @@ describe("Borg Sprint 7", () => {
 
     const llm = new FakeLLMClient({
       responses: [
+        createEntityDetectionResponse(["Rust", "E0597"]),
+        createModeDetectionResponse("problem_solving"),
+        createNoTemporalCueResponse(),
         {
           text: "",
           input_tokens: 4,
@@ -176,14 +230,14 @@ describe("Borg Sprint 7", () => {
             },
           ],
         },
-        {
-          text: "Try shrinking the borrow scope and introducing an intermediate binding.",
-          input_tokens: 20,
-          output_tokens: 20,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createFakeEmitAnswerResponse("Try shrinking the borrow scope and introducing an intermediate binding.", {
+            inputTokens: 20,
+            outputTokens: 20,
+          }),
         createEmptyReflectionResponse(),
+        createEntityDetectionResponse(["Rust", "E0597"]),
+        createModeDetectionResponse("problem_solving"),
+        createNoTemporalCueResponse(),
         {
           text: "",
           input_tokens: 4,
@@ -201,13 +255,10 @@ describe("Borg Sprint 7", () => {
             },
           ],
         },
-        {
-          text: "Reuse the scoped-binding approach; it still fits the Rust lifetime issue.",
-          input_tokens: 20,
-          output_tokens: 20,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        createFakeEmitAnswerResponse("Reuse the scoped-binding approach; it still fits the Rust lifetime issue.", {
+            inputTokens: 20,
+            outputTokens: 20,
+          }),
         {
           text: "",
           input_tokens: 20,
@@ -239,8 +290,7 @@ describe("Borg Sprint 7", () => {
         ...DEFAULT_CONFIG,
         dataDir: tempDir,
         perception: {
-          useLlmFallback: false,
-          modeWhenLlmAbsent: "problem_solving",
+          useLlmFallback: true,
         },
         affective: {
           ...DEFAULT_CONFIG.affective,

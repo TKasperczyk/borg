@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { FakeLLMClient } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { FixedClock } from "../../util/clock.js";
 import { EntityExtractor } from "./entity-extractor.js";
 import { ModeDetector } from "./mode-detector.js";
@@ -284,7 +284,7 @@ describe("perception", () => {
     });
   });
 
-  it("falls back to the configured neutral mode when mode detection throws", async () => {
+  it("falls back to idle when mode detection throws", async () => {
     const onClassifierFailure = vi.fn();
     const llm = new FakeLLMClient({
       responses: [entityResponse(["Atlas"]), invalidModeResponse()],
@@ -294,13 +294,12 @@ describe("perception", () => {
       model: "haiku",
       affectiveUseLlmFallback: false,
       temporalCueUseLlmFallback: false,
-      modeWhenLlmAbsent: "relational",
       onClassifierFailure,
     });
 
     const perceived = await perceiver.perceive("plain lower text");
 
-    expect(perceived.mode).toBe("relational");
+    expect(perceived.mode).toBe("idle");
     expect(perceived.entities).toEqual(["Atlas"]);
     expect(onClassifierFailure).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -352,7 +351,6 @@ describe("perception", () => {
       model: "haiku",
       affectiveUseLlmFallback: false,
       temporalCueUseLlmFallback: false,
-      modeWhenLlmAbsent: "idle",
       onClassifierFailure,
     });
 
@@ -391,7 +389,6 @@ describe("perception", () => {
       model: "haiku",
       affectiveUseLlmFallback: false,
       temporalCueUseLlmFallback: false,
-      modeWhenLlmAbsent: "idle",
     }).perceive("plain lower text");
 
     expect(Object.keys(degraded).sort()).toEqual(Object.keys(successful).sort());

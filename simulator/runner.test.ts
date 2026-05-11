@@ -7,11 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACTION_STATES,
   Borg,
-  FakeLLMClient,
   RELATIONAL_SLOT_STATES,
   type GenerationSuppressionReason,
   type SessionId,
 } from "../src/index.js";
+import { FakeLLMClient } from "../src/llm/test-support/fake-client.js";
 import {
   MaintenanceScheduler,
   type MaintenanceCadence,
@@ -211,7 +211,6 @@ describe("SimulatorRunner", () => {
     expect(scenario.borgConfigOverrides).toEqual({
       generation: {
         evidenceLedger: { enabled: true },
-        manifestFinalizer: { enabled: true },
         postGenerationGuards: {
           commitment: { mode: "enforce" },
           closurePressure: { mode: "enforce" },
@@ -1114,9 +1113,9 @@ describe("SimulatorRunner", () => {
             stop_reason: "tool_use",
             tool_calls: [
               {
-                id: "toolu_no_output",
-                name: "no_output",
-                input: {},
+                id: "toolu_emit_no_output",
+                name: "EmitNoOutput",
+                input: { reason: "No assistant message is needed." },
               },
             ],
           },
