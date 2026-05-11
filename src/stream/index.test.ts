@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ManualClock } from "../util/clock.js";
-import { DEFAULT_SESSION_ID } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, createEntityId } from "../util/ids.js";
 import { StreamError } from "../util/errors.js";
 import { getSessionStreamPath, streamEntrySchema, StreamReader, StreamWriter } from "./index.js";
 
@@ -93,6 +93,7 @@ describe("stream", () => {
 
     expect(first.timestamp).toBe(100);
     expect(first.compressed).toBe(false);
+    expect(first.sender_entity_id).toBeNull();
 
     const reader = new StreamReader({
       dataDir: tempDir,
@@ -114,6 +115,58 @@ describe("stream", () => {
       "agent_suppressed",
       "internal_event",
     ]);
+  });
+
+  it("persists and reads sender entity ids", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const senderEntityId = createEntityId();
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+    });
+
+    try {
+      await writer.append({
+        kind: "user_msg",
+        content: "hello from Alice",
+        sender_entity_id: senderEntityId,
+      });
+    } finally {
+      writer.close();
+    }
+
+    const [entry] = new StreamReader({
+      dataDir: tempDir,
+    }).tail(1);
+
+    expect(entry?.sender_entity_id).toBe(senderEntityId);
+  });
+
+  it("parses legacy stream entries without sender ids as null", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const streamDir = join(tempDir, "stream");
+    const streamPath = join(streamDir, "default.jsonl");
+
+    mkdirSync(streamDir, { recursive: true });
+    writeFileSync(
+      streamPath,
+      `${JSON.stringify({
+        id: "strm_abcdefghijklmnop",
+        timestamp: 100,
+        kind: "user_msg",
+        content: "legacy hello",
+        session_id: DEFAULT_SESSION_ID,
+        compressed: false,
+      })}\n`,
+    );
+
+    const [entry] = new StreamReader({
+      dataDir: tempDir,
+    }).tail(1);
+
+    expect(entry?.sender_entity_id).toBeNull();
   });
 
   it("assigns append timestamps after acquiring the stream lock", async () => {

@@ -1,6 +1,8 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 
 import { type Migration, type SqliteDatabase } from "../storage/sqlite/index.js";
+import { tableExists, tableHasColumn } from "../storage/sqlite/migrations-utils.js";
+import type { EntityId } from "../util/ids.js";
 
 import { getSessionStreamPath } from "./path.js";
 import { type SessionId, type StreamEntry, streamEntrySchema } from "./types.js";
@@ -19,11 +21,27 @@ export const streamEntryIndexMigrations: Migration[] = [
         entry_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         byte_offset INTEGER NOT NULL,
-        timestamp INTEGER NOT NULL
+        timestamp INTEGER NOT NULL,
+        sender_entity_id TEXT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_stream_entry_session
       ON stream_entry_index(session_id)
     `,
+  },
+  {
+    id: 202,
+    name: "add-stream-entry-sender-entity-id",
+    up: (db) => {
+      if (
+        tableExists(db, "stream_entry_index") &&
+        !tableHasColumn(db, "stream_entry_index", "sender_entity_id")
+      ) {
+        db.exec(`
+          ALTER TABLE stream_entry_index
+            ADD COLUMN sender_entity_id TEXT NULL;
+        `);
+      }
+    },
   },
 ];
 
@@ -32,6 +50,7 @@ export type StreamEntryIndexRecord = {
   session_id: SessionId;
   byte_offset: number;
   timestamp: number;
+  sender_entity_id: EntityId | null;
 };
 
 type StreamEntryIndexRow = {
@@ -39,6 +58,7 @@ type StreamEntryIndexRow = {
   session_id: string;
   byte_offset: number;
   timestamp: number;
+  sender_entity_id: string | null;
 };
 
 type SessionEntryCountRow = {
@@ -83,6 +103,10 @@ function recordFromRow(row: StreamEntryIndexRow): StreamEntryIndexRecord {
     session_id: row.session_id as SessionId,
     byte_offset: row.byte_offset,
     timestamp: row.timestamp,
+    sender_entity_id:
+      row.sender_entity_id === null || row.sender_entity_id === undefined
+        ? null
+        : (row.sender_entity_id as EntityId),
   };
 }
 
@@ -195,23 +219,33 @@ export class StreamEntryIndexRepository {
     this.logger = options.logger ?? console;
   }
 
-  record(entryId: string, sessionId: SessionId, byteOffset: number, timestamp: number): void {
+  record(
+    entryId: string,
+    sessionId: SessionId,
+    byteOffset: number,
+    timestamp: number,
+    senderEntityId: EntityId | null = null,
+  ): void {
     this.db
       .prepare(
-        `INSERT INTO stream_entry_index (entry_id, session_id, byte_offset, timestamp)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO stream_entry_index (
+           entry_id, session_id, byte_offset, timestamp, sender_entity_id
+         )
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT (entry_id) DO UPDATE SET
            session_id = excluded.session_id,
            byte_offset = excluded.byte_offset,
-           timestamp = excluded.timestamp`,
+           timestamp = excluded.timestamp,
+           sender_entity_id = excluded.sender_entity_id`,
       )
-      .run(entryId, sessionId, byteOffset, timestamp);
+      .run(entryId, sessionId, byteOffset, timestamp, senderEntityId);
   }
 
   lookup(entryId: string): StreamEntryIndexRecord | null {
     const row = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
+              , sender_entity_id
          FROM stream_entry_index
          WHERE entry_id = ?`,
       )
@@ -230,6 +264,7 @@ export class StreamEntryIndexRepository {
     const rows = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
+              , sender_entity_id
          FROM stream_entry_index
          WHERE entry_id IN (${uniqueIds.map(() => "?").join(", ")})`,
       )
@@ -275,8 +310,10 @@ export class StreamEntryIndexRepository {
 
       const insertMissing = this.db.transaction((): number => {
         const insert = this.db.prepare(
-          `INSERT INTO stream_entry_index (entry_id, session_id, byte_offset, timestamp)
-           VALUES (?, ?, ?, ?)
+          `INSERT INTO stream_entry_index (
+             entry_id, session_id, byte_offset, timestamp, sender_entity_id
+           )
+           VALUES (?, ?, ?, ?, ?)
            ON CONFLICT (entry_id) DO NOTHING`,
         );
         let inserted = 0;
@@ -288,7 +325,8 @@ export class StreamEntryIndexRepository {
           this.logger,
           (entry, byteOffset) => {
             inserted += Number(
-              insert.run(entry.id, sessionId, byteOffset, entry.timestamp).changes,
+              insert.run(entry.id, sessionId, byteOffset, entry.timestamp, entry.sender_entity_id)
+                .changes,
             );
           },
         );

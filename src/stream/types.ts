@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import {
   DEFAULT_SESSION_ID,
+  entityIdHelpers,
+  type EntityId,
   type SessionId,
   type StreamEntryId,
   isSessionId,
@@ -42,6 +44,13 @@ export const sessionIdSchema = z
   })
   .transform((value) => parseSessionId(value));
 
+export const streamEntryEntityIdSchema = z
+  .string()
+  .refine((value) => entityIdHelpers.is(value), {
+    message: "Invalid stream entry entity id",
+  })
+  .transform((value) => value as EntityId);
+
 export const streamEntrySchema = z.object({
   id: streamEntryIdSchema,
   timestamp: z.number().finite(),
@@ -52,6 +61,7 @@ export const streamEntrySchema = z.object({
   token_estimate: z.number().int().nonnegative().optional(),
   tool_calls: z.array(z.unknown()).optional(),
   audience: z.string().min(1).optional(),
+  sender_entity_id: streamEntryEntityIdSchema.nullable().default(null),
   persistence_class: streamEntryPersistenceClassSchema.optional(),
   session_id: sessionIdSchema,
   compressed: z.boolean().default(false),

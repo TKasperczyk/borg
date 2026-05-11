@@ -127,7 +127,13 @@ export class StreamWriter {
                   continue;
                 }
 
-                this.entryIndex.record(entry.id, entry.session_id, byteOffset, entry.timestamp);
+                this.entryIndex.record(
+                  entry.id,
+                  entry.session_id,
+                  byteOffset,
+                  entry.timestamp,
+                  entry.sender_entity_id,
+                );
               }
             } catch (error) {
               this.logger.error(`Failed to update stream entry index for ${streamPath}`);

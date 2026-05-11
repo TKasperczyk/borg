@@ -6,6 +6,7 @@ export {
   isNarrativeStreamEntry,
   streamEntryInputSchema,
   streamEntryIdSchema,
+  streamEntryEntityIdSchema,
   streamEntryKindSchema,
   streamEntryPersistenceClassSchema,
   streamEntrySchema,
