@@ -23,6 +23,7 @@ import {
 import { runS2Planner } from "./s2-planner.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
 import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
+import { resolveSpeakerDisplayName } from "../speaker-tags.js";
 import type { GenerationSuppressionReason, PendingTurnEmission } from "../generation/types.js";
 import type {
   DeliberationContext,
@@ -235,7 +236,13 @@ export class Deliberator {
         ? null
         : [context.evidenceLedgerPromptSection];
 
-    const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage);
+    const currentSpeakerDisplayName = resolveSpeakerDisplayName(
+      context.entityRepository,
+      context.senderEntityId,
+    );
+    const dialogueMessages = buildDialogueMessages(context.recencyMessages, context.userMessage, {
+      currentSpeakerDisplayName,
+    });
     const dialogueBlockMessages = toContentBlockMessages(dialogueMessages);
     const deliberatorTools = this.options.toolDispatcher.listTools("deliberator");
     const useEmissionFinalizer = this.options.emissionFinalizerEnabled === true;

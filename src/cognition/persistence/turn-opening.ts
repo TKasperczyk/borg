@@ -1,4 +1,5 @@
 import type { StreamEntry, StreamWriter } from "../../stream/index.js";
+import type { EntityId } from "../../util/ids.js";
 import type {
   PendingSocialAttribution,
   PendingTraitAttribution,
@@ -20,6 +21,7 @@ export type TurnOpeningPersistenceInput = {
   userMessage: string;
   persistUserMessage?: boolean;
   audience?: string;
+  senderEntityId?: EntityId;
   workingMemory: WorkingMemory;
   pendingSocialAttribution: PendingSocialAttribution | null;
   pendingTraitAttribution: PendingTraitAttribution | null;
@@ -47,6 +49,9 @@ export class TurnOpeningPersistence {
             turn_id: input.turnId,
             turn_status: ACTIVE_TURN_STATUS,
             ...(input.audience === undefined ? {} : { audience: input.audience }),
+            ...(input.senderEntityId === undefined
+              ? {}
+              : { sender_entity_id: input.senderEntityId }),
           });
 
     const workingMemory = this.options.workingMemoryStore.save({

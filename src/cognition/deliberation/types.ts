@@ -67,6 +67,7 @@ export type DeliberationContext = {
   turnId?: string;
   audience?: string;
   audienceEntityId?: EntityId | null;
+  senderEntityId?: EntityId;
   userMessage: string;
   userEntryId?: string;
   autonomyTrigger?: AutonomyTriggerContext | null;

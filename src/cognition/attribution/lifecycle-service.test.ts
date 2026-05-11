@@ -60,6 +60,8 @@ function makeStreamWriter() {
         timestamp: 1_000,
         session_id: DEFAULT_SESSION_ID,
         compressed: input.compressed ?? false,
+        sender_entity_id:
+          input.sender_entity_id === undefined ? null : (input.sender_entity_id as EntityId),
       } satisfies StreamEntry;
     },
   };

@@ -4,6 +4,11 @@ import {
   isNarrativeStreamEntry,
   type StreamEntry,
 } from "../../stream/index.js";
+import {
+  prefixSpeakerTag,
+  resolveSpeakerDisplayName,
+  type SpeakerEntityRepository,
+} from "../speaker-tags.js";
 
 import type { RecencyMessage, RecencyWindow } from "./types.js";
 
@@ -26,6 +31,11 @@ export type TurnContextCompilerOptions = {
    * see scheduler-generated self-conversation in their dialogue context.
    */
   includeSelfTurns?: boolean;
+  /**
+   * Optional lookup for sender display names. When absent or when a sender id
+   * cannot be resolved, the compiler preserves legacy untagged content.
+   */
+  entityRepository?: SpeakerEntityRepository;
 };
 
 const DEFAULT_MAX_MESSAGES = 16;
@@ -105,14 +115,26 @@ function suppressionCategoryContext(reason: string): string {
   return "guard or finalizer suppression";
 }
 
-function renderEntryContent(entry: StreamEntry): string {
+function renderEntryContent(
+  entry: StreamEntry,
+  entityRepository: SpeakerEntityRepository | undefined,
+): string {
   if (entry.kind === "agent_suppressed") {
     const reason = suppressionReason(entry);
 
     return `[system: prior turn suppressed -- reason: ${reason}; category: ${suppressionCategoryContext(reason)}; no user-visible response was emitted]`;
   }
 
-  return entryContentToString(entry);
+  const content = entryContentToString(entry);
+
+  if (entry.kind !== "user_msg") {
+    return content;
+  }
+
+  return prefixSpeakerTag(
+    content,
+    resolveSpeakerDisplayName(entityRepository, entry.sender_entity_id),
+  );
 }
 
 /**
@@ -137,11 +159,13 @@ export class TurnContextCompiler {
   private readonly maxMessages: number;
   private readonly maxChars: number;
   private readonly includeSelfTurns: boolean;
+  private readonly entityRepository?: SpeakerEntityRepository;
 
   constructor(options: TurnContextCompilerOptions = {}) {
     this.maxMessages = options.maxMessages ?? DEFAULT_MAX_MESSAGES;
     this.maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
     this.includeSelfTurns = options.includeSelfTurns ?? false;
+    this.entityRepository = options.entityRepository;
   }
 
   compile(
@@ -188,7 +212,7 @@ export class TurnContextCompiler {
         continue;
       }
 
-      const content = renderEntryContent(item.entry);
+      const content = renderEntryContent(item.entry, this.entityRepository);
       const contentLength = content.length;
 
       if (reversed.length > 0 && totalChars + contentLength > this.maxChars) {

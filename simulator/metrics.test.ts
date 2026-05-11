@@ -370,6 +370,7 @@ describe("MetricsCapture", () => {
             turn_id: anomalyTurnId,
             session_id: sessionId,
             compressed: false,
+            sender_entity_id: null,
           },
         ],
       ],
@@ -881,6 +882,7 @@ describe("MetricsCapture", () => {
             turn_id: activeTurnId,
             session_id: sessionId,
             compressed: false,
+            sender_entity_id: null,
           },
           {
             id: createStreamEntryId(),
@@ -890,6 +892,7 @@ describe("MetricsCapture", () => {
             turn_id: abortedTurnId,
             session_id: sessionId,
             compressed: false,
+            sender_entity_id: null,
           },
           {
             id: createStreamEntryId(),
@@ -904,6 +907,7 @@ describe("MetricsCapture", () => {
             turn_status: "aborted",
             session_id: sessionId,
             compressed: false,
+            sender_entity_id: null,
           },
         ],
       ],

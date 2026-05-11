@@ -19,7 +19,12 @@ export { retrievalMigrations } from "../../retrieval/index.js";
 export { LanceDbStore } from "../../storage/lancedb/index.js";
 export { composeMigrations, openDatabase, SqliteDatabase } from "../../storage/sqlite/index.js";
 export { ManualClock } from "../../util/clock.js";
-export { createEpisodeId, createSessionId, createStreamEntryId } from "../../util/ids.js";
+export {
+  createEntityId,
+  createEpisodeId,
+  createSessionId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 export { createTestConfig } from "../../offline/test-support.js";
 export { resolveBorgConfig } from "../storage-setup.js";
 export { Borg };

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ABORTED_TURN_EVENT, StreamReader, StreamWriter } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
-import { DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createEntityId, type EntityId } from "../../util/ids.js";
 
 import { TurnContextCompiler } from "./compiler.js";
 
@@ -79,6 +79,71 @@ describe("TurnContextCompiler", () => {
     ]);
     expect(window.latest_ts).toBe(1_030);
     expect(window.total_chars).toBeGreaterThan(0);
+  });
+
+  it("prefixes user messages with a resolved sender display name", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+    const senderEntityId = createEntityId();
+
+    try {
+      await writer.append({
+        kind: "user_msg",
+        content: "Can you check Atlas?",
+        sender_entity_id: senderEntityId,
+      });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "Checking." });
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler({
+      entityRepository: {
+        get: (id: EntityId) =>
+          id === senderEntityId
+            ? {
+                id: senderEntityId,
+                canonical_name: "Alice",
+                aliases: [],
+                created_at: 1_000,
+              }
+            : null,
+      },
+    }).compile(makeReader(dataDir));
+
+    expect(window.messages.map((message) => message.content)).toEqual([
+      "[Alice]: Can you check Atlas?",
+      "Checking.",
+    ]);
+  });
+
+  it("keeps legacy user message content unchanged when sender is omitted", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+
+    try {
+      await writer.append({ kind: "user_msg", content: "Can you check Atlas?" });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "Checking." });
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler({
+      entityRepository: {
+        get: () => {
+          throw new Error("sender lookup should not run for omitted sender ids");
+        },
+      },
+    }).compile(makeReader(dataDir));
+
+    expect(window.messages.map((message) => message.content)).toEqual([
+      "Can you check Atlas?",
+      "Checking.",
+    ]);
   });
 
   it("skips non-conversational entries like thoughts and tool calls", async () => {

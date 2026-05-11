@@ -206,6 +206,7 @@ describe("internal tools", () => {
                 content: "We need the search tool to return evidence, not only ids.",
                 session_id: DEFAULT_SESSION_ID,
                 compressed: false,
+                sender_entity_id: null,
               },
             ],
           },

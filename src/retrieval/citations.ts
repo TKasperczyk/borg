@@ -331,6 +331,7 @@ function createUnresolvedCitationEntry(sourceId: StreamEntryId): StreamEntry {
     content: `[citation unresolved: ${sourceId}]`,
     session_id: DEFAULT_SESSION_ID,
     compressed: false,
+    sender_entity_id: null,
     turn_status: "active",
   };
 }

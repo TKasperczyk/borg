@@ -280,6 +280,7 @@ describe("post-generation guard shadow chain", () => {
       content: "What happened?",
       session_id: DEFAULT_SESSION_ID,
       compressed: false,
+      sender_entity_id: null,
     };
     const llm = new FakeLLMClient({
       responses: [

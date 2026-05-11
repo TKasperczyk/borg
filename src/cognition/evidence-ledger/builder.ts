@@ -6,6 +6,7 @@ import {
   type ActionState,
 } from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
+import type { EntityRepository } from "../../memory/commitments/index.js";
 import type {
   RelationalSlot,
   RelationalSlotRepository,
@@ -29,6 +30,7 @@ import {
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
 import type { EntityId, EpisodeId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { FrameAnomalyClassification } from "../frame-anomaly/index.js";
+import { resolveSpeakerDisplayName, type SpeakerEntityRepository } from "../speaker-tags.js";
 import {
   EVIDENCE_LEDGER_SECTION_DEFINITIONS,
   type EvidenceLedger,
@@ -81,6 +83,7 @@ export type EvidenceLedgerBuilderOptions = {
   actionThreadRenderLimit?: number;
   actionThreadSimilarityThreshold?: number;
   actionThreadSourceRecordLimit?: number;
+  entityRepository?: Pick<EntityRepository, "get">;
 };
 
 export type EvidenceLedgerBuildInput = {
@@ -1193,6 +1196,22 @@ function estimateLedgerTokens(sections: readonly EvidenceLedgerSection[]): numbe
   return text.length === 0 ? 0 : estimatePromptTokens(text);
 }
 
+function currentUserMessageText(
+  input: EvidenceLedgerBuildInput,
+  entityRepository: SpeakerEntityRepository | undefined,
+): string {
+  const displayName = resolveSpeakerDisplayName(
+    entityRepository,
+    input.currentUserEntry?.sender_entity_id,
+  );
+
+  if (displayName === null) {
+    return input.currentUserMessage;
+  }
+
+  return [`Most recent speaker: ${displayName}`, input.currentUserMessage].join("\n");
+}
+
 export function summarizeEvidenceLedgerTrace(ledger: EvidenceLedger): EvidenceLedgerTraceSummary {
   // Sprint 8d.3: per-section token accounting. v36 mean input tokens were
   // ~113k -- without per-section breakdown there is no way to attribute
@@ -1312,7 +1331,7 @@ export class EvidenceLedgerBuilder {
       session_scope: "current_session",
       actor: "user",
       trust_rank: CURRENT_USER_TRUST_RANK,
-      text: input.currentUserMessage,
+      text: currentUserMessageText(input, this.options.entityRepository),
       stream_index:
         input.currentUserEntry === undefined
           ? undefined

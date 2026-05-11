@@ -58,7 +58,7 @@ import {
 } from "../../stream/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
 import type { Clock } from "../../util/clock.js";
-import type { SessionId, StreamEntryId } from "../../util/ids.js";
+import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { StreamIngestionCoordinator } from "../ingestion/index.js";
 import type { TurnRelationalGuardRunner } from "../generation/turn-relational-guard.js";
 import type { TurnLifecycleTracker } from "./turn-lifecycle-tracker.js";
@@ -80,6 +80,7 @@ type EvidenceLedgerFinalizerContext = {
 export type TurnPhaseInput = {
   userMessage: string;
   audience?: string;
+  senderEntityId?: EntityId;
   stakes?: TurnStakes;
   sessionId?: SessionId;
   origin?: "user" | "autonomous";
@@ -218,6 +219,7 @@ export class TurnPhaseCoordinator {
       userMessage: turnInput.userMessage,
       persistUserMessage: isUserTurn,
       audience: turnInput.audience,
+      senderEntityId: turnInput.senderEntityId,
       workingMemory,
       pendingSocialAttribution,
       pendingTraitAttribution,
@@ -486,6 +488,7 @@ export class TurnPhaseCoordinator {
         turnId,
         audience: turnInput.audience,
         audienceEntityId,
+        senderEntityId: turnInput.senderEntityId,
         userMessage: turnInput.userMessage,
         userEntryId: persistedUserEntryId,
         autonomyTrigger: turnInput.autonomyTrigger ?? null,
@@ -1158,6 +1161,7 @@ export class TurnPhaseCoordinator {
       actionThreadRenderLimit: config.actionThreadRenderLimit,
       actionThreadSimilarityThreshold: config.actionThreadSimilarityThreshold,
       actionThreadSourceRecordLimit: config.actionThreadSourceRecordLimit,
+      entityRepository: this.options.entityRepository,
     });
     const ledger = await builder.build(input);
     const rendered = renderEvidenceLedger(ledger);

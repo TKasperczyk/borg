@@ -1,6 +1,7 @@
 // Converts recency-window dialogue and the current turn into LLM message shapes.
 import type { LLMContentBlockMessage, LLMMessage } from "../../llm/index.js";
 import type { RecencyMessage } from "../recency/index.js";
+import { prefixSpeakerTag } from "../speaker-tags.js";
 
 // Anthropic rejects requests where any text content block has empty
 // content with 'messages: text content blocks must be non-empty'.
@@ -21,6 +22,9 @@ const EMPTY_CONTENT_PLACEHOLDER = "(no content)";
 export function buildDialogueMessages(
   recency: readonly RecencyMessage[] | undefined,
   currentUserMessage: string,
+  options: {
+    currentSpeakerDisplayName?: string | null;
+  } = {},
 ): LLMMessage[] {
   const messages: LLMMessage[] = [];
 
@@ -34,9 +38,10 @@ export function buildDialogueMessages(
   }
 
   const trimmed = currentUserMessage.trim();
+  const currentContent = trimmed.length === 0 ? EMPTY_CONTENT_PLACEHOLDER : currentUserMessage;
   messages.push({
     role: "user",
-    content: trimmed.length === 0 ? EMPTY_CONTENT_PLACEHOLDER : currentUserMessage,
+    content: prefixSpeakerTag(currentContent, options.currentSpeakerDisplayName ?? null),
   });
   return messages;
 }

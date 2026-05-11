@@ -10,6 +10,7 @@ import {
   borgInternals,
   createEmptyReflectionResponse,
   createReviewOpenQuestionResponse,
+  createEntityId,
   join,
   mkdtempSync,
   rmSync,
@@ -403,6 +404,65 @@ describe("Borg", () => {
         "perception",
         "agent_msg",
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("persists sender entity id from turn input on the user message", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const senderEntityId = createEntityId();
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+          modeWhenLlmAbsent: "idle",
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      }),
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "Try the rollback plan.",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          },
+          createEmptyReflectionResponse(),
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      await borg.turn({
+        userMessage: "Atlas deploy failed again.",
+        senderEntityId,
+      });
+
+      const userEntry = borg.stream.tail(3).find((entry) => entry.kind === "user_msg");
+
+      expect(userEntry?.sender_entity_id).toBe(senderEntityId);
     } finally {
       await borg.close();
     }

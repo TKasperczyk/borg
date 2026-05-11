@@ -59,6 +59,7 @@ import type { CognitiveMode, IntentRecord } from "./types.js";
 export type TurnInput = {
   userMessage: string;
   audience?: string;
+  senderEntityId?: EntityId;
   stakes?: TurnStakes;
   sessionId?: SessionId;
   origin?: "user" | "autonomous";
@@ -147,7 +148,11 @@ export class TurnOrchestrator {
   constructor(private readonly options: TurnOrchestratorOptions) {
     this.clock = options.clock ?? new SystemClock();
     this.tracer = options.tracer ?? NOOP_TRACER;
-    const turnContextCompiler = options.turnContextCompiler ?? new TurnContextCompiler();
+    const turnContextCompiler =
+      options.turnContextCompiler ??
+      new TurnContextCompiler({
+        entityRepository: options.entityRepository,
+      });
     this.sessionLock =
       options.sessionLock ??
       new SessionLock({

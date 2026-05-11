@@ -18,6 +18,7 @@ import {
   DEFAULT_SESSION_ID,
   createActionId,
   createCommitmentId,
+  createEntityId,
   createEpisodeId,
   createGoalId,
   createOpenQuestionId,
@@ -26,6 +27,7 @@ import {
   createSemanticEdgeId,
   createSemanticNodeId,
   createStreamEntryId,
+  type EntityId,
 } from "../../util/ids.js";
 import { EvidenceLedgerBuilder } from "./builder.js";
 
@@ -247,6 +249,7 @@ describe("EvidenceLedgerBuilder", () => {
       turn_status: "active",
       session_id: createSessionId(),
       compressed: false,
+      sender_entity_id: null,
     };
     const priorEpisodeId = createEpisodeId();
     const action = makeAction(userEntry.id);
@@ -383,6 +386,112 @@ describe("EvidenceLedgerBuilder", () => {
         session_scope: "prior_session",
       }),
     ]);
+  });
+
+  it("surfaces the most recent speaker when the current user entry has a sender", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const senderEntityId = createEntityId();
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Atlas needs a rollback plan.",
+      sender_entity_id: senderEntityId,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      entityRepository: {
+        get: (id: EntityId) =>
+          id === senderEntityId
+            ? {
+                id: senderEntityId,
+                canonical_name: "Alice",
+                aliases: [],
+                created_at: NOW_MS,
+              }
+            : null,
+      },
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-speaker",
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+
+    expect(
+      ledger.sections.find((section) => section.id === "current_user_message")?.entries[0]?.text,
+    ).toBe("Most recent speaker: Alice\nAtlas needs a rollback plan.");
+  });
+
+  it("keeps current user message rendering unchanged when sender is omitted", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Atlas needs a rollback plan.",
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      entityRepository: {
+        get: () => {
+          throw new Error("sender lookup should not run for omitted sender ids");
+        },
+      },
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-legacy-speaker",
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+
+    expect(
+      ledger.sections.find((section) => section.id === "current_user_message")?.entries[0]?.text,
+    ).toBe("Atlas needs a rollback plan.");
   });
 
   it("renders one action thread for same-goal similar action transitions", async () => {
@@ -1181,6 +1290,7 @@ describe("EvidenceLedgerBuilder", () => {
       turn_status: "active",
       session_id: createSessionId(),
       compressed: false,
+      sender_entity_id: null,
     };
     const unresolvedEntryId = createStreamEntryId();
     const builder = new EvidenceLedgerBuilder({

@@ -40,6 +40,8 @@ function makeStreamWriter(sequence: string[]) {
         session_id: DEFAULT_SESSION_ID,
         compressed: input.compressed ?? false,
         turn_status: input.turn_status ?? activeTurnStatus,
+        sender_entity_id:
+          input.sender_entity_id === undefined ? null : (input.sender_entity_id as EntityId),
       } satisfies StreamEntry;
     },
   };
@@ -89,6 +91,7 @@ describe("TurnOpeningPersistence", () => {
       turnId,
       userMessage: "Fix Atlas",
       audience: "alice",
+      senderEntityId: entityId,
       workingMemory: initialWorkingMemory,
       pendingSocialAttribution,
       pendingTraitAttribution,
@@ -119,6 +122,7 @@ describe("TurnOpeningPersistence", () => {
         turn_id: turnId,
         turn_status: activeTurnStatus,
         audience: "alice",
+        sender_entity_id: entityId,
       },
       {
         kind: "perception",
@@ -235,5 +239,28 @@ describe("TurnOpeningPersistence", () => {
         audience: expect.anything(),
       }),
     ]);
+  });
+
+  it("omits sender entity id from the user message input when no sender was provided", async () => {
+    const sequence: string[] = [];
+    const { appended, streamWriter } = makeStreamWriter(sequence);
+
+    await new TurnOpeningPersistence({
+      workingMemoryStore: {
+        save: vi.fn((memory) => memory),
+      },
+    }).persist({
+      streamWriter,
+      turnId,
+      userMessage: "Hello",
+      workingMemory: createWorkingMemory(DEFAULT_SESSION_ID, 500),
+      pendingSocialAttribution: null,
+      pendingTraitAttribution: null,
+      suppressionSet: SuppressionSet.fromEntries([], 0),
+      perception: makePerception(),
+      now: () => 1_000,
+    });
+
+    expect(appended[0]).not.toHaveProperty("sender_entity_id");
   });
 });
