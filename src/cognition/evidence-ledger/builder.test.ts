@@ -440,9 +440,12 @@ describe("EvidenceLedgerBuilder", () => {
       frameAnomaly: null,
     });
 
-    expect(
-      ledger.sections.find((section) => section.id === "current_user_message")?.entries[0]?.text,
-    ).toBe("Most recent speaker: Alice\nAtlas needs a rollback plan.");
+    const currentUserEntry = ledger.sections.find(
+      (section) => section.id === "current_user_message",
+    )?.entries[0];
+
+    expect(currentUserEntry?.text).toBe("Atlas needs a rollback plan.");
+    expect(currentUserEntry?.state_metadata).toEqual({ sender_display_name: "Alice" });
   });
 
   it("keeps current user message rendering unchanged when sender is omitted", async () => {

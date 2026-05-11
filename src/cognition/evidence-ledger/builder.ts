@@ -1196,20 +1196,16 @@ function estimateLedgerTokens(sections: readonly EvidenceLedgerSection[]): numbe
   return text.length === 0 ? 0 : estimatePromptTokens(text);
 }
 
-function currentUserMessageText(
+function currentUserMessageStateMetadata(
   input: EvidenceLedgerBuildInput,
   entityRepository: SpeakerEntityRepository | undefined,
-): string {
+): Record<string, unknown> | undefined {
   const displayName = resolveSpeakerDisplayName(
     entityRepository,
     input.currentUserEntry?.sender_entity_id,
   );
 
-  if (displayName === null) {
-    return input.currentUserMessage;
-  }
-
-  return [`Most recent speaker: ${displayName}`, input.currentUserMessage].join("\n");
+  return displayName === null ? undefined : { sender_display_name: displayName };
 }
 
 export function summarizeEvidenceLedgerTrace(ledger: EvidenceLedger): EvidenceLedgerTraceSummary {
@@ -1331,7 +1327,8 @@ export class EvidenceLedgerBuilder {
       session_scope: "current_session",
       actor: "user",
       trust_rank: CURRENT_USER_TRUST_RANK,
-      text: currentUserMessageText(input, this.options.entityRepository),
+      text: input.currentUserMessage,
+      state_metadata: currentUserMessageStateMetadata(input, this.options.entityRepository),
       stream_index:
         input.currentUserEntry === undefined
           ? undefined

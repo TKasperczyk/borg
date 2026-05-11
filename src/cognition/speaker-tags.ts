@@ -14,6 +14,21 @@ export function resolveSpeakerDisplayName(
   return entityRepository.get(senderEntityId)?.canonical_name ?? null;
 }
 
+function sanitizeSpeakerDisplayName(displayName: string): string {
+  const sanitized = displayName
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[\]\\]/g, "")
+    .replace(/:+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return sanitized.length === 0 ? "speaker" : sanitized;
+}
+
 export function prefixSpeakerTag(content: string, displayName: string | null): string {
-  return displayName === null ? content : `[${displayName}]: ${content}`;
+  if (displayName === null) {
+    return content;
+  }
+
+  return `[${sanitizeSpeakerDisplayName(displayName)}]: ${content}`;
 }
