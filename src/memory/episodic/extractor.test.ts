@@ -386,6 +386,39 @@ describe("episodic extractor", () => {
     expect(listed[0]?.source_stream_ids).not.toContain(perception.id);
   });
 
+  it("includes secondary-thread coverage guidance in the extraction prompt", async () => {
+    const harness = await createRelationalExtractorHarness();
+    await harness.writer.append({
+      kind: "user_msg",
+      content:
+        "Let's review the Atlas rollout plan. One more thing before I forget: I saw a heron at the canal this morning.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [createEpisodeToolResponse([])],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      clock: harness.clock,
+    });
+
+    const result = await extractor.extractFromStream();
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(result).toEqual({
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+    });
+    expect(prompt).toContain("multiple substantive threads");
+    expect(prompt).toContain("not only the headline topic");
+    expect(prompt).toContain("prioritize coverage over length");
+  });
+
   it("applies relational slot updates emitted with episodic extraction", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const clock = new ManualClock(1_000);
