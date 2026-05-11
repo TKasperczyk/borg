@@ -67,6 +67,18 @@ const scenario: ReplayScenario = {
       throw new Error("Scenario 44 expected episodic prompt headline coverage guidance.");
     }
 
+    if (!prompt.includes("specific name, place, observation, callback, or concrete detail")) {
+      throw new Error(
+        "Scenario 44 expected episodic prompt to define what counts as a substantive thread.",
+      );
+    }
+
+    if (!prompt.includes("trivial filler does not count")) {
+      throw new Error(
+        "Scenario 44 expected episodic prompt to exclude trivial filler from substantive threads.",
+      );
+    }
+
     if (extraction.inserted !== 1) {
       throw new Error("Scenario 44 expected episodic extraction to insert one episode.");
     }

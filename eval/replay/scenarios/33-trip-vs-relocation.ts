@@ -102,6 +102,12 @@ const scenario: ReplayScenario = {
       throw new Error("Scenario 33 expected semantic prompt aliasing guidance.");
     }
 
+    if (!semanticPrompt.includes("prefer the narrower event-scoped interpretation")) {
+      throw new Error(
+        "Scenario 33 expected semantic prompt ambiguity-fallback guidance.",
+      );
+    }
+
     if (semanticResult.insertedNodes !== 1) {
       throw new Error("Scenario 33 expected semantic extraction to insert one node.");
     }

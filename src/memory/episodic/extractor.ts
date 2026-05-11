@@ -379,7 +379,7 @@ function buildExtractorPrompt(
     "source_stream_ids MUST only reference ids present in the chunk.",
     "Perception context is advisory only; NEVER include perception context entries in source_stream_ids.",
     "Narrative should be 2-5 concise sentences.",
-    "When a source contains multiple substantive threads, the episode narrative must capture each substantive thread, not only the headline topic.",
+    "When a source contains multiple substantive threads, the episode narrative should cover each substantive thread, not only the headline topic. Details that merely elaborate one core thread are not separate threads.",
     "A thread is substantive when the user introduces a specific name, place, observation, callback, or concrete detail; trivial filler does not count.",
     "The narrative may be slightly longer when needed for multi-thread coverage, but prioritize coverage over length.",
     "For each episode, emit emotional_arc directly from the episode text and user signals. Use null only when there is no meaningful affective signal.",
