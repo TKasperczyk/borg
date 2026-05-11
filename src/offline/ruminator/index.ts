@@ -308,6 +308,20 @@ function mergeQuestionStreamIds(
   return [...new Set(groups.flatMap((group) => [...group]))];
 }
 
+function countOpenQuestionEvidenceHandles(question: OpenQuestion): number {
+  return new Set([
+    ...question.related_episode_ids.map((episodeId) => `episode:${episodeId}`),
+    ...question.resolution_evidence_episode_ids.map((episodeId) => `episode:${episodeId}`),
+    ...openQuestionProvenanceEpisodeIds(question).map((episodeId) => `episode:${episodeId}`),
+    ...question.resolution_evidence_stream_entry_ids.map(
+      (streamEntryId) => `stream:${streamEntryId}`,
+    ),
+    ...openQuestionProvenanceStreamEntryIds(question).map(
+      (streamEntryId) => `stream:${streamEntryId}`,
+    ),
+  ]).size;
+}
+
 function openQuestionProvenanceEpisodeIds(
   question: OpenQuestion,
 ): OpenQuestion["related_episode_ids"] {
@@ -1068,6 +1082,16 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             },
           );
           await ctx.openQuestionsRepository.delete(duplicate.id);
+
+          if (ctx.tracer?.enabled === true) {
+            ctx.tracer.emit("open_question_merged", {
+              turnId: ctx.runId,
+              kept_oq_id: primary.id,
+              deleted_oq_id: duplicate.id,
+              similarity_score: item.similarity,
+              evidence_folded_count: countOpenQuestionEvidenceHandles(duplicate),
+            });
+          }
         }
 
         ctx.auditLog.record({

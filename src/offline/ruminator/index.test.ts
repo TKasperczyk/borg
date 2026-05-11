@@ -757,6 +757,7 @@ describe("RuminatorProcess", () => {
   });
 
   it("merges near-duplicate open questions that share entity scope", async () => {
+    const tracer = new CaptureTracer();
     const sharedNodeId = createSemanticNodeId();
     const firstEpisodeId = createEpisodeId();
     const secondEpisodeId = createEpisodeId();
@@ -764,6 +765,7 @@ describe("RuminatorProcess", () => {
     const firstQuestion = "Should Madrid practice stay attached to the trip prep goal?";
     const secondQuestion = "Does the Madrid prep question still belong with trip practice?";
     const harness = await createOfflineTestHarness({
+      tracer,
       embeddingClient: new TestEmbeddingClient(
         new Map([
           [firstQuestion, [1, 0, 0, 0]],
@@ -831,6 +833,15 @@ describe("RuminatorProcess", () => {
         related_semantic_node_ids: [sharedNodeId],
         provenance: { kind: "episodes", episode_ids: [firstEpisodeId] },
         resolution_evidence_stream_entry_ids: [duplicateStreamId],
+      });
+      expect(tracer.events).toContainEqual({
+        event: "open_question_merged",
+        data: expect.objectContaining({
+          kept_oq_id: older.id,
+          deleted_oq_id: newer.id,
+          similarity_score: 1,
+          evidence_folded_count: 2,
+        }),
       });
     } finally {
       await harness.cleanup();

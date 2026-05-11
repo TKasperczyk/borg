@@ -43,6 +43,7 @@ export type TurnTraceEventName =
   | "closure_loop_classifier_payload_normalized"
   | "open_question_resolution_degraded"
   | "open_question_resolution_attempt"
+  | "open_question_merged"
   | "open_question_stale_dismissed"
   | "reflector_intent_update_suppressed"
   | "offline_process_completed"
