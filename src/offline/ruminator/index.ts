@@ -271,6 +271,10 @@ function mergeRetrievedEpisodes(episodeSets: readonly (readonly RetrievedEpisode
 }
 
 function shareOpenQuestionEntityScope(left: OpenQuestion, right: OpenQuestion): boolean {
+  if (left.related_semantic_node_ids.length === 0 || right.related_semantic_node_ids.length === 0) {
+    return true;
+  }
+
   const rightNodeIds = new Set(right.related_semantic_node_ids);
 
   return left.related_semantic_node_ids.some((nodeId) => rightNodeIds.has(nodeId));
@@ -414,7 +418,7 @@ async function planDuplicateMerges(
   );
 
   for (const question of ordered) {
-    if (mergedDuplicateIds.has(question.id) || question.related_semantic_node_ids.length === 0) {
+    if (mergedDuplicateIds.has(question.id)) {
       continue;
     }
 
@@ -786,12 +790,14 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       status: "open",
       limit: maxQuestionsPerRun,
     });
+    const allOpenQuestions = ctx.openQuestionsRepository.list({ status: "open" });
     const duplicateQuestionIds = new Set<OpenQuestion["id"]>();
+    const staleDismissedIds = new Set<OpenQuestion["id"]>();
     let tokensUsed = 0;
     let budgetExhausted = false;
 
     try {
-      const duplicateMerges = await planDuplicateMerges(ctx, questions);
+      const duplicateMerges = await planDuplicateMerges(ctx, allOpenQuestions);
       items.push(...duplicateMerges);
 
       for (const item of duplicateMerges) {
@@ -803,12 +809,34 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       errors.push(offlineProcessError(this.name, error));
     }
 
+    const llmWindowIds = new Set(questions.map((question) => question.id));
+
+    try {
+      for (const question of allOpenQuestions) {
+        if (duplicateQuestionIds.has(question.id) || llmWindowIds.has(question.id)) {
+          continue;
+        }
+
+        if (await shouldDismissStaleNoTraction(ctx, question)) {
+          items.push({
+            action: "abandon",
+            question_id: question.id,
+            previous: question,
+            reason: "stale_no_traction",
+          });
+          staleDismissedIds.add(question.id);
+        }
+      }
+    } catch (error) {
+      errors.push(offlineProcessError(this.name, error));
+    }
+
     try {
       const budgeted = await withBudget(this.name, budget, async ({ wrapClient }) => {
         const llmClient = wrapClient(ctx.llm.background);
 
         for (const question of questions) {
-          if (duplicateQuestionIds.has(question.id)) {
+          if (duplicateQuestionIds.has(question.id) || staleDismissedIds.has(question.id)) {
             continue;
           }
 

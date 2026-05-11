@@ -848,6 +848,122 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("merges near-duplicate open questions when both lack semantic-node handles", async () => {
+    const tracer = new CaptureTracer();
+    const firstQuestion = "Should the trip prep checklist stay open?";
+    const secondQuestion = "Is the trip prep checklist still relevant?";
+    const harness = await createOfflineTestHarness({
+      tracer,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [firstQuestion, [1, 0, 0, 0]],
+          [secondQuestion, [1, 0, 0, 0]],
+        ]),
+      ),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            duplicateSimilarityThreshold: 0.9,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const older = harness.openQuestionsRepository.add({
+        question: firstQuestion,
+        urgency: 0.4,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 1_000,
+        last_touched: 1_000,
+      });
+      const newer = harness.openQuestionsRepository.add({
+        question: secondQuestion,
+        urgency: 0.8,
+        source: "reflection",
+        provenance: { kind: "manual" },
+        created_at: 2_000,
+        last_touched: 2_000,
+      });
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "merge_duplicate",
+            primary_question_id: older.id,
+            duplicate_question_id: newer.id,
+          }),
+        ]),
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("dismisses stale OQs outside the urgency-bounded LLM window", async () => {
+    const tracer = new CaptureTracer();
+    const harness = await createOfflineTestHarness({
+      tracer,
+      configOverrides: {
+        offline: {
+          ruminator: {
+            staleNoTractionTicks: 2,
+            maxQuestionsPerRun: 1,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const highUrgency = harness.openQuestionsRepository.add({
+        question: "High-urgency recent OQ that should not be dismissed?",
+        urgency: 0.95,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      const lowUrgencyStale = harness.openQuestionsRepository.add({
+        question: "Low-urgency stale OQ outside the LLM window?",
+        urgency: 0.1,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      harness.openQuestionsRepository.markRuminated(lowUrgencyStale.id, 2);
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "abandon",
+            question_id: lowUrgencyStale.id,
+            reason: "stale_no_traction",
+          }),
+        ]),
+      );
+      expect(
+        plan.items.some(
+          (item) => item.action === "abandon" && item.question_id === highUrgency.id,
+        ),
+      ).toBe(false);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("resolves global open questions only from public or self evidence", async () => {
     const llm = new FakeLLMClient({
       responses: [
