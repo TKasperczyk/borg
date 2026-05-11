@@ -271,7 +271,6 @@ const configBaseSchema = z.object({
           stalenessTicks: z.number().int().positive().nullable().default(null),
           staleNoTractionTicks: z.number().int().positive().default(4),
           budget: z.number().int().positive().default(40_000),
-          perQuestionBudget: z.number().int().positive().default(8_000),
         })
         .prefault({}),
       selfNarrator: z
@@ -972,11 +971,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "ruminator", "budget"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_BUDGET"),
-  );
-  setConfigOverride(
-    overrides,
-    ["offline", "ruminator", "perQuestionBudget"],
-    readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_PER_QUESTION_BUDGET"),
   );
   setConfigOverride(
     overrides,
