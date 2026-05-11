@@ -6,9 +6,9 @@
 TypeScript library (plus thin CLI and optional headless daemon) that provides
 primitives for agent memory, cognition, and evolving identity.
 
-Read [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full design. It is the
-authoritative reference for the current memory bands, cognitive loop, offline
-processes, and retrieval pipeline.
+The code is the authoritative reference for the memory bands, cognitive loop,
+offline processes, and retrieval pipeline. Start from `src/borg/facade.ts`
+and follow the imports.
 
 ## Stack
 
@@ -200,7 +200,7 @@ sessions, not part of the distributed CLI surface.
 
 ## When implementing a sprint
 
-1. Read `ARCHITECTURE.md` for what the sprint is building.
+1. Read the relevant module to understand its current shape before changing it.
 2. Before writing a new utility, search for an existing one.
 3. Match the existing patterns (naming, error handling, file layout).
 4. Add tests for new behavior.

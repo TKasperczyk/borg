@@ -6,13 +6,11 @@ A TypeScript library, CLI, and optional headless daemon for building agents
 with persistent memory, explicit cognition, and identity that evolves over
 time.
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the design document.
-
 ## Status
 
-Feature-complete against the design in `ARCHITECTURE.md` (18 sprints delivered).
-Not yet used in anger. No stability guarantees; schemas, storage layout, and
-public API may still shift as the library gets exercised.
+Under active development. Not yet used in anger. No stability guarantees;
+schemas, storage layout, and public API may still shift as the library gets
+exercised.
 
 ## What it does
 
@@ -44,9 +42,9 @@ public API may still shift as the library gets exercised.
 - **Bayesian procedural memory.** Skills are Beta(α, β) posteriors; Thompson
   sampling selects an approach; outcomes update the posterior atomically.
 
-Currently 778 tests across 120 files, typecheck clean. The being targets
-Opus 4.7; the substrate is not designed to be portable across arbitrary
-LLMs (see ARCHITECTURE.md Part 7 for why).
+The being targets Opus 4.7. The substrate co-produces identity with the
+model, so the design accepts drift when migrating to a successor Opus
+rather than aiming for model-swap conformance.
 
 ## Install
 

@@ -1,6 +1,6 @@
 // Borg -- public library entry point.
-// See ARCHITECTURE.md for the design. This file re-exports the stable
-// library surface; implementation modules stay behind internal paths.
+// Re-exports the stable library surface; implementation modules stay
+// behind internal paths.
 
 export const VERSION = "0.1.0";
 
