@@ -104,6 +104,36 @@ describe("semantic extractor", () => {
     }
   });
 
+  it("includes event-vs-state guidance in the extraction prompt", async () => {
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Madrid travel note", {
+      narrative: "The user described arrival and return dates for a Madrid visit.",
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [],
+          edges: [],
+        }),
+      ],
+    });
+    const extractor = new SemanticExtractor({
+      nodeRepository: {} as SemanticNodeRepository,
+      edgeRepository: {} as SemanticEdgeRepository,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    await extractor.extractFromEpisodes([episode]);
+
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(prompt).toContain("Distinguish temporally bounded events");
+    expect(prompt).toContain("do not collapse event-scoped language");
+    expect(prompt).toContain("prefer the narrower event-scoped interpretation");
+  });
+
   it("extracts nodes and edges, rejects hallucinated refs, and merges duplicates", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
