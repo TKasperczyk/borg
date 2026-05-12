@@ -28,9 +28,11 @@ import { estimatePromptTokens } from "../src/util/token-estimate.js";
 import {
   createSemanticNodeId,
   parseSessionId,
+  type EntityId,
   type GoalId,
   type SessionId,
 } from "../src/util/ids.js";
+import type { EntityRepository, EntityResolveOptions } from "../src/memory/commitments/index.js";
 import {
   ABORTED_TURN_EVENT,
   getStreamDirectory,
@@ -68,6 +70,12 @@ export type AuditTranscriptEntry = {
   entry: StreamEntry;
   quarantined: boolean;
   quarantineReason: string | null;
+};
+
+export type ChatWithBorgOptions = {
+  sessionId?: string;
+  audience?: string;
+  senderEntityId?: EntityId;
 };
 
 export type SeededGoalProgressEvidence = {
@@ -754,10 +762,7 @@ export class BorgTransport {
     }
   }
 
-  async chat(
-    message: string,
-    options: { sessionId?: string; audience?: string } = {},
-  ): Promise<ChatWithBorgResult> {
+  async chat(message: string, options: ChatWithBorgOptions = {}): Promise<ChatWithBorgResult> {
     if (this.borg === undefined) {
       throw new Error("BorgTransport.open() must be called before chat()");
     }
@@ -770,6 +775,7 @@ export class BorgTransport {
       userMessage: message,
       stakes: DEFAULT_BORG_STAKES,
       ...(options.audience === undefined ? {} : { audience: options.audience }),
+      ...(options.senderEntityId === undefined ? {} : { senderEntityId: options.senderEntityId }),
       ...(sessionId === undefined ? {} : { sessionId }),
     });
     const events = readTraceEvents(this.tracePath);
@@ -816,6 +822,16 @@ export class BorgTransport {
     }
 
     return this.borg;
+  }
+
+  resolveEntity(name: string, options: EntityResolveOptions = {}): EntityId {
+    const borg = this.getBorg() as unknown as {
+      deps: {
+        entityRepository: EntityRepository;
+      };
+    };
+
+    return borg.deps.entityRepository.resolve(name, options);
   }
 
   streamTail(limit: number) {

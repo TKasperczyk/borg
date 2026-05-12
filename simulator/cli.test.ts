@@ -54,6 +54,23 @@ describe("simulator CLI", () => {
     expect(options.noPayloads).toBe(true);
   });
 
+  it("parses comma-separated multi-persona keys", () => {
+    const options = parseSimulatorCliOptions([
+      "node",
+      "simulate",
+      "--personas",
+      "alice-trip,ben-trip",
+    ]);
+
+    expect(options.personas).toBe("alice-trip,ben-trip");
+  });
+
+  it("parses built-in simulator scenarios", () => {
+    const options = parseSimulatorCliOptions(["node", "simulate", "--scenario", "trip-planning"]);
+
+    expect(options.scenario).toBe("trip-planning");
+  });
+
   it("preserves parsing without a -- separator", () => {
     const options = parseSimulatorCliOptions(["node", "cli.ts", "--mock", "--turns", "1"]);
 
