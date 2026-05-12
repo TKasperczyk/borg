@@ -250,6 +250,7 @@ describe("EvidenceLedgerBuilder", () => {
       session_id: createSessionId(),
       compressed: false,
       sender_entity_id: null,
+      reply_target_entity_id: null,
     };
     const priorEpisodeId = createEpisodeId();
     const action = makeAction(userEntry.id);
@@ -446,7 +447,93 @@ describe("EvidenceLedgerBuilder", () => {
     )?.entries[0];
 
     expect(currentUserEntry?.text).toBe("Atlas needs a rollback plan.");
-    expect(currentUserEntry?.state_metadata).toEqual({ sender_display_name: "Alice" });
+    expect(currentUserEntry?.state_metadata).toEqual({
+      sender_entity_id: senderEntityId,
+      sender_display_name: "Alice",
+    });
+  });
+
+  it("surfaces agent reply targets in current-session transcript metadata", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const aliceEntityId = createEntityId();
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    await writer.append({
+      kind: "user_msg",
+      content: "Can someone pick the train dates?",
+      sender_entity_id: aliceEntityId,
+      audience: "Planning Channel",
+    });
+    await writer.append({
+      kind: "agent_msg",
+      content: "Alice, can you own the train dates?",
+      audience: "Planning Channel",
+      reply_target_entity_id: aliceEntityId,
+    });
+    await writer.append({
+      kind: "agent_msg",
+      content: "For the channel, keep budget and rest days together.",
+      audience: "Planning Channel",
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      entityRepository: {
+        get: (id: EntityId) =>
+          id === aliceEntityId
+            ? {
+                id: aliceEntityId,
+                canonical_name: "Alice",
+                aliases: [],
+                kind: "person",
+                created_at: NOW_MS,
+              }
+            : null,
+      },
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-reply-target",
+      audienceEntityId: null,
+      currentUserMessage: "Next message",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const transcriptEntries =
+      ledger.sections.find((section) => section.id === "current_session_transcript")?.entries ?? [];
+
+    expect(transcriptEntries.map((entry) => entry.state_metadata)).toEqual([
+      {
+        sender_entity_id: aliceEntityId,
+        sender_display_name: "Alice",
+      },
+      {
+        reply_target_kind: "entity",
+        reply_target_entity_id: aliceEntityId,
+        reply_target_display_name: "Alice",
+      },
+      {
+        reply_target_kind: "audience",
+        reply_target_label: "Planning Channel",
+      },
+    ]);
   });
 
   it("keeps current user message rendering unchanged when sender is omitted", async () => {
@@ -1295,6 +1382,7 @@ describe("EvidenceLedgerBuilder", () => {
       session_id: createSessionId(),
       compressed: false,
       sender_entity_id: null,
+      reply_target_entity_id: null,
     };
     const unresolvedEntryId = createStreamEntryId();
     const builder = new EvidenceLedgerBuilder({

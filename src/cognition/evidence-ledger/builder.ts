@@ -231,6 +231,48 @@ function streamPersistenceClass(entry: Pick<StreamEntry, "persistence_class">) {
     : { persistence_class: entry.persistence_class };
 }
 
+function speakerStateMetadata(
+  entityRepository: SpeakerEntityRepository | undefined,
+  senderEntityId: EntityId | null | undefined,
+): Record<string, unknown> | undefined {
+  if (senderEntityId === null || senderEntityId === undefined) {
+    return undefined;
+  }
+
+  const displayName = resolveSpeakerDisplayName(entityRepository, senderEntityId);
+
+  return {
+    sender_entity_id: senderEntityId,
+    ...(displayName === null ? {} : { sender_display_name: displayName }),
+  };
+}
+
+function replyTargetStateMetadata(
+  entry: TranscriptStreamEntry,
+  entityRepository: SpeakerEntityRepository | undefined,
+): Record<string, unknown> | undefined {
+  if (entry.kind !== "agent_msg") {
+    return speakerStateMetadata(entityRepository, entry.sender_entity_id);
+  }
+
+  const replyTargetEntityId = entry.reply_target_entity_id ?? null;
+
+  if (replyTargetEntityId === null) {
+    return {
+      reply_target_kind: "audience",
+      reply_target_label: entry.audience ?? "current audience",
+    };
+  }
+
+  const displayName = resolveSpeakerDisplayName(entityRepository, replyTargetEntityId);
+
+  return {
+    reply_target_kind: "entity",
+    reply_target_entity_id: replyTargetEntityId,
+    ...(displayName === null ? {} : { reply_target_display_name: displayName }),
+  };
+}
+
 function rawStreamActor(
   streamEntryIds: readonly StreamEntryId[] | readonly string[] | undefined,
   resolver: ScopeResolver,
@@ -265,6 +307,7 @@ function estimateTranscriptEntryTokens(entry: TranscriptStreamEntry): number {
 function transcriptRawEntry(
   entry: TranscriptStreamEntry,
   resolver: ScopeResolver,
+  entityRepository: SpeakerEntityRepository | undefined,
 ): EvidenceLedgerEntry {
   return {
     id: `current_session_stream:${entry.id}`,
@@ -275,6 +318,7 @@ function transcriptRawEntry(
     text: stringifyPromptContent(entry.content),
     stream_index: resolver.streamOrderById.get(entry.id),
     state: transcriptState(entry),
+    state_metadata: replyTargetStateMetadata(entry, entityRepository),
     taint: "none",
     ...streamPersistenceClass(entry),
   };
@@ -372,12 +416,15 @@ function compactTranscriptEntries(input: {
   budget: number;
   currentUserEntryId?: string;
   resolver: ScopeResolver;
+  entityRepository?: SpeakerEntityRepository;
 }): TranscriptCompactionResult {
   const transcriptTokens = estimateTranscriptTokens(input.entries);
 
   if (transcriptTokens <= input.budget) {
     return {
-      entries: input.entries.map((entry) => transcriptRawEntry(entry, input.resolver)),
+      entries: input.entries.map((entry) =>
+        transcriptRawEntry(entry, input.resolver, input.entityRepository),
+      ),
       rawStreamIds: new Set(input.entries.map((entry) => entry.id)),
       compacted: false,
       originalTokenEstimate: transcriptTokens,
@@ -406,7 +453,7 @@ function compactTranscriptEntries(input: {
   for (const entry of input.entries) {
     if (shouldKeepRawCompactedTranscriptEntry(entry, tailIds, input.currentUserEntryId)) {
       flushCompactedRun();
-      renderedEntries.push(transcriptRawEntry(entry, input.resolver));
+      renderedEntries.push(transcriptRawEntry(entry, input.resolver, input.entityRepository));
       rawStreamIds.add(entry.id);
       if (entry.kind === "user_msg") {
         rawPreservedUserEntryCount += 1;
@@ -1200,12 +1247,7 @@ function currentUserMessageStateMetadata(
   input: EvidenceLedgerBuildInput,
   entityRepository: SpeakerEntityRepository | undefined,
 ): Record<string, unknown> | undefined {
-  const displayName = resolveSpeakerDisplayName(
-    entityRepository,
-    input.currentUserEntry?.sender_entity_id,
-  );
-
-  return displayName === null ? undefined : { sender_display_name: displayName };
+  return speakerStateMetadata(entityRepository, input.currentUserEntry?.sender_entity_id);
 }
 
 export function summarizeEvidenceLedgerTrace(ledger: EvidenceLedger): EvidenceLedgerTraceSummary {
@@ -1281,6 +1323,7 @@ export class EvidenceLedgerBuilder {
       budget: this.options.currentSessionTranscriptTokenBudget,
       currentUserEntryId: input.currentUserEntry?.id,
       resolver,
+      entityRepository: this.options.entityRepository,
     });
     const sections = createSectionBuckets();
 
