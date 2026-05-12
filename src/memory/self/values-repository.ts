@@ -300,8 +300,33 @@ export class ValuesRepository {
     }
   }
 
-  remove(valueId: ValueId): boolean {
-    const result = this.db.prepare('DELETE FROM "values" WHERE id = ?').run(valueId);
+  remove(valueId: ValueId, options: IdentityCasOptions = {}): boolean {
+    const current = this.get(valueId);
+
+    if (current === null) {
+      if (options.expectedVersion !== undefined) {
+        assertIdentityCasUpdated({
+          result: { changes: 0 },
+          recordType: "value",
+          recordId: valueId,
+          expectedVersion: options.expectedVersion,
+        });
+      }
+
+      return false;
+    }
+
+    const expectedVersion = expectedRecordVersion(current, options);
+    const result = this.db
+      .prepare('DELETE FROM "values" WHERE id = ? AND record_version = ?')
+      .run(valueId, expectedVersion);
+    assertIdentityCasUpdated({
+      result,
+      recordType: "value",
+      recordId: valueId,
+      expectedVersion,
+    });
+
     return result.changes > 0;
   }
 

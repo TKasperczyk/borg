@@ -158,7 +158,7 @@ export class AutobiographicalRepository {
       last_updated?: number;
     },
     options: IdentityCasOptions & {
-      expectedOpenPeriod?: { id: AutobiographicalPeriodId; record_version: number } | null;
+      expectedOpenPeriod?: { id: AutobiographicalPeriodId; expectedVersion: number } | null;
     } = {},
   ): AutobiographicalPeriod {
     if (input.provenance === undefined) {
@@ -175,7 +175,7 @@ export class AutobiographicalRepository {
     const expectedOpenPeriod =
       options.expectedOpenPeriod ??
       (openPeriod !== null && openPeriod.id !== input.id
-        ? { id: openPeriod.id, record_version: expectedRecordVersion(openPeriod) }
+        ? { id: openPeriod.id, expectedVersion: expectedRecordVersion(openPeriod) }
         : null);
     const nowMs = this.clock.now();
     const period = autobiographicalPeriodSchema.parse({
@@ -210,13 +210,13 @@ export class AutobiographicalRepository {
             period.start_ts,
             period.last_updated,
             expectedOpenPeriod.id,
-            expectedOpenPeriod.record_version,
+            expectedOpenPeriod.expectedVersion,
           );
         assertIdentityCasUpdated({
           result: closeResult,
           recordType: "autobiographical_period",
           recordId: expectedOpenPeriod.id,
-          expectedVersion: expectedOpenPeriod.record_version,
+          expectedVersion: expectedOpenPeriod.expectedVersion,
         });
       }
 
@@ -414,12 +414,15 @@ export class AutobiographicalRepository {
         last_updated: this.clock.now(),
       },
       {
-        expectedVersion: existing.record_version,
+        expectedVersion: expectedRecordVersion(existing),
       },
     );
   }
 
   deletePeriod(id: AutobiographicalPeriodId): boolean {
+    // Current callers are offline audit reversers for periods created by the
+    // audited action. AuditLog.revert runs reversers inside BEGIN IMMEDIATE, so
+    // no concurrent writer can interleave with this cleanup delete.
     const result = this.db.prepare("DELETE FROM autobiographical_periods WHERE id = ?").run(id);
     return result.changes > 0;
   }

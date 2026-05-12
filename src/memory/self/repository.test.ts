@@ -6,8 +6,9 @@ import { describe, expect, it } from "vitest";
 
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
-import { ProvenanceError } from "../../util/errors.js";
+import { IdentityCasMismatchError, ProvenanceError } from "../../util/errors.js";
 import { createEntityId, createStreamEntryId } from "../../util/ids.js";
+import { expectedRecordVersion } from "../common/cas.js";
 import { selfMigrations } from "./migrations.js";
 import { GoalsRepository, TraitsRepository, ValuesRepository } from "./repository.js";
 
@@ -49,6 +50,82 @@ describe("self repositories", () => {
 
       expect(values.remove(value.id)).toBe(true);
       expect(values.list()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("CAS-protects value, goal, and trait removals", () => {
+    const db = openDatabase(":memory:", {
+      migrations: [...selfMigrations],
+    });
+    const values = new ValuesRepository({
+      db,
+      clock: new FixedClock(100),
+    });
+    const goals = new GoalsRepository({
+      db,
+      clock: new FixedClock(100),
+    });
+    const traits = new TraitsRepository({
+      db,
+      clock: new FixedClock(100),
+    });
+
+    try {
+      const value = values.add({
+        label: "stability",
+        description: "Keep state changes explicit.",
+        priority: 8,
+        provenance: manualProvenance,
+      });
+      values.reinforce(value.id, manualProvenance, 200, {
+        expectedVersion: expectedRecordVersion(value),
+      });
+
+      expect(() =>
+        values.remove(value.id, {
+          expectedVersion: expectedRecordVersion(value),
+        }),
+      ).toThrow(IdentityCasMismatchError);
+      expect(values.get(value.id)).not.toBeNull();
+
+      const goal = goals.add({
+        description: "Guard deletes with CAS",
+        priority: 5,
+        provenance: manualProvenance,
+      });
+      goals.updateProgress(goal.id, "Concurrent progress.", manualProvenance, {
+        expectedVersion: expectedRecordVersion(goal),
+      });
+
+      expect(() =>
+        goals.remove(goal.id, {
+          expectedVersion: expectedRecordVersion(goal),
+        }),
+      ).toThrow(IdentityCasMismatchError);
+      expect(goals.get(goal.id)).not.toBeNull();
+
+      const trait = traits.reinforce({
+        label: "careful",
+        delta: 0.4,
+        provenance: manualProvenance,
+        timestamp: 100,
+      });
+      traits.reinforce({
+        label: trait.label,
+        delta: 0.1,
+        provenance: manualProvenance,
+        timestamp: 200,
+        expectedVersion: expectedRecordVersion(trait),
+      });
+
+      expect(() =>
+        traits.remove(trait.id, {
+          expectedVersion: expectedRecordVersion(trait),
+        }),
+      ).toThrow(IdentityCasMismatchError);
+      expect(traits.get(trait.id)).not.toBeNull();
     } finally {
       db.close();
     }

@@ -4,6 +4,7 @@ import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { IdentityCasMismatchError } from "../../util/errors.js";
 import { createEntityId, createEpisodeId, createStreamEntryId } from "../../util/ids.js";
+import { expectedRecordVersion } from "../common/cas.js";
 import { commitmentMigrations, CommitmentRepository } from "../commitments/index.js";
 import {
   AutobiographicalRepository,
@@ -114,11 +115,11 @@ describe("identity service", () => {
         },
         provenance,
         {
-          expectedVersion: firstRead.record_version,
+          expectedVersion: expectedRecordVersion(firstRead),
         },
       );
 
-      expect(firstUpdate.record_version).toBe((firstRead.record_version ?? 1) + 1);
+      expect(firstUpdate.record_version).toBe(expectedRecordVersion(firstRead) + 1);
 
       let mismatch: unknown;
 
@@ -130,7 +131,7 @@ describe("identity service", () => {
           },
           provenance,
           {
-            expectedVersion: secondRead.record_version,
+            expectedVersion: expectedRecordVersion(secondRead),
           },
         );
       } catch (error) {
@@ -143,7 +144,7 @@ describe("identity service", () => {
         code: "IDENTITY_CAS_MISMATCH",
         recordType: "value",
         recordId: value.id,
-        expectedVersion: secondRead.record_version,
+        expectedVersion: expectedRecordVersion(secondRead),
       });
       expect(harness.valuesRepository.get(value.id)?.description).toBe(
         "Prefer grounded claims with source checks.",

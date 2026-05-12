@@ -321,6 +321,9 @@ export class GrowthMarkersRepository {
   }
 
   delete(id: GrowthMarkerId): boolean {
+    // Current callers are offline audit reversers for markers created by the
+    // audited action. AuditLog.revert runs reversers inside BEGIN IMMEDIATE, so
+    // no concurrent writer can interleave with this cleanup delete.
     const result = this.db.prepare("DELETE FROM growth_markers WHERE id = ?").run(id);
     return result.changes > 0;
   }

@@ -65,6 +65,27 @@ export class TraitsRepository {
     return this.options.identityEventRepository;
   }
 
+  private runTraitWrite<T>(callback: () => T): T {
+    if (this.db.raw.inTransaction) {
+      return callback();
+    }
+
+    this.db.exec("BEGIN IMMEDIATE");
+
+    try {
+      const result = callback();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the original failure.
+      }
+      throw error;
+    }
+  }
+
   private getById(traitId: TraitId): Record<string, unknown> | undefined {
     return this.db
       .prepare(
@@ -473,10 +494,39 @@ export class TraitsRepository {
   }
 
   cull(threshold: number): number {
-    const result = this.db
-      .prepare("DELETE FROM traits WHERE strength < ?")
-      .run(clamp(threshold, 0, 1));
-    return result.changes;
+    const parsedThreshold = clamp(threshold, 0, 1);
+    const rows = this.db
+      .prepare(
+        `
+          SELECT id, label, strength, last_reinforced, last_decayed, provenance_kind,
+                 provenance_episode_ids, provenance_process, state, established_at,
+                 record_version, confidence, last_tested_at, last_contradicted_at,
+                 support_count, contradiction_count, evidence_episode_ids
+          FROM traits
+          WHERE strength < ?
+        `,
+      )
+      .all(parsedThreshold) as Record<string, unknown>[];
+
+    return this.runTraitWrite(() => {
+      const remove = this.db.prepare("DELETE FROM traits WHERE id = ? AND record_version = ?");
+      let count = 0;
+
+      for (const row of rows) {
+        const current = mapTraitRow(row);
+        const expectedVersion = expectedRecordVersion(current);
+        const result = remove.run(current.id, expectedVersion);
+        assertIdentityCasUpdated({
+          result,
+          recordType: "trait",
+          recordId: current.id,
+          expectedVersion,
+        });
+        count += result.changes;
+      }
+
+      return count;
+    });
   }
 
   /**
@@ -571,8 +621,33 @@ export class TraitsRepository {
     });
   }
 
-  remove(traitId: TraitId): boolean {
-    const result = this.db.prepare("DELETE FROM traits WHERE id = ?").run(traitId);
+  remove(traitId: TraitId, options: IdentityCasOptions = {}): boolean {
+    const current = this.get(traitId);
+
+    if (current === null) {
+      if (options.expectedVersion !== undefined) {
+        assertIdentityCasUpdated({
+          result: { changes: 0 },
+          recordType: "trait",
+          recordId: traitId,
+          expectedVersion: options.expectedVersion,
+        });
+      }
+
+      return false;
+    }
+
+    const expectedVersion = expectedRecordVersion(current, options);
+    const result = this.db
+      .prepare("DELETE FROM traits WHERE id = ? AND record_version = ?")
+      .run(traitId, expectedVersion);
+    assertIdentityCasUpdated({
+      result,
+      recordType: "trait",
+      recordId: traitId,
+      expectedVersion,
+    });
+
     return result.changes > 0;
   }
 

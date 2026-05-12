@@ -99,6 +99,8 @@ export class TurnLifecycleTracker {
       }
     }
 
+    // Abort cleanup only touches goals created during the turn being rolled
+    // back; no committed caller has observed a stable version to race here.
     for (const goalId of this.createdGoalIds) {
       try {
         this.options.goalsRepository.remove(goalId);

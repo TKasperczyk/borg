@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../cognition/index.js";
 import { computeWeights } from "../../cognition/attention/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { expectedRecordVersion } from "../../memory/common/cas.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
+import { IdentityCasMismatchError } from "../../util/errors.js";
 import {
   createActionId,
   createEpisodeId,
@@ -407,6 +409,55 @@ describe("RuminatorProcess", () => {
           }),
         ]),
       );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("rejects stale apply plans when the saved open question snapshot lacks a version", async () => {
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(40 * DAY_MS),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const question = harness.openQuestionsRepository.add({
+        question: "Which unversioned rumination plan is stale?",
+        urgency: 0.4,
+        source: "reflection",
+        created_at: 0,
+        last_touched: 0,
+        provenance: { kind: "manual" },
+      });
+      const { record_version: _recordVersion, ...previousWithoutVersion } = question;
+
+      harness.openQuestionsRepository.bumpUrgency(question.id, 0.1, {
+        expectedVersion: expectedRecordVersion(question),
+      });
+
+      await expect(
+        process.apply(harness.createContext(), {
+          process: "ruminator",
+          items: [
+            {
+              action: "mark_unresolved",
+              question_id: question.id,
+              previous: previousWithoutVersion,
+              next_unresolved_rumination_ticks: 1,
+            },
+          ],
+          errors: [],
+          tokens_used: 0,
+          budget_exhausted: false,
+        }),
+      ).rejects.toThrow(IdentityCasMismatchError);
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        unresolved_rumination_ticks: 0,
+      });
     } finally {
       await harness.cleanup();
     }
@@ -876,9 +927,7 @@ describe("RuminatorProcess", () => {
         ]),
       );
       expect(
-        plan.items.some(
-          (item) => item.action === "abandon" && item.question_id === primary.id,
-        ),
+        plan.items.some((item) => item.action === "abandon" && item.question_id === primary.id),
       ).toBe(false);
     } finally {
       await harness.cleanup();
@@ -931,9 +980,7 @@ describe("RuminatorProcess", () => {
         ]),
       );
       expect(
-        plan.items.some(
-          (item) => item.action === "abandon" && item.question_id === highUrgency.id,
-        ),
+        plan.items.some((item) => item.action === "abandon" && item.question_id === highUrgency.id),
       ).toBe(false);
     } finally {
       await harness.cleanup();

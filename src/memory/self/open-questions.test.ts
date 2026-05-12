@@ -15,6 +15,7 @@ import {
   createSemanticNodeId,
   createStreamEntryId,
 } from "../../util/ids.js";
+import { expectedRecordVersion } from "../common/cas.js";
 
 import { selfMigrations } from "./migrations.js";
 import { OpenQuestionsRepository, createOpenQuestionsTableSchema } from "./open-questions.js";
@@ -154,7 +155,7 @@ describe("OpenQuestionsRepository", () => {
         source: "ruminator",
         provenance: manualProvenance,
       });
-      const staleVersion = question.record_version;
+      const staleVersion = expectedRecordVersion(question);
       const concurrent = repository.update(
         question.id,
         {
@@ -196,7 +197,7 @@ describe("OpenQuestionsRepository", () => {
         source: "ruminator",
         provenance: manualProvenance,
       });
-      const staleVersion = question.record_version;
+      const staleVersion = expectedRecordVersion(question);
       const concurrent = repository.bumpUrgency(question.id, 0.1, {
         expectedVersion: staleVersion,
       });

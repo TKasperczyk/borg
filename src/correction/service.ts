@@ -4,6 +4,7 @@ import { correctionTargetIdKindDescriptors, type EntityId } from "../util/ids.js
 import { SystemClock, type Clock } from "../util/clock.js";
 import type { Config } from "../config/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
+import { expectedRecordVersion } from "../memory/common/cas.js";
 import {
   parseReviewProvenance,
   provenanceSchema,
@@ -429,7 +430,9 @@ export class CorrectionService {
           });
         }
 
-        this.options.valuesRepository.remove(target.id);
+        this.options.valuesRepository.remove(target.id, {
+          expectedVersion: expectedRecordVersion(current),
+        });
         this.options.identityEventRepository.record({
           record_type: "value",
           record_id: target.id,
@@ -450,7 +453,9 @@ export class CorrectionService {
           });
         }
 
-        this.options.goalsRepository.remove(target.id);
+        this.options.goalsRepository.remove(target.id, {
+          expectedVersion: expectedRecordVersion(current),
+        });
         this.options.identityEventRepository.record({
           record_type: "goal",
           record_id: target.id,
@@ -471,7 +476,9 @@ export class CorrectionService {
           });
         }
 
-        this.options.traitsRepository.remove(target.id);
+        this.options.traitsRepository.remove(target.id, {
+          expectedVersion: expectedRecordVersion(current),
+        });
         this.options.identityEventRepository.record({
           record_type: "trait",
           record_id: target.id,

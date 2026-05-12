@@ -518,12 +518,41 @@ export class GoalsRepository {
     return parsed;
   }
 
-  remove(goalId: GoalId): boolean {
-    const reparent = this.db
-      .prepare("UPDATE goals SET parent_goal_id = NULL WHERE parent_goal_id = ?")
-      .run(goalId);
-    void reparent;
-    const result = this.db.prepare("DELETE FROM goals WHERE id = ?").run(goalId);
-    return result.changes > 0;
+  remove(goalId: GoalId, options: IdentityCasOptions = {}): boolean {
+    const current = this.get(goalId);
+
+    if (current === null) {
+      if (options.expectedVersion !== undefined) {
+        assertIdentityCasUpdated({
+          result: { changes: 0 },
+          recordType: "goal",
+          recordId: goalId,
+          expectedVersion: options.expectedVersion,
+        });
+      }
+
+      return false;
+    }
+
+    const expectedVersion = expectedRecordVersion(current, options);
+
+    return this.runGoalWrite(() => {
+      const result = this.db
+        .prepare("DELETE FROM goals WHERE id = ? AND record_version = ?")
+        .run(goalId, expectedVersion);
+      assertIdentityCasUpdated({
+        result,
+        recordType: "goal",
+        recordId: goalId,
+        expectedVersion,
+      });
+
+      const reparent = this.db
+        .prepare("UPDATE goals SET parent_goal_id = NULL WHERE parent_goal_id = ?")
+        .run(goalId);
+      void reparent;
+
+      return result.changes > 0;
+    });
   }
 }

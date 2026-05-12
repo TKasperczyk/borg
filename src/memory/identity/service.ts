@@ -167,11 +167,6 @@ export class IdentityService {
     this.guard = options.guard ?? new IdentityGuard();
   }
 
-  private runCasCheckedWrite<T>(operation: () => T): T {
-    // Patches are semantic, so callers must recompute after a CAS conflict.
-    return operation();
-  }
-
   listEvents(
     ...args: Parameters<IdentityEventRepository["list"]>
   ): ReturnType<IdentityEventRepository["list"]> {
@@ -199,35 +194,33 @@ export class IdentityService {
     timestamp?: number,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<ValueRecord> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.valuesRepository.get(valueId);
+    const current = this.options.valuesRepository.get(valueId);
 
-      if (current === null) {
-        throw new StorageError(`Unknown value id: ${valueId}`, {
-          code: "VALUE_NOT_FOUND",
-        });
-      }
-
-      const decision = this.guard.evaluateChange({
-        current,
-        provenance,
-        throughReview: options.throughReview,
+    if (current === null) {
+      throw new StorageError(`Unknown value id: ${valueId}`, {
+        code: "VALUE_NOT_FOUND",
       });
+    }
 
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
-
-      return {
-        status: "applied",
-        record: this.options.valuesRepository.reinforce(valueId, provenance, timestamp, {
-          expectedVersion: current.record_version,
-        }),
-      };
+    const decision = this.guard.evaluateChange({
+      current,
+      provenance,
+      throughReview: options.throughReview,
     });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    return {
+      status: "applied",
+      record: this.options.valuesRepository.reinforce(valueId, provenance, timestamp, {
+        expectedVersion: expectedRecordVersion(current),
+      }),
+    };
   }
 
   addGoal(input: Parameters<GoalsRepository["add"]>[0]): GoalRecord {
@@ -263,95 +256,90 @@ export class IdentityService {
   addPeriod(
     input: Parameters<AutobiographicalRepository["upsertPeriod"]>[0],
   ): AutobiographicalPeriod {
-    return this.runCasCheckedWrite(() => {
-      if (input.id !== undefined && this.options.autobiographicalRepository.getPeriod(input.id)) {
-        throw new StorageError(`Autobiographical period already exists: ${input.id}`, {
-          code: "AUTOBIOGRAPHICAL_PERIOD_ALREADY_EXISTS",
-        });
-      }
+    if (input.id !== undefined && this.options.autobiographicalRepository.getPeriod(input.id)) {
+      throw new StorageError(`Autobiographical period already exists: ${input.id}`, {
+        code: "AUTOBIOGRAPHICAL_PERIOD_ALREADY_EXISTS",
+      });
+    }
 
-      const currentOpenPeriod =
-        input.end_ts === undefined || input.end_ts === null
-          ? this.options.autobiographicalRepository.currentPeriod()
-          : null;
-      const periodClosedByCreate =
-        currentOpenPeriod !== null && (input.id === undefined || currentOpenPeriod.id !== input.id)
-          ? currentOpenPeriod
-          : null;
+    const currentOpenPeriod =
+      input.end_ts === undefined || input.end_ts === null
+        ? this.options.autobiographicalRepository.currentPeriod()
+        : null;
+    const periodClosedByCreate =
+      currentOpenPeriod !== null && (input.id === undefined || currentOpenPeriod.id !== input.id)
+        ? currentOpenPeriod
+        : null;
 
-      if (periodClosedByCreate !== null) {
-        const closeDecision = this.guard.evaluateChange({
-          current: autobiographicalPeriodGuardState(),
-          provenance: input.provenance,
-        });
-
-        if (!closeDecision.allowed) {
-          throw new StorageError(
-            "Autobiographical period creation would close an established period and requires review",
-            {
-              code: "IDENTITY_GUARD_CREATE_REJECTED",
-            },
-          );
-        }
-      }
-
-      const decision = this.guard.evaluateChange({
-        current: null,
+    if (periodClosedByCreate !== null) {
+      const closeDecision = this.guard.evaluateChange({
+        current: autobiographicalPeriodGuardState(),
         provenance: input.provenance,
       });
 
-      if (!decision.allowed) {
-        throw new StorageError("Autobiographical period creation unexpectedly required review", {
-          code: "IDENTITY_GUARD_CREATE_REJECTED",
-        });
+      if (!closeDecision.allowed) {
+        throw new StorageError(
+          "Autobiographical period creation would close an established period and requires review",
+          {
+            code: "IDENTITY_GUARD_CREATE_REJECTED",
+          },
+        );
       }
+    }
 
-      return this.options.identityEventRepository.runInTransaction(() => {
-        const period = this.options.autobiographicalRepository.upsertPeriod(input, {
-          expectedOpenPeriod:
-            periodClosedByCreate === null
-              ? null
-              : {
-                  id: periodClosedByCreate.id,
-                  record_version: expectedRecordVersion(periodClosedByCreate),
-                },
-        });
+    const decision = this.guard.evaluateChange({
+      current: null,
+      provenance: input.provenance,
+    });
 
-        if (periodClosedByCreate !== null) {
-          const closedPeriod = this.options.autobiographicalRepository.getPeriod(
-            periodClosedByCreate.id,
-          );
+    if (!decision.allowed) {
+      throw new StorageError("Autobiographical period creation unexpectedly required review", {
+        code: "IDENTITY_GUARD_CREATE_REJECTED",
+      });
+    }
 
-          if (closedPeriod === null) {
-            throw new StorageError(
-              `Unknown autobiographical period id: ${periodClosedByCreate.id}`,
-              {
-                code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
+    return this.options.identityEventRepository.runInTransaction(() => {
+      const period = this.options.autobiographicalRepository.upsertPeriod(input, {
+        expectedOpenPeriod:
+          periodClosedByCreate === null
+            ? null
+            : {
+                id: periodClosedByCreate.id,
+                expectedVersion: expectedRecordVersion(periodClosedByCreate),
               },
-            );
-          }
+      });
 
-          this.options.identityEventRepository.record({
-            record_type: "autobiographical_period",
-            record_id: periodClosedByCreate.id,
-            action: "close",
-            old_value: periodClosedByCreate,
-            new_value: closedPeriod,
-            provenance: input.provenance,
+      if (periodClosedByCreate !== null) {
+        const closedPeriod = this.options.autobiographicalRepository.getPeriod(
+          periodClosedByCreate.id,
+        );
+
+        if (closedPeriod === null) {
+          throw new StorageError(`Unknown autobiographical period id: ${periodClosedByCreate.id}`, {
+            code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
           });
         }
 
         this.options.identityEventRepository.record({
           record_type: "autobiographical_period",
-          record_id: period.id,
-          action: "create",
-          old_value: null,
-          new_value: period,
+          record_id: periodClosedByCreate.id,
+          action: "close",
+          old_value: periodClosedByCreate,
+          new_value: closedPeriod,
           provenance: input.provenance,
         });
+      }
 
-        return period;
+      this.options.identityEventRepository.record({
+        record_type: "autobiographical_period",
+        record_id: period.id,
+        action: "create",
+        old_value: null,
+        new_value: period,
+        provenance: input.provenance,
       });
+
+      return period;
     });
   }
 
@@ -381,38 +369,36 @@ export class IdentityService {
     input: Parameters<TraitsRepository["reinforce"]>[0],
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<TraitRecord> {
-    return this.runCasCheckedWrite(() => {
-      const current =
-        this.options.traitsRepository.list().find((trait) => trait.label === input.label) ?? null;
+    const current =
+      this.options.traitsRepository.list().find((trait) => trait.label === input.label) ?? null;
 
-      if (current === null) {
-        return {
-          status: "applied",
-          record: this.options.traitsRepository.reinforce(input),
-        };
-      }
-
-      const decision = this.guard.evaluateChange({
-        current,
-        provenance: input.provenance,
-        throughReview: options.throughReview,
-      });
-
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
-
+    if (current === null) {
       return {
         status: "applied",
-        record: this.options.traitsRepository.reinforce({
-          ...input,
-          expectedVersion: current.record_version,
-        }),
+        record: this.options.traitsRepository.reinforce(input),
       };
+    }
+
+    const decision = this.guard.evaluateChange({
+      current,
+      provenance: input.provenance,
+      throughReview: options.throughReview,
     });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    return {
+      status: "applied",
+      record: this.options.traitsRepository.reinforce({
+        ...input,
+        expectedVersion: expectedRecordVersion(current),
+      }),
+    };
   }
 
   addGrowthMarker(input: Parameters<GrowthMarkersRepository["add"]>[0]): GrowthMarker {
@@ -503,265 +489,40 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<ValueRecord> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.valuesRepository.get(valueId);
+    const current = this.options.valuesRepository.get(valueId);
 
-      if (current === null) {
-        throw new StorageError(`Unknown value id: ${valueId}`, {
-          code: "VALUE_NOT_FOUND",
-        });
-      }
+    if (current === null) {
+      throw new StorageError(`Unknown value id: ${valueId}`, {
+        code: "VALUE_NOT_FOUND",
+      });
+    }
 
-      const parsedPatch = valuePatchSchema.parse(patch);
+    const parsedPatch = valuePatchSchema.parse(patch);
 
-      if (Object.keys(parsedPatch).length === 0) {
-        return {
-          status: "applied",
-          record: current,
-        };
-      }
+    if (Object.keys(parsedPatch).length === 0) {
+      return {
+        status: "applied",
+        record: current,
+      };
+    }
 
-      const decision = this.guard.evaluateChange({
+    const decision = this.guard.evaluateChange({
+      current,
+      provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
         current,
-        provenance,
-        throughReview: options.throughReview,
-      });
-
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
-
-      return {
-        status: "applied",
-        record: this.options.valuesRepository.update(
-          valueId,
-          {
-            ...parsedPatch,
-            provenance,
-          },
-          provenance,
-          {
-            reason: options.reason,
-            reviewItemId: options.reviewItemId,
-            expectedVersion: current.record_version,
-          },
-        ),
       };
-    });
-  }
+    }
 
-  updateTrait(
-    traitId: TraitRecord["id"],
-    patch: unknown,
-    provenance: Provenance,
-    options: IdentityUpdateOptions = {},
-  ): IdentityUpdateResult<TraitRecord> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.traitsRepository.get(traitId);
-
-      if (current === null) {
-        throw new StorageError(`Unknown trait id: ${traitId}`, {
-          code: "TRAIT_NOT_FOUND",
-        });
-      }
-
-      const parsedPatch = traitPatchSchema.parse(patch);
-
-      if (Object.keys(parsedPatch).length === 0) {
-        return {
-          status: "applied",
-          record: current,
-        };
-      }
-
-      const decision = this.guard.evaluateChange({
-        current,
-        provenance,
-        throughReview: options.throughReview,
-      });
-
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
-
-      return {
-        status: "applied",
-        record: this.options.traitsRepository.update(
-          traitId,
-          {
-            ...parsedPatch,
-            provenance,
-          },
-          provenance,
-          {
-            reason: options.reason,
-            reviewItemId: options.reviewItemId,
-            expectedVersion: current.record_version,
-          },
-        ),
-      };
-    });
-  }
-
-  updateGoal(
-    goalId: GoalRecord["id"],
-    patch: unknown,
-    provenance: Provenance,
-    options: IdentityUpdateOptions = {},
-  ): IdentityUpdateResult<GoalRecord> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.goalsRepository.get(goalId);
-
-      if (current === null) {
-        throw new StorageError(`Unknown goal id: ${goalId}`, {
-          code: "GOAL_NOT_FOUND",
-        });
-      }
-
-      const parsedPatch = goalPatchSchema.parse(patch);
-
-      if (Object.keys(parsedPatch).length === 0) {
-        return {
-          status: "applied",
-          record: current,
-        };
-      }
-
-      const decision = this.guard.evaluateChange({
-        current: goalGuardState(current),
-        provenance,
-        throughReview: options.throughReview,
-      });
-
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
-
-      return {
-        status: "applied",
-        record: this.options.goalsRepository.update(
-          goalId,
-          {
-            ...parsedPatch,
-            provenance,
-          },
-          provenance,
-          {
-            reason: options.reason,
-            reviewItemId: options.reviewItemId,
-            expectedVersion: current.record_version,
-          },
-        ),
-      };
-    });
-  }
-
-  updateGoalProgressFromReflection(
-    goalId: GoalRecord["id"],
-    patch: unknown,
-    provenance: Provenance,
-    options: ReflectionGoalProgressOptions,
-  ): IdentityUpdateResult<GoalRecord> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.goalsRepository.get(goalId);
-
-      if (current === null) {
-        throw new StorageError(`Unknown goal id: ${goalId}`, {
-          code: "GOAL_NOT_FOUND",
-        });
-      }
-
-      const parsedPatch = goalPatchSchema.parse(patch);
-
-      if (Object.keys(parsedPatch).length === 0) {
-        return {
-          status: "applied",
-          record: current,
-        };
-      }
-
-      if (
-        options.origin !== "user" ||
-        !isOnlineReflectorProvenance(provenance) ||
-        !isProgressOnlyGoalPatch(parsedPatch)
-      ) {
-        return this.updateGoal(goalId, parsedPatch, provenance, options);
-      }
-
-      return {
-        status: "applied",
-        record: this.options.goalsRepository.update(
-          goalId,
-          {
-            ...parsedPatch,
-            provenance,
-          },
-          provenance,
-          {
-            reason: options.reason,
-            reviewItemId: options.reviewItemId,
-            expectedVersion: current.record_version,
-          },
-        ),
-      };
-    });
-  }
-
-  updateCommitment(
-    commitmentId: CommitmentId,
-    patch: unknown,
-    provenance: Provenance,
-    options: IdentityUpdateOptions = {},
-  ): IdentityUpdateResult<CommitmentRecord> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.commitmentRepository.get(commitmentId);
-
-      if (current === null) {
-        throw new StorageError(`Unknown commitment id: ${commitmentId}`, {
-          code: "COMMITMENT_NOT_FOUND",
-        });
-      }
-
-      const parsedPatch = commitmentPatchSchema.parse(patch);
-
-      if (Object.keys(parsedPatch).length === 0) {
-        return {
-          status: "applied",
-          record: current,
-        };
-      }
-
-      const decision = this.guard.evaluateChange({
-        current: {
-          state:
-            current.revoked_at === null &&
-            current.expired_at === null &&
-            current.superseded_by === null
-              ? "established"
-              : "candidate",
-        },
-        provenance,
-        throughReview: options.throughReview,
-      });
-
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
-
-      const record = this.options.commitmentRepository.update(
-        commitmentId,
+    return {
+      status: "applied",
+      record: this.options.valuesRepository.update(
+        valueId,
         {
           ...parsedPatch,
           provenance,
@@ -770,21 +531,236 @@ export class IdentityService {
         {
           reason: options.reason,
           reviewItemId: options.reviewItemId,
-          expectedVersion: current.record_version,
+          expectedVersion: expectedRecordVersion(current),
         },
-      );
+      ),
+    };
+  }
 
-      if (record === null) {
-        throw new StorageError(`Unknown commitment id: ${commitmentId}`, {
-          code: "COMMITMENT_NOT_FOUND",
-        });
-      }
+  updateTrait(
+    traitId: TraitRecord["id"],
+    patch: unknown,
+    provenance: Provenance,
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<TraitRecord> {
+    const current = this.options.traitsRepository.get(traitId);
 
+    if (current === null) {
+      throw new StorageError(`Unknown trait id: ${traitId}`, {
+        code: "TRAIT_NOT_FOUND",
+      });
+    }
+
+    const parsedPatch = traitPatchSchema.parse(patch);
+
+    if (Object.keys(parsedPatch).length === 0) {
       return {
         status: "applied",
-        record,
+        record: current,
       };
+    }
+
+    const decision = this.guard.evaluateChange({
+      current,
+      provenance,
+      throughReview: options.throughReview,
     });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    return {
+      status: "applied",
+      record: this.options.traitsRepository.update(
+        traitId,
+        {
+          ...parsedPatch,
+          provenance,
+        },
+        provenance,
+        {
+          reason: options.reason,
+          reviewItemId: options.reviewItemId,
+          expectedVersion: expectedRecordVersion(current),
+        },
+      ),
+    };
+  }
+
+  updateGoal(
+    goalId: GoalRecord["id"],
+    patch: unknown,
+    provenance: Provenance,
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<GoalRecord> {
+    const current = this.options.goalsRepository.get(goalId);
+
+    if (current === null) {
+      throw new StorageError(`Unknown goal id: ${goalId}`, {
+        code: "GOAL_NOT_FOUND",
+      });
+    }
+
+    const parsedPatch = goalPatchSchema.parse(patch);
+
+    if (Object.keys(parsedPatch).length === 0) {
+      return {
+        status: "applied",
+        record: current,
+      };
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: goalGuardState(current),
+      provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    return {
+      status: "applied",
+      record: this.options.goalsRepository.update(
+        goalId,
+        {
+          ...parsedPatch,
+          provenance,
+        },
+        provenance,
+        {
+          reason: options.reason,
+          reviewItemId: options.reviewItemId,
+          expectedVersion: expectedRecordVersion(current),
+        },
+      ),
+    };
+  }
+
+  updateGoalProgressFromReflection(
+    goalId: GoalRecord["id"],
+    patch: unknown,
+    provenance: Provenance,
+    options: ReflectionGoalProgressOptions,
+  ): IdentityUpdateResult<GoalRecord> {
+    const current = this.options.goalsRepository.get(goalId);
+
+    if (current === null) {
+      throw new StorageError(`Unknown goal id: ${goalId}`, {
+        code: "GOAL_NOT_FOUND",
+      });
+    }
+
+    const parsedPatch = goalPatchSchema.parse(patch);
+
+    if (Object.keys(parsedPatch).length === 0) {
+      return {
+        status: "applied",
+        record: current,
+      };
+    }
+
+    if (
+      options.origin !== "user" ||
+      !isOnlineReflectorProvenance(provenance) ||
+      !isProgressOnlyGoalPatch(parsedPatch)
+    ) {
+      return this.updateGoal(goalId, parsedPatch, provenance, options);
+    }
+
+    return {
+      status: "applied",
+      record: this.options.goalsRepository.update(
+        goalId,
+        {
+          ...parsedPatch,
+          provenance,
+        },
+        provenance,
+        {
+          reason: options.reason,
+          reviewItemId: options.reviewItemId,
+          expectedVersion: expectedRecordVersion(current),
+        },
+      ),
+    };
+  }
+
+  updateCommitment(
+    commitmentId: CommitmentId,
+    patch: unknown,
+    provenance: Provenance,
+    options: IdentityUpdateOptions = {},
+  ): IdentityUpdateResult<CommitmentRecord> {
+    const current = this.options.commitmentRepository.get(commitmentId);
+
+    if (current === null) {
+      throw new StorageError(`Unknown commitment id: ${commitmentId}`, {
+        code: "COMMITMENT_NOT_FOUND",
+      });
+    }
+
+    const parsedPatch = commitmentPatchSchema.parse(patch);
+
+    if (Object.keys(parsedPatch).length === 0) {
+      return {
+        status: "applied",
+        record: current,
+      };
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: {
+        state:
+          current.revoked_at === null &&
+          current.expired_at === null &&
+          current.superseded_by === null
+            ? "established"
+            : "candidate",
+      },
+      provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.commitmentRepository.update(
+      commitmentId,
+      {
+        ...parsedPatch,
+        provenance,
+      },
+      provenance,
+      {
+        reason: options.reason,
+        reviewItemId: options.reviewItemId,
+        expectedVersion: expectedRecordVersion(current),
+      },
+    );
+
+    if (record === null) {
+      throw new StorageError(`Unknown commitment id: ${commitmentId}`, {
+        code: "COMMITMENT_NOT_FOUND",
+      });
+    }
+
+    return {
+      status: "applied",
+      record,
+    };
   }
 
   closePeriod(
@@ -793,59 +769,57 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<AutobiographicalPeriod> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.autobiographicalRepository.getPeriod(periodId);
+    const current = this.options.autobiographicalRepository.getPeriod(periodId);
 
-      if (current === null) {
+    if (current === null) {
+      throw new StorageError(`Unknown autobiographical period id: ${periodId}`, {
+        code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
+      });
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: autobiographicalPeriodGuardState(),
+      provenance,
+      throughReview: options.throughReview,
+    });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      this.options.autobiographicalRepository.closePeriod(periodId, closedAt, {
+        expectedVersion: expectedRecordVersion(current),
+      });
+      const updated = this.options.autobiographicalRepository.getPeriod(periodId);
+
+      if (updated === null) {
         throw new StorageError(`Unknown autobiographical period id: ${periodId}`, {
           code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
         });
       }
 
-      const decision = this.guard.evaluateChange({
-        current: autobiographicalPeriodGuardState(),
+      this.options.identityEventRepository.record({
+        record_type: "autobiographical_period",
+        record_id: periodId,
+        action: identityEventAction("close", options),
+        old_value: current,
+        new_value: updated,
+        reason: options.reason ?? null,
         provenance,
-        throughReview: options.throughReview,
+        review_item_id: options.reviewItemId ?? null,
       });
 
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
-
-      const record = this.options.identityEventRepository.runInTransaction(() => {
-        this.options.autobiographicalRepository.closePeriod(periodId, closedAt, {
-          expectedVersion: current.record_version,
-        });
-        const updated = this.options.autobiographicalRepository.getPeriod(periodId);
-
-        if (updated === null) {
-          throw new StorageError(`Unknown autobiographical period id: ${periodId}`, {
-            code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
-          });
-        }
-
-        this.options.identityEventRepository.record({
-          record_type: "autobiographical_period",
-          record_id: periodId,
-          action: identityEventAction("close", options),
-          old_value: current,
-          new_value: updated,
-          reason: options.reason ?? null,
-          provenance,
-          review_item_id: options.reviewItemId ?? null,
-        });
-
-        return updated;
-      });
-
-      return {
-        status: "applied",
-        record,
-      };
+      return updated;
     });
+
+    return {
+      status: "applied",
+      record,
+    };
   }
 
   resolveOpenQuestion(
@@ -854,53 +828,51 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<OpenQuestion> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.openQuestionsRepository.get(openQuestionId);
+    const current = this.options.openQuestionsRepository.get(openQuestionId);
 
-      if (current === null) {
-        throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
-          code: "OPEN_QUESTION_NOT_FOUND",
-        });
-      }
-
-      const decision = this.guard.evaluateChange({
-        current: openQuestionGuardState(current),
-        provenance,
-        throughReview: options.throughReview,
-        changeKind: "open_question_resolution",
+    if (current === null) {
+      throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
       });
+    }
 
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
-
-      const record = this.options.identityEventRepository.runInTransaction(() => {
-        const resolved = this.options.openQuestionsRepository.resolve(openQuestionId, resolution, {
-          expectedVersion: current.record_version,
-        });
-
-        this.options.identityEventRepository.record({
-          record_type: "open_question",
-          record_id: openQuestionId,
-          action: identityEventAction("resolve", options),
-          old_value: current,
-          new_value: resolved,
-          reason: options.reason ?? null,
-          provenance,
-          review_item_id: options.reviewItemId ?? null,
-        });
-
-        return resolved;
-      });
-
-      return {
-        status: "applied",
-        record,
-      };
+    const decision = this.guard.evaluateChange({
+      current: openQuestionGuardState(current),
+      provenance,
+      throughReview: options.throughReview,
+      changeKind: "open_question_resolution",
     });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const resolved = this.options.openQuestionsRepository.resolve(openQuestionId, resolution, {
+        expectedVersion: expectedRecordVersion(current),
+      });
+
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: openQuestionId,
+        action: identityEventAction("resolve", options),
+        old_value: current,
+        new_value: resolved,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return resolved;
+    });
+
+    return {
+      status: "applied",
+      record,
+    };
   }
 
   abandonOpenQuestion(
@@ -909,52 +881,50 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<OpenQuestion> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.openQuestionsRepository.get(openQuestionId);
+    const current = this.options.openQuestionsRepository.get(openQuestionId);
 
-      if (current === null) {
-        throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
-          code: "OPEN_QUESTION_NOT_FOUND",
-        });
-      }
-
-      const decision = this.guard.evaluateChange({
-        current: openQuestionGuardState(current),
-        provenance,
-        throughReview: options.throughReview,
+    if (current === null) {
+      throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
       });
+    }
 
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
-
-      const record = this.options.identityEventRepository.runInTransaction(() => {
-        const abandoned = this.options.openQuestionsRepository.abandon(openQuestionId, reason, {
-          expectedVersion: current.record_version,
-        });
-
-        this.options.identityEventRepository.record({
-          record_type: "open_question",
-          record_id: openQuestionId,
-          action: identityEventAction("abandon", options),
-          old_value: current,
-          new_value: abandoned,
-          reason: options.reason ?? reason,
-          provenance,
-          review_item_id: options.reviewItemId ?? null,
-        });
-
-        return abandoned;
-      });
-
-      return {
-        status: "applied",
-        record,
-      };
+    const decision = this.guard.evaluateChange({
+      current: openQuestionGuardState(current),
+      provenance,
+      throughReview: options.throughReview,
     });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const abandoned = this.options.openQuestionsRepository.abandon(openQuestionId, reason, {
+        expectedVersion: expectedRecordVersion(current),
+      });
+
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: openQuestionId,
+        action: identityEventAction("abandon", options),
+        old_value: current,
+        new_value: abandoned,
+        reason: options.reason ?? reason,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return abandoned;
+    });
+
+    return {
+      status: "applied",
+      record,
+    };
   }
 
   bumpOpenQuestionUrgency(
@@ -963,52 +933,50 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<OpenQuestion> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.openQuestionsRepository.get(openQuestionId);
+    const current = this.options.openQuestionsRepository.get(openQuestionId);
 
-      if (current === null) {
-        throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
-          code: "OPEN_QUESTION_NOT_FOUND",
-        });
-      }
-
-      const decision = this.guard.evaluateChange({
-        current: openQuestionGuardState(current),
-        provenance,
-        throughReview: options.throughReview,
+    if (current === null) {
+      throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
       });
+    }
 
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
-
-      const record = this.options.identityEventRepository.runInTransaction(() => {
-        const bumped = this.options.openQuestionsRepository.bumpUrgency(openQuestionId, delta, {
-          expectedVersion: current.record_version,
-        });
-
-        this.options.identityEventRepository.record({
-          record_type: "open_question",
-          record_id: openQuestionId,
-          action: identityEventAction("bump_urgency", options),
-          old_value: current,
-          new_value: bumped,
-          reason: options.reason ?? null,
-          provenance,
-          review_item_id: options.reviewItemId ?? null,
-        });
-
-        return bumped;
-      });
-
-      return {
-        status: "applied",
-        record,
-      };
+    const decision = this.guard.evaluateChange({
+      current: openQuestionGuardState(current),
+      provenance,
+      throughReview: options.throughReview,
     });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const bumped = this.options.openQuestionsRepository.bumpUrgency(openQuestionId, delta, {
+        expectedVersion: expectedRecordVersion(current),
+      });
+
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: openQuestionId,
+        action: identityEventAction("bump_urgency", options),
+        old_value: current,
+        new_value: bumped,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return bumped;
+    });
+
+    return {
+      status: "applied",
+      record,
+    };
   }
 
   updatePeriod(
@@ -1017,71 +985,69 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<AutobiographicalPeriod> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.autobiographicalRepository.getPeriod(periodId);
+    const current = this.options.autobiographicalRepository.getPeriod(periodId);
 
-      if (current === null) {
-        throw new StorageError(`Unknown autobiographical period id: ${periodId}`, {
-          code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
-        });
-      }
-
-      const parsedPatch = autobiographicalPeriodPatchSchema.parse(patch);
-
-      if (Object.keys(parsedPatch).length === 0) {
-        return {
-          status: "applied",
-          record: current,
-        };
-      }
-
-      const decision = this.guard.evaluateChange({
-        current: autobiographicalPeriodGuardState(),
-        provenance,
-        throughReview: options.throughReview,
+    if (current === null) {
+      throw new StorageError(`Unknown autobiographical period id: ${periodId}`, {
+        code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
       });
+    }
 
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
+    const parsedPatch = autobiographicalPeriodPatchSchema.parse(patch);
 
-      const record = this.options.identityEventRepository.runInTransaction(() => {
-        const updated = this.options.autobiographicalRepository.upsertPeriod(
-          {
-            ...current,
-            ...parsedPatch,
-            provenance,
-          },
-          {
-            expectedVersion: current.record_version,
-          },
-        );
-
-        this.options.identityEventRepository.record({
-          record_type: "autobiographical_period",
-          record_id: periodId,
-          action:
-            options.reviewItemId === null || options.reviewItemId === undefined
-              ? "update"
-              : "correction_apply",
-          old_value: current,
-          new_value: updated,
-          reason: options.reason ?? null,
-          provenance,
-          review_item_id: options.reviewItemId ?? null,
-        });
-
-        return updated;
-      });
-
+    if (Object.keys(parsedPatch).length === 0) {
       return {
         status: "applied",
-        record,
+        record: current,
       };
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: autobiographicalPeriodGuardState(),
+      provenance,
+      throughReview: options.throughReview,
     });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const updated = this.options.autobiographicalRepository.upsertPeriod(
+        {
+          ...current,
+          ...parsedPatch,
+          provenance,
+        },
+        {
+          expectedVersion: expectedRecordVersion(current),
+        },
+      );
+
+      this.options.identityEventRepository.record({
+        record_type: "autobiographical_period",
+        record_id: periodId,
+        action:
+          options.reviewItemId === null || options.reviewItemId === undefined
+            ? "update"
+            : "correction_apply",
+        old_value: current,
+        new_value: updated,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return updated;
+    });
+
+    return {
+      status: "applied",
+      record,
+    };
   }
 
   updateGrowthMarker(
@@ -1090,71 +1056,69 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<GrowthMarker> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.growthMarkersRepository.get(markerId);
+    const current = this.options.growthMarkersRepository.get(markerId);
 
-      if (current === null) {
-        throw new StorageError(`Unknown growth marker id: ${markerId}`, {
-          code: "GROWTH_MARKER_NOT_FOUND",
-        });
-      }
-
-      const parsedPatch = growthMarkerPatchSchema.parse(patch);
-
-      if (Object.keys(parsedPatch).length === 0) {
-        return {
-          status: "applied",
-          record: current,
-        };
-      }
-
-      const decision = this.guard.evaluateChange({
-        current: growthMarkerGuardState(),
-        provenance,
-        throughReview: options.throughReview,
+    if (current === null) {
+      throw new StorageError(`Unknown growth marker id: ${markerId}`, {
+        code: "GROWTH_MARKER_NOT_FOUND",
       });
+    }
 
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
+    const parsedPatch = growthMarkerPatchSchema.parse(patch);
 
-      const record = this.options.identityEventRepository.runInTransaction(() => {
-        const updated = this.options.growthMarkersRepository.update(
-          markerId,
-          {
-            ...parsedPatch,
-            provenance,
-          },
-          {
-            expectedVersion: current.record_version,
-          },
-        );
-
-        this.options.identityEventRepository.record({
-          record_type: "growth_marker",
-          record_id: markerId,
-          action:
-            options.reviewItemId === null || options.reviewItemId === undefined
-              ? "update"
-              : "correction_apply",
-          old_value: current,
-          new_value: updated,
-          reason: options.reason ?? null,
-          provenance,
-          review_item_id: options.reviewItemId ?? null,
-        });
-
-        return updated;
-      });
-
+    if (Object.keys(parsedPatch).length === 0) {
       return {
         status: "applied",
-        record,
+        record: current,
       };
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: growthMarkerGuardState(),
+      provenance,
+      throughReview: options.throughReview,
     });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const updated = this.options.growthMarkersRepository.update(
+        markerId,
+        {
+          ...parsedPatch,
+          provenance,
+        },
+        {
+          expectedVersion: expectedRecordVersion(current),
+        },
+      );
+
+      this.options.identityEventRepository.record({
+        record_type: "growth_marker",
+        record_id: markerId,
+        action:
+          options.reviewItemId === null || options.reviewItemId === undefined
+            ? "update"
+            : "correction_apply",
+        old_value: current,
+        new_value: updated,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return updated;
+    });
+
+    return {
+      status: "applied",
+      record,
+    };
   }
 
   updateOpenQuestion(
@@ -1163,70 +1127,68 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<OpenQuestion> {
-    return this.runCasCheckedWrite(() => {
-      const current = this.options.openQuestionsRepository.get(openQuestionId);
+    const current = this.options.openQuestionsRepository.get(openQuestionId);
 
-      if (current === null) {
-        throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
-          code: "OPEN_QUESTION_NOT_FOUND",
-        });
-      }
-
-      const parsedPatch = openQuestionPatchSchema.parse(patch);
-
-      if (Object.keys(parsedPatch).length === 0) {
-        return {
-          status: "applied",
-          record: current,
-        };
-      }
-
-      const decision = this.guard.evaluateChange({
-        current: openQuestionGuardState(current),
-        provenance,
-        throughReview: options.throughReview,
+    if (current === null) {
+      throw new StorageError(`Unknown open question id: ${openQuestionId}`, {
+        code: "OPEN_QUESTION_NOT_FOUND",
       });
+    }
 
-      if (!decision.allowed) {
-        return {
-          status: "requires_review",
-          current,
-        };
-      }
+    const parsedPatch = openQuestionPatchSchema.parse(patch);
 
-      const record = this.options.identityEventRepository.runInTransaction(() => {
-        const updated = this.options.openQuestionsRepository.update(
-          openQuestionId,
-          {
-            ...parsedPatch,
-            ...(options.preserveRecordProvenance === true ? {} : { provenance }),
-          },
-          {
-            expectedVersion: current.record_version,
-          },
-        );
-
-        this.options.identityEventRepository.record({
-          record_type: "open_question",
-          record_id: openQuestionId,
-          action:
-            options.reviewItemId === null || options.reviewItemId === undefined
-              ? "update"
-              : "correction_apply",
-          old_value: current,
-          new_value: updated,
-          reason: options.reason ?? null,
-          provenance,
-          review_item_id: options.reviewItemId ?? null,
-        });
-
-        return updated;
-      });
-
+    if (Object.keys(parsedPatch).length === 0) {
       return {
         status: "applied",
-        record,
+        record: current,
       };
+    }
+
+    const decision = this.guard.evaluateChange({
+      current: openQuestionGuardState(current),
+      provenance,
+      throughReview: options.throughReview,
     });
+
+    if (!decision.allowed) {
+      return {
+        status: "requires_review",
+        current,
+      };
+    }
+
+    const record = this.options.identityEventRepository.runInTransaction(() => {
+      const updated = this.options.openQuestionsRepository.update(
+        openQuestionId,
+        {
+          ...parsedPatch,
+          ...(options.preserveRecordProvenance === true ? {} : { provenance }),
+        },
+        {
+          expectedVersion: expectedRecordVersion(current),
+        },
+      );
+
+      this.options.identityEventRepository.record({
+        record_type: "open_question",
+        record_id: openQuestionId,
+        action:
+          options.reviewItemId === null || options.reviewItemId === undefined
+            ? "update"
+            : "correction_apply",
+        old_value: current,
+        new_value: updated,
+        reason: options.reason ?? null,
+        provenance,
+        review_item_id: options.reviewItemId ?? null,
+      });
+
+      return updated;
+    });
+
+    return {
+      status: "applied",
+      record,
+    };
   }
 }

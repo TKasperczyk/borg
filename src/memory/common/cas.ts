@@ -14,7 +14,9 @@ export function expectedRecordVersion(
   record: IdentityCasRecord,
   options: IdentityCasOptions = {},
 ): number {
-  return options.expectedVersion ?? record.record_version ?? 1;
+  // Missing versions mean a caller is applying a stale/unversioned snapshot.
+  // Use a sentinel that cannot match persisted positive versions.
+  return options.expectedVersion ?? record.record_version ?? -1;
 }
 
 export function nextRecordVersion(expectedVersion: number): number {

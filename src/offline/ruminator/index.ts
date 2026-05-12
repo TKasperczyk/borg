@@ -20,6 +20,7 @@ import {
   openQuestionSchema,
   type OpenQuestion,
 } from "../../memory/self/index.js";
+import { expectedRecordVersion } from "../../memory/common/cas.js";
 import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import { createGrowthMarkerId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
@@ -825,10 +826,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
 
     try {
       for (const question of allOpenQuestions) {
-        if (
-          mergeParticipantIds.has(question.id) ||
-          llmWindowIds.has(question.id)
-        ) {
+        if (mergeParticipantIds.has(question.id) || llmWindowIds.has(question.id)) {
           continue;
         }
 
@@ -940,7 +938,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           item.question_id,
           item.next_unresolved_rumination_ticks,
           {
-            expectedVersion: item.previous.record_version,
+            expectedVersion: expectedRecordVersion(item.previous),
           },
         );
         continue;
@@ -1128,7 +1126,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             },
           );
           await ctx.openQuestionsRepository.delete(duplicate.id, {
-            expectedVersion: duplicate.record_version,
+            expectedVersion: expectedRecordVersion(duplicate),
           });
 
           if (ctx.tracer?.enabled === true) {
@@ -1171,7 +1169,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         });
       }
 
-      let markExpectedVersion = current.record_version;
+      let markExpectedVersion = expectedRecordVersion(current);
 
       if (Math.abs(current.urgency - item.next_urgency) > 1e-6) {
         const result = ctx.identityService.bumpOpenQuestionUrgency(
@@ -1184,7 +1182,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         );
 
         if (result.status === "applied") {
-          markExpectedVersion = result.record.record_version;
+          markExpectedVersion = expectedRecordVersion(result.record);
         }
       }
 
