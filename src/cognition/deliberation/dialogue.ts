@@ -11,12 +11,27 @@ import type { RecencyMessage } from "../recency/index.js";
 // empty response in edge cases) -- those poison subsequent turns'
 // recency window without this guard.
 const EMPTY_CONTENT_PLACEHOLDER = "(no content)";
+const ADJACENT_MESSAGE_SEPARATOR = "\n\n";
+
+function appendMessage(messages: LLMMessage[], next: LLMMessage): void {
+  const previous = messages[messages.length - 1];
+
+  if (previous?.role === next.role) {
+    messages[messages.length - 1] = {
+      role: previous.role,
+      content: [previous.content, next.content].join(ADJACENT_MESSAGE_SEPARATOR),
+    };
+    return;
+  }
+
+  messages.push(next);
+}
 
 /**
  * Assemble the Anthropic `messages` array from recent dialogue + the current
- * user message. The recency window is already shaped to satisfy Anthropic's
- * ordering constraints (starts with user, ends with assistant), so we can
- * concatenate and append the current user message safely.
+ * user message. Recency can contain adjacent user-role messages when Borg
+ * observed instead of speaking, so this step merges adjacent same-role entries
+ * rather than inventing assistant output.
  */
 export function buildDialogueMessages(
   recency: readonly RecencyMessage[] | undefined,
@@ -29,13 +44,13 @@ export function buildDialogueMessages(
       if (item.content.trim().length === 0) {
         continue;
       }
-      messages.push({ role: item.role, content: item.content });
+      appendMessage(messages, { role: item.role, content: item.content });
     }
   }
 
   const trimmed = currentUserMessage.trim();
   const currentContent = trimmed.length === 0 ? EMPTY_CONTENT_PLACEHOLDER : currentUserMessage;
-  messages.push({
+  appendMessage(messages, {
     role: "user",
     content: currentContent,
   });

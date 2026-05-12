@@ -38,12 +38,31 @@ describe("buildDialogueMessages", () => {
     expect(messages).toEqual([{ role: "user", content: "(no content)" }]);
   });
 
-  it("preserves non-empty content as-is", () => {
+  it("merges adjacent user messages without inventing assistant output", () => {
     const messages = buildDialogueMessages([makeRecency("user", "first", 1)], "second");
 
+    expect(messages).toEqual([{ role: "user", content: "first\n\nsecond" }]);
+  });
+
+  it("merges observed-turn markers with the surrounding user-role run", () => {
+    const messages = buildDialogueMessages(
+      [
+        makeRecency("user", "Alice: Tuesday works.", 1),
+        makeRecency(
+          "user",
+          "[system: borg observed turn turn-2 silently -- reason: Peer coordination.]",
+          2,
+        ),
+      ],
+      "Bob: Tuesday works for me too.",
+    );
+
     expect(messages).toEqual([
-      { role: "user", content: "first" },
-      { role: "user", content: "second" },
+      {
+        role: "user",
+        content:
+          "Alice: Tuesday works.\n\n[system: borg observed turn turn-2 silently -- reason: Peer coordination.]\n\nBob: Tuesday works for me too.",
+      },
     ]);
   });
 

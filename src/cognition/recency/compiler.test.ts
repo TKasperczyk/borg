@@ -128,7 +128,7 @@ describe("TurnContextCompiler", () => {
     ]);
   });
 
-  it("skips non-conversational entries like thoughts and tool calls", async () => {
+  it("skips non-conversational entries like thoughts and internal events", async () => {
     const dataDir = createTempDir();
     const clock = new ManualClock(1_000);
     const writer = makeWriter(dataDir, clock);
@@ -153,11 +153,13 @@ describe("TurnContextCompiler", () => {
 
     const window = new TurnContextCompiler().compile(makeReader(dataDir));
 
-    expect(window.messages).toHaveLength(2);
+    expect(window.messages).toHaveLength(3);
     expect(window.messages[0]?.role).toBe("user");
     expect(window.messages[0]?.content).toBe("debug this");
     expect(window.messages[1]?.role).toBe("assistant");
-    expect(window.messages[1]?.content).toBe("looking");
+    expect(window.messages[1]?.content).toContain("[system: prior turn suppressed");
+    expect(window.messages[2]?.role).toBe("assistant");
+    expect(window.messages[2]?.content).toBe("looking");
   });
 
   it("renders prior suppression markers in the recency window", async () => {
@@ -184,6 +186,33 @@ describe("TurnContextCompiler", () => {
       "[system: prior turn suppressed -- reason: manifest_validation_failed_critical",
     );
     expect(window.messages[1]?.content).toContain("no user-visible response was emitted");
+  });
+
+  it("renders prior observation markers in the recency window without suppressing discourse", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+
+    try {
+      await writer.append({ kind: "user_msg", content: "Alice: should we pick Tuesday?" });
+      clock.advance(10);
+      await writer.append({
+        kind: "agent_observed",
+        turn_id: "turn-observe",
+        content: { reason: "Alice and Bob are coordinating directly." },
+      });
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler().compile(makeReader(dataDir));
+
+    expect(window.messages).toHaveLength(2);
+    expect(window.messages[1]?.role).toBe("user");
+    expect(window.messages[1]?.kind).toBe("agent_observed");
+    expect(window.messages[1]?.content).toContain(
+      "[system: borg observed turn turn-observe silently -- reason: Alice and Bob are coordinating directly.]",
+    );
   });
 
   it("filters self-addressed turns by default", async () => {
@@ -247,7 +276,7 @@ describe("TurnContextCompiler", () => {
     ]);
   });
 
-  it("drops a trailing user entry so the caller's current user msg won't collide", async () => {
+  it("keeps a trailing user entry so dialogue assembly can merge participant runs", async () => {
     const dataDir = createTempDir();
     const clock = new ManualClock(1_000);
     const writer = makeWriter(dataDir, clock);
@@ -257,10 +286,9 @@ describe("TurnContextCompiler", () => {
       clock.advance(10);
       await writer.append({ kind: "agent_msg", content: "response" });
       clock.advance(10);
-      // Simulates a prior user_msg that never produced an agent_msg, e.g. a
-      // failed turn. The compiler must drop it so the caller can safely
-      // append the NEW current user message without producing two
-      // consecutive user entries.
+      // Simulates a prior user_msg that never produced a visible Borg
+      // message. The compiler keeps it; dialogue assembly handles the
+      // adjacent current user message without inventing assistant output.
       await writer.append({ kind: "user_msg", content: "orphan" });
     } finally {
       writer.close();
@@ -268,9 +296,9 @@ describe("TurnContextCompiler", () => {
 
     const window = new TurnContextCompiler().compile(makeReader(dataDir));
 
-    expect(window.messages).toHaveLength(2);
-    expect(window.messages[window.messages.length - 1]?.role).toBe("assistant");
-    expect(window.messages.map((m) => m.content)).toEqual(["first", "response"]);
+    expect(window.messages).toHaveLength(3);
+    expect(window.messages[window.messages.length - 1]?.role).toBe("user");
+    expect(window.messages.map((m) => m.content)).toEqual(["first", "response", "orphan"]);
   });
 
   it("excludes entries from an aborted turn", async () => {
@@ -315,7 +343,7 @@ describe("TurnContextCompiler", () => {
     ]);
   });
 
-  it("collapses same-role adjacency by keeping the newest entry in each run", async () => {
+  it("preserves same-role adjacency for group-chat transcript fidelity", async () => {
     const dataDir = createTempDir();
     const clock = new ManualClock(1_000);
     const writer = makeWriter(dataDir, clock);
@@ -340,7 +368,9 @@ describe("TurnContextCompiler", () => {
 
     expect(window.messages.map((message) => message.content)).toEqual([
       "first user",
+      "older assistant",
       "newer assistant",
+      "older followup",
       "newer followup",
       "final answer",
     ]);

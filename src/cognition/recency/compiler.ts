@@ -60,11 +60,15 @@ function streamKindToRole(kind: StreamEntry["kind"]): RecencyMessage["role"] | n
     return "assistant";
   }
 
+  if (kind === "agent_observed") {
+    return "user";
+  }
+
   return null;
 }
 
-function suppressionReason(entry: StreamEntry): string {
-  if (entry.kind !== "agent_suppressed") {
+function markerReason(entry: StreamEntry): string {
+  if (entry.kind !== "agent_suppressed" && entry.kind !== "agent_observed") {
     return "unknown";
   }
 
@@ -107,9 +111,16 @@ function suppressionCategoryContext(reason: string): string {
 
 function renderEntryContent(entry: StreamEntry): string {
   if (entry.kind === "agent_suppressed") {
-    const reason = suppressionReason(entry);
+    const reason = markerReason(entry);
 
     return `[system: prior turn suppressed -- reason: ${reason}; category: ${suppressionCategoryContext(reason)}; no user-visible response was emitted]`;
+  }
+
+  if (entry.kind === "agent_observed") {
+    const reason = markerReason(entry);
+    const turn = entry.turn_id ?? "unknown";
+
+    return `[system: borg observed turn ${turn} silently -- reason: ${reason}]`;
   }
 
   return entryContentToString(entry);
@@ -123,10 +134,9 @@ function renderEntryContent(entry: StreamEntry): string {
  * Guarantees on the returned `messages`:
  *   - First message (if any) has role `user` -- Anthropic requires `messages`
  *     to start with a user role when it's provided.
- *   - Last message does NOT have role `user`. The caller appends a
- *     `{role:"user", content: currentUserMessage}` entry, so a trailing
- *     user in the window would produce two consecutive user messages.
- *   - Roles alternate.
+ *   - Roles may repeat. Deliberation dialogue assembly merges repeated roles
+ *     before making an Anthropic request, which preserves group-chat gaps
+ *     where Borg observed instead of speaking.
  *
  * Non-conversational entries (`thought`, `internal_event`, `tool_call`,
  * `tool_result`, `perception`, `dream_report`) are
@@ -159,7 +169,11 @@ export class TurnContextCompiler {
     }> = [];
 
     for (const entry of recent) {
-      if (!isNarrativeStreamEntry(entry) && entry.kind !== "agent_suppressed") {
+      if (
+        !isNarrativeStreamEntry(entry) &&
+        entry.kind !== "agent_suppressed" &&
+        entry.kind !== "agent_observed"
+      ) {
         continue;
       }
 
@@ -200,6 +214,7 @@ export class TurnContextCompiler {
         content,
         stream_entry_id: item.entry.id,
         ts: item.entry.timestamp,
+        kind: item.entry.kind,
       });
 
       totalChars += contentLength;
@@ -218,31 +233,11 @@ export class TurnContextCompiler {
       messages.shift();
     }
 
-    // Drop a trailing `user` -- the caller is about to append the current
-    // user message, and two consecutive user entries are rejected.
-    while (messages.length > 0 && messages[messages.length - 1]?.role === "user") {
-      messages.pop();
-    }
-
-    const alternating: RecencyMessage[] = [];
-
-    for (const message of messages) {
-      const previous = alternating[alternating.length - 1];
-
-      if (previous?.role === message.role) {
-        alternating[alternating.length - 1] = message;
-        continue;
-      }
-
-      alternating.push(message);
-    }
-
-    const latestTs =
-      alternating.length === 0 ? null : (alternating[alternating.length - 1]?.ts ?? null);
-    const normalizedChars = alternating.reduce((sum, message) => sum + message.content.length, 0);
+    const latestTs = messages.length === 0 ? null : (messages[messages.length - 1]?.ts ?? null);
+    const normalizedChars = messages.reduce((sum, message) => sum + message.content.length, 0);
 
     return {
-      messages: alternating,
+      messages,
       latest_ts: latestTs,
       total_chars: normalizedChars,
     };

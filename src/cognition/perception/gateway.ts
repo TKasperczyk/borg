@@ -104,9 +104,9 @@ export class PerceptionGateway {
   ): Promise<PerceptionGatewayResult> {
     // Compile recent dialogue BEFORE appending the current user message,
     // so the window contains prior turns only. The compiler guarantees
-    // the window starts with a user role and ends with an assistant
-    // role, making it safe to concatenate with a trailing
-    // {role:"user", content: currentUserMessage}.
+    // the window starts with a user role when non-empty. Deliberation dialogue
+    // assembly later merges adjacent user-role entries created by observed
+    // group-chat turns before making an Anthropic request.
     const recencyWindow: RecencyWindow = this.options.turnContextCompiler.compile(
       this.options.createStreamReader(input.sessionId),
       {

@@ -1,23 +1,25 @@
+import type { StreamEntry } from "../../stream/index.js";
 import type { StreamEntryId } from "../../util/ids.js";
 
 /**
  * A single conversational message resolved from the stream, pre-formatted for
- * use as an Anthropic `messages` array entry. Role is derived from the stream
- * entry kind (`user_msg` -> "user", `agent_msg` -> "assistant").
+ * use as dialogue context. Role is derived from the stream entry kind. Observed
+ * turns are rendered as user-role system markers so dialogue assembly can merge
+ * them with adjacent participant messages without inventing assistant output.
  */
 export type RecencyMessage = {
   role: "user" | "assistant";
   content: string;
   stream_entry_id: StreamEntryId;
   ts: number;
+  kind?: StreamEntry["kind"];
 };
 
 /**
- * Recent conversation window compiled from the session stream. `messages` is
- * safe to concatenate with `{role:"user", content: currentUserMessage}` and
- * hand to the LLM: it starts with a user role, alternates user/assistant,
- * and does NOT end with a user role (so it won't collide with the current
- * user message).
+ * Recent conversation window compiled from the session stream. It starts with a
+ * user role when non-empty, but may include adjacent user-role messages when
+ * Borg observed intervening turns. Deliberation dialogue assembly normalizes
+ * these runs before sending them to the LLM.
  */
 export type RecencyWindow = {
   messages: RecencyMessage[];
