@@ -1,6 +1,7 @@
 import type { StreamEntryPersistenceClass } from "../../stream/index.js";
 import type { ClosurePressureHistoryReason } from "../../memory/working/index.js";
-import type { StreamEntryId } from "../../util/ids.js";
+import { entityIdHelpers, type EntityId, type StreamEntryId } from "../../util/ids.js";
+import { z } from "zod";
 
 export type GenerationSuppressionReason =
   | "generation_gate"
@@ -41,10 +42,38 @@ export function isNaturalSilenceSuppressionReason(reason: GenerationSuppressionR
   return NATURAL_SILENCE_SUPPRESSION_REASON_SET.has(reason);
 }
 
+const replyTargetEntityIdSchema = z
+  .string()
+  .refine((value) => entityIdHelpers.is(value), {
+    message: "Invalid reply target entity id",
+  })
+  .transform((value) => value as EntityId);
+
+export const replyTargetSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("audience"),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("entity"),
+      entity_id: replyTargetEntityIdSchema,
+    })
+    .strict(),
+]);
+
+export type ReplyTarget = z.infer<typeof replyTargetSchema>;
+
+export function replyTargetEntityId(replyTarget: ReplyTarget | undefined): EntityId | null {
+  return replyTarget?.kind === "entity" ? replyTarget.entity_id : null;
+}
+
 export type PendingTurnEmission =
   | {
       kind: "message";
       content: string;
+      reply_target?: ReplyTarget;
       persistence_class?: StreamEntryPersistenceClass;
       closure_pressure_history_reason?: ClosurePressureHistoryReason;
     }
@@ -59,6 +88,7 @@ export type TurnEmission =
   | {
       kind: "message";
       content: string;
+      reply_target?: ReplyTarget;
       agentMessageId: StreamEntryId;
       persistence_class?: StreamEntryPersistenceClass;
     }

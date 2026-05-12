@@ -153,6 +153,9 @@ function buildFinalizerEmission(result: FinalizerResult): FinalizerEmission {
     emission: {
       kind: "message",
       content: result.decision.text,
+      ...(result.decision.reply_target === undefined
+        ? {}
+        : { reply_target: result.decision.reply_target }),
     },
   };
 }

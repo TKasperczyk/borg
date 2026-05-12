@@ -19,7 +19,11 @@ import {
   type EvidenceLedgerBuildInput,
 } from "../evidence-ledger/index.js";
 import type { TurnDiscourseStateService } from "../generation/turn-discourse-state.js";
-import type { PendingTurnEmission, TurnEmission } from "../generation/types.js";
+import {
+  replyTargetEntityId,
+  type PendingTurnEmission,
+  type TurnEmission,
+} from "../generation/types.js";
 import { GenerationGate } from "../generation/generation-gate.js";
 import { StopCommitmentExtractor } from "../generation/self-stop-commitment.js";
 import {
@@ -565,6 +569,7 @@ export class TurnPhaseCoordinator {
             turn_status: ACTIVE_TURN_STATUS,
             content: actionResult.response,
             tool_calls: actionResult.tool_calls,
+            reply_target_entity_id: replyTargetEntityId(actionEmission.reply_target),
             ...(actionEmission.persistence_class === undefined
               ? {}
               : { persistence_class: actionEmission.persistence_class }),
@@ -596,6 +601,9 @@ export class TurnPhaseCoordinator {
       kind: "message",
       content: actionResult.response,
       agentMessageId: persistedAgentEntry.id,
+      ...(actionEmission.reply_target === undefined
+        ? {}
+        : { reply_target: actionEmission.reply_target }),
       ...(actionEmission.persistence_class === undefined
         ? {}
         : { persistence_class: actionEmission.persistence_class }),

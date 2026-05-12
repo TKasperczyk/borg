@@ -42,6 +42,10 @@ function makeStreamWriter(sequence: string[]) {
         turn_status: input.turn_status ?? activeTurnStatus,
         sender_entity_id:
           input.sender_entity_id === undefined ? null : (input.sender_entity_id as EntityId),
+        reply_target_entity_id:
+          input.reply_target_entity_id === undefined
+            ? null
+            : (input.reply_target_entity_id as EntityId),
       } satisfies StreamEntry;
     },
   };

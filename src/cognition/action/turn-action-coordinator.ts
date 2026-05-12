@@ -52,17 +52,20 @@ export type TurnActionCoordinatorResult = {
   actionEmission: PendingTurnEmission;
 };
 
-function withMessagePersistenceClass(
+function withMessageMetadata(
   emission: PendingTurnEmission,
-  persistenceClass: Extract<PendingTurnEmission, { kind: "message" }>["persistence_class"],
+  source: Extract<PendingTurnEmission, { kind: "message" }>,
 ): PendingTurnEmission {
-  if (emission.kind === "suppressed" || persistenceClass === undefined) {
+  if (emission.kind === "suppressed") {
     return emission;
   }
 
   return {
     ...emission,
-    persistence_class: persistenceClass,
+    ...(source.reply_target === undefined ? {} : { reply_target: source.reply_target }),
+    ...(source.persistence_class === undefined
+      ? {}
+      : { persistence_class: source.persistence_class }),
   };
 }
 
@@ -146,14 +149,14 @@ export class TurnActionCoordinator {
       commitments: input.applicableCommitments,
       relevantEntities: input.perceptionEntities,
     });
-    const commitmentEmission = withMessagePersistenceClass(
+    const commitmentEmission = withMessageMetadata(
       commitmentCheck.emission,
-      input.deliberationEmission.persistence_class,
+      input.deliberationEmission,
     );
     const guardedEmission =
       commitmentEmission.kind === "suppressed"
         ? commitmentEmission
-        : withMessagePersistenceClass(
+        : withMessageMetadata(
             await this.options.relationalGuardRunner.run({
               llmClient: input.llmClient,
               turnId: input.turnId,
@@ -171,7 +174,7 @@ export class TurnActionCoordinator {
               currentTurn: input.workingMemory.turn_counter,
               audienceEntityId: input.audienceEntityId,
             }),
-            input.deliberationEmission.persistence_class,
+            commitmentEmission,
           );
 
     return performAction({

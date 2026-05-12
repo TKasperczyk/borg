@@ -332,6 +332,7 @@ function createUnresolvedCitationEntry(sourceId: StreamEntryId): StreamEntry {
     session_id: DEFAULT_SESSION_ID,
     compressed: false,
     sender_entity_id: null,
+    reply_target_entity_id: null,
     turn_status: "active",
   };
 }

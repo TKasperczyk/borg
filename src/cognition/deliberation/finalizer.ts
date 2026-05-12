@@ -6,6 +6,7 @@ import type { ToolDefinition, ToolDispatcher } from "../../tools/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import { executeToolLoop, type ToolLoopResult } from "../action/index.js";
+import { replyTargetSchema, type ReplyTarget } from "../generation/types.js";
 
 export const EMIT_ANSWER_FINALIZER_TOOL_NAME = "EmitAnswer";
 export const EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME = "EmitNoOutput";
@@ -14,6 +15,7 @@ export const EMIT_SELF_REPORT_FINALIZER_TOOL_NAME = "EmitSelfReport";
 const emitTextToolInputSchema = z
   .object({
     text: z.string(),
+    reply_target: replyTargetSchema.optional(),
   })
   .strict();
 
@@ -85,7 +87,7 @@ const EMISSION_FINALIZER_TOOL_NAMES = [
 const EMISSION_FINALIZER_INSTRUCTIONS = [
   "Call exactly ONE of EmitAnswer / EmitNoOutput / EmitSelfReport per turn.",
   "",
-  "Use EmitAnswer for an ordinary assistant response. Put the complete user-visible response in text.",
+  "Use EmitAnswer for an ordinary assistant response. Put the complete user-visible response in text. Optionally set reply_target to kind=entity only when directing the answer at a specific prompt-visible entity_id; omit it or set kind=audience when replying to the current audience.",
   "Use EmitNoOutput only when the correct current-turn behavior is to emit no assistant message at all. Put a concise reason in reason.",
   "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.",
   "",
@@ -132,6 +134,7 @@ export type EmissionDecision =
       kind: "answer";
       text: string;
       source: "tool" | "text";
+      reply_target?: ReplyTarget;
     }
   | {
       kind: "self_report";
@@ -156,7 +159,8 @@ export type FinalizerResult = ToolLoopResult & {
 };
 
 function buildDynamicSystemPrompt(options: RunFinalizerOptions): string {
-  const baseSystemPrompt = options.cacheableSystemPrompt?.dynamicContent ?? options.baseSystemPrompt;
+  const baseSystemPrompt =
+    options.cacheableSystemPrompt?.dynamicContent ?? options.baseSystemPrompt;
 
   return options.additionalPromptSections === undefined
     ? baseSystemPrompt
@@ -221,7 +225,14 @@ function decisionFromEmissionToolResult(result: ToolLoopResult): EmissionDecisio
 
     return parsed.data.text.trim().length === 0
       ? { kind: "empty" }
-      : { kind: "answer", text: parsed.data.text, source: "tool" };
+      : {
+          kind: "answer",
+          text: parsed.data.text,
+          source: "tool",
+          ...(parsed.data.reply_target === undefined
+            ? {}
+            : { reply_target: parsed.data.reply_target }),
+        };
   }
 
   if (terminalCall.name === EMIT_SELF_REPORT_FINALIZER_TOOL_NAME) {
@@ -263,6 +274,9 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
     decision: decision.kind,
     ...(decision.kind === "answer" || decision.kind === "self_report"
       ? { text_length: decision.text.length }
+      : {}),
+    ...(decision.kind === "answer" && decision.reply_target !== undefined
+      ? { reply_target: decision.reply_target }
       : {}),
     ...(decision.kind === "no_output" ? { reason: decision.reason } : {}),
     ...(decision.kind === "self_report" ? { persistence_class: decision.persistence_class } : {}),

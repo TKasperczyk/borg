@@ -4,10 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  Borg,
-  DEFAULT_SESSION_ID,
-} from "../../index.js";
+import { Borg, DEFAULT_SESSION_ID } from "../../index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
 import { deriveProceduralContextKey } from "../../memory/procedural/index.js";
@@ -210,6 +207,7 @@ describe("internal tools", () => {
                 session_id: DEFAULT_SESSION_ID,
                 compressed: false,
                 sender_entity_id: null,
+                reply_target_entity_id: null,
               },
             ],
           },

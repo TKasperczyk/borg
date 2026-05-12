@@ -62,6 +62,7 @@ export const streamEntrySchema = z.object({
   tool_calls: z.array(z.unknown()).optional(),
   audience: z.string().min(1).optional(),
   sender_entity_id: streamEntryEntityIdSchema.nullable().default(null),
+  reply_target_entity_id: streamEntryEntityIdSchema.nullable().default(null),
   persistence_class: streamEntryPersistenceClassSchema.optional(),
   session_id: sessionIdSchema,
   compressed: z.boolean().default(false),

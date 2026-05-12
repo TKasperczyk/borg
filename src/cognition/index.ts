@@ -102,6 +102,7 @@ export {
   type EmissionRecommendation,
   type GenerationSuppressionReason,
   type PendingTurnEmission,
+  type ReplyTarget,
   type TurnEmission,
 } from "./generation/types.js";
 export { Reflector, type ReflectionContext, type ReflectorOptions } from "./reflection/index.js";

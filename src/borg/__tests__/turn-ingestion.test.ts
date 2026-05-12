@@ -62,9 +62,9 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("Try the rollback plan.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -291,9 +291,9 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("Try the rollback plan.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -372,9 +372,9 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("Try the rollback plan.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -429,9 +429,9 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("Try the rollback plan.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -447,6 +447,82 @@ describe("Borg", () => {
       const userEntry = borg.stream.tail(3).find((entry) => entry.kind === "user_msg");
 
       expect(userEntry?.sender_entity_id).toBe(senderEntityId);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("persists reply target entity id from EmitAnswer on the agent message", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const replyTargetEntityId = createEntityId();
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      }),
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          {
+            text: "",
+            input_tokens: 10,
+            output_tokens: 5,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_emit_answer",
+                name: "EmitAnswer",
+                input: {
+                  text: "Alice, try the rollback plan.",
+                  reply_target: {
+                    kind: "entity",
+                    entity_id: replyTargetEntityId,
+                  },
+                },
+              },
+            ],
+          },
+          createEmptyReflectionResponse(),
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      const result = await borg.turn({
+        userMessage: "Atlas deploy failed again.",
+      });
+
+      const agentEntry = borg.stream.tail(3).find((entry) => entry.kind === "agent_msg");
+
+      expect(result.emission).toMatchObject({
+        kind: "message",
+        reply_target: {
+          kind: "entity",
+          entity_id: replyTargetEntityId,
+        },
+      });
+      expect(agentEntry?.reply_target_entity_id).toBe(replyTargetEntityId);
     } finally {
       await borg.close();
     }
@@ -486,9 +562,9 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("Try the rollback plan.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
         ],
       }),
       liveExtraction: true,
@@ -580,9 +656,9 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("The turn still completes.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
           createEmptyReflectionResponse(),
         ],
       }),

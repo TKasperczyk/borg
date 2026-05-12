@@ -8,7 +8,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createEntityId } from "../../util/ids.js";
 import { runFinalizer, type CacheableFinalizerSystemPrompt } from "./finalizer.js";
 
 function createDispatcher(tempDirs: string[]): ToolDispatcher {
@@ -54,8 +54,8 @@ async function runEmissionFinalizer(
             text: "Please respond.",
           },
         ],
-    },
-  ],
+      },
+    ],
     userEntryId: undefined,
     maxTokens: 256,
     path: "system_1",
@@ -119,6 +119,45 @@ describe("runFinalizer emission tools", () => {
         text: "Base dynamic prompt.",
       }),
     ]);
+  });
+
+  it("accepts an optional entity reply target on EmitAnswer", async () => {
+    const targetEntityId = createEntityId();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_targeted_answer",
+              name: "EmitAnswer",
+              input: {
+                text: "Alice, start with the train dates.",
+                reply_target: {
+                  kind: "entity",
+                  entity_id: targetEntityId,
+                },
+              },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs);
+
+    expect(result.decision).toEqual({
+      kind: "answer",
+      text: "Alice, start with the train dates.",
+      source: "tool",
+      reply_target: {
+        kind: "entity",
+        entity_id: targetEntityId,
+      },
+    });
   });
 
   it("keeps the static system block byte-identical when dynamic context changes", async () => {

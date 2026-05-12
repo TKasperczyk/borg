@@ -94,6 +94,7 @@ describe("stream", () => {
     expect(first.timestamp).toBe(100);
     expect(first.compressed).toBe(false);
     expect(first.sender_entity_id).toBeNull();
+    expect(first.reply_target_entity_id).toBeNull();
 
     const reader = new StreamReader({
       dataDir: tempDir,
@@ -143,6 +144,32 @@ describe("stream", () => {
     expect(entry?.sender_entity_id).toBe(senderEntityId);
   });
 
+  it("persists and reads reply target entity ids", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const replyTargetEntityId = createEntityId();
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+    });
+
+    try {
+      await writer.append({
+        kind: "agent_msg",
+        content: "Alice, use the train route.",
+        reply_target_entity_id: replyTargetEntityId,
+      });
+    } finally {
+      writer.close();
+    }
+
+    const [entry] = new StreamReader({
+      dataDir: tempDir,
+    }).tail(1);
+
+    expect(entry?.reply_target_entity_id).toBe(replyTargetEntityId);
+  });
+
   it("parses legacy stream entries without sender ids as null", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -167,6 +194,7 @@ describe("stream", () => {
     }).tail(1);
 
     expect(entry?.sender_entity_id).toBeNull();
+    expect(entry?.reply_target_entity_id).toBeNull();
   });
 
   it("assigns append timestamps after acquiring the stream lock", async () => {
