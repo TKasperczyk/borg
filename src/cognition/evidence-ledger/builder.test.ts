@@ -529,11 +529,62 @@ describe("EvidenceLedgerBuilder", () => {
         reply_target_entity_id: aliceEntityId,
         reply_target_display_name: "Alice",
       },
-      {
-        reply_target_kind: "audience",
-        reply_target_label: "Planning Channel",
-      },
+      undefined,
     ]);
+  });
+
+  it("preserves legacy single-persona agent transcript metadata shape", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "Can you keep this on the rollout list?",
+    });
+    const assistantEntry = await writer.append({
+      kind: "agent_msg",
+      content: "I will keep it on the rollout list.",
+      reply_target_entity_id: null,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-legacy-agent-metadata",
+      audienceEntityId: null,
+      currentUserMessage: "Next message",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const transcriptEntries =
+      ledger.sections.find((section) => section.id === "current_session_transcript")?.entries ?? [];
+    const agentEntry = transcriptEntries.find(
+      (entry) => entry.id === `current_session_stream:${assistantEntry.id}`,
+    );
+
+    expect(transcriptEntries.map((entry) => entry.id)).toContain(
+      `current_session_stream:${userEntry.id}`,
+    );
+    expect(agentEntry).not.toHaveProperty("state_metadata");
   });
 
   it("keeps current user message rendering unchanged when sender is omitted", async () => {

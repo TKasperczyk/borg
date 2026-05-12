@@ -258,10 +258,7 @@ function replyTargetStateMetadata(
   const replyTargetEntityId = entry.reply_target_entity_id ?? null;
 
   if (replyTargetEntityId === null) {
-    return {
-      reply_target_kind: "audience",
-      reply_target_label: entry.audience ?? "current audience",
-    };
+    return undefined;
   }
 
   const displayName = resolveSpeakerDisplayName(entityRepository, replyTargetEntityId);
@@ -271,6 +268,12 @@ function replyTargetStateMetadata(
     reply_target_entity_id: replyTargetEntityId,
     ...(displayName === null ? {} : { reply_target_display_name: displayName }),
   };
+}
+
+function optionalStateMetadata(
+  stateMetadata: Record<string, unknown> | undefined,
+): Pick<EvidenceLedgerEntry, "state_metadata"> {
+  return stateMetadata === undefined ? {} : { state_metadata: stateMetadata };
 }
 
 function rawStreamActor(
@@ -309,6 +312,8 @@ function transcriptRawEntry(
   resolver: ScopeResolver,
   entityRepository: SpeakerEntityRepository | undefined,
 ): EvidenceLedgerEntry {
+  const stateMetadata = replyTargetStateMetadata(entry, entityRepository);
+
   return {
     id: `current_session_stream:${entry.id}`,
     source_type: "current_session_stream",
@@ -318,7 +323,7 @@ function transcriptRawEntry(
     text: stringifyPromptContent(entry.content),
     stream_index: resolver.streamOrderById.get(entry.id),
     state: transcriptState(entry),
-    state_metadata: replyTargetStateMetadata(entry, entityRepository),
+    ...optionalStateMetadata(stateMetadata),
     taint: "none",
     ...streamPersistenceClass(entry),
   };
@@ -1364,6 +1369,8 @@ export class EvidenceLedgerBuilder {
     input: EvidenceLedgerBuildInput,
     resolver: ScopeResolver,
   ): void {
+    const stateMetadata = currentUserMessageStateMetadata(input, this.options.entityRepository);
+
     addEntry(sections, "current_user_message", {
       id: `current_user_message:${input.currentUserEntry?.id ?? input.turnId ?? "unpersisted"}`,
       source_type: "current_user_message",
@@ -1371,7 +1378,7 @@ export class EvidenceLedgerBuilder {
       actor: "user",
       trust_rank: CURRENT_USER_TRUST_RANK,
       text: input.currentUserMessage,
-      state_metadata: currentUserMessageStateMetadata(input, this.options.entityRepository),
+      ...optionalStateMetadata(stateMetadata),
       stream_index:
         input.currentUserEntry === undefined
           ? undefined
