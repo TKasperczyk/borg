@@ -126,8 +126,9 @@ describe("discourse state", () => {
       });
     }
 
-    expect(workingMemory.discourse_state?.closure_pressure_history?.map((entry) => entry.turn_id))
-      .toEqual(["turn-2", "turn-3", "turn-4", "turn-5", "turn-6"]);
+    expect(
+      workingMemory.discourse_state?.closure_pressure_history?.map((entry) => entry.turn_id),
+    ).toEqual(["turn-2", "turn-3", "turn-4", "turn-5", "turn-6"]);
   });
 
   it("caps recent suppression visibility at the three most recent entries", () => {
@@ -136,13 +137,14 @@ describe("discourse state", () => {
     for (let index = 0; index < 5; index += 1) {
       workingMemory = appendRecentSuppression(workingMemory, {
         turnId: `turn-${index}`,
-        reason: "manifest_validation_failed_critical",
+        reason: "legacy_manifest_validation_failed_critical",
         ts: index,
       });
     }
 
-    expect(workingMemory.discourse_state?.recent_suppressions?.map((entry) => entry.turn_id))
-      .toEqual(["turn-2", "turn-3", "turn-4"]);
+    expect(
+      workingMemory.discourse_state?.recent_suppressions?.map((entry) => entry.turn_id),
+    ).toEqual(["turn-2", "turn-3", "turn-4"]);
   });
 
   it("marks a detected closure loop named after S2 planner no-output", () => {

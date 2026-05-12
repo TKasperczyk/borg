@@ -102,6 +102,7 @@ export const pendingProceduralAttemptSchema = z
 
 export const discourseStopProvenanceSchema = z.enum([
   "generation_gate",
+  "finalizer_no_output",
   "manifest_no_output",
   "self_commitment_extractor",
   "no_output_tool",

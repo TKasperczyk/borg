@@ -63,7 +63,7 @@ export type SimulatorRunnerOptions = {
   mock?: boolean;
   includePayloads?: boolean;
   shadowPostGenGuards?: boolean;
-  pipelineCDoublePrime?: boolean;
+  emissionBaseline?: boolean;
   env?: NodeJS.ProcessEnv;
   dataDir?: string;
   tracePath?: string;
@@ -91,14 +91,14 @@ const PERSONA_ROLE_BLEED_MAX_ATTEMPTS = 2;
 const PERSONA_ROLE_BLEED_REJECTED_PREVIEW_CHARS = 500;
 const PERSONA_CHANNEL_TRANSCRIPT_LIMIT = 10;
 const BORG_OBSERVATION_MARKER_PREFIX = "[borg observation:";
-export const PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE =
-  "--pipeline-c-double-prime sets per-guard modes explicitly; --shadow-post-gen-guards is incompatible";
+export const EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE =
+  "--emission-baseline sets per-guard modes explicitly; --shadow-post-gen-guards is incompatible";
 
 type ChannelTranscriptLogEntry = PersonaChannelTranscriptEntry & {
   speakerIndex: number | null;
 };
 
-export const PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES = {
+export const EMISSION_BASELINE_BORG_CONFIG_OVERRIDES = {
   generation: {
     evidenceLedger: { enabled: true },
     postGenerationGuards: {
@@ -164,17 +164,17 @@ export function createSimulatorScenario(
   totalTurns: number,
   options: Pick<
     SimulatorRunnerOptions,
-    "shadowPostGenGuards" | "pipelineCDoublePrime" | "channelName"
+    "shadowPostGenGuards" | "emissionBaseline" | "channelName"
   > = {},
 ): Scenario {
-  if (options.pipelineCDoublePrime === true && options.shadowPostGenGuards === true) {
-    throw new Error(PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE);
+  if (options.emissionBaseline === true && options.shadowPostGenGuards === true) {
+    throw new Error(EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE);
   }
 
   const personas = Array.isArray(personaOrPersonas) ? personaOrPersonas : [personaOrPersonas];
   const baseBorgConfigOverrides =
-    options.pipelineCDoublePrime === true
-      ? PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES
+    options.emissionBaseline === true
+      ? EMISSION_BASELINE_BORG_CONFIG_OVERRIDES
       : options.shadowPostGenGuards === true
         ? SHADOW_POST_GEN_GUARDS_BORG_CONFIG_OVERRIDES
         : undefined;
@@ -550,14 +550,14 @@ export class SimulatorRunner {
     const scheduler = this.options.personaScheduler ?? ROUND_ROBIN_PERSONA_SCHEDULER;
     const scenario = createSimulatorScenario(personas, this.options.totalTurns, {
       shadowPostGenGuards: this.options.shadowPostGenGuards,
-      pipelineCDoublePrime: this.options.pipelineCDoublePrime,
+      emissionBaseline: this.options.emissionBaseline,
       channelName: audienceName,
     });
 
-    if (this.options.pipelineCDoublePrime === true) {
+    if (this.options.emissionBaseline === true) {
       // eslint-disable-next-line no-console
       console.warn(
-        "[simulator] Pipeline C″ active: emission-tool finalizer on; commitment and closure-pressure enforce; relational guard shadow.",
+        "[simulator] Emission baseline active: evidence ledger on; commitment and closure-pressure enforce; relational guard shadow.",
       );
     }
 

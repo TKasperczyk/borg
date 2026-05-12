@@ -35,6 +35,19 @@ function isRelationalGuardSuppressionReason(reason: SuppressionReason): boolean 
   );
 }
 
+function isFinalizerNoOutputSuppressionReason(
+  reason: SuppressionReason,
+): reason is Extract<
+  SuppressionReason,
+  "finalizer_no_output" | "manifest_no_output" | "no_output_tool"
+> {
+  return (
+    reason === "finalizer_no_output" ||
+    reason === "manifest_no_output" ||
+    reason === "no_output_tool"
+  );
+}
+
 export type TurnDiscourseStateServiceOptions = {
   tracer: TurnTracer;
   clock?: Clock;
@@ -290,7 +303,7 @@ export class TurnDiscourseStateService {
       });
     }
 
-    if (input.reason === "no_output_tool" || input.reason === "manifest_no_output") {
+    if (isFinalizerNoOutputSuppressionReason(input.reason)) {
       workingMemory = this.setStopState({
         workingMemory,
         provenance: input.reason,
@@ -340,7 +353,7 @@ export class TurnDiscourseStateService {
         workingMemory,
         sourceStreamEntryId: input.sourceStreamEntryId,
         reason:
-          input.reason === "no_output_tool"
+          input.reason === "no_output_tool" || input.reason === "finalizer_no_output"
             ? "Closure loop detected; finalizer chose no_output."
             : input.reason === "manifest_no_output"
               ? "Closure loop detected; legacy finalizer chose no_output."

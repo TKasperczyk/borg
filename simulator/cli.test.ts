@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import { parseSimulatorCliOptions } from "./cli.js";
-import { PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE } from "./runner.js";
+import { EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE } from "./runner.js";
 
 describe("simulator CLI", () => {
-  it("parses --pipeline-c-double-prime", () => {
+  it("parses --emission-baseline", () => {
+    const options = parseSimulatorCliOptions(["node", "simulate", "--emission-baseline"]);
+
+    expect(options.emissionBaseline).toBe(true);
+  });
+
+  it("parses deprecated --pipeline-c-double-prime as emission baseline", () => {
     const options = parseSimulatorCliOptions(["node", "simulate", "--pipeline-c-double-prime"]);
 
-    expect(options.pipelineCDoublePrime).toBe(true);
+    expect(options.emissionBaseline).toBe(true);
   });
 
   it("parses flags after a pnpm-style -- separator", () => {
@@ -23,13 +29,13 @@ describe("simulator CLI", () => {
       "cli.ts",
       "--",
       "--real",
-      "--pipeline-c-double-prime",
+      "--emission-baseline",
       "--turns",
       "70",
     ]);
 
     expect(options.real).toBe(true);
-    expect(options.pipelineCDoublePrime).toBe(true);
+    expect(options.emissionBaseline).toBe(true);
     expect(options.turns).toBe(70);
   });
 
@@ -114,18 +120,18 @@ describe("simulator CLI", () => {
     expect(options.keep).toBe(true);
   });
 
-  it("rejects --pipeline-c-double-prime with --shadow-post-gen-guards", () => {
+  it("rejects --emission-baseline with --shadow-post-gen-guards", () => {
     expect(() =>
       parseSimulatorCliOptions([
         "node",
         "simulate",
-        "--pipeline-c-double-prime",
+        "--emission-baseline",
         "--shadow-post-gen-guards",
       ]),
-    ).toThrow(PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE);
+    ).toThrow(EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE);
   });
 
-  it("rejects incompatible pipeline flags after a pnpm-style -- separator", () => {
+  it("rejects incompatible deprecated pipeline alias after a pnpm-style -- separator", () => {
     expect(() =>
       parseSimulatorCliOptions([
         "node",
@@ -134,7 +140,7 @@ describe("simulator CLI", () => {
         "--pipeline-c-double-prime",
         "--shadow-post-gen-guards",
       ]),
-    ).toThrow(PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE);
+    ).toThrow(EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE);
   });
 
   it("parses --shadow-post-gen-guards after a pnpm-style -- separator", () => {
@@ -143,9 +149,9 @@ describe("simulator CLI", () => {
     expect(options.shadowPostGenGuards).toBe(true);
   });
 
-  it("defaults --pipeline-c-double-prime to false", () => {
+  it("defaults --emission-baseline to false", () => {
     const options = parseSimulatorCliOptions(["node", "simulate"]);
 
-    expect(options.pipelineCDoublePrime === true).toBe(false);
+    expect(options.emissionBaseline === true).toBe(false);
   });
 });

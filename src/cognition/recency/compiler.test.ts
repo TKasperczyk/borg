@@ -162,31 +162,34 @@ describe("TurnContextCompiler", () => {
     expect(window.messages[2]?.content).toBe("looking");
   });
 
-  it("renders prior suppression markers in the recency window", async () => {
-    const dataDir = createTempDir();
-    const clock = new ManualClock(1_000);
-    const writer = makeWriter(dataDir, clock);
+  it.each(["legacy_manifest_validation_failed_critical", "manifest_validation_failed_critical"])(
+    "renders prior suppression markers in the recency window for %s",
+    async (reason) => {
+      const dataDir = createTempDir();
+      const clock = new ManualClock(1_000);
+      const writer = makeWriter(dataDir, clock);
 
-    try {
-      await writer.append({ kind: "user_msg", content: "Are you there?" });
-      clock.advance(10);
-      await writer.append({
-        kind: "agent_suppressed",
-        content: { reason: "manifest_validation_failed_critical" },
-      });
-    } finally {
-      writer.close();
-    }
+      try {
+        await writer.append({ kind: "user_msg", content: "Are you there?" });
+        clock.advance(10);
+        await writer.append({
+          kind: "agent_suppressed",
+          content: { reason },
+        });
+      } finally {
+        writer.close();
+      }
 
-    const window = new TurnContextCompiler().compile(makeReader(dataDir));
+      const window = new TurnContextCompiler().compile(makeReader(dataDir));
 
-    expect(window.messages).toHaveLength(2);
-    expect(window.messages[1]?.role).toBe("assistant");
-    expect(window.messages[1]?.content).toContain(
-      "[system: prior turn suppressed -- reason: manifest_validation_failed_critical",
-    );
-    expect(window.messages[1]?.content).toContain("no user-visible response was emitted");
-  });
+      expect(window.messages).toHaveLength(2);
+      expect(window.messages[1]?.role).toBe("assistant");
+      expect(window.messages[1]?.content).toContain(
+        `[system: prior turn suppressed -- reason: ${reason}`,
+      );
+      expect(window.messages[1]?.content).toContain("no user-visible response was emitted");
+    },
+  );
 
   it("renders prior observation markers in the recency window without suppressing discourse", async () => {
     const dataDir = createTempDir();

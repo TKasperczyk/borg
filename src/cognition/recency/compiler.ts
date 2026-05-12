@@ -113,7 +113,10 @@ function sanitizeObservationReason(reason: string): string {
 }
 
 function suppressionCategoryContext(reason: string): string {
-  if (reason === "manifest_validation_failed_critical") {
+  if (
+    reason === "legacy_manifest_validation_failed_critical" ||
+    reason === "manifest_validation_failed_critical"
+  ) {
     return "prior unsupported response guard suppressed output";
   }
 
@@ -129,7 +132,11 @@ function suppressionCategoryContext(reason: string): string {
     return "internal identifier guard rejected the response";
   }
 
-  if (reason === "manifest_no_output" || reason === "no_output_tool") {
+  if (
+    reason === "finalizer_no_output" ||
+    reason === "manifest_no_output" ||
+    reason === "no_output_tool"
+  ) {
     return "no_output decision";
   }
 

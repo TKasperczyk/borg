@@ -11,8 +11,8 @@ import { loadCredentials } from "../src/auth/claude-oauth.js";
 import { tomPersona } from "./personas/tom.js";
 import { findSimulatorScenario, scenarioPersonas } from "./scenarios/index.js";
 import {
+  EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE,
   formatSimulatorReport,
-  PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE,
   runSimulation,
 } from "./runner.js";
 import type { Persona } from "./types.js";
@@ -32,11 +32,12 @@ export type ParsedOptions = {
   real?: boolean;
   noPayloads?: boolean;
   shadowPostGenGuards?: boolean;
-  pipelineCDoublePrime?: boolean;
+  emissionBaseline?: boolean;
 };
 
 type RawParsedOptions = ParsedOptions & {
   "--"?: string[];
+  pipelineCDoublePrime?: boolean;
   "pipelineC-doublePrime"?: boolean;
   payloads?: boolean;
 };
@@ -206,11 +207,11 @@ function createSimulatorCli() {
     .option("--trace-out <path>", "Write per-turn trace JSONL to a file (default: /tmp)")
     .option("--no-payloads", "Do not include full prompt/response payloads in turn traces")
     .option("--shadow-post-gen-guards", "Run post-generation guards in shadow mode")
-    // Pipeline C-double-prime launch:
-    // pnpm simulate --pipeline-c-double-prime --scenario <scenario> ...
-    // C-double-prime means emission-tool finalizer on, commitment and
-    // closure-pressure in enforce, and relational guard in shadow.
-    .option("--pipeline-c-double-prime", "Run Pipeline C″ config for v27 launches")
+    .option(
+      "--emission-baseline",
+      "Run emission baseline config: evidence ledger on, commitment and closure-pressure enforce, relational guard shadow",
+    )
+    .option("--pipeline-c-double-prime", "Deprecated alias for --emission-baseline")
     .option("--keep", "Keep Borg data dirs and trace files for inspection")
     .option("--real", "Use real Anthropic persona and overseer calls")
     .option("--mock", "Use deterministic fake persona, overseer, and Borg LLM");
@@ -219,8 +220,8 @@ function createSimulatorCli() {
 }
 
 function assertSimulatorFlagCompatibility(options: ParsedOptions): void {
-  if (options.pipelineCDoublePrime === true && options.shadowPostGenGuards === true) {
-    throw new Error(PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE);
+  if (options.emissionBaseline === true && options.shadowPostGenGuards === true) {
+    throw new Error(EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE);
   }
 }
 
@@ -240,12 +241,19 @@ export function parseSimulatorCliOptions(argv: string[] = process.argv): ParsedO
     rawOptions = parsed.options as RawParsedOptions;
   }
 
-  const { "pipelineC-doublePrime": pipelineCDoublePrimeRaw, payloads, ...restOptions } = rawOptions;
+  const {
+    "pipelineC-doublePrime": pipelineCDoublePrimeRaw,
+    pipelineCDoublePrime: deprecatedPipelineCDoublePrime,
+    payloads,
+    ...restOptions
+  } = rawOptions;
   const options: ParsedOptions = {
     ...restOptions,
     noPayloads: restOptions.noPayloads === true || payloads === false,
-    pipelineCDoublePrime:
-      restOptions.pipelineCDoublePrime === true || pipelineCDoublePrimeRaw === true,
+    emissionBaseline:
+      restOptions.emissionBaseline === true ||
+      deprecatedPipelineCDoublePrime === true ||
+      pipelineCDoublePrimeRaw === true,
   };
 
   assertSimulatorFlagCompatibility(options);
@@ -282,7 +290,7 @@ async function main(): Promise<void> {
     metricsPath,
     tracePath,
     shadowPostGenGuards: options.shadowPostGenGuards === true,
-    pipelineCDoublePrime: options.pipelineCDoublePrime === true,
+    emissionBaseline: options.emissionBaseline === true,
     includePayloads: options.noPayloads !== true,
     keep: options.keep === true,
     mock: selectMode(options),

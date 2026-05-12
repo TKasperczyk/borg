@@ -231,9 +231,9 @@ function chatResult(input: {
 }
 
 describe("SimulatorRunner", () => {
-  it("builds Pipeline C-double-prime config overrides", () => {
+  it("builds emission baseline config overrides", () => {
     const scenario = createSimulatorScenario(tomPersona, 100, {
-      pipelineCDoublePrime: true,
+      emissionBaseline: true,
     });
 
     expect(scenario.borgConfigOverrides).toEqual({
@@ -256,7 +256,7 @@ describe("SimulatorRunner", () => {
     expect(scenario.borgConfigOverrides).toBeUndefined();
   });
 
-  it("enables evidence ledger in Borg config for multi-persona runs without Pipeline C-double-prime", async () => {
+  it("enables evidence ledger in Borg config for multi-persona runs without emission baseline", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
     const alice = {
