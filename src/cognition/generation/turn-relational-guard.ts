@@ -40,6 +40,8 @@ const RELATIONAL_SLOT_GUARD_LIMIT = 64;
 const INTERNAL_IDENTIFIER_EXACT_PATTERN =
   /^(?:strm|sess|ep|goal|val|trt|abp|grw|oq|semn|seme|cmt|ent|act|rslot|skl|procevi|run|exstep)_[a-z0-9]{16}$|^autonomy_wake_[a-f0-9]{16}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+type TurnRelationalGuardEmission = Extract<PendingTurnEmission, { kind: "message" | "suppressed" }>;
+
 export type TurnRelationalGuardRunnerOptions = {
   auditModel: string;
   rewriteModel: string;
@@ -180,7 +182,7 @@ function applyInternalIdentifierGuard(input: {
   response: string;
   knownIdentifiers: readonly string[];
   tracer: TurnTracer;
-}): PendingTurnEmission {
+}): TurnRelationalGuardEmission {
   const leakedIdentifiers = leakedInternalIdentifiers(input.response, input.knownIdentifiers);
 
   if (leakedIdentifiers.length === 0) {
@@ -207,7 +209,7 @@ function applyInternalIdentifierGuard(input: {
 export class TurnRelationalGuardRunner {
   constructor(private readonly options: TurnRelationalGuardRunnerOptions) {}
 
-  async run(input: RunTurnRelationalGuardInput): Promise<PendingTurnEmission> {
+  async run(input: RunTurnRelationalGuardInput): Promise<TurnRelationalGuardEmission> {
     const currentUserMessage: RelationalGuardCurrentUserMessage | null =
       input.persistedUserEntry === undefined
         ? null

@@ -170,15 +170,18 @@ export function buildClosureLoopMessageWindow(input: {
   currentUserEntryId: StreamEntryId;
 }): ClosureLoopMessageForClassification[] {
   return [
-    ...input.recentHistory.slice(-6).map(
-      (message): ClosureLoopMessageForClassification => ({
-        message_ref: message.stream_entry_id,
-        role: message.role,
-        content: message.content,
-        stream_entry_id: message.stream_entry_id,
-        ts: message.ts,
-      }),
-    ),
+    ...input.recentHistory
+      .filter((message) => message.kind !== "agent_observed")
+      .slice(-6)
+      .map(
+        (message): ClosureLoopMessageForClassification => ({
+          message_ref: message.stream_entry_id,
+          role: message.role,
+          content: message.content,
+          stream_entry_id: message.stream_entry_id,
+          ts: message.ts,
+        }),
+      ),
     {
       message_ref: input.currentUserEntryId,
       role: "user",

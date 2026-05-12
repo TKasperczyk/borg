@@ -25,10 +25,7 @@ import type {
 import type { JsonValue } from "../../util/json-value.js";
 import { valueAppearsIn } from "../../util/text-presence.js";
 import type { TurnTracer } from "../tracing/tracer.js";
-import {
-  RELATIONAL_CLAIM_KINDS,
-  type RelationalClaimKind,
-} from "./relational-claim-kinds.js";
+import { RELATIONAL_CLAIM_KINDS, type RelationalClaimKind } from "./relational-claim-kinds.js";
 import type { PendingTurnEmission } from "./types.js";
 
 export { RELATIONAL_CLAIM_KINDS, type RelationalClaimKind } from "./relational-claim-kinds.js";
@@ -225,7 +222,7 @@ const NAME_PHRASE_PATTERN = `${NAME_WORD_PATTERN}(?:\\s+${NAME_WORD_PATTERN})?`;
 export type RelationalGuardStreamEvidence = {
   entry_id: StreamEntryId;
   role: "user" | "assistant";
-  kind: Extract<StreamEntryKind, "user_msg" | "agent_msg" | "agent_suppressed">;
+  kind: Extract<StreamEntryKind, "user_msg" | "agent_msg" | "agent_suppressed" | "agent_observed">;
   session_id: string;
   ts: number;
   snippet: string;
@@ -298,12 +295,17 @@ export type RelationalClaimValidationSummary = {
   unsupported: RelationalClaimValidation[];
 };
 
+type RelationalClaimGuardEmission = Extract<
+  PendingTurnEmission,
+  { kind: "message" | "suppressed" }
+>;
+
 export type RelationalClaimGuardResult = {
-  emission: PendingTurnEmission;
+  emission: RelationalClaimGuardEmission;
   claims: RelationalClaimAuditClaim[];
   validations: RelationalClaimValidation[];
   verdict: "passed" | "rewritten" | "suppressed";
-  suppressionReason?: Extract<PendingTurnEmission, { kind: "suppressed" }>["reason"];
+  suppressionReason?: Extract<RelationalClaimGuardEmission, { kind: "suppressed" }>["reason"];
 };
 
 export type RelationalClaimGuardOptions = {
@@ -351,7 +353,8 @@ export function streamEntryToRelationalGuardEvidence(
   if (
     entry.kind !== "user_msg" &&
     entry.kind !== "agent_msg" &&
-    entry.kind !== "agent_suppressed"
+    entry.kind !== "agent_suppressed" &&
+    entry.kind !== "agent_observed"
   ) {
     return null;
   }
@@ -649,10 +652,10 @@ function validateSessionCitationScope(input: {
   }
 
   for (const entry of resolved) {
-    if (entry.kind === "agent_suppressed") {
+    if (entry.kind === "agent_suppressed" || entry.kind === "agent_observed") {
       return {
         entries: resolved,
-        reason: `cited stream entry ${entry.entry_id} is an agent_suppressed marker`,
+        reason: `cited stream entry ${entry.entry_id} is an ${entry.kind} marker`,
       };
     }
 
@@ -1517,10 +1520,14 @@ function relationalClaimModeForKind(
 }
 
 function relationalModeAllShadow(mode: RelationalClaimGuardMode | undefined): boolean {
-  return RELATIONAL_CLAIM_KINDS.every((kind) => relationalClaimModeForKind(mode, kind) === "shadow");
+  return RELATIONAL_CLAIM_KINDS.every(
+    (kind) => relationalClaimModeForKind(mode, kind) === "shadow",
+  );
 }
 
-function traceMode(mode: RelationalClaimGuardMode | undefined): "enforce" | "shadow" | "per_category" {
+function traceMode(
+  mode: RelationalClaimGuardMode | undefined,
+): "enforce" | "shadow" | "per_category" {
   if (mode === undefined) {
     return "enforce";
   }
@@ -1616,7 +1623,8 @@ function emitTrace(input: {
     traceUnsupportedPayload(validation, includePayloads),
   );
   const unsupportedEnforced =
-    input.unsupportedEnforced ?? partitionUnsupportedByMode(input.unsupported, configuredMode).enforced;
+    input.unsupportedEnforced ??
+    partitionUnsupportedByMode(input.unsupported, configuredMode).enforced;
   const unsupportedShadow =
     input.unsupportedShadow ?? partitionUnsupportedByMode(input.unsupported, configuredMode).shadow;
 

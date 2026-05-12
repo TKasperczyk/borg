@@ -83,8 +83,13 @@ const CLOSURE_RESPONSE_AUDIT_SYSTEM_PROMPT = [
 export type ClosureResponseSpan = z.infer<typeof closureResponseSpanSchema>;
 export type ClosureResponseAudit = z.infer<typeof closureResponseAuditSchema>;
 
+type ClosurePressureGuardEmission = Extract<
+  PendingTurnEmission,
+  { kind: "message" | "suppressed" }
+>;
+
 export type ClosurePressureGuardResult = {
-  emission: PendingTurnEmission;
+  emission: ClosurePressureGuardEmission;
   verdict: "passed" | "rewritten" | "suppressed";
   removed_spans: string[];
   active_closure_commitments: string[];
@@ -162,8 +167,7 @@ function activeClosurePressureHistoryEntries(input: {
     const withinTurns =
       input.currentTurn === undefined ||
       entry.turn === undefined ||
-      Math.max(0, input.currentTurn - entry.turn) <=
-        CLOSURE_PRESSURE_HISTORY_ACTIVE_TURN_WINDOW;
+      Math.max(0, input.currentTurn - entry.turn) <= CLOSURE_PRESSURE_HISTORY_ACTIVE_TURN_WINDOW;
 
     return withinTime && withinTurns;
   });

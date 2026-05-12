@@ -91,7 +91,9 @@ function isCompactRepeatedProbe(text: string): boolean {
 }
 
 function recentUserMessages(messages: readonly RecencyMessage[]): string[] {
-  return messages.filter((message) => message.role === "user").map((message) => message.content);
+  return messages
+    .filter((message) => message.role === "user" && message.kind !== "agent_observed")
+    .map((message) => message.content);
 }
 
 function countRecentMinimalRun(messages: readonly string[]): number {
@@ -251,6 +253,7 @@ export class GenerationGate {
               recent_messages: input.recencyMessages.slice(-8).map((message) => ({
                 role: message.role,
                 content: message.content,
+                kind: message.kind ?? null,
               })),
             }),
           },
