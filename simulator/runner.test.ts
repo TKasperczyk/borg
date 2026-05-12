@@ -95,6 +95,9 @@ function fakeSimulatorBorg(): Borg {
       countActive: () => 0,
       countSuperseded: () => 0,
     },
+    entities: {
+      resolve: () => createEntityId(),
+    },
     relationalSlots: {
       countByState: () => zeroCounts(RELATIONAL_SLOT_STATES),
     },
@@ -244,6 +247,48 @@ describe("SimulatorRunner", () => {
     const scenario = createSimulatorScenario(tomPersona, 100);
 
     expect(scenario.borgConfigOverrides).toBeUndefined();
+  });
+
+  it("enables evidence ledger in Borg config for multi-persona runs without Pipeline C-double-prime", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const alice = {
+      key: "alice-test",
+      displayName: "Alice",
+      systemPrompt: "Speak as Alice.",
+    };
+    const bob = {
+      key: "bob-test",
+      displayName: "Bob",
+      systemPrompt: "Speak as Bob.",
+    };
+    const aliceSession = fakePersonaSession(["alice first"]);
+    const bobSession = fakePersonaSession(["bob first"]);
+    const openSpy = vi.spyOn(Borg, "open").mockResolvedValue(fakeSimulatorBorg());
+    vi.spyOn(BorgTransport.prototype, "resolveEntity").mockReturnValue(createEntityId());
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) =>
+      chatResult({
+        response: "Borg replied.",
+        emitted: true,
+        turnId: "turn-multi-ledger",
+        sessionId: options.sessionId as SessionId,
+      }),
+    );
+
+    await runSimulation({
+      runId: "sim-runner-multi-persona-ledger-test",
+      persona: alice,
+      personas: [alice, bob],
+      personaSessions: [aliceSession.session, bobSession.session],
+      totalTurns: 1,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+
+    expect(openSpy.mock.calls[0]?.[0]?.config?.generation.evidenceLedger.enabled).toBe(true);
   });
 
   it("drafts one persona turn while retrying transient transport failures", async () => {

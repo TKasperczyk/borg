@@ -126,6 +126,26 @@ const SHADOW_POST_GEN_GUARDS_BORG_CONFIG_OVERRIDES = {
   },
 } satisfies NonNullable<Scenario["borgConfigOverrides"]>;
 
+function withMultiPersonaEvidenceLedger(
+  overrides: NonNullable<Scenario["borgConfigOverrides"]> | undefined,
+  personas: readonly Persona[],
+): NonNullable<Scenario["borgConfigOverrides"]> | undefined {
+  if (personas.length <= 1) {
+    return overrides;
+  }
+
+  return {
+    ...overrides,
+    generation: {
+      ...overrides?.generation,
+      evidenceLedger: {
+        ...overrides?.generation?.evidenceLedger,
+        enabled: true,
+      },
+    },
+  };
+}
+
 function isSessionEndingSuppression(reason: GenerationSuppressionReason | undefined): boolean {
   if (reason === undefined) return true;
 
@@ -144,14 +164,15 @@ export function createSimulatorScenario(
     throw new Error(PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE);
   }
 
-  const borgConfigOverrides =
+  const personas = Array.isArray(personaOrPersonas) ? personaOrPersonas : [personaOrPersonas];
+  const baseBorgConfigOverrides =
     options.pipelineCDoublePrime === true
       ? PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES
       : options.shadowPostGenGuards === true
         ? SHADOW_POST_GEN_GUARDS_BORG_CONFIG_OVERRIDES
         : undefined;
+  const borgConfigOverrides = withMultiPersonaEvidenceLedger(baseBorgConfigOverrides, personas);
 
-  const personas = Array.isArray(personaOrPersonas) ? personaOrPersonas : [personaOrPersonas];
   const personaKeys = personas.map((persona) => persona.key).join("-");
   const personaNames = personas.map((persona) => persona.displayName).join(", ");
   const channelSuffix =
