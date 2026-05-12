@@ -36,7 +36,7 @@ const emitSelfReportToolInputSchema = z
 const EMIT_ANSWER_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_ANSWER_FINALIZER_TOOL_NAME,
   description:
-    "Emit the assistant response for this turn. Put the complete user-visible response in text. Use this for ordinary answers, questions, acknowledgments, challenges, and continuations.",
+    "Emit the assistant response for this turn. Put the complete user-visible response in text. Use this for ordinary answers, questions, acknowledgments, challenges, and continuations. When the response is primarily addressed to one named participant, also set reply_target to kind=entity with their prompt-visible entity_id; default kind=audience (or omit) when speaking to the whole channel or multiple participants.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitTextToolInputSchema,
@@ -87,7 +87,7 @@ const EMISSION_FINALIZER_TOOL_NAMES = [
 const EMISSION_FINALIZER_INSTRUCTIONS = [
   "Call exactly ONE of EmitAnswer / EmitNoOutput / EmitSelfReport per turn.",
   "",
-  "Use EmitAnswer for an ordinary assistant response. Put the complete user-visible response in text. Optionally set reply_target to kind=entity only when directing the answer at a specific prompt-visible entity_id; omit it or set kind=audience when replying to the current audience.",
+  "Use EmitAnswer for an ordinary assistant response. Put the complete user-visible response in text. Use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. Use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole. For example, if Alice asks Borg a question and Borg's response begins 'Alice -- ...', reply_target.kind should be entity with Alice's entity_id.",
   "Use EmitNoOutput only when the correct current-turn behavior is to emit no assistant message at all. Put a concise reason in reason.",
   "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.",
   "",
