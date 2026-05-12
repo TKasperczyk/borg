@@ -22,17 +22,17 @@ const turnPlanSchema = z.object({
   uncertainty: z
     .string()
     .describe(
-      "What's unclear about the user's current turn that matters for the answer? Empty string if nothing.",
+      "What's unclear about the current participant input that matters for the engagement decision or answer? Empty string if nothing.",
     ),
   verification_steps: z
     .array(z.string())
     .describe(
-      "Short phrases describing what you should double-check or re-retrieve before answering. Empty array if nothing.",
+      "Short phrases describing what you should double-check or re-retrieve before engaging. Empty array if nothing.",
     ),
   tensions: z
     .array(z.string())
     .describe(
-      "Conflicts or contradictions in what you already know that need to be reconciled in the response. Empty array if none.",
+      "Conflicts or contradictions in what you already know that need to be reconciled if you respond. Empty array if none.",
     ),
   voice_note: z
     .string()
@@ -43,7 +43,7 @@ const turnPlanSchema = z.object({
     .enum(["emit", "no_output"])
     .default("emit")
     .describe(
-      "Use no_output when the correct current-turn behavior is to emit no assistant message at all; otherwise use emit.",
+      "Use no_output only when the conversation has naturally closed and the correct current-turn behavior is to emit no assistant message at all; otherwise use emit and let the finalizer choose visible speech or observation.",
     ),
   referenced_episode_ids: z
     .array(z.string())
@@ -65,7 +65,7 @@ export const TURN_PLAN_TOOL_NAME = "EmitTurnPlan";
 const TURN_PLAN_TOOL: LLMToolDefinition = {
   name: TURN_PLAN_TOOL_NAME,
   description:
-    "Emit a structured plan for this reflective/high-stakes turn before the final response. The plan is passed back to you in the final-response call so you can execute against it. List the episode_ids from borg_retrieved_evidence that you actually used as evidence; empty if none were drawn on. Emit follow-up intents only for concrete future actions worth carrying in working memory.",
+    "Emit a structured plan for this reflective/high-stakes turn before the final engagement decision. The plan is passed back to you in the final-response call so you can execute against it. List the episode_ids from borg_retrieved_evidence that you actually used as evidence; empty if none were drawn on. Emit follow-up intents only for concrete future actions worth carrying in working memory.",
   inputSchema: toToolInputSchema(turnPlanSchema),
   // Sprint 8d.6.5 placed cache_control here, but v39 traces (codex
   // 1b0384c3) showed it was a no-op: TURN_PLAN_TOOL JSON is ~2.2KB,
@@ -108,10 +108,10 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
     options.baseSystemPrompt,
     plannerVoiceAnchors,
     [
-      "You are about to answer a reflective, high-stakes, or contradictory turn.",
+      "You are about to decide whether and how to engage with a reflective, high-stakes, or contradictory turn.",
       `Emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,
       "The plan is passed back to you in the next call so you can execute it. Keep it short and grounded in the current turn -- do NOT try to draft the answer itself here.",
-      "Set emission_recommendation='no_output' only when the correct action is no assistant message at all. Do not describe silence in voice_note.",
+      "Set emission_recommendation='no_output' only when the conversation has naturally closed. Do not describe silence in voice_note.",
       "Use plan.intents only for concrete future actions you mean to carry into later turns. Leave it empty when no follow-up state should persist.",
     ].join("\n"),
   ]
@@ -162,7 +162,8 @@ function aggregatePlannerUsage(
   next: DeliberationUsage,
 ): DeliberationUsage {
   const cacheCreation =
-    current.cache_creation_input_tokens === undefined && next.cache_creation_input_tokens === undefined
+    current.cache_creation_input_tokens === undefined &&
+    next.cache_creation_input_tokens === undefined
       ? undefined
       : (current.cache_creation_input_tokens ?? 0) + (next.cache_creation_input_tokens ?? 0);
   const cacheRead =
