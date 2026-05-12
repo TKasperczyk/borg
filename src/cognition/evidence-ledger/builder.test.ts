@@ -148,7 +148,10 @@ function makeAction(
   };
 }
 
-function makeSlot(streamEntryId: StreamEntry["id"]): RelationalSlot {
+function makeSlot(
+  streamEntryId: StreamEntry["id"],
+  overrides: Partial<RelationalSlot> = {},
+): RelationalSlot {
   return {
     id: createRelationalSlotId(),
     subject_entity_id: "ent_aaaaaaaaaaaaaaaa" as RelationalSlot["subject_entity_id"],
@@ -160,6 +163,7 @@ function makeSlot(streamEntryId: StreamEntry["id"]): RelationalSlot {
     alternate_values: [],
     created_at: NOW_MS,
     updated_at: NOW_MS,
+    ...overrides,
   };
 }
 
@@ -386,6 +390,118 @@ describe("EvidenceLedgerBuilder", () => {
         source_type: "system_metadata",
         session_scope: "prior_session",
       }),
+    ]);
+  });
+
+  it("renders relational slots scoped and ordered by active participant", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const unseen = createEntityId();
+    const aliceEntry = await writer.append({
+      kind: "user_msg",
+      content: "Alice gives her tutor update.",
+      sender_entity_id: alice,
+    });
+    const bobEntry = await writer.append({
+      kind: "user_msg",
+      content: "Bob gives his dog update.",
+      sender_entity_id: bob,
+    });
+    const slots = [
+      makeSlot(aliceEntry.id, {
+        subject_entity_id: alice,
+        slot_key: "tutor.name",
+        value: "Marta",
+      }),
+      makeSlot(bobEntry.id, {
+        subject_entity_id: bob,
+        slot_key: "dog.name",
+        value: "Niko",
+      }),
+      makeSlot(aliceEntry.id, {
+        subject_entity_id: unseen,
+        slot_key: "partner.name",
+        value: "Lee",
+      }),
+    ];
+    const listSlots = (
+      options: {
+        subjectEntityId?: EntityId;
+        states?: readonly RelationalSlot["state"][];
+        limit?: number;
+      } = {},
+    ) =>
+      slots
+        .filter(
+          (slot) =>
+            (options.subjectEntityId === undefined ||
+              slot.subject_entity_id === options.subjectEntityId) &&
+            (options.states === undefined ||
+              options.states.some((state) => state === slot.state)),
+        )
+        .slice(0, options.limit ?? slots.length);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: listSlots,
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(bobEntry.content),
+      currentUserEntry: bobEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        {
+          entityId: bob,
+          displayName: "Bob",
+          role: "speaker",
+        },
+        {
+          entityId: alice,
+          displayName: "Alice",
+          role: "participant",
+        },
+      ],
+    });
+    const relationalEntries =
+      ledger.sections.find((section) => section.id === "relational_slots")?.entries ?? [];
+
+    expect(relationalEntries.map((entry) => entry.value)).toEqual([
+      "dog.name=Niko",
+      "tutor.name=Marta",
+    ]);
+    expect(relationalEntries.map((entry) => entry.state_metadata)).toEqual([
+      {
+        subject_entity_id: bob,
+        subject_display_name: "Bob",
+        subject_role: "speaker",
+      },
+      {
+        subject_entity_id: alice,
+        subject_display_name: "Alice",
+        subject_role: "participant",
+      },
     ]);
   });
 

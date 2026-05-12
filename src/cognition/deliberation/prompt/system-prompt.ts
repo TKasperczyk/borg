@@ -21,6 +21,7 @@ import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
+import type { ActiveParticipant } from "../../participants.js";
 import {
   CURRENT_USER_MESSAGE_REMINDER,
   DEFAULT_HOST_CAPABILITIES_SECTION,
@@ -181,7 +182,10 @@ function buildBaseSystemPromptSections(
   };
   const relationalSlotConstraintsSection = {
     tag: "borg_relational_slot_constraints",
-    content: summarizeRelationalSlotConstraints(context.relationalSlots ?? []),
+    content: summarizeRelationalSlotConstraints(
+      context.relationalSlots ?? [],
+      context.activeParticipants,
+    ),
   };
   const frameAnomalyGateSection = {
     tag: "borg_frame_anomaly_gate",
@@ -529,7 +533,19 @@ function summarizeDiscourseControl(workingMemory: WorkingMemory): string | null 
   return lines.length === 0 ? null : lines.join("\n");
 }
 
-function summarizeRelationalSlotConstraints(slots: readonly RelationalSlot[]): string | null {
+function relationalSlotSubjectLabel(
+  slot: RelationalSlot,
+  participants: readonly ActiveParticipant[] | undefined,
+): string {
+  const participant = participants?.find((candidate) => candidate.entityId === slot.subject_entity_id);
+
+  return participant?.displayName ?? participant?.entityId ?? slot.subject_entity_id;
+}
+
+function summarizeRelationalSlotConstraints(
+  slots: readonly RelationalSlot[],
+  participants: readonly ActiveParticipant[] | undefined,
+): string | null {
   const constrained = slots.filter(
     (slot) => slot.state === "contested" || slot.state === "quarantined",
   );
@@ -542,12 +558,16 @@ function summarizeRelationalSlotConstraints(slots: readonly RelationalSlot[]): s
     "Relational slot constraints (do not violate):",
     ...constrained.slice(0, 12).map((slot) => {
       const neutral = neutralPhraseForSlotKey(slot.slot_key);
+      const subjectPrefix =
+        participants === undefined || participants.length <= 1
+          ? ""
+          : `${relationalSlotSubjectLabel(slot, participants)}: `;
       const reason =
         slot.state === "quarantined"
           ? "conflicting evidence reached quarantine"
           : "conflicting evidence is contested";
 
-      return `- ${slot.slot_key}: ${slot.state.toUpperCase()} (${reason}). Do not name this relation. Use "${neutral}" or "they". Re-establish only if the user names it in the current message.`;
+      return `- ${subjectPrefix}${slot.slot_key}: ${slot.state.toUpperCase()} (${reason}). Do not name this relation. Use "${neutral}" or "they". Re-establish only if the user names it in the current message.`;
     }),
   ].join("\n");
 }

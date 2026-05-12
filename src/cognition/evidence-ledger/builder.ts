@@ -30,6 +30,7 @@ import {
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
 import type { EntityId, EpisodeId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { FrameAnomalyClassification } from "../frame-anomaly/index.js";
+import type { ActiveParticipant } from "../participants.js";
 import { resolveSpeakerDisplayName, type SpeakerEntityRepository } from "../speaker-tags.js";
 import {
   EVIDENCE_LEDGER_SECTION_DEFINITIONS,
@@ -100,6 +101,7 @@ export type EvidenceLedgerBuildInput = {
   openQuestions: readonly OpenQuestion[];
   pendingCorrections: readonly ReviewQueueItem[];
   frameAnomaly?: FrameAnomalyClassification | null;
+  activeParticipants?: readonly ActiveParticipant[];
 };
 
 type SectionBucket = {
@@ -688,6 +690,29 @@ function slotScope(slot: RelationalSlot, resolver: ScopeResolver): EvidenceLedge
     ],
     resolver,
   );
+}
+
+function participantForSlot(
+  slot: RelationalSlot,
+  participants: readonly ActiveParticipant[] | undefined,
+): ActiveParticipant | undefined {
+  return participants?.find((participant) => participant.entityId === slot.subject_entity_id);
+}
+
+function slotSubjectStateMetadata(
+  slot: RelationalSlot,
+  participant: ActiveParticipant | undefined,
+  participantCount: number,
+): Record<string, unknown> | undefined {
+  if (participant === undefined || participantCount <= 1) {
+    return undefined;
+  }
+
+  return {
+    subject_entity_id: slot.subject_entity_id,
+    subject_display_name: participant.displayName ?? slot.subject_entity_id,
+    subject_role: participant.role,
+  };
 }
 
 function openQuestionScope(
@@ -1338,7 +1363,7 @@ export class EvidenceLedgerBuilder {
     this.addDiscourseState(sections, input, resolver);
     this.addContradictionsAndQuarantines(sections, input, streamEntries, resolver);
     await this.addActionStates(sections, input, resolver);
-    this.addRelationalSlots(sections, resolver);
+    this.addRelationalSlots(sections, resolver, input.activeParticipants);
     // Sprint 8d.6.3: stream IDs covered by the current_session_transcript
     // section don't need to be re-rendered as retrieved_raw_stream_evidence.
     // The same underlying entry's text was duplicated across both sections
@@ -1635,13 +1660,28 @@ export class EvidenceLedgerBuilder {
     });
   }
 
-  private addRelationalSlots(sections: SectionBuckets, resolver: ScopeResolver): void {
-    const slots = this.options.relationalSlotRepository.list({
-      states: ["established", "contested", "quarantined"],
-      limit: RELATIONAL_SLOT_LEDGER_LIMIT,
-    });
+  private addRelationalSlots(
+    sections: SectionBuckets,
+    resolver: ScopeResolver,
+    activeParticipants: readonly ActiveParticipant[] | undefined,
+  ): void {
+    const slots =
+      activeParticipants === undefined
+        ? this.options.relationalSlotRepository.list({
+            states: ["established", "contested", "quarantined"],
+            limit: RELATIONAL_SLOT_LEDGER_LIMIT,
+          })
+        : activeParticipants.flatMap((participant) =>
+            this.options.relationalSlotRepository.list({
+              subjectEntityId: participant.entityId,
+              states: ["established", "contested", "quarantined"],
+              limit: RELATIONAL_SLOT_LEDGER_LIMIT,
+            }),
+          );
+    const cappedSlots = slots.slice(0, RELATIONAL_SLOT_LEDGER_LIMIT);
 
-    for (const slot of slots) {
+    for (const slot of cappedSlots) {
+      const participant = participantForSlot(slot, activeParticipants);
       addEntry(
         sections,
         "relational_slots",
@@ -1657,6 +1697,9 @@ export class EvidenceLedgerBuilder {
               : `alternate_values=${slot.alternate_values.map((alternate) => alternate.value).join(", ")}`,
           value: `${slot.slot_key}=${slot.value}`,
           state: slot.state,
+          ...optionalStateMetadata(
+            slotSubjectStateMetadata(slot, participant, activeParticipants?.length ?? 0),
+          ),
           taint: slotTaint(slot),
           ...persistenceClassFromProvenance(
             {

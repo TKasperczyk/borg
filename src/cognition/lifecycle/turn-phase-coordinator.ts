@@ -35,6 +35,7 @@ import {
 } from "../frame-anomaly/index.js";
 import type { TurnGoalPromotionService } from "../goals/turn-goal-promotion-service.js";
 import type { PerceptionGateway } from "../perception/gateway.js";
+import { resolveActiveParticipants, type ActiveParticipant } from "../participants.js";
 import type { TurnOpeningPersistence } from "../persistence/turn-opening.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnReflectionCoordinator } from "../reflection/turn-reflection-coordinator.js";
@@ -56,6 +57,7 @@ import type { SocialRepository } from "../../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import {
   QUARANTINED_USER_ENTRY_EVENT,
+  loadSessionStreamEntries,
   type StreamEntry,
   type StreamReader,
   type StreamWriter,
@@ -75,11 +77,30 @@ import {
 } from "../generation/closure-loop.js";
 
 const ACTIVE_TURN_STATUS = "active";
+const DELIBERATION_RELATIONAL_SLOT_LIMIT = 24;
 
 type EvidenceLedgerFinalizerContext = {
   ledger: EvidenceLedger | null;
   promptSection: string | null;
 };
+
+function listConstrainedRelationalSlotsForParticipants(
+  repository: RelationalSlotRepository,
+  participants: readonly ActiveParticipant[],
+) {
+  if (participants.length === 0) {
+    return [];
+  }
+
+  return participants
+    .flatMap((participant) =>
+      repository.listConstrained({
+        subjectEntityId: participant.entityId,
+        limit: DELIBERATION_RELATIONAL_SLOT_LIMIT,
+      }),
+    )
+    .slice(0, DELIBERATION_RELATIONAL_SLOT_LIMIT);
+}
 
 export type TurnPhaseInput = {
   userMessage: string;
@@ -236,6 +257,12 @@ export class TurnPhaseCoordinator {
     const persistedUserEntryId = persistedUserEntry?.id;
     const persistedPerceptionEntry = openingPersistence.persistedPerceptionEntry;
     workingMemory = openingPersistence.workingMemory;
+    const activeParticipants = resolveActiveParticipants({
+      audienceEntityId,
+      senderEntityId: turnInput.senderEntityId ?? null,
+      streamEntries: await loadSessionStreamEntries(this.options.createStreamReader(sessionId)),
+      entityRepository: this.options.entityRepository,
+    });
 
     const frameAnomalyClassification = await this.classifyFrameAnomaly({
       llmClient,
@@ -459,9 +486,10 @@ export class TurnPhaseCoordinator {
     const retrievedSemantic = retrievalContext.retrievedSemantic;
     const proceduralContext = retrievalContext.proceduralContext;
     const selectedSkill = retrievalContext.selectedSkill;
-    const relationalSlots = this.options.relationalSlotRepository.listConstrained({
-      limit: 24,
-    });
+    const relationalSlots = listConstrainedRelationalSlotsForParticipants(
+      this.options.relationalSlotRepository,
+      activeParticipants,
+    );
     const evidenceLedgerContext = await this.buildEvidenceLedgerFinalizerContext({
       sessionId,
       turnId,
@@ -476,6 +504,7 @@ export class TurnPhaseCoordinator {
       openQuestions: retrieval.open_questions,
       pendingCorrections,
       frameAnomaly: currentTurnFrameAnomaly,
+      activeParticipants,
     });
     const deliberator = new Deliberator({
       llmClient,
@@ -506,6 +535,7 @@ export class TurnPhaseCoordinator {
         openQuestionsContext: retrieval.open_questions,
         pendingCorrectionsContext: pendingCorrections,
         relationalSlots,
+        activeParticipants,
         selectedSkill,
         entityRepository: this.options.entityRepository,
         workingMemory,

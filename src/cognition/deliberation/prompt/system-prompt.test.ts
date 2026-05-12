@@ -588,6 +588,58 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("Sarah");
   });
 
+  it("renders relational slot constraints with participant names when multiple people are active", () => {
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        activeParticipants: [
+          {
+            entityId: bob,
+            displayName: "Bob",
+            role: "speaker",
+          },
+          {
+            entityId: alice,
+            displayName: "Alice",
+            role: "participant",
+          },
+        ],
+        relationalSlots: [
+          {
+            id: createRelationalSlotId(),
+            subject_entity_id: alice,
+            slot_key: "partner.name",
+            value: "Sarah",
+            state: "contested",
+            evidence_stream_entry_ids: [createStreamEntryId()],
+            contradicted_by_stream_entry_ids: [createStreamEntryId()],
+            alternate_values: [],
+            created_at: NOW_MS,
+            updated_at: NOW_MS,
+          },
+          {
+            id: createRelationalSlotId(),
+            subject_entity_id: bob,
+            slot_key: "dog.name",
+            value: "Niko",
+            state: "quarantined",
+            evidence_stream_entry_ids: [createStreamEntryId()],
+            contradicted_by_stream_entry_ids: [createStreamEntryId()],
+            alternate_values: [],
+            created_at: NOW_MS,
+            updated_at: NOW_MS,
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_relational_slot_constraints");
+
+    expect(block).toContain("Bob: dog.name: QUARANTINED");
+    expect(block).toContain("Alice: partner.name: CONTESTED");
+  });
+
   it("renders the selected skill first with up to two evaluated alternatives", () => {
     const tracePath = makeSkill(
       "skl_aaaaaaaaaaaaaaaa",
