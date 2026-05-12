@@ -64,32 +64,36 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
     label: "6. Action States",
   },
   {
+    id: "group_channel_memory",
+    label: "7. Group/Channel Memory",
+  },
+  {
     id: "relational_slots",
-    label: "7. Relational And Profile Slots",
+    label: "8. Active Participant Memory",
   },
   {
     id: "retrieved_raw_stream_evidence",
-    label: "8. Retrieved Raw Stream Evidence",
+    label: "9. Retrieved Raw Stream Evidence",
   },
   {
     id: "retrieved_memory_evidence",
-    label: "9. Retrieved Memory Evidence",
+    label: "10. Retrieved Memory Evidence",
   },
   {
     id: "episodes",
-    label: "10. Episodes",
+    label: "11. Episodes",
   },
   {
     id: "semantic_graph",
-    label: "11. Semantic Graph",
+    label: "12. Semantic Graph",
   },
   {
     id: "open_questions",
-    label: "12. Open Questions",
+    label: "13. Open Questions",
   },
   {
     id: "prior_session_memory",
-    label: "13. Prior-Session Memory",
+    label: "14. Prior-Session Memory",
   },
 ] as const;
 

@@ -20,6 +20,7 @@ import { requireProvenance } from "./shared/provenance.js";
 import { mapGoalRow } from "./shared/sql-mapping.js";
 import {
   goalAudienceEntityIdSchema,
+  goalOwnerEntityIdSchema,
   goalPatchSchema,
   goalSchema,
   goalStatusSchema,
@@ -38,11 +39,12 @@ export type GoalsRepositoryOptions = {
 export type GoalListOptions = {
   status?: GoalStatus;
   visibleToAudienceEntityId?: EntityId | null;
+  ownerEntityId?: EntityId | null;
 };
 
 const GOAL_SELECT_COLUMNS = `
   id, record_version, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
-  created_at, target_at, audience_entity_id, source_stream_entry_ids,
+  created_at, target_at, audience_entity_id, owner_entity_id, source_stream_entry_ids,
   provenance_kind, provenance_episode_ids, provenance_process
 `;
 
@@ -116,6 +118,7 @@ export class GoalsRepository {
     createdAt?: number;
     targetAt?: number | null;
     audienceEntityId?: EntityId | null;
+    ownerEntityId?: EntityId | null;
     sourceStreamEntryIds?: readonly StreamEntryId[];
   }): GoalRecord {
     const parentGoalId = input.parentId ?? null;
@@ -147,6 +150,7 @@ export class GoalsRepository {
       created_at: createdAt,
       target_at: input.targetAt ?? null,
       audience_entity_id: input.audienceEntityId ?? null,
+      owner_entity_id: input.ownerEntityId ?? null,
       ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
         ? {}
         : { source_stream_entry_ids: [...input.sourceStreamEntryIds] }),
@@ -160,9 +164,9 @@ export class GoalsRepository {
           `
             INSERT INTO goals (
               id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
-              created_at, target_at, audience_entity_id, source_stream_entry_ids,
+              created_at, target_at, audience_entity_id, owner_entity_id, source_stream_entry_ids,
               provenance_kind, provenance_episode_ids, provenance_process
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -176,6 +180,7 @@ export class GoalsRepository {
           goal.created_at,
           goal.target_at,
           goal.audience_entity_id,
+          goal.owner_entity_id,
           goal.source_stream_entry_ids === undefined
             ? null
             : serializeJsonValue(goal.source_stream_entry_ids),
@@ -210,6 +215,15 @@ export class GoalsRepository {
       } else {
         filters.push("(audience_entity_id IS NULL OR audience_entity_id = ?)");
         values.push(goalAudienceEntityIdSchema.parse(options.visibleToAudienceEntityId));
+      }
+    }
+
+    if (options.ownerEntityId !== undefined) {
+      if (options.ownerEntityId === null) {
+        filters.push("owner_entity_id IS NULL");
+      } else {
+        filters.push("owner_entity_id = ?");
+        values.push(goalOwnerEntityIdSchema.parse(options.ownerEntityId));
       }
     }
 
@@ -426,7 +440,8 @@ export class GoalsRepository {
           `
             UPDATE goals
             SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
-                last_progress_ts = ?, target_at = ?, audience_entity_id = ?, source_stream_entry_ids = ?,
+                last_progress_ts = ?, target_at = ?, audience_entity_id = ?, owner_entity_id = ?,
+                source_stream_entry_ids = ?,
                 provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?,
                 record_version = record_version + 1
             WHERE id = ? AND record_version = ?
@@ -441,6 +456,7 @@ export class GoalsRepository {
           next.last_progress_ts,
           next.target_at,
           next.audience_entity_id,
+          next.owner_entity_id,
           next.source_stream_entry_ids === undefined
             ? null
             : serializeJsonValue(next.source_stream_entry_ids),
@@ -490,7 +506,7 @@ export class GoalsRepository {
             UPDATE goals
             SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
                 last_progress_ts = ?, created_at = ?, target_at = ?, audience_entity_id = ?,
-                source_stream_entry_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
+                owner_entity_id = ?, source_stream_entry_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
                 provenance_process = ?
             WHERE id = ?
           `,
@@ -505,6 +521,7 @@ export class GoalsRepository {
           parsed.created_at,
           parsed.target_at,
           parsed.audience_entity_id,
+          parsed.owner_entity_id,
           parsed.source_stream_entry_ids === undefined
             ? null
             : serializeJsonValue(parsed.source_stream_entry_ids),

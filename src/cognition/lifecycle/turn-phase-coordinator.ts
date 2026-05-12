@@ -53,10 +53,11 @@ import type { Config } from "../../config/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { ActionRepository } from "../../memory/actions/index.js";
-import type { EntityRepository } from "../../memory/commitments/index.js";
+import type { CommitmentRepository, EntityRepository } from "../../memory/commitments/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
 import {
   appendInternalFailureEvent,
+  type GoalsRepository,
   type OpenQuestionsRepository,
 } from "../../memory/self/index.js";
 import type { SocialRepository } from "../../memory/social/index.js";
@@ -165,6 +166,8 @@ export type TurnPhaseCoordinatorOptions = {
   relationalSlotRepository: RelationalSlotRepository;
   actionRepository: Pick<ActionRepository, "get" | "list"> &
     Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
+  commitmentRepository: CommitmentRepository;
+  goalsRepository: GoalsRepository;
   openQuestionsRepository: Pick<OpenQuestionsRepository, "findByHandles">;
   toolDispatcher: ToolDispatcher;
   createStreamReader: (sessionId: SessionId) => StreamReader;
@@ -233,6 +236,12 @@ export class TurnPhaseCoordinator {
     // not to the abstract channel entity. Updating the group too is deferred.
     const socialInteractionEntityId =
       audienceEntity?.kind === "group" ? (turnInput.senderEntityId ?? null) : audienceEntityId;
+    const groupSpeakerEntityId =
+      audienceEntity?.kind === "group" ? (turnInput.senderEntityId ?? null) : null;
+    const groupSpeakerDisplayName =
+      groupSpeakerEntityId === null
+        ? null
+        : (this.options.entityRepository.get(groupSpeakerEntityId)?.canonical_name ?? null);
     const perceptionResult = await turnPerception.perceive({
       sessionId,
       isSelfAudience,
@@ -342,6 +351,8 @@ export class TurnPhaseCoordinator {
             persistedUserEntryId,
             recentHistory: recencyWindow.messages,
             audienceEntityId,
+            committedByEntityId: groupSpeakerEntityId,
+            speakerDisplayName: groupSpeakerDisplayName,
             sessionId,
             onHookFailure: (hook, error, details) =>
               this.appendHookFailureEvent(streamWriter, hook, error, details),
@@ -359,6 +370,8 @@ export class TurnPhaseCoordinator {
         persistedUserEntryId,
         recentHistory: recencyWindow.messages,
         audienceEntityId,
+        speakerEntityId: groupSpeakerEntityId,
+        speakerDisplayName: groupSpeakerDisplayName,
         goalId: actionLinkGoalId,
         frameAnomaly: frameAnomalyClassification,
       }),
@@ -370,6 +383,8 @@ export class TurnPhaseCoordinator {
             userMessage: turnInput.userMessage,
             recentHistory: recencyWindow.messages,
             audienceEntityId,
+            ownerEntityId: groupSpeakerEntityId,
+            speakerDisplayName: groupSpeakerDisplayName,
             temporalCue: perception.temporalCue,
             activeGoals: activeGoalsForPromotion,
             persistedUserEntryId,
@@ -1257,6 +1272,8 @@ export class TurnPhaseCoordinator {
       createStreamReader: this.options.createStreamReader,
       relationalSlotRepository: this.options.relationalSlotRepository,
       actionRepository: this.options.actionRepository,
+      commitmentRepository: this.options.commitmentRepository,
+      goalsRepository: this.options.goalsRepository,
       openQuestionsRepository: this.options.openQuestionsRepository,
       currentSessionTranscriptTokenBudget: config.currentSessionTranscriptTokenBudget,
       actionThreadRenderLimit: config.actionThreadRenderLimit,

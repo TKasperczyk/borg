@@ -117,6 +117,10 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
       row.about_entity === null || row.about_entity === undefined
         ? null
         : parseEntityId(String(row.about_entity)),
+    committed_by_entity_id:
+      row.committed_by_entity_id === null || row.committed_by_entity_id === undefined
+        ? null
+        : parseEntityId(String(row.committed_by_entity_id)),
     provenance: parseStoredProvenance({
       provenance_kind: row.provenance_kind,
       provenance_episode_ids: row.provenance_episode_ids,
@@ -471,7 +475,8 @@ export class CommitmentRepository {
         (candidate) =>
           candidate.made_to_entity === record.made_to_entity &&
           candidate.restricted_audience === record.restricted_audience &&
-          candidate.about_entity === record.about_entity,
+          candidate.about_entity === record.about_entity &&
+          candidate.committed_by_entity_id === record.committed_by_entity_id,
       );
   }
 
@@ -587,6 +592,7 @@ export class CommitmentRepository {
     madeToEntity?: EntityId | null;
     restrictedAudience?: EntityId | null;
     aboutEntity?: EntityId | null;
+    committedByEntityId?: EntityId | null;
     provenance: CommitmentRecord["provenance"];
     sourceStreamEntryIds?: readonly StreamEntryId[];
     createdAt?: number;
@@ -612,6 +618,7 @@ export class CommitmentRepository {
       made_to_entity: input.madeToEntity ?? null,
       restricted_audience: input.restrictedAudience ?? null,
       about_entity: input.aboutEntity ?? null,
+      committed_by_entity_id: input.committedByEntityId ?? null,
       provenance: provenanceSchema.parse(input.provenance),
       ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
         ? {}
@@ -637,12 +644,13 @@ export class CommitmentRepository {
         .prepare(
           `
             INSERT INTO commitments (
-              id, type, directive_family, closure_pressure_relevance, directive, priority, made_to_entity, restricted_audience, about_entity,
+              id, type, directive_family, closure_pressure_relevance, directive, priority,
+              made_to_entity, restricted_audience, about_entity, committed_by_entity_id,
               source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
               source_stream_entry_ids, created_at, expires_at, expired_at, revoked_at, revoked_reason,
               revoke_provenance_kind, revoke_provenance_episode_ids, revoke_provenance_process,
               superseded_by, last_reinforced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -655,6 +663,7 @@ export class CommitmentRepository {
           record.made_to_entity,
           record.restricted_audience,
           record.about_entity,
+          record.committed_by_entity_id,
           serializeJsonValue(
             record.provenance.kind === "episodes" ? record.provenance.episode_ids : [],
           ),
@@ -727,6 +736,15 @@ export class CommitmentRepository {
     if (options.aboutEntity !== undefined && options.aboutEntity !== null) {
       filters.push("(about_entity IS NULL OR about_entity = ?)");
       values.push(options.aboutEntity);
+    }
+
+    if (options.committedByEntity !== undefined) {
+      if (options.committedByEntity === null) {
+        filters.push("committed_by_entity_id IS NULL");
+      } else {
+        filters.push("committed_by_entity_id = ?");
+        values.push(options.committedByEntity);
+      }
     }
 
     const whereClause = filters.length === 0 ? "" : `WHERE ${filters.join(" AND ")}`;
@@ -943,8 +961,10 @@ export class CommitmentRepository {
         .prepare(
           `
             UPDATE commitments
-            SET type = ?, directive_family = ?, closure_pressure_relevance = ?, directive = ?, priority = ?, made_to_entity = ?, restricted_audience = ?,
-                about_entity = ?, source_episode_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
+            SET type = ?, directive_family = ?, closure_pressure_relevance = ?, directive = ?,
+                priority = ?, made_to_entity = ?, restricted_audience = ?, about_entity = ?,
+                committed_by_entity_id = ?, source_episode_ids = ?, provenance_kind = ?,
+                provenance_episode_ids = ?,
                 provenance_process = ?, source_stream_entry_ids = ?, expires_at = ?, expired_at = ?, revoked_at = ?, revoked_reason = ?,
                 revoke_provenance_kind = ?, revoke_provenance_episode_ids = ?, revoke_provenance_process = ?,
                 superseded_by = ?, last_reinforced_at = ?, record_version = record_version + 1
@@ -960,6 +980,7 @@ export class CommitmentRepository {
           next.made_to_entity,
           next.restricted_audience,
           next.about_entity,
+          next.committed_by_entity_id,
           serializeJsonValue(
             isEpisodeProvenance(next.provenance) ? next.provenance.episode_ids : [],
           ),

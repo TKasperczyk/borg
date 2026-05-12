@@ -19,7 +19,7 @@ import { ActionStateExtractor } from "./action-state-extractor.js";
 
 type ActionStateInput = {
   description?: string;
-  actor?: "user" | "borg";
+  actor?: "user" | "borg" | string;
   state?: "considering" | "committed_to_do" | "scheduled" | "completed" | "not_done";
   audience_entity_id?: string | null;
   evidence_stream_entry_ids?: string[];
@@ -134,6 +134,53 @@ describe("ActionStateExtractor", () => {
     });
 
     expect(summary.unsupported).toEqual([]);
+  });
+
+  it("records group-chat first-person user actions on the speaker entity", async () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const group = createEntityId();
+    const alice = createEntityId();
+    const add = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        actionStateResponse([
+          {
+            description: "book Alhambra tickets",
+            actor: "user",
+            state: "committed_to_do",
+            audience_entity_id: group,
+            evidence_stream_entry_ids: [currentUserStreamEntryId],
+            confidence: 0.93,
+          },
+        ]),
+      ],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: { add },
+      clock: new FixedClock(2_000),
+    });
+
+    const records = await extractor.extract({
+      ...makeExtractorInput(currentUserStreamEntryId),
+      userMessage: "I'll book Alhambra.",
+      audienceEntityId: group,
+      speakerEntityId: alice,
+      speakerDisplayName: "Alice",
+    });
+
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      description: "book Alhambra tickets",
+      actor: alice,
+      audience_entity_id: group,
+      state: "committed_to_do",
+    });
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ actor: alice }));
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+      `"speaker_entity_id":"${alice}"`,
+    );
   });
 
   it("does not write ActionRecords when the LLM emits no action states", async () => {

@@ -55,6 +55,10 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
       row.audience_entity_id === null || row.audience_entity_id === undefined
         ? null
         : String(row.audience_entity_id),
+    owner_entity_id:
+      row.owner_entity_id === null || row.owner_entity_id === undefined
+        ? null
+        : String(row.owner_entity_id),
     ...(sourceStreamEntryIds === undefined || sourceStreamEntryIds.length === 0
       ? {}
       : { source_stream_entry_ids: sourceStreamEntryIds }),

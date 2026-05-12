@@ -34,6 +34,8 @@ export type ExtractTurnGoalPromotionsInput = {
   userMessage: string;
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
   audienceEntityId: EntityId | null;
+  ownerEntityId?: EntityId | null;
+  speakerDisplayName?: string | null;
   temporalCue: TemporalCue | null;
   activeGoals: readonly GoalRecord[];
   persistedUserEntryId?: StreamEntryId;
@@ -70,6 +72,8 @@ export class TurnGoalPromotionService {
       userMessage: input.userMessage,
       recentHistory: input.recentHistory,
       audienceEntityId: input.audienceEntityId,
+      speakerEntityId: input.ownerEntityId ?? null,
+      speakerDisplayName: input.speakerDisplayName ?? null,
       temporalCue: input.temporalCue,
       activeGoals: input.activeGoals.map((goal) => ({
         id: goal.id,
@@ -89,6 +93,7 @@ export class TurnGoalPromotionService {
     return this.persistGoalPromotions({
       candidates: goalPromotionCandidates,
       audienceEntityId: input.audienceEntityId,
+      ownerEntityId: input.ownerEntityId ?? null,
       persistedUserEntryId: input.persistedUserEntryId,
       turnId: input.turnId,
       onHookFailure: input.onHookFailure,
@@ -98,6 +103,7 @@ export class TurnGoalPromotionService {
   private async persistGoalPromotions(input: {
     candidates: readonly GoalPromotionCandidate[];
     audienceEntityId: EntityId | null;
+    ownerEntityId: EntityId | null;
     persistedUserEntryId?: StreamEntryId;
     turnId: string;
     onHookFailure: (
@@ -123,6 +129,7 @@ export class TurnGoalPromotionService {
           status: "active",
           targetAt: candidate.target_at,
           audienceEntityId: input.audienceEntityId,
+          ownerEntityId: input.ownerEntityId,
           provenance: GOAL_PROMOTION_PROVENANCE,
           sourceStreamEntryIds,
         });

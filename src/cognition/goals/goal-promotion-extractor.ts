@@ -102,6 +102,7 @@ const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "Promote only when the user asks Borg to track, support, remind, follow up, keep organized, or otherwise carry an ongoing role; or when the turn clearly establishes that Borg has committed to ongoing support.",
   "Do not promote a goal just because the user mentions a possible intention, appointment, task, wish, plan, or event. Those may be pending actions or ordinary conversation, not Borg goals.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
+  "When speaker_entity_id is supplied and the current speaker creates a durable first-person goal, treat that speaker as the goal owner. In group chat, first-person user goals belong to the current sender, not the group, unless the message explicitly says the group is acting.",
   "If an existing active goal already covers the request, set duplicate_of_goal_id and do not create a new goal.",
   "Use target_at only for a real goal deadline. Use the supplied temporal cue as context, not as an automatic trigger.",
   "When uncertain, emit no promotions. Return only the required tool call.",
@@ -154,6 +155,8 @@ export type ExtractGoalPromotionInput = {
   userMessage: string;
   recentHistory: readonly RecencyMessage[];
   audienceEntityId: EntityId | null;
+  speakerEntityId?: EntityId | null;
+  speakerDisplayName?: string | null;
   temporalCue: unknown;
   activeGoals: readonly Pick<GoalRecord, "id" | "description" | "priority" | "target_at">[];
 };
@@ -227,6 +230,8 @@ function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessag
           content: message.content,
         })),
         audience_entity_id: input.audienceEntityId,
+        speaker_entity_id: input.speakerEntityId ?? null,
+        speaker_display_name: input.speakerDisplayName ?? null,
         temporal_cue: input.temporalCue,
         active_goals: input.activeGoals.map((goal) => ({
           id: goal.id,

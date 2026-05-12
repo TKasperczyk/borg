@@ -22,6 +22,8 @@ export type ExtractTurnActionStatesInput = {
   persistedUserEntryId?: StreamEntryId;
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
   audienceEntityId: EntityId | null;
+  speakerEntityId?: EntityId | null;
+  speakerDisplayName?: string | null;
   goalId?: GoalId | null;
   openQuestionId?: OpenQuestionId | null;
   frameAnomaly?: FrameAnomalyClassification | null;
@@ -65,6 +67,8 @@ export class TurnActionStateService {
       currentUserStreamEntryId: input.persistedUserEntryId,
       recentHistory: input.recentHistory,
       audienceEntityId: input.audienceEntityId,
+      speakerEntityId: input.speakerEntityId ?? null,
+      speakerDisplayName: input.speakerDisplayName ?? null,
       goalId: input.goalId ?? null,
       openQuestionId: input.openQuestionId ?? null,
     });

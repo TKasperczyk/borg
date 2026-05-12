@@ -4,10 +4,14 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ActionRecord } from "../../memory/actions/index.js";
+import type { ActionRecord, ActionRecordListFilter } from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
-import { OpenQuestionsRepository, type OpenQuestion } from "../../memory/self/index.js";
+import {
+  OpenQuestionsRepository,
+  type GoalRecord,
+  type OpenQuestion,
+} from "../../memory/self/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import type { RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
 import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
@@ -30,6 +34,7 @@ import {
   type EntityId,
 } from "../../util/ids.js";
 import { EvidenceLedgerBuilder } from "./builder.js";
+import { renderEvidenceLedger } from "./renderer.js";
 
 const NOW_MS = 1_800_000_000_000;
 
@@ -194,6 +199,31 @@ function makeCommitment(streamEntryId: StreamEntry["id"]): CommitmentRecord {
   };
 }
 
+function makeGoal(
+  streamEntryId: StreamEntry["id"],
+  overrides: Partial<GoalRecord> = {},
+): GoalRecord {
+  return {
+    id: createGoalId(),
+    record_version: 1,
+    description: "Coordinate the Spain trip",
+    priority: 1,
+    parent_goal_id: null,
+    status: "active",
+    progress_notes: null,
+    last_progress_ts: null,
+    created_at: NOW_MS,
+    target_at: null,
+    audience_entity_id: null,
+    owner_entity_id: null,
+    source_stream_entry_ids: [streamEntryId],
+    provenance: {
+      kind: "system",
+    },
+    ...overrides,
+  };
+}
+
 function makeOpenQuestion(episodeId: ReturnType<typeof createEpisodeId>): OpenQuestion {
   return {
     id: createOpenQuestionId(),
@@ -320,6 +350,7 @@ describe("EvidenceLedgerBuilder", () => {
       "closure_discourse_state",
       "contradictions_quarantines",
       "action_states",
+      "group_channel_memory",
       "relational_slots",
       "retrieved_raw_stream_evidence",
       "retrieved_memory_evidence",
@@ -502,6 +533,179 @@ describe("EvidenceLedgerBuilder", () => {
         subject_role: "participant",
       },
     ]);
+  });
+
+  it("renders group/channel memory separately while keeping active participant action lanes visible", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const group = createEntityId();
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "I'll book Alhambra.",
+      audience: "Spain Trip Planning Channel",
+      sender_entity_id: alice,
+    });
+    const groupSlot = makeSlot(userEntry.id, {
+      subject_entity_id: group,
+      slot_key: "trip.destination",
+      value: "Spain",
+    });
+    const aliceSlot = makeSlot(userEntry.id, {
+      subject_entity_id: alice,
+      slot_key: "task.booking",
+      value: "Alhambra",
+    });
+    const groupCommitment = {
+      ...makeCommitment(userEntry.id),
+      restricted_audience: group,
+      directive_family: "spain_channel_scope",
+      directive: "Keep Spain planning scoped to the channel.",
+    };
+    const groupGoal = makeGoal(userEntry.id, {
+      audience_entity_id: group,
+      description: "Coordinate the Spain trip channel.",
+    });
+    const aliceAction = makeAction(userEntry.id, {
+      description: "book Alhambra",
+      actor: alice,
+      audience_entity_id: alice,
+      state: "committed_to_do",
+      committed_at: NOW_MS,
+      scheduled_at: null,
+    });
+    const groupAction = makeAction(userEntry.id, {
+      description: "settle Spain trip dates",
+      actor: "user",
+      audience_entity_id: group,
+      state: "scheduled",
+    });
+    const actions = [aliceAction, groupAction];
+    const listActions = (filter: ActionRecordListFilter = {}) =>
+      actions
+        .filter(
+          (action) =>
+            (filter.actor === undefined || action.actor === filter.actor) &&
+            (!("audienceEntityId" in filter) ||
+              (filter.audienceEntityId === null
+                ? action.audience_entity_id === null
+                : action.audience_entity_id === filter.audienceEntityId)),
+        )
+        .slice(0, filter.limit ?? actions.length);
+    const slots = [groupSlot, aliceSlot];
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: (options = {}) =>
+          slots.filter(
+            (slot) =>
+              options.subjectEntityId === undefined ||
+              slot.subject_entity_id === options.subjectEntityId,
+          ),
+      },
+      actionRepository: {
+        list: listActions,
+      },
+      commitmentRepository: {
+        list: () => [groupCommitment],
+      },
+      goalsRepository: {
+        list: () => [{ ...groupGoal, children: [] }],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+      entityRepository: {
+        get: (entityId) => {
+          if (entityId === group) {
+            return {
+              id: group,
+              canonical_name: "Spain Trip Planning Channel",
+              aliases: [],
+              kind: "group",
+              name_provenance: "user_declared",
+              created_at: NOW_MS,
+            };
+          }
+
+          if (entityId === alice) {
+            return {
+              id: alice,
+              canonical_name: "Alice",
+              aliases: [],
+              kind: "person",
+              name_provenance: "user_declared",
+              created_at: NOW_MS,
+            };
+          }
+
+          if (entityId === bob) {
+            return {
+              id: bob,
+              canonical_name: "Ben",
+              aliases: [],
+              kind: "person",
+              name_provenance: "user_declared",
+              created_at: NOW_MS,
+            };
+          }
+
+          return null;
+        },
+      },
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-group-ledger",
+      audienceEntityId: group,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [groupCommitment],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        {
+          entityId: alice,
+          displayName: "Alice",
+          role: "speaker",
+        },
+        {
+          entityId: bob,
+          displayName: "Ben",
+          role: "participant",
+        },
+      ],
+    });
+    const rendered = renderEvidenceLedger(ledger) ?? "";
+
+    expect(rendered).toContain("## 7. Group/Channel Memory");
+    expect(rendered).toContain("trip.destination=Spain");
+    expect(rendered).toContain("spain_channel_scope");
+    expect(rendered).toContain("Coordinate the Spain trip channel.");
+    expect(rendered).toContain("## 8. Active Participant Memory");
+    expect(rendered).toContain("task.booking=Alhambra");
+    expect(rendered).toContain("book Alhambra");
+    expect(rendered).toContain("actor: Alice");
+    expect(
+      ledger.sections
+        .find((section) => section.id === "action_states")
+        ?.entries.find((entry) => entry.text?.includes("book Alhambra")),
+    ).toMatchObject({
+      value: "Alice",
+      state_metadata: expect.objectContaining({
+        current_actor: "Alice",
+      }),
+    });
   });
 
   it("renders legacy global relational slots when active participant set is empty", async () => {

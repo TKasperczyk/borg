@@ -128,6 +128,7 @@ const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
   "Separately, fill slot_negations when the user rejects a supplied relational slot value, even if classification is none.",
   "For slot_negations, select subject_entity_id and slot_key only from supplied relational_slots and cite only the current_user_stream_entry_id.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
+  "When speaker_entity_id is supplied and the current speaker gives a durable first-person correction, treat that speaker as the committer. In group chat, first-person user commitments/preferences belong to the current sender, not the group, unless the message explicitly says the group is acting.",
   "Emit directive_family as a short snake_case semantic family slug chosen by meaning, not by surface wording.",
   'Emit closure_pressure_relevance as "no_closure" for durable no-wrap-up/no-signoff/no-closure corrections, "closure_seeking" for durable requests to add closure, and "neutral" otherwise.',
   "When uncertain, return none. The directive must be enforceable by a later response checker without needing to remember the current phrasing.",
@@ -183,6 +184,8 @@ export type ExtractCorrectivePreferenceInput = {
   currentUserStreamEntryId?: StreamEntryId | null;
   recentHistory: readonly RecencyMessage[];
   audienceEntityId: EntityId | null;
+  speakerEntityId?: EntityId | null;
+  speakerDisplayName?: string | null;
   activeCommitments: readonly {
     id: CommitmentId;
     type: string;
@@ -298,6 +301,8 @@ function buildCorrectivePreferenceMessages(input: ExtractCorrectivePreferenceInp
           content: message.content,
         })),
         audience_entity_id: input.audienceEntityId,
+        speaker_entity_id: input.speakerEntityId ?? null,
+        speaker_display_name: input.speakerDisplayName ?? null,
         active_commitments: input.activeCommitments.map((commitment) => ({
           id: commitment.id,
           type: commitment.type,

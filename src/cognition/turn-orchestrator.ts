@@ -148,8 +148,7 @@ export class TurnOrchestrator {
   constructor(private readonly options: TurnOrchestratorOptions) {
     this.clock = options.clock ?? new SystemClock();
     this.tracer = options.tracer ?? NOOP_TRACER;
-    const turnContextCompiler =
-      options.turnContextCompiler ?? new TurnContextCompiler();
+    const turnContextCompiler = options.turnContextCompiler ?? new TurnContextCompiler();
     this.sessionLock =
       options.sessionLock ??
       new SessionLock({
@@ -276,6 +275,8 @@ export class TurnOrchestrator {
       socialRepository: options.socialRepository,
       relationalSlotRepository: options.relationalSlotRepository,
       actionRepository: options.actionRepository,
+      commitmentRepository: options.commitmentRepository,
+      goalsRepository: options.goalsRepository,
       openQuestionsRepository: options.openQuestionsRepository,
       toolDispatcher: options.toolDispatcher,
       createStreamReader,

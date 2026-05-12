@@ -43,6 +43,8 @@ export type ExtractCorrectivePreferenceForTurnInput = {
   persistedUserEntryId?: StreamEntryId;
   recentHistory: ExtractCorrectivePreferenceInput["recentHistory"];
   audienceEntityId: EntityId | null;
+  committedByEntityId?: EntityId | null;
+  speakerDisplayName?: string | null;
   sessionId: SessionId;
   onHookFailure: (hook: string, error: unknown, details?: Record<string, unknown>) => Promise<void>;
   trackAppliedSlotNegation: (slot: RelationalSlot) => void;
@@ -56,6 +58,7 @@ export type CorrectivePreferenceTurnResult = {
 function buildCorrectivePreferenceCommitment(input: {
   candidate: CorrectivePreferenceCandidate;
   audienceEntityId: EntityId | null;
+  committedByEntityId: EntityId | null;
   sourceStreamEntryIds?: CommitmentRecord["source_stream_entry_ids"];
   nowMs: number;
 }): CommitmentRecord {
@@ -69,6 +72,7 @@ function buildCorrectivePreferenceCommitment(input: {
     made_to_entity: null,
     restricted_audience: input.audienceEntityId,
     about_entity: null,
+    committed_by_entity_id: input.committedByEntityId,
     provenance: {
       kind: "online",
       process: "corrective-preference-extractor",
@@ -139,6 +143,8 @@ export class CorrectivePreferenceTurnService {
       currentUserStreamEntryId: input.persistedUserEntryId ?? null,
       recentHistory: input.recentHistory,
       audienceEntityId: input.audienceEntityId,
+      speakerEntityId: input.committedByEntityId ?? null,
+      speakerDisplayName: input.speakerDisplayName ?? null,
       activeCommitments: activeCommitmentsForExtractor.map((commitment) => ({
         id: commitment.id,
         type: commitment.type,
@@ -155,6 +161,7 @@ export class CorrectivePreferenceTurnService {
       correctiveCommitment = buildCorrectivePreferenceCommitment({
         candidate: correctiveCandidate,
         audienceEntityId: input.audienceEntityId,
+        committedByEntityId: input.committedByEntityId ?? null,
         sourceStreamEntryIds:
           input.persistedUserEntryId === undefined ? undefined : [input.persistedUserEntryId],
         nowMs: this.options.clock.now(),
@@ -221,6 +228,7 @@ export class CorrectivePreferenceTurnService {
         madeToEntity: commitment.made_to_entity,
         restrictedAudience: commitment.restricted_audience,
         aboutEntity: commitment.about_entity,
+        committedByEntityId: commitment.committed_by_entity_id,
         provenance: commitment.provenance,
         sourceStreamEntryIds: commitment.source_stream_entry_ids,
         createdAt: commitment.created_at,

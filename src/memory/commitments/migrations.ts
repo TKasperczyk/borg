@@ -26,6 +26,7 @@ export const commitmentMigrations = [
           made_to_entity TEXT NULL,
           restricted_audience TEXT NULL,
           about_entity TEXT NULL,
+          committed_by_entity_id TEXT NULL,
           source_episode_ids TEXT NOT NULL,
           created_at INTEGER NOT NULL,
           expires_at INTEGER NULL,
@@ -45,6 +46,8 @@ export const commitmentMigrations = [
           ON commitments(restricted_audience);
         CREATE INDEX IF NOT EXISTS commitments_about_idx
           ON commitments(about_entity);
+        CREATE INDEX IF NOT EXISTS commitments_committed_by_idx
+          ON commitments(committed_by_entity_id);
       `);
     },
   },
@@ -154,6 +157,27 @@ export const commitmentMigrations = [
       db.exec(`
         ALTER TABLE commitments
           ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1;
+      `);
+    },
+  },
+  {
+    id: 8,
+    name: "commitment_committed_by_entity_id",
+    up: (db) => {
+      if (!tableExists(db, "commitments")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "commitments", "committed_by_entity_id")) {
+        db.exec(`
+          ALTER TABLE commitments
+            ADD COLUMN committed_by_entity_id TEXT NULL;
+        `);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS commitments_committed_by_idx
+          ON commitments(committed_by_entity_id);
       `);
     },
   },

@@ -636,6 +636,18 @@ function summarizeActionProvenance(action: ActionRecord): string {
   return parts.length === 0 ? "provenance=unknown" : parts.join(" ");
 }
 
+function promptSafeActionActor(actor: ActionRecord["actor"]): string {
+  if (actor === "borg") {
+    return "assistant";
+  }
+
+  if (actor === "user") {
+    return "user";
+  }
+
+  return "participant";
+}
+
 function summarizeRecentCompletedActions(actions: readonly ActionRecord[]): string | null {
   const completed = actions
     .filter((action) => action.state === "completed")
@@ -651,7 +663,7 @@ function summarizeRecentCompletedActions(actions: readonly ActionRecord[]): stri
     "Treat these as completed action evidence, distinct from pending follow-ups.",
     ...completed.map((action) => {
       const completedAt = action.completed_at ?? action.updated_at;
-      return `- ${action.description.trim()} (actor=${action.actor}, completed=${new Date(
+      return `- ${action.description.trim()} (actor=${promptSafeActionActor(action.actor)}, completed=${new Date(
         completedAt,
       ).toISOString()}, conf=${action.confidence.toFixed(2)}, ${summarizeActionProvenance(action)})`;
     }),

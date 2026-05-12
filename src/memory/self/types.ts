@@ -40,6 +40,13 @@ export const goalAudienceEntityIdSchema = z
   })
   .transform((value) => value as EntityId);
 
+export const goalOwnerEntityIdSchema = z
+  .string()
+  .refine((value) => entityIdHelpers.is(value), {
+    message: "Invalid goal owner entity id",
+  })
+  .transform((value) => value as EntityId);
+
 export const goalSourceStreamEntryIdSchema = z
   .string()
   .refine((value) => streamEntryIdHelpers.is(value), {
@@ -107,6 +114,7 @@ export const goalSchema = z.object({
   created_at: z.number().finite(),
   target_at: z.number().finite().nullable(),
   audience_entity_id: goalAudienceEntityIdSchema.nullable().default(null),
+  owner_entity_id: goalOwnerEntityIdSchema.nullable().optional(),
   source_stream_entry_ids: z.array(goalSourceStreamEntryIdSchema).min(1).optional(),
   provenance: provenanceSchema,
 });
@@ -149,10 +157,12 @@ export const goalPatchSchema = goalSchema
     record_version: true,
     created_at: true,
     audience_entity_id: true,
+    owner_entity_id: true,
     source_stream_entry_ids: true,
   })
   .extend({
     audience_entity_id: goalAudienceEntityIdSchema.nullable().optional(),
+    owner_entity_id: goalOwnerEntityIdSchema.nullable().optional(),
     source_stream_entry_ids: z.array(goalSourceStreamEntryIdSchema).min(1).optional(),
   })
   .partial()

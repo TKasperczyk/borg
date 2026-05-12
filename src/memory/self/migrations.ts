@@ -50,6 +50,7 @@ export const selfMigrations = [
           provenance_process TEXT,
           last_progress_ts INTEGER,
           audience_entity_id TEXT,
+          owner_entity_id TEXT,
           source_stream_entry_ids TEXT,
           FOREIGN KEY (parent_goal_id) REFERENCES goals(id) ON DELETE SET NULL
         );
@@ -380,6 +381,27 @@ export const selfMigrations = [
             ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1;
         `);
       }
+    },
+  },
+  {
+    id: 7,
+    name: "goal_owner_entity_id",
+    up: (db) => {
+      if (!tableExists(db, "goals")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "goals", "owner_entity_id")) {
+        db.exec(`
+          ALTER TABLE goals
+            ADD COLUMN owner_entity_id TEXT;
+        `);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_goals_owner_status_priority
+          ON goals (owner_entity_id, status, priority DESC, created_at ASC);
+      `);
     },
   },
   {

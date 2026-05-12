@@ -103,6 +103,7 @@ export const commitmentSchema = z.object({
   made_to_entity: entityIdSchema.nullable(),
   restricted_audience: entityIdSchema.nullable(),
   about_entity: entityIdSchema.nullable(),
+  committed_by_entity_id: entityIdSchema.nullable().optional(),
   provenance: provenanceSchema,
   source_stream_entry_ids: z.array(streamEntryIdSchema).min(1).optional(),
   created_at: z.number().finite(),
@@ -137,6 +138,7 @@ export type CommitmentListOptions = {
   activeOnly?: boolean;
   audience?: EntityId | null;
   aboutEntity?: EntityId | null;
+  committedByEntity?: EntityId | null;
   nowMs?: number;
 };
 

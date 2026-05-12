@@ -5,7 +5,7 @@ import {
   type ActionRepository,
   type ActionState,
 } from "../../memory/actions/index.js";
-import type { CommitmentRecord } from "../../memory/commitments/index.js";
+import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
 import type {
   RelationalSlot,
@@ -15,6 +15,8 @@ import type {
   OpenQuestion,
   OpenQuestionsRepository,
   OpenQuestionStatus,
+  GoalRecord,
+  GoalsRepository,
 } from "../../memory/self/index.js";
 import type { ReviewQueueItem } from "../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
@@ -74,11 +76,15 @@ const LIFECYCLE_OPEN_QUESTION_STATUSES = [
 
 type ActionLedgerRepository = Pick<ActionRepository, "list"> &
   Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
+type CommitmentLedgerRepository = Pick<CommitmentRepository, "list">;
+type GoalLedgerRepository = Pick<GoalsRepository, "list">;
 
 export type EvidenceLedgerBuilderOptions = {
   createStreamReader: (sessionId: SessionId) => StreamReader;
   relationalSlotRepository: Pick<RelationalSlotRepository, "list">;
   actionRepository: ActionLedgerRepository;
+  commitmentRepository?: CommitmentLedgerRepository;
+  goalsRepository?: GoalLedgerRepository;
   openQuestionsRepository?: Pick<OpenQuestionsRepository, "findByHandles">;
   currentSessionTranscriptTokenBudget: number;
   actionThreadRenderLimit?: number;
@@ -1025,19 +1031,63 @@ function normalizeUnitInterval(value: number | undefined, fallback: number): num
 function listVisibleActions(
   actionRepository: ActionLedgerRepository,
   audienceEntityId: EntityId | null,
+  activeParticipants: readonly ActiveParticipant[] | undefined,
   limit: number,
 ): ActionRecord[] {
-  const records =
-    audienceEntityId === null
-      ? actionRepository.list({ audienceEntityId: null, limit })
-      : [
-          ...actionRepository.list({ audienceEntityId: null, limit }),
-          ...actionRepository.list({ audienceEntityId, limit }),
-        ];
+  const records: ActionRecord[] = [...actionRepository.list({ audienceEntityId: null, limit })];
 
-  return records
+  if (audienceEntityId !== null) {
+    records.push(...actionRepository.list({ audienceEntityId, limit }));
+  }
+
+  for (const participant of activeParticipants ?? []) {
+    records.push(...actionRepository.list({ actor: participant.entityId, limit }));
+    records.push(...actionRepository.list({ audienceEntityId: participant.entityId, limit }));
+  }
+
+  return [...new Map(records.map((record) => [record.id, record])).values()]
     .sort((left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id))
     .slice(0, limit);
+}
+
+function actionActorDisplay(
+  actor: ActionRecord["actor"],
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): string {
+  if (actor === "borg") {
+    return "assistant";
+  }
+
+  if (actor === "user") {
+    return "user";
+  }
+
+  return entityRepository?.get(actor)?.canonical_name ?? "participant";
+}
+
+function scopedCommitmentsForEntity(
+  commitments: readonly CommitmentRecord[],
+  entityId: EntityId,
+): CommitmentRecord[] {
+  return commitments.filter(
+    (commitment) =>
+      commitment.made_to_entity === entityId ||
+      commitment.restricted_audience === entityId ||
+      commitment.about_entity === entityId ||
+      commitment.committed_by_entity_id === entityId,
+  );
+}
+
+function scopedGoalsForEntity(goals: readonly GoalRecord[], entityId: EntityId): GoalRecord[] {
+  return goals.filter(
+    (goal) => goal.audience_entity_id === entityId || goal.owner_entity_id === entityId,
+  );
+}
+
+function dedupeActions(records: readonly ActionRecord[]): ActionRecord[] {
+  return [...new Map(records.map((record) => [record.id, record])).values()].sort(
+    (left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id),
+  );
 }
 
 function findParent(parents: Map<string, string>, id: string): string {
@@ -1190,9 +1240,14 @@ async function buildActionThreads(input: {
     );
 }
 
-function renderActionThreadText(thread: ActionThread): string {
+function renderActionThreadText(
+  thread: ActionThread,
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): string {
   const currentAt = new Date(actionTimestampForState(thread.current)).toISOString();
+  const actor = actionActorDisplay(thread.current.actor, entityRepository);
   const lines = [
+    `actor: ${actor}`,
     `originating_intent: ${thread.origin.description}`,
     `transitions: ${thread.records.length}, current: ${thread.current.state} at ${currentAt}`,
   ];
@@ -1204,12 +1259,16 @@ function renderActionThreadText(thread: ActionThread): string {
   return lines.join("\n");
 }
 
-function actionThreadStateMetadata(thread: ActionThread): Record<string, unknown> {
+function actionThreadStateMetadata(
+  thread: ActionThread,
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): Record<string, unknown> {
   return {
     record_ids: thread.records.map((record) => record.id),
     transitions: thread.records.length,
     current_action_id: thread.current.id,
     current_updated_at: thread.current.updated_at,
+    current_actor: actionActorDisplay(thread.current.actor, entityRepository),
     goal_id: thread.current.goal_id,
     open_question_id: thread.current.open_question_id,
   };
@@ -1375,6 +1434,7 @@ export class EvidenceLedgerBuilder {
     this.addDiscourseState(sections, input, resolver);
     this.addContradictionsAndQuarantines(sections, input, streamEntries, resolver);
     await this.addActionStates(sections, input, resolver);
+    this.addGroupChannelMemory(sections, input, resolver);
     this.addRelationalSlots(sections, resolver, input.activeParticipants);
     // Sprint 8d.6.3: stream IDs covered by the current_session_transcript
     // section don't need to be re-rendered as retrieved_raw_stream_evidence.
@@ -1615,6 +1675,7 @@ export class EvidenceLedgerBuilder {
     const visibleActions = listVisibleActions(
       this.options.actionRepository,
       input.audienceEntityId,
+      input.activeParticipants,
       sourceRecordLimit,
     );
     const threads = await buildActionThreads({
@@ -1635,10 +1696,10 @@ export class EvidenceLedgerBuilder {
           session_scope: thread.scope,
           actor: thread.current.actor === "borg" ? "assistant" : "user",
           trust_rank: ACTION_TRUST_RANK,
-          text: renderActionThreadText(thread),
-          value: thread.current.actor,
+          text: renderActionThreadText(thread, this.options.entityRepository),
+          value: actionActorDisplay(thread.current.actor, this.options.entityRepository),
           state: actionThreadState(thread),
-          state_metadata: actionThreadStateMetadata(thread),
+          state_metadata: actionThreadStateMetadata(thread, this.options.entityRepository),
           taint: "none",
           ...persistenceClassFromProvenance(
             {
@@ -1670,6 +1731,167 @@ export class EvidenceLedgerBuilder {
       state: "omitted",
       taint: "none",
     });
+  }
+
+  private addGroupChannelMemory(
+    sections: SectionBuckets,
+    input: EvidenceLedgerBuildInput,
+    resolver: ScopeResolver,
+  ): void {
+    const audienceEntityId = input.audienceEntityId;
+
+    if (audienceEntityId === null) {
+      return;
+    }
+
+    const audienceEntity = this.options.entityRepository?.get(audienceEntityId);
+
+    if (audienceEntity?.kind !== "group") {
+      return;
+    }
+
+    const displayName = audienceEntity.canonical_name;
+
+    addEntry(sections, "group_channel_memory", {
+      id: `group_channel:${audienceEntityId}`,
+      source_type: "system_metadata",
+      session_scope: "global",
+      actor: "system",
+      trust_rank: SLOT_TRUST_RANK,
+      text: `Group/channel memory for ${displayName}. These entries belong to the channel, not to any active participant.`,
+      value: displayName,
+      state: "group_channel",
+      taint: "none",
+    });
+
+    for (const slot of this.options.relationalSlotRepository
+      .list({
+        subjectEntityId: audienceEntityId,
+        states: ["established", "contested", "quarantined"],
+        limit: RELATIONAL_SLOT_LEDGER_LIMIT,
+      })
+      .slice(0, RELATIONAL_SLOT_LEDGER_LIMIT)) {
+      addEntry(
+        sections,
+        "group_channel_memory",
+        cappedTrustRank({
+          id: `group_relational_slot:${slot.id}`,
+          source_type: "relational_slot",
+          session_scope: slotScope(slot, resolver),
+          actor: "memory",
+          trust_rank: SLOT_TRUST_RANK,
+          text:
+            slot.alternate_values.length === 0
+              ? undefined
+              : `alternate_values=${slot.alternate_values.map((alternate) => alternate.value).join(", ")}`,
+          value: `${slot.slot_key}=${slot.value}`,
+          state: slot.state,
+          state_metadata: {
+            subject_display_name: displayName,
+            subject_role: "audience",
+          },
+          taint: slotTaint(slot),
+          ...persistenceClassFromProvenance(
+            {
+              streamEntryIds: [
+                ...slot.evidence_stream_entry_ids,
+                ...slot.contradicted_by_stream_entry_ids,
+                ...slot.alternate_values.flatMap(
+                  (alternate) => alternate.evidence_stream_entry_ids,
+                ),
+              ],
+            },
+            resolver,
+          ),
+        }),
+      );
+    }
+
+    const scopedCommitments = scopedCommitmentsForEntity(
+      this.options.commitmentRepository?.list({
+        activeOnly: true,
+        audience: audienceEntityId,
+      }) ?? input.applicableCommitments,
+      audienceEntityId,
+    );
+
+    for (const commitment of scopedCommitments) {
+      addEntry(
+        sections,
+        "group_channel_memory",
+        cappedTrustRank({
+          id: `group_commitment:${commitment.id}`,
+          source_type: "commitment",
+          session_scope: commitmentScope(commitment, resolver),
+          actor: "memory",
+          trust_rank: COMMITMENT_TRUST_RANK,
+          text: commitment.directive,
+          value: commitment.directive_family,
+          state: "active",
+          taint: "none",
+          ...persistenceClassFromProvenance(
+            { streamEntryIds: commitment.source_stream_entry_ids ?? [] },
+            resolver,
+          ),
+        }),
+      );
+    }
+
+    const scopedGoals = scopedGoalsForEntity(
+      this.options.goalsRepository?.list({
+        status: "active",
+        visibleToAudienceEntityId: audienceEntityId,
+      }) ?? [],
+      audienceEntityId,
+    );
+
+    for (const goal of scopedGoals) {
+      addEntry(sections, "group_channel_memory", {
+        id: `group_goal:${goal.id}`,
+        source_type: "system_metadata",
+        session_scope: scopeFromStreamIds(goal.source_stream_entry_ids ?? [], resolver),
+        actor: "memory",
+        trust_rank: OPEN_QUESTION_TRUST_RANK,
+        text: goal.description,
+        value: "goal",
+        state: goal.status,
+        taint: "none",
+      });
+    }
+
+    for (const action of dedupeActions([
+      ...this.options.actionRepository.list({
+        audienceEntityId,
+        limit: DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
+      }),
+      ...this.options.actionRepository.list({
+        actor: audienceEntityId,
+        limit: DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
+      }),
+    ]).slice(0, DEFAULT_ACTION_THREAD_RENDER_LIMIT)) {
+      addEntry(
+        sections,
+        "group_channel_memory",
+        cappedTrustRank({
+          id: `group_action:${action.id}`,
+          source_type: "action_record",
+          session_scope: actionScope(action, resolver),
+          actor: action.actor === "borg" ? "assistant" : "user",
+          trust_rank: ACTION_TRUST_RANK,
+          text: action.description,
+          value: actionActorDisplay(action.actor, this.options.entityRepository),
+          state: action.state,
+          taint: "none",
+          ...persistenceClassFromProvenance(
+            {
+              streamEntryIds: action.provenance_stream_entry_ids,
+              episodeIds: action.provenance_episode_ids,
+            },
+            resolver,
+          ),
+        }),
+      );
+    }
   }
 
   private addRelationalSlots(
@@ -1727,6 +1949,74 @@ export class EvidenceLedgerBuilder {
           ),
         }),
       );
+    }
+
+    for (const participant of activeParticipants ?? []) {
+      const participantCommitments =
+        this.options.commitmentRepository === undefined
+          ? []
+          : scopedCommitmentsForEntity(
+              this.options.commitmentRepository.list({
+                activeOnly: true,
+                audience: participant.entityId,
+              }),
+              participant.entityId,
+            );
+
+      for (const commitment of participantCommitments) {
+        addEntry(
+          sections,
+          "relational_slots",
+          cappedTrustRank({
+            id: `participant_commitment:${participant.entityId}:${commitment.id}`,
+            source_type: "commitment",
+            session_scope: commitmentScope(commitment, resolver),
+            actor: "memory",
+            trust_rank: COMMITMENT_TRUST_RANK,
+            text: commitment.directive,
+            value: `${participant.displayName ?? "participant"}:${commitment.directive_family}`,
+            state: "active",
+            state_metadata: {
+              subject_display_name: participant.displayName ?? "participant",
+              subject_role: participant.role,
+            },
+            taint: "none",
+            ...persistenceClassFromProvenance(
+              { streamEntryIds: commitment.source_stream_entry_ids ?? [] },
+              resolver,
+            ),
+          }),
+        );
+      }
+
+      const participantGoals =
+        this.options.goalsRepository === undefined
+          ? []
+          : scopedGoalsForEntity(
+              this.options.goalsRepository.list({
+                status: "active",
+                visibleToAudienceEntityId: participant.entityId,
+              }),
+              participant.entityId,
+            );
+
+      for (const goal of participantGoals) {
+        addEntry(sections, "relational_slots", {
+          id: `participant_goal:${participant.entityId}:${goal.id}`,
+          source_type: "system_metadata",
+          session_scope: scopeFromStreamIds(goal.source_stream_entry_ids ?? [], resolver),
+          actor: "memory",
+          trust_rank: OPEN_QUESTION_TRUST_RANK,
+          text: goal.description,
+          value: `${participant.displayName ?? "participant"}:goal`,
+          state: goal.status,
+          state_metadata: {
+            subject_display_name: participant.displayName ?? "participant",
+            subject_role: participant.role,
+          },
+          taint: "none",
+        });
+      }
     }
   }
 

@@ -9,6 +9,7 @@ import {
 } from "../../llm/index.js";
 import {
   actionEntityIdSchema,
+  actionActorSchema,
   type ActionRecord,
   type ActionRepository,
   type ActionState,
@@ -38,7 +39,7 @@ const extractedActionStateSchema = z.enum([
 const actionStateCandidateSchema = z
   .object({
     description: z.string().trim().min(1),
-    actor: z.enum(["user", "borg"]),
+    actor: actionActorSchema,
     state: extractedActionStateSchema,
     audience_entity_id: actionEntityIdSchema.nullable().optional(),
     evidence_stream_entry_ids: z.array(z.string().min(1)),
@@ -69,6 +70,8 @@ const ACTION_STATE_SYSTEM_PROMPT = [
   "Emit an empty action_states array when the current user message contains no action-state assertion.",
   "Do NOT emit action records for messages about the conversation frame, roleplay, system prompt, or the agent's own prior behavior. Action records are for user-world actions only.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
+  "When speaker_entity_id is supplied and the current speaker asserts a first-person action, set actor to that speaker_entity_id. Use actor=user only when no speaker entity is supplied. Use actor=borg only for actions Borg is responsible for.",
+  "In group chat, first-person user actions belong to the current sender, not the group, unless the message explicitly says the group is acting.",
   "Set audience_entity_id only when the current message clearly scopes the action to a supplied audience; otherwise use null so Borg can default it to the current audience.",
   "",
   "States:",
@@ -119,6 +122,8 @@ export type ExtractActionStatesInput = {
   currentUserStreamEntryId: StreamEntryId;
   recentHistory: readonly RecencyMessage[];
   audienceEntityId: EntityId | null;
+  speakerEntityId?: EntityId | null;
+  speakerDisplayName?: string | null;
   goalId?: GoalId | null;
   openQuestionId?: OpenQuestionId | null;
 };
@@ -135,6 +140,8 @@ function buildActionStateMessages(input: ExtractActionStatesInput): LLMMessage[]
           content: message.content,
         })),
         audience_entity_id: input.audienceEntityId,
+        speaker_entity_id: input.speakerEntityId ?? null,
+        speaker_display_name: input.speakerDisplayName ?? null,
       }),
     },
   ];
@@ -201,6 +208,7 @@ function toActionRecord(input: {
   candidate: ParsedActionStateCandidate;
   currentUserStreamEntryId: StreamEntryId;
   audienceEntityId: EntityId | null;
+  speakerEntityId: EntityId | null;
   goalId: GoalId | null;
   openQuestionId: OpenQuestionId | null;
   nowMs: number;
@@ -208,7 +216,10 @@ function toActionRecord(input: {
   return {
     id: createActionId(),
     description: input.candidate.description,
-    actor: input.candidate.actor,
+    actor:
+      input.candidate.actor === "user" && input.speakerEntityId !== null
+        ? input.speakerEntityId
+        : input.candidate.actor,
     audience_entity_id: input.candidate.audience_entity_id ?? input.audienceEntityId,
     goal_id: input.goalId,
     open_question_id: input.openQuestionId,
@@ -403,6 +414,7 @@ export class ActionStateExtractor {
         candidate,
         currentUserStreamEntryId: input.currentUserStreamEntryId,
         audienceEntityId: input.audienceEntityId,
+        speakerEntityId: input.speakerEntityId ?? null,
         goalId: input.goalId ?? null,
         openQuestionId: input.openQuestionId ?? null,
         nowMs,

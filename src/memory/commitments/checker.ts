@@ -90,7 +90,8 @@ export function formatCommitmentsForPrompt(
       const madeTo = entityName(entityRepository, commitment.made_to_entity);
       const audience = entityName(entityRepository, commitment.restricted_audience);
       const about = entityName(entityRepository, commitment.about_entity);
-      return `- [${commitment.type}] ${commitment.directive}${madeTo === null ? "" : ` made_to=${madeTo}`}${audience === null ? "" : ` audience=${audience}`}${about === null ? "" : ` about=${about}`} ${summarizeProvenanceForPrompt(commitment.provenance)}`;
+      const committedBy = entityName(entityRepository, commitment.committed_by_entity_id ?? null);
+      return `- [${commitment.type}] ${commitment.directive}${madeTo === null ? "" : ` made_to=${madeTo}`}${audience === null ? "" : ` audience=${audience}`}${about === null ? "" : ` about=${about}`}${committedBy === null ? "" : ` committed_by=${committedBy}`} ${summarizeProvenanceForPrompt(commitment.provenance)}`;
     }),
   ].join("\n");
 }
@@ -102,10 +103,12 @@ function describeCommitmentForJudge(
   const madeTo = entityName(entityRepository, commitment.made_to_entity);
   const audience = entityName(entityRepository, commitment.restricted_audience);
   const about = entityName(entityRepository, commitment.about_entity);
+  const committedBy = entityName(entityRepository, commitment.committed_by_entity_id ?? null);
   const scope = [
     madeTo === null ? null : `made_to=${madeTo}`,
     audience === null ? null : `audience=${audience}`,
     about === null ? null : `about=${about}`,
+    committedBy === null ? null : `committed_by=${committedBy}`,
   ]
     .filter((part): part is string => part !== null)
     .join(" ");
