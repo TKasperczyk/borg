@@ -847,7 +847,7 @@ describe("SimulatorRunner", () => {
       }
 
       return chatResult({
-        response: "",
+        response: "[borg observation: The participants are coordinating directly.]",
         emitted: false,
         observedReason: "The participants are coordinating directly.",
         turnId: `turn-peer-${callNumber}`,
@@ -916,6 +916,12 @@ describe("SimulatorRunner", () => {
         ],
       },
     ]);
+    expect(
+      JSON.stringify([
+        ...aliceSession.prepareNextTurn.mock.calls,
+        ...bobSession.prepareNextTurn.mock.calls,
+      ]),
+    ).not.toContain("[borg observation:");
   });
 
   it("passes the persona display name as Borg defaultUser when opening", async () => {

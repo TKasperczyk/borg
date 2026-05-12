@@ -90,6 +90,7 @@ const PERSONA_ROLE_BLEED_EVENT = "persona_role_bleed";
 const PERSONA_ROLE_BLEED_MAX_ATTEMPTS = 2;
 const PERSONA_ROLE_BLEED_REJECTED_PREVIEW_CHARS = 500;
 const PERSONA_CHANNEL_TRANSCRIPT_LIMIT = 10;
+const BORG_OBSERVATION_MARKER_PREFIX = "[borg observation:";
 export const PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE =
   "--pipeline-c-double-prime sets per-guard modes explicitly; --shadow-post-gen-guards is incompatible";
 
@@ -277,11 +278,19 @@ function channelTranscriptForSpeaker(
 
   return sinceLastOwn
     .filter((entry) => entry.speakerIndex !== speakerIndex)
+    .filter((entry) => !isBorgObservationMarker(entry))
     .slice(-PERSONA_CHANNEL_TRANSCRIPT_LIMIT)
     .map((entry) => ({
       speaker_display_name: entry.speaker_display_name,
       text: entry.text,
     }));
+}
+
+function isBorgObservationMarker(entry: ChannelTranscriptLogEntry): boolean {
+  return (
+    entry.speaker_display_name === "Borg" &&
+    entry.text.trim().startsWith(BORG_OBSERVATION_MARKER_PREFIX)
+  );
 }
 
 function priorTurnForSpeaker(input: {
@@ -634,9 +643,10 @@ export class SimulatorRunner {
         const suppressionReason =
           result.emission?.kind === "suppressed" ? result.emission.reason : undefined;
         const emissionKind = result.emission?.kind ?? (result.emitted ? "message" : "suppressed");
+        const response = emissionKind === "message" && result.emitted ? result.response : "";
         return {
           turnId: result.turnId,
-          response: result.response,
+          response,
           emitted: result.emitted,
           emissionKind,
           suppressionReason,
@@ -798,7 +808,7 @@ export class SimulatorRunner {
           text: draft.message,
         });
 
-        if (success.emitted) {
+        if (success.emissionKind === "message" && success.response.trim().length > 0) {
           appendChannelTranscriptEntry(channelTranscript, {
             speakerIndex: null,
             speaker_display_name: "Borg",
