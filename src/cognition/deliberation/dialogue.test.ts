@@ -48,11 +48,7 @@ describe("buildDialogueMessages", () => {
     const messages = buildDialogueMessages(
       [
         makeRecency("user", "Alice: Tuesday works.", 1),
-        makeRecency(
-          "user",
-          "[system: borg observed turn turn-2 silently -- reason: Peer coordination.]",
-          2,
-        ),
+        makeRecency("user", "[borg observation: Peer coordination.]", 2),
       ],
       "Bob: Tuesday works for me too.",
     );
@@ -61,7 +57,7 @@ describe("buildDialogueMessages", () => {
       {
         role: "user",
         content:
-          "Alice: Tuesday works.\n\n[system: borg observed turn turn-2 silently -- reason: Peer coordination.]\n\nBob: Tuesday works for me too.",
+          "Alice: Tuesday works.\n\n[borg observation: Peer coordination.]\n\nBob: Tuesday works for me too.",
       },
     ]);
   });

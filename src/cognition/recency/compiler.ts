@@ -30,6 +30,7 @@ export type TurnContextCompilerOptions = {
 
 const DEFAULT_MAX_MESSAGES = 16;
 const DEFAULT_MAX_CHARS = 24_000;
+const OBSERVATION_REASON_MAX_CHARS = 160;
 
 /**
  * Number of trailing stream entries to read in order to find `maxMessages`
@@ -85,6 +86,32 @@ function markerReason(entry: StreamEntry): string {
   return "unknown";
 }
 
+function sanitizeObservationReason(reason: string): string {
+  let sanitized = reason
+    .replaceAll("\r", " ")
+    .replaceAll("\n", " ")
+    .replaceAll("[", "(")
+    .replaceAll("]", ")")
+    .replaceAll(":", " -")
+    .trim();
+
+  let collapsed = sanitized.replaceAll("  ", " ");
+  while (collapsed !== sanitized) {
+    sanitized = collapsed;
+    collapsed = sanitized.replaceAll("  ", " ");
+  }
+
+  if (sanitized.length === 0) {
+    return "unknown";
+  }
+
+  if (sanitized.length <= OBSERVATION_REASON_MAX_CHARS) {
+    return sanitized;
+  }
+
+  return `${sanitized.slice(0, OBSERVATION_REASON_MAX_CHARS).trimEnd()}...`;
+}
+
 function suppressionCategoryContext(reason: string): string {
   if (reason === "manifest_validation_failed_critical") {
     return "prior unsupported response guard suppressed output";
@@ -117,10 +144,9 @@ function renderEntryContent(entry: StreamEntry): string {
   }
 
   if (entry.kind === "agent_observed") {
-    const reason = markerReason(entry);
-    const turn = entry.turn_id ?? "unknown";
+    const reason = sanitizeObservationReason(markerReason(entry));
 
-    return `[system: borg observed turn ${turn} silently -- reason: ${reason}]`;
+    return `[borg observation: ${reason}]`;
   }
 
   return entryContentToString(entry);
