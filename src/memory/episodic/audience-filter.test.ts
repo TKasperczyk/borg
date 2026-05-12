@@ -10,10 +10,12 @@ import {
 
 const AUDIENCE_A = "ent_aaaaaaaaaaaaaaaa" as EntityId;
 const AUDIENCE_B = "ent_bbbbbbbbbbbbbbbb" as EntityId;
+const GROUP_AUDIENCE = "ent_cccccccccccccccc" as EntityId;
 const PUBLIC_EPISODE = "ep_aaaaaaaaaaaaaaaa" as EpisodeId;
 const PRIVATE_A_EPISODE = "ep_bbbbbbbbbbbbbbbb" as EpisodeId;
 const PRIVATE_B_EPISODE = "ep_cccccccccccccccc" as EpisodeId;
 const SHARED_B_EPISODE = "ep_dddddddddddddddd" as EpisodeId;
+const PRIVATE_GROUP_EPISODE = "ep_eeeeeeeeeeeeeeee" as EpisodeId;
 
 function episode(
   id: EpisodeId,
@@ -69,6 +71,25 @@ describe("filterEpisodesByAudience", () => {
       ).toEqual({
         visibleEpisodeIds: [PUBLIC_EPISODE, PRIVATE_A_EPISODE],
         hiddenEpisodeIds: [PRIVATE_B_EPISODE],
+        hasPrivateMix: true,
+      });
+    });
+
+    it("treats group audiences as flat audience entity ids", () => {
+      expect(
+        filterEpisodesByAudience(
+          [
+            episode(PUBLIC_EPISODE, null),
+            episode(PRIVATE_GROUP_EPISODE, GROUP_AUDIENCE),
+            episode(PRIVATE_A_EPISODE, AUDIENCE_A),
+            episode(SHARED_B_EPISODE, AUDIENCE_B, true),
+          ],
+          GROUP_AUDIENCE,
+          "filter",
+        ),
+      ).toEqual({
+        visibleEpisodeIds: [PUBLIC_EPISODE, PRIVATE_GROUP_EPISODE, SHARED_B_EPISODE],
+        hiddenEpisodeIds: [PRIVATE_A_EPISODE],
         hasPrivateMix: true,
       });
     });
