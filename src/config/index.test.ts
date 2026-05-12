@@ -75,6 +75,7 @@ describe("config", () => {
         budget_tokens: 4096,
       },
     });
+    expect(config.generation.activeParticipantLimit).toBe(8);
     expect(config.generation.postGenerationGuards).toEqual({
       commitment: {
         mode: "enforce",

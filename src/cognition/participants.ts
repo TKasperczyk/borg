@@ -1,10 +1,11 @@
+import { DEFAULT_ACTIVE_PARTICIPANT_LIMIT } from "../config/index.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
 import type { SocialProfile, SocialRepository } from "../memory/social/index.js";
-import type { StreamEntry } from "../stream/index.js";
+import type { StreamEntry, StreamReader } from "../stream/index.js";
 import type { EntityId } from "../util/ids.js";
 import { resolveSpeakerDisplayName } from "./speaker-tags.js";
 
-export const DEFAULT_ACTIVE_PARTICIPANT_LIMIT = 8;
+const ACTIVE_PARTICIPANT_SCAN_MULTIPLIER = 4;
 
 export type ActiveParticipantRole = "speaker" | "participant" | "audience";
 
@@ -48,7 +49,22 @@ function appendParticipant(
   });
 }
 
-function recentSenderEntityIds(streamEntries: readonly StreamEntry[]): EntityId[] {
+export function activeParticipantStreamEntryScanLimit(participantLimit: number): number {
+  return Math.max(1, Math.floor(participantLimit)) * ACTIVE_PARTICIPANT_SCAN_MULTIPLIER;
+}
+
+export function loadRecentParticipantStreamEntries(
+  reader: Pick<StreamReader, "tail">,
+  participantLimit: number = DEFAULT_ACTIVE_PARTICIPANT_LIMIT,
+): StreamEntry[] {
+  return reader.tail(activeParticipantStreamEntryScanLimit(participantLimit));
+}
+
+function recentSenderEntityIds(streamEntries: readonly StreamEntry[], limit: number): EntityId[] {
+  if (limit <= 0) {
+    return [];
+  }
+
   const seen = new Set<EntityId>();
   const senders: EntityId[] = [];
 
@@ -67,6 +83,10 @@ function recentSenderEntityIds(streamEntries: readonly StreamEntry[]): EntityId[
 
     seen.add(senderEntityId);
     senders.push(senderEntityId);
+
+    if (senders.length >= limit) {
+      break;
+    }
   }
 
   return senders;
@@ -85,7 +105,7 @@ export function resolveActiveParticipants(
   appendParticipant(participants, seen, input.senderEntityId, "speaker");
 
   if (audienceKind === "group") {
-    for (const senderEntityId of recentSenderEntityIds(input.streamEntries)) {
+    for (const senderEntityId of recentSenderEntityIds(input.streamEntries, limit)) {
       appendParticipant(participants, seen, senderEntityId, "participant");
     }
   } else if (input.audienceEntityId !== null) {

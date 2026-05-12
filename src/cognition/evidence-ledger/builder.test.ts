@@ -443,8 +443,7 @@ describe("EvidenceLedgerBuilder", () => {
           (slot) =>
             (options.subjectEntityId === undefined ||
               slot.subject_entity_id === options.subjectEntityId) &&
-            (options.states === undefined ||
-              options.states.some((state) => state === slot.state)),
+            (options.states === undefined || options.states.some((state) => state === slot.state)),
         )
         .slice(0, options.limit ?? slots.length);
     const builder = new EvidenceLedgerBuilder({
@@ -503,6 +502,89 @@ describe("EvidenceLedgerBuilder", () => {
         subject_role: "participant",
       },
     ]);
+  });
+
+  it("renders legacy global relational slots when active participant set is empty", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const aliceEntry = await writer.append({
+      kind: "user_msg",
+      content: "Alice gives her tutor update.",
+      sender_entity_id: null,
+    });
+    const bobEntry = await writer.append({
+      kind: "user_msg",
+      content: "Bob gives his dog update.",
+      sender_entity_id: null,
+    });
+    const slots = [
+      makeSlot(aliceEntry.id, {
+        subject_entity_id: alice,
+        slot_key: "tutor.name",
+        value: "Marta",
+      }),
+      makeSlot(bobEntry.id, {
+        subject_entity_id: bob,
+        slot_key: "dog.name",
+        value: "Niko",
+      }),
+    ];
+    const listSlots = (
+      options: {
+        subjectEntityId?: EntityId;
+        states?: readonly RelationalSlot["state"][];
+        limit?: number;
+      } = {},
+    ) =>
+      slots
+        .filter(
+          (slot) =>
+            (options.subjectEntityId === undefined ||
+              slot.subject_entity_id === options.subjectEntityId) &&
+            (options.states === undefined || options.states.some((state) => state === slot.state)),
+        )
+        .slice(0, options.limit ?? slots.length);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: listSlots,
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(bobEntry.content),
+      currentUserEntry: bobEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [],
+    });
+    const relationalEntries =
+      ledger.sections.find((section) => section.id === "relational_slots")?.entries ?? [];
+
+    expect(relationalEntries.map((entry) => entry.value)).toEqual([
+      "tutor.name=Marta",
+      "dog.name=Niko",
+    ]);
+    expect(relationalEntries.map((entry) => entry.state_metadata)).toEqual([undefined, undefined]);
   });
 
   it("surfaces the most recent speaker when the current user entry has a sender", async () => {

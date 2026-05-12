@@ -1666,7 +1666,7 @@ export class EvidenceLedgerBuilder {
     activeParticipants: readonly ActiveParticipant[] | undefined,
   ): void {
     const slots =
-      activeParticipants === undefined
+      activeParticipants === undefined || activeParticipants.length === 0
         ? this.options.relationalSlotRepository.list({
             states: ["established", "contested", "quarantined"],
             limit: RELATIONAL_SLOT_LEDGER_LIMIT,

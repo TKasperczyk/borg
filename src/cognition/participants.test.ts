@@ -9,7 +9,11 @@ import {
   createStreamEntryId,
   type EntityId,
 } from "../util/ids.js";
-import { resolveActiveParticipants, resolveParticipantProfiles } from "./participants.js";
+import {
+  loadRecentParticipantStreamEntries,
+  resolveActiveParticipants,
+  resolveParticipantProfiles,
+} from "./participants.js";
 
 const BASE_TS = 1_700_000_000_000;
 
@@ -90,6 +94,61 @@ describe("resolveActiveParticipants", () => {
       {
         entityId: bobId,
         displayName: "Bob",
+        role: "participant",
+      },
+    ]);
+  });
+
+  it("loads only a bounded recent stream slice for group participant resolution", () => {
+    const groupId = createEntityId();
+    const aliceId = createEntityId();
+    const bobId = createEntityId();
+    const carolId = createEntityId();
+    const entities = repository([
+      entity(groupId, "Planning Room", "group"),
+      entity(aliceId, "Alice", "person"),
+      entity(bobId, "Bob", "person"),
+      entity(carolId, "Carol", "person"),
+    ]);
+    const senders = [aliceId, bobId, carolId];
+    const entries = Array.from({ length: 500 }, (_, index) =>
+      userEntry(senders[index % senders.length] ?? null, index),
+    );
+    let requestedTailLimit = 0;
+
+    const recentEntries = loadRecentParticipantStreamEntries(
+      {
+        tail: (limit) => {
+          requestedTailLimit = limit;
+          return entries.slice(-limit);
+        },
+      },
+      8,
+    );
+    const participants = resolveActiveParticipants({
+      audienceEntityId: groupId,
+      senderEntityId: null,
+      streamEntries: recentEntries,
+      entityRepository: entities,
+      limit: 8,
+    });
+
+    expect(requestedTailLimit).toBe(32);
+    expect(recentEntries).toHaveLength(32);
+    expect(participants).toEqual([
+      {
+        entityId: bobId,
+        displayName: "Bob",
+        role: "participant",
+      },
+      {
+        entityId: aliceId,
+        displayName: "Alice",
+        role: "participant",
+      },
+      {
+        entityId: carolId,
+        displayName: "Carol",
         role: "participant",
       },
     ]);

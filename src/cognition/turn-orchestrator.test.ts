@@ -1111,6 +1111,53 @@ describe("TurnOrchestrator participant social profiles", () => {
       await borg.close();
     }
   });
+
+  it("keeps legacy global constrained slots when no participant can be resolved", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_700_000_000_500);
+    const llm = new FakeLLMClient({
+      responses: [
+        createEmitAnswerResponse("I will keep it neutral."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "entityRepository" | "relationalSlotRepository">;
+    };
+
+    try {
+      const tom = internal.deps.entityRepository.resolve("Tom", {
+        kind: "person",
+      });
+      internal.deps.relationalSlotRepository.applyAssertion({
+        subject_entity_id: tom,
+        slot_key: "partner.name",
+        asserted_value: "Sarah",
+        source_stream_entry_ids: [createStreamEntryId()],
+      });
+      internal.deps.relationalSlotRepository.applyAssertion({
+        subject_entity_id: tom,
+        slot_key: "partner.name",
+        asserted_value: "Maya",
+        source_stream_entry_ids: [createStreamEntryId()],
+      });
+
+      await borg.turn({
+        userMessage: "Help me decide what to say next.",
+        stakes: "low",
+      });
+
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+
+      expect(finalizerSystem).toContain("Relational slot constraints");
+      expect(finalizerSystem).toContain("partner.name: CONTESTED");
+      expect(finalizerSystem).not.toContain("Tom: partner.name");
+    } finally {
+      await borg.close();
+    }
+  });
 });
 
 describe("TurnOrchestrator self snapshot audience visibility", () => {

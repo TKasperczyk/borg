@@ -727,6 +727,70 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("Participants:");
   });
 
+  it("keeps the legacy single-user prompt shape with profile and slot constraints", () => {
+    const alice = createEntityId();
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        activeParticipants: [
+          {
+            entityId: alice,
+            displayName: "Alice",
+            role: "audience",
+          },
+        ],
+        participantProfiles: [
+          {
+            entityId: alice,
+            displayName: "Alice",
+            role: "audience",
+            profile: makeSocialProfile(alice, {
+              trust: 0.72,
+              attachment: 0.31,
+              interaction_count: 6,
+              communication_style: "direct",
+            }),
+          },
+        ],
+        relationalSlots: [
+          {
+            id: createRelationalSlotId(),
+            subject_entity_id: alice,
+            slot_key: "partner.name",
+            value: "Sarah",
+            state: "contested",
+            evidence_stream_entry_ids: [createStreamEntryId()],
+            contradicted_by_stream_entry_ids: [createStreamEntryId()],
+            alternate_values: [
+              {
+                value: "Maya",
+                evidence_stream_entry_ids: [createStreamEntryId()],
+              },
+            ],
+            created_at: NOW_MS,
+            updated_at: NOW_MS,
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+    const profileBlock = extractBlock(prompt, "borg_audience_profile");
+    const slotBlock = extractBlock(prompt, "borg_relational_slot_constraints");
+
+    expect(prompt).toContain(VOICE_AND_POSTURE_SECTION);
+    expect(prompt).toContain(IDENTITY_POSTURE_SECTION);
+    expect(prompt).toContain(LOOP_BREAKING_POSTURE_SECTION);
+    expect(profileBlock).toContain("Talking to: trust=0.72 | attachment=0.31 | interactions=6");
+    expect(profileBlock).toContain("style=direct");
+    expect(profileBlock).not.toContain("Participants:");
+    expect(slotBlock).toContain(
+      [
+        "Relational slot constraints (do not violate):",
+        '- partner.name: CONTESTED (conflicting evidence is contested). Do not name this relation. Use "your partner" or "they". Re-establish only if the user names it in the current message.',
+      ].join("\n"),
+    );
+    expect(slotBlock).not.toContain("Alice: partner.name");
+  });
+
   it("renders the selected skill first with up to two evaluated alternatives", () => {
     const tracePath = makeSkill(
       "skl_aaaaaaaaaaaaaaaa",

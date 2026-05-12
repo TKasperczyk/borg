@@ -1756,6 +1756,10 @@ function isOpenQuestionVisibleToAudience(
   question: OpenQuestion,
   audienceEntityId: EntityId | null | undefined,
 ): boolean {
+  // Phase B intentionally does NOT expand audience scoping to individual participants.
+  // Group audience turns currently see only memories scoped to the group entity OR
+  // to public/self/shared. Participant-private memories remain invisible from a group turn.
+  // This is Phase C territory (ACL-style DM+group coexistence).
   if (audienceEntityId === null || audienceEntityId === undefined) {
     return question.audience_entity_id === null;
   }

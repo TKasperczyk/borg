@@ -12,6 +12,7 @@ import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
 
 const DEFAULT_DATA_DIR = "~/.borg";
+export const DEFAULT_ACTIVE_PARTICIPANT_LIMIT = 8;
 
 export function expandPath(pathLike: string): string {
   if (pathLike === "~") {
@@ -165,6 +166,7 @@ const configBaseSchema = z.object({
   generation: z
     .object({
       discourseStateHardCapTurns: z.number().int().positive().default(50),
+      activeParticipantLimit: z.number().int().positive().default(DEFAULT_ACTIVE_PARTICIPANT_LIMIT),
       cognition: cognitionConfigSchema,
       evidenceLedger: evidenceLedgerConfigSchema,
       postGenerationGuards: postGenerationGuardsConfigSchema,
@@ -676,6 +678,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["generation", "discourseStateHardCapTurns"],
     readOptionalEnvNumber(env, "BORG_GENERATION_DISCOURSE_HARD_CAP_TURNS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "activeParticipantLimit"],
+    readOptionalEnvNumber(env, "BORG_GENERATION_ACTIVE_PARTICIPANT_LIMIT"),
   );
   setConfigOverride(
     overrides,

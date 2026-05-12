@@ -36,6 +36,7 @@ import {
 import type { TurnGoalPromotionService } from "../goals/turn-goal-promotion-service.js";
 import type { PerceptionGateway } from "../perception/gateway.js";
 import {
+  loadRecentParticipantStreamEntries,
   resolveActiveParticipants,
   resolveParticipantProfiles,
   type ActiveParticipant,
@@ -62,7 +63,6 @@ import type { SocialRepository } from "../../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import {
   QUARANTINED_USER_ENTRY_EVENT,
-  loadSessionStreamEntries,
   type StreamEntry,
   type StreamReader,
   type StreamWriter,
@@ -94,7 +94,9 @@ function listConstrainedRelationalSlotsForParticipants(
   participants: readonly ActiveParticipant[],
 ) {
   if (participants.length === 0) {
-    return [];
+    return repository.listConstrained({
+      limit: DELIBERATION_RELATIONAL_SLOT_LIMIT,
+    });
   }
 
   return participants
@@ -285,11 +287,16 @@ export class TurnPhaseCoordinator {
     const persistedUserEntryId = persistedUserEntry?.id;
     const persistedPerceptionEntry = openingPersistence.persistedPerceptionEntry;
     workingMemory = openingPersistence.workingMemory;
+    const activeParticipantLimit = this.options.config.generation.activeParticipantLimit;
     const activeParticipants = resolveActiveParticipants({
       audienceEntityId,
       senderEntityId: turnInput.senderEntityId ?? null,
-      streamEntries: await loadSessionStreamEntries(this.options.createStreamReader(sessionId)),
+      streamEntries: loadRecentParticipantStreamEntries(
+        this.options.createStreamReader(sessionId),
+        activeParticipantLimit,
+      ),
       entityRepository: this.options.entityRepository,
+      limit: activeParticipantLimit,
     });
     const participantProfiles = resolveParticipantProfiles(
       activeParticipants,

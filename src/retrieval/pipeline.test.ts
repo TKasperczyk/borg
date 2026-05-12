@@ -1258,4 +1258,92 @@ describe("retrieval pipeline", () => {
     ]);
     expect(defaultResult.open_questions).toEqual([]);
   });
+
+  it("keeps participant-private open questions hidden from group audience retrieval", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: composeMigrations(episodicMigrations, selfMigrations, retrievalMigrations),
+    });
+    const table = await store.openTable({
+      name: "episodes",
+      schema: createEpisodesTableSchema(4),
+    });
+    const openQuestionsTable = await store.openTable({
+      name: "open_questions",
+      schema: createOpenQuestionsTableSchema(4),
+    });
+    const repo = new EpisodicRepository({
+      table,
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const embeddingClient = new ScriptedEmbeddingClient();
+    const openQuestionsRepository = new OpenQuestionsRepository({
+      db,
+      table: openQuestionsTable,
+      embeddingClient,
+      clock: new FixedClock(5_000),
+    });
+    const group = createEntityId();
+    const alice = createEntityId();
+
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    await repo.insert({
+      ...createEpisode("ep_groupvisibility0", "strm_groupvisible0000" as never, [1, 0, 0, 0]),
+      title: "Atlas deployment note",
+    });
+    openQuestionsRepository.add({
+      question: "Why does Atlas deployment keep failing for everyone?",
+      urgency: 0.8,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    openQuestionsRepository.add({
+      question: "Why does Atlas deployment keep failing in the group?",
+      urgency: 0.9,
+      audience_entity_id: group,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    openQuestionsRepository.add({
+      question: "Why does Atlas deployment keep failing for Alice privately?",
+      urgency: 1,
+      audience_entity_id: alice,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    await openQuestionsRepository.waitForPendingEmbeddings();
+
+    const pipeline = new RetrievalPipeline({
+      embeddingClient,
+      episodicRepository: repo,
+      openQuestionsRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+    });
+
+    const result = await pipeline.searchWithContext("Atlas deployment", {
+      limit: 1,
+      includeOpenQuestions: true,
+      audienceEntityId: group,
+      openQuestionsLimit: 10,
+    });
+    const questions = result.open_questions.map((question) => question.question);
+
+    expect(questions).toEqual(
+      expect.arrayContaining([
+        "Why does Atlas deployment keep failing for everyone?",
+        "Why does Atlas deployment keep failing in the group?",
+      ]),
+    );
+    expect(questions).not.toContain("Why does Atlas deployment keep failing for Alice privately?");
+  });
 });
