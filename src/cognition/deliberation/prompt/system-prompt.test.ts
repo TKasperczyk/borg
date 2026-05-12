@@ -752,10 +752,16 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).toContain(
       "In ordinary one-to-one turns, the natural choices are a visible response or natural closure.",
     );
-    expect(prompt).toContain("When the evidence ledger Participants section shows multiple");
-    expect(prompt).toContain("In multi-participant contexts where others are talking to each other");
+    expect(prompt).toContain(
+      "When <borg_audience_profile> shows a Participants list with multiple entries",
+    );
+    expect(prompt).toContain(
+      "In multi-participant contexts where others are talking to each other",
+    );
     expect(prompt).not.toContain("silent observation, or natural closure");
-    expect(prompt).not.toContain("If the conversation continues without needing your visible input");
+    expect(prompt).not.toContain(
+      "If the conversation continues without needing your visible input",
+    );
   });
 
   it("keeps the legacy single-user prompt shape with profile and slot constraints", () => {

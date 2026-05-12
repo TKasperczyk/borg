@@ -1208,6 +1208,40 @@ describe("TurnOrchestrator participant social profiles", () => {
     }
   });
 
+  it("keeps group audience visible when no prior peer turns are recent", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_700_000_000_000);
+    const llm = new FakeLLMClient({
+      responses: [createEmitAnswerResponse("Flights next."), createEmptyReflectionResponse()],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.entities.resolve("Planning Room", {
+        kind: "group",
+      });
+      const alice = borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+
+      await borg.turn({
+        userMessage: "I can handle flights.",
+        audience: "Planning Room",
+        senderEntityId: alice,
+      });
+
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+
+      expect(finalizerSystem).toContain("Participants:");
+      expect(finalizerSystem).toContain("Alice (speaker):");
+      expect(finalizerSystem).toContain("Planning Room (audience):");
+      expect(finalizerSystem).not.toContain("Talking to:");
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("keeps legacy global constrained slots when no participant can be resolved", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

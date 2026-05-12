@@ -108,6 +108,10 @@ export function resolveActiveParticipants(
     for (const senderEntityId of recentSenderEntityIds(input.streamEntries, limit)) {
       appendParticipant(participants, seen, senderEntityId, "participant");
     }
+
+    if (participants.length <= 1) {
+      appendParticipant(participants, seen, input.audienceEntityId, "audience");
+    }
   } else if (input.audienceEntityId !== null) {
     appendParticipant(participants, seen, input.audienceEntityId, "audience");
   }

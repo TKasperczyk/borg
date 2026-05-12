@@ -178,7 +178,7 @@ describe("resolveActiveParticipants", () => {
     ]);
   });
 
-  it("returns no active people for group audiences without speaker history", () => {
+  it("returns the group audience marker when no person can be resolved", () => {
     const groupId = createEntityId();
     const entities = repository([entity(groupId, "Planning Room", "group")]);
 
@@ -189,7 +189,42 @@ describe("resolveActiveParticipants", () => {
       entityRepository: entities,
     });
 
-    expect(participants).toEqual([]);
+    expect(participants).toEqual([
+      {
+        entityId: groupId,
+        displayName: "Planning Room",
+        role: "audience",
+      },
+    ]);
+  });
+
+  it("preserves a group-audience signal when recency has no other speakers", () => {
+    const groupId = createEntityId();
+    const aliceId = createEntityId();
+    const entities = repository([
+      entity(groupId, "Planning Room", "group"),
+      entity(aliceId, "Alice", "person"),
+    ]);
+
+    const participants = resolveActiveParticipants({
+      audienceEntityId: groupId,
+      senderEntityId: aliceId,
+      streamEntries: [],
+      entityRepository: entities,
+    });
+
+    expect(participants).toEqual([
+      {
+        entityId: aliceId,
+        displayName: "Alice",
+        role: "speaker",
+      },
+      {
+        entityId: groupId,
+        displayName: "Planning Room",
+        role: "audience",
+      },
+    ]);
   });
 
   it("loads social profiles for each active participant", () => {
