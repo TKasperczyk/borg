@@ -727,6 +727,37 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("Participants:");
   });
 
+  it("gates observe guidance on multi-participant evidence in single-user context", () => {
+    const tom = createEntityId();
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        evidenceLedgerPromptSection:
+          "<borg_evidence_ledger>\nParticipants:\n- Tom (speaker)\n</borg_evidence_ledger>",
+        participantProfiles: [
+          {
+            entityId: tom,
+            displayName: "Tom",
+            role: "audience",
+            profile: makeSocialProfile(tom, {
+              trust: 0.7,
+              attachment: 0.2,
+              interaction_count: 1,
+            }),
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(prompt).toContain(
+      "In ordinary one-to-one turns, the natural choices are a visible response or natural closure.",
+    );
+    expect(prompt).toContain("When the evidence ledger Participants section shows multiple");
+    expect(prompt).toContain("In multi-participant contexts where others are talking to each other");
+    expect(prompt).not.toContain("silent observation, or natural closure");
+    expect(prompt).not.toContain("If the conversation continues without needing your visible input");
+  });
+
   it("keeps the legacy single-user prompt shape with profile and slot constraints", () => {
     const alice = createEntityId();
     const prompt = buildBaseSystemPrompt(

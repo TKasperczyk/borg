@@ -56,7 +56,7 @@ const EMIT_ANSWER_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
   description:
-    "Emit no assistant message for this turn because the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Different from EmitObserve, which means Borg remains present while other participants continue.",
+    "Emit no assistant message for this turn because the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Different from EmitObserve, which is only for multi-participant conversations where Borg remains present while other participants continue.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitNoOutputToolInputSchema,
@@ -69,7 +69,7 @@ const EMIT_NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_OBSERVE_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_OBSERVE_FINALIZER_TOOL_NAME,
   description:
-    "Choose to observe the current conversation without producing a visible message. Use when other participants are talking to each other and your input is not needed, when the conversation flows naturally without you, or when adding to it would interrupt rather than help. Different from EmitNoOutput, which signals conversation closure.",
+    "Choose to observe the current conversation without producing a visible message. Use only when the evidence ledger Participants section shows multiple participants and they are talking to each other rather than to you: your input is not needed, the conversation flows naturally without you, or adding to it would interrupt rather than help. Different from EmitNoOutput, which signals conversation closure.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitObserveToolInputSchema,
@@ -110,7 +110,7 @@ const EMISSION_FINALIZER_INSTRUCTIONS = [
   "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport per turn.",
   "",
   "Use EmitAnswer for an ordinary assistant response when Borg should speak. Put the complete user-visible response in text. Use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. Use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole.",
-  "Use EmitObserve when Borg should remain present and listening without interrupting participant-to-participant conversation. Put a concise durable reason in reason. This is an active observation, not a closure signal.",
+  "Use EmitObserve only in multi-participant contexts where the evidence ledger Participants section shows multiple participants and the current exchange is participant-to-participant rather than directed to Borg. Put a concise durable reason in reason. This is an active observation, not a closure signal. In ordinary one-to-one turns, prefer EmitAnswer when Borg should speak or EmitNoOutput when the conversation has closed.",
   "Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason.",
   "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.",
   "",
