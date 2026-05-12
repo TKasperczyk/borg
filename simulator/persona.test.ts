@@ -287,4 +287,64 @@ describe("PersonaSession", () => {
 
     expect(prompts).toEqual([FIRST_BORG_REPLY]);
   });
+
+  it("uses channel transcript context when peers have spoken since this persona", async () => {
+    const calls: Array<readonly { role?: string; content?: unknown }[]> = [];
+    const client = {
+      messages: {
+        stream(params: { messages: Array<{ role?: string; content?: unknown }> }) {
+          calls.push(params.messages);
+          return {
+            async finalMessage() {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `persona draft ${calls.length}`,
+                  },
+                ],
+              };
+            },
+          };
+        },
+      },
+    };
+    const persona = new PersonaSession({
+      persona: tomPersona,
+      client: client as never,
+    });
+
+    const draft = await persona.prepareNextTurn({
+      kind: "normal",
+      text: FIRST_BORG_REPLY,
+      channelTranscript: [
+        {
+          speaker_display_name: "Alice",
+          text: "The Tuesday slot works for me.",
+        },
+        {
+          speaker_display_name: "Borg",
+          text: "Tuesday is the cleanest option.",
+        },
+      ],
+    });
+    persona.commit(draft, "");
+    await persona.prepareNextTurn({ kind: "normal", text: SECOND_BORG_REPLY });
+
+    expect(calls[0]?.at(-1)?.content).toBe(
+      [
+        "Recent channel messages since you last spoke:",
+        "[Alice]: The Tuesday slot works for me.",
+        "[Borg]: Tuesday is the cleanest option.",
+      ].join("\n"),
+    );
+    expect(calls[1]?.[0]).toMatchObject({
+      role: "user",
+      content: [
+        "Recent channel messages since you last spoke:",
+        "[Alice]: The Tuesday slot works for me.",
+        "[Borg]: Tuesday is the cleanest option.",
+      ].join("\n"),
+    });
+  });
 });

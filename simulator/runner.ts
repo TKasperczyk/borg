@@ -22,6 +22,7 @@ import { appendJsonlLine } from "./jsonl.js";
 import {
   classifyPersonaRoleBleed,
   PersonaSession,
+  type PersonaChannelTranscriptEntry,
   type PersonaTurnDraft,
   type PersonaRoleBleedDetection,
   type PriorBorgTurn,
@@ -88,8 +89,13 @@ const MAX_PERSONAS = 4;
 const PERSONA_ROLE_BLEED_EVENT = "persona_role_bleed";
 const PERSONA_ROLE_BLEED_MAX_ATTEMPTS = 2;
 const PERSONA_ROLE_BLEED_REJECTED_PREVIEW_CHARS = 500;
+const PERSONA_CHANNEL_TRANSCRIPT_LIMIT = 10;
 export const PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE =
   "--pipeline-c-double-prime sets per-guard modes explicitly; --shadow-post-gen-guards is incompatible";
+
+type ChannelTranscriptLogEntry = PersonaChannelTranscriptEntry & {
+  speakerIndex: number | null;
+};
 
 export const PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES = {
   generation: {
@@ -249,6 +255,52 @@ function normalizeSpeakerIndex(index: number, personas: readonly Persona[]): num
 
 function priorBorgTurnRetry(priorTurn: PriorBorgTurn): PriorBorgTurn {
   return { ...priorTurn, retry: PERSONA_ROLE_BLEED_EVENT };
+}
+
+function appendChannelTranscriptEntry(
+  transcript: ChannelTranscriptLogEntry[],
+  entry: ChannelTranscriptLogEntry,
+): void {
+  transcript.push(entry);
+
+  if (transcript.length > PERSONA_CHANNEL_TRANSCRIPT_LIMIT) {
+    transcript.splice(0, transcript.length - PERSONA_CHANNEL_TRANSCRIPT_LIMIT);
+  }
+}
+
+function channelTranscriptForSpeaker(
+  transcript: readonly ChannelTranscriptLogEntry[],
+  speakerIndex: number,
+): PersonaChannelTranscriptEntry[] {
+  const lastOwnIndex = transcript.findLastIndex((entry) => entry.speakerIndex === speakerIndex);
+  const sinceLastOwn = lastOwnIndex >= 0 ? transcript.slice(lastOwnIndex + 1) : transcript;
+
+  return sinceLastOwn
+    .filter((entry) => entry.speakerIndex !== speakerIndex)
+    .slice(-PERSONA_CHANNEL_TRANSCRIPT_LIMIT)
+    .map((entry) => ({
+      speaker_display_name: entry.speaker_display_name,
+      text: entry.text,
+    }));
+}
+
+function priorTurnForSpeaker(input: {
+  priorTurn: PriorBorgTurn;
+  transcript: readonly ChannelTranscriptLogEntry[];
+  speakerIndex: number;
+  personas: readonly Persona[];
+}): PriorBorgTurn {
+  if (input.personas.length <= 1) {
+    return input.priorTurn;
+  }
+
+  const channelTranscript = channelTranscriptForSpeaker(input.transcript, input.speakerIndex);
+
+  if (channelTranscript.length === 0) {
+    return input.priorTurn;
+  }
+
+  return { ...input.priorTurn, channelTranscript };
 }
 
 function rejectedPreview(message: string): string {
@@ -533,6 +585,7 @@ export class SimulatorRunner {
     let currentSessionId: SessionId = createSessionId();
     const sessionIds: SessionId[] = [currentSessionId];
     const maxSessions = this.options.maxSessions ?? MAX_SESSIONS_DEFAULT;
+    const channelTranscript: ChannelTranscriptLogEntry[] = [];
 
     if (!Number.isInteger(maxSessions) || maxSessions <= 0) {
       throw new Error("maxSessions must be a positive integer");
@@ -570,6 +623,7 @@ export class SimulatorRunner {
         turnId: string;
         response: string;
         emitted: boolean;
+        emissionKind: "message" | "observed" | "suppressed";
         suppressionReason?: GenerationSuppressionReason;
       }> => {
         const result = await transport.chat(draft.message, {
@@ -579,10 +633,12 @@ export class SimulatorRunner {
         });
         const suppressionReason =
           result.emission?.kind === "suppressed" ? result.emission.reason : undefined;
+        const emissionKind = result.emission?.kind ?? (result.emitted ? "message" : "suppressed");
         return {
           turnId: result.turnId,
           response: result.response,
           emitted: result.emitted,
+          emissionKind,
           suppressionReason,
         };
       };
@@ -592,6 +648,7 @@ export class SimulatorRunner {
           turnId: string;
           response: string;
           emitted: boolean;
+          emissionKind: "message" | "observed" | "suppressed";
           suppressionReason?: GenerationSuppressionReason;
           transportChatAttempts: number;
         } | null = null;
@@ -604,7 +661,13 @@ export class SimulatorRunner {
         const speaker = personas[speakerIndex]!;
         const personaSession = personaSessions[speakerIndex]!;
         const speakerEntityId = personaEntityIds[speakerIndex] ?? audienceEntityId;
-        let draft = await personaSession.prepareNextTurn(priorBorgTurn);
+        const speakerPriorTurn = priorTurnForSpeaker({
+          priorTurn: priorBorgTurn,
+          transcript: channelTranscript,
+          speakerIndex,
+          personas,
+        });
+        let draft = await personaSession.prepareNextTurn(speakerPriorTurn);
         let roleBleedAborted = false;
 
         for (
@@ -628,7 +691,7 @@ export class SimulatorRunner {
             tracePath: transport.tracePath,
             turn,
             sessionId: currentSessionId,
-            priorTurn: priorBorgTurn,
+            priorTurn: speakerPriorTurn,
             detection: bleedDetection,
             rejectedMessage: draft.message,
             attempt: bleedAttempt,
@@ -663,7 +726,7 @@ export class SimulatorRunner {
             break;
           }
 
-          draft = await personaSession.prepareNextTurn(priorBorgTurnRetry(priorBorgTurn));
+          draft = await personaSession.prepareNextTurn(priorBorgTurnRetry(speakerPriorTurn));
         }
 
         if (roleBleedAborted) {
@@ -729,6 +792,19 @@ export class SimulatorRunner {
         }
 
         personaSession.commit(draft, success.response);
+        appendChannelTranscriptEntry(channelTranscript, {
+          speakerIndex,
+          speaker_display_name: speaker.displayName,
+          text: draft.message,
+        });
+
+        if (success.emitted) {
+          appendChannelTranscriptEntry(channelTranscript, {
+            speakerIndex: null,
+            speaker_display_name: "Borg",
+            text: success.response,
+          });
+        }
         consecutiveFailures = 0;
 
         const overseerDue =
@@ -736,8 +812,10 @@ export class SimulatorRunner {
           this.options.checkEvery > 0 &&
           turn % this.options.checkEvery === 0;
         const suppressionReason = success.emitted ? undefined : success.suppressionReason;
+        const isObserveTurn = !success.emitted && success.emissionKind === "observed";
         const continuesSuppressedSession =
           !success.emitted &&
+          !isObserveTurn &&
           suppressionReason !== undefined &&
           !isSessionEndingSuppression(suppressionReason);
 
@@ -756,7 +834,12 @@ export class SimulatorRunner {
           heavyMaintenanceRan = true;
         }
 
-        if (!success.emitted && !continuesSuppressedSession && !heavyMaintenanceRan) {
+        if (
+          !success.emitted &&
+          !isObserveTurn &&
+          !continuesSuppressedSession &&
+          !heavyMaintenanceRan
+        ) {
           await runMaintenanceTick(transport, turn, "heavy", {
             final: turn === this.options.totalTurns,
           });
@@ -767,7 +850,7 @@ export class SimulatorRunner {
           sessionId: currentSessionId,
           sessionIds,
           transportChatAttempts: success.transportChatAttempts,
-          overseerDueOnSuppressedTurn: !success.emitted && overseerDue,
+          overseerDueOnSuppressedTurn: !success.emitted && !isObserveTurn && overseerDue,
         });
 
         if (overseerDue) {
@@ -784,6 +867,10 @@ export class SimulatorRunner {
         }
 
         if (!success.emitted) {
+          if (isObserveTurn) {
+            continue;
+          }
+
           if (continuesSuppressedSession) {
             suppressionEvents.push({
               sessionIndex: sessions.length,
@@ -815,6 +902,7 @@ export class SimulatorRunner {
           for (const session of personaSessions) {
             session.startNewSession();
           }
+          channelTranscript.length = 0;
           priorBorgTurn = { kind: "new_session", gapContext: gap };
           currentSessionStartTurn = turn + 1;
           currentSessionId = createSessionId();

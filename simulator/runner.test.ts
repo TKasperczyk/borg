@@ -195,20 +195,27 @@ function chatResult(input: {
   turnId: string;
   sessionId: SessionId;
   suppressionReason?: GenerationSuppressionReason;
+  observedReason?: string;
 }): ChatWithBorgResult {
   return {
     response: input.response,
     emitted: input.emitted,
-    emission: input.emitted
-      ? ({
-          kind: "message",
-          content: input.response,
-          agentMessageId: `strm_${input.turnId}`,
-        } as ChatWithBorgResult["emission"])
-      : {
-          kind: "suppressed",
-          reason: input.suppressionReason ?? "no_output_tool",
-        },
+    emission:
+      input.observedReason !== undefined
+        ? {
+            kind: "observed",
+            reason: input.observedReason,
+          }
+        : input.emitted
+          ? ({
+              kind: "message",
+              content: input.response,
+              agentMessageId: `strm_${input.turnId}`,
+            } as ChatWithBorgResult["emission"])
+          : {
+              kind: "suppressed",
+              reason: input.suppressionReason ?? "no_output_tool",
+            },
     turnId: input.turnId,
     sessionId: input.sessionId,
     usage: {
@@ -805,6 +812,110 @@ describe("SimulatorRunner", () => {
     });
     expect(report.personas).toEqual(["alice-test", "bob-test"]);
     expect(report.audience).toBe("Planning Channel");
+  });
+
+  it("keeps observed multi-persona turns in session and threads peer transcript", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const alice = {
+      key: "alice-test",
+      displayName: "Alice",
+      systemPrompt: "Speak as Alice.",
+    };
+    const bob = {
+      key: "bob-test",
+      displayName: "Bob",
+      systemPrompt: "Speak as Bob.",
+    };
+    const aliceSession = fakePersonaSession(["alice first", "alice second", "alice third"]);
+    const bobSession = fakePersonaSession(["bob first", "bob second"]);
+    const chatSessionIds: SessionId[] = [];
+    mockTransportLifecycle();
+    spyMaintenanceTick();
+    vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) => {
+      const callNumber = chatSessionIds.length + 1;
+      const sessionId = options.sessionId as SessionId;
+      chatSessionIds.push(sessionId);
+
+      if (callNumber === 2 || callNumber === 4) {
+        return chatResult({
+          response: `Borg answer ${callNumber}`,
+          emitted: true,
+          turnId: `turn-peer-${callNumber}`,
+          sessionId,
+        });
+      }
+
+      return chatResult({
+        response: "",
+        emitted: false,
+        observedReason: "The participants are coordinating directly.",
+        turnId: `turn-peer-${callNumber}`,
+        sessionId,
+      });
+    });
+
+    const report = await runSimulation({
+      runId: "sim-runner-observe-peer-transcript-test",
+      persona: alice,
+      personas: [alice, bob],
+      personaSessions: [aliceSession.session, bobSession.session],
+      channelName: "Planning Channel",
+      totalTurns: 5,
+      checkEvery: 999,
+      maxSessions: 3,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+
+    expect(new Set(chatSessionIds).size).toBe(1);
+    expect(aliceSession.startNewSession).not.toHaveBeenCalled();
+    expect(bobSession.startNewSession).not.toHaveBeenCalled();
+    expect(report.sessions).toEqual([
+      {
+        sessionIndex: 0,
+        sessionId: chatSessionIds[0],
+        startedAtTurn: 1,
+        endedAtTurn: 5,
+        endReason: "run_complete",
+      },
+    ]);
+    expect(report.suppressionEvents).toEqual([]);
+    expect(aliceSession.prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([
+      { kind: "new_session" },
+      {
+        kind: "normal",
+        text: "Borg answer 2",
+        channelTranscript: [
+          { speaker_display_name: "Bob", text: "bob first" },
+          { speaker_display_name: "Borg", text: "Borg answer 2" },
+        ],
+      },
+      {
+        kind: "normal",
+        text: "Borg answer 4",
+        channelTranscript: [
+          { speaker_display_name: "Bob", text: "bob second" },
+          { speaker_display_name: "Borg", text: "Borg answer 4" },
+        ],
+      },
+    ]);
+    expect(bobSession.prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([
+      {
+        kind: "new_session",
+        channelTranscript: [{ speaker_display_name: "Alice", text: "alice first" }],
+      },
+      {
+        kind: "normal",
+        text: "Borg answer 2",
+        channelTranscript: [
+          { speaker_display_name: "Borg", text: "Borg answer 2" },
+          { speaker_display_name: "Alice", text: "alice second" },
+        ],
+      },
+    ]);
   });
 
   it("passes the persona display name as Borg defaultUser when opening", async () => {

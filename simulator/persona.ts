@@ -68,19 +68,28 @@ type PersonaRoleBleedRetry = {
   retry?: "persona_role_bleed";
 };
 
+export type PersonaChannelTranscriptEntry = {
+  speaker_display_name: string;
+  text: string;
+};
+
+type PersonaPriorTurnContext = PersonaRoleBleedRetry & {
+  channelTranscript?: readonly PersonaChannelTranscriptEntry[];
+};
+
 export type PriorBorgTurn =
   | ({
       kind: "new_session";
       gapContext?: string;
-    } & PersonaRoleBleedRetry)
+    } & PersonaPriorTurnContext)
   | ({
       kind: "normal";
       text: string;
-    } & PersonaRoleBleedRetry)
+    } & PersonaPriorTurnContext)
   | ({
       kind: "continued_suppression";
       reason: string;
-    } & PersonaRoleBleedRetry);
+    } & PersonaPriorTurnContext);
 
 type PersonaClientInit = {
   client: PersonaClient;
@@ -258,7 +267,26 @@ function continuedSuppressionPrompt(persona: Persona): string {
   ].join(" ");
 }
 
+function channelTranscriptPrompt(
+  transcript: readonly PersonaChannelTranscriptEntry[] | undefined,
+): string | null {
+  if (transcript === undefined || transcript.length === 0) {
+    return null;
+  }
+
+  return [
+    "Recent channel messages since you last spoke:",
+    ...transcript.map((entry) => `[${entry.speaker_display_name}]: ${entry.text}`),
+  ].join("\n");
+}
+
 function baseUserMessageForPriorTurn(persona: Persona, priorTurn: PriorBorgTurn): string {
+  const transcriptPrompt = channelTranscriptPrompt(priorTurn.channelTranscript);
+
+  if (transcriptPrompt !== null) {
+    return transcriptPrompt;
+  }
+
   if (priorTurn.kind === "new_session") {
     return initialPrompt(persona, priorTurn.gapContext ?? null);
   }
