@@ -1035,13 +1035,22 @@ function listVisibleActions(
   limit: number,
 ): ActionRecord[] {
   const records: ActionRecord[] = [...actionRepository.list({ audienceEntityId: null, limit })];
+  const activeParticipantIds = new Set(
+    (activeParticipants ?? []).map((participant) => participant.entityId),
+  );
 
   if (audienceEntityId !== null) {
     records.push(...actionRepository.list({ audienceEntityId, limit }));
   }
 
   for (const participant of activeParticipants ?? []) {
-    records.push(...actionRepository.list({ actor: participant.entityId, limit }));
+    records.push(
+      ...actionRepository
+        .list({ actor: participant.entityId })
+        .filter((action) =>
+          isActionVisibleToSession(action, audienceEntityId, activeParticipantIds),
+        ),
+    );
     records.push(...actionRepository.list({ audienceEntityId: participant.entityId, limit }));
   }
 
@@ -1084,10 +1093,141 @@ function scopedGoalsForEntity(goals: readonly GoalRecord[], entityId: EntityId):
   );
 }
 
+function dedupeCommitments(records: readonly CommitmentRecord[]): CommitmentRecord[] {
+  return [...new Map(records.map((record) => [record.id, record])).values()].sort(
+    (left, right) => right.priority - left.priority || left.created_at - right.created_at,
+  );
+}
+
+function dedupeGoals(records: readonly GoalRecord[]): GoalRecord[] {
+  return [...new Map(records.map((record) => [record.id, record])).values()].sort(
+    (left, right) => right.priority - left.priority || left.created_at - right.created_at,
+  );
+}
+
 function dedupeActions(records: readonly ActionRecord[]): ActionRecord[] {
   return [...new Map(records.map((record) => [record.id, record])).values()].sort(
     (left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id),
   );
+}
+
+function visibleAudienceEntityIds(
+  audienceEntityId: EntityId | null,
+  activeParticipants: readonly ActiveParticipant[] | undefined,
+): ReadonlySet<EntityId> {
+  const ids = new Set((activeParticipants ?? []).map((participant) => participant.entityId));
+
+  if (audienceEntityId !== null) {
+    ids.add(audienceEntityId);
+  }
+
+  return ids;
+}
+
+function audienceIsVisibleToSession(
+  scopedAudienceEntityId: EntityId | null | undefined,
+  currentAudienceEntityId: EntityId | null,
+  activeParticipantIds: ReadonlySet<EntityId>,
+): boolean {
+  if (scopedAudienceEntityId === null || scopedAudienceEntityId === undefined) {
+    return true;
+  }
+
+  return (
+    scopedAudienceEntityId === currentAudienceEntityId ||
+    activeParticipantIds.has(scopedAudienceEntityId)
+  );
+}
+
+function isActionVisibleToSession(
+  action: ActionRecord,
+  audienceEntityId: EntityId | null,
+  activeParticipantIds: ReadonlySet<EntityId>,
+): boolean {
+  return audienceIsVisibleToSession(
+    action.audience_entity_id,
+    audienceEntityId,
+    activeParticipantIds,
+  );
+}
+
+function isCommitmentVisibleToSession(
+  commitment: CommitmentRecord,
+  audienceEntityId: EntityId | null,
+  activeParticipantIds: ReadonlySet<EntityId>,
+): boolean {
+  if (commitment.restricted_audience !== null) {
+    return audienceIsVisibleToSession(
+      commitment.restricted_audience,
+      audienceEntityId,
+      activeParticipantIds,
+    );
+  }
+
+  return audienceIsVisibleToSession(
+    commitment.made_to_entity,
+    audienceEntityId,
+    activeParticipantIds,
+  );
+}
+
+function isGoalVisibleToSession(
+  goal: GoalRecord,
+  audienceEntityId: EntityId | null,
+  activeParticipantIds: ReadonlySet<EntityId>,
+): boolean {
+  return audienceIsVisibleToSession(
+    goal.audience_entity_id,
+    audienceEntityId,
+    activeParticipantIds,
+  );
+}
+
+function entityIdPointsAtPerson(
+  entityId: EntityId | null | undefined,
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): boolean {
+  return (
+    entityId !== null &&
+    entityId !== undefined &&
+    entityRepository?.get(entityId)?.kind === "person"
+  );
+}
+
+function actionBelongsToGroupChannel(
+  action: ActionRecord,
+  audienceEntityId: EntityId,
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): boolean {
+  if (action.actor === "user" || action.audience_entity_id !== audienceEntityId) {
+    return false;
+  }
+
+  return action.actor === "borg" || !entityIdPointsAtPerson(action.actor, entityRepository);
+}
+
+function commitmentBelongsToGroupChannel(
+  commitment: CommitmentRecord,
+  audienceEntityId: EntityId,
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): boolean {
+  if (entityIdPointsAtPerson(commitment.committed_by_entity_id ?? null, entityRepository)) {
+    return false;
+  }
+
+  return scopedCommitmentsForEntity([commitment], audienceEntityId).length > 0;
+}
+
+function goalBelongsToGroupChannel(
+  goal: GoalRecord,
+  audienceEntityId: EntityId,
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): boolean {
+  if (entityIdPointsAtPerson(goal.owner_entity_id ?? null, entityRepository)) {
+    return false;
+  }
+
+  return scopedGoalsForEntity([goal], audienceEntityId).length > 0;
 }
 
 function findParent(parents: Map<string, string>, id: string): string {
@@ -1435,7 +1575,7 @@ export class EvidenceLedgerBuilder {
     this.addContradictionsAndQuarantines(sections, input, streamEntries, resolver);
     await this.addActionStates(sections, input, resolver);
     this.addGroupChannelMemory(sections, input, resolver);
-    this.addRelationalSlots(sections, resolver, input.activeParticipants);
+    this.addRelationalSlots(sections, resolver, input.audienceEntityId, input.activeParticipants);
     // Sprint 8d.6.3: stream IDs covered by the current_session_transcript
     // section don't need to be re-rendered as retrieved_raw_stream_evidence.
     // The same underlying entry's text was duplicated across both sections
@@ -1813,6 +1953,8 @@ export class EvidenceLedgerBuilder {
         audience: audienceEntityId,
       }) ?? input.applicableCommitments,
       audienceEntityId,
+    ).filter((commitment) =>
+      commitmentBelongsToGroupChannel(commitment, audienceEntityId, this.options.entityRepository),
     );
 
     for (const commitment of scopedCommitments) {
@@ -1843,6 +1985,8 @@ export class EvidenceLedgerBuilder {
         visibleToAudienceEntityId: audienceEntityId,
       }) ?? [],
       audienceEntityId,
+    ).filter((goal) =>
+      goalBelongsToGroupChannel(goal, audienceEntityId, this.options.entityRepository),
     );
 
     for (const goal of scopedGoals) {
@@ -1860,14 +2004,22 @@ export class EvidenceLedgerBuilder {
     }
 
     for (const action of dedupeActions([
-      ...this.options.actionRepository.list({
-        audienceEntityId,
-        limit: DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
-      }),
-      ...this.options.actionRepository.list({
-        actor: audienceEntityId,
-        limit: DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
-      }),
+      ...this.options.actionRepository
+        .list({
+          audienceEntityId,
+          limit: DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
+        })
+        .filter((record) =>
+          actionBelongsToGroupChannel(record, audienceEntityId, this.options.entityRepository),
+        ),
+      ...this.options.actionRepository
+        .list({
+          actor: audienceEntityId,
+          limit: DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
+        })
+        .filter((record) =>
+          actionBelongsToGroupChannel(record, audienceEntityId, this.options.entityRepository),
+        ),
     ]).slice(0, DEFAULT_ACTION_THREAD_RENDER_LIMIT)) {
       addEntry(
         sections,
@@ -1897,8 +2049,10 @@ export class EvidenceLedgerBuilder {
   private addRelationalSlots(
     sections: SectionBuckets,
     resolver: ScopeResolver,
+    audienceEntityId: EntityId | null,
     activeParticipants: readonly ActiveParticipant[] | undefined,
   ): void {
+    const activeParticipantIds = visibleAudienceEntityIds(audienceEntityId, activeParticipants);
     const slots =
       activeParticipants === undefined || activeParticipants.length === 0
         ? this.options.relationalSlotRepository.list({
@@ -1956,11 +2110,19 @@ export class EvidenceLedgerBuilder {
         this.options.commitmentRepository === undefined
           ? []
           : scopedCommitmentsForEntity(
-              this.options.commitmentRepository.list({
-                activeOnly: true,
-                audience: participant.entityId,
-              }),
+              dedupeCommitments([
+                ...this.options.commitmentRepository.list({
+                  activeOnly: true,
+                  committedByEntity: participant.entityId,
+                }),
+                ...this.options.commitmentRepository.list({
+                  activeOnly: true,
+                  audience: participant.entityId,
+                }),
+              ]),
               participant.entityId,
+            ).filter((commitment) =>
+              isCommitmentVisibleToSession(commitment, audienceEntityId, activeParticipantIds),
             );
 
       for (const commitment of participantCommitments) {
@@ -1993,11 +2155,19 @@ export class EvidenceLedgerBuilder {
         this.options.goalsRepository === undefined
           ? []
           : scopedGoalsForEntity(
-              this.options.goalsRepository.list({
-                status: "active",
-                visibleToAudienceEntityId: participant.entityId,
-              }),
+              dedupeGoals([
+                ...this.options.goalsRepository.list({
+                  status: "active",
+                  ownerEntityId: participant.entityId,
+                }),
+                ...this.options.goalsRepository.list({
+                  status: "active",
+                  visibleToAudienceEntityId: participant.entityId,
+                }),
+              ]),
               participant.entityId,
+            ).filter((goal) =>
+              isGoalVisibleToSession(goal, audienceEntityId, activeParticipantIds),
             );
 
       for (const goal of participantGoals) {

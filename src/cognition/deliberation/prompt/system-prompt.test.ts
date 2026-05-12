@@ -1048,6 +1048,51 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).toContain("state_metadata.sender_display_name");
   });
 
+  it("renders group-chat sender scoping guidance only for group audiences", () => {
+    const group = createEntityId();
+    const person = createEntityId();
+    const entityRepository = {
+      get: (id: typeof group | typeof person) =>
+        id === group
+          ? {
+              id: group,
+              canonical_name: "Spain Trip Planning Channel",
+              aliases: [],
+              kind: "group" as const,
+              name_provenance: "user_declared" as const,
+              created_at: NOW_MS,
+            }
+          : {
+              id: person,
+              canonical_name: "Alice",
+              aliases: [],
+              kind: "person" as const,
+              name_provenance: "user_declared" as const,
+              created_at: NOW_MS,
+            },
+    };
+    const groupPrompt = buildBaseSystemPrompt(
+      makeContext({
+        audienceEntityId: group,
+        entityRepository: entityRepository as never,
+      }),
+      PROMPT_OPTIONS,
+    );
+    const personPrompt = buildBaseSystemPrompt(
+      makeContext({
+        audienceEntityId: person,
+        entityRepository: entityRepository as never,
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(groupPrompt).toContain("first-person user commitments/actions/goals belong");
+    expect(groupPrompt).toContain("state_metadata.sender_display_name");
+    expect(groupPrompt).toContain("participant profile");
+    expect(groupPrompt).not.toContain("<speaker_display_name>");
+    expect(personPrompt).not.toContain("first-person user commitments/actions/goals belong");
+  });
+
   it("does not mention inline speaker tag conventions", () => {
     const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
 

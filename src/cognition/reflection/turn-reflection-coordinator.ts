@@ -53,6 +53,8 @@ export type RunTurnReflectionInput = {
   selectedSkill: SkillSelectionResult | null;
   proceduralContext: ProceduralContext | null;
   audienceEntityId: EntityId | null;
+  audienceIsGroup?: boolean;
+  senderEntityId?: EntityId | null;
   socialInteractionEntityId: EntityId | null;
   pendingSocialAttribution: PendingSocialAttribution | null;
   suppressionSet: SuppressionSet;
@@ -138,6 +140,8 @@ export class TurnReflectionCoordinator {
         executiveFocus: input.executiveFocus,
         selectedSkillId: input.selectedSkill?.skill.id ?? null,
         audienceEntityId: input.audienceEntityId,
+        audienceIsGroup: input.audienceIsGroup ?? false,
+        senderEntityId: input.senderEntityId ?? null,
         activeOpenQuestions,
         suppressionSet: input.suppressionSet,
         frameAnomaly: input.frameAnomaly ?? null,

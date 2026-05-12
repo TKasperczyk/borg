@@ -67,6 +67,8 @@ export type ReflectionContext = {
   executiveFocus?: ExecutiveFocus | null;
   selectedSkillId?: SkillId | null;
   audienceEntityId?: EntityId | null;
+  audienceIsGroup?: boolean;
+  senderEntityId?: EntityId | null;
   activeOpenQuestions?: readonly OpenQuestion[];
   suppressionSet: SuppressionSet;
   frameAnomaly?: FrameAnomalyClassification | null;
@@ -961,12 +963,21 @@ export class Reflector {
     for (const update of updates) {
       const state = actionStateFromIntentStatus(update.status);
       const id = createActionId();
+      const actor =
+        update.actor === "user" && context.audienceIsGroup === true
+          ? context.senderEntityId
+          : update.actor;
+
+      if (actor === null || actor === undefined) {
+        this.emitGroupIntentUpdateSuppressed(context, update.description);
+        continue;
+      }
 
       try {
         repository.add({
           id,
           description: update.description.trim(),
-          actor: update.actor,
+          actor,
           audience_entity_id: context.audienceEntityId ?? null,
           goal_id: selectedGoalId,
           open_question_id: selectedOpenQuestionId,
@@ -992,6 +1003,21 @@ export class Reflector {
         });
       }
     }
+  }
+
+  private emitGroupIntentUpdateSuppressed(context: ReflectionContext, description: string): void {
+    const tracer = this.options.tracer;
+
+    if (tracer?.enabled !== true || context.turnId === undefined) {
+      return;
+    }
+
+    tracer.emit("reflector_intent_update_suppressed", {
+      turnId: context.turnId,
+      reason: "missing_group_sender_entity_id",
+      description,
+      count: 1,
+    });
   }
 
   private async dropAutonomousCloseAndReplaceProposals(

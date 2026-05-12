@@ -22,7 +22,12 @@ import {
 import { retrievalMigrations } from "../../retrieval/migrations.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { DEFAULT_SESSION_ID, createExecutiveStepId, createStreamEntryId } from "../../util/ids.js";
+import {
+  DEFAULT_SESSION_ID,
+  createEntityId,
+  createExecutiveStepId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import {
@@ -1642,6 +1647,95 @@ describe("reflector", () => {
       }),
     ]);
     expect(llm.requests[0]?.messages[0]?.content).toContain("pending_actions");
+  });
+
+  it("persists group-chat user intent updates on the sender entity", async () => {
+    const pendingIntent = {
+      description: "Book the Alhambra visit",
+      next_action: "reserve tickets",
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [
+            {
+              ...pendingIntent,
+              actor: "user",
+              status: "completed",
+              evidence: "Alice said she booked the Alhambra visit.",
+            },
+          ],
+        ),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+    });
+    const alice = createEntityId();
+    const group = createEntityId();
+    const workingMemory = createWorkingMemoryFixture({
+      turn_counter: 2,
+      pending_actions: [pendingIntent],
+      mode: "problem_solving" as const,
+    });
+
+    await reflector.reflect(
+      {
+        userMessage: "I booked the Alhambra visit.",
+        workingMemory,
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Noted.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Noted.",
+          tool_calls: [],
+          intents: [],
+          workingMemory,
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        audienceEntityId: group,
+        audienceIsGroup: true,
+        senderEntityId: alice,
+        suppressionSet: new SuppressionSet(),
+        currentTurnStreamEntryIds: [createStreamEntryId()],
+      },
+      harness.streamWriter,
+    );
+
+    expect(harness.actionRepository.list({ state: "completed" })).toEqual([
+      expect.objectContaining({
+        description: "Book the Alhambra visit",
+        actor: alice,
+        audience_entity_id: group,
+      }),
+    ]);
   });
 
   it("suppresses intent update action records for frame-anomalous turns", async () => {

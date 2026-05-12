@@ -787,6 +787,8 @@ export class TurnPhaseCoordinator {
       selectedSkill,
       proceduralContext,
       audienceEntityId,
+      audienceIsGroup: audienceEntity?.kind === "group",
+      senderEntityId: turnInput.senderEntityId ?? null,
       socialInteractionEntityId,
       pendingSocialAttribution,
       suppressionSet,

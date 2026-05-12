@@ -546,6 +546,7 @@ describe("EvidenceLedgerBuilder", () => {
     const group = createEntityId();
     const alice = createEntityId();
     const bob = createEntityId();
+    const otherChannel = createEntityId();
     const userEntry = await writer.append({
       kind: "user_msg",
       content: "I'll book Alhambra.",
@@ -567,26 +568,58 @@ describe("EvidenceLedgerBuilder", () => {
       restricted_audience: group,
       directive_family: "spain_channel_scope",
       directive: "Keep Spain planning scoped to the channel.",
+      committed_by_entity_id: null,
+    };
+    const aliceCommitment = {
+      ...makeCommitment(userEntry.id),
+      restricted_audience: group,
+      committed_by_entity_id: alice,
+      directive_family: "alice_alhambra_booking",
+      directive: "Alice is responsible for booking the Alhambra visit.",
+    };
+    const leakedCommitment = {
+      ...makeCommitment(userEntry.id),
+      restricted_audience: otherChannel,
+      committed_by_entity_id: alice,
+      directive_family: "private_channel_task",
+      directive: "Alice's private channel task must stay private.",
     };
     const groupGoal = makeGoal(userEntry.id, {
       audience_entity_id: group,
+      owner_entity_id: null,
       description: "Coordinate the Spain trip channel.",
+    });
+    const aliceGoal = makeGoal(userEntry.id, {
+      audience_entity_id: group,
+      owner_entity_id: alice,
+      description: "Alice will book the Alhambra visit.",
+    });
+    const leakedGoal = makeGoal(userEntry.id, {
+      audience_entity_id: otherChannel,
+      owner_entity_id: alice,
+      description: "Alice's private channel goal.",
     });
     const aliceAction = makeAction(userEntry.id, {
       description: "book Alhambra",
       actor: alice,
-      audience_entity_id: alice,
+      audience_entity_id: group,
       state: "committed_to_do",
       committed_at: NOW_MS,
       scheduled_at: null,
     });
     const groupAction = makeAction(userEntry.id, {
       description: "settle Spain trip dates",
-      actor: "user",
+      actor: group,
       audience_entity_id: group,
       state: "scheduled",
     });
-    const actions = [aliceAction, groupAction];
+    const leakedAction = makeAction(userEntry.id, {
+      description: "call the private channel contact",
+      actor: alice,
+      audience_entity_id: otherChannel,
+      state: "scheduled",
+    });
+    const actions = [aliceAction, groupAction, leakedAction];
     const listActions = (filter: ActionRecordListFilter = {}) =>
       actions
         .filter(
@@ -613,10 +646,35 @@ describe("EvidenceLedgerBuilder", () => {
         list: listActions,
       },
       commitmentRepository: {
-        list: () => [groupCommitment],
+        list: (options = {}) =>
+          [groupCommitment, aliceCommitment, leakedCommitment].filter(
+            (commitment) =>
+              (options.audience === undefined ||
+                (options.audience === null
+                  ? commitment.restricted_audience === null && commitment.made_to_entity === null
+                  : (commitment.restricted_audience === null &&
+                      (commitment.made_to_entity === null ||
+                        commitment.made_to_entity === options.audience)) ||
+                    commitment.restricted_audience === options.audience)) &&
+              (options.committedByEntity === undefined ||
+                commitment.committed_by_entity_id === options.committedByEntity),
+          ),
       },
       goalsRepository: {
-        list: () => [{ ...groupGoal, children: [] }],
+        list: (options = {}) =>
+          [groupGoal, aliceGoal, leakedGoal]
+            .filter(
+              (goal) =>
+                (options.status === undefined || goal.status === options.status) &&
+                (options.visibleToAudienceEntityId === undefined ||
+                  (options.visibleToAudienceEntityId === null
+                    ? goal.audience_entity_id === null
+                    : goal.audience_entity_id === null ||
+                      goal.audience_entity_id === options.visibleToAudienceEntityId)) &&
+                (options.ownerEntityId === undefined ||
+                  goal.owner_entity_id === options.ownerEntityId),
+            )
+            .map((goal) => ({ ...goal, children: [] })),
       },
       currentSessionTranscriptTokenBudget: 50_000,
       entityRepository: {
@@ -649,6 +707,17 @@ describe("EvidenceLedgerBuilder", () => {
               canonical_name: "Ben",
               aliases: [],
               kind: "person",
+              name_provenance: "user_declared",
+              created_at: NOW_MS,
+            };
+          }
+
+          if (entityId === otherChannel) {
+            return {
+              id: otherChannel,
+              canonical_name: "Private Planning Channel",
+              aliases: [],
+              kind: "group",
               name_provenance: "user_declared",
               created_at: NOW_MS,
             };
@@ -687,15 +756,30 @@ describe("EvidenceLedgerBuilder", () => {
       ],
     });
     const rendered = renderEvidenceLedger(ledger) ?? "";
+    const groupSection = ledger.sections.find((section) => section.id === "group_channel_memory");
+    const participantSection = ledger.sections.find((section) => section.id === "relational_slots");
+    const actionSection = ledger.sections.find((section) => section.id === "action_states");
+    const groupText = JSON.stringify(groupSection?.entries ?? []);
+    const participantText = JSON.stringify(participantSection?.entries ?? []);
+    const actionText = JSON.stringify(actionSection?.entries ?? []);
 
     expect(rendered).toContain("## 7. Group/Channel Memory");
     expect(rendered).toContain("trip.destination=Spain");
     expect(rendered).toContain("spain_channel_scope");
     expect(rendered).toContain("Coordinate the Spain trip channel.");
+    expect(groupText).toContain("settle Spain trip dates");
+    expect(groupText).not.toContain("book Alhambra");
+    expect(groupText).not.toContain("alice_alhambra_booking");
+    expect(groupText).not.toContain("Alice will book the Alhambra visit.");
     expect(rendered).toContain("## 8. Active Participant Memory");
     expect(rendered).toContain("task.booking=Alhambra");
+    expect(participantText).toContain("alice_alhambra_booking");
+    expect(participantText).toContain("Alice will book the Alhambra visit.");
     expect(rendered).toContain("book Alhambra");
     expect(rendered).toContain("actor: Alice");
+    expect(rendered).not.toContain("call the private channel contact");
+    expect(rendered).not.toContain("private_channel_task");
+    expect(rendered).not.toContain("Alice's private channel goal.");
     expect(
       ledger.sections
         .find((section) => section.id === "action_states")
@@ -706,6 +790,8 @@ describe("EvidenceLedgerBuilder", () => {
         current_actor: "Alice",
       }),
     });
+    expect(actionText).toContain("book Alhambra");
+    expect(actionText).not.toContain("call the private channel contact");
   });
 
   it("renders legacy global relational slots when active participant set is empty", async () => {

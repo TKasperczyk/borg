@@ -26,6 +26,7 @@ import {
   CURRENT_USER_MESSAGE_REMINDER,
   DEFAULT_HOST_CAPABILITIES_SECTION,
   EPISTEMIC_POSTURE_SECTION,
+  GROUP_CHAT_SENDER_SCOPING_REMINDER,
   IDENTITY_POSTURE_SECTION,
   LOOP_BREAKING_POSTURE_SECTION,
   TRUSTED_GUIDANCE_PREAMBLE,
@@ -216,6 +217,19 @@ function buildBaseSystemPromptSections(
   };
 }
 
+function groupChatSenderScopingReminder(context: DeliberationContext): string | null {
+  const audienceEntityId = context.audienceEntityId ?? null;
+
+  if (
+    audienceEntityId === null ||
+    context.entityRepository?.get(audienceEntityId)?.kind !== "group"
+  ) {
+    return null;
+  }
+
+  return GROUP_CHAT_SENDER_SCOPING_REMINDER;
+}
+
 export function buildBaseSystemPrompt(
   context: DeliberationContext,
   options: BuildBaseSystemPromptOptions,
@@ -239,6 +253,7 @@ export function buildBaseSystemPrompt(
     untrustedDynamicBlock,
     trustedGuidanceBlock,
     CURRENT_USER_MESSAGE_REMINDER,
+    groupChatSenderScopingReminder(context),
   ]
     .filter((section): section is string => section !== null)
     .join("\n\n");
@@ -276,6 +291,7 @@ export function buildCacheableBaseSystemPromptParts(
       trustedDynamicGuidanceBlock,
       untrustedDynamicBlock,
       CURRENT_USER_MESSAGE_REMINDER,
+      groupChatSenderScopingReminder(context),
     ]
       .filter((section): section is string => section !== null)
       .join("\n\n"),
