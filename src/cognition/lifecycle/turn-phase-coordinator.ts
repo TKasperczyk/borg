@@ -648,13 +648,21 @@ export class TurnPhaseCoordinator {
               : { persistence_class: actionEmission.persistence_class }),
             ...(turnInput.audience === undefined ? {} : { audience: turnInput.audience }),
           })
-        : await this.options.discourseStateService.appendSuppressionMarker({
-            streamWriter,
-            reason: actionEmission.reason,
-            userEntryId: persistedUserEntryId,
-            turnId,
-            audience: turnInput.audience,
-          });
+        : actionEmission.kind === "observed"
+          ? await this.options.discourseStateService.appendObservationMarker({
+              streamWriter,
+              reason: actionEmission.reason,
+              userEntryId: persistedUserEntryId,
+              turnId,
+              audience: turnInput.audience,
+            })
+          : await this.options.discourseStateService.appendSuppressionMarker({
+              streamWriter,
+              reason: actionEmission.reason,
+              userEntryId: persistedUserEntryId,
+              turnId,
+              audience: turnInput.audience,
+            });
 
     if (actionEmission.kind === "suppressed") {
       return this.suppressFromAction({
@@ -670,68 +678,80 @@ export class TurnPhaseCoordinator {
       });
     }
 
-    const messageEmission: TurnEmission = {
-      kind: "message",
-      content: actionResult.response,
-      agentMessageId: persistedAgentEntry.id,
-      ...(actionEmission.reply_target === undefined
-        ? {}
-        : { reply_target: actionEmission.reply_target }),
-      ...(actionEmission.persistence_class === undefined
-        ? {}
-        : { persistence_class: actionEmission.persistence_class }),
-    };
+    const turnEmission: TurnEmission =
+      actionEmission.kind === "observed"
+        ? {
+            kind: "observed",
+            reason: actionEmission.reason,
+            markerEntryId: persistedAgentEntry.id,
+          }
+        : {
+            kind: "message",
+            content: actionResult.response,
+            agentMessageId: persistedAgentEntry.id,
+            ...(actionEmission.reply_target === undefined
+              ? {}
+              : { reply_target: actionEmission.reply_target }),
+            ...(actionEmission.persistence_class === undefined
+              ? {}
+              : { persistence_class: actionEmission.persistence_class }),
+          };
     let postActionWorkingMemory = actionResult.workingMemory;
-    if (actionEmission.closure_pressure_history_reason !== undefined) {
+    if (
+      actionEmission.kind === "message" &&
+      actionEmission.closure_pressure_history_reason !== undefined
+    ) {
       postActionWorkingMemory = this.options.discourseStateService.appendClosurePressureHistory({
         workingMemory: postActionWorkingMemory,
         turnId,
         reason: actionEmission.closure_pressure_history_reason,
       });
     }
-    const stopCommitmentExtractor = new StopCommitmentExtractor({
-      llmClient,
-      model: this.options.config.anthropic.models.background,
-      onDegraded: (reason, error) =>
-        this.appendHookFailureEvent(
-          streamWriter,
-          "self_stop_commitment_extraction",
-          error ?? reason,
-          {
-            reason,
-          },
-        ),
-    });
-    const stopCommitment = await stopCommitmentExtractor.extract({
-      userMessage: turnInput.userMessage,
-      agentResponse: actionResult.response,
-    });
+    if (actionEmission.kind === "message") {
+      const stopCommitmentExtractor = new StopCommitmentExtractor({
+        llmClient,
+        model: this.options.config.anthropic.models.background,
+        onDegraded: (reason, error) =>
+          this.appendHookFailureEvent(
+            streamWriter,
+            "self_stop_commitment_extraction",
+            error ?? reason,
+            {
+              reason,
+            },
+          ),
+      });
+      const stopCommitment = await stopCommitmentExtractor.extract({
+        userMessage: turnInput.userMessage,
+        agentResponse: actionResult.response,
+      });
 
-    if (stopCommitment !== null) {
-      postActionWorkingMemory = this.options.discourseStateService.setStopState({
-        workingMemory: postActionWorkingMemory,
-        provenance: "self_commitment_extractor",
-        sourceStreamEntryId: persistedAgentEntry.id,
-        reason: stopCommitment.reason,
-        turnId,
-      });
-    }
+      if (stopCommitment !== null) {
+        postActionWorkingMemory = this.options.discourseStateService.setStopState({
+          workingMemory: postActionWorkingMemory,
+          provenance: "self_commitment_extractor",
+          sourceStreamEntryId: persistedAgentEntry.id,
+          reason: stopCommitment.reason,
+          turnId,
+        });
+      }
 
-    if (postActionWorkingMemory.discourse_state?.closure_loop?.status === "detected") {
-      postActionWorkingMemory = this.options.discourseStateService.markClosureLoopNamed({
-        workingMemory: postActionWorkingMemory,
-        sourceStreamEntryId: persistedAgentEntry.id,
-        reason: "Closure loop detected; assistant used the single allowed naming/output turn.",
-        turnId,
-      });
-      postActionWorkingMemory = this.options.discourseStateService.setStopState({
-        workingMemory: postActionWorkingMemory,
-        provenance: "no_output_tool",
-        sourceStreamEntryId: persistedAgentEntry.id,
-        reason:
-          "Closure loop was already named once; suppress further closure-only turns until substantive content.",
-        turnId,
-      });
+      if (postActionWorkingMemory.discourse_state?.closure_loop?.status === "detected") {
+        postActionWorkingMemory = this.options.discourseStateService.markClosureLoopNamed({
+          workingMemory: postActionWorkingMemory,
+          sourceStreamEntryId: persistedAgentEntry.id,
+          reason: "Closure loop detected; assistant used the single allowed naming/output turn.",
+          turnId,
+        });
+        postActionWorkingMemory = this.options.discourseStateService.setStopState({
+          workingMemory: postActionWorkingMemory,
+          provenance: "no_output_tool",
+          sourceStreamEntryId: persistedAgentEntry.id,
+          reason:
+            "Closure loop was already named once; suppress further closure-only turns until substantive content.",
+          turnId,
+        });
+      }
     }
 
     await this.options.turnReflectionCoordinator.run({
@@ -771,15 +791,15 @@ export class TurnPhaseCoordinator {
       mode: perception.mode,
       path: deliberation.path,
       response: actionResult.response,
-      emitted: true,
-      emission: messageEmission,
+      emitted: actionEmission.kind === "message",
+      emission: turnEmission,
       thoughts: deliberation.thoughts,
       usage: deliberation.usage,
       retrievedEpisodeIds: deliberation.retrievedEpisodes.map((result) => result.episode.id),
       referencedEpisodeIds: [...(deliberation.referencedEpisodeIds ?? [])],
       intents: actionResult.intents,
       toolCalls: [...actionResult.tool_calls],
-      agentMessageId: persistedAgentEntry.id,
+      ...(actionEmission.kind === "message" ? { agentMessageId: persistedAgentEntry.id } : {}),
     };
   }
 

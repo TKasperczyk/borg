@@ -102,6 +102,7 @@ describe("runFinalizer emission tools", () => {
     });
     expect(llm.requests[0]?.tools?.map((tool) => tool.name)).toEqual([
       "EmitAnswer",
+      "EmitObserve",
       "EmitNoOutput",
       "EmitSelfReport",
     ]);
@@ -111,7 +112,7 @@ describe("runFinalizer emission tools", () => {
         type: "text",
         cache_control: { type: "ephemeral", ttl: "1h" },
         text: expect.stringContaining(
-          "Call exactly ONE of EmitAnswer / EmitNoOutput / EmitSelfReport per turn.",
+          "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport per turn.",
         ),
       }),
       expect.objectContaining({
@@ -283,6 +284,33 @@ describe("runFinalizer emission tools", () => {
     const result = await runEmissionFinalizer(llm, tempDirs);
 
     expect(result.decision).toEqual({ kind: "empty" });
+  });
+
+  it("accepts EmitObserve as an observation decision", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_observe",
+              name: "EmitObserve",
+              input: { reason: "Alice and Bob are sorting it out." },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs);
+
+    expect(result.decision).toEqual({
+      kind: "observe",
+      reason: "Alice and Bob are sorting it out.",
+    });
   });
 
   it("rejects malformed EmitSelfReport payloads", async () => {

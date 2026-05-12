@@ -13,6 +13,7 @@ import {
   setStopUntilSubstantiveContent,
 } from "./discourse-state.js";
 import {
+  type AgentObservedStreamContent,
   isNaturalSilenceSuppressionReason,
   type AgentSuppressedStreamContent,
   type PendingTurnEmission,
@@ -51,6 +52,14 @@ export type AppendSuppressionMarkerInput = {
   streamWriter: Pick<StreamWriter, "append">;
   reason: SuppressionReason;
   userEntryId?: AgentSuppressedStreamContent["user_entry_id"];
+  turnId: string;
+  audience?: string;
+};
+
+export type AppendObservationMarkerInput = {
+  streamWriter: Pick<StreamWriter, "append">;
+  reason: string;
+  userEntryId?: AgentObservedStreamContent["user_entry_id"];
   turnId: string;
   audience?: string;
 };
@@ -236,6 +245,20 @@ export class TurnDiscourseStateService {
         user_entry_id: input.userEntryId,
         turn_id: input.turnId,
       } satisfies AgentSuppressedStreamContent,
+      ...(input.audience === undefined ? {} : { audience: input.audience }),
+    });
+  }
+
+  appendObservationMarker(input: AppendObservationMarkerInput) {
+    return input.streamWriter.append({
+      kind: "agent_observed",
+      turn_id: input.turnId,
+      turn_status: ACTIVE_TURN_STATUS,
+      content: {
+        reason: input.reason,
+        user_entry_id: input.userEntryId,
+        turn_id: input.turnId,
+      } satisfies AgentObservedStreamContent,
       ...(input.audience === undefined ? {} : { audience: input.audience }),
     });
   }

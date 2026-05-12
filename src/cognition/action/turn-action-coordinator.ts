@@ -52,11 +52,11 @@ export type TurnActionCoordinatorResult = {
   actionEmission: PendingTurnEmission;
 };
 
-function withMessageMetadata(
-  emission: PendingTurnEmission,
+function withMessageMetadata<T extends PendingTurnEmission>(
+  emission: T,
   source: Extract<PendingTurnEmission, { kind: "message" }>,
-): PendingTurnEmission {
-  if (emission.kind === "suppressed") {
+): T {
+  if (emission.kind !== "message") {
     return emission;
   }
 
@@ -66,7 +66,7 @@ function withMessageMetadata(
     ...(source.persistence_class === undefined
       ? {}
       : { persistence_class: source.persistence_class }),
-  };
+  } as T;
 }
 
 export class TurnActionCoordinator {
@@ -106,7 +106,7 @@ export class TurnActionCoordinator {
       });
     };
     const actionResult =
-      deliberationEmission.kind === "suppressed"
+      deliberationEmission.kind !== "message"
         ? await performAction({
             response: "",
             emission: deliberationEmission,

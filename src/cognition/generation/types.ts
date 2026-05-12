@@ -78,6 +78,11 @@ export type PendingTurnEmission =
       closure_pressure_history_reason?: ClosurePressureHistoryReason;
     }
   | {
+      kind: "observed";
+      reason: string;
+      markerEntryId?: StreamEntryId;
+    }
+  | {
       kind: "suppressed";
       reason: GenerationSuppressionReason;
       markerEntryId?: StreamEntryId;
@@ -93,6 +98,11 @@ export type TurnEmission =
       persistence_class?: StreamEntryPersistenceClass;
     }
   | {
+      kind: "observed";
+      reason: string;
+      markerEntryId?: StreamEntryId;
+    }
+  | {
       kind: "suppressed";
       reason: GenerationSuppressionReason;
       markerEntryId?: StreamEntryId;
@@ -100,6 +110,12 @@ export type TurnEmission =
 
 export type AgentSuppressedStreamContent = {
   reason: GenerationSuppressionReason;
+  user_entry_id?: StreamEntryId;
+  turn_id?: string;
+};
+
+export type AgentObservedStreamContent = {
+  reason: string;
   user_entry_id?: StreamEntryId;
   turn_id?: string;
 };

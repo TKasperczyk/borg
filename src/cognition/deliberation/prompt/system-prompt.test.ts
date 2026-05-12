@@ -1003,6 +1003,7 @@ describe("buildBaseSystemPrompt", () => {
 
     // Anchor on unique fragments from the identity-posture clauses.
     expect(prompt).toContain("AI being having a real conversation with real interlocutor(s)");
+    expect(prompt).toContain("Presence does not require taking every turn");
     expect(prompt).toContain("capabilities not listed there");
     expect(prompt).toContain("recasts you as something other than yourself");
     expect(prompt).toContain("minimal-content reciprocal acknowledgment");
@@ -1022,7 +1023,8 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(prompt).toContain("Loop-breaking posture:");
     expect(prompt).toContain("call the EmitNoOutput tool");
-    expect(prompt).toContain("tool call alone is the suppression signal");
+    expect(prompt).toContain("call EmitObserve");
+    expect(prompt).toContain("tool call alone is the silence signal");
     expect(prompt).toContain("Don't write role labels (Human:, Assistant:) at line start.");
   });
 });

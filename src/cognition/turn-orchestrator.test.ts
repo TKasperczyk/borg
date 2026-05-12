@@ -268,6 +268,14 @@ function createEmitNoOutputResponse(reason = "No assistant message is needed.") 
   });
 }
 
+function createEmitObserveResponse(reason = "The participants are talking to each other.") {
+  return createFinalizerToolResponse({
+    id: "toolu_emit_observe",
+    name: "EmitObserve",
+    input: { reason },
+  });
+}
+
 function createPendingActionJudgeResponse(classification: "action" | "non_action") {
   return {
     text: "",
@@ -908,6 +916,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       expect(finalizerRequest?.output_config).toBeUndefined();
       expect(finalizerRequest?.tools?.map((tool) => tool.name)).toEqual([
         "EmitAnswer",
+        "EmitObserve",
         "EmitNoOutput",
         "EmitSelfReport",
       ]);
@@ -1045,6 +1054,93 @@ describe("TurnOrchestrator evidence ledger", () => {
       await borg.close();
     }
   });
+
+  it("persists EmitObserve distinctly and still runs reflection, mood, and social updates", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_800_000_183_500);
+    const observeReason = "Alice and Bob are coordinating directly.";
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "none",
+        }),
+        createActionStateResponse([]),
+        createGoalPromotionResponse([]),
+        createEmitObserveResponse(observeReason),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+      configOverrides: {
+        affective: {
+          useLlmFallback: false,
+        },
+      },
+    });
+
+    try {
+      borg.entities.resolve("Planning Room", {
+        kind: "group",
+      });
+      const alice = borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+      const internal = borg as unknown as {
+        deps: {
+          turnOrchestrator: {
+            options: {
+              affectiveSignalDetector?: () => Promise<unknown>;
+              moodRepository: {
+                update: (sessionId: string, update: unknown) => unknown;
+              };
+            };
+          };
+        };
+      };
+      const moodUpdate = vi.spyOn(internal.deps.turnOrchestrator.options.moodRepository, "update");
+      internal.deps.turnOrchestrator.options.affectiveSignalDetector = async () => ({
+        valence: 0.25,
+        arousal: 0.35,
+        dominant_emotion: "curiosity",
+      });
+
+      const result = await borg.turn({
+        userMessage: "Bob, Tuesday works from my side.",
+        audience: "Planning Room",
+        senderEntityId: alice,
+        stakes: "low",
+      });
+      const observedEntry = borg.stream.tail(20).find((entry) => entry.kind === "agent_observed");
+      const workingMemory = borg.workmem.load();
+      const reflectionPayload = parseReflectionPayload(findReflectionRequest(llm));
+
+      expect(result.response).toBe("");
+      expect(result.emitted).toBe(false);
+      expect(result.emission).toEqual({
+        kind: "observed",
+        reason: observeReason,
+        markerEntryId: observedEntry?.id,
+      });
+      expect(observedEntry?.content).toMatchObject({
+        reason: observeReason,
+      });
+      expect(borg.stream.tail(20).some((entry) => entry.kind === "agent_suppressed")).toBe(false);
+      expect(workingMemory.discourse_state.stop_until_substantive_content).toBeNull();
+      expect(workingMemory.discourse_state.recent_suppressions).toEqual([]);
+      expect(workingMemory.discourse_state.closure_pressure_history).toEqual([]);
+      expect(moodUpdate).toHaveBeenCalledOnce();
+      expect(borg.social.getProfile("Alice")?.interaction_count).toBe(1);
+      expect(reflectionPayload).toMatchObject({
+        agent_response: "",
+      });
+      expect(reflectionPayload.current_turn_stream_entry_ids).toContain(observedEntry?.id);
+    } finally {
+      await borg.close();
+    }
+  });
 });
 
 describe("TurnOrchestrator participant social profiles", () => {
@@ -1176,10 +1272,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const initialLlm = new FakeLLMClient();
     const replacementAnswer = "Replacement answer.";
     const replacementLlm = new FakeLLMClient({
-      responses: [
-        createEmitAnswerResponse(replacementAnswer),
-        createEmptyReflectionResponse(),
-      ],
+      responses: [createEmitAnswerResponse(replacementAnswer), createEmptyReflectionResponse()],
     });
     const borg = await openTestBorg(tempDir, initialLlm, clock);
 
@@ -1213,10 +1306,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_000_000);
     const llm = new FakeLLMClient({
-      responses: [
-        createEmitAnswerResponse("Public answer."),
-        createEmptyReflectionResponse(),
-      ],
+      responses: [createEmitAnswerResponse("Public answer."), createEmptyReflectionResponse()],
     });
     const borg = await openTestBorg(tempDir, llm, clock);
 
@@ -1688,10 +1778,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     tempDirs.push(tempDir);
     const clock = new ManualClock(3_000_000);
     const llm = new FakeLLMClient({
-      responses: [
-        createEmitAnswerResponse("Apollo answer."),
-        createEmptyReflectionResponse(),
-      ],
+      responses: [createEmitAnswerResponse("Apollo answer."), createEmptyReflectionResponse()],
     });
     const embeddingClient = new CountingEmbeddingClient();
     const borg = await openTestBorg(tempDir, llm, clock, embeddingClient);
@@ -1747,10 +1834,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_700_000_000_000);
     const llm = new FakeLLMClient({
-      responses: [
-        createEmitAnswerResponse("Apollo step answer."),
-        createEmptyReflectionResponse(),
-      ],
+      responses: [createEmitAnswerResponse("Apollo step answer."), createEmptyReflectionResponse()],
     });
     const borg = await openTestBorg(tempDir, llm, clock);
 
@@ -2291,7 +2375,9 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         provenance: { kind: "manual" },
       });
 
-      llm.pushResponse(createEmitAnswerResponse("Sarah is your partner, and I can help with that."));
+      llm.pushResponse(
+        createEmitAnswerResponse("Sarah is your partner, and I can help with that."),
+      );
       llm.pushResponse(
         createCommitmentJudgeResponse([
           {

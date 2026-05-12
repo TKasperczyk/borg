@@ -4,7 +4,7 @@ import type { StreamEntry } from "./types.js";
 
 export type TranscriptStreamEntryKind = Extract<
   StreamEntry["kind"],
-  "user_msg" | "agent_msg" | "agent_suppressed"
+  "user_msg" | "agent_msg" | "agent_suppressed" | "agent_observed"
 >;
 
 export type TranscriptStreamEntry = StreamEntry & {
@@ -13,7 +13,10 @@ export type TranscriptStreamEntry = StreamEntry & {
 
 export function isTranscriptStreamEntry(entry: StreamEntry): entry is TranscriptStreamEntry {
   return (
-    entry.kind === "user_msg" || entry.kind === "agent_msg" || entry.kind === "agent_suppressed"
+    entry.kind === "user_msg" ||
+    entry.kind === "agent_msg" ||
+    entry.kind === "agent_suppressed" ||
+    entry.kind === "agent_observed"
   );
 }
 

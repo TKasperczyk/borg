@@ -105,6 +105,7 @@ function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppress
     case "invalid_tool":
       return "finalizer_failed";
     case "answer":
+    case "observe":
     case "self_report":
       return null;
   }
@@ -132,6 +133,17 @@ function buildFinalizerEmission(result: FinalizerResult): FinalizerEmission {
         kind: "message",
         content: result.decision.text,
         persistence_class: result.decision.persistence_class,
+      },
+    };
+  }
+
+  if (result.decision.kind === "observe") {
+    return {
+      response: "",
+      emitted: false,
+      emission: {
+        kind: "observed",
+        reason: result.decision.reason,
       },
     };
   }

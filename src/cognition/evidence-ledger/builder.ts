@@ -216,7 +216,11 @@ function actorForStreamEntry(entry: Pick<StreamEntry, "kind">): EvidenceLedgerAc
     return "user";
   }
 
-  if (entry.kind === "agent_msg" || entry.kind === "agent_suppressed") {
+  if (
+    entry.kind === "agent_msg" ||
+    entry.kind === "agent_suppressed" ||
+    entry.kind === "agent_observed"
+  ) {
     return "assistant";
   }
 
@@ -224,7 +228,15 @@ function actorForStreamEntry(entry: Pick<StreamEntry, "kind">): EvidenceLedgerAc
 }
 
 function transcriptState(entry: TranscriptStreamEntry): string | undefined {
-  return entry.kind === "agent_suppressed" ? "suppressed" : undefined;
+  if (entry.kind === "agent_suppressed") {
+    return "suppressed";
+  }
+
+  if (entry.kind === "agent_observed") {
+    return "observed";
+  }
+
+  return undefined;
 }
 
 function streamPersistenceClass(entry: Pick<StreamEntry, "persistence_class">) {

@@ -9,6 +9,7 @@ import { executeToolLoop, type ToolLoopResult } from "../action/index.js";
 import { replyTargetSchema, type ReplyTarget } from "../generation/types.js";
 
 export const EMIT_ANSWER_FINALIZER_TOOL_NAME = "EmitAnswer";
+export const EMIT_OBSERVE_FINALIZER_TOOL_NAME = "EmitObserve";
 export const EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME = "EmitNoOutput";
 export const EMIT_SELF_REPORT_FINALIZER_TOOL_NAME = "EmitSelfReport";
 
@@ -20,6 +21,12 @@ const emitTextToolInputSchema = z
   .strict();
 
 const emitNoOutputToolInputSchema = z
+  .object({
+    reason: z.string().min(1),
+  })
+  .strict();
+
+const emitObserveToolInputSchema = z
   .object({
     reason: z.string().min(1),
   })
@@ -49,10 +56,23 @@ const EMIT_ANSWER_FINALIZER_TOOL: ToolDefinition = {
 const EMIT_NO_OUTPUT_FINALIZER_TOOL: ToolDefinition = {
   name: EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
   description:
-    "Emit no assistant message for this turn. The tool call alone is the suppression signal; do not narrate silence. Use it when the conversation has reached a natural close, when the user input does not warrant a response, or when continuing would only produce ritual closure tokens.",
+    "Emit no assistant message for this turn because the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Different from EmitObserve, which means Borg remains present while other participants continue.",
   allowedOrigins: ["deliberator"],
   writeScope: "read",
   inputSchema: emitNoOutputToolInputSchema,
+  outputSchema: z.object({}).strict(),
+  async invoke() {
+    return {};
+  },
+};
+
+const EMIT_OBSERVE_FINALIZER_TOOL: ToolDefinition = {
+  name: EMIT_OBSERVE_FINALIZER_TOOL_NAME,
+  description:
+    "Choose to observe the current conversation without producing a visible message. Use when other participants are talking to each other and your input is not needed, when the conversation flows naturally without you, or when adding to it would interrupt rather than help. Different from EmitNoOutput, which signals conversation closure.",
+  allowedOrigins: ["deliberator"],
+  writeScope: "read",
+  inputSchema: emitObserveToolInputSchema,
   outputSchema: z.object({}).strict(),
   async invoke() {
     return {};
@@ -74,21 +94,24 @@ const EMIT_SELF_REPORT_FINALIZER_TOOL: ToolDefinition = {
 
 const EMISSION_FINALIZER_TOOLS = [
   EMIT_ANSWER_FINALIZER_TOOL,
+  EMIT_OBSERVE_FINALIZER_TOOL,
   EMIT_NO_OUTPUT_FINALIZER_TOOL,
   EMIT_SELF_REPORT_FINALIZER_TOOL,
 ] as const;
 
 const EMISSION_FINALIZER_TOOL_NAMES = [
   EMIT_ANSWER_FINALIZER_TOOL_NAME,
+  EMIT_OBSERVE_FINALIZER_TOOL_NAME,
   EMIT_NO_OUTPUT_FINALIZER_TOOL_NAME,
   EMIT_SELF_REPORT_FINALIZER_TOOL_NAME,
 ] as const;
 
 const EMISSION_FINALIZER_INSTRUCTIONS = [
-  "Call exactly ONE of EmitAnswer / EmitNoOutput / EmitSelfReport per turn.",
+  "Call exactly ONE of EmitAnswer / EmitObserve / EmitNoOutput / EmitSelfReport per turn.",
   "",
-  "Use EmitAnswer for an ordinary assistant response. Put the complete user-visible response in text. Use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. Use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole. For example, if Alice asks Borg a question and Borg's response begins 'Alice -- ...', reply_target.kind should be entity with Alice's entity_id.",
-  "Use EmitNoOutput only when the correct current-turn behavior is to emit no assistant message at all. Put a concise reason in reason.",
+  "Use EmitAnswer for an ordinary assistant response when Borg should speak. Put the complete user-visible response in text. Use reply_target.kind=entity with a prompt-visible entity_id when the response is primarily addressed to a single named participant -- including when answering a question from a specific speaker, when addressing one person by name, or when a participant has asked to be addressed directly. Use reply_target.kind=audience (or omit) when the response speaks to the channel as a whole.",
+  "Use EmitObserve when Borg should remain present and listening without interrupting participant-to-participant conversation. Put a concise durable reason in reason. This is an active observation, not a closure signal.",
+  "Use EmitNoOutput only when the conversation has reached a natural close, the user has ended the exchange, or continuing would only produce ritual closure tokens. Put a concise reason in reason.",
   "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.",
   "",
   "Do not hide factual or source-sensitive content. If a name, place, number, date, callback, action state, relational/profile detail, or claim about Borg's own prior behavior cannot be grounded in prompt-visible evidence, remove it or phrase it qualitatively.",
@@ -143,6 +166,10 @@ export type EmissionDecision =
     }
   | {
       kind: "no_output";
+      reason: string;
+    }
+  | {
+      kind: "observe";
       reason: string;
     }
   | {
@@ -259,6 +286,14 @@ function decisionFromEmissionToolResult(result: ToolLoopResult): EmissionDecisio
       : invalidToolDecision(terminalCall.name, parsed.error.message);
   }
 
+  if (terminalCall.name === EMIT_OBSERVE_FINALIZER_TOOL_NAME) {
+    const parsed = emitObserveToolInputSchema.safeParse(terminalCall.input);
+
+    return parsed.success
+      ? { kind: "observe", reason: parsed.data.reason }
+      : invalidToolDecision(terminalCall.name, parsed.error.message);
+  }
+
   return invalidToolDecision(terminalCall.name, "unknown terminal emission tool");
 }
 
@@ -279,6 +314,7 @@ function emitFinalizerTrace(options: RunFinalizerOptions, decision: EmissionDeci
       ? { reply_target: decision.reply_target }
       : {}),
     ...(decision.kind === "no_output" ? { reason: decision.reason } : {}),
+    ...(decision.kind === "observe" ? { reason: decision.reason } : {}),
     ...(decision.kind === "self_report" ? { persistence_class: decision.persistence_class } : {}),
     ...(decision.kind === "invalid_tool"
       ? { tool_name: decision.toolName, reason: decision.reason }

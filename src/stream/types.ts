@@ -15,6 +15,7 @@ export const STREAM_ENTRY_KINDS = [
   "user_msg",
   "agent_msg",
   "agent_suppressed",
+  "agent_observed",
   "thought",
   "tool_call",
   "tool_result",
