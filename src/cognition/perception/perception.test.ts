@@ -42,7 +42,7 @@ function invalidModeResponse() {
   };
 }
 
-function entityResponse(entities: readonly string[], userIdentityNames: readonly string[] = []) {
+function entityResponse(entities: readonly unknown[], userIdentityNames: readonly string[] = []) {
   return {
     text: "",
     input_tokens: 1,
@@ -280,7 +280,33 @@ describe("perception", () => {
 
     expect(await extractor.extract("I'm Tom")).toEqual({
       entities: ["Tom"],
+      entityMentions: [{ name: "Tom", kind: "person" }],
       userIdentityNames: ["Tom"],
+    });
+  });
+
+  it("accepts typed entity kinds and defaults omitted kinds to person", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        entityResponse([
+          { name: "planning-room", kind: "group" },
+          { name: "Atlas", kind: "abstract" },
+          { name: "Maya" },
+        ]),
+      ],
+    });
+    const extractor = new EntityExtractor({
+      llmClient: llm,
+      model: "haiku",
+    });
+
+    expect(await extractor.extract("planning-room discussed Atlas with Maya")).toMatchObject({
+      entities: ["planning-room", "Atlas", "Maya"],
+      entityMentions: [
+        { name: "planning-room", kind: "group" },
+        { name: "Atlas", kind: "abstract" },
+        { name: "Maya", kind: "person" },
+      ],
     });
   });
 
@@ -395,6 +421,7 @@ describe("perception", () => {
     expect({
       ...degraded,
       entities: successful.entities,
+      entityMentions: successful.entityMentions,
       mode: successful.mode,
     }).toEqual(successful);
   });

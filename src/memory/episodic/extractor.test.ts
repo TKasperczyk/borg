@@ -863,6 +863,86 @@ describe("episodic extractor", () => {
     ).toBeNull();
   });
 
+  it("resolves bare user relational slot subjects to each stream entry sender when present", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const alice = harness.entityRepository.resolve("Alice", {
+      kind: "person",
+    });
+    const bob = harness.entityRepository.resolve("Bob", {
+      kind: "person",
+    });
+    const aliceMessage = await harness.writer.append({
+      kind: "user_msg",
+      content: "My dog's name is Maple.",
+      sender_entity_id: alice,
+    });
+    harness.clock.advance(10);
+    const bobMessage = await harness.writer.append({
+      kind: "user_msg",
+      content: "My cat's name is Nori.",
+      sender_entity_id: bob,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse(
+          [],
+          [
+            {
+              subject_entity_id: "user",
+              slot_key: "dog.name",
+              asserted_value: "Maple",
+              source_stream_entry_ids: [aliceMessage.id],
+              confirmation_kind: "direct",
+            },
+            {
+              subject_entity_id: "I",
+              slot_key: "cat.name",
+              asserted_value: "Nori",
+              source_stream_entry_ids: [bobMessage.id],
+              confirmation_kind: "direct",
+            },
+          ],
+        ),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    expect(prompt).toContain(`"sender_entity_id":"${alice}"`);
+    expect(prompt).toContain(`"sender_entity_id":"${bob}"`);
+    expect(
+      harness.relationalSlotRepository.findBySubjectAndKey(alice, "dog.name"),
+    ).toMatchObject({
+      subject_entity_id: alice,
+      slot_key: "dog.name",
+      value: "Maple",
+      evidence_stream_entry_ids: [aliceMessage.id],
+    });
+    expect(harness.relationalSlotRepository.findBySubjectAndKey(bob, "cat.name")).toMatchObject({
+      subject_entity_id: bob,
+      slot_key: "cat.name",
+      value: "Nori",
+      evidence_stream_entry_ids: [bobMessage.id],
+    });
+    expect(
+      harness.relationalSlotRepository.findBySubjectAndKey(
+        harness.entityRepository.resolve("user"),
+        "dog.name",
+      ),
+    ).toBeNull();
+  });
+
   it("keeps bare user relational slot subjects on the default user for self audience", async () => {
     const harness = await createRelationalExtractorHarness();
     const user = await harness.writer.append({

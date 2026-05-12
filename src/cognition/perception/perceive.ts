@@ -186,6 +186,7 @@ export class Perceiver {
         // fails -- the turn proceeds with no entities for this turn.
         fallback: () => ({
           entities: [],
+          entityMentions: [],
           userIdentityNames: [],
         }),
         onFailure: this.onClassifierFailure,
@@ -228,6 +229,7 @@ export class Perceiver {
 
     const perception = perceptionResultSchema.parse({
       entities: entityExtraction.entities,
+      entityMentions: entityExtraction.entityMentions,
       userIdentityNames: entityExtraction.userIdentityNames,
       mode,
       affectiveSignal: affective.signal,

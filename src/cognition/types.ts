@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export { affectiveSignalSchema } from "../memory/affective/types.js";
 import { affectiveSignalSchema } from "../memory/affective/types.js";
+import { entityKindSchema } from "../memory/commitments/types.js";
 
 export const COGNITIVE_MODES = ["problem_solving", "relational", "reflective", "idle"] as const;
 
@@ -11,6 +12,11 @@ export const temporalCueSchema = z.object({
   sinceTs: z.number().finite().optional(),
   untilTs: z.number().finite().optional(),
   label: z.string().min(1).optional(),
+});
+
+export const perceivedEntitySchema = z.object({
+  name: z.string().min(1),
+  kind: entityKindSchema,
 });
 
 export const intentRecordSchema = z.object({
@@ -32,6 +38,7 @@ export const attentionWeightsSchema = z.object({
 
 export const perceptionResultSchema = z.object({
   entities: z.array(z.string().min(1)),
+  entityMentions: z.array(perceivedEntitySchema).optional(),
   userIdentityNames: z.array(z.string().min(1)).optional(),
   mode: cognitiveModeSchema,
   affectiveSignal: affectiveSignalSchema,

@@ -69,7 +69,7 @@ type ExtractorResponse = z.infer<typeof extractorResponseSchema>;
 type RelationalSlotSubject = {
   entity_id: EntityId;
   label: string;
-  source: "default_user" | "audience";
+  source: "default_user" | "audience" | "sender";
 };
 const EXTRACT_EPISODES_TOOL_NAME = "EmitEpisodeCandidates";
 const EPISODIC_CONTEXT_STREAM_KINDS = [
@@ -362,6 +362,7 @@ function buildExtractorPrompt(
       id: entry.id,
       timestamp: entry.timestamp,
       kind: entry.kind,
+      sender_entity_id: entry.sender_entity_id ?? undefined,
       content: entry.content,
       audience:
         entry.audience === undefined ? undefined : `(audience routing label) ${entry.audience}`,
@@ -384,6 +385,7 @@ function buildExtractorPrompt(
     "The narrative may be slightly longer when needed for multi-thread coverage, but prioritize coverage over length.",
     "For each episode, emit emotional_arc directly from the episode text and user signals. Use null only when there is no meaningful affective signal.",
     "Also emit relational_slot_updates for user-asserted relational attributes whose subject_entity_id appears in the supplied relational slot subject manifest.",
+    "When a stream entry has sender_entity_id and the user asserts a first-person relational attribute, use that sender entity_id as subject_entity_id.",
     "Use relational_slot_updates only for direct user assertions, not assistant statements, guesses, corrections, denials, or uncertainty.",
     "If an assistant introduced a person name and a later user merely reuses that name, do not emit a relational_slot_update for the name. Bare adoption is not explicit confirmation.",
     "Stream entry audience fields are audience routing labels, not evidence that the user self-declared the label as their name.",
@@ -418,6 +420,13 @@ function subjectForPrompt(subject: RelationalSlotSubject): RelationalSlotSubject
       ...subject,
       label: `(audience routing label) ${subject.label}`,
       routing_label: subject.label,
+    };
+  }
+
+  if (subject.source === "sender") {
+    return {
+      ...subject,
+      label: `(stream sender) ${subject.label}`,
     };
   }
 
@@ -538,6 +547,31 @@ function defaultUserRelationalSlotSubject(
   return relationalSlotSubjects.find((subject) => subject.source === "default_user") ?? null;
 }
 
+function senderForRelationalSlot(
+  sourceEntries: readonly StreamEntry[],
+  relationalSlotSubjects: readonly RelationalSlotSubject[],
+): RelationalSlotSubject | null {
+  const senderIds = uniqueStrings(
+    sourceEntries.flatMap((entry) =>
+      entry.sender_entity_id === null || entry.sender_entity_id === undefined
+        ? []
+        : [entry.sender_entity_id],
+    ),
+  );
+
+  if (senderIds.length !== 1) {
+    return null;
+  }
+
+  const senderId = senderIds[0];
+
+  if (senderId === undefined) {
+    return null;
+  }
+
+  return relationalSlotSubjects.find((subject) => subject.entity_id === senderId) ?? null;
+}
+
 function resolveRelationalSlotSubjectEntityId(
   subjectEntityId: string,
   sourceEntries: readonly StreamEntry[],
@@ -545,9 +579,10 @@ function resolveRelationalSlotSubjectEntityId(
 ): EntityId {
   const candidate = subjectEntityId.trim();
 
-  if (candidate === "user") {
+  if (candidate === "user" || candidate === "I" || candidate === "i" || candidate === "me") {
     return (
       (
+        senderForRelationalSlot(sourceEntries, relationalSlotSubjects) ??
         humanAudienceForRelationalSlot(sourceEntries, relationalSlotSubjects) ??
         defaultUserRelationalSlotSubject(relationalSlotSubjects)
       )?.entity_id ?? (candidate as EntityId)
@@ -747,6 +782,7 @@ export class EpisodicExtractor {
     if (defaultUser.length > 0) {
       subjects.push({
         entity_id: this.options.entityRepository.resolve(defaultUser, {
+          kind: "person",
           provenance: "config_default_user",
         }),
         label: defaultUser,
@@ -765,6 +801,22 @@ export class EpisodicExtractor {
         }),
         label: audience,
         source: "audience",
+      });
+    }
+
+    for (const senderEntityId of uniqueStrings(
+      chunk.flatMap((entry) =>
+        entry.sender_entity_id === null || entry.sender_entity_id === undefined
+          ? []
+          : [entry.sender_entity_id],
+      ),
+    )) {
+      const entity = this.options.entityRepository.get(senderEntityId as EntityId);
+
+      subjects.push({
+        entity_id: senderEntityId as EntityId,
+        label: entity?.canonical_name ?? senderEntityId,
+        source: "sender",
       });
     }
 

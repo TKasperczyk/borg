@@ -6,10 +6,20 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import { entityKindSchema, type EntityKind } from "../../memory/commitments/index.js";
 import { CognitionError, LLMError } from "../../util/errors.js";
 
+const extractedEntitySchema = z.union([
+  z.string().min(1),
+  z
+    .object({
+      name: z.string().min(1),
+      kind: entityKindSchema.optional(),
+    })
+    .strict(),
+]);
 const entityFallbackSchema = z.object({
-  entities: z.array(z.string().min(1)),
+  entities: z.array(extractedEntitySchema),
   user_identity_names: z.array(z.string().min(1)).optional(),
 });
 const ENTITY_FALLBACK_TOOL_NAME = "EmitEntityExtraction";
@@ -33,6 +43,8 @@ const ENTITY_LLM_SYSTEM_PROMPT = [
   "- Verbatim phrases longer than ~6 words",
   "",
   "If the text contains no specific named entities, return an empty list. An empty list is the correct output for most casual text. Do not invent entities to fill the list.",
+  "",
+  "For each emitted entity, include kind when known: person for humans, group for channels or rooms containing people, self for Borg, abstract for places, concepts, projects, products, things, and other non-person entities. If omitted, Borg will default kind to person.",
   "",
   "Also populate user_identity_names only when the user explicitly states or confirms that a name is their own name in this message. Do not copy audience labels, metadata names, addressed names, or names merely mentioned as topics.",
 ].join("\n");
@@ -60,7 +72,13 @@ function isAcceptableEntity(value: string): boolean {
 
 export type EntityExtractionResult = {
   entities: string[];
+  entityMentions: ExtractedEntity[];
   userIdentityNames: string[];
+};
+
+export type ExtractedEntity = {
+  name: string;
+  kind: EntityKind;
 };
 
 function parseEntityFallback(result: LLMCompleteResult): EntityExtractionResult {
@@ -82,7 +100,7 @@ function parseEntityFallback(result: LLMCompleteResult): EntityExtractionResult 
   }
 
   return {
-    entities: sanitizeEntities(parsed.data.entities),
+    ...sanitizeExtractedEntities(parsed.data.entities),
     userIdentityNames: sanitizeEntities(parsed.data.user_identity_names ?? []),
   };
 }
@@ -111,6 +129,42 @@ function sanitizeEntities(values: readonly string[]): string[] {
   return items;
 }
 
+function sanitizeExtractedEntities(values: readonly z.infer<typeof extractedEntitySchema>[]): {
+  entities: string[];
+  entityMentions: ExtractedEntity[];
+} {
+  const seen = new Set<string>();
+  const entities: string[] = [];
+  const entityMentions: ExtractedEntity[] = [];
+
+  for (const value of values) {
+    const name = typeof value === "string" ? value.trim() : value.name.trim();
+    const kind = typeof value === "string" ? "person" : (value.kind ?? "person");
+
+    if (!isAcceptableEntity(name)) {
+      continue;
+    }
+
+    const key = name.toLowerCase();
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    entities.push(name);
+    entityMentions.push({
+      name,
+      kind,
+    });
+  }
+
+  return {
+    entities,
+    entityMentions,
+  };
+}
+
 export type EntityExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
@@ -125,6 +179,7 @@ export class EntityExtractor {
     if (normalizedText.length === 0) {
       return {
         entities: [],
+        entityMentions: [],
         userIdentityNames: [],
       };
     }
@@ -137,6 +192,7 @@ export class EntityExtractor {
       // than wrong.
       return {
         entities: [],
+        entityMentions: [],
         userIdentityNames: [],
       };
     }
