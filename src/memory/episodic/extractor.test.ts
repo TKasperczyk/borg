@@ -921,9 +921,7 @@ describe("episodic extractor", () => {
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
     expect(prompt).toContain(`"sender_entity_id":"${alice}"`);
     expect(prompt).toContain(`"sender_entity_id":"${bob}"`);
-    expect(
-      harness.relationalSlotRepository.findBySubjectAndKey(alice, "dog.name"),
-    ).toMatchObject({
+    expect(harness.relationalSlotRepository.findBySubjectAndKey(alice, "dog.name")).toMatchObject({
       subject_entity_id: alice,
       slot_key: "dog.name",
       value: "Maple",
@@ -941,6 +939,88 @@ describe("episodic extractor", () => {
         "dog.name",
       ),
     ).toBeNull();
+  });
+
+  it("keeps same-key first-person relational slots separate for group chat senders", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const group = harness.entityRepository.resolve("Planning Room", {
+      kind: "group",
+    });
+    const alice = harness.entityRepository.resolve("Alice", {
+      kind: "person",
+    });
+    const ben = harness.entityRepository.resolve("Ben", {
+      kind: "person",
+    });
+    const aliceMessage = await harness.writer.append({
+      kind: "user_msg",
+      content: "My partner Maya.",
+      audience: "Planning Room",
+      sender_entity_id: alice,
+    });
+    harness.clock.advance(10);
+    const benMessage = await harness.writer.append({
+      kind: "user_msg",
+      content: "My partner Sara.",
+      audience: "Planning Room",
+      sender_entity_id: ben,
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createEpisodeToolResponse(
+          [],
+          [
+            {
+              subject_entity_id: "user",
+              slot_key: "partner.name",
+              asserted_value: "Maya",
+              source_stream_entry_ids: [aliceMessage.id],
+              confirmation_kind: "direct",
+            },
+            {
+              subject_entity_id: "user",
+              slot_key: "partner.name",
+              asserted_value: "Sara",
+              source_stream_entry_ids: [benMessage.id],
+              confirmation_kind: "direct",
+            },
+          ],
+        ),
+      ],
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: llm,
+      model: "claude-haiku",
+      entityRepository: harness.entityRepository,
+      relationalSlotRepository: harness.relationalSlotRepository,
+      clock: harness.clock,
+    });
+
+    await extractor.extractFromStream();
+
+    expect(
+      harness.relationalSlotRepository.findBySubjectAndKey(alice, "partner.name"),
+    ).toMatchObject({
+      subject_entity_id: alice,
+      slot_key: "partner.name",
+      value: "Maya",
+      evidence_stream_entry_ids: [aliceMessage.id],
+    });
+    expect(harness.relationalSlotRepository.findBySubjectAndKey(ben, "partner.name")).toMatchObject(
+      {
+        subject_entity_id: ben,
+        slot_key: "partner.name",
+        value: "Sara",
+        evidence_stream_entry_ids: [benMessage.id],
+      },
+    );
+    expect(
+      harness.relationalSlotRepository.findBySubjectAndKey(alice, "partner.name")?.value,
+    ).not.toBe("Sara");
+    expect(harness.relationalSlotRepository.findBySubjectAndKey(group, "partner.name")).toBeNull();
   });
 
   it("keeps bare user relational slot subjects on the default user for self audience", async () => {

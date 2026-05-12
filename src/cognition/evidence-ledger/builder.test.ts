@@ -767,12 +767,16 @@ describe("EvidenceLedgerBuilder", () => {
     expect(rendered).toContain("trip.destination=Spain");
     expect(rendered).toContain("spain_channel_scope");
     expect(rendered).toContain("Coordinate the Spain trip channel.");
+    expect(groupText).toContain("trip.destination=Spain");
+    expect(groupText).toContain("spain_channel_scope");
     expect(groupText).toContain("settle Spain trip dates");
     expect(groupText).not.toContain("book Alhambra");
     expect(groupText).not.toContain("alice_alhambra_booking");
     expect(groupText).not.toContain("Alice will book the Alhambra visit.");
     expect(rendered).toContain("## 8. Active Participant Memory");
     expect(rendered).toContain("task.booking=Alhambra");
+    expect(participantText).not.toContain("trip.destination=Spain");
+    expect(participantText).not.toContain("spain_channel_scope");
     expect(participantText).toContain("alice_alhambra_booking");
     expect(participantText).toContain("Alice will book the Alhambra visit.");
     expect(rendered).toContain("book Alhambra");

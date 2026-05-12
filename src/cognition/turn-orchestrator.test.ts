@@ -945,6 +945,118 @@ describe("TurnOrchestrator evidence ledger", () => {
     }
   });
 
+  it("keeps group-chat first-person actions attributed to the original sender on later turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_250);
+    const audience = "Spain Trip Planning Channel";
+    let groupEntityId: EntityId;
+    const actionStateForCurrentUser = Object.assign(
+      (options: LLMCompleteOptions) => {
+        const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+          current_user_stream_entry_id?: string;
+        };
+        const currentUserStreamEntryId = payload.current_user_stream_entry_id;
+
+        if (typeof currentUserStreamEntryId !== "string") {
+          throw new Error("action-state request did not include current_user_stream_entry_id");
+        }
+
+        return createActionStateResponse([
+          {
+            description: "book the Alhambra tickets this weekend",
+            actor: "user",
+            state: "committed_to_do",
+            audience_entity_id: groupEntityId,
+            evidence_stream_entry_ids: [currentUserStreamEntryId],
+          },
+        ]);
+      },
+      { budget: "action-state-extractor" },
+    );
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({ classification: "none" }),
+        actionStateForCurrentUser,
+        createGoalPromotionResponse([]),
+        createEmitAnswerResponse("Alice can own the Alhambra booking."),
+        createClaimAuditResponse([]),
+        createClosureResponseAuditResponse(),
+        createEmptyReflectionResponse(),
+        createCorrectivePreferenceResponse({ classification: "none" }),
+        createActionStateResponse([]),
+        createGoalPromotionResponse([]),
+        createEmitAnswerResponse("I will keep the commitments separated by speaker."),
+        createClaimAuditResponse([]),
+        createClosureResponseAuditResponse(),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      configOverrides: {
+        generation: {
+          evidenceLedger: {
+            enabled: true,
+            currentSessionTranscriptTokenBudget: 50_000,
+          },
+        },
+      },
+    });
+
+    try {
+      groupEntityId = borg.entities.resolve(audience, {
+        kind: "group",
+      });
+      const alice = borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+      const ben = borg.entities.resolve("Ben", {
+        kind: "person",
+      });
+
+      await borg.turn({
+        userMessage: "I'll book the Alhambra tickets this weekend",
+        audience,
+        senderEntityId: alice,
+        stakes: "low",
+      });
+
+      const aliceAction = borg.actions
+        .list({ limit: 10 })
+        .find((record) => record.description === "book the Alhambra tickets this weekend");
+
+      expect(aliceAction).toMatchObject({
+        actor: alice,
+        audience_entity_id: groupEntityId,
+        state: "committed_to_do",
+      });
+      expect(aliceAction?.actor).not.toBe("user");
+      expect(aliceAction?.actor).not.toBe(groupEntityId);
+      expect(aliceAction?.actor).not.toBe(ben);
+
+      await borg.turn({
+        userMessage: "what did I commit to?",
+        audience,
+        senderEntityId: ben,
+        stakes: "low",
+      });
+
+      const benFinalizerSystem = systemText(finalizerRequests(llm.requests).at(1));
+
+      expect(benFinalizerSystem).toContain("<borg_evidence_ledger>");
+      expect(benFinalizerSystem).toContain("book the Alhambra tickets this weekend");
+      expect(benFinalizerSystem).toContain("actor: Alice");
+      expect(benFinalizerSystem).not.toContain("actor: Ben");
+      expect(
+        borg.actions
+          .list({ actor: ben, limit: 10 })
+          .some((record) => record.description === "book the Alhambra tickets this weekend"),
+      ).toBe(false);
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("persists EmitSelfReport responses as assistant self-report stream entries", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
