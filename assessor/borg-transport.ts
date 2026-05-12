@@ -32,7 +32,7 @@ import {
   type GoalId,
   type SessionId,
 } from "../src/util/ids.js";
-import type { EntityRepository, EntityResolveOptions } from "../src/memory/commitments/index.js";
+import type { EntityResolveOptions } from "../src/memory/commitments/index.js";
 import {
   ABORTED_TURN_EVENT,
   getStreamDirectory,
@@ -825,13 +825,7 @@ export class BorgTransport {
   }
 
   resolveEntity(name: string, options: EntityResolveOptions = {}): EntityId {
-    const borg = this.getBorg() as unknown as {
-      deps: {
-        entityRepository: EntityRepository;
-      };
-    };
-
-    return borg.deps.entityRepository.resolve(name, options);
+    return this.getBorg().entities.resolve(name, options);
   }
 
   streamTail(limit: number) {

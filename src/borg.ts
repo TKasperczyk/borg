@@ -23,6 +23,7 @@ export class Borg {
   readonly mood: BorgFacades["mood"];
   readonly actions: BorgFacades["actions"];
   readonly social: BorgFacades["social"];
+  readonly entities: BorgFacades["entities"];
   readonly semantic: BorgFacades["semantic"];
   readonly relationalSlots: BorgFacades["relationalSlots"];
   readonly commitments: BorgFacades["commitments"];
@@ -45,6 +46,7 @@ export class Borg {
     this.mood = facades.mood;
     this.actions = facades.actions;
     this.social = facades.social;
+    this.entities = facades.entities;
     this.semantic = facades.semantic;
     this.relationalSlots = facades.relationalSlots;
     this.commitments = facades.commitments;

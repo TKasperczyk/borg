@@ -303,6 +303,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       adjustTrust: (entity, delta, provenance) =>
         deps.socialRepository.adjustTrust(deps.entityRepository.resolve(entity), delta, provenance),
     },
+    entities: {
+      resolve: (...args) => deps.entityRepository.resolve(...args),
+    },
     semantic: {
       nodes: {
         add: async (input) => {

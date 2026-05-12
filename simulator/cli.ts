@@ -110,6 +110,45 @@ function parsePersonaKeys(value: string): string[] {
     .filter((key) => key.length > 0);
 }
 
+function assertUniquePersonaKeys(keys: readonly string[]): void {
+  const seen = new Set<string>();
+
+  for (const key of keys) {
+    if (seen.has(key)) {
+      throw new Error(`Duplicate persona key in --personas: ${key}`);
+    }
+
+    seen.add(key);
+  }
+}
+
+function assertUniquePersonaDisplayNames(personas: readonly Persona[]): void {
+  const seen = new Set<string>();
+
+  for (const persona of personas) {
+    if (seen.has(persona.displayName)) {
+      throw new Error(`Duplicate persona display name in --personas: ${persona.displayName}`);
+    }
+
+    seen.add(persona.displayName);
+  }
+}
+
+function assertParsedPersonaSelection(options: ParsedOptions): void {
+  if (options.personas === undefined || options.personas.trim().length === 0) {
+    return;
+  }
+
+  const keys = parsePersonaKeys(options.personas);
+  assertUniquePersonaKeys(keys);
+
+  const personas = keys.map((key) => PERSONAS.get(key));
+
+  if (personas.every((persona): persona is Persona => persona !== undefined)) {
+    assertUniquePersonaDisplayNames(personas);
+  }
+}
+
 function selectPersonas(options: ParsedOptions): {
   personas: readonly Persona[];
   channelName?: string;
@@ -133,13 +172,17 @@ function selectPersonas(options: ParsedOptions): {
 
   if (options.personas !== undefined && options.personas.trim().length > 0) {
     const keys = parsePersonaKeys(options.personas);
+    assertUniquePersonaKeys(keys);
 
     if (keys.length < 2 || keys.length > 4) {
       throw new Error("--personas must list 2 to 4 persona keys");
     }
 
+    const personas = keys.map((key) => selectPersona(key));
+    assertUniquePersonaDisplayNames(personas);
+
     return {
-      personas: keys.map((key) => selectPersona(key)),
+      personas,
     };
   }
 
@@ -206,6 +249,7 @@ export function parseSimulatorCliOptions(argv: string[] = process.argv): ParsedO
   };
 
   assertSimulatorFlagCompatibility(options);
+  assertParsedPersonaSelection(options);
 
   return options;
 }

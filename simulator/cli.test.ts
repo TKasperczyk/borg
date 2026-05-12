@@ -65,6 +65,17 @@ describe("simulator CLI", () => {
     expect(options.personas).toBe("alice-trip,ben-trip");
   });
 
+  it("rejects duplicate multi-persona keys", () => {
+    expect(() =>
+      parseSimulatorCliOptions([
+        "node",
+        "simulate",
+        "--personas",
+        "alice-trip,alice-trip,ben-trip",
+      ]),
+    ).toThrow("Duplicate persona key in --personas: alice-trip");
+  });
+
   it("parses built-in simulator scenarios", () => {
     const options = parseSimulatorCliOptions(["node", "simulate", "--scenario", "trip-planning"]);
 

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import { EntityRepository, commitmentMigrations } from "../commitments/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
+import { FixedClock } from "../../util/clock.js";
 import type { EntityId, EpisodeId } from "../../util/ids.js";
 
 import {
@@ -92,6 +95,42 @@ describe("filterEpisodesByAudience", () => {
         hiddenEpisodeIds: [PRIVATE_A_EPISODE],
         hasPrivateMix: true,
       });
+    });
+
+    it("keeps episodes visible for a repository-backed group audience entity", () => {
+      const db = openDatabase(":memory:", {
+        migrations: composeMigrations(commitmentMigrations),
+      });
+
+      try {
+        const entities = new EntityRepository({
+          db,
+          clock: new FixedClock(1_000),
+        });
+        const groupAudience = entities.resolve("Planning Channel", {
+          kind: "group",
+          provenance: "transport_audience_label",
+        });
+
+        expect(entities.get(groupAudience)?.kind).toBe("group");
+        expect(
+          filterEpisodesByAudience(
+            [
+              episode(PUBLIC_EPISODE, null),
+              episode(PRIVATE_GROUP_EPISODE, groupAudience),
+              episode(PRIVATE_A_EPISODE, AUDIENCE_A),
+            ],
+            groupAudience,
+            "filter",
+          ),
+        ).toEqual({
+          visibleEpisodeIds: [PUBLIC_EPISODE, PRIVATE_GROUP_EPISODE],
+          hiddenEpisodeIds: [PRIVATE_A_EPISODE],
+          hasPrivateMix: true,
+        });
+      } finally {
+        db.close();
+      }
     });
 
     it("treats null audience as public-only visibility", () => {

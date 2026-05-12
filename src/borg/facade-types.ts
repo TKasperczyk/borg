@@ -9,7 +9,7 @@ import type {
 import type { CorrectionService } from "../correction/index.js";
 import type { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
-import type { CommitmentRepository } from "../memory/commitments/index.js";
+import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { Provenance } from "../memory/common/index.js";
 import type { EpisodicRepository, ExtractFromStreamResult } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
@@ -224,6 +224,12 @@ export type BorgSocialFacade = {
   ) => ReturnType<SocialRepository["adjustTrust"]>;
 };
 
+export type BorgEntitiesFacade = {
+  resolve: (
+    ...args: Parameters<EntityRepository["resolve"]>
+  ) => ReturnType<EntityRepository["resolve"]>;
+};
+
 export type BorgSemanticFacade = {
   nodes: {
     add: (input: {
@@ -344,6 +350,7 @@ export type BorgFacades = {
   mood: BorgMoodFacade;
   actions: ActionRepository;
   social: BorgSocialFacade;
+  entities: BorgEntitiesFacade;
   semantic: BorgSemanticFacade;
   relationalSlots: {
     countByState: () => ReturnType<RelationalSlotRepository["countByState"]>;

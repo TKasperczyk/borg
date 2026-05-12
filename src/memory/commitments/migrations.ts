@@ -109,12 +109,16 @@ export const commitmentMigrations = [
     id: 6,
     name: "entity_kind",
     up: (db) => {
-      db.exec(`
-        ALTER TABLE entities
-          ADD COLUMN kind TEXT NULL CHECK (
-            kind IS NULL OR kind IN ('person', 'group', 'self', 'abstract')
-          );
+      if (!tableHasColumn(db, "entities", "kind")) {
+        db.exec(`
+          ALTER TABLE entities
+            ADD COLUMN kind TEXT NULL CHECK (
+              kind IS NULL OR kind IN ('person', 'group', 'self', 'abstract')
+            );
+        `);
+      }
 
+      db.exec(`
         UPDATE entities
         SET kind = 'person'
         WHERE kind IS NULL
