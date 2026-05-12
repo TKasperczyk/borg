@@ -8,8 +8,14 @@ import {
   type SemanticNodeId,
 } from "../../util/ids.js";
 import type { IdentityService } from "../identity/index.js";
+import type { Provenance } from "../common/provenance.js";
 
-import type { OpenQuestionsRepository } from "./open-questions.js";
+import type {
+  OpenQuestion,
+  OpenQuestionSearchCandidate,
+  OpenQuestionSimilarLookupOptions,
+  OpenQuestionsRepository,
+} from "./open-questions.js";
 import type {
   OpenQuestionProposal,
   ReviewOpenQuestionContext,
@@ -17,20 +23,50 @@ import type {
 } from "./review-open-question-extractor.js";
 
 type OpenQuestionCreateInput = Parameters<OpenQuestionsRepository["add"]>[0];
-type OpenQuestionWriter = OpenQuestionsRepository | Pick<IdentityService, "addOpenQuestion">;
+type OpenQuestionWriter =
+  | OpenQuestionsRepository
+  | Pick<
+      IdentityService,
+      "addOpenQuestion" | "findSimilarOpenQuestion" | "bumpOpenQuestionUrgency"
+    >;
 export type ReviewOpenQuestionExtractorLike = Pick<ReviewOpenQuestionExtractor, "extract">;
 
 export type ReviewOpenQuestionHookOptions = {
   extractor?: ReviewOpenQuestionExtractorLike | null;
+  minSimilarity?: number;
 };
 
-function addOpenQuestion(writer: OpenQuestionWriter, input: OpenQuestionCreateInput): void {
+const DEFAULT_REVIEW_OPEN_QUESTION_SIMILARITY_THRESHOLD = 0.9;
+
+function addOpenQuestion(writer: OpenQuestionWriter, input: OpenQuestionCreateInput): OpenQuestion {
   if ("addOpenQuestion" in writer) {
-    writer.addOpenQuestion(input);
+    return writer.addOpenQuestion(input);
+  }
+
+  return writer.add(input);
+}
+
+async function findSimilarOpenQuestion(
+  writer: OpenQuestionWriter,
+  input: OpenQuestionSimilarLookupOptions,
+): Promise<OpenQuestionSearchCandidate | null> {
+  return writer.findSimilarOpenQuestion(input);
+}
+
+function reinforceOpenQuestion(
+  writer: OpenQuestionWriter,
+  question: OpenQuestion,
+  provenance: Provenance,
+): void {
+  if ("bumpOpenQuestionUrgency" in writer) {
+    writer.bumpOpenQuestionUrgency(question.id, 0.02, provenance, {
+      throughReview: true,
+      reason: "Similar review-derived open question already exists.",
+    });
     return;
   }
 
-  writer.add(input);
+  writer.touch(question.id);
 }
 
 function reviewItemAudienceEntityId(item: ReviewQueueItem) {
@@ -158,15 +194,34 @@ export async function enqueueOpenQuestionForReview(
   }
 
   const relatedIds = filterProposalIds(proposal, context);
-
-  addOpenQuestion(writer, {
+  const provenance = provenanceForFilteredProposal(relatedIds);
+  const createInput: OpenQuestionCreateInput = {
     question: proposal.question,
     urgency: proposal.urgency,
     audience_entity_id: context.audience_entity_id,
     ...relatedIds,
-    provenance: provenanceForFilteredProposal(relatedIds),
+    provenance,
     source: sourceForReviewItem(item),
+  };
+  const existing = await findSimilarOpenQuestion(writer, {
+    question: createInput.question,
+    audienceEntityId: createInput.audience_entity_id,
+    minSimilarity: options.minSimilarity ?? DEFAULT_REVIEW_OPEN_QUESTION_SIMILARITY_THRESHOLD,
   });
+
+  if (existing !== null) {
+    reinforceOpenQuestion(
+      writer,
+      existing.question,
+      provenance ?? {
+        kind: "offline",
+        process: sourceForReviewItem(item),
+      },
+    );
+    return;
+  }
+
+  addOpenQuestion(writer, createInput);
 }
 
 export async function appendInternalFailureEvent(

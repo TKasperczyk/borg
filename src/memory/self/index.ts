@@ -46,6 +46,7 @@ export {
   type OpenQuestionHandleLookupOptions,
   type OpenQuestionPatch,
   type OpenQuestionSearchCandidate,
+  type OpenQuestionSimilarLookupOptions,
   type OpenQuestionSource,
   type OpenQuestionsRepositoryOptions,
   type OpenQuestionStatus,

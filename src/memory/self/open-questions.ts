@@ -174,6 +174,12 @@ export type OpenQuestionGoalLookupOptions = {
   statuses?: readonly OpenQuestionStatus[];
   limit?: number;
 };
+export type OpenQuestionSimilarLookupOptions = {
+  question: string;
+  audienceEntityId?: EntityId | null;
+  limit?: number;
+  minSimilarity?: number;
+};
 
 type OpenQuestionVectorRow = {
   id: string;
@@ -647,6 +653,49 @@ export class OpenQuestionsRepository {
         minSimilarity: options.minSimilarity,
       })
     ).filter((candidate) => candidate.question.id !== question.id);
+  }
+
+  async findSimilarOpenQuestion(
+    input: OpenQuestionSimilarLookupOptions,
+  ): Promise<OpenQuestionSearchCandidate | null> {
+    const normalizedQuestion = normalizeQuestionForDedupe(input.question);
+    const exact = this.list({
+      status: "open",
+      visibleToAudienceEntityId: input.audienceEntityId,
+      limit: Math.max(input.limit ?? 50, 50),
+    }).find((question) => normalizeQuestionForDedupe(question.question) === normalizedQuestion);
+
+    if (exact !== undefined) {
+      return {
+        question: exact,
+        similarity: 1,
+      };
+    }
+
+    const embeddingClient = this.embeddingClient;
+
+    if (this.table === undefined || embeddingClient === undefined) {
+      return null;
+    }
+
+    let vector: Float32Array;
+
+    try {
+      vector = await embeddingClient.embed(input.question);
+    } catch {
+      return null;
+    }
+
+    return (
+      (
+        await this.searchByVector(vector, {
+          status: "open",
+          visibleToAudienceEntityId: input.audienceEntityId,
+          limit: input.limit,
+          minSimilarity: input.minSimilarity,
+        })
+      )[0] ?? null
+    );
   }
 
   async backfillMissingEmbeddings(

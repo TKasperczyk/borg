@@ -4,13 +4,19 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { EmbeddingClient } from "../../embeddings/index.js";
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
 import type { ReviewQueueItem } from "../semantic/index.js";
-import { OpenQuestionsRepository, selfMigrations } from "./index.js";
+import {
+  OpenQuestionsRepository,
+  createOpenQuestionsTableSchema,
+  selfMigrations,
+} from "./index.js";
 import {
   REVIEW_OPEN_QUESTION_TOOL,
   ReviewOpenQuestionExtractor,
@@ -19,6 +25,27 @@ import {
 import { enqueueOpenQuestionForReview } from "./review-open-question-hook.js";
 
 const TOOL_NAME = REVIEW_OPEN_QUESTION_TOOL.name;
+
+class MapEmbeddingClient implements EmbeddingClient {
+  readonly calls: string[] = [];
+
+  constructor(private readonly vectors: ReadonlyMap<string, readonly number[]>) {}
+
+  async embed(text: string): Promise<Float32Array> {
+    this.calls.push(text);
+    const vector = this.vectors.get(text);
+
+    if (vector === undefined) {
+      throw new Error(`No scripted embedding for ${text}`);
+    }
+
+    return Float32Array.from(vector);
+  }
+
+  async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+    return Promise.all(texts.map((text) => this.embed(text)));
+  }
+}
 
 function createReviewItem(overrides: Partial<ReviewQueueItem> = {}): ReviewQueueItem {
   return {
@@ -64,11 +91,11 @@ function createToolResponse(input: unknown): LLMCompleteResult {
 }
 
 describe("review open-question extractor", () => {
-  const cleanup: Array<() => void> = [];
+  const cleanup: Array<() => void | Promise<void>> = [];
 
-  afterEach(() => {
+  afterEach(async () => {
     while (cleanup.length > 0) {
-      cleanup.pop()?.();
+      await cleanup.pop()?.();
     }
   });
 
@@ -333,6 +360,73 @@ describe("review open-question extractor", () => {
         },
       }),
     ]);
+  });
+
+  it("reinforces an existing similar open question instead of adding a review duplicate", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+    });
+    const table = await store.openTable({
+      name: "open_questions",
+      schema: createOpenQuestionsTableSchema(4),
+    });
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...selfMigrations],
+    });
+    const existingText = "Is €2,800 a hard ceiling for the trip?";
+    const proposalText = "Should we treat €2,800 as a firm ceiling?";
+    const embeddingClient = new MapEmbeddingClient(
+      new Map([
+        [existingText, [1, 0, 0, 0]],
+        [proposalText, [1, 0, 0, 0]],
+      ]),
+    );
+    const repository = new OpenQuestionsRepository({
+      db,
+      table,
+      embeddingClient,
+      clock: new FixedClock(1_000),
+    });
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const existing = repository.add({
+      question: existingText,
+      urgency: 0.61,
+      source: "overseer",
+      provenance: {
+        kind: "offline",
+        process: "overseer",
+      },
+    });
+    await repository.waitForPendingEmbeddings();
+    const extractor = {
+      extract: vi.fn(async () => ({
+        question: proposalText,
+        urgency: 0.8,
+        related_episode_ids: [parseEpisodeId("ep_aaaaaaaaaaaaaaaa")],
+        related_semantic_node_ids: [],
+      })),
+    };
+
+    await enqueueOpenQuestionForReview(repository, createReviewItem(), {
+      extractor,
+    });
+    await repository.waitForPendingEmbeddings();
+
+    const openQuestions = repository.list({ status: "open" });
+
+    expect(openQuestions).toHaveLength(1);
+    expect(openQuestions[0]).toMatchObject({
+      id: existing.id,
+      question: existingText,
+    });
+    expect(openQuestions[0]?.urgency).toBeCloseTo(0.63);
+    expect(embeddingClient.calls).toEqual([existingText, proposalText]);
   });
 
   it("does not write an open question when no extractor is supplied", async () => {

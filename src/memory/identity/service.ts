@@ -21,6 +21,8 @@ import {
   type AutobiographicalPeriod,
   type GrowthMarker,
   type OpenQuestion,
+  type OpenQuestionSearchCandidate,
+  type OpenQuestionSimilarLookupOptions,
   autobiographicalPeriodPatchSchema,
   buildOpenQuestionDedupeKey,
   growthMarkerPatchSchema,
@@ -459,6 +461,12 @@ export class IdentityService {
 
       return question;
     });
+  }
+
+  async findSimilarOpenQuestion(
+    input: OpenQuestionSimilarLookupOptions,
+  ): Promise<OpenQuestionSearchCandidate | null> {
+    return this.options.openQuestionsRepository.findSimilarOpenQuestion(input);
   }
 
   updateValue(
