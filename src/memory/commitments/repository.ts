@@ -18,6 +18,12 @@ import {
   provenanceSchema,
   toStoredProvenance,
 } from "../common/provenance.js";
+import {
+  assertIdentityCasUpdated,
+  expectedRecordVersion,
+  nextRecordVersion,
+  type IdentityCasOptions,
+} from "../common/cas.js";
 import { IdentityEventRepository } from "../identity/repository.js";
 import { runIdentityWrite } from "../self/shared/identity-events.js";
 import {
@@ -93,6 +99,7 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
         );
   const parsed = commitmentSchema.safeParse({
     id: row.id,
+    record_version: Number(row.record_version ?? 1),
     type: row.type,
     directive_family: row.directive_family,
     closure_pressure_relevance: row.closure_pressure_relevance,
@@ -400,15 +407,24 @@ export class CommitmentRepository {
       return;
     }
 
-    const update = this.db.prepare("UPDATE commitments SET expired_at = ? WHERE id = ?");
+    const update = this.db.prepare(
+      "UPDATE commitments SET expired_at = ?, record_version = record_version + 1 WHERE id = ? AND record_version = ?",
+    );
 
     runIdentityWrite(this.identityEventRepository, () => {
       for (const row of rows) {
         const current = mapCommitmentRow(row);
+        const currentVersion = expectedRecordVersion(current);
         const expiredAt = current.expires_at ?? nowMs;
-        update.run(expiredAt, current.id);
+        const result = update.run(expiredAt, current.id, currentVersion);
+
+        if (result.changes === 0) {
+          continue;
+        }
+
         const next: CommitmentRecord = {
           ...current,
+          record_version: nextRecordVersion(currentVersion),
           expired_at: expiredAt,
         };
         this.identityEventRepository?.record({
@@ -478,8 +494,10 @@ export class CommitmentRepository {
       ...(kept.source_stream_entry_ids ?? []),
       ...(incoming.source_stream_entry_ids ?? []),
     ]);
+    const keptVersion = expectedRecordVersion(kept);
     const next = commitmentSchema.parse({
       ...kept,
+      record_version: nextRecordVersion(keptVersion),
       priority: Math.max(kept.priority, incoming.priority),
       closure_pressure_relevance:
         kept.closure_pressure_relevance === "no_closure" ||
@@ -490,12 +508,13 @@ export class CommitmentRepository {
       last_reinforced_at: Math.max(kept.last_reinforced_at, incoming.last_reinforced_at),
     });
 
-    this.db
+    const keptResult = this.db
       .prepare(
         `
           UPDATE commitments
-          SET priority = ?, closure_pressure_relevance = ?, source_stream_entry_ids = ?, last_reinforced_at = ?
-          WHERE id = ?
+          SET priority = ?, closure_pressure_relevance = ?, source_stream_entry_ids = ?,
+              last_reinforced_at = ?, record_version = record_version + 1
+          WHERE id = ? AND record_version = ?
         `,
       )
       .run(
@@ -506,7 +525,14 @@ export class CommitmentRepository {
           : serializeJsonValue(next.source_stream_entry_ids),
         next.last_reinforced_at,
         kept.id,
+        keptVersion,
       );
+    assertIdentityCasUpdated({
+      result: keptResult,
+      recordType: "commitment",
+      recordId: kept.id,
+      expectedVersion: keptVersion,
+    });
 
     this.identityEventRepository?.record({
       record_type: "commitment",
@@ -519,10 +545,19 @@ export class CommitmentRepository {
       ts: next.last_reinforced_at,
     });
 
-    const supersede = this.db.prepare("UPDATE commitments SET superseded_by = ? WHERE id = ?");
+    const supersede = this.db.prepare(
+      "UPDATE commitments SET superseded_by = ?, record_version = record_version + 1 WHERE id = ? AND record_version = ?",
+    );
 
     for (const current of superseded) {
-      supersede.run(kept.id, current.id);
+      const currentVersion = expectedRecordVersion(current);
+      const result = supersede.run(kept.id, current.id, currentVersion);
+      assertIdentityCasUpdated({
+        result,
+        recordType: "commitment",
+        recordId: current.id,
+        expectedVersion: currentVersion,
+      });
       this.identityEventRepository?.record({
         record_type: "commitment",
         record_id: current.id,
@@ -530,6 +565,7 @@ export class CommitmentRepository {
         old_value: current,
         new_value: {
           ...current,
+          record_version: nextRecordVersion(currentVersion),
           superseded_by: kept.id,
         },
         reason: "directive_family_duplicate",
@@ -567,6 +603,7 @@ export class CommitmentRepository {
 
     const record = commitmentSchema.parse({
       id: input.id ?? createCommitmentId(),
+      record_version: 1,
       type: input.type,
       directive_family: normalizeDirectiveFamily(input.directiveFamily),
       closure_pressure_relevance: input.closurePressureRelevance ?? "neutral",
@@ -743,6 +780,7 @@ export class CommitmentRepository {
     reason: string,
     provenance: CommitmentRecord["provenance"],
     timestamp = this.clock.now(),
+    options: IdentityCasOptions = {},
   ): CommitmentRecord | null {
     const current = this.get(id);
 
@@ -752,16 +790,18 @@ export class CommitmentRepository {
 
     const parsedReason = reason.trim();
     const parsedProvenance = provenanceSchema.parse(provenance);
+    const expectedVersion = expectedRecordVersion(current, options);
     const storedProvenance = toStoredProvenance(parsedProvenance);
 
     return runIdentityWrite(this.identityEventRepository, () => {
-      this.db
+      const result = this.db
         .prepare(
           `
             UPDATE commitments
             SET revoked_at = ?, revoked_reason = ?, revoke_provenance_kind = ?,
-                revoke_provenance_episode_ids = ?, revoke_provenance_process = ?
-            WHERE id = ?
+                revoke_provenance_episode_ids = ?, revoke_provenance_process = ?,
+                record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -771,9 +811,17 @@ export class CommitmentRepository {
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
           id,
+          expectedVersion,
         );
+      assertIdentityCasUpdated({
+        result,
+        recordType: "commitment",
+        recordId: id,
+        expectedVersion,
+      });
       const next = {
         ...current,
+        record_version: nextRecordVersion(expectedVersion),
         revoked_at: timestamp,
         revoked_reason: parsedReason,
         revoke_provenance: parsedProvenance,
@@ -792,17 +840,33 @@ export class CommitmentRepository {
     });
   }
 
-  supersede(id: CommitmentId, nextId: CommitmentId): CommitmentRecord | null {
+  supersede(
+    id: CommitmentId,
+    nextId: CommitmentId,
+    options: IdentityCasOptions = {},
+  ): CommitmentRecord | null {
     const current = this.get(id);
 
     if (current === null) {
       return null;
     }
 
+    const expectedVersion = expectedRecordVersion(current, options);
     return runIdentityWrite(this.identityEventRepository, () => {
-      this.db.prepare("UPDATE commitments SET superseded_by = ? WHERE id = ?").run(nextId, id);
+      const result = this.db
+        .prepare(
+          "UPDATE commitments SET superseded_by = ?, record_version = record_version + 1 WHERE id = ? AND record_version = ?",
+        )
+        .run(nextId, id, expectedVersion);
+      assertIdentityCasUpdated({
+        result,
+        recordType: "commitment",
+        recordId: id,
+        expectedVersion,
+      });
       const next = {
         ...current,
+        record_version: nextRecordVersion(expectedVersion),
         superseded_by: nextId,
       };
       this.identityEventRepository?.record({
@@ -851,6 +915,7 @@ export class CommitmentRepository {
       reason?: string | null;
       reviewItemId?: number | null;
       overwriteWithoutReview?: boolean;
+      expectedVersion?: number;
     } = {},
   ): CommitmentRecord | null {
     const current = this.get(id);
@@ -861,9 +926,11 @@ export class CommitmentRepository {
 
     const parsedPatch = commitmentPatchSchema.parse(patch);
     const parsedProvenance = provenanceSchema.parse(provenance);
+    const expectedVersion = expectedRecordVersion(current, options);
     const next = commitmentSchema.parse({
       ...current,
       ...parsedPatch,
+      record_version: nextRecordVersion(expectedVersion),
       provenance: parsedPatch.provenance ?? current.provenance,
       revoke_provenance: parsedPatch.revoke_provenance ?? current.revoke_provenance,
     });
@@ -872,7 +939,7 @@ export class CommitmentRepository {
       next.revoke_provenance === null ? null : toStoredProvenance(next.revoke_provenance);
 
     return runIdentityWrite(this.identityEventRepository, () => {
-      this.db
+      const result = this.db
         .prepare(
           `
             UPDATE commitments
@@ -880,8 +947,8 @@ export class CommitmentRepository {
                 about_entity = ?, source_episode_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
                 provenance_process = ?, source_stream_entry_ids = ?, expires_at = ?, expired_at = ?, revoked_at = ?, revoked_reason = ?,
                 revoke_provenance_kind = ?, revoke_provenance_episode_ids = ?, revoke_provenance_process = ?,
-                superseded_by = ?, last_reinforced_at = ?
-            WHERE id = ?
+                superseded_by = ?, last_reinforced_at = ?, record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -912,7 +979,14 @@ export class CommitmentRepository {
           next.superseded_by,
           next.last_reinforced_at,
           id,
+          expectedVersion,
         );
+      assertIdentityCasUpdated({
+        result,
+        recordType: "commitment",
+        recordId: id,
+        expectedVersion,
+      });
 
       this.identityEventRepository?.record({
         record_type: "commitment",

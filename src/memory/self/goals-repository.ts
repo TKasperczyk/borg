@@ -7,6 +7,12 @@ import { StorageError } from "../../util/errors.js";
 import { createGoalId, type EntityId, type GoalId, type StreamEntryId } from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { toStoredProvenance, type Provenance } from "../common/provenance.js";
+import {
+  assertIdentityCasUpdated,
+  expectedRecordVersion,
+  nextRecordVersion,
+  type IdentityCasOptions,
+} from "../common/cas.js";
 import { type IdentityEventRepository } from "../identity/repository.js";
 
 import { recordIdentityEvent } from "./shared/identity-events.js";
@@ -35,7 +41,7 @@ export type GoalListOptions = {
 };
 
 const GOAL_SELECT_COLUMNS = `
-  id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
+  id, record_version, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
   created_at, target_at, audience_entity_id, source_stream_entry_ids,
   provenance_kind, provenance_episode_ids, provenance_process
 `;
@@ -130,6 +136,7 @@ export class GoalsRepository {
 
     const goal = goalSchema.parse({
       id: input.id ?? createGoalId(),
+      record_version: 1,
       description: input.description,
       priority: input.priority,
       parent_goal_id: parentGoalId,
@@ -241,7 +248,12 @@ export class GoalsRepository {
     return roots;
   }
 
-  updateStatus(goalId: GoalId, status: GoalStatus, provenance: Provenance): void {
+  updateStatus(
+    goalId: GoalId,
+    status: GoalStatus,
+    provenance: Provenance,
+    options: IdentityCasOptions = {},
+  ): void {
     const current = this.get(goalId);
 
     if (current === null) {
@@ -251,6 +263,7 @@ export class GoalsRepository {
     }
 
     const parsedStatus = goalStatusSchema.parse(status);
+    const expectedVersion = expectedRecordVersion(current, options);
     const parsedProvenance = requireProvenance(provenance, "Goal status update");
     const storedProvenance = toStoredProvenance(parsedProvenance);
 
@@ -259,8 +272,9 @@ export class GoalsRepository {
         .prepare(
           `
             UPDATE goals
-            SET status = ?, provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?
-            WHERE id = ?
+            SET status = ?, provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?,
+                record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -269,11 +283,15 @@ export class GoalsRepository {
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
           goalId,
+          expectedVersion,
         );
 
       if (result.changes === 0) {
-        throw new StorageError(`Unknown goal id: ${goalId}`, {
-          code: "GOAL_NOT_FOUND",
+        assertIdentityCasUpdated({
+          result,
+          recordType: "goal",
+          recordId: goalId,
+          expectedVersion,
         });
       }
 
@@ -286,6 +304,7 @@ export class GoalsRepository {
         old_value: current,
         new_value: {
           ...current,
+          record_version: nextRecordVersion(expectedVersion),
           status: parsedStatus,
           provenance: parsedProvenance,
         },
@@ -294,7 +313,12 @@ export class GoalsRepository {
     });
   }
 
-  updateProgress(goalId: GoalId, progressNotes: string, provenance: Provenance): void {
+  updateProgress(
+    goalId: GoalId,
+    progressNotes: string,
+    provenance: Provenance,
+    options: IdentityCasOptions = {},
+  ): void {
     const current = this.get(goalId);
 
     if (current === null) {
@@ -304,6 +328,7 @@ export class GoalsRepository {
     }
 
     const parsedProvenance = requireProvenance(provenance, "Goal progress update");
+    const expectedVersion = expectedRecordVersion(current, options);
     const storedProvenance = toStoredProvenance(parsedProvenance);
     const nowMs = this.clock.now();
 
@@ -313,8 +338,8 @@ export class GoalsRepository {
           `
             UPDATE goals
             SET progress_notes = ?, last_progress_ts = ?, provenance_kind = ?, provenance_episode_ids = ?,
-                provenance_process = ?
-            WHERE id = ?
+                provenance_process = ?, record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -324,11 +349,15 @@ export class GoalsRepository {
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
           goalId,
+          expectedVersion,
         );
 
       if (result.changes === 0) {
-        throw new StorageError(`Unknown goal id: ${goalId}`, {
-          code: "GOAL_NOT_FOUND",
+        assertIdentityCasUpdated({
+          result,
+          recordType: "goal",
+          recordId: goalId,
+          expectedVersion,
         });
       }
 
@@ -339,6 +368,7 @@ export class GoalsRepository {
         old_value: current,
         new_value: {
           ...current,
+          record_version: nextRecordVersion(expectedVersion),
           progress_notes: progressNotes,
           last_progress_ts: nowMs,
           provenance: parsedProvenance,
@@ -360,6 +390,7 @@ export class GoalsRepository {
       reason?: string | null;
       reviewItemId?: number | null;
       overwriteWithoutReview?: boolean;
+      expectedVersion?: number;
     } = {},
   ): GoalRecord {
     const current = this.get(goalId);
@@ -371,6 +402,7 @@ export class GoalsRepository {
     }
 
     const parsedPatch = goalPatchSchema.parse(patch);
+    const expectedVersion = expectedRecordVersion(current, options);
     const parsedProvenance = requireProvenance(provenance, "Goal update");
     const nextProgressNotes =
       parsedPatch.progress_notes === undefined
@@ -381,6 +413,7 @@ export class GoalsRepository {
     const next = goalSchema.parse({
       ...current,
       ...parsedPatch,
+      record_version: nextRecordVersion(expectedVersion),
       progress_notes: nextProgressNotes,
       last_progress_ts: nextLastProgressTs,
       provenance: parsedPatch.provenance ?? current.provenance,
@@ -388,14 +421,15 @@ export class GoalsRepository {
     const storedProvenance = toStoredProvenance(next.provenance);
 
     this.runGoalWrite(() => {
-      this.db
+      const result = this.db
         .prepare(
           `
             UPDATE goals
             SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
                 last_progress_ts = ?, target_at = ?, audience_entity_id = ?, source_stream_entry_ids = ?,
-                provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?
-            WHERE id = ?
+                provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?,
+                record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -414,7 +448,15 @@ export class GoalsRepository {
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
           goalId,
+          expectedVersion,
         );
+
+      assertIdentityCasUpdated({
+        result,
+        recordType: "goal",
+        recordId: goalId,
+        expectedVersion,
+      });
 
       this.abandonOpenStepsWhenClosingGoal(current, next.status);
 

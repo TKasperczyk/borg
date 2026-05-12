@@ -9,6 +9,7 @@ export const selfMigrations = [
       db.exec(`
         CREATE TABLE "values" (
           id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
           label TEXT NOT NULL,
           description TEXT NOT NULL,
           priority REAL NOT NULL,
@@ -36,6 +37,7 @@ export const selfMigrations = [
 
         CREATE TABLE goals (
           id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
           description TEXT NOT NULL,
           priority REAL NOT NULL,
           parent_goal_id TEXT,
@@ -57,6 +59,7 @@ export const selfMigrations = [
 
         CREATE TABLE traits (
           label TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
           strength REAL NOT NULL,
           last_reinforced INTEGER NOT NULL,
           last_decayed INTEGER,
@@ -80,6 +83,7 @@ export const selfMigrations = [
 
         CREATE TABLE autobiographical_periods (
           id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
           label TEXT NOT NULL,
           start_ts INTEGER NOT NULL,
           end_ts INTEGER,
@@ -103,6 +107,7 @@ export const selfMigrations = [
 
         CREATE TABLE growth_markers (
           id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
           ts INTEGER NOT NULL,
           category TEXT NOT NULL CHECK (
             category IN ('skill', 'value', 'habit', 'relationship', 'understanding')
@@ -126,6 +131,7 @@ export const selfMigrations = [
 
         CREATE TABLE open_questions (
           id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
           question TEXT NOT NULL,
           urgency REAL NOT NULL,
           status TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'abandoned')),
@@ -349,6 +355,29 @@ export const selfMigrations = [
         db.exec(`
           ALTER TABLE open_questions
             ADD COLUMN goal_id TEXT;
+        `);
+      }
+    },
+  },
+  {
+    id: 6,
+    name: "self_record_versions",
+    up: (db) => {
+      for (const table of [
+        "values",
+        "goals",
+        "traits",
+        "autobiographical_periods",
+        "growth_markers",
+        "open_questions",
+      ]) {
+        if (!tableExists(db, table) || tableHasColumn(db, table, "record_version")) {
+          continue;
+        }
+
+        db.exec(`
+          ALTER TABLE "${table}"
+            ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1;
         `);
       }
     },

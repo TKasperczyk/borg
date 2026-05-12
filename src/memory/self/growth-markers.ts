@@ -11,6 +11,12 @@ import {
 import { serializeJsonValue } from "../../util/json-value.js";
 import { episodeIdSchema } from "../episodic/types.js";
 import {
+  assertIdentityCasUpdated,
+  expectedRecordVersion,
+  nextRecordVersion,
+  type IdentityCasOptions,
+} from "../common/cas.js";
+import {
   parseStoredProvenance,
   provenanceSchema,
   toStoredProvenance,
@@ -35,6 +41,7 @@ export const growthMarkerCategorySchema = z.enum(GROWTH_MARKER_CATEGORIES);
 
 export const growthMarkerSchema = z.object({
   id: growthMarkerIdSchema,
+  record_version: z.number().int().positive().optional(),
   ts: z.number().finite(),
   category: growthMarkerCategorySchema,
   what_changed: z.string().min(1),
@@ -50,6 +57,7 @@ export const growthMarkerSchema = z.object({
 export const growthMarkerPatchSchema = growthMarkerSchema
   .omit({
     id: true,
+    record_version: true,
     created_at: true,
   })
   .partial()
@@ -96,6 +104,7 @@ function parseEpisodeIds(value: string) {
 function mapGrowthMarkerRow(row: Record<string, unknown>): GrowthMarker {
   const parsed = growthMarkerSchema.safeParse({
     id: row.id,
+    record_version: Number(row.record_version ?? 1),
     ts: Number(row.ts),
     category: row.category,
     what_changed: row.what_changed,
@@ -160,6 +169,7 @@ export class GrowthMarkersRepository {
 
     const marker = growthMarkerSchema.parse({
       id: input.id ?? createGrowthMarkerId(),
+      record_version: 1,
       ts: input.ts,
       category: input.category,
       what_changed: input.what_changed,
@@ -254,7 +264,11 @@ export class GrowthMarkersRepository {
     return row === undefined ? null : mapGrowthMarkerRow(row);
   }
 
-  update(id: GrowthMarkerId, patch: GrowthMarkerPatch): GrowthMarker {
+  update(
+    id: GrowthMarkerId,
+    patch: GrowthMarkerPatch,
+    options: IdentityCasOptions = {},
+  ): GrowthMarker {
     const existing = this.get(id);
 
     if (existing === null) {
@@ -266,17 +280,19 @@ export class GrowthMarkersRepository {
     const next = growthMarkerSchema.parse({
       ...existing,
       ...growthMarkerPatchSchema.parse(patch),
+      record_version: nextRecordVersion(expectedRecordVersion(existing, options)),
     });
+    const expectedVersion = expectedRecordVersion(existing, options);
     const storedProvenance = toStoredProvenance(next.provenance);
 
-    this.db
+    const result = this.db
       .prepare(
         `
           UPDATE growth_markers
           SET ts = ?, category = ?, what_changed = ?, before_description = ?, after_description = ?,
               evidence_episode_ids = ?, confidence = ?, source_process = ?, provenance_kind = ?,
-              provenance_episode_ids = ?, provenance_process = ?
-          WHERE id = ?
+              provenance_episode_ids = ?, provenance_process = ?, record_version = record_version + 1
+          WHERE id = ? AND record_version = ?
         `,
       )
       .run(
@@ -292,7 +308,14 @@ export class GrowthMarkersRepository {
         storedProvenance.provenance_episode_ids,
         storedProvenance.provenance_process,
         id,
+        expectedVersion,
       );
+    assertIdentityCasUpdated({
+      result,
+      recordType: "growth_marker",
+      recordId: id,
+      expectedVersion,
+    });
 
     return next;
   }

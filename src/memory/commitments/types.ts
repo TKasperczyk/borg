@@ -94,6 +94,7 @@ export const entityRecordSchema = z.object({
 
 export const commitmentSchema = z.object({
   id: commitmentIdSchema,
+  record_version: z.number().int().positive().optional(),
   type: commitmentTypeSchema,
   directive_family: directiveFamilySchema,
   closure_pressure_relevance: closurePressureRelevanceSchema.default("neutral"),
@@ -117,6 +118,7 @@ export const commitmentSchema = z.object({
 export const commitmentPatchSchema = commitmentSchema
   .omit({
     id: true,
+    record_version: true,
     created_at: true,
   })
   .partial()

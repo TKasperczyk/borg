@@ -79,6 +79,24 @@ export class StorageError extends BorgError {
   }
 }
 
+export class IdentityCasMismatchError extends StorageError {
+  readonly recordType: string;
+  readonly recordId: string;
+  readonly expectedVersion: number;
+
+  constructor(input: { recordType: string; recordId: string; expectedVersion: number }) {
+    super(
+      `Identity CAS mismatch for ${input.recordType} ${input.recordId} at version ${input.expectedVersion}`,
+      {
+        code: "IDENTITY_CAS_MISMATCH",
+      },
+    );
+    this.recordType = input.recordType;
+    this.recordId = input.recordId;
+    this.expectedVersion = input.expectedVersion;
+  }
+}
+
 export class CognitionError extends BorgError {
   constructor(message: string, options: BorgTypedErrorOptions = {}) {
     super(options.code ?? "BORG_COGNITION_ERROR", message, options);

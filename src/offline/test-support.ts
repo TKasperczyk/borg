@@ -899,6 +899,7 @@ export function createGoalFixture(overrides: Partial<GoalRecord> = {}): GoalReco
 
   return {
     id: overrides.id ?? createGoalId(),
+    record_version: overrides.record_version ?? 1,
     description: overrides.description ?? "Stabilize Atlas release workflow",
     priority: overrides.priority ?? 1,
     parent_goal_id: overrides.parent_goal_id ?? null,
@@ -924,6 +925,7 @@ export function createAutobiographicalPeriodFixture(
 
   return {
     id: overrides.id ?? createAutobiographicalPeriodId(),
+    record_version: overrides.record_version ?? 1,
     label: overrides.label ?? "2026-Q1",
     start_ts: overrides.start_ts ?? nowMs - 10_000,
     end_ts: overrides.end_ts ?? null,

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
+import { IdentityCasMismatchError } from "../../util/errors.js";
 import { createEntityId, createEpisodeId, createStreamEntryId } from "../../util/ids.js";
 import { commitmentMigrations, CommitmentRepository } from "../commitments/index.js";
 import {
@@ -86,6 +87,125 @@ function createHarness(clock: FixedClock | ManualClock) {
 describe("identity service", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("rejects stale identity repository writes with a typed CAS mismatch", () => {
+    const harness = createHarness(new FixedClock(1_000));
+    const provenance = { kind: "manual" } as const;
+
+    try {
+      const value = harness.valuesRepository.add({
+        label: "accuracy",
+        description: "Prefer grounded claims.",
+        priority: 8,
+        provenance,
+      });
+      const firstRead = harness.valuesRepository.get(value.id);
+      const secondRead = harness.valuesRepository.get(value.id);
+
+      if (firstRead === null || secondRead === null) {
+        throw new Error("value fixture was not created");
+      }
+
+      const firstUpdate = harness.valuesRepository.update(
+        value.id,
+        {
+          description: "Prefer grounded claims with source checks.",
+        },
+        provenance,
+        {
+          expectedVersion: firstRead.record_version,
+        },
+      );
+
+      expect(firstUpdate.record_version).toBe((firstRead.record_version ?? 1) + 1);
+
+      let mismatch: unknown;
+
+      try {
+        harness.valuesRepository.update(
+          value.id,
+          {
+            description: "Prefer quick claims.",
+          },
+          provenance,
+          {
+            expectedVersion: secondRead.record_version,
+          },
+        );
+      } catch (error) {
+        mismatch = error;
+      }
+
+      expect(mismatch).toBeInstanceOf(IdentityCasMismatchError);
+      expect(mismatch).toMatchObject({
+        name: "IdentityCasMismatchError",
+        code: "IDENTITY_CAS_MISMATCH",
+        recordType: "value",
+        recordId: value.id,
+        expectedVersion: secondRead.record_version,
+      });
+      expect(harness.valuesRepository.get(value.id)?.description).toBe(
+        "Prefer grounded claims with source checks.",
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("retries IdentityService updates when a concurrent writer wins first", () => {
+    const harness = createHarness(new FixedClock(1_000));
+    const provenance = { kind: "manual" } as const;
+
+    try {
+      const value = harness.valuesRepository.add({
+        label: "accuracy",
+        description: "Prefer grounded claims.",
+        priority: 8,
+        provenance,
+      });
+      const originalUpdate = harness.valuesRepository.update.bind(harness.valuesRepository);
+      const updateSpy = vi.spyOn(harness.valuesRepository, "update");
+
+      updateSpy.mockImplementationOnce((...args: Parameters<ValuesRepository["update"]>) => {
+        originalUpdate(
+          value.id,
+          {
+            description: "Concurrent maintenance update.",
+          },
+          provenance,
+          {
+            expectedVersion: args[3]?.expectedVersion,
+          },
+        );
+
+        return originalUpdate(...args);
+      });
+      updateSpy.mockImplementation(originalUpdate);
+
+      const result = harness.identity.updateValue(
+        value.id,
+        {
+          description: "Service update after retry.",
+        },
+        provenance,
+      );
+
+      expect(result).toMatchObject({
+        status: "applied",
+        record: {
+          description: "Service update after retry.",
+          record_version: 3,
+        },
+      });
+      expect(updateSpy).toHaveBeenCalledTimes(2);
+      expect(harness.valuesRepository.get(value.id)).toMatchObject({
+        description: "Service update after retry.",
+        record_version: 3,
+      });
+    } finally {
+      harness.db.close();
+    }
   });
 
   it("requires review for manual, system, and offline overwrites of established episode-backed values", () => {

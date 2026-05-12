@@ -63,6 +63,7 @@ export const valueSourceEpisodeIdSchema = z
 
 export const valueSchema = z.object({
   id: valueIdSchema,
+  record_version: z.number().int().positive().optional(),
   label: z.string().min(1),
   description: z.string().min(1),
   priority: z.number().finite(),
@@ -82,6 +83,7 @@ export const valueSchema = z.object({
 export const valuePatchSchema = valueSchema
   .omit({
     id: true,
+    record_version: true,
     created_at: true,
     confidence: true,
     last_tested_at: true,
@@ -95,6 +97,7 @@ export const valuePatchSchema = valueSchema
 
 export const goalSchema = z.object({
   id: goalIdSchema,
+  record_version: z.number().int().positive().optional(),
   description: z.string().min(1),
   priority: z.number().finite(),
   parent_goal_id: goalIdSchema.nullable(),
@@ -110,6 +113,7 @@ export const goalSchema = z.object({
 
 export const traitSchema = z.object({
   id: traitIdSchema,
+  record_version: z.number().int().positive().optional(),
   label: z.string().min(1),
   strength: z.number().min(0).max(1),
   last_reinforced: z.number().finite(),
@@ -128,6 +132,7 @@ export const traitSchema = z.object({
 export const traitPatchSchema = traitSchema
   .omit({
     id: true,
+    record_version: true,
     confidence: true,
     last_tested_at: true,
     last_contradicted_at: true,
@@ -141,6 +146,7 @@ export const traitPatchSchema = traitSchema
 export const goalPatchSchema = goalSchema
   .omit({
     id: true,
+    record_version: true,
     created_at: true,
     audience_entity_id: true,
     source_stream_entry_ids: true,

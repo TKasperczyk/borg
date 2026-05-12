@@ -11,6 +11,12 @@ import {
 import { serializeJsonValue } from "../../util/json-value.js";
 import { episodeIdSchema } from "../episodic/types.js";
 import {
+  assertIdentityCasUpdated,
+  expectedRecordVersion,
+  nextRecordVersion,
+  type IdentityCasOptions,
+} from "../common/cas.js";
+import {
   parseStoredProvenance,
   provenanceSchema,
   toStoredProvenance,
@@ -26,6 +32,7 @@ export const autobiographicalPeriodIdSchema = z
 export const autobiographicalPeriodSchema = z
   .object({
     id: autobiographicalPeriodIdSchema,
+    record_version: z.number().int().positive().optional(),
     label: z.string().min(1),
     start_ts: z.number().finite(),
     end_ts: z.number().finite().nullable(),
@@ -88,6 +95,7 @@ function parseStringArray<T>(value: string, schema: z.ZodType<T>, label: string)
 function mapPeriodRow(row: Record<string, unknown>): AutobiographicalPeriod {
   const parsed = autobiographicalPeriodSchema.safeParse({
     id: row.id,
+    record_version: Number(row.record_version ?? 1),
     label: row.label,
     start_ts: Number(row.start_ts),
     end_ts: row.end_ts === null || row.end_ts === undefined ? null : Number(row.end_ts),
@@ -136,18 +144,23 @@ export class AutobiographicalRepository {
     return this.db.raw.transaction(callback)();
   }
 
-  upsertPeriod(input: {
-    id?: AutobiographicalPeriodId;
-    label: string;
-    start_ts: number;
-    end_ts?: number | null;
-    narrative: string;
-    key_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
-    themes?: readonly string[];
-    provenance: z.infer<typeof provenanceSchema>;
-    created_at?: number;
-    last_updated?: number;
-  }): AutobiographicalPeriod {
+  upsertPeriod(
+    input: {
+      id?: AutobiographicalPeriodId;
+      label: string;
+      start_ts: number;
+      end_ts?: number | null;
+      narrative: string;
+      key_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
+      themes?: readonly string[];
+      provenance: z.infer<typeof provenanceSchema>;
+      created_at?: number;
+      last_updated?: number;
+    },
+    options: IdentityCasOptions & {
+      expectedOpenPeriod?: { id: AutobiographicalPeriodId; record_version: number } | null;
+    } = {},
+  ): AutobiographicalPeriod {
     if (input.provenance === undefined) {
       throw new ProvenanceError("Autobiographical period requires provenance", {
         code: "PROVENANCE_REQUIRED",
@@ -155,9 +168,22 @@ export class AutobiographicalRepository {
     }
 
     const existing = input.id === undefined ? null : this.getPeriod(input.id);
+    const expectedExistingVersion =
+      existing === null ? null : expectedRecordVersion(existing, options);
+    const openPeriod =
+      input.end_ts === undefined || input.end_ts === null ? this.currentPeriod() : null;
+    const expectedOpenPeriod =
+      options.expectedOpenPeriod ??
+      (openPeriod !== null && openPeriod.id !== input.id
+        ? { id: openPeriod.id, record_version: expectedRecordVersion(openPeriod) }
+        : null);
     const nowMs = this.clock.now();
     const period = autobiographicalPeriodSchema.parse({
       id: input.id ?? createAutobiographicalPeriodId(),
+      record_version:
+        existing === null || expectedExistingVersion === null
+          ? 1
+          : nextRecordVersion(expectedExistingVersion),
       label: input.label,
       start_ts: input.start_ts,
       end_ts: input.end_ts ?? null,
@@ -171,16 +197,27 @@ export class AutobiographicalRepository {
     const storedProvenance = toStoredProvenance(period.provenance);
 
     this.runInTransaction(() => {
-      if (period.end_ts === null) {
-        this.db
+      if (period.end_ts === null && expectedOpenPeriod !== null) {
+        const closeResult = this.db
           .prepare(
             `
               UPDATE autobiographical_periods
-              SET end_ts = ?, last_updated = ?
-              WHERE end_ts IS NULL AND id != ?
+              SET end_ts = ?, last_updated = ?, record_version = record_version + 1
+              WHERE id = ? AND end_ts IS NULL AND record_version = ?
             `,
           )
-          .run(period.start_ts, period.last_updated, period.id);
+          .run(
+            period.start_ts,
+            period.last_updated,
+            expectedOpenPeriod.id,
+            expectedOpenPeriod.record_version,
+          );
+        assertIdentityCasUpdated({
+          result: closeResult,
+          recordType: "autobiographical_period",
+          recordId: expectedOpenPeriod.id,
+          expectedVersion: expectedOpenPeriod.record_version,
+        });
       }
 
       if (existing === null) {
@@ -210,13 +247,14 @@ export class AutobiographicalRepository {
         return;
       }
 
-      this.db
+      const result = this.db
         .prepare(
           `
             UPDATE autobiographical_periods
             SET label = ?, start_ts = ?, end_ts = ?, narrative = ?, key_episode_ids = ?, themes = ?,
-                provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, last_updated = ?
-            WHERE id = ?
+                provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, last_updated = ?,
+                record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -231,7 +269,14 @@ export class AutobiographicalRepository {
           storedProvenance.provenance_process,
           period.last_updated,
           period.id,
+          expectedExistingVersion,
         );
+      assertIdentityCasUpdated({
+        result,
+        recordType: "autobiographical_period",
+        recordId: period.id,
+        expectedVersion: expectedExistingVersion ?? 0,
+      });
     });
 
     return period;
@@ -314,20 +359,32 @@ export class AutobiographicalRepository {
     return row === undefined ? null : mapPeriodRow(row);
   }
 
-  closePeriod(id: AutobiographicalPeriodId, endTs: number): void {
+  closePeriod(id: AutobiographicalPeriodId, endTs: number, options: IdentityCasOptions = {}): void {
+    const existing = this.getPeriod(id);
+
+    if (existing === null) {
+      throw new StorageError(`Unknown autobiographical period id: ${id}`, {
+        code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
+      });
+    }
+
+    const expectedVersion = expectedRecordVersion(existing, options);
     const result = this.db
       .prepare(
         `
           UPDATE autobiographical_periods
-          SET end_ts = ?, last_updated = ?
-          WHERE id = ?
+          SET end_ts = ?, last_updated = ?, record_version = record_version + 1
+          WHERE id = ? AND record_version = ?
         `,
       )
-      .run(endTs, this.clock.now(), id);
+      .run(endTs, this.clock.now(), id, expectedVersion);
 
     if (result.changes === 0) {
-      throw new StorageError(`Unknown autobiographical period id: ${id}`, {
-        code: "AUTOBIOGRAPHICAL_PERIOD_NOT_FOUND",
+      assertIdentityCasUpdated({
+        result,
+        recordType: "autobiographical_period",
+        recordId: id,
+        expectedVersion,
       });
     }
   }
@@ -347,14 +404,19 @@ export class AutobiographicalRepository {
       });
     }
 
-    return this.upsertPeriod({
-      ...existing,
-      narrative,
-      key_episode_ids: keyEpisodeIds ?? existing.key_episode_ids,
-      themes: themes ?? existing.themes,
-      provenance: provenance ?? existing.provenance,
-      last_updated: this.clock.now(),
-    });
+    return this.upsertPeriod(
+      {
+        ...existing,
+        narrative,
+        key_episode_ids: keyEpisodeIds ?? existing.key_episode_ids,
+        themes: themes ?? existing.themes,
+        provenance: provenance ?? existing.provenance,
+        last_updated: this.clock.now(),
+      },
+      {
+        expectedVersion: existing.record_version,
+      },
+    );
   }
 
   deletePeriod(id: AutobiographicalPeriodId): boolean {

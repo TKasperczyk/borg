@@ -1,5 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
-import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
+import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const commitmentMigrations = [
   {
@@ -19,6 +19,7 @@ export const commitmentMigrations = [
 
         CREATE TABLE commitments (
           id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
           type TEXT NOT NULL,
           directive TEXT NOT NULL,
           priority INTEGER NOT NULL,
@@ -140,6 +141,20 @@ export const commitmentMigrations = [
             AND name_provenance = 'config_default_user';
         `);
       }
+    },
+  },
+  {
+    id: 7,
+    name: "commitment_record_versions",
+    up: (db) => {
+      if (!tableExists(db, "commitments") || tableHasColumn(db, "commitments", "record_version")) {
+        return;
+      }
+
+      db.exec(`
+        ALTER TABLE commitments
+          ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1;
+      `);
     },
   },
 ] as const satisfies readonly Migration[];

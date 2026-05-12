@@ -5,6 +5,12 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { createValueId, type EpisodeId, type ValueId } from "../../util/ids.js";
 import {
+  assertIdentityCasUpdated,
+  expectedRecordVersion,
+  nextRecordVersion,
+  type IdentityCasOptions,
+} from "../common/cas.js";
+import {
   isEpisodeProvenance,
   parseStoredProvenance,
   toStoredProvenance,
@@ -70,9 +76,10 @@ export class ValuesRepository {
       .prepare(
         `
           SELECT
-            id, label, description, priority, created_at, last_affirmed, state, established_at,
-            confidence, last_tested_at, last_contradicted_at, support_count, contradiction_count,
-            evidence_episode_ids, provenance_kind, provenance_episode_ids, provenance_process
+            id, record_version, label, description, priority, created_at, last_affirmed, state,
+            established_at, confidence, last_tested_at, last_contradicted_at, support_count,
+            contradiction_count, evidence_episode_ids, provenance_kind, provenance_episode_ids,
+            provenance_process
           FROM "values"
           WHERE id = ?
         `,
@@ -172,6 +179,7 @@ export class ValuesRepository {
       : [];
     const value = valueSchema.parse({
       id: input.id ?? createValueId(),
+      record_version: 1,
       label: input.label,
       description: input.description,
       priority: input.priority,
@@ -254,9 +262,10 @@ export class ValuesRepository {
         .prepare(
           `
             SELECT
-              id, label, description, priority, created_at, last_affirmed, state, established_at,
-              confidence, last_tested_at, last_contradicted_at, support_count, contradiction_count,
-              evidence_episode_ids, provenance_kind, provenance_episode_ids, provenance_process
+              id, record_version, label, description, priority, created_at, last_affirmed, state,
+              established_at, confidence, last_tested_at, last_contradicted_at, support_count,
+              contradiction_count, evidence_episode_ids, provenance_kind, provenance_episode_ids,
+              provenance_process
             FROM "values"
             ORDER BY priority DESC, created_at ASC
           `,
@@ -265,14 +274,28 @@ export class ValuesRepository {
     ).map((row) => mapValueRow(row));
   }
 
-  affirm(valueId: ValueId, timestamp = this.clock.now()): void {
-    const result = this.db
-      .prepare('UPDATE "values" SET last_affirmed = ? WHERE id = ?')
-      .run(timestamp, valueId);
+  affirm(valueId: ValueId, timestamp = this.clock.now(), options: IdentityCasOptions = {}): void {
+    const current = this.get(valueId);
 
-    if (result.changes === 0) {
+    if (current === null) {
       throw new StorageError(`Unknown value id: ${valueId}`, {
         code: "VALUE_NOT_FOUND",
+      });
+    }
+
+    const expectedVersion = expectedRecordVersion(current, options);
+    const result = this.db
+      .prepare(
+        'UPDATE "values" SET last_affirmed = ?, record_version = record_version + 1 WHERE id = ? AND record_version = ?',
+      )
+      .run(timestamp, valueId, expectedVersion);
+
+    if (result.changes === 0) {
+      assertIdentityCasUpdated({
+        result,
+        recordType: "value",
+        recordId: valueId,
+        expectedVersion,
       });
     }
   }
@@ -282,7 +305,12 @@ export class ValuesRepository {
     return result.changes > 0;
   }
 
-  reinforce(valueId: ValueId, provenance: Provenance, timestamp = this.clock.now()): ValueRecord {
+  reinforce(
+    valueId: ValueId,
+    provenance: Provenance,
+    timestamp = this.clock.now(),
+    options: IdentityCasOptions = {},
+  ): ValueRecord {
     const current = this.get(valueId);
 
     if (current === null) {
@@ -291,6 +319,7 @@ export class ValuesRepository {
       });
     }
 
+    const expectedVersion = expectedRecordVersion(current, options);
     const parsedProvenance = requireProvenance(provenance, "Value reinforcement");
 
     return runIdentityWrite(this.identityEventRepository, () => {
@@ -331,6 +360,7 @@ export class ValuesRepository {
               : current.provenance;
       const next = valueSchema.parse({
         ...current,
+        record_version: nextRecordVersion(expectedVersion),
         provenance: nextProvenance,
         state: nextState,
         established_at:
@@ -344,14 +374,14 @@ export class ValuesRepository {
       });
       const storedProvenance = toStoredProvenance(next.provenance);
 
-      this.db
+      const result = this.db
         .prepare(
           `
             UPDATE "values"
             SET provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, state = ?, established_at = ?,
                 confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
-                contradiction_count = ?, evidence_episode_ids = ?
-            WHERE id = ?
+                contradiction_count = ?, evidence_episode_ids = ?, record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -367,7 +397,15 @@ export class ValuesRepository {
           next.contradiction_count,
           JSON.stringify(next.evidence_episode_ids),
           valueId,
+          expectedVersion,
         );
+
+      assertIdentityCasUpdated({
+        result,
+        recordType: "value",
+        recordId: valueId,
+        expectedVersion,
+      });
 
       if (current.state !== "established" && next.state === "established") {
         recordIdentityEvent(this.identityEventRepository, {
@@ -389,6 +427,7 @@ export class ValuesRepository {
     provenance: Provenance;
     weight?: number;
     timestamp?: number;
+    expectedVersion?: number;
   }): ValueRecord {
     const current = this.get(input.valueId);
 
@@ -398,6 +437,7 @@ export class ValuesRepository {
       });
     }
 
+    const expectedVersion = expectedRecordVersion(current, input);
     const timestamp = input.timestamp ?? this.clock.now();
     const provenance = requireProvenance(input.provenance, "Value contradiction");
     const weight = Number.isFinite(input.weight) && input.weight !== undefined ? input.weight : 1;
@@ -411,6 +451,7 @@ export class ValuesRepository {
       );
       const next = valueSchema.parse({
         ...current,
+        record_version: nextRecordVersion(expectedVersion),
         confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
         last_tested_at: evidence.lastTestedAt,
         last_contradicted_at: evidence.lastContradictedAt,
@@ -419,13 +460,13 @@ export class ValuesRepository {
         evidence_episode_ids: evidence.evidenceEpisodeIds,
       });
 
-      this.db
+      const result = this.db
         .prepare(
           `
             UPDATE "values"
             SET confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
-                contradiction_count = ?, evidence_episode_ids = ?
-            WHERE id = ?
+                contradiction_count = ?, evidence_episode_ids = ?, record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -436,7 +477,15 @@ export class ValuesRepository {
           next.contradiction_count,
           JSON.stringify(next.evidence_episode_ids),
           input.valueId,
+          expectedVersion,
         );
+
+      assertIdentityCasUpdated({
+        result,
+        recordType: "value",
+        recordId: input.valueId,
+        expectedVersion,
+      });
 
       recordIdentityEvent(this.identityEventRepository, {
         record_type: "value",
@@ -471,6 +520,7 @@ export class ValuesRepository {
       reason?: string | null;
       reviewItemId?: number | null;
       overwriteWithoutReview?: boolean;
+      expectedVersion?: number;
     } = {},
   ): ValueRecord {
     const current = this.get(valueId);
@@ -482,24 +532,26 @@ export class ValuesRepository {
     }
 
     const parsedPatch = valuePatchSchema.parse(patch);
+    const expectedVersion = expectedRecordVersion(current, options);
     const parsedProvenance = requireProvenance(provenance, "Value update");
     const next = valueSchema.parse({
       ...current,
       ...parsedPatch,
+      record_version: nextRecordVersion(expectedVersion),
       provenance: parsedPatch.provenance ?? current.provenance,
     });
     const storedProvenance = toStoredProvenance(next.provenance);
 
     return runIdentityWrite(this.identityEventRepository, () => {
-      this.db
+      const result = this.db
         .prepare(
           `
             UPDATE "values"
             SET label = ?, description = ?, priority = ?, last_affirmed = ?, state = ?, established_at = ?,
                 confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
                 contradiction_count = ?, evidence_episode_ids = ?, provenance_kind = ?,
-                provenance_episode_ids = ?, provenance_process = ?
-            WHERE id = ?
+                provenance_episode_ids = ?, provenance_process = ?, record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -519,7 +571,15 @@ export class ValuesRepository {
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
           valueId,
+          expectedVersion,
         );
+
+      assertIdentityCasUpdated({
+        result,
+        recordType: "value",
+        recordId: valueId,
+        expectedVersion,
+      });
 
       recordIdentityEvent(this.identityEventRepository, {
         record_type: "value",

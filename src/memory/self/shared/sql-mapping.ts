@@ -33,6 +33,7 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
 
   return goalSchema.parse({
     id: row.id,
+    record_version: Number(row.record_version ?? 1),
     description: row.description,
     priority: Number(row.priority),
     parent_goal_id:
@@ -68,6 +69,7 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
 export function mapValueRow(row: Record<string, unknown>): ValueRecord {
   return valueSchema.parse({
     id: row.id,
+    record_version: Number(row.record_version ?? 1),
     label: row.label,
     description: row.description,
     priority: Number(row.priority),
@@ -104,6 +106,7 @@ export function mapValueRow(row: Record<string, unknown>): ValueRecord {
 export function mapTraitRow(row: Record<string, unknown>): TraitRecord {
   return traitSchema.parse({
     id: row.id,
+    record_version: Number(row.record_version ?? 1),
     label: row.label,
     strength: Number(row.strength),
     last_reinforced: Number(row.last_reinforced),

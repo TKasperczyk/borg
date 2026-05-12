@@ -33,6 +33,12 @@ import { serializeJsonValue } from "../../util/json-value.js";
 import { episodeIdSchema } from "../episodic/types.js";
 import { semanticNodeIdSchema } from "../semantic/types.js";
 import {
+  assertIdentityCasUpdated,
+  expectedRecordVersion,
+  nextRecordVersion,
+  type IdentityCasOptions,
+} from "../common/cas.js";
+import {
   parseStoredProvenance,
   provenanceSchema,
   toStoredProvenance,
@@ -76,6 +82,7 @@ export const openQuestionResolutionStreamEntryIdSchema = z
 export const openQuestionSchema = z
   .object({
     id: openQuestionIdSchema,
+    record_version: z.number().int().positive().optional(),
     question: z.string().min(1),
     urgency: z.number().min(0).max(1),
     status: openQuestionStatusSchema,
@@ -337,6 +344,7 @@ export function buildOpenQuestionDedupeKey(input: {
 function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
   const parsed = openQuestionSchema.safeParse({
     id: row.id,
+    record_version: Number(row.record_version ?? 1),
     question: row.question,
     urgency: Number(row.urgency),
     status: row.status,
@@ -786,6 +794,7 @@ export class OpenQuestionsRepository {
     const nowMs = this.clock.now();
     const question = openQuestionSchema.parse({
       id: input.id ?? createOpenQuestionId(),
+      record_version: 1,
       question: input.question,
       urgency: input.urgency,
       status: "open",
@@ -1044,7 +1053,11 @@ export class OpenQuestionsRepository {
     return row === undefined ? null : mapOpenQuestionRow(row);
   }
 
-  update(id: OpenQuestionId, patch: OpenQuestionPatch): OpenQuestion {
+  update(
+    id: OpenQuestionId,
+    patch: OpenQuestionPatch,
+    options: IdentityCasOptions = {},
+  ): OpenQuestion {
     const existing = this.get(id);
 
     if (existing === null) {
@@ -1054,9 +1067,11 @@ export class OpenQuestionsRepository {
     }
 
     const parsedPatch = openQuestionPatchSchema.parse(patch);
+    const expectedVersion = expectedRecordVersion(existing, options);
     const next = openQuestionSchema.parse({
       ...existing,
       ...parsedPatch,
+      record_version: nextRecordVersion(expectedVersion),
       last_touched: this.clock.now(),
     });
     const dedupeKey = buildOpenQuestionDedupeKey({
@@ -1067,7 +1082,7 @@ export class OpenQuestionsRepository {
     });
     const storedProvenance = next.provenance === null ? null : toStoredProvenance(next.provenance);
 
-    this.db
+    const result = this.db
       .prepare(
         `
           UPDATE open_questions
@@ -1076,8 +1091,9 @@ export class OpenQuestionsRepository {
               provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
               resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
               resolution_note = ?, resolved_at = ?, abandoned_reason = ?, abandoned_at = ?,
-              dedupe_key = ?, unresolved_rumination_ticks = ?, last_ruminated_at = ?
-          WHERE id = ?
+              dedupe_key = ?, unresolved_rumination_ticks = ?, last_ruminated_at = ?,
+              record_version = record_version + 1
+          WHERE id = ? AND record_version = ?
         `,
       )
       .run(
@@ -1103,7 +1119,14 @@ export class OpenQuestionsRepository {
         next.unresolved_rumination_ticks,
         next.last_ruminated_at,
         id,
+        expectedVersion,
       );
+    assertIdentityCasUpdated({
+      result,
+      recordType: "open_question",
+      recordId: id,
+      expectedVersion,
+    });
 
     this.scheduleQuestionVectorUpsert(next, next.status === "open" ? "update" : "metadata_sync", {
       forceEmbed: parsedPatch.question !== undefined,
@@ -1186,7 +1209,11 @@ export class OpenQuestionsRepository {
     return result.changes > 0;
   }
 
-  touch(id: OpenQuestionId, now = this.clock.now()): OpenQuestion {
+  touch(
+    id: OpenQuestionId,
+    now = this.clock.now(),
+    options: IdentityCasOptions = {},
+  ): OpenQuestion {
     const existing = this.get(id);
 
     if (existing === null) {
@@ -1197,12 +1224,22 @@ export class OpenQuestionsRepository {
 
     const nextUrgency =
       existing.status === "open" ? clamp(existing.urgency + 0.02, 0, 1) : existing.urgency;
-    this.db
-      .prepare("UPDATE open_questions SET urgency = ?, last_touched = ? WHERE id = ?")
-      .run(nextUrgency, now, id);
+    const expectedVersion = expectedRecordVersion(existing, options);
+    const result = this.db
+      .prepare(
+        "UPDATE open_questions SET urgency = ?, last_touched = ?, record_version = record_version + 1 WHERE id = ? AND record_version = ?",
+      )
+      .run(nextUrgency, now, id, expectedVersion);
+    assertIdentityCasUpdated({
+      result,
+      recordType: "open_question",
+      recordId: id,
+      expectedVersion,
+    });
 
     const touched = {
       ...existing,
+      record_version: nextRecordVersion(expectedVersion),
       urgency: nextUrgency,
       last_touched: now,
     };
@@ -1223,6 +1260,7 @@ export class OpenQuestionsRepository {
       >[];
       resolution_note: string;
     },
+    options: IdentityCasOptions = {},
   ): OpenQuestion {
     const existing = this.get(id);
 
@@ -1253,17 +1291,19 @@ export class OpenQuestionsRepository {
     }
 
     const resolvedAt = this.clock.now();
+    const expectedVersion = expectedRecordVersion(existing, options);
     // Rumination counters describe the active open lifecycle. Terminal states
     // keep their own timestamps/events, so reset the active-loop metadata.
-    this.db
+    const result = this.db
       .prepare(
         `
           UPDATE open_questions
           SET status = 'resolved', resolution_evidence_episode_ids = ?,
               resolution_evidence_stream_entry_ids = ?, resolution_note = ?, resolved_at = ?,
               abandoned_reason = NULL, abandoned_at = NULL, last_touched = ?,
-              unresolved_rumination_ticks = 0, last_ruminated_at = NULL
-          WHERE id = ?
+              unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
+              record_version = record_version + 1
+          WHERE id = ? AND record_version = ?
         `,
       )
       .run(
@@ -1273,10 +1313,18 @@ export class OpenQuestionsRepository {
         resolvedAt,
         resolvedAt,
         id,
+        expectedVersion,
       );
+    assertIdentityCasUpdated({
+      result,
+      recordType: "open_question",
+      recordId: id,
+      expectedVersion,
+    });
 
     const resolved: OpenQuestion = {
       ...existing,
+      record_version: nextRecordVersion(expectedVersion),
       status: "resolved",
       resolution_evidence_episode_ids: resolutionEvidenceEpisodeIds,
       resolution_evidence_stream_entry_ids: resolutionEvidenceStreamEntryIds,
@@ -1296,7 +1344,7 @@ export class OpenQuestionsRepository {
     return resolved;
   }
 
-  abandon(id: OpenQuestionId, reason: string): OpenQuestion {
+  abandon(id: OpenQuestionId, reason: string, options: IdentityCasOptions = {}): OpenQuestion {
     const existing = this.get(id);
 
     if (existing === null) {
@@ -1312,23 +1360,32 @@ export class OpenQuestionsRepository {
     }
 
     const abandonedAt = this.clock.now();
+    const expectedVersion = expectedRecordVersion(existing, options);
     // Rumination counters describe the active open lifecycle. Terminal states
     // keep their own timestamps/events, so reset the active-loop metadata.
-    this.db
+    const result = this.db
       .prepare(
         `
           UPDATE open_questions
           SET status = 'abandoned', abandoned_reason = ?, abandoned_at = ?,
               resolution_evidence_episode_ids = '[]', resolution_evidence_stream_entry_ids = '[]',
               resolution_note = NULL, resolved_at = NULL, last_touched = ?,
-              unresolved_rumination_ticks = 0, last_ruminated_at = NULL
-          WHERE id = ?
+              unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
+              record_version = record_version + 1
+          WHERE id = ? AND record_version = ?
         `,
       )
-      .run(reason, abandonedAt, abandonedAt, id);
+      .run(reason, abandonedAt, abandonedAt, id, expectedVersion);
+    assertIdentityCasUpdated({
+      result,
+      recordType: "open_question",
+      recordId: id,
+      expectedVersion,
+    });
 
     const abandoned: OpenQuestion = {
       ...existing,
+      record_version: nextRecordVersion(expectedVersion),
       status: "abandoned",
       resolution_evidence_episode_ids: [],
       resolution_evidence_stream_entry_ids: [],
@@ -1348,7 +1405,7 @@ export class OpenQuestionsRepository {
     return abandoned;
   }
 
-  bumpUrgency(id: OpenQuestionId, delta: number): OpenQuestion {
+  bumpUrgency(id: OpenQuestionId, delta: number, options: IdentityCasOptions = {}): OpenQuestion {
     const existing = this.get(id);
 
     if (existing === null) {
@@ -1359,12 +1416,22 @@ export class OpenQuestionsRepository {
 
     const nextUrgency = clamp(existing.urgency + delta, 0, 1);
     const nowMs = this.clock.now();
-    this.db
-      .prepare("UPDATE open_questions SET urgency = ?, last_touched = ? WHERE id = ?")
-      .run(nextUrgency, nowMs, id);
+    const expectedVersion = expectedRecordVersion(existing, options);
+    const result = this.db
+      .prepare(
+        "UPDATE open_questions SET urgency = ?, last_touched = ?, record_version = record_version + 1 WHERE id = ? AND record_version = ?",
+      )
+      .run(nextUrgency, nowMs, id, expectedVersion);
+    assertIdentityCasUpdated({
+      result,
+      recordType: "open_question",
+      recordId: id,
+      expectedVersion,
+    });
 
     const bumped = {
       ...existing,
+      record_version: nextRecordVersion(expectedVersion),
       urgency: nextUrgency,
       last_touched: nowMs,
     };
@@ -1376,7 +1443,7 @@ export class OpenQuestionsRepository {
     return bumped;
   }
 
-  setUrgency(id: OpenQuestionId, urgency: number): OpenQuestion {
+  setUrgency(id: OpenQuestionId, urgency: number, options: IdentityCasOptions = {}): OpenQuestion {
     const existing = this.get(id);
 
     if (existing === null) {
@@ -1387,12 +1454,22 @@ export class OpenQuestionsRepository {
 
     const nextUrgency = clamp(urgency, 0, 1);
     const nowMs = this.clock.now();
-    this.db
-      .prepare("UPDATE open_questions SET urgency = ?, last_touched = ? WHERE id = ?")
-      .run(nextUrgency, nowMs, id);
+    const expectedVersion = expectedRecordVersion(existing, options);
+    const result = this.db
+      .prepare(
+        "UPDATE open_questions SET urgency = ?, last_touched = ?, record_version = record_version + 1 WHERE id = ? AND record_version = ?",
+      )
+      .run(nextUrgency, nowMs, id, expectedVersion);
+    assertIdentityCasUpdated({
+      result,
+      recordType: "open_question",
+      recordId: id,
+      expectedVersion,
+    });
 
     const updated = {
       ...existing,
+      record_version: nextRecordVersion(expectedVersion),
       urgency: nextUrgency,
       last_touched: nowMs,
     };
@@ -1420,7 +1497,8 @@ export class OpenQuestionsRepository {
       .prepare(
         `
           UPDATE open_questions
-          SET unresolved_rumination_ticks = ?, last_ruminated_at = ?
+          SET unresolved_rumination_ticks = ?, last_ruminated_at = ?,
+              record_version = record_version + 1
           WHERE id = ? AND status = 'open' AND unresolved_rumination_ticks < ?
         `,
       )
@@ -1441,7 +1519,11 @@ export class OpenQuestionsRepository {
     return updated;
   }
 
-  reopenForReversal(id: OpenQuestionId, urgency?: number): OpenQuestion {
+  reopenForReversal(
+    id: OpenQuestionId,
+    urgency?: number,
+    options: IdentityCasOptions = {},
+  ): OpenQuestion {
     const existing = this.get(id);
 
     if (existing === null) {
@@ -1452,9 +1534,10 @@ export class OpenQuestionsRepository {
 
     const nowMs = this.clock.now();
     const nextUrgency = clamp(urgency ?? existing.urgency, 0, 1);
+    const expectedVersion = expectedRecordVersion(existing, options);
     // A reversal/reopen starts a new active open lifecycle, so stale
     // unresolved-attempt metadata should not carry into the revived question.
-    this.db
+    const result = this.db
       .prepare(
         `
           UPDATE open_questions
@@ -1462,14 +1545,22 @@ export class OpenQuestionsRepository {
               resolution_evidence_episode_ids = '[]',
               resolution_evidence_stream_entry_ids = '[]', resolution_note = NULL,
               resolved_at = NULL, abandoned_reason = NULL, abandoned_at = NULL,
-              unresolved_rumination_ticks = 0, last_ruminated_at = NULL
-          WHERE id = ?
+              unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
+              record_version = record_version + 1
+          WHERE id = ? AND record_version = ?
         `,
       )
-      .run(nextUrgency, nowMs, id);
+      .run(nextUrgency, nowMs, id, expectedVersion);
+    assertIdentityCasUpdated({
+      result,
+      recordType: "open_question",
+      recordId: id,
+      expectedVersion,
+    });
 
     const reopened: OpenQuestion = {
       ...existing,
+      record_version: nextRecordVersion(expectedVersion),
       status: "open",
       urgency: nextUrgency,
       last_touched: nowMs,

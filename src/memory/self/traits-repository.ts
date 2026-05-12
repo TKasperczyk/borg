@@ -5,6 +5,12 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { createTraitId, type TraitId } from "../../util/ids.js";
 import {
+  assertIdentityCasUpdated,
+  expectedRecordVersion,
+  nextRecordVersion,
+  type IdentityCasOptions,
+} from "../common/cas.js";
+import {
   parseStoredProvenance,
   toStoredProvenance,
   type Provenance,
@@ -64,8 +70,9 @@ export class TraitsRepository {
       .prepare(
         `
           SELECT id, label, strength, last_reinforced, last_decayed, state, established_at,
-                 confidence, last_tested_at, last_contradicted_at, support_count, contradiction_count,
-                 evidence_episode_ids, provenance_kind, provenance_episode_ids, provenance_process
+                 record_version, confidence, last_tested_at, last_contradicted_at, support_count,
+                 contradiction_count, evidence_episode_ids, provenance_kind, provenance_episode_ids,
+                 provenance_process
           FROM traits
           WHERE id = ?
         `,
@@ -78,8 +85,9 @@ export class TraitsRepository {
       .prepare(
         `
           SELECT id, label, strength, last_reinforced, last_decayed, state, established_at,
-                 confidence, last_tested_at, last_contradicted_at, support_count, contradiction_count,
-                 evidence_episode_ids, provenance_kind, provenance_episode_ids, provenance_process
+                 record_version, confidence, last_tested_at, last_contradicted_at, support_count,
+                 contradiction_count, evidence_episode_ids, provenance_kind, provenance_episode_ids,
+                 provenance_process
           FROM traits
           WHERE label = ?
         `,
@@ -137,6 +145,7 @@ export class TraitsRepository {
     delta: number;
     provenance: Provenance;
     timestamp?: number;
+    expectedVersion?: number;
   }): TraitRecord {
     const timestamp = input.timestamp ?? this.clock.now();
     const provenance = requireProvenance(input.provenance, "Trait reinforcement");
@@ -148,6 +157,7 @@ export class TraitsRepository {
       1,
     );
     const traitId = existing === undefined ? createTraitId() : current!.id;
+    const expectedVersion = current === null ? null : expectedRecordVersion(current, input);
     const aggregateProvenance = existing === undefined ? provenance : current!.provenance;
     const currentEvidenceEpisodeIds = current === null ? [] : current.evidence_episode_ids;
     const currentState =
@@ -171,10 +181,16 @@ export class TraitsRepository {
           last_tested_at, last_contradicted_at, support_count, contradiction_count, evidence_episode_ids
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (label) DO UPDATE SET
-          strength = excluded.strength,
-          last_reinforced = excluded.last_reinforced,
-          last_decayed = excluded.last_decayed
+        ${
+          expectedVersion === null
+            ? "ON CONFLICT (label) DO NOTHING"
+            : `ON CONFLICT (label) DO UPDATE SET
+                strength = excluded.strength,
+                last_reinforced = excluded.last_reinforced,
+                last_decayed = excluded.last_decayed,
+                record_version = traits.record_version + 1
+              WHERE traits.record_version = ?`
+        }
       `,
     );
     const insertEvent = this.db.prepare(
@@ -196,7 +212,7 @@ export class TraitsRepository {
     );
     return runIdentityWrite(this.identityEventRepository, () => {
       const apply = this.db.transaction(() => {
-        insertOrUpdate.run(
+        const upsertResult = insertOrUpdate.run(
           traitId,
           input.label,
           nextStrength,
@@ -213,7 +229,14 @@ export class TraitsRepository {
           current?.support_count ?? 0,
           current?.contradiction_count ?? 0,
           JSON.stringify(currentEvidenceEpisodeIds),
+          ...(expectedVersion === null ? [] : [expectedVersion]),
         );
+        assertIdentityCasUpdated({
+          result: upsertResult,
+          recordType: "trait",
+          recordId: traitId,
+          expectedVersion: expectedVersion ?? 0,
+        });
         insertEvent.run(
           traitId,
           input.delta,
@@ -294,6 +317,7 @@ export class TraitsRepository {
     provenance: Provenance;
     weight?: number;
     timestamp?: number;
+    expectedVersion?: number;
   }): TraitRecord {
     const existing = this.getByLabel(input.label);
 
@@ -304,6 +328,7 @@ export class TraitsRepository {
     }
 
     const current = mapTraitRow(existing);
+    const expectedVersion = expectedRecordVersion(current, input);
     const timestamp = input.timestamp ?? this.clock.now();
     const provenance = requireProvenance(input.provenance, "Trait contradiction");
     const weight = Number.isFinite(input.weight) && input.weight !== undefined ? input.weight : 1;
@@ -322,6 +347,7 @@ export class TraitsRepository {
       );
       const next = traitSchema.parse({
         ...current,
+        record_version: nextRecordVersion(expectedVersion),
         confidence: computeConfidence(evidence.supportCount, evidence.contradictionCount),
         last_tested_at: evidence.lastTestedAt,
         last_contradicted_at: evidence.lastContradictedAt,
@@ -330,13 +356,13 @@ export class TraitsRepository {
         evidence_episode_ids: evidence.evidenceEpisodeIds,
       });
 
-      this.db
+      const result = this.db
         .prepare(
           `
             UPDATE traits
             SET confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
-                contradiction_count = ?, evidence_episode_ids = ?
-            WHERE id = ?
+                contradiction_count = ?, evidence_episode_ids = ?, record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -347,7 +373,15 @@ export class TraitsRepository {
           next.contradiction_count,
           JSON.stringify(next.evidence_episode_ids),
           current.id,
+          expectedVersion,
         );
+
+      assertIdentityCasUpdated({
+        result,
+        recordType: "trait",
+        recordId: current.id,
+        expectedVersion,
+      });
 
       recordIdentityEvent(this.identityEventRepository, {
         record_type: "trait",
@@ -382,21 +416,22 @@ export class TraitsRepository {
       .prepare(
         `
           SELECT id, label, strength, last_reinforced, last_decayed, provenance_kind,
-                 provenance_episode_ids, provenance_process, state, established_at, confidence,
-                 last_tested_at, last_contradicted_at, support_count, contradiction_count,
-                 evidence_episode_ids
+                 provenance_episode_ids, provenance_process, state, established_at, record_version,
+                 confidence, last_tested_at, last_contradicted_at, support_count,
+                 contradiction_count, evidence_episode_ids
           FROM traits
           ${traitIds === null || traitIds.length === 0 ? "" : `WHERE id IN (${placeholders})`}
         `,
       )
       .all(...(traitIds ?? [])) as Record<string, unknown>[];
     const update = this.db.prepare(
-      "UPDATE traits SET strength = ?, last_decayed = ? WHERE label = ?",
+      "UPDATE traits SET strength = ?, last_decayed = ?, record_version = record_version + 1 WHERE label = ? AND record_version = ?",
     );
     const records: TraitRecord[] = [];
 
     for (const row of rows) {
       const current = mapTraitRow(row);
+      const currentVersion = expectedRecordVersion(current);
       const lastTouched = Math.max(current.last_reinforced, current.last_decayed ?? 0);
       const elapsedHours = Math.max(0, nowMs - lastTouched) / 3_600_000;
       const nextStrength = clamp(
@@ -407,11 +442,18 @@ export class TraitsRepository {
 
       const next = traitSchema.parse({
         ...current,
+        record_version: nextRecordVersion(currentVersion),
         strength: nextStrength,
         last_decayed: nowMs,
       });
 
-      update.run(next.strength, nowMs, next.label);
+      const result = update.run(next.strength, nowMs, next.label, currentVersion);
+      assertIdentityCasUpdated({
+        result,
+        recordType: "trait",
+        recordId: current.id,
+        expectedVersion: currentVersion,
+      });
       records.push(next);
 
       if (Math.abs(next.strength - current.strength) > Number.EPSILON) {
@@ -449,6 +491,7 @@ export class TraitsRepository {
       reason?: string | null;
       reviewItemId?: number | null;
       overwriteWithoutReview?: boolean;
+      expectedVersion?: number;
     } = {},
   ): TraitRecord {
     const current = this.get(traitId);
@@ -460,24 +503,26 @@ export class TraitsRepository {
     }
 
     const parsedPatch = traitPatchSchema.parse(patch);
+    const expectedVersion = expectedRecordVersion(current, options);
     const parsedProvenance = requireProvenance(provenance, "Trait update");
     const next = traitSchema.parse({
       ...current,
       ...parsedPatch,
+      record_version: nextRecordVersion(expectedVersion),
       provenance: parsedPatch.provenance ?? current.provenance,
     });
     const storedProvenance = toStoredProvenance(next.provenance);
 
     return runIdentityWrite(this.identityEventRepository, () => {
-      this.db
+      const result = this.db
         .prepare(
           `
             UPDATE traits
             SET label = ?, strength = ?, last_reinforced = ?, last_decayed = ?, state = ?, established_at = ?,
                 confidence = ?, last_tested_at = ?, last_contradicted_at = ?, support_count = ?,
                 contradiction_count = ?, evidence_episode_ids = ?, provenance_kind = ?,
-                provenance_episode_ids = ?, provenance_process = ?
-            WHERE id = ?
+                provenance_episode_ids = ?, provenance_process = ?, record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
           `,
         )
         .run(
@@ -497,7 +542,15 @@ export class TraitsRepository {
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
           traitId,
+          expectedVersion,
         );
+
+      assertIdentityCasUpdated({
+        result,
+        recordType: "trait",
+        recordId: traitId,
+        expectedVersion,
+      });
 
       recordIdentityEvent(this.identityEventRepository, {
         record_type: "trait",
@@ -529,9 +582,9 @@ export class TraitsRepository {
         .prepare(
           `
             SELECT id, label, strength, last_reinforced, last_decayed, provenance_kind,
-                   provenance_episode_ids, provenance_process, state, established_at, confidence,
-                   last_tested_at, last_contradicted_at, support_count, contradiction_count,
-                   evidence_episode_ids
+                   provenance_episode_ids, provenance_process, state, established_at,
+                   record_version, confidence, last_tested_at, last_contradicted_at,
+                   support_count, contradiction_count, evidence_episode_ids
             FROM traits
             ORDER BY strength DESC, label ASC
           `,
