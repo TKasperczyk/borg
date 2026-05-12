@@ -760,7 +760,7 @@ export class TurnPhaseCoordinator {
         });
         postActionWorkingMemory = this.options.discourseStateService.setStopState({
           workingMemory: postActionWorkingMemory,
-          provenance: "no_output_tool",
+          provenance: "finalizer_no_output",
           sourceStreamEntryId: persistedAgentEntry.id,
           reason:
             "Closure loop was already named once; suppress further closure-only turns until substantive content.",
@@ -1033,7 +1033,7 @@ export class TurnPhaseCoordinator {
     });
     workingMemory = this.options.discourseStateService.setStopState({
       workingMemory,
-      provenance: "no_output_tool",
+      provenance: "finalizer_no_output",
       sourceStreamEntryId: input.persistedUserEntryId,
       reason: "Closure loop already named; suppressing another closure-only turn.",
       turnId: input.turnId,
@@ -1042,7 +1042,7 @@ export class TurnPhaseCoordinator {
       response: "",
       emission: {
         kind: "suppressed",
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
       },
       toolCalls: [],
       intents: [],
@@ -1053,20 +1053,20 @@ export class TurnPhaseCoordinator {
     });
     const suppressionMarker = await this.options.discourseStateService.appendSuppressionMarker({
       streamWriter: input.streamWriter,
-      reason: "no_output_tool",
+      reason: "finalizer_no_output",
       userEntryId: input.persistedUserEntryId,
       turnId: input.turnId,
       audience: input.turnInput.audience,
     });
     const suppressionEmission: TurnEmission = {
       kind: "suppressed",
-      reason: "no_output_tool",
+      reason: "finalizer_no_output",
       markerEntryId: suppressionMarker.id,
     };
     const suppressedWorkingMemory = this.options.discourseStateService.applySuppressedEmissionState(
       {
         workingMemory: suppressionActionResult.workingMemory,
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
         sourceStreamEntryId: suppressionMarker.id,
         turnId: input.turnId,
       },
@@ -1075,7 +1075,7 @@ export class TurnPhaseCoordinator {
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("generation_suppressed", {
         turnId: input.turnId,
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
         streamEntryId: suppressionMarker.id,
         source: "closure_loop",
         classified: true,

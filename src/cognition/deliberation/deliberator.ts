@@ -99,7 +99,7 @@ type FinalizerEmission = {
 function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppressionReason | null {
   switch (result.decision.kind) {
     case "no_output":
-      return "no_output_tool";
+      return "finalizer_no_output";
     case "empty":
       return "empty_finalizer";
     case "invalid_tool":

@@ -48,6 +48,12 @@ function isFinalizerNoOutputSuppressionReason(
   );
 }
 
+function canonicalFinalizerNoOutputSuppressionReason(
+  reason: SuppressionReason,
+): "finalizer_no_output" | null {
+  return isFinalizerNoOutputSuppressionReason(reason) ? "finalizer_no_output" : null;
+}
+
 export type TurnDiscourseStateServiceOptions = {
   tracer: TurnTracer;
   clock?: Clock;
@@ -303,10 +309,12 @@ export class TurnDiscourseStateService {
       });
     }
 
-    if (isFinalizerNoOutputSuppressionReason(input.reason)) {
+    const finalizerNoOutputReason = canonicalFinalizerNoOutputSuppressionReason(input.reason);
+
+    if (finalizerNoOutputReason !== null) {
       workingMemory = this.setStopState({
         workingMemory,
-        provenance: input.reason,
+        provenance: finalizerNoOutputReason,
         sourceStreamEntryId: input.sourceStreamEntryId,
         reason:
           input.reason === "manifest_no_output"

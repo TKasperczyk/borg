@@ -516,7 +516,7 @@ describe("deliberator", () => {
     });
   });
 
-  it("suppresses EmitNoOutput responses with no_output_tool", async () => {
+  it("suppresses EmitNoOutput responses with finalizer_no_output", async () => {
     const tracer = new CapturingTracer();
     const llm = new FakeLLMClient({
       responses: [
@@ -573,7 +573,7 @@ describe("deliberator", () => {
     expect(result.emitted).toBe(false);
     expect(result.emission).toEqual({
       kind: "suppressed",
-      reason: "no_output_tool",
+      reason: "finalizer_no_output",
     });
     const emittedEvent = tracer.events.find((entry) => entry.event === "finalizer_emitted");
     expect(emittedEvent?.data).toMatchObject({
@@ -928,7 +928,7 @@ describe("deliberator", () => {
       expect(result.emitted).toBe(false);
       expect(result.emission).toEqual({
         kind: "suppressed",
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
       });
       expect(result.emissionRecommendation).toBe("emit");
       expect(result.response).toBe("");
@@ -1034,7 +1034,7 @@ describe("deliberator", () => {
       expect(result.response).toBe("");
       expect(result.emission).toEqual({
         kind: "suppressed",
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
       });
       expect(result.thoughtsPersisted).toBe(true);
       expect(result.thoughtStreamEntryIds).toHaveLength(1);

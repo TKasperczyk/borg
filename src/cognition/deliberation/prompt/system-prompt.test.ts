@@ -363,7 +363,7 @@ describe("buildBaseSystemPrompt", () => {
           ...makeContext().workingMemory,
           discourse_state: {
             stop_until_substantive_content: {
-              provenance: "no_output_tool",
+              provenance: "finalizer_no_output",
               source_stream_entry_id: "strm_aaaaaaaaaaaaaaaa" as never,
               reason: "Finalizer called no_output.",
               since_turn: 7,
@@ -376,7 +376,7 @@ describe("buildBaseSystemPrompt", () => {
     const block = extractBlock(prompt, "borg_discourse_control");
 
     expect(block).toContain(
-      "Discourse control: stop-until-substantive-content active since turn 7 (provenance: no_output_tool). Minimal input does not require a response.",
+      "Discourse control: stop-until-substantive-content active since turn 7 (provenance: finalizer_no_output). Minimal input does not require a response.",
     );
     expect(extractBlock(prompt, "borg_working_state")).not.toContain("Discourse control");
   });
@@ -446,7 +446,7 @@ describe("buildBaseSystemPrompt", () => {
             recent_suppressions: [
               {
                 turn_id: "turn-b",
-                reason: "no_output_tool",
+                reason: "finalizer_no_output",
                 ts: NOW_MS,
               },
             ],
@@ -458,7 +458,7 @@ describe("buildBaseSystemPrompt", () => {
     const block = extractBlock(prompt, "borg_discourse_control");
 
     expect(block).toContain("Recent silences from your side");
-    expect(block).toContain("turn-b:no_output_tool");
+    expect(block).toContain("turn-b:finalizer_no_output");
     expect(block).toContain("Do not invent network failures");
   });
 

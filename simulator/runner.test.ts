@@ -214,7 +214,7 @@ function chatResult(input: {
             } as ChatWithBorgResult["emission"])
           : {
               kind: "suppressed",
-              reason: input.suppressionReason ?? "no_output_tool",
+              reason: input.suppressionReason ?? "finalizer_no_output",
             },
     turnId: input.turnId,
     sessionId: input.sessionId,
@@ -1044,7 +1044,7 @@ describe("SimulatorRunner", () => {
     ]);
   });
 
-  it("passes distinct session IDs after no_output_tool rotation and records them", async () => {
+  it("passes distinct session IDs after finalizer_no_output rotation and records them", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
     const chatSessionIds: SessionId[] = [];
@@ -1059,7 +1059,7 @@ describe("SimulatorRunner", () => {
         emitted,
         turnId: `turn-${chatSessionIds.length}`,
         sessionId,
-        suppressionReason: "no_output_tool",
+        suppressionReason: "finalizer_no_output",
       });
     });
 
@@ -1086,7 +1086,7 @@ describe("SimulatorRunner", () => {
         startedAtTurn: 1,
         endedAtTurn: 1,
         endReason: "suppression",
-        suppressionReason: "no_output_tool",
+        suppressionReason: "finalizer_no_output",
       },
       {
         sessionIndex: 1,
@@ -1305,7 +1305,7 @@ describe("SimulatorRunner", () => {
     );
   });
 
-  it("starts a new session after no_output_tool suppression", async () => {
+  it("starts a new session after finalizer_no_output suppression", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
     const persona = fakePersonaSession(["first persona turn", "second persona turn"]);
@@ -1321,7 +1321,7 @@ describe("SimulatorRunner", () => {
         emitted,
         turnId: `turn-${chatSessionIds.length}`,
         sessionId,
-        suppressionReason: "no_output_tool",
+        suppressionReason: "finalizer_no_output",
       });
     });
 
@@ -1357,7 +1357,7 @@ describe("SimulatorRunner", () => {
       startedAtTurn: 1,
       endedAtTurn: 1,
       endReason: "suppression",
-      suppressionReason: "no_output_tool",
+      suppressionReason: "finalizer_no_output",
     });
     expect(report.sessions[1]).toMatchObject({
       sessionIndex: 1,

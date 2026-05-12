@@ -4,10 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  Borg,
-  ManualClock,
-} from "../../index.js";
+import { Borg, ManualClock } from "../../index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createTestConfig, TestEmbeddingClient } from "../../offline/test-support.js";
 
@@ -181,14 +178,14 @@ describe("stop primitive v8 regressions", () => {
         expect(result.response).toBe("");
         expect(result.emission).toMatchObject({
           kind: "suppressed",
-          reason: "no_output_tool",
+          reason: "finalizer_no_output",
         });
         expect(agentMessages(borg)).toEqual([]);
         expect(suppressionEntry?.content).toMatchObject({
-          reason: "no_output_tool",
+          reason: "finalizer_no_output",
         });
         expect(activeStop).toMatchObject({
-          provenance: "no_output_tool",
+          provenance: "finalizer_no_output",
           source_stream_entry_id: suppressionEntry?.id,
         });
       } finally {

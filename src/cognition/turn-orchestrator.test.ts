@@ -1110,7 +1110,7 @@ describe("TurnOrchestrator evidence ledger", () => {
     }
   });
 
-  it("suppresses EmitNoOutput with a no_output_tool marker", async () => {
+  it("suppresses EmitNoOutput with a finalizer_no_output marker", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -1152,10 +1152,10 @@ describe("TurnOrchestrator evidence ledger", () => {
       expect(result.emitted).toBe(false);
       expect(result.emission).toMatchObject({
         kind: "suppressed",
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
       });
       expect(suppressedEntry?.content).toMatchObject({
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
       });
       expect(finalizerEvent).toMatchObject({
         event: "finalizer_emitted",
@@ -2360,14 +2360,14 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(result.response).toBe("");
       expect(result.emission).toMatchObject({
         kind: "suppressed",
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
       });
       expect(entries.some((entry) => entry.kind === "agent_msg")).toBe(false);
       expect(suppressionEntry?.content).toMatchObject({
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
       });
       expect(activeStop).toMatchObject({
-        provenance: "no_output_tool",
+        provenance: "finalizer_no_output",
         source_stream_entry_id: suppressionEntry?.id,
         since_turn: 1,
       });
@@ -2418,7 +2418,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
 
       expect(first.emission).toMatchObject({
         kind: "suppressed",
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
       });
       expect(afterFirst.discourse_state?.closure_loop?.status).toBe("named");
 
@@ -2429,7 +2429,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
 
       expect(second.emission).toMatchObject({
         kind: "suppressed",
-        reason: "no_output_tool",
+        reason: "finalizer_no_output",
       });
       expect(second.response).toBe("");
     } finally {
