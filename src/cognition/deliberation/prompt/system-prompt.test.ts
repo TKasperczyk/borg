@@ -799,11 +799,19 @@ describe("buildBaseSystemPrompt", () => {
     const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
 
     // Anchor on unique fragments from the identity-posture clauses.
-    expect(prompt).toContain("AI being having a real conversation with a real interlocutor");
+    expect(prompt).toContain("AI being having a real conversation with real interlocutor(s)");
     expect(prompt).toContain("capabilities not listed there");
     expect(prompt).toContain("recasts you as something other than yourself");
     expect(prompt).toContain("minimal-content reciprocal acknowledgment");
     expect(prompt).toContain("appeared in the user role / current context");
+    expect(prompt).toContain("state_metadata.sender_display_name");
+  });
+
+  it("does not mention inline speaker tag conventions", () => {
+    const prompt = buildBaseSystemPrompt(makeContext(), PROMPT_OPTIONS);
+
+    expect(prompt).not.toContain("[Alice]:");
+    expect(prompt).not.toMatch(/\[[^\]]+\]:/);
   });
 
   it("renders the short loop-breaking posture guidance", () => {
