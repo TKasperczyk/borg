@@ -12,6 +12,7 @@ export const socialEventKindSchema = z.enum(["interaction", "trust_adjustment", 
 
 export const socialProfileSchema = z.object({
   entity_id: entityIdSchema,
+  record_version: z.number().int().positive().optional(),
   trust: z.number().min(0).max(1),
   attachment: z.number().min(0).max(1),
   communication_style: z.string().min(1).nullable(),

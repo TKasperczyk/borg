@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableExists, tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const socialMigrations = [
   {
@@ -8,6 +9,7 @@ export const socialMigrations = [
       db.exec(`
         CREATE TABLE social_profiles (
           entity_id TEXT PRIMARY KEY,
+          record_version INTEGER NOT NULL DEFAULT 1,
           trust REAL NOT NULL DEFAULT 0.5,
           attachment REAL NOT NULL DEFAULT 0.0,
           communication_style TEXT,
@@ -41,6 +43,23 @@ export const socialMigrations = [
 
         CREATE INDEX IF NOT EXISTS idx_social_events_entity_ts
           ON social_events (entity_id, ts DESC, id DESC);
+      `);
+    },
+  },
+  {
+    id: 2,
+    name: "social_profile_record_versions",
+    up: (db) => {
+      if (
+        !tableExists(db, "social_profiles") ||
+        tableHasColumn(db, "social_profiles", "record_version")
+      ) {
+        return;
+      }
+
+      db.exec(`
+        ALTER TABLE social_profiles
+          ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1;
       `);
     },
   },

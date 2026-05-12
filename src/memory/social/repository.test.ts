@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createOfflineTestHarness } from "../../offline/test-support.js";
-import { ProvenanceError } from "../../util/errors.js";
+import { IdentityCasMismatchError, ProvenanceError } from "../../util/errors.js";
 
 describe("SocialRepository", () => {
   const manualProvenance = { kind: "manual" } as const;
@@ -86,5 +86,70 @@ describe("SocialRepository", () => {
         ts: 1_000,
       }),
     ]);
+  });
+
+  it("composes interaction aggregate updates and reconstructs sentiment from events", async () => {
+    harness = await createOfflineTestHarness();
+    const entityId = harness.entityRepository.resolve("Sam");
+
+    const first = harness.socialRepository.recordInteractionWithId(entityId, {
+      valence: 0.4,
+      now: 1_000,
+      provenance: manualProvenance,
+    });
+    const second = harness.socialRepository.recordInteractionWithId(entityId, {
+      valence: -0.6,
+      now: 1_001,
+      provenance: manualProvenance,
+    });
+
+    expect(second.profile.interaction_count).toBe(2);
+    expect(second.profile.last_interaction_at).toBe(1_001);
+    expect(second.profile.sentiment_history).toEqual([
+      {
+        ts: 1_000,
+        valence: 0.4,
+      },
+      {
+        ts: 1_001,
+        valence: -0.6,
+      },
+    ]);
+    expect(harness.socialRepository.listEvents(entityId)).toEqual([
+      expect.objectContaining({
+        id: second.interaction_id,
+        valence: -0.6,
+        interaction_delta: 1,
+      }),
+      expect.objectContaining({
+        id: first.interaction_id,
+        valence: 0.4,
+        interaction_delta: 1,
+      }),
+    ]);
+  });
+
+  it("rejects stale full-profile restores with CAS mismatch", async () => {
+    harness = await createOfflineTestHarness();
+    const entityId = harness.entityRepository.resolve("Sam");
+    const stale = harness.socialRepository.upsertProfile(entityId);
+
+    harness.socialRepository.recordInteractionWithId(entityId, {
+      now: 1_000,
+      provenance: manualProvenance,
+    });
+
+    expect(() =>
+      harness!.socialRepository.restoreProfile({
+        ...stale,
+        notes: "stale restore should not win",
+      }),
+    ).toThrow(IdentityCasMismatchError);
+
+    const current = harness.socialRepository.getProfile(entityId);
+    expect(current).toMatchObject({
+      interaction_count: 1,
+      notes: null,
+    });
   });
 });

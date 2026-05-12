@@ -5,6 +5,11 @@ import { serializeJsonValue } from "../../util/json-value.js";
 import type { CommitmentRepository } from "../commitments/index.js";
 import type { EntityId } from "../../util/ids.js";
 import {
+  assertIdentityCasUpdated,
+  expectedRecordVersion,
+  nextRecordVersion,
+} from "../common/cas.js";
+import {
   parseStoredProvenance,
   provenanceSchema,
   toStoredProvenance,
@@ -52,6 +57,7 @@ function parseSentimentHistory(value: string): SocialSentimentPoint[] {
 function mapProfileRow(row: Record<string, unknown>): SocialProfile {
   const parsed = socialProfileSchema.safeParse({
     entity_id: row.entity_id,
+    record_version: Number(row.record_version ?? 1),
     trust: Number(row.trust),
     attachment: Number(row.attachment),
     communication_style:
@@ -133,32 +139,44 @@ export class SocialRepository {
     return this.options.db;
   }
 
-  private writeProfile(profile: SocialProfile): SocialProfile {
+  private requireProfile(entityId: EntityId): SocialProfile {
+    const profile = this.getProfile(entityId);
+
+    if (profile === null) {
+      throw new StorageError(`Missing social profile for ${entityId}`, {
+        code: "SOCIAL_ROW_INVALID",
+      });
+    }
+
+    return profile;
+  }
+
+  private assertAtomicProfileUpdated(result: { changes: number }, entityId: EntityId): void {
+    if (result.changes > 0) {
+      return;
+    }
+
+    throw new StorageError(`Missing social profile for ${entityId}`, {
+      code: "SOCIAL_ROW_INVALID",
+    });
+  }
+
+  private insertProfileIfMissing(profile: SocialProfile): SocialProfile {
     const parsed = socialProfileSchema.parse(profile);
 
     this.db
       .prepare(
         `
-          INSERT INTO social_profiles (
-            entity_id, trust, attachment, communication_style, shared_history_summary,
+          INSERT OR IGNORE INTO social_profiles (
+            entity_id, record_version, trust, attachment, communication_style, shared_history_summary,
             last_interaction_at, interaction_count, commitment_count, sentiment_history, notes,
             created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (entity_id) DO UPDATE SET
-            trust = excluded.trust,
-            attachment = excluded.attachment,
-            communication_style = excluded.communication_style,
-            shared_history_summary = excluded.shared_history_summary,
-            last_interaction_at = excluded.last_interaction_at,
-            interaction_count = excluded.interaction_count,
-            commitment_count = excluded.commitment_count,
-            sentiment_history = excluded.sentiment_history,
-            notes = excluded.notes,
-            updated_at = excluded.updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
         parsed.entity_id,
+        parsed.record_version ?? 1,
         parsed.trust,
         parsed.attachment,
         parsed.communication_style,
@@ -172,7 +190,134 @@ export class SocialRepository {
         parsed.updated_at,
       );
 
-    return parsed;
+    return this.requireProfile(parsed.entity_id);
+  }
+
+  private writeProfile(profile: SocialProfile): SocialProfile {
+    const parsed = socialProfileSchema.parse(profile);
+    const expectedVersion = expectedRecordVersion(parsed);
+    const result = this.db
+      .prepare(
+        `
+          UPDATE social_profiles
+          SET trust = ?,
+              attachment = ?,
+              communication_style = ?,
+              shared_history_summary = ?,
+              last_interaction_at = ?,
+              interaction_count = ?,
+              commitment_count = ?,
+              sentiment_history = ?,
+              notes = ?,
+              created_at = ?,
+              updated_at = ?,
+              record_version = record_version + 1
+          WHERE entity_id = ? AND record_version = ?
+        `,
+      )
+      .run(
+        parsed.trust,
+        parsed.attachment,
+        parsed.communication_style,
+        parsed.shared_history_summary,
+        parsed.last_interaction_at,
+        parsed.interaction_count,
+        parsed.commitment_count,
+        serializeJsonValue(parsed.sentiment_history),
+        parsed.notes,
+        parsed.created_at,
+        parsed.updated_at,
+        parsed.entity_id,
+        expectedVersion,
+      );
+
+    assertIdentityCasUpdated({
+      result,
+      recordType: "social_profile",
+      recordId: parsed.entity_id,
+      expectedVersion,
+    });
+
+    return {
+      ...parsed,
+      record_version: nextRecordVersion(expectedVersion),
+    };
+  }
+
+  private sentimentHistoryFromEvents(entityId: EntityId): SocialSentimentPoint[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT ts, valence
+          FROM (
+            SELECT id, ts, valence
+            FROM social_events
+            WHERE entity_id = ? AND kind = 'interaction' AND valence IS NOT NULL
+            ORDER BY ts DESC, id DESC
+            LIMIT 50
+          )
+          ORDER BY ts ASC, id ASC
+        `,
+      )
+      .all(entityId) as Record<string, unknown>[];
+
+    return rows.map((row) =>
+      socialSentimentPointSchema.parse({
+        ts: Number(row.ts),
+        valence: Number(row.valence),
+      }),
+    );
+  }
+
+  private refreshSentimentHistory(
+    entityId: EntityId,
+    timestamp: number,
+    options: { bumpRecordVersion: boolean },
+  ): void {
+    const sentimentHistory = this.sentimentHistoryFromEvents(entityId);
+    const result = this.db
+      .prepare(
+        options.bumpRecordVersion
+          ? `
+              UPDATE social_profiles
+              SET sentiment_history = ?,
+                  updated_at = ?,
+                  record_version = record_version + 1
+              WHERE entity_id = ?
+            `
+          : `
+              UPDATE social_profiles
+              SET sentiment_history = ?,
+                  updated_at = ?
+              WHERE entity_id = ?
+            `,
+      )
+      .run(serializeJsonValue(sentimentHistory), timestamp, entityId);
+
+    this.assertAtomicProfileUpdated(result, entityId);
+  }
+
+  private applyInteractionAggregate(entityId: EntityId, timestamp: number): void {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE social_profiles
+          SET last_interaction_at = CASE
+                WHEN last_interaction_at IS NULL OR last_interaction_at < ? THEN ?
+                ELSE last_interaction_at
+              END,
+              interaction_count = interaction_count + 1,
+              updated_at = CASE
+                WHEN updated_at < ? THEN ?
+                ELSE updated_at
+              END,
+              record_version = record_version + 1
+          WHERE entity_id = ?
+        `,
+      )
+      .run(timestamp, timestamp, timestamp, timestamp, entityId);
+
+    this.assertAtomicProfileUpdated(result, entityId);
   }
 
   upsertProfile(entityId: EntityId): SocialProfile {
@@ -183,8 +328,9 @@ export class SocialRepository {
     }
 
     const nowMs = this.clock.now();
-    return this.writeProfile({
+    return this.insertProfileIfMissing({
       entity_id: entityId,
+      record_version: 1,
       trust: 0.5,
       attachment: 0,
       communication_style: null,
@@ -241,52 +387,48 @@ export class SocialRepository {
       now?: number;
     },
   ): SocialInteractionRecord {
-    const existing = this.upsertProfile(entityId);
+    this.upsertProfile(entityId);
     const nowMs = input.now ?? this.clock.now();
     const provenance = requireProvenance(input.provenance, "Social interaction");
-    const sentimentHistory =
-      input.valence === undefined
-        ? existing.sentiment_history
-        : [
-            ...existing.sentiment_history,
-            socialSentimentPointSchema.parse({
-              ts: nowMs,
-              valence: clamp(input.valence, -1, 1),
-            }),
-          ].slice(-50);
+    const valence = input.valence === undefined ? null : clamp(input.valence, -1, 1);
     const storedProvenance = toStoredProvenance(provenance);
 
-    const insertResult = this.db
-      .prepare(
-        `
-          INSERT INTO social_events (
-            entity_id, ts, kind, provenance_kind, provenance_episode_ids, provenance_process,
-            trust_delta, attachment_delta, interaction_delta, valence
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-      )
-      .run(
-        entityId,
-        nowMs,
-        socialEventKindSchema.parse("interaction"),
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        0,
-        0,
-        1,
-        input.valence === undefined ? null : clamp(input.valence, -1, 1),
-      );
+    const writeInteraction = this.db.transaction(() => {
+      const insertResult = this.db
+        .prepare(
+          `
+            INSERT INTO social_events (
+              entity_id, ts, kind, provenance_kind, provenance_episode_ids, provenance_process,
+              trust_delta, attachment_delta, interaction_delta, valence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          entityId,
+          nowMs,
+          socialEventKindSchema.parse("interaction"),
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          0,
+          0,
+          1,
+          valence,
+        );
+
+      this.applyInteractionAggregate(entityId, nowMs);
+
+      if (valence !== null) {
+        this.refreshSentimentHistory(entityId, nowMs, { bumpRecordVersion: false });
+      }
+
+      return Number(insertResult.lastInsertRowid);
+    });
+    const interactionId = writeInteraction();
 
     return {
-      interaction_id: Number(insertResult.lastInsertRowid),
-      profile: this.writeProfile({
-        ...existing,
-        last_interaction_at: nowMs,
-        interaction_count: existing.interaction_count + 1,
-        sentiment_history: sentimentHistory,
-        updated_at: nowMs,
-      }),
+      interaction_id: interactionId,
+      profile: this.requireProfile(entityId),
     };
   }
 
@@ -300,7 +442,7 @@ export class SocialRepository {
     const row = this.db
       .prepare(
         `
-          SELECT entity_id, ts
+          SELECT entity_id
           FROM social_events
           WHERE id = ? AND kind = 'interaction'
         `,
@@ -314,75 +456,85 @@ export class SocialRepository {
     }
 
     const entityId = String(row.entity_id) as EntityId;
-    const interactionTs = Number(row.ts);
-    const existing = this.upsertProfile(entityId);
+    this.upsertProfile(entityId);
     const nowMs = input.now ?? this.clock.now();
     const valence = clamp(input.valence, -1, 1);
-    const sentimentHistory = [
-      ...existing.sentiment_history,
-      socialSentimentPointSchema.parse({
-        ts: interactionTs,
-        valence,
-      }),
-    ].slice(-50);
 
-    this.db
-      .prepare(
-        `
-          UPDATE social_events
-          SET valence = ?
-          WHERE id = ?
-        `,
-      )
-      .run(valence, interactionId);
+    const attach = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+            UPDATE social_events
+            SET valence = ?
+            WHERE id = ?
+          `,
+        )
+        .run(valence, interactionId);
 
-    return this.writeProfile({
-      ...existing,
-      sentiment_history: sentimentHistory,
-      updated_at: nowMs,
+      this.refreshSentimentHistory(entityId, nowMs, { bumpRecordVersion: true });
     });
+    attach();
+
+    return this.requireProfile(entityId);
   }
 
   adjustTrust(entityId: EntityId, delta: number, provenance: Provenance): SocialProfile {
-    const existing = this.upsertProfile(entityId);
+    this.upsertProfile(entityId);
     const parsedProvenance = requireProvenance(provenance, "Social trust adjustment");
     const storedProvenance = toStoredProvenance(parsedProvenance);
     const nowMs = this.clock.now();
 
-    this.db
-      .prepare(
-        `
-          INSERT INTO social_events (
-            entity_id, ts, kind, provenance_kind, provenance_episode_ids, provenance_process,
-            trust_delta, attachment_delta, interaction_delta, valence
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-      )
-      .run(
-        entityId,
-        nowMs,
-        socialEventKindSchema.parse("trust_adjustment"),
-        storedProvenance.provenance_kind,
-        storedProvenance.provenance_episode_ids,
-        storedProvenance.provenance_process,
-        delta,
-        0,
-        0,
-        null,
-      );
+    const adjust = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+            INSERT INTO social_events (
+              entity_id, ts, kind, provenance_kind, provenance_episode_ids, provenance_process,
+              trust_delta, attachment_delta, interaction_delta, valence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          entityId,
+          nowMs,
+          socialEventKindSchema.parse("trust_adjustment"),
+          storedProvenance.provenance_kind,
+          storedProvenance.provenance_episode_ids,
+          storedProvenance.provenance_process,
+          delta,
+          0,
+          0,
+          null,
+        );
 
-    return this.writeProfile({
-      ...existing,
-      trust: clamp(existing.trust + delta, 0, 1),
-      updated_at: nowMs,
+      const result = this.db
+        .prepare(
+          `
+            UPDATE social_profiles
+            SET trust = CASE
+                  WHEN trust + ? < 0 THEN 0
+                  WHEN trust + ? > 1 THEN 1
+                  ELSE trust + ?
+                END,
+                updated_at = ?,
+                record_version = record_version + 1
+            WHERE entity_id = ?
+          `,
+        )
+        .run(delta, delta, delta, nowMs, entityId);
+
+      this.assertAtomicProfileUpdated(result, entityId);
     });
+    adjust();
+
+    return this.requireProfile(entityId);
   }
 
   recomputeCommitmentCount(
     entityId: EntityId,
     commitmentRepository: CommitmentRepository,
   ): SocialProfile {
-    const existing = this.upsertProfile(entityId);
+    this.upsertProfile(entityId);
     const count = commitmentRepository
       .list({ activeOnly: true })
       .filter(
@@ -392,11 +544,21 @@ export class SocialRepository {
           commitment.about_entity === entityId,
       ).length;
 
-    return this.writeProfile({
-      ...existing,
-      commitment_count: count,
-      updated_at: this.clock.now(),
-    });
+    const result = this.db
+      .prepare(
+        `
+          UPDATE social_profiles
+          SET commitment_count = ?,
+              updated_at = ?,
+              record_version = record_version + 1
+          WHERE entity_id = ?
+        `,
+      )
+      .run(count, this.clock.now(), entityId);
+
+    this.assertAtomicProfileUpdated(result, entityId);
+
+    return this.requireProfile(entityId);
   }
 
   restoreProfile(profile: SocialProfile): SocialProfile {
