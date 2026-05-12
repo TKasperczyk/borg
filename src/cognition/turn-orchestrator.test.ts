@@ -1047,6 +1047,72 @@ describe("TurnOrchestrator evidence ledger", () => {
   });
 });
 
+describe("TurnOrchestrator participant social profiles", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    while (tempDirs.length > 0) {
+      rmSync(tempDirs.pop() as string, { recursive: true, force: true });
+    }
+  });
+
+  it("renders all active group participants in the social profile prompt section", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_700_000_000_000);
+    const llm = new FakeLLMClient({
+      responses: [createEmitAnswerResponse("Flights next."), createEmptyReflectionResponse()],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.entities.resolve("Planning Room", {
+        kind: "group",
+      });
+      const alice = borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+      const bob = borg.entities.resolve("Bob", {
+        kind: "person",
+      });
+
+      borg.social.recordInteraction("Alice", {
+        provenance: {
+          kind: "system",
+        },
+        now: clock.now(),
+      });
+      borg.social.recordInteraction("Bob", {
+        provenance: {
+          kind: "system",
+        },
+        now: clock.now(),
+      });
+      await borg.stream.append({
+        kind: "user_msg",
+        content: "I can handle hotels.",
+        audience: "Planning Room",
+        sender_entity_id: bob,
+      });
+
+      await borg.turn({
+        userMessage: "I can handle flights.",
+        audience: "Planning Room",
+        senderEntityId: alice,
+      });
+
+      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+
+      expect(finalizerSystem).toContain("Participants:");
+      expect(finalizerSystem).toContain("Alice (speaker): trust=0.50");
+      expect(finalizerSystem).toContain("Bob (participant): trust=0.50");
+      expect(finalizerSystem).not.toContain("Talking to:");
+    } finally {
+      await borg.close();
+    }
+  });
+});
+
 describe("TurnOrchestrator self snapshot audience visibility", () => {
   const tempDirs: string[] = [];
 
