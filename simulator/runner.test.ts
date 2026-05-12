@@ -959,6 +959,56 @@ describe("SimulatorRunner", () => {
     expect(openSpy.mock.calls[0]?.[0]?.config?.defaultUser).toBe("Tom");
   });
 
+  it("omits Borg defaultUser when opening multi-persona group runs", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const alice = {
+      key: "alice-test",
+      displayName: "Alice",
+      systemPrompt: "Speak as Alice.",
+    };
+    const bob = {
+      key: "bob-test",
+      displayName: "Bob",
+      systemPrompt: "Speak as Bob.",
+    };
+    const aliceSession = fakePersonaSession(["alice first"]);
+    const bobSession = fakePersonaSession(["bob first"]);
+    const openSpy = vi.spyOn(Borg, "open").mockResolvedValue(fakeSimulatorBorg());
+    vi.spyOn(BorgTransport.prototype, "resolveEntity").mockReturnValue(createEntityId());
+    vi.spyOn(BorgTransport.prototype, "chat").mockResolvedValue({
+      response: "Mock response",
+      emitted: true,
+      emission: undefined as never,
+      turnId: "turn-group-default-user",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+      moodAfter: {
+        valence: 0,
+        arousal: 0,
+      },
+      toolCalls: [],
+    });
+
+    await runSimulation({
+      runId: "sim-runner-group-default-user-test",
+      persona: alice,
+      personas: [alice, bob],
+      personaSessions: [aliceSession.session, bobSession.session],
+      channelName: "Planning Channel",
+      totalTurns: 1,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+
+    expect(openSpy.mock.calls[0]?.[0]?.config?.defaultUser).toBeUndefined();
+  });
+
   it("passes normal prior Borg output to the next persona turn", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");

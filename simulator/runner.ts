@@ -574,7 +574,7 @@ export class SimulatorRunner {
       tracePath: this.options.tracePath,
       llmClient: this.options.llmClient,
       embeddingClient: this.options.embeddingClient,
-      defaultUser: primaryPersona.displayName,
+      defaultUser: personas.length === 1 ? primaryPersona.displayName : undefined,
     });
     const metrics = new MetricsCapture(this.options.metricsPath, {
       tracePath: transport.tracePath,
