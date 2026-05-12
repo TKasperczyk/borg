@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createOfflineTestHarness } from "../../offline/test-support.js";
 import { IdentityCasMismatchError, ProvenanceError } from "../../util/errors.js";
@@ -9,6 +9,7 @@ describe("SocialRepository", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await harness?.cleanup();
     harness = undefined;
   });
@@ -88,9 +89,15 @@ describe("SocialRepository", () => {
     ]);
   });
 
-  it("composes interaction aggregate updates and reconstructs sentiment from events", async () => {
+  it("uses atomic SQL for interaction increments and event-derived sentiment", async () => {
     harness = await createOfflineTestHarness();
     const entityId = harness.entityRepository.resolve("Sam");
+    const preparedSql: string[] = [];
+    const prepare = harness.db.prepare.bind(harness.db);
+    vi.spyOn(harness.db, "prepare").mockImplementation((statement: string) => {
+      preparedSql.push(statement);
+      return prepare(statement);
+    });
 
     const first = harness.socialRepository.recordInteractionWithId(entityId, {
       valence: 0.4,
@@ -127,6 +134,21 @@ describe("SocialRepository", () => {
         interaction_delta: 1,
       }),
     ]);
+
+    const normalizedSql = preparedSql.map((statement) => statement.replace(/\s+/g, " ").trim());
+    expect(
+      normalizedSql.some((statement) =>
+        statement.includes("interaction_count = interaction_count + 1"),
+      ),
+    ).toBe(true);
+    expect(
+      normalizedSql.some(
+        (statement) =>
+          statement.includes("FROM social_events") &&
+          statement.includes("valence IS NOT NULL") &&
+          statement.includes("LIMIT 50"),
+      ),
+    ).toBe(true);
   });
 
   it("rejects stale full-profile restores with CAS mismatch", async () => {
