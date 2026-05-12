@@ -10,11 +10,15 @@ export {
   CommitmentRepository,
   EntityRepository,
   type CommitmentRepositoryOptions,
+  type EntityAddInput,
+  type EntityListOptions,
   type EntityRepositoryOptions,
+  type EntityResolveOptions,
 } from "./repository.js";
 export {
   CLOSURE_PRESSURE_RELEVANCE,
   COMMITMENT_TYPES,
+  ENTITY_KINDS,
   NAME_PROVENANCES,
   closurePressureRelevanceSchema,
   commitmentIdSchema,
@@ -23,6 +27,7 @@ export {
   commitmentTypeSchema,
   directiveFamilySchema,
   entityIdSchema,
+  entityKindSchema,
   entityRecordSchema,
   nameProvenanceSchema,
   normalizeDirectiveFamily,
@@ -33,6 +38,7 @@ export {
   type CommitmentRecord,
   type CommitmentType,
   type ClosurePressureRelevance,
+  type EntityKind,
   type EntityRecord,
   type NameProvenance,
 } from "./types.js";

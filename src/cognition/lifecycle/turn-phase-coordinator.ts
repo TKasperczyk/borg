@@ -189,6 +189,7 @@ export class TurnPhaseCoordinator {
     const perception = perceptionResult.perception;
     for (const userIdentityName of perception.userIdentityNames ?? []) {
       this.options.entityRepository.resolve(userIdentityName, {
+        kind: "person",
         provenance: "user_declared",
       });
     }

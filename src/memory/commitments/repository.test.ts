@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
@@ -455,6 +459,99 @@ describe("commitment repository", () => {
         provenance: "config_default_user",
       });
       expect(entities.get(tom)?.name_provenance).toBe("user_declared");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates entity kind with targeted legacy backfills", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-commitments-"));
+    const dbPath = join(tempDir, "borg.db");
+
+    try {
+      const legacyDb = openDatabase(dbPath, {
+        migrations: commitmentMigrations.filter((migration) => migration.id <= 5),
+      });
+
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO entities (id, canonical_name, aliases, name_provenance, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `,
+        )
+        .run("ent_aaaaaaaaaaaaaaaa", "self", "[]", "unknown", 1);
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO entities (id, canonical_name, aliases, name_provenance, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `,
+        )
+        .run("ent_bbbbbbbbbbbbbbbb", "user", "[]", "unknown", 2);
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO entities (id, canonical_name, aliases, name_provenance, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `,
+        )
+        .run("ent_cccccccccccccccc", "Tomasz", "[]", "config_default_user", 3);
+      legacyDb
+        .prepare(
+          `
+            INSERT INTO entities (id, canonical_name, aliases, name_provenance, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `,
+        )
+        .run("ent_dddddddddddddddd", "Atlas", "[]", "unknown", 4);
+      legacyDb.close();
+
+      const db = openDatabase(dbPath, {
+        migrations: commitmentMigrations,
+      });
+      const entities = new EntityRepository({
+        db,
+        clock: new FixedClock(1_000),
+      });
+
+      try {
+        expect(entities.get("ent_aaaaaaaaaaaaaaaa" as never)?.kind).toBe("self");
+        expect(entities.get("ent_bbbbbbbbbbbbbbbb" as never)?.kind).toBe("person");
+        expect(entities.get("ent_cccccccccccccccc" as never)?.kind).toBe("person");
+        expect(entities.get("ent_dddddddddddddddd" as never)?.kind).toBeNull();
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("defaults new entities to person and lists by kind", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const entities = new EntityRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+
+    try {
+      const alice = entities.resolve("Alice");
+      const project = entities.resolve("Atlas", {
+        kind: "abstract",
+      });
+      const group = entities.add({
+        canonicalName: "planning-room",
+        kind: "group",
+      });
+
+      expect(entities.get(alice)?.kind).toBe("person");
+      expect(entities.get(project)?.kind).toBe("abstract");
+      expect(entities.get(group.id)?.kind).toBe("group");
+      expect(entities.list({ kind: "person" }).map((entity) => entity.id)).toEqual([alice]);
+      expect(entities.list({ kind: "group" }).map((entity) => entity.id)).toEqual([group.id]);
     } finally {
       db.close();
     }

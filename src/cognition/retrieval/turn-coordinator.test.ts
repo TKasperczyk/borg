@@ -311,6 +311,7 @@ describe("TurnRetrievalCoordinator", () => {
       id: audienceEntityId,
       canonical_name: "Alice",
       aliases: ["Al"],
+      kind: "person",
       created_at: 100,
     };
     const temporalCue = {

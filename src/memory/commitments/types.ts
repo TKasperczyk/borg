@@ -12,6 +12,7 @@ import {
 
 export const COMMITMENT_TYPES = ["promise", "boundary", "rule", "preference"] as const;
 export const CLOSURE_PRESSURE_RELEVANCE = ["no_closure", "neutral", "closure_seeking"] as const;
+export const ENTITY_KINDS = ["person", "group", "self", "abstract"] as const;
 export const NAME_PROVENANCES = [
   "user_declared",
   "user_confirmed",
@@ -73,6 +74,7 @@ export const streamEntryIdSchema = z
 
 export const commitmentTypeSchema = z.enum(COMMITMENT_TYPES);
 export const closurePressureRelevanceSchema = z.enum(CLOSURE_PRESSURE_RELEVANCE);
+export const entityKindSchema = z.enum(ENTITY_KINDS);
 export const nameProvenanceSchema = z.enum(NAME_PROVENANCES);
 
 export const directiveFamilySchema = z
@@ -85,6 +87,7 @@ export const entityRecordSchema = z.object({
   id: entityIdSchema,
   canonical_name: z.string().min(1),
   aliases: z.array(z.string().min(1)),
+  kind: entityKindSchema.nullable(),
   name_provenance: nameProvenanceSchema.optional(),
   created_at: z.number().finite(),
 });
@@ -124,6 +127,7 @@ export type CommitmentRecord = z.infer<typeof commitmentSchema>;
 export type CommitmentPatch = z.infer<typeof commitmentPatchSchema>;
 export type CommitmentType = z.infer<typeof commitmentTypeSchema>;
 export type ClosurePressureRelevance = z.infer<typeof closurePressureRelevanceSchema>;
+export type EntityKind = z.infer<typeof entityKindSchema>;
 export type NameProvenance = z.infer<typeof nameProvenanceSchema>;
 export type CommitmentProvenance = Provenance;
 

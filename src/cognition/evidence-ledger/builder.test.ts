@@ -418,6 +418,7 @@ describe("EvidenceLedgerBuilder", () => {
                 id: senderEntityId,
                 canonical_name: "Alice",
                 aliases: [],
+                kind: "person",
                 created_at: NOW_MS,
               }
             : null,

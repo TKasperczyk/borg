@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
 
 export const commitmentMigrations = [
   {
@@ -102,6 +103,39 @@ export const commitmentMigrations = [
         SET name_provenance = 'unknown'
         WHERE name_provenance IS NULL;
       `);
+    },
+  },
+  {
+    id: 6,
+    name: "entity_kind",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE entities
+          ADD COLUMN kind TEXT NULL CHECK (
+            kind IS NULL OR kind IN ('person', 'group', 'self', 'abstract')
+          );
+
+        UPDATE entities
+        SET kind = 'person'
+        WHERE kind IS NULL
+          AND lower(trim(canonical_name)) = 'user';
+
+        UPDATE entities
+        SET kind = 'self'
+        WHERE lower(trim(canonical_name)) = 'self';
+
+        CREATE INDEX IF NOT EXISTS entities_kind_idx
+          ON entities(kind);
+      `);
+
+      if (tableHasColumn(db, "entities", "name_provenance")) {
+        db.exec(`
+          UPDATE entities
+          SET kind = 'person'
+          WHERE kind IS NULL
+            AND name_provenance = 'config_default_user';
+        `);
+      }
     },
   },
 ] as const satisfies readonly Migration[];

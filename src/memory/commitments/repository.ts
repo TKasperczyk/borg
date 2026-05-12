@@ -23,6 +23,7 @@ import { runIdentityWrite } from "../self/shared/identity-events.js";
 import {
   commitmentPatchSchema,
   commitmentSchema,
+  entityKindSchema,
   entityRecordSchema,
   nameProvenanceSchema,
   normalizeDirectiveFamily,
@@ -31,6 +32,7 @@ import {
   type CommitmentPatch,
   type CommitmentRecord,
   type CommitmentType,
+  type EntityKind,
   type EntityRecord,
   type NameProvenance,
 } from "./types.js";
@@ -74,6 +76,7 @@ function mapEntityRow(row: Record<string, unknown>): EntityRecord {
     aliases: uniqueStrings(
       parseJsonArray<string>(String(row.aliases ?? "[]"), "aliases", COMMITMENT_JSON_ARRAY_CODEC),
     ),
+    kind: row.kind === null || row.kind === undefined ? null : entityKindSchema.parse(row.kind),
     name_provenance: nameProvenanceSchema.parse(row.name_provenance ?? "unknown"),
     created_at: Number(row.created_at),
   });
@@ -156,6 +159,24 @@ export type EntityRepositoryOptions = {
   clock?: Clock;
 };
 
+export type EntityListOptions = {
+  kind?: EntityKind;
+};
+
+export type EntityAddInput = {
+  id?: EntityId;
+  canonicalName: string;
+  aliases?: readonly string[];
+  kind?: EntityKind;
+  provenance?: NameProvenance;
+  createdAt?: number;
+};
+
+export type EntityResolveOptions = {
+  provenance?: NameProvenance;
+  kind?: EntityKind;
+};
+
 export class EntityRepository {
   private readonly clock: Clock;
 
@@ -167,28 +188,83 @@ export class EntityRepository {
     return this.options.db;
   }
 
-  private listEntities(): EntityRecord[] {
-    const rows = this.db
-      .prepare(
-        `
-          SELECT id, canonical_name, aliases, name_provenance, created_at
-          FROM entities
-          ORDER BY created_at ASC
-        `,
-      )
-      .all() as Record<string, unknown>[];
+  private listEntities(options: EntityListOptions = {}): EntityRecord[] {
+    const kindFilter = options.kind;
+    const rows =
+      kindFilter === undefined
+        ? (this.db
+            .prepare(
+              `
+                SELECT id, canonical_name, aliases, kind, name_provenance, created_at
+                FROM entities
+                ORDER BY created_at ASC
+              `,
+            )
+            .all() as Record<string, unknown>[])
+        : (this.db
+            .prepare(
+              `
+                SELECT id, canonical_name, aliases, kind, name_provenance, created_at
+                FROM entities
+                WHERE kind = ?
+                ORDER BY created_at ASC
+              `,
+            )
+            .all(kindFilter) as Record<string, unknown>[]);
 
     return rows.map((row) => mapEntityRow(row));
   }
 
-  findByName(name: string): EntityId | null {
+  list(options: EntityListOptions = {}): EntityRecord[] {
+    return this.listEntities(options);
+  }
+
+  add(input: EntityAddInput): EntityRecord {
+    const canonicalName = input.canonicalName.trim();
+    const provenance = input.provenance ?? "unknown";
+
+    if (canonicalName.length === 0) {
+      throw new CommitmentError("Entity name is required", {
+        code: "ENTITY_NAME_REQUIRED",
+      });
+    }
+
+    const entity = entityRecordSchema.parse({
+      id: input.id ?? createEntityId(),
+      canonical_name: canonicalName,
+      aliases: uniqueStrings(input.aliases ?? []),
+      kind: input.kind ?? "person",
+      name_provenance: provenance,
+      created_at: input.createdAt ?? this.clock.now(),
+    });
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO entities (id, canonical_name, aliases, kind, name_provenance, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        entity.id,
+        entity.canonical_name,
+        serializeJsonValue(entity.aliases),
+        entity.kind,
+        entity.name_provenance,
+        entity.created_at,
+      );
+
+    return entity;
+  }
+
+  findByName(name: string, options: EntityListOptions = {}): EntityId | null {
     const normalized = normalizeName(name);
 
     if (normalized.length === 0) {
       return null;
     }
 
-    for (const entity of this.listEntities()) {
+    for (const entity of this.listEntities(options)) {
       const names = [entity.canonical_name, ...entity.aliases].map((value) => normalizeName(value));
 
       if (names.includes(normalized)) {
@@ -199,7 +275,7 @@ export class EntityRepository {
     return null;
   }
 
-  resolve(name: string, options: { provenance?: NameProvenance } = {}): EntityId {
+  resolve(name: string, options: EntityResolveOptions = {}): EntityId {
     const normalized = normalizeName(name);
     const provenance = options.provenance ?? "unknown";
 
@@ -209,7 +285,10 @@ export class EntityRepository {
       });
     }
 
-    const existing = this.findByName(name);
+    const existing = this.findByName(
+      name,
+      options.kind === undefined ? {} : { kind: options.kind },
+    );
 
     if (existing !== null) {
       const current = this.get(existing);
@@ -224,28 +303,11 @@ export class EntityRepository {
       return existing;
     }
 
-    const entity = entityRecordSchema.parse({
-      id: createEntityId(),
-      canonical_name: name.trim(),
-      aliases: [],
-      name_provenance: provenance,
-      created_at: this.clock.now(),
+    const entity = this.add({
+      canonicalName: name,
+      kind: options.kind,
+      provenance,
     });
-
-    this.db
-      .prepare(
-        `
-          INSERT INTO entities (id, canonical_name, aliases, name_provenance, created_at)
-          VALUES (?, ?, ?, ?, ?)
-        `,
-      )
-      .run(
-        entity.id,
-        entity.canonical_name,
-        serializeJsonValue(entity.aliases),
-        entity.name_provenance,
-        entity.created_at,
-      );
 
     return entity.id;
   }
