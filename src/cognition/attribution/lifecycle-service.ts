@@ -24,6 +24,7 @@ export type AttributionLifecycleServiceOptions = {
 export type AttributionLifecycleInput = {
   isUserTurn: boolean;
   audienceEntityId: EntityId | null;
+  socialEntityId?: EntityId | null;
   perception: PerceptionResult;
   pendingSocialAttribution: PendingSocialAttribution | null;
   pendingTraitAttribution: PendingTraitAttribution | null;
@@ -64,7 +65,7 @@ export class AttributionLifecycleService {
       const nowMs = this.options.clock.now();
       const expired =
         nowMs - pendingSocialAttribution.turn_completed_ts > PENDING_SOCIAL_ATTRIBUTION_TTL_MS;
-      const audienceEntityId = input.audienceEntityId;
+      const audienceEntityId = input.socialEntityId ?? input.audienceEntityId;
 
       if (
         expired ||
@@ -78,6 +79,7 @@ export class AttributionLifecycleService {
             reason: expired ? "expired" : "audience_mismatch",
             pending_entity_id: pendingSocialAttribution.entity_id,
             current_audience_entity_id: input.audienceEntityId,
+            current_social_entity_id: audienceEntityId,
             turn_completed_ts: pendingSocialAttribution.turn_completed_ts,
             agent_response_summary: pendingSocialAttribution.agent_response_summary,
           },

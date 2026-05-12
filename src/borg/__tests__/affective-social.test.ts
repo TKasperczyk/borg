@@ -421,6 +421,75 @@ describe("Borg", () => {
     }
   });
 
+  it("records group-channel social interactions on the current speaker", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const clock = new ManualClock(1_000);
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: false,
+        },
+        affective: {
+          useLlmFallback: false,
+          incomingMoodWeight: 0.3,
+          moodHalfLifeHours: 24,
+          moodHistoryRetentionDays: 90,
+        },
+        embedding: {
+          baseUrl: "http://localhost:1234/v1",
+          apiKey: "test",
+          model: "fake-embed",
+          dims: 4,
+        },
+        anthropic: {
+          auth: "api-key",
+          apiKey: "test",
+          models: {
+            cognition: "sonnet",
+            background: "haiku",
+            extraction: "haiku",
+          },
+        },
+      }),
+      clock,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createEmitAnswerResponse("I will keep Alice's plan separate.", {
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
+          createEmptyReflectionResponse(),
+        ],
+      }),
+      liveExtraction: false,
+    });
+
+    try {
+      borg.entities.resolve("Planning Room", {
+        kind: "group",
+      });
+      const alice = borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+
+      await borg.turn({
+        userMessage: "I can take the flights part.",
+        audience: "Planning Room",
+        senderEntityId: alice,
+      });
+
+      expect(borg.social.getProfile("Alice")?.interaction_count).toBe(1);
+      expect(borg.social.getProfile("Planning Room")).toBeNull();
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("keeps pending social attribution across an autonomous wake until the next user reply", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

@@ -1,4 +1,5 @@
 import type { EntityRepository } from "../memory/commitments/index.js";
+import type { SocialProfile, SocialRepository } from "../memory/social/index.js";
 import type { StreamEntry } from "../stream/index.js";
 import type { EntityId } from "../util/ids.js";
 import { resolveSpeakerDisplayName } from "./speaker-tags.js";
@@ -11,6 +12,10 @@ export type ActiveParticipant = {
   entityId: EntityId;
   displayName: string | null;
   role: ActiveParticipantRole;
+};
+
+export type ParticipantProfileContext = ActiveParticipant & {
+  profile: SocialProfile | null;
 };
 
 export type ResolveActiveParticipantsInput = {
@@ -91,5 +96,15 @@ export function resolveActiveParticipants(
     entityId: participant.entityId,
     displayName: resolveSpeakerDisplayName(input.entityRepository, participant.entityId),
     role: participant.role,
+  }));
+}
+
+export function resolveParticipantProfiles(
+  participants: readonly ActiveParticipant[],
+  socialRepository: Pick<SocialRepository, "getProfile">,
+): ParticipantProfileContext[] {
+  return participants.map((participant) => ({
+    ...participant,
+    profile: socialRepository.getProfile(participant.entityId),
   }));
 }

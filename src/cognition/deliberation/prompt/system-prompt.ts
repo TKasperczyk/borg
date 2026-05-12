@@ -21,7 +21,7 @@ import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { ReviewQueueItem } from "../../../memory/semantic/index.js";
 import type { WorkingMemory } from "../../../memory/working/index.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
-import type { ActiveParticipant } from "../../participants.js";
+import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import {
   CURRENT_USER_MESSAGE_REMINDER,
   DEFAULT_HOST_CAPABILITIES_SECTION,
@@ -120,7 +120,7 @@ function buildBaseSystemPromptSections(
     },
     {
       tag: "borg_audience_profile",
-      content: summarizeAudienceProfile(context.audienceProfile),
+      content: summarizeParticipantProfiles(context.participantProfiles, context.audienceProfile),
     },
     {
       tag: "borg_retrieved_evidence",
@@ -537,7 +537,9 @@ function relationalSlotSubjectLabel(
   slot: RelationalSlot,
   participants: readonly ActiveParticipant[] | undefined,
 ): string {
-  const participant = participants?.find((candidate) => candidate.entityId === slot.subject_entity_id);
+  const participant = participants?.find(
+    (candidate) => candidate.entityId === slot.subject_entity_id,
+  );
 
   return participant?.displayName ?? participant?.entityId ?? slot.subject_entity_id;
 }
@@ -733,7 +735,7 @@ function summarizeRecentGrowth(markers: readonly GrowthMarker[] | undefined): st
   return lines.length === 1 ? null : lines.join("\n");
 }
 
-function summarizeAudienceProfile(profile: SocialProfile | null | undefined): string | null {
+function summarizeSingleAudienceProfile(profile: SocialProfile | null | undefined): string | null {
   if (profile === null || profile === undefined) {
     return null;
   }
@@ -759,6 +761,50 @@ function summarizeAudienceProfile(profile: SocialProfile | null | undefined): st
   }
 
   return parts.join(" | ");
+}
+
+function summarizeParticipantProfileLine(participant: ParticipantProfileContext): string {
+  const label = participant.displayName ?? participant.entityId;
+  const role = participant.role;
+  const profile = participant.profile;
+
+  if (profile === null) {
+    return `- ${label} (${role}): no stored social profile`;
+  }
+
+  const parts: string[] = [
+    `trust=${profile.trust.toFixed(2)}`,
+    `attachment=${profile.attachment.toFixed(2)}`,
+    `interactions=${profile.interaction_count}`,
+  ];
+
+  if (profile.last_interaction_at !== null) {
+    parts.push(`last=${new Date(profile.last_interaction_at).toISOString()}`);
+  }
+
+  if (profile.communication_style !== null && profile.communication_style.trim().length > 0) {
+    parts.push(`style=${profile.communication_style.trim()}`);
+  }
+
+  return `- ${label} (${role}): ${parts.join(" | ")}`;
+}
+
+function summarizeParticipantProfiles(
+  participants: readonly ParticipantProfileContext[] | undefined,
+  audienceProfile: SocialProfile | null | undefined,
+): string | null {
+  if (participants === undefined || participants.length === 0) {
+    return summarizeSingleAudienceProfile(audienceProfile);
+  }
+
+  if (participants.length === 1) {
+    return summarizeSingleAudienceProfile(participants[0]?.profile ?? audienceProfile);
+  }
+
+  return [
+    "Participants:",
+    ...participants.map((participant) => summarizeParticipantProfileLine(participant)),
+  ].join("\n");
 }
 
 function compactPromptText(text: string, maxLength: number): string {

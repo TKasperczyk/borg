@@ -53,6 +53,7 @@ export type RunTurnReflectionInput = {
   selectedSkill: SkillSelectionResult | null;
   proceduralContext: ProceduralContext | null;
   audienceEntityId: EntityId | null;
+  socialInteractionEntityId: EntityId | null;
   pendingSocialAttribution: PendingSocialAttribution | null;
   suppressionSet: SuppressionSet;
   persistedUserEntryId?: StreamEntryId;
@@ -92,10 +93,12 @@ export class TurnReflectionCoordinator {
     }
 
     let interactionRecord: ReturnType<SocialRepository["recordInteractionWithId"]> | null = null;
-    if (input.audienceEntityId !== null) {
+    if (input.socialInteractionEntityId !== null) {
       try {
+        // The lifecycle passes the current speaker for group channels, so
+        // participant sentiment does not collapse onto the abstract group.
         interactionRecord = this.options.socialRepository.recordInteractionWithId(
-          input.audienceEntityId,
+          input.socialInteractionEntityId,
           {
             now: this.options.clock.now(),
             provenance: {
@@ -151,11 +154,11 @@ export class TurnReflectionCoordinator {
 
     const reflectedWorkingMemory = reflection.workingMemory;
     const nextPendingSocialAttribution =
-      input.audienceEntityId !== null &&
+      input.socialInteractionEntityId !== null &&
       interactionRecord !== null &&
       input.pendingSocialAttribution === null
         ? {
-            entity_id: input.audienceEntityId,
+            entity_id: input.socialInteractionEntityId,
             interaction_id: interactionRecord.interaction_id,
             agent_response_summary:
               input.actionResult.response.trim().length === 0

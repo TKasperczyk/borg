@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
+import type { SocialProfile } from "../../../memory/social/index.js";
 import { deriveProceduralContextKey } from "../../../memory/procedural/index.js";
 import type {
   SkillContextStatsRecord,
@@ -159,6 +160,27 @@ function makeMoodHistoryEntry(
     provenance: {
       kind: "system",
     },
+  };
+}
+
+function makeSocialProfile(
+  entityId: ReturnType<typeof createEntityId>,
+  overrides: Partial<SocialProfile> = {},
+): SocialProfile {
+  return {
+    entity_id: entityId,
+    trust: 0.75,
+    attachment: 0.25,
+    communication_style: null,
+    shared_history_summary: null,
+    last_interaction_at: NOW_MS - 60_000,
+    interaction_count: 3,
+    commitment_count: 0,
+    sentiment_history: [],
+    notes: null,
+    created_at: NOW_MS - 120_000,
+    updated_at: NOW_MS - 60_000,
+    ...overrides,
   };
 }
 
@@ -638,6 +660,71 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(block).toContain("Bob: dog.name: QUARANTINED");
     expect(block).toContain("Alice: partner.name: CONTESTED");
+  });
+
+  it("renders multiple participant social profiles", () => {
+    const alice = createEntityId();
+    const bob = createEntityId();
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        participantProfiles: [
+          {
+            entityId: bob,
+            displayName: "Bob",
+            role: "speaker",
+            profile: makeSocialProfile(bob, {
+              trust: 0.8,
+              attachment: 0.1,
+              interaction_count: 4,
+            }),
+          },
+          {
+            entityId: alice,
+            displayName: "Alice",
+            role: "participant",
+            profile: makeSocialProfile(alice, {
+              trust: 0.6,
+              attachment: 0.3,
+              interaction_count: 2,
+              communication_style: "brief",
+            }),
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_audience_profile");
+
+    expect(block).toContain("Participants:");
+    expect(block).toContain("Bob (speaker): trust=0.80");
+    expect(block).toContain("Alice (participant): trust=0.60");
+    expect(block).toContain("style=brief");
+    expect(block).not.toContain("Talking to:");
+  });
+
+  it("keeps single-user social profile wording", () => {
+    const alice = createEntityId();
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        participantProfiles: [
+          {
+            entityId: alice,
+            displayName: "Alice",
+            role: "audience",
+            profile: makeSocialProfile(alice, {
+              trust: 0.7,
+              attachment: 0.2,
+              interaction_count: 1,
+            }),
+          },
+        ],
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_audience_profile");
+
+    expect(block).toContain("Talking to: trust=0.70");
+    expect(block).not.toContain("Participants:");
   });
 
   it("renders the selected skill first with up to two evaluated alternatives", () => {

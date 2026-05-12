@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EntityRecord } from "../memory/commitments/index.js";
+import type { SocialProfile } from "../memory/social/index.js";
 import type { StreamEntry } from "../stream/index.js";
 import {
   DEFAULT_SESSION_ID,
@@ -8,7 +9,7 @@ import {
   createStreamEntryId,
   type EntityId,
 } from "../util/ids.js";
-import { resolveActiveParticipants } from "./participants.js";
+import { resolveActiveParticipants, resolveParticipantProfiles } from "./participants.js";
 
 const BASE_TS = 1_700_000_000_000;
 
@@ -42,6 +43,23 @@ function userEntry(senderEntityId: EntityId | null, offset: number): StreamEntry
     reply_target_entity_id: null,
     session_id: DEFAULT_SESSION_ID,
     compressed: false,
+  };
+}
+
+function profile(entityId: EntityId): SocialProfile {
+  return {
+    entity_id: entityId,
+    trust: 0.7,
+    attachment: 0.2,
+    communication_style: null,
+    shared_history_summary: null,
+    last_interaction_at: BASE_TS,
+    interaction_count: 3,
+    commitment_count: 0,
+    sentiment_history: [],
+    notes: null,
+    created_at: BASE_TS,
+    updated_at: BASE_TS,
   };
 }
 
@@ -113,5 +131,45 @@ describe("resolveActiveParticipants", () => {
     });
 
     expect(participants).toEqual([]);
+  });
+
+  it("loads social profiles for each active participant", () => {
+    const aliceId = createEntityId();
+    const bobId = createEntityId();
+    const aliceProfile = profile(aliceId);
+    const profiles = new Map<EntityId, SocialProfile>([[aliceId, aliceProfile]]);
+
+    const participantProfiles = resolveParticipantProfiles(
+      [
+        {
+          entityId: aliceId,
+          displayName: "Alice",
+          role: "speaker",
+        },
+        {
+          entityId: bobId,
+          displayName: "Bob",
+          role: "participant",
+        },
+      ],
+      {
+        getProfile: (entityId) => profiles.get(entityId) ?? null,
+      },
+    );
+
+    expect(participantProfiles).toEqual([
+      {
+        entityId: aliceId,
+        displayName: "Alice",
+        role: "speaker",
+        profile: aliceProfile,
+      },
+      {
+        entityId: bobId,
+        displayName: "Bob",
+        role: "participant",
+        profile: null,
+      },
+    ]);
   });
 });

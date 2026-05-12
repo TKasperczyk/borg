@@ -35,7 +35,12 @@ import {
 } from "../frame-anomaly/index.js";
 import type { TurnGoalPromotionService } from "../goals/turn-goal-promotion-service.js";
 import type { PerceptionGateway } from "../perception/gateway.js";
-import { resolveActiveParticipants, type ActiveParticipant } from "../participants.js";
+import {
+  resolveActiveParticipants,
+  resolveParticipantProfiles,
+  type ActiveParticipant,
+  type ParticipantProfileContext,
+} from "../participants.js";
 import type { TurnOpeningPersistence } from "../persistence/turn-opening.js";
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnReflectionCoordinator } from "../reflection/turn-reflection-coordinator.js";
@@ -100,6 +105,24 @@ function listConstrainedRelationalSlotsForParticipants(
       }),
     )
     .slice(0, DELIBERATION_RELATIONAL_SLOT_LIMIT);
+}
+
+function audienceProfileForParticipants(
+  participantProfiles: readonly ParticipantProfileContext[],
+  audienceEntityId: EntityId | null,
+) {
+  if (participantProfiles.length === 1) {
+    return participantProfiles[0]?.profile ?? null;
+  }
+
+  if (audienceEntityId === null) {
+    return null;
+  }
+
+  return (
+    participantProfiles.find((participant) => participant.entityId === audienceEntityId)?.profile ??
+    null
+  );
 }
 
 export type TurnPhaseInput = {
@@ -204,6 +227,10 @@ export class TurnPhaseCoordinator {
       audienceEntityId === null ? null : this.options.entityRepository.get(audienceEntityId);
     let audienceProfile =
       audienceEntityId === null ? null : this.options.socialRepository.getProfile(audienceEntityId);
+    // In a group channel the social exchange belongs to the current speaker,
+    // not to the abstract channel entity. Updating the group too is deferred.
+    const socialInteractionEntityId =
+      audienceEntity?.kind === "group" ? (turnInput.senderEntityId ?? null) : audienceEntityId;
     const perceptionResult = await turnPerception.perceive({
       sessionId,
       isSelfAudience,
@@ -228,6 +255,7 @@ export class TurnPhaseCoordinator {
     const attributionResult = await this.options.attributionLifecycleService.settle({
       isUserTurn,
       audienceEntityId,
+      socialEntityId: socialInteractionEntityId,
       perception,
       pendingSocialAttribution: workingMemory.pending_social_attribution,
       pendingTraitAttribution: workingMemory.pending_trait_attribution,
@@ -263,6 +291,13 @@ export class TurnPhaseCoordinator {
       streamEntries: await loadSessionStreamEntries(this.options.createStreamReader(sessionId)),
       entityRepository: this.options.entityRepository,
     });
+    const participantProfiles = resolveParticipantProfiles(
+      activeParticipants,
+      this.options.socialRepository,
+    );
+    if (activeParticipants.length > 0) {
+      audienceProfile = audienceProfileForParticipants(participantProfiles, audienceEntityId);
+    }
 
     const frameAnomalyClassification = await this.classifyFrameAnomaly({
       llmClient,
@@ -536,6 +571,7 @@ export class TurnPhaseCoordinator {
         pendingCorrectionsContext: pendingCorrections,
         relationalSlots,
         activeParticipants,
+        participantProfiles,
         selectedSkill,
         entityRepository: this.options.entityRepository,
         workingMemory,
@@ -709,6 +745,7 @@ export class TurnPhaseCoordinator {
       selectedSkill,
       proceduralContext,
       audienceEntityId,
+      socialInteractionEntityId,
       pendingSocialAttribution,
       suppressionSet,
       persistedUserEntryId,
