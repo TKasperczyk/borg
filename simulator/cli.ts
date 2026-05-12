@@ -9,6 +9,7 @@ import { cac } from "cac";
 import { loadCredentials } from "../src/auth/claude-oauth.js";
 
 import { tomPersona } from "./personas/tom.js";
+import { findSimulatorScenario, scenarioPersonas } from "./scenarios/index.js";
 import {
   formatSimulatorReport,
   PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE,
@@ -18,6 +19,8 @@ import type { Persona } from "./types.js";
 
 export type ParsedOptions = {
   persona?: string;
+  personas?: string;
+  scenario?: string;
   turns?: string | number;
   checkEvery?: string | number;
   maintenanceEvery?: string | number;
@@ -38,7 +41,10 @@ type RawParsedOptions = ParsedOptions & {
   payloads?: boolean;
 };
 
-const PERSONAS = new Map<string, Persona>([[tomPersona.key, tomPersona]]);
+const PERSONAS = new Map<string, Persona>([
+  [tomPersona.key, tomPersona],
+  ...scenarioPersonas().map((persona) => [persona.key, persona] as const),
+]);
 
 function hasAnthropicCredentials(env: NodeJS.ProcessEnv): boolean {
   if ((env.ANTHROPIC_API_KEY?.trim() ?? "").length > 0) {
@@ -97,11 +103,58 @@ function selectPersona(key: string | undefined): Persona {
   return persona;
 }
 
+function parsePersonaKeys(value: string): string[] {
+  return value
+    .split(",")
+    .map((key) => key.trim())
+    .filter((key) => key.length > 0);
+}
+
+function selectPersonas(options: ParsedOptions): {
+  personas: readonly Persona[];
+  channelName?: string;
+} {
+  if (options.scenario !== undefined && options.scenario.trim().length > 0) {
+    if (options.personas !== undefined && options.personas.trim().length > 0) {
+      throw new Error("--scenario and --personas cannot be used together");
+    }
+
+    const scenario = findSimulatorScenario(options.scenario.trim());
+
+    if (scenario === undefined) {
+      throw new Error(`Unknown scenario: ${options.scenario}`);
+    }
+
+    return {
+      personas: scenario.personas,
+      channelName: scenario.channelName,
+    };
+  }
+
+  if (options.personas !== undefined && options.personas.trim().length > 0) {
+    const keys = parsePersonaKeys(options.personas);
+
+    if (keys.length < 2 || keys.length > 4) {
+      throw new Error("--personas must list 2 to 4 persona keys");
+    }
+
+    return {
+      personas: keys.map((key) => selectPersona(key)),
+    };
+  }
+
+  return {
+    personas: [selectPersona(options.persona)],
+  };
+}
+
 function createSimulatorCli() {
   const cli = cac("simulate");
 
   cli
     .option("--persona <key>", "Persona key to run", { default: "tom" })
+    .option("--personas <keys>", "Comma-separated persona keys for a 2-4 person channel")
+    .option("--scenario <key>", "Built-in simulator scenario key")
     .option("--turns <n>", "Number of continuous turns", { default: 1000 })
     .option("--check-every <n>", "Run overseer every N turns", { default: 250 })
     .option("--maintenance-every <n>", "Run light maintenance every N turns", { default: 10 })
@@ -167,6 +220,8 @@ async function main(): Promise<void> {
       : metricsOut;
   const traceOut = options.traceOut?.trim();
   const tracePath = traceOut === undefined || traceOut.length === 0 ? undefined : traceOut;
+  const selection = selectPersonas(options);
+  const primaryPersona = selection.personas[0] ?? tomPersona;
 
   if (tracePath !== undefined) {
     mkdirSync(dirname(tracePath), { recursive: true });
@@ -174,7 +229,9 @@ async function main(): Promise<void> {
 
   const report = await runSimulation({
     runId,
-    persona: selectPersona(options.persona),
+    persona: primaryPersona,
+    ...(selection.personas.length <= 1 ? {} : { personas: selection.personas }),
+    ...(selection.channelName === undefined ? {} : { channelName: selection.channelName }),
     totalTurns: parsePositiveInteger(options.turns, "--turns", 1000),
     checkEvery: parsePositiveInteger(options.checkEvery, "--check-every", 250),
     maintenanceEvery: parsePositiveInteger(options.maintenanceEvery, "--maintenance-every", 10),

@@ -9,6 +9,7 @@ import {
   DEFAULT_CONFIG,
   type GenerationSuppressionReason,
   type BorgOpenOptions,
+  type EntityId,
   type LLMClient,
   type MaintenanceCadence,
   type ReviewQueueItem,
@@ -49,6 +50,9 @@ const MAX_SESSIONS_DEFAULT = 12;
 export type SimulatorRunnerOptions = {
   runId: string;
   persona: Persona;
+  personas?: readonly Persona[];
+  channelName?: string;
+  personaScheduler?: PersonaScheduler;
   totalTurns: number;
   metricsPath: string;
   checkEvery: number;
@@ -66,10 +70,21 @@ export type SimulatorRunnerOptions = {
   embeddingClient?: BorgOpenOptions["embeddingClient"];
   personaRoleBleedLlmClient?: LLMClient;
   personaSession?: PersonaSession;
+  personaSessions?: readonly PersonaSession[];
   overseerRunner?: (options: RunOverseerOptions) => Promise<OverseerVerdict>;
 };
 
+export type PersonaSchedulerInput = {
+  turn: number;
+  personas: readonly Persona[];
+};
+
+export type PersonaScheduler = {
+  selectSpeakerIndex(input: PersonaSchedulerInput): number;
+};
+
 const DEFAULT_MAINTENANCE_EVERY = 10;
+const MAX_PERSONAS = 4;
 const PERSONA_ROLE_BLEED_EVENT = "persona_role_bleed";
 const PERSONA_ROLE_BLEED_MAX_ATTEMPTS = 2;
 const PERSONA_ROLE_BLEED_REJECTED_PREVIEW_CHARS = 500;
@@ -88,6 +103,12 @@ export const PIPELINE_C_DOUBLE_PRIME_BORG_CONFIG_OVERRIDES = {
     },
   },
 } satisfies NonNullable<Scenario["borgConfigOverrides"]>;
+
+export const ROUND_ROBIN_PERSONA_SCHEDULER: PersonaScheduler = {
+  selectSpeakerIndex(input) {
+    return (input.turn - 1) % input.personas.length;
+  },
+};
 
 const SHADOW_POST_GEN_GUARDS_BORG_CONFIG_OVERRIDES = {
   generation: {
@@ -112,9 +133,12 @@ function isSessionEndingSuppression(reason: GenerationSuppressionReason | undefi
 }
 
 export function createSimulatorScenario(
-  persona: Persona,
+  personaOrPersonas: Persona | readonly Persona[],
   totalTurns: number,
-  options: Pick<SimulatorRunnerOptions, "shadowPostGenGuards" | "pipelineCDoublePrime"> = {},
+  options: Pick<
+    SimulatorRunnerOptions,
+    "shadowPostGenGuards" | "pipelineCDoublePrime" | "channelName"
+  > = {},
 ): Scenario {
   if (options.pipelineCDoublePrime === true && options.shadowPostGenGuards === true) {
     throw new Error(PIPELINE_C_DOUBLE_PRIME_INCOMPATIBLE_SHADOW_MESSAGE);
@@ -127,13 +151,79 @@ export function createSimulatorScenario(
         ? SHADOW_POST_GEN_GUARDS_BORG_CONFIG_OVERRIDES
         : undefined;
 
+  const personas = Array.isArray(personaOrPersonas) ? personaOrPersonas : [personaOrPersonas];
+  const personaKeys = personas.map((persona) => persona.key).join("-");
+  const personaNames = personas.map((persona) => persona.displayName).join(", ");
+  const channelSuffix =
+    personas.length === 1 ? "" : ` in ${options.channelName ?? "a group channel"}`;
+
   return {
-    name: `simulator-${persona.key}`,
-    description: `Long-horizon simulator run for ${persona.displayName}.`,
-    systemPrompt: persona.systemPrompt,
+    name: `simulator-${personaKeys}`,
+    description: `Long-horizon simulator run for ${personaNames}${channelSuffix}.`,
+    systemPrompt: personas.map((persona) => persona.systemPrompt).join("\n\n"),
     maxTurns: totalTurns,
     ...(borgConfigOverrides === undefined ? {} : { borgConfigOverrides }),
   };
+}
+
+function resolveActivePersonas(options: SimulatorRunnerOptions): readonly Persona[] {
+  const personas = options.personas ?? [options.persona];
+
+  if (personas.length === 0) {
+    throw new Error("at least one persona is required");
+  }
+
+  if (personas.length > MAX_PERSONAS) {
+    throw new Error(`simulator supports at most ${MAX_PERSONAS} personas`);
+  }
+
+  if (options.personas !== undefined && personas.length < 2) {
+    throw new Error("--personas requires at least two personas");
+  }
+
+  if (personas.length > 1 && options.personaSession !== undefined) {
+    throw new Error("personaSession is only valid for single-persona runs; use personaSessions");
+  }
+
+  return personas;
+}
+
+function resolveAudienceName(
+  options: SimulatorRunnerOptions,
+  personas: readonly Persona[],
+): string {
+  if (personas.length === 1) {
+    return personas[0]?.displayName ?? options.persona.displayName;
+  }
+
+  return (
+    options.channelName ?? `${personas.map((persona) => persona.displayName).join(", ")} Channel`
+  );
+}
+
+function createPersonaSessions(
+  options: SimulatorRunnerOptions,
+  personas: readonly Persona[],
+): PersonaSession[] {
+  return personas.map(
+    (persona, index) =>
+      options.personaSessions?.[index] ??
+      (personas.length === 1 && index === 0 && options.personaSession !== undefined
+        ? options.personaSession
+        : new PersonaSession({
+            persona,
+            mock: options.mock,
+            env: options.env,
+          })),
+  );
+}
+
+function normalizeSpeakerIndex(index: number, personas: readonly Persona[]): number {
+  if (!Number.isInteger(index) || index < 0 || index >= personas.length) {
+    throw new Error(`persona scheduler returned invalid speaker index ${index}`);
+  }
+
+  return index;
 }
 
 function priorBorgTurnRetry(priorTurn: PriorBorgTurn): PriorBorgTurn {
@@ -372,9 +462,14 @@ export class SimulatorRunner {
       throw new Error("maintenanceEvery must be a positive integer");
     }
 
-    const scenario = createSimulatorScenario(this.options.persona, this.options.totalTurns, {
+    const personas = resolveActivePersonas(this.options);
+    const audienceName = resolveAudienceName(this.options, personas);
+    const primaryPersona = personas[0] ?? this.options.persona;
+    const scheduler = this.options.personaScheduler ?? ROUND_ROBIN_PERSONA_SCHEDULER;
+    const scenario = createSimulatorScenario(personas, this.options.totalTurns, {
       shadowPostGenGuards: this.options.shadowPostGenGuards,
       pipelineCDoublePrime: this.options.pipelineCDoublePrime,
+      channelName: audienceName,
     });
 
     if (this.options.pipelineCDoublePrime === true) {
@@ -397,18 +492,12 @@ export class SimulatorRunner {
       tracePath: this.options.tracePath,
       llmClient: this.options.llmClient,
       embeddingClient: this.options.embeddingClient,
-      defaultUser: this.options.persona.displayName,
+      defaultUser: primaryPersona.displayName,
     });
     const metrics = new MetricsCapture(this.options.metricsPath, {
       tracePath: transport.tracePath,
     });
-    const persona =
-      this.options.personaSession ??
-      new PersonaSession({
-        persona: this.options.persona,
-        mock: this.options.mock,
-        env: this.options.env,
-      });
+    const personaSessions = createPersonaSessions(this.options, personas);
     const personaRoleBleedLlmClient =
       this.options.personaRoleBleedLlmClient ??
       (this.options.mock === true ? undefined : new AnthropicLLMClient({ env: this.options.env }));
@@ -430,6 +519,16 @@ export class SimulatorRunner {
 
     try {
       await transport.open();
+      const audienceEntityId = transport.resolveEntity(audienceName, {
+        kind: personas.length === 1 ? "person" : "group",
+        provenance: "transport_audience_label",
+      });
+      const personaEntityIds = personas.map((persona) =>
+        transport.resolveEntity(persona.displayName, {
+          kind: "person",
+          provenance: "transport_audience_label",
+        }),
+      );
 
       // Long-horizon runs amortize cost across hours, so a single failing
       // turn (LLM rate-limit, transient API error, schema validation crash
@@ -445,6 +544,7 @@ export class SimulatorRunner {
 
       const attemptTurn = async (
         draft: PersonaTurnDraft,
+        speakerEntityId: EntityId,
       ): Promise<{
         turnId: string;
         response: string;
@@ -452,8 +552,9 @@ export class SimulatorRunner {
         suppressionReason?: GenerationSuppressionReason;
       }> => {
         const result = await transport.chat(draft.message, {
-          audience: this.options.persona.displayName,
+          audience: audienceName,
           sessionId: currentSessionId,
+          senderEntityId: speakerEntityId,
         });
         const suppressionReason =
           result.emission?.kind === "suppressed" ? result.emission.reason : undefined;
@@ -475,7 +576,14 @@ export class SimulatorRunner {
         } | null = null;
         let attemptError: unknown = null;
         let attemptsMade = 0;
-        let draft = await persona.prepareNextTurn(priorBorgTurn);
+        const speakerIndex = normalizeSpeakerIndex(
+          scheduler.selectSpeakerIndex({ turn, personas }),
+          personas,
+        );
+        const speaker = personas[speakerIndex]!;
+        const personaSession = personaSessions[speakerIndex]!;
+        const speakerEntityId = personaEntityIds[speakerIndex] ?? audienceEntityId;
+        let draft = await personaSession.prepareNextTurn(priorBorgTurn);
         let roleBleedAborted = false;
 
         for (
@@ -487,7 +595,7 @@ export class SimulatorRunner {
             message: draft.message,
             llmClient: personaRoleBleedLlmClient,
             model: DEFAULT_CONFIG.anthropic.models.recallExpansion,
-            personaName: this.options.persona.displayName,
+            personaName: speaker.displayName,
           });
 
           if (!bleedDetection.flagged) {
@@ -505,7 +613,7 @@ export class SimulatorRunner {
             attempt: bleedAttempt,
             action: finalBleedAttempt ? "aborted" : "regenerated",
           });
-          persona.rollback(draft);
+          personaSession.rollback(draft);
 
           if (finalBleedAttempt) {
             const detail = `${PERSONA_ROLE_BLEED_EVENT}: ${
@@ -534,7 +642,7 @@ export class SimulatorRunner {
             break;
           }
 
-          draft = await persona.prepareNextTurn(priorBorgTurnRetry(priorBorgTurn));
+          draft = await personaSession.prepareNextTurn(priorBorgTurnRetry(priorBorgTurn));
         }
 
         if (roleBleedAborted) {
@@ -545,7 +653,7 @@ export class SimulatorRunner {
           attemptsMade = attempt + 1;
           const traceBeforeCount = readTraceEvents(transport.tracePath).length;
           try {
-            const result = await attemptTurn(draft);
+            const result = await attemptTurn(draft, speakerEntityId);
             success = {
               ...result,
               transportChatAttempts: attemptsMade,
@@ -579,7 +687,7 @@ export class SimulatorRunner {
 
         if (success === null) {
           const detail = formatErrorChain(attemptError);
-          persona.rollback(draft);
+          personaSession.rollback(draft);
           turnFailures.push({ turn, error: detail, attempts: attemptsMade });
           await metrics.captureAborted(transport.getBorg(), turn, {
             sessionId: currentSessionId,
@@ -599,7 +707,7 @@ export class SimulatorRunner {
           continue;
         }
 
-        persona.commit(draft, success.response);
+        personaSession.commit(draft, success.response);
         consecutiveFailures = 0;
 
         const overseerDue =
@@ -683,7 +791,9 @@ export class SimulatorRunner {
           const gap =
             SESSION_GAP_DESCRIPTIONS[sessions.length % SESSION_GAP_DESCRIPTIONS.length] ??
             SESSION_GAP_DESCRIPTIONS[0]!;
-          persona.startNewSession();
+          for (const session of personaSessions) {
+            session.startNewSession();
+          }
           priorBorgTurn = { kind: "new_session", gapContext: gap };
           currentSessionStartTurn = turn + 1;
           currentSessionId = createSessionId();
@@ -712,7 +822,9 @@ export class SimulatorRunner {
 
       return {
         runId: this.options.runId,
-        persona: this.options.persona.key,
+        persona: primaryPersona.key,
+        personas: personas.map((persona) => persona.key),
+        audience: audienceName,
         totalTurns: this.options.totalTurns,
         resultState,
         sessions,
@@ -734,10 +846,15 @@ export async function runSimulation(options: SimulatorRunnerOptions): Promise<Si
 }
 
 export function formatSimulatorReport(report: SimulatorRunReport): string {
+  const participantLine =
+    report.personas.length <= 1
+      ? `Persona: ${report.persona}`
+      : `Personas: ${report.personas.join(", ")}`;
   const lines = [
     `# Borg Simulator Run ${report.runId}`,
     "",
-    `Persona: ${report.persona}`,
+    participantLine,
+    `Audience: ${report.audience}`,
     `Turns: ${report.totalTurns}`,
     `Result: ${report.resultState}`,
     `Sessions: ${report.sessions.length}`,

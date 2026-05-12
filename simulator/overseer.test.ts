@@ -66,6 +66,7 @@ function streamEntry(input: {
     session_id: input.sessionId ?? DEFAULT_SESSION_ID,
     compressed: false,
     sender_entity_id: null,
+    reply_target_entity_id: null,
   };
 }
 

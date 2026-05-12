@@ -13,6 +13,13 @@ export type Persona = {
   seedFacts?: string[];
 };
 
+export type SimulatorScenarioDefinition = {
+  key: string;
+  description: string;
+  channelName: string;
+  personas: readonly Persona[];
+};
+
 export type MetricsRow = {
   event: "turn_metrics" | "aborted_turn" | "aborted_attempt";
   ts: number;
@@ -86,6 +93,8 @@ export type SimulatorSuppressionRecord = {
 export type SimulatorRunReport = {
   runId: string;
   persona: string;
+  personas: string[];
+  audience: string;
   totalTurns: number;
   resultState: SimulatorResultState;
   sessions: SimulatorSessionRecord[];

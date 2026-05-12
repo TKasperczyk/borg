@@ -8,9 +8,11 @@ import {
   ACTION_STATES,
   Borg,
   RELATIONAL_SLOT_STATES,
+  type EntityId,
   type GenerationSuppressionReason,
   type SessionId,
 } from "../src/index.js";
+import { createEntityId } from "../src/util/ids.js";
 import { FakeLLMClient } from "../src/llm/test-support/fake-client.js";
 import {
   MaintenanceScheduler,
@@ -162,10 +164,26 @@ function fakePersonaSession(messages: readonly string[]): {
   };
 }
 
-function mockTransportLifecycle(): void {
+function mockTransportLifecycle() {
+  const entityIds = new Map<string, EntityId>();
   vi.spyOn(BorgTransport.prototype, "open").mockResolvedValue(undefined);
   vi.spyOn(BorgTransport.prototype, "close").mockResolvedValue(undefined);
   vi.spyOn(BorgTransport.prototype, "getBorg").mockReturnValue(fakeSimulatorBorg());
+  const resolveEntitySpy = vi
+    .spyOn(BorgTransport.prototype, "resolveEntity")
+    .mockImplementation((name) => {
+      const existing = entityIds.get(name);
+
+      if (existing !== undefined) {
+        return existing;
+      }
+
+      const entityId = createEntityId();
+      entityIds.set(name, entityId);
+      return entityId;
+    });
+
+  return { entityIds, resolveEntitySpy };
 }
 
 function chatResult(input: {
@@ -599,6 +617,7 @@ describe("SimulatorRunner", () => {
     vi.spyOn(BorgTransport.prototype, "open").mockResolvedValue(undefined);
     vi.spyOn(BorgTransport.prototype, "close").mockResolvedValue(undefined);
     vi.spyOn(BorgTransport.prototype, "getBorg").mockReturnValue(borg);
+    vi.spyOn(BorgTransport.prototype, "resolveEntity").mockReturnValue(createEntityId());
     vi.spyOn(BorgTransport.prototype, "chat").mockImplementation(async (_message, options = {}) => {
       chatCalls += 1;
 
@@ -676,10 +695,78 @@ describe("SimulatorRunner", () => {
     expect(chatSpy.mock.calls.map(([, options]) => options?.audience)).toEqual(["Tom", "Tom"]);
   });
 
+  it("round-robins multi-persona channel turns with sender ids and a group audience", async () => {
+    const dir = tempDir();
+    const metricsPath = join(dir, "metrics.jsonl");
+    const alice = {
+      key: "alice-test",
+      displayName: "Alice",
+      systemPrompt: "Speak as Alice.",
+    };
+    const bob = {
+      key: "bob-test",
+      displayName: "Bob",
+      systemPrompt: "Speak as Bob.",
+    };
+    const aliceSession = fakePersonaSession(["alice first", "alice second"]);
+    const bobSession = fakePersonaSession(["bob first"]);
+    const { entityIds, resolveEntitySpy } = mockTransportLifecycle();
+    let chatCalls = 0;
+    const chatSpy = vi
+      .spyOn(BorgTransport.prototype, "chat")
+      .mockImplementation(async (_message, options = {}) => {
+        chatCalls += 1;
+
+        return chatResult({
+          response: `Borg reply ${chatCalls}`,
+          emitted: true,
+          turnId: `turn-group-${chatCalls}`,
+          sessionId: options.sessionId as SessionId,
+        });
+      });
+
+    const report = await runSimulation({
+      runId: "sim-runner-multi-persona-test",
+      persona: alice,
+      personas: [alice, bob],
+      personaSessions: [aliceSession.session, bobSession.session],
+      channelName: "Planning Channel",
+      totalTurns: 3,
+      checkEvery: 999,
+      metricsPath,
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+    });
+
+    expect(chatSpy.mock.calls.map(([message]) => message)).toEqual([
+      "alice first",
+      "bob first",
+      "alice second",
+    ]);
+    expect(chatSpy.mock.calls.map(([, options]) => options?.audience)).toEqual([
+      "Planning Channel",
+      "Planning Channel",
+      "Planning Channel",
+    ]);
+    expect(chatSpy.mock.calls.map(([, options]) => options?.senderEntityId)).toEqual([
+      entityIds.get("Alice"),
+      entityIds.get("Bob"),
+      entityIds.get("Alice"),
+    ]);
+    expect(resolveEntitySpy).toHaveBeenCalledWith("Planning Channel", {
+      kind: "group",
+      provenance: "transport_audience_label",
+    });
+    expect(report.personas).toEqual(["alice-test", "bob-test"]);
+    expect(report.audience).toBe("Planning Channel");
+  });
+
   it("passes the persona display name as Borg defaultUser when opening", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
     const openSpy = vi.spyOn(Borg, "open").mockResolvedValue(fakeSimulatorBorg());
+    vi.spyOn(BorgTransport.prototype, "resolveEntity").mockReturnValue(createEntityId());
     vi.spyOn(BorgTransport.prototype, "chat").mockResolvedValue({
       response: "Mock response",
       emitted: true,

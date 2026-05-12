@@ -371,6 +371,7 @@ describe("MetricsCapture", () => {
             session_id: sessionId,
             compressed: false,
             sender_entity_id: null,
+            reply_target_entity_id: null,
           },
         ],
       ],
@@ -883,6 +884,7 @@ describe("MetricsCapture", () => {
             session_id: sessionId,
             compressed: false,
             sender_entity_id: null,
+            reply_target_entity_id: null,
           },
           {
             id: createStreamEntryId(),
@@ -893,6 +895,7 @@ describe("MetricsCapture", () => {
             session_id: sessionId,
             compressed: false,
             sender_entity_id: null,
+            reply_target_entity_id: null,
           },
           {
             id: createStreamEntryId(),
@@ -908,6 +911,7 @@ describe("MetricsCapture", () => {
             session_id: sessionId,
             compressed: false,
             sender_entity_id: null,
+            reply_target_entity_id: null,
           },
         ],
       ],
