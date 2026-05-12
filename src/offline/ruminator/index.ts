@@ -939,6 +939,9 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         ctx.openQuestionsRepository.markRuminated(
           item.question_id,
           item.next_unresolved_rumination_ticks,
+          {
+            expectedVersion: item.previous.record_version,
+          },
         );
         continue;
       }
@@ -1124,7 +1127,9 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               preserveRecordProvenance: true,
             },
           );
-          await ctx.openQuestionsRepository.delete(duplicate.id);
+          await ctx.openQuestionsRepository.delete(duplicate.id, {
+            expectedVersion: duplicate.record_version,
+          });
 
           if (ctx.tracer?.enabled === true) {
             ctx.tracer.emit("open_question_merged", {
@@ -1166,8 +1171,10 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         });
       }
 
+      let markExpectedVersion = current.record_version;
+
       if (Math.abs(current.urgency - item.next_urgency) > 1e-6) {
-        ctx.identityService.bumpOpenQuestionUrgency(
+        const result = ctx.identityService.bumpOpenQuestionUrgency(
           item.question_id,
           item.next_urgency - current.urgency,
           processProvenance,
@@ -1175,11 +1182,18 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             throughReview: true,
           },
         );
+
+        if (result.status === "applied") {
+          markExpectedVersion = result.record.record_version;
+        }
       }
 
       ctx.openQuestionsRepository.markRuminated(
         item.question_id,
         item.next_unresolved_rumination_ticks,
+        {
+          expectedVersion: markExpectedVersion,
+        },
       );
 
       ctx.auditLog.record({

@@ -153,7 +153,7 @@ describe("identity service", () => {
     }
   });
 
-  it("retries IdentityService updates when a concurrent writer wins first", () => {
+  it("propagates IdentityService CAS mismatch and preserves the concurrent writer", () => {
     const harness = createHarness(new FixedClock(1_000));
     const provenance = { kind: "manual" } as const;
 
@@ -183,24 +183,86 @@ describe("identity service", () => {
       });
       updateSpy.mockImplementation(originalUpdate);
 
-      const result = harness.identity.updateValue(
-        value.id,
-        {
-          description: "Service update after retry.",
-        },
-        provenance,
-      );
-
-      expect(result).toMatchObject({
-        status: "applied",
-        record: {
-          description: "Service update after retry.",
-          record_version: 3,
-        },
+      expect(() =>
+        harness.identity.updateValue(
+          value.id,
+          {
+            description: "Service update after stale patch.",
+          },
+          provenance,
+        ),
+      ).toThrow(IdentityCasMismatchError);
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(harness.valuesRepository.get(value.id)).toMatchObject({
+        description: "Concurrent maintenance update.",
+        record_version: 2,
       });
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it("lets callers catch CAS mismatch and retry with a freshly computed patch", () => {
+    const harness = createHarness(new FixedClock(1_000));
+    const provenance = { kind: "manual" } as const;
+
+    try {
+      const value = harness.valuesRepository.add({
+        label: "accuracy",
+        description: "Prefer grounded claims.",
+        priority: 8,
+        provenance,
+      });
+      const originalUpdate = harness.valuesRepository.update.bind(harness.valuesRepository);
+      const updateSpy = vi.spyOn(harness.valuesRepository, "update");
+
+      updateSpy.mockImplementationOnce((...args: Parameters<ValuesRepository["update"]>) => {
+        originalUpdate(
+          value.id,
+          {
+            description: "Concurrent maintenance update.",
+          },
+          provenance,
+          {
+            expectedVersion: args[3]?.expectedVersion,
+          },
+        );
+
+        return originalUpdate(...args);
+      });
+      updateSpy.mockImplementation(originalUpdate);
+
+      try {
+        harness.identity.updateValue(
+          value.id,
+          {
+            description: "Service update after stale patch.",
+          },
+          provenance,
+        );
+      } catch (error) {
+        if (!(error instanceof IdentityCasMismatchError)) {
+          throw error;
+        }
+
+        const latest = harness.valuesRepository.get(value.id);
+
+        if (latest === null) {
+          throw new Error("value fixture disappeared");
+        }
+
+        harness.identity.updateValue(
+          value.id,
+          {
+            description: `${latest.description} Service note.`,
+          },
+          provenance,
+        );
+      }
+
       expect(updateSpy).toHaveBeenCalledTimes(2);
       expect(harness.valuesRepository.get(value.id)).toMatchObject({
-        description: "Service update after retry.",
+        description: "Concurrent maintenance update. Service note.",
         record_version: 3,
       });
     } finally {

@@ -8,7 +8,7 @@ import type { EmbeddingClient } from "../../embeddings/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { ProvenanceError } from "../../util/errors.js";
+import { IdentityCasMismatchError, ProvenanceError } from "../../util/errors.js";
 import {
   createEntityId,
   createEpisodeId,
@@ -135,6 +135,84 @@ describe("OpenQuestionsRepository", () => {
     expect(bumped.urgency).toBeLessThanOrEqual(1);
 
     db.close();
+  });
+
+  it("CAS-protects open question deletion", async () => {
+    const clock = new FixedClock(10_000);
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const question = repository.add({
+        question: "Which duplicate should survive?",
+        urgency: 0.4,
+        source: "ruminator",
+        provenance: manualProvenance,
+      });
+      const staleVersion = question.record_version;
+      const concurrent = repository.update(
+        question.id,
+        {
+          urgency: 0.8,
+        },
+        {
+          expectedVersion: staleVersion,
+        },
+      );
+
+      await expect(
+        repository.delete(question.id, {
+          expectedVersion: staleVersion,
+        }),
+      ).rejects.toThrow(IdentityCasMismatchError);
+      expect(repository.get(question.id)).toMatchObject({
+        urgency: 0.8,
+        record_version: concurrent.record_version,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("CAS-protects rumination marker updates", () => {
+    const clock = new FixedClock(10_000);
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const question = repository.add({
+        question: "Which rumination update is stale?",
+        urgency: 0.4,
+        source: "ruminator",
+        provenance: manualProvenance,
+      });
+      const staleVersion = question.record_version;
+      const concurrent = repository.bumpUrgency(question.id, 0.1, {
+        expectedVersion: staleVersion,
+      });
+
+      expect(() =>
+        repository.markRuminated(question.id, 1, {
+          expectedVersion: staleVersion,
+        }),
+      ).toThrow(IdentityCasMismatchError);
+      expect(repository.get(question.id)).toMatchObject({
+        record_version: concurrent.record_version,
+        unresolved_rumination_ticks: 0,
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it("embeds inserted questions into the vector table", async () => {

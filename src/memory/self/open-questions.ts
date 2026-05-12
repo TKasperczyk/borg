@@ -1199,8 +1199,32 @@ export class OpenQuestionsRepository {
     return parsed;
   }
 
-  async delete(id: OpenQuestionId): Promise<boolean> {
-    const result = this.db.prepare("DELETE FROM open_questions WHERE id = ?").run(id);
+  async delete(id: OpenQuestionId, options: IdentityCasOptions = {}): Promise<boolean> {
+    const existing = this.get(id);
+
+    if (existing === null) {
+      if (options.expectedVersion !== undefined) {
+        assertIdentityCasUpdated({
+          result: { changes: 0 },
+          recordType: "open_question",
+          recordId: id,
+          expectedVersion: options.expectedVersion,
+        });
+      }
+
+      return false;
+    }
+
+    const expectedVersion = expectedRecordVersion(existing, options);
+    const result = this.db
+      .prepare("DELETE FROM open_questions WHERE id = ? AND record_version = ?")
+      .run(id, expectedVersion);
+    assertIdentityCasUpdated({
+      result,
+      recordType: "open_question",
+      recordId: id,
+      expectedVersion,
+    });
 
     if (result.changes > 0 && this.table !== undefined) {
       await this.table.remove(`id = ${quoteSqlString(id)}`);
@@ -1481,7 +1505,11 @@ export class OpenQuestionsRepository {
     return updated;
   }
 
-  markRuminated(id: OpenQuestionId, nextUnresolvedRuminationTicks: number): OpenQuestion {
+  markRuminated(
+    id: OpenQuestionId,
+    nextUnresolvedRuminationTicks: number,
+    options: IdentityCasOptions = {},
+  ): OpenQuestion {
     const existing = this.get(id);
 
     if (existing === null) {
@@ -1492,25 +1520,46 @@ export class OpenQuestionsRepository {
 
     const parsedTicks = z.number().int().nonnegative().parse(nextUnresolvedRuminationTicks);
     const nowMs = this.clock.now();
+    const currentVersion = expectedRecordVersion(existing);
+    const expectedVersion = options.expectedVersion ?? currentVersion;
 
-    this.db
+    if (expectedVersion !== currentVersion) {
+      assertIdentityCasUpdated({
+        result: { changes: 0 },
+        recordType: "open_question",
+        recordId: id,
+        expectedVersion,
+      });
+    }
+
+    if (existing.status !== "open" || existing.unresolved_rumination_ticks >= parsedTicks) {
+      return existing;
+    }
+
+    const result = this.db
       .prepare(
         `
           UPDATE open_questions
           SET unresolved_rumination_ticks = ?, last_ruminated_at = ?,
               record_version = record_version + 1
           WHERE id = ? AND status = 'open' AND unresolved_rumination_ticks < ?
+            AND record_version = ?
         `,
       )
-      .run(parsedTicks, nowMs, id, parsedTicks);
+      .run(parsedTicks, nowMs, id, parsedTicks, expectedVersion);
+    assertIdentityCasUpdated({
+      result,
+      recordType: "open_question",
+      recordId: id,
+      expectedVersion,
+    });
 
-    const updated = this.get(id);
-
-    if (updated === null) {
-      throw new StorageError(`Unknown open question id after rumination update: ${id}`, {
-        code: "OPEN_QUESTION_NOT_FOUND",
-      });
-    }
+    const updated = {
+      ...existing,
+      record_version: nextRecordVersion(expectedVersion),
+      unresolved_rumination_ticks: parsedTicks,
+      last_ruminated_at: nowMs,
+    };
 
     this.scheduleQuestionVectorUpsert(updated, "metadata_sync", {
       skipIfMissing: true,

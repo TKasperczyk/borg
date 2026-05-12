@@ -1,4 +1,4 @@
-import { IdentityCasMismatchError, StorageError } from "../../util/errors.js";
+import { StorageError } from "../../util/errors.js";
 import {
   type AutobiographicalPeriodId,
   type CommitmentId,
@@ -75,8 +75,6 @@ export type IdentityServiceOptions = {
   identityEventRepository: IdentityEventRepository;
   guard?: IdentityGuard;
 };
-
-const IDENTITY_CAS_MAX_ATTEMPTS = 3;
 
 function goalGuardState(current: GoalRecord): IdentityGuardState {
   return {
@@ -169,22 +167,9 @@ export class IdentityService {
     this.guard = options.guard ?? new IdentityGuard();
   }
 
-  private withCasRetry<T>(operation: () => T): T {
-    let lastMismatch: IdentityCasMismatchError | null = null;
-
-    for (let attempt = 0; attempt < IDENTITY_CAS_MAX_ATTEMPTS; attempt += 1) {
-      try {
-        return operation();
-      } catch (error) {
-        if (!(error instanceof IdentityCasMismatchError)) {
-          throw error;
-        }
-
-        lastMismatch = error;
-      }
-    }
-
-    throw lastMismatch;
+  private runCasCheckedWrite<T>(operation: () => T): T {
+    // Patches are semantic, so callers must recompute after a CAS conflict.
+    return operation();
   }
 
   listEvents(
@@ -214,7 +199,7 @@ export class IdentityService {
     timestamp?: number,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<ValueRecord> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.valuesRepository.get(valueId);
 
       if (current === null) {
@@ -278,7 +263,7 @@ export class IdentityService {
   addPeriod(
     input: Parameters<AutobiographicalRepository["upsertPeriod"]>[0],
   ): AutobiographicalPeriod {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       if (input.id !== undefined && this.options.autobiographicalRepository.getPeriod(input.id)) {
         throw new StorageError(`Autobiographical period already exists: ${input.id}`, {
           code: "AUTOBIOGRAPHICAL_PERIOD_ALREADY_EXISTS",
@@ -396,7 +381,7 @@ export class IdentityService {
     input: Parameters<TraitsRepository["reinforce"]>[0],
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<TraitRecord> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current =
         this.options.traitsRepository.list().find((trait) => trait.label === input.label) ?? null;
 
@@ -518,7 +503,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<ValueRecord> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.valuesRepository.get(valueId);
 
       if (current === null) {
@@ -574,7 +559,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<TraitRecord> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.traitsRepository.get(traitId);
 
       if (current === null) {
@@ -630,7 +615,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<GoalRecord> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.goalsRepository.get(goalId);
 
       if (current === null) {
@@ -686,7 +671,7 @@ export class IdentityService {
     provenance: Provenance,
     options: ReflectionGoalProgressOptions,
   ): IdentityUpdateResult<GoalRecord> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.goalsRepository.get(goalId);
 
       if (current === null) {
@@ -737,7 +722,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<CommitmentRecord> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.commitmentRepository.get(commitmentId);
 
       if (current === null) {
@@ -808,7 +793,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<AutobiographicalPeriod> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.autobiographicalRepository.getPeriod(periodId);
 
       if (current === null) {
@@ -869,7 +854,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<OpenQuestion> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.openQuestionsRepository.get(openQuestionId);
 
       if (current === null) {
@@ -924,7 +909,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<OpenQuestion> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.openQuestionsRepository.get(openQuestionId);
 
       if (current === null) {
@@ -978,7 +963,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<OpenQuestion> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.openQuestionsRepository.get(openQuestionId);
 
       if (current === null) {
@@ -1032,7 +1017,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<AutobiographicalPeriod> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.autobiographicalRepository.getPeriod(periodId);
 
       if (current === null) {
@@ -1105,7 +1090,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<GrowthMarker> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.growthMarkersRepository.get(markerId);
 
       if (current === null) {
@@ -1178,7 +1163,7 @@ export class IdentityService {
     provenance: Provenance,
     options: IdentityUpdateOptions = {},
   ): IdentityUpdateResult<OpenQuestion> {
-    return this.withCasRetry(() => {
+    return this.runCasCheckedWrite(() => {
       const current = this.options.openQuestionsRepository.get(openQuestionId);
 
       if (current === null) {

@@ -44,7 +44,7 @@ import {
   type SkillId,
   type StreamEntryId,
 } from "../../util/ids.js";
-import { LLMError } from "../../util/errors.js";
+import { IdentityCasMismatchError, LLMError } from "../../util/errors.js";
 import { z } from "zod";
 
 import type { ActionResult } from "../action/index.js";
@@ -1377,6 +1377,10 @@ export class Reflector {
           effects.resolvedOpenQuestions.push(current);
         }
       } catch (error) {
+        if (error instanceof IdentityCasMismatchError) {
+          throw error;
+        }
+
         this.emitOpenQuestionResolutionDegraded(context, {
           reason: "resolution_failed",
           question_id: resolution.question_id,
