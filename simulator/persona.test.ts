@@ -340,11 +340,57 @@ describe("PersonaSession", () => {
     );
     expect(calls[1]?.[0]).toMatchObject({
       role: "user",
-      content: [
-        "Recent channel messages since you last spoke:",
-        "[Alice]: The Tuesday slot works for me.",
-        "[Borg]: Tuesday is the cleanest option.",
-      ].join("\n"),
+      content: FIRST_BORG_REPLY,
     });
+  });
+
+  it("keeps peer transcript context out of committed persona history", async () => {
+    const calls: Array<readonly { role?: string; content?: unknown }[]> = [];
+    const client = {
+      messages: {
+        stream(params: { messages: Array<{ role?: string; content?: unknown }> }) {
+          calls.push(params.messages);
+          return {
+            async finalMessage() {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `persona draft ${calls.length}`,
+                  },
+                ],
+              };
+            },
+          };
+        },
+      },
+    };
+    const persona = new PersonaSession({
+      persona: tomPersona,
+      client: client as never,
+    });
+
+    for (let i = 0; i < 10; i += 1) {
+      const draft = await persona.prepareNextTurn({
+        kind: "normal",
+        text: `Borg reply ${i}`,
+        channelTranscript: [
+          {
+            speaker_display_name: "Alice",
+            text: `PEER_TRANSCRIPT_${i}_${"x".repeat(200)}`,
+          },
+        ],
+      });
+      persona.commit(draft, "");
+    }
+
+    await persona.prepareNextTurn({ kind: "normal", text: "Borg after transcript turns." });
+    const finalRequest = calls.at(-1) ?? [];
+    const finalContent = finalRequest.map((message) => String(message.content ?? "")).join("\n");
+
+    expect(calls[0]?.at(-1)?.content).toContain("PEER_TRANSCRIPT_0_");
+    expect(finalRequest).toHaveLength(21);
+    expect(finalContent).not.toContain("PEER_TRANSCRIPT_");
+    expect(finalContent).toContain("Borg after transcript turns.");
   });
 });

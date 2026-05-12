@@ -77,6 +77,10 @@ type PersonaPriorTurnContext = PersonaRoleBleedRetry & {
   channelTranscript?: readonly PersonaChannelTranscriptEntry[];
 };
 
+type BaseUserMessageOptions = {
+  includeChannelTranscript?: boolean;
+};
+
 export type PriorBorgTurn =
   | ({
       kind: "new_session";
@@ -280,8 +284,15 @@ function channelTranscriptPrompt(
   ].join("\n");
 }
 
-function baseUserMessageForPriorTurn(persona: Persona, priorTurn: PriorBorgTurn): string {
-  const transcriptPrompt = channelTranscriptPrompt(priorTurn.channelTranscript);
+function baseUserMessageForPriorTurn(
+  persona: Persona,
+  priorTurn: PriorBorgTurn,
+  options: BaseUserMessageOptions = {},
+): string {
+  const includeChannelTranscript = options.includeChannelTranscript ?? true;
+  const transcriptPrompt = includeChannelTranscript
+    ? channelTranscriptPrompt(priorTurn.channelTranscript)
+    : null;
 
   if (transcriptPrompt !== null) {
     return transcriptPrompt;
@@ -516,7 +527,9 @@ export class PersonaSession {
         ? await createDefaultPersonaClient(this.env)
         : { client: this.client, systemPrefix: this.systemPrefix };
 
-    const historyUserMessage = baseUserMessageForPriorTurn(this.persona, priorBorgTurn);
+    const historyUserMessage = baseUserMessageForPriorTurn(this.persona, priorBorgTurn, {
+      includeChannelTranscript: false,
+    });
     const requestUserMessage = requestUserMessageForPriorTurn(this.persona, priorBorgTurn);
 
     // Build the candidate request messages without committing to
