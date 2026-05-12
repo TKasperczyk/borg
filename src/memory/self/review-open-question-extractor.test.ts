@@ -4,19 +4,13 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { EmbeddingClient } from "../../embeddings/index.js";
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { parseEpisodeId, parseSemanticNodeId } from "../../util/ids.js";
 import type { ReviewQueueItem } from "../semantic/index.js";
-import {
-  OpenQuestionsRepository,
-  createOpenQuestionsTableSchema,
-  selfMigrations,
-} from "./index.js";
+import { OpenQuestionsRepository, selfMigrations } from "./index.js";
 import {
   REVIEW_OPEN_QUESTION_TOOL,
   ReviewOpenQuestionExtractor,
@@ -25,27 +19,6 @@ import {
 import { enqueueOpenQuestionForReview } from "./review-open-question-hook.js";
 
 const TOOL_NAME = REVIEW_OPEN_QUESTION_TOOL.name;
-
-class MapEmbeddingClient implements EmbeddingClient {
-  readonly calls: string[] = [];
-
-  constructor(private readonly vectors: ReadonlyMap<string, readonly number[]>) {}
-
-  async embed(text: string): Promise<Float32Array> {
-    this.calls.push(text);
-    const vector = this.vectors.get(text);
-
-    if (vector === undefined) {
-      throw new Error(`No scripted embedding for ${text}`);
-    }
-
-    return Float32Array.from(vector);
-  }
-
-  async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
-    return Promise.all(texts.map((text) => this.embed(text)));
-  }
-}
 
 function createReviewItem(overrides: Partial<ReviewQueueItem> = {}): ReviewQueueItem {
   return {
@@ -362,71 +335,135 @@ describe("review open-question extractor", () => {
     ]);
   });
 
-  it("reinforces an existing similar open question instead of adding a review duplicate", async () => {
+  it("reinforces an existing open question when the proposal matches its normalized text", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    const store = new LanceDbStore({
-      uri: join(tempDir, "lancedb"),
-    });
-    const table = await store.openTable({
-      name: "open_questions",
-      schema: createOpenQuestionsTableSchema(4),
-    });
     const db = openDatabase(join(tempDir, "borg.db"), {
       migrations: [...selfMigrations],
     });
-    const existingText = "Is €2,800 a hard ceiling for the trip?";
-    const proposalText = "Should we treat €2,800 as a firm ceiling?";
-    const embeddingClient = new MapEmbeddingClient(
-      new Map([
-        [existingText, [1, 0, 0, 0]],
-        [proposalText, [1, 0, 0, 0]],
-      ]),
-    );
     const repository = new OpenQuestionsRepository({
       db,
-      table,
-      embeddingClient,
       clock: new FixedClock(1_000),
     });
-    cleanup.push(async () => {
+    cleanup.push(() => {
       db.close();
-      await store.close();
       rmSync(tempDir, { recursive: true, force: true });
     });
 
     const existing = repository.add({
-      question: existingText,
+      question: "Is €2,800 a hard ceiling for the trip?",
       urgency: 0.61,
       source: "overseer",
-      provenance: {
-        kind: "offline",
-        process: "overseer",
-      },
+      provenance: { kind: "offline", process: "overseer" },
     });
-    await repository.waitForPendingEmbeddings();
     const extractor = {
       extract: vi.fn(async () => ({
-        question: proposalText,
+        // Same question, different whitespace/case -- normalization should collapse it.
+        question: "  is €2,800 A HARD ceiling for the trip?  ",
         urgency: 0.8,
         related_episode_ids: [parseEpisodeId("ep_aaaaaaaaaaaaaaaa")],
         related_semantic_node_ids: [],
       })),
     };
 
-    await enqueueOpenQuestionForReview(repository, createReviewItem(), {
-      extractor,
-    });
-    await repository.waitForPendingEmbeddings();
+    await enqueueOpenQuestionForReview(repository, createReviewItem(), { extractor });
 
     const openQuestions = repository.list({ status: "open" });
 
     expect(openQuestions).toHaveLength(1);
-    expect(openQuestions[0]).toMatchObject({
-      id: existing.id,
-      question: existingText,
-    });
+    expect(openQuestions[0]).toMatchObject({ id: existing.id });
     expect(openQuestions[0]?.urgency).toBeCloseTo(0.63);
-    expect(embeddingClient.calls).toEqual([existingText, proposalText]);
+  });
+
+  it("does not collapse distinct review questions that share wording but differ on a specific", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...selfMigrations],
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    cleanup.push(() => {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    repository.add({
+      question: "Is €2,800 a hard ceiling for the trip?",
+      urgency: 0.5,
+      source: "overseer",
+      provenance: { kind: "offline", process: "overseer" },
+    });
+    const extractor = {
+      extract: vi.fn(async () => ({
+        question: "Is €5,000 a hard ceiling for the trip?",
+        urgency: 0.55,
+        related_episode_ids: [parseEpisodeId("ep_aaaaaaaaaaaaaaaa")],
+        related_semantic_node_ids: [],
+      })),
+    };
+
+    await enqueueOpenQuestionForReview(repository, createReviewItem(), { extractor });
+
+    const openQuestions = repository.list({ status: "open" });
+
+    expect(openQuestions).toHaveLength(2);
+    expect(openQuestions.map((question) => question.question).sort()).toEqual([
+      "Is €2,800 a hard ceiling for the trip?",
+      "Is €5,000 a hard ceiling for the trip?",
+    ]);
+  });
+
+  it("finds an exact-normalized match outside the urgency top window", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    const db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: [...selfMigrations],
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(1_000),
+    });
+    cleanup.push(() => {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    const lowUrgencyTarget = repository.add({
+      question: "Should the participant roster collapse Borg and assistant?",
+      urgency: 0.01,
+      source: "overseer",
+      provenance: { kind: "offline", process: "overseer" },
+    });
+    // Add 60 high-urgency unrelated questions so the target falls below the
+    // pre-fix top-50 window.
+    for (let i = 0; i < 60; i += 1) {
+      repository.add({
+        question: `Padding question ${i}?`,
+        urgency: 0.9,
+        source: "overseer",
+        provenance: { kind: "offline", process: "overseer" },
+      });
+    }
+
+    const extractor = {
+      extract: vi.fn(async () => ({
+        question: "Should the participant roster collapse Borg and assistant?",
+        urgency: 0.7,
+        related_episode_ids: [parseEpisodeId("ep_aaaaaaaaaaaaaaaa")],
+        related_semantic_node_ids: [],
+      })),
+    };
+
+    await enqueueOpenQuestionForReview(repository, createReviewItem(), { extractor });
+
+    const matching = repository
+      .list({ status: "open", limit: 200 })
+      .filter((question) =>
+        question.question === "Should the participant roster collapse Borg and assistant?",
+      );
+
+    expect(matching).toHaveLength(1);
+    expect(matching[0]?.id).toBe(lowUrgencyTarget.id);
   });
 
   it("does not write an open question when no extractor is supplied", async () => {

@@ -177,8 +177,6 @@ export type OpenQuestionGoalLookupOptions = {
 export type OpenQuestionSimilarLookupOptions = {
   question: string;
   audienceEntityId?: EntityId | null;
-  limit?: number;
-  minSimilarity?: number;
 };
 
 type OpenQuestionVectorRow = {
@@ -655,47 +653,42 @@ export class OpenQuestionsRepository {
     ).filter((candidate) => candidate.question.id !== question.id);
   }
 
+  // Insert-time dedup is exact-normalized-text only -- semantic merging is the
+  // ruminator's job. Vector matching here would risk collapsing distinct
+  // questions that share wording but differ on a numeric/entity specific
+  // (e.g. two ceiling-amount questions). Scans all visible open questions, not
+  // a top-N urgency window, so exact matches can't slip through outside the cap.
   async findSimilarOpenQuestion(
     input: OpenQuestionSimilarLookupOptions,
   ): Promise<OpenQuestionSearchCandidate | null> {
     const normalizedQuestion = normalizeQuestionForDedupe(input.question);
-    const exact = this.list({
-      status: "open",
-      visibleToAudienceEntityId: input.audienceEntityId,
-      limit: Math.max(input.limit ?? 50, 50),
-    }).find((question) => normalizeQuestionForDedupe(question.question) === normalizedQuestion);
+    const filters: string[] = ["status = 'open'"];
+    const values: unknown[] = [];
 
-    if (exact !== undefined) {
-      return {
-        question: exact,
-        similarity: 1,
-      };
+    if (input.audienceEntityId === null || input.audienceEntityId === undefined) {
+      filters.push("audience_entity_id IS NULL");
+    } else {
+      filters.push("(audience_entity_id IS NULL OR audience_entity_id = ?)");
+      values.push(openQuestionAudienceEntityIdSchema.parse(input.audienceEntityId));
     }
 
-    const embeddingClient = this.embeddingClient;
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM open_questions
+          WHERE ${filters.join(" AND ")}
+        `,
+      )
+      .all(...values) as Record<string, unknown>[];
 
-    if (this.table === undefined || embeddingClient === undefined) {
-      return null;
+    for (const row of rows) {
+      if (normalizeQuestionForDedupe(String(row.question ?? "")) === normalizedQuestion) {
+        return { question: mapOpenQuestionRow(row), similarity: 1 };
+      }
     }
 
-    let vector: Float32Array;
-
-    try {
-      vector = await embeddingClient.embed(input.question);
-    } catch {
-      return null;
-    }
-
-    return (
-      (
-        await this.searchByVector(vector, {
-          status: "open",
-          visibleToAudienceEntityId: input.audienceEntityId,
-          limit: input.limit,
-          minSimilarity: input.minSimilarity,
-        })
-      )[0] ?? null
-    );
+    return null;
   }
 
   async backfillMissingEmbeddings(

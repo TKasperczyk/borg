@@ -33,10 +33,7 @@ export type ReviewOpenQuestionExtractorLike = Pick<ReviewOpenQuestionExtractor, 
 
 export type ReviewOpenQuestionHookOptions = {
   extractor?: ReviewOpenQuestionExtractorLike | null;
-  minSimilarity?: number;
 };
-
-const DEFAULT_REVIEW_OPEN_QUESTION_SIMILARITY_THRESHOLD = 0.9;
 
 function addOpenQuestion(writer: OpenQuestionWriter, input: OpenQuestionCreateInput): OpenQuestion {
   if ("addOpenQuestion" in writer) {
@@ -206,7 +203,6 @@ export async function enqueueOpenQuestionForReview(
   const existing = await findSimilarOpenQuestion(writer, {
     question: createInput.question,
     audienceEntityId: createInput.audience_entity_id,
-    minSimilarity: options.minSimilarity ?? DEFAULT_REVIEW_OPEN_QUESTION_SIMILARITY_THRESHOLD,
   });
 
   if (existing !== null) {
