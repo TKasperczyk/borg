@@ -521,6 +521,7 @@ describe("SimulatorRunner", () => {
   it("runs a 20-turn mock simulation with overseer checkpoints and metrics", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");
+    const auditWindows: Array<[number | undefined, number]> = [];
     spyMaintenanceTick();
     const report = await runSimulation({
       runId: "sim-runner-test",
@@ -531,13 +532,16 @@ describe("SimulatorRunner", () => {
       dataDir: join(dir, "data"),
       tracePath: join(dir, "trace.jsonl"),
       mock: true,
-      overseerRunner: async ({ turnCounter }) => ({
-        ts: Date.now(),
-        turn_counter: turnCounter,
-        status: "healthy",
-        observations: ["Mock overseer saw no degradation."],
-        recommendation: "Continue.",
-      }),
+      overseerRunner: async ({ auditWindowStartTurn, turnCounter }) => {
+        auditWindows.push([auditWindowStartTurn, turnCounter]);
+        return {
+          ts: Date.now(),
+          turn_counter: turnCounter,
+          status: "healthy",
+          observations: ["Mock overseer saw no degradation."],
+          recommendation: "Continue.",
+        };
+      },
     });
     const metricsRows = readFileSync(metricsPath, "utf8")
       .trim()
@@ -547,6 +551,10 @@ describe("SimulatorRunner", () => {
     expect(report.totalTurns).toBe(20);
     expect(Object.hasOwn(report, "probes")).toBe(false);
     expect(report.overseerCheckpoints).toHaveLength(2);
+    expect(auditWindows).toEqual([
+      [1, 10],
+      [11, 20],
+    ]);
     expect(metricsRows).toHaveLength(20);
     expect(metricsRows.at(-1)?.turn_counter).toBe(20);
   });

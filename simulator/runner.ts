@@ -593,6 +593,7 @@ export class SimulatorRunner {
     const suppressionEvents: SimulatorSuppressionRecord[] = [];
     let currentSessionStartTurn = 1;
     let currentSessionId: SessionId = createSessionId();
+    let lastOverseerCheckpointTurn = 0;
     const sessionIds: SessionId[] = [currentSessionId];
     const maxSessions = this.options.maxSessions ?? MAX_SESSIONS_DEFAULT;
     const channelTranscript: ChannelTranscriptLogEntry[] = [];
@@ -865,6 +866,7 @@ export class SimulatorRunner {
         });
 
         if (overseerDue) {
+          const auditWindowStartTurn = lastOverseerCheckpointTurn + 1;
           const memorySnapshotMarkdown = await buildMemorySnapshotMarkdown({
             transport,
             sessionIds,
@@ -874,6 +876,7 @@ export class SimulatorRunner {
             await overseerRunner({
               transport,
               metricsPath: this.options.metricsPath,
+              auditWindowStartTurn,
               turnCounter: turn,
               totalTurns: this.options.totalTurns,
               memorySnapshotMarkdown,
@@ -881,6 +884,7 @@ export class SimulatorRunner {
               env: this.options.env,
             }),
           );
+          lastOverseerCheckpointTurn = turn;
         }
 
         if (!success.emitted) {
