@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -159,6 +161,22 @@ function createNoGoalPromotionResponse() {
         id: "toolu_goals",
         name: "EmitGoalPromotion",
         input: { promotions: [] },
+      },
+    ],
+  };
+}
+
+function createDecisionArtifactPatchResponse(input: { operations: unknown[] }) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_decision_artifact",
+        name: "EmitDecisionArtifactPatch",
+        input,
       },
     ],
   };
@@ -1336,16 +1354,120 @@ describe("Borg", () => {
         stakes: "high",
       });
       const plannerRequest = llm.requests.find((request) => request.budget === "cognition-plan");
+      const finalizerRequest = llm.requests.find(
+        (request) => request.budget === "cognition-system-2",
+      );
       const plannerSystem = requestSystemText(plannerRequest);
+      const finalizerSystem = requestSystemText(finalizerRequest);
       const artifactIndex = plannerSystem.indexOf("## 0. Canonical Decision State");
       const compactLedgerIndex = plannerSystem.indexOf("CompactPlannerLedger");
+      const finalizerArtifactIndex = finalizerSystem.indexOf("## 0. Canonical Decision State");
+      const currentUserSectionIndex = finalizerSystem.indexOf("## 1. Current User Message");
 
       expect(result.path).toBe("system_2");
       expect(plannerSystem).toContain(
         "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
       );
+      expect(finalizerSystem).toContain(
+        "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
+      );
       expect(artifactIndex).toBeGreaterThanOrEqual(0);
       expect(compactLedgerIndex).toBeGreaterThan(artifactIndex);
+      expect(finalizerArtifactIndex).toBeGreaterThanOrEqual(0);
+      expect(currentUserSectionIndex).toBeGreaterThan(finalizerArtifactIndex);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("rejects decision artifact citations outside the prompt-visible ledger", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_000);
+    const inventedStreamId = "strm_zzzzzzzzzzzzzzzz";
+    const llm = new FakeLLMClient({
+      responses: [
+        createEntityDetectionResponse(["Spain planning", "Ben"]),
+        createModeDetectionResponse("problem_solving"),
+        createNoTemporalCueResponse(),
+        createGenerationGateResponse({
+          decision: "proceed",
+          substantive: true,
+          reason: "planning turn",
+        }),
+        createDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Invented route fact",
+              owner_entity_id: null,
+              source_stream_entry_ids: [inventedStreamId],
+            },
+          ],
+        }),
+        createTurnPlanResponse(),
+        createEmitAnswerResponse("I will not persist unsupported provenance.", {
+          inputTokens: 10,
+          outputTokens: 5,
+        }),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: true,
+        },
+        generation: {
+          evidenceLedger: {
+            enabled: true,
+          },
+        },
+      }),
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: llm,
+      clock,
+      tracerPath: tracePath,
+      liveExtraction: false,
+    });
+
+    try {
+      const internal = borgInternals<{
+        deps: Pick<BorgDependencies, "decisionArtifactRepository" | "entityRepository">;
+      }>(borg);
+      const audience = internal.deps.entityRepository.resolve("Spain planning", {
+        kind: "group",
+        provenance: "transport_audience_label",
+      });
+      const ben = internal.deps.entityRepository.resolve("Ben", {
+        kind: "person",
+        provenance: "user_declared",
+      });
+
+      await borg.turn({
+        userMessage: "Ben here. Lock the invented route fact.",
+        audience: "Spain planning",
+        senderEntityId: ben,
+        stakes: "high",
+      });
+
+      const traceEvents = readFileSync(tracePath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+      expect(internal.deps.decisionArtifactRepository.get(audience)).toBeNull();
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "decision_artifact_compile_completed",
+          rejectedCount: 1,
+          rejectionReasons: ["disallowed_source_stream_entry_id"],
+          applied: false,
+        }),
+      );
     } finally {
       await borg.close();
     }

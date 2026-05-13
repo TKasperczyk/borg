@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -109,55 +113,127 @@ describe("DecisionArtifactRepository", () => {
     });
   });
 
-  it("throws a CAS mismatch on stale concurrent upsert", () => {
+  it("throws a CAS mismatch between concurrent repository instances", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-decision-artifact-"));
+    const dbPath = join(tempDir, "borg.db");
+    const firstDb = openDatabase(dbPath, {
+      migrations: composeMigrations(decisionArtifactMigrations),
+    });
+    const secondDb = openDatabase(dbPath, {
+      migrations: composeMigrations(decisionArtifactMigrations),
+    });
+    const firstWriter = new DecisionArtifactRepository({
+      db: firstDb,
+      clock,
+    });
+    const secondWriter = new DecisionArtifactRepository({
+      db: secondDb,
+      clock,
+    });
     const audience = createEntityId();
     const firstSource = createStreamEntryId();
     const secondSource = createStreamEntryId();
     const thirdSource = createStreamEntryId();
-    const initial = repository.upsert(audience, [
-      {
-        type: "add",
-        kind: "live",
-        text: "Question: Toledo placement",
-        provenance_stream_entry_ids: [firstSource],
-      },
-    ]);
-    const entryId = initial?.entries[0]?.id;
 
-    expect(entryId).toBeDefined();
-    repository.upsert(
-      audience,
-      [
+    try {
+      firstWriter.upsert(audience, [
         {
-          type: "update",
-          id: entryId!,
-          text: "Question: Toledo placement before Madrid",
-          add_provenance_stream_entry_ids: [secondSource],
-          last_updated_stream_entry_ids: [secondSource],
+          type: "add",
+          kind: "live",
+          text: "Question: Toledo placement",
+          provenance_stream_entry_ids: [firstSource],
         },
-      ],
-      {
-        expectedVersion: initial?.record_version,
-      },
-    );
+      ]);
+      const firstSnapshot = firstWriter.get(audience);
+      const secondSnapshot = secondWriter.get(audience);
+      const entryId = firstSnapshot?.entries[0]?.id;
 
-    expect(() =>
-      repository.upsert(
+      expect(entryId).toBeDefined();
+      expect(firstSnapshot?.record_version).toBe(secondSnapshot?.record_version);
+
+      firstWriter.upsert(
         audience,
         [
           {
             type: "update",
             id: entryId!,
-            text: "Question: Toledo placement after Madrid",
-            add_provenance_stream_entry_ids: [thirdSource],
-            last_updated_stream_entry_ids: [thirdSource],
+            text: "Question: Toledo placement before Madrid",
+            add_provenance_stream_entry_ids: [secondSource],
+            last_updated_stream_entry_ids: [secondSource],
           },
         ],
         {
-          expectedVersion: initial?.record_version,
+          expectedVersion: firstSnapshot?.record_version,
         },
-      ),
-    ).toThrow(IdentityCasMismatchError);
+      );
+
+      expect(() =>
+        secondWriter.upsert(
+          audience,
+          [
+            {
+              type: "update",
+              id: entryId!,
+              text: "Question: Toledo placement after Madrid",
+              add_provenance_stream_entry_ids: [thirdSource],
+              last_updated_stream_entry_ids: [thirdSource],
+            },
+          ],
+          {
+            expectedVersion: secondSnapshot?.record_version,
+          },
+        ),
+      ).toThrow(IdentityCasMismatchError);
+    } finally {
+      firstDb.close();
+      secondDb.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects pruning a replacement entry while superseded entries still point to it", () => {
+    const audience = createEntityId();
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const initial = repository.upsert(audience, [
+      {
+        type: "add",
+        kind: "locked",
+        text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 2",
+        provenance_stream_entry_ids: [firstSource],
+      },
+    ]);
+    const oldEntryId = initial?.entries[0]?.id;
+
+    expect(oldEntryId).toBeDefined();
+    const superseded = repository.upsert(audience, [
+      {
+        type: "supersede",
+        id: oldEntryId!,
+        replacement: {
+          kind: "locked",
+          text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
+          provenance_stream_entry_ids: [secondSource],
+        },
+        last_updated_stream_entry_ids: [secondSource],
+      },
+    ]);
+    const replacementId = superseded?.entries.find((entry) => entry.id !== oldEntryId)?.id;
+
+    expect(replacementId).toBeDefined();
+    expect(() =>
+      repository.upsert(audience, [
+        {
+          type: "prune",
+          id: replacementId!,
+        },
+      ]),
+    ).toThrow();
+    expect(
+      repository.get(audience)?.entries.find((entry) => entry.id === oldEntryId),
+    ).toMatchObject({
+      superseded_by_id: replacementId,
+    });
   });
 
   it("deletes the parent and cascades entries", () => {

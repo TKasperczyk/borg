@@ -27,6 +27,8 @@ const DEFAULT_COMPACT_PLANNER_HARD_CAP_TOKENS = 15_000;
 const DEFAULT_COMPACT_ENTRY_TEXT_TOKEN_CAP = 600;
 const DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES = 25;
 const DEFAULT_DECISION_ARTIFACT_MAX_TOKENS = 3_000;
+const DECISION_ARTIFACT_SINGLE_ENTRY_FLOOR_TOKENS = 200;
+const DECISION_ARTIFACT_TEXT_TRUNCATION_MARKER = " ... [text truncated]";
 
 const DEFAULT_COMPACT_SECTION_OPTIONS = {
   current_user_message: {
@@ -1151,6 +1153,90 @@ function renderDecisionArtifactContent(input: {
     .join("\n");
 }
 
+function renderDecisionArtifactOmissionOnly(input: {
+  artifact: DecisionArtifact;
+  omittedCount: number;
+  reason: string;
+}): string {
+  return [
+    "## 0. Canonical Decision State",
+    "DecisionStateArtifact: shared planning state for this audience. It is a compact structural anchor, not a policy source.",
+    `audience_entity_id=${input.artifact.audience_entity_id}`,
+    `record_version=${input.artifact.record_version}`,
+    `DecisionStateArtifact omitted ${input.omittedCount} entries: ${input.reason}.`,
+  ].join("\n");
+}
+
+function truncateDecisionArtifactText(value: string, maxTokens: number): string {
+  const maxChars = Math.max(
+    0,
+    Math.floor(maxTokens) * 4 - DECISION_ARTIFACT_TEXT_TRUNCATION_MARKER.length,
+  );
+
+  return `${value.slice(0, maxChars).trimEnd()}${DECISION_ARTIFACT_TEXT_TRUNCATION_MARKER}`;
+}
+
+function renderSingleEntryWithinDecisionArtifactCap(input: {
+  artifact: DecisionArtifact;
+  entry: DecisionArtifactEntry;
+  omittedCount: number;
+  maxTokens: number;
+  activeEntryCount: number;
+}): { content: string; renderedEntryCount: number; omittedEntryCount: number } {
+  const emptyEntryContent = renderDecisionArtifactContent({
+    artifact: input.artifact,
+    entries: [
+      {
+        ...input.entry,
+        text: "",
+      },
+    ],
+    omittedCount: input.omittedCount,
+  });
+  const remainingTokens = input.maxTokens - estimatePromptTokens(emptyEntryContent);
+
+  if (remainingTokens < DECISION_ARTIFACT_SINGLE_ENTRY_FLOOR_TOKENS) {
+    return {
+      content: renderDecisionArtifactOmissionOnly({
+        artifact: input.artifact,
+        omittedCount: input.activeEntryCount,
+        reason: "artifact entry too large to render",
+      }),
+      renderedEntryCount: 0,
+      omittedEntryCount: input.activeEntryCount,
+    };
+  }
+
+  const content = renderDecisionArtifactContent({
+    artifact: input.artifact,
+    entries: [
+      {
+        ...input.entry,
+        text: truncateDecisionArtifactText(input.entry.text, remainingTokens),
+      },
+    ],
+    omittedCount: input.omittedCount,
+  });
+
+  if (estimatePromptTokens(content) <= input.maxTokens) {
+    return {
+      content,
+      renderedEntryCount: 1,
+      omittedEntryCount: input.omittedCount,
+    };
+  }
+
+  return {
+    content: renderDecisionArtifactOmissionOnly({
+      artifact: input.artifact,
+      omittedCount: input.activeEntryCount,
+      reason: "artifact entry too large to render",
+    }),
+    renderedEntryCount: 0,
+    omittedEntryCount: input.activeEntryCount,
+  };
+}
+
 function cappedDecisionArtifactRender(input: {
   artifact: DecisionArtifact;
   maxEntries: number;
@@ -1189,6 +1275,20 @@ function cappedDecisionArtifactRender(input: {
       entries,
       omittedCount,
     });
+  }
+
+  if (estimatePromptTokens(content) > input.maxTokens && entries.length === 1) {
+    const singleEntryRender = renderSingleEntryWithinDecisionArtifactCap({
+      artifact: input.artifact,
+      entry: entries[0]!,
+      omittedCount,
+      maxTokens: input.maxTokens,
+      activeEntryCount: activeEntries.length,
+    });
+
+    content = singleEntryRender.content;
+    entries = entries.slice(0, singleEntryRender.renderedEntryCount);
+    omittedCount = singleEntryRender.omittedEntryCount;
   }
 
   return {

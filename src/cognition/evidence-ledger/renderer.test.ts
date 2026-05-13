@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 
+import type { DecisionArtifact } from "../../memory/decision-artifacts/index.js";
+import {
+  createDecisionArtifactEntryId,
+  createEntityId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { EVIDENCE_LEDGER_SECTION_DEFINITIONS, type EvidenceLedger } from "./types.js";
 import {
   buildCompactPlannerLedgerPrompt,
   compactEvidenceLedger,
   renderCompactPlannerLedger,
+  renderDecisionStateArtifact,
   renderEvidenceLedger,
 } from "./renderer.js";
 
@@ -116,6 +123,41 @@ describe("renderEvidenceLedger", () => {
     expect(rendered).toContain(
       'state_metadata={"abandoned_reason":"No longer relevant.","abandoned_at":1800000000000}',
     );
+  });
+});
+
+describe("renderDecisionStateArtifact", () => {
+  it("caps a single oversized locked entry", () => {
+    const now = 1_000;
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const artifact: DecisionArtifact = {
+      audience_entity_id: audience,
+      record_version: 1,
+      created_at: now,
+      updated_at: now,
+      last_compiled_at: now,
+      last_compiled_stream_entry_id: source,
+      entries: [
+        {
+          id: createDecisionArtifactEntryId(),
+          audience_entity_id: audience,
+          kind: "locked",
+          text: "oversized decision ".repeat(10_000),
+          owner_entity_id: audience,
+          provenance_stream_entry_ids: [source],
+          last_updated_stream_entry_ids: [source],
+          created_at: now,
+          last_updated_at: now,
+          superseded_by_id: null,
+          rank: 0,
+        },
+      ],
+    };
+    const rendered = renderDecisionStateArtifact(artifact) ?? "";
+
+    expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(3_000);
+    expect(rendered).toContain(" ... [text truncated]");
   });
 });
 

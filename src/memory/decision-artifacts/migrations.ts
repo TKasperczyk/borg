@@ -33,7 +33,7 @@ export const decisionArtifactMigrations = [
           ON DELETE CASCADE,
         FOREIGN KEY (superseded_by_id)
           REFERENCES decision_artifact_entries(id)
-          ON DELETE SET NULL
+          ON DELETE RESTRICT
       );
 
       CREATE INDEX IF NOT EXISTS idx_decision_artifact_entries_audience_rank

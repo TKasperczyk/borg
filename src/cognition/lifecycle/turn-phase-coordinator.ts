@@ -79,7 +79,12 @@ import {
 import type { ToolDispatcher } from "../../tools/index.js";
 import type { Clock } from "../../util/clock.js";
 import { CognitionError } from "../../util/errors.js";
-import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
+import {
+  streamEntryIdHelpers,
+  type EntityId,
+  type SessionId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 import type { StreamIngestionCoordinator } from "../ingestion/index.js";
 import type { TurnPostGenerationGuardRunner } from "../generation/turn-post-generation-guard.js";
 import type { TurnLifecycleTracker } from "./turn-lifecycle-tracker.js";
@@ -102,6 +107,12 @@ type EvidenceLedgerFinalizerContext = {
 type EvidenceLedgerFinalizerBuildInput = EvidenceLedgerBuildInput & {
   isUserTurn: boolean;
 };
+
+const DECISION_ARTIFACT_LEDGER_STREAM_METADATA_KEYS = [
+  "stream_ids",
+  "source_stream_ids",
+  "evidence_stream_entry_ids",
+] as const;
 
 function listConstrainedRelationalSlotsForParticipants(
   repository: RelationalSlotRepository,
@@ -139,6 +150,59 @@ function audienceProfileForParticipants(
     participantProfiles.find((participant) => participant.entityId === audienceEntityId)?.profile ??
     null
   );
+}
+
+function addDecisionArtifactAllowedStreamId(ids: Set<StreamEntryId>, value: unknown): void {
+  if (typeof value === "string" && streamEntryIdHelpers.is(value)) {
+    ids.add(value);
+  }
+}
+
+function addDecisionArtifactAllowedStreamIds(ids: Set<StreamEntryId>, value: unknown): void {
+  if (typeof value === "string") {
+    addDecisionArtifactAllowedStreamId(ids, value);
+    return;
+  }
+
+  if (!Array.isArray(value)) {
+    return;
+  }
+
+  for (const item of value) {
+    addDecisionArtifactAllowedStreamId(ids, item);
+  }
+}
+
+function addDecisionArtifactEntryIdStreamHandle(ids: Set<StreamEntryId>, entryId: string): void {
+  const currentSessionPrefix = "current_session_stream:";
+  const currentUserPrefix = "current_user_message:";
+  const source = entryId.startsWith(currentSessionPrefix)
+    ? entryId.slice(currentSessionPrefix.length)
+    : entryId.startsWith(currentUserPrefix)
+      ? entryId.slice(currentUserPrefix.length)
+      : null;
+
+  addDecisionArtifactAllowedStreamId(ids, source);
+}
+
+function collectDecisionArtifactAllowedStreamEntryIds(
+  ledger: EvidenceLedger,
+  currentUserStreamEntryId: StreamEntryId,
+): StreamEntryId[] {
+  const ids = new Set<StreamEntryId>([currentUserStreamEntryId]);
+
+  for (const section of ledger.sections) {
+    for (const entry of section.entries) {
+      addDecisionArtifactEntryIdStreamHandle(ids, entry.id);
+      addDecisionArtifactAllowedStreamIds(ids, entry.citations);
+
+      for (const key of DECISION_ARTIFACT_LEDGER_STREAM_METADATA_KEYS) {
+        addDecisionArtifactAllowedStreamIds(ids, entry.state_metadata?.[key]);
+      }
+    }
+  }
+
+  return [...ids];
 }
 
 export type TurnPhaseInput = {
@@ -1346,6 +1410,7 @@ export class TurnPhaseCoordinator {
     const renderedWithoutArtifact = renderEvidenceLedger(ledgerWithoutArtifact);
     const decisionArtifact = await this.compileDecisionArtifactForEvidenceLedger({
       input,
+      ledger: ledgerWithoutArtifact,
       promptVisibleLedger: renderedWithoutArtifact ?? "",
     });
     const ledger = this.withDecisionArtifact(ledgerWithoutArtifact, decisionArtifact);
@@ -1402,6 +1467,7 @@ export class TurnPhaseCoordinator {
 
   private async compileDecisionArtifactForEvidenceLedger(input: {
     input: EvidenceLedgerFinalizerBuildInput;
+    ledger: EvidenceLedger;
     promptVisibleLedger: string;
   }): Promise<DecisionArtifact | null> {
     const audienceEntityId = input.input.audienceEntityId;
@@ -1436,6 +1502,10 @@ export class TurnPhaseCoordinator {
       currentUserStreamEntryId: input.input.currentUserEntry.id,
       promptVisibleLedger: input.promptVisibleLedger,
       previousArtifact,
+      allowedSourceStreamEntryIds: collectDecisionArtifactAllowedStreamEntryIds(
+        input.ledger,
+        input.input.currentUserEntry.id,
+      ),
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.input.turnId,
