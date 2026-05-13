@@ -26,19 +26,20 @@ Concrete examples:
 
 Rationale: we previously deleted ManifestValidator (8d.8/8d.9) for exactly this reason -- it tried to enforce claim-coverage from outside the model when the model handles claim-coverage better natively when prompted well. Adding external auditors that second-guess the model's within-response taste just adds latency, complexity, and another LLM call with the same blind spots as the first.
 
-## Solutions to refuse on sight
+## Production policing of model output
 
-Before proposing any of these, stop. If the Opus 5.0 test verdict is "out of scope", refuse to propose, even when the user asks for options. Naming a pattern and refusing it is the right move; offering the pattern with caveats is not. The shapes below are seductive because they look like rigorous engineering -- testable, deterministic, predictable -- and they regress past lessons every time.
+The pattern to avoid is **production policing**: an LLM (or deterministic check) that rewrites or suppresses Borg's user-facing output based on semantic judgment. Second-guessing the model with another agent that has the same blind spots adds latency, fires on the wrong things, and tends to mask harness gaps that should be fixed upstream. **Reserve production policing for critical violations only**: substrate hygiene (internal IDs leaking from prompt context), safety, prompt-injection attacks, tool-shape invariants. Not for "is this claim well-grounded", "is this attribution accurate", or "is this number cited correctly" -- those are the model's responsibility given correct context.
 
-- **LLM-grades-LLM validators.** A second LLM call that audits the first for claim correctness, attribution, citation grounding, or semantic quality. Same blind spots as the generator. Precedent: ManifestValidator deletion (Sprint 8d.8-9).
-- **Deterministic semantic re-validators.** Regex/pattern checks that re-verify claim grounding, citation accuracy, named-entity presence, numeric attribution, or other semantic correctness in model output. These are always symptoms of presentation gaps -- fix what the model sees in the prompt/ledger/recency, do not audit what it says afterward.
-- **Post-generation rewriters with semantic judgment.** Code that edits model output to "improve" it based on inferred intent. The model owns its prose; we own its input.
+The distinguishing question on any proposed check: **is it observing/structuring/auditing, or is it deciding what reaches the user?**
 
-In-scope deterministic checks (substrate hygiene only):
-- Internal ID leak detection (Sprint 9.13): catches `strm_`, `ep_`, `oq_`, `semn_`, `sess_`, `cmt_` and similar in emitted text. These should never appear regardless of model intelligence.
-- Tool-shape structural invariants: schema validation of emission tool fields, content non-emptiness, mutex constraints between fields, reference validity (e.g., reply_target.entity_id must be a known entity), encoding sanity.
+Allowed and load-bearing in Borg:
+- **LLM reading LLM output for extraction, classification, interpretation.** The semantic extractor, action-state extractor, goal-promotion extractor, corrective-preference extractor, reflector, perception, recency compiler -- all read prior LLM output to produce structured data. Not policing.
+- **Post-hoc / eval-time audit.** The simulator overseer runs LLM audits at checkpoints over bounded sims; findings drive harness improvements rather than in-flight enforcement. The offline overseer audits production state into the review queue -- gray zone (production-resident, but doesn't enforce in-flight), case-by-case.
+- **Critical-violation enforcement.** Internal-ID leak detection (Sprint 9.13). Schema/structural invariants of emission tools (field non-emptiness, mutex constraints, reference validity, encoding sanity). Narrow scope, clear failure mode, never about semantic judgment.
 
-The line: **substrate vs semantic.** Enforce substrate (artifacts that should never appear, structural invariants of our own tool shapes). Never enforce meaning (claim grounding, attribution, citation truth, naming correctness, numeric accuracy). Meaning is the model's job given the right context.
+Pushback expected if proposed (not refused outright, but argue for it explicitly):
+- **In-flight LLM judges of semantic correctness in production.** Examples: relational claim guard, manifest-style claim validators. Precedent: ManifestValidator deletion (Sprint 8d.8-9) chose to drop this shape because the audit had the same blind spots as the generator and prompt-side fixes worked better. When proposing one, name what's critical about the violation. If it isn't critical, the right answer is usually upstream (better extraction, better presentation, better prompt copy).
+- **Deterministic semantic re-validators in production.** Regex/pattern checks re-verifying claim grounding, citation accuracy, named-entity presence, numeric attribution in emitted text. Same problem one layer down -- if the model needed something the harness didn't give it, fix the harness, don't audit the output.
 
 ## Proposal hygiene
 
@@ -47,6 +48,6 @@ Any proposal for new harness work touching `src/cognition/`, `src/retrieval/`, `
 - "Opus 5.0: in-scope because \<reason\>" -- the harness genuinely doesn't surface what the model needs, or has a structural correctness gap.
 - "Opus 5.0: out-of-scope -- the fix is \<X\>" -- where X is usually "stronger model", "better prompt copy", or "fix presentation in the ledger/recency/retrieval".
 
-The verdict line is mandatory, not optional. Run the test before proposing, not after pushback. If you find yourself drafting an external auditor / validator / grader / claim checker / deterministic claim grounding, you almost certainly skipped this check -- the named patterns above exist precisely because that solution shape feels like good engineering and isn't.
+The verdict line is mandatory, not optional. Run the test before proposing, not after pushback.
 
-When the verdict is out-of-scope, the right output is one sentence naming the harness-side fix, not a list of options that includes the refused pattern with caveats. Listing the refused pattern at all is the failure mode.
+When the verdict is out-of-scope, the harness-side fix is usually the answer (better prompt, ledger render, retrieval, extraction). If you find yourself drafting a production policeman of model output -- LLM or deterministic -- pause and name what's critical about the violation. For non-critical semantic judgments (claim grounding, citation accuracy, attribution correctness), production policing is the failure mode regardless of how rigorous it looks. Audit and extraction shapes are different and fine; the test is whether the new component decides what reaches the user.
