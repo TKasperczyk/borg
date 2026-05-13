@@ -4,7 +4,15 @@ export {
   type EvidenceLedgerBuildInput,
   type EvidenceLedgerBuilderOptions,
 } from "./builder.js";
-export { estimateEvidenceLedgerPromptTokens, renderEvidenceLedger } from "./renderer.js";
+export {
+  buildCompactPlannerLedgerPrompt,
+  estimateEvidenceLedgerPromptTokens,
+  renderCompactPlannerLedger,
+  renderEvidenceLedger,
+  type CompactPlannerLedgerOptions,
+  type CompactPlannerLedgerPrompt,
+  type CompactPlannerLedgerTraceSummary,
+} from "./renderer.js";
 export {
   evidenceLedgerSourceTypeSchema,
   type EvidenceLedger,

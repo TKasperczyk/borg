@@ -22,7 +22,8 @@ import {
 } from "./prompt/system-prompt.js";
 import { runS2Planner } from "./s2-planner.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
-import { NOOP_TRACER, type TurnTracer } from "../tracing/tracer.js";
+import { NOOP_TRACER, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import { buildCompactPlannerLedgerPrompt } from "../evidence-ledger/index.js";
 import type { GenerationSuppressionReason, PendingTurnEmission } from "../generation/types.js";
 import type {
   DeliberationContext,
@@ -300,12 +301,37 @@ export class Deliberator {
     // emits a structured plan via tool-use; the finalizer consumes that
     // plan as explicit structured context rather than "scratchpad text"
     // jammed into its system prompt.
+    const compactPlannerLedger =
+      context.evidenceLedger === undefined || context.evidenceLedger === null
+        ? null
+        : buildCompactPlannerLedgerPrompt(context.evidenceLedger);
+
+    if (compactPlannerLedger !== null && this.tracer.enabled && context.turnId !== undefined) {
+      this.tracer.emit("planner_compact_ledger_built", {
+        turnId: context.turnId,
+        entry_counts: toTraceJsonValue(compactPlannerLedger.traceSummary.entryCountsBySection),
+        omitted_entry_counts: toTraceJsonValue(
+          compactPlannerLedger.traceSummary.omittedEntryCountsBySection,
+        ),
+        estimated_tokens_by_section: toTraceJsonValue(
+          compactPlannerLedger.traceSummary.estimatedTokensBySection,
+        ),
+        total_estimated_tokens: compactPlannerLedger.traceSummary.totalEstimatedTokens,
+        target_tokens: compactPlannerLedger.traceSummary.targetTokens,
+        hard_cap_tokens: compactPlannerLedger.traceSummary.hardCapTokens,
+      });
+    }
+
     const planner = await runS2Planner({
       llmClient: this.options.llmClient,
       model: this.options.cognitionModel,
       baseSystemPrompt,
       dialogueMessages,
       selfSnapshot: context.selfSnapshot,
+      ...(compactPlannerLedger?.promptSection === undefined ||
+      compactPlannerLedger.promptSection === null
+        ? {}
+        : { additionalPromptSections: [compactPlannerLedger.promptSection] }),
       maxTokens: planningMaxTokens,
       ...(thinking === undefined ? {} : { thinking }),
       tracer: this.tracer,

@@ -87,6 +87,7 @@ export type RunS2PlannerOptions = {
   baseSystemPrompt: string;
   dialogueMessages: readonly LLMMessage[];
   selfSnapshot: SelfSnapshot;
+  additionalPromptSections?: readonly (string | null)[];
   maxTokens: number;
   thinking?: LLMCompleteOptions["thinking"];
   tracer?: TurnTracer;
@@ -107,6 +108,7 @@ export async function runS2Planner(options: RunS2PlannerOptions): Promise<S2Plan
   const systemPrompt = [
     options.baseSystemPrompt,
     plannerVoiceAnchors,
+    ...(options.additionalPromptSections ?? []),
     [
       "You are about to decide whether and how to engage with a reflective, high-stakes, or contradictory turn.",
       `Emit a structured plan by calling the ${TURN_PLAN_TOOL_NAME} tool exactly once.`,

@@ -21,8 +21,10 @@ export {
 } from "./deliberation/deliberator.js";
 export {
   EvidenceLedgerBuilder,
+  buildCompactPlannerLedgerPrompt,
   evidenceLedgerSourceTypeSchema,
   estimateEvidenceLedgerPromptTokens,
+  renderCompactPlannerLedger,
   renderEvidenceLedger,
   summarizeEvidenceLedgerTrace,
   type EvidenceLedger,
@@ -37,6 +39,9 @@ export {
   type EvidenceLedgerTaint,
   type EvidenceLedgerTraceSummary,
   type EvidenceLedgerTranscriptOmittedReason,
+  type CompactPlannerLedgerOptions,
+  type CompactPlannerLedgerPrompt,
+  type CompactPlannerLedgerTraceSummary,
 } from "./evidence-ledger/index.js";
 export { Perceiver, perceive } from "./perception/index.js";
 export {
