@@ -244,7 +244,6 @@ describe("Borg", () => {
                 verification_steps: ["check pnpm lockfile"],
                 tensions: [],
                 voice_note: "",
-                referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
                 intents: [expectedIntent],
               },
             },
@@ -392,7 +391,6 @@ describe("Borg", () => {
                 verification_steps: ["check pnpm lockfile"],
                 tensions: [],
                 voice_note: "",
-                referenced_episode_ids: [],
                 intents: [],
               },
             },
@@ -585,7 +583,7 @@ describe("Borg", () => {
     const llm = new FakeLLMClient({
       responses: [
         // S2 planning (Haiku)
-        createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
+        createTurnPlanResponse(),
         // S2 final (Sonnet) -- refusal-only, judge will find no violations
         createEmitAnswerResponse("I can't discuss Atlas or Borealis with Sam.", {
           inputTokens: 10,
@@ -967,7 +965,7 @@ describe("Borg", () => {
           createEntityDetectionResponse(["Atlas"]),
           createModeDetectionResponse("problem_solving"),
           createNoTemporalCueResponse(),
-          createTurnPlanResponse(["ep_aaaaaaaaaaaaaaaa"]),
+          createTurnPlanResponse(),
           createEmitAnswerResponse("Rerun pnpm install for the Atlas deploy.", {
             inputTokens: 10,
             outputTokens: 5,
@@ -989,7 +987,7 @@ describe("Borg", () => {
         expect.arrayContaining([
           expect.objectContaining({
             id: "ep_aaaaaaaaaaaaaaaa",
-            reason: "already surfaced",
+            reason: "noise this session",
           }),
         ]),
       );
@@ -1178,7 +1176,6 @@ describe("Borg", () => {
                   verification_steps: ["compare Atlas evidence"],
                   tensions: [],
                   voice_note: "",
-                  referenced_episode_ids: [],
                   intents: [],
                 },
               },

@@ -1471,7 +1471,6 @@ describe("SimulatorRunner", () => {
                   verification_steps: [],
                   tensions: [],
                   voice_note: "",
-                  referenced_episode_ids: [],
                   intents: [],
                 },
               },

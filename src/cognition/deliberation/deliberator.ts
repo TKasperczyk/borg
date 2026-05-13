@@ -434,7 +434,7 @@ export class Deliberator {
         ...context.retrievalResult,
         ...(secondaryRetrieval?.episodes ?? []),
       ]),
-      referencedEpisodeIds: plan?.referenced_episode_ids ?? null,
+      referencedEpisodeIds: null,
       intents: plan === null ? [] : [...plan.intents],
       thoughtsPersisted,
     };

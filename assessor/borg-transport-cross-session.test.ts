@@ -107,7 +107,7 @@ function recallExpansion(namedTerms: string[]): LLMCompleteResult {
   });
 }
 
-function turnPlan(referencedEpisodeIds: readonly EpisodeId[] = []): LLMCompleteResult {
+function turnPlan(): LLMCompleteResult {
   return completeWithTool({
     id: "toolu_turn_plan",
     name: "EmitTurnPlan",
@@ -117,7 +117,6 @@ function turnPlan(referencedEpisodeIds: readonly EpisodeId[] = []): LLMCompleteR
       tensions: [],
       voice_note: "",
       emission_recommendation: "emit",
-      referenced_episode_ids: [...referencedEpisodeIds],
       intents: [],
     },
   });
@@ -212,7 +211,7 @@ function extractorSourceIds(options: ScriptOptions): string[] {
     .map((entry) => entry.id);
 }
 
-function createScriptedLlm(getKnownEpisodeId: () => EpisodeId | null): FakeLLMClient {
+function createScriptedLlm(): FakeLLMClient {
   let recallExpansionCalls = 0;
   let extractionCalls = 0;
   const dispatcher = (options: ScriptOptions): string | LLMCompleteResult => {
@@ -231,8 +230,7 @@ function createScriptedLlm(getKnownEpisodeId: () => EpisodeId | null): FakeLLMCl
     }
 
     if (names.includes("EmitTurnPlan")) {
-      const episodeId = getKnownEpisodeId();
-      return turnPlan(episodeId === null ? [] : [episodeId]);
+      return turnPlan();
     }
 
     if (names.includes("EmitStopCommitmentClassification")) {
@@ -313,7 +311,7 @@ describe("cross-session recall_state integration", () => {
     const sessionA = createSessionId();
     const sessionB = createSessionId();
     let sessionAEpisodeId: EpisodeId | null = null;
-    const llm = createScriptedLlm(() => sessionAEpisodeId);
+    const llm = createScriptedLlm();
     const borg = await Borg.open({
       config: createTestConfig({
         dataDir: dir,

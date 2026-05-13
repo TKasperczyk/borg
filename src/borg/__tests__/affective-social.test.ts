@@ -69,9 +69,9 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("Try the rollback plan.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
         ],
       }),
       liveExtraction: false,
@@ -161,9 +161,9 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("We can slow down and inspect the failure.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
         ],
       }),
       liveExtraction: false,
@@ -250,13 +250,13 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("Focus on the audience and clarify the tone first.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
           createEmitAnswerResponse("I'll keep this short for Sam.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
         ],
       }),
     });
@@ -339,24 +339,24 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          createTurnPlanResponse([]),
+          createTurnPlanResponse(),
           createEmitAnswerResponse("Warm, supportive reply for Sam.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
-          createTurnPlanResponse([]),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
+          createTurnPlanResponse(),
           createEmitAnswerResponse("I hear that landed badly.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
           createEmitAnswerResponse("I hear that landed badly.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
           createEmitAnswerResponse("I hear that landed badly.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
         ],
       }),
       liveExtraction: false,
@@ -574,29 +574,29 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("First reply for Sam.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
           createEmitAnswerResponse("Autonomous reflection.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
           createEmitAnswerResponse("Follow-up reply for Sam.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
           createEmitAnswerResponse("Extra fallback.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
           createEmitAnswerResponse("Extra fallback.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
           createEmitAnswerResponse("Extra fallback.", {
-              inputTokens: 8,
-              outputTokens: 4,
-            }),
+            inputTokens: 8,
+            outputTokens: 4,
+          }),
         ],
       }),
     });
@@ -695,10 +695,13 @@ describe("Borg", () => {
       embeddingClient: new ScriptedEmbeddingClient(),
       llmClient: new FakeLLMClient({
         responses: [
-          createEmitAnswerResponse("Amazing, great, wonderful progress! I'm thrilled this is working!", {
+          createEmitAnswerResponse(
+            "Amazing, great, wonderful progress! I'm thrilled this is working!",
+            {
               inputTokens: 8,
               outputTokens: 4,
-            }),
+            },
+          ),
         ],
       }),
     });
@@ -754,9 +757,9 @@ describe("Borg", () => {
       llmClient: new FakeLLMClient({
         responses: [
           createEmitAnswerResponse("Let's inspect the deploy state first.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
           createEmptyReflectionResponse(),
         ],
       }),
@@ -846,9 +849,9 @@ describe("Borg", () => {
           createInvalidModeClassifierResponse(),
           createNoTemporalCueResponse(),
           createEmitAnswerResponse("The turn still completed.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
           createEmptyReflectionResponse(),
         ],
       }),

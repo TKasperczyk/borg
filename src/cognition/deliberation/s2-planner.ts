@@ -45,11 +45,6 @@ const turnPlanSchema = z.object({
     .describe(
       "Use no_output only when the conversation has naturally closed and the correct current-turn behavior is to emit no assistant message at all; otherwise use emit and let the finalizer choose visible speech or observation.",
     ),
-  referenced_episode_ids: z
-    .array(z.string())
-    .describe(
-      "List the episode_ids from borg_retrieved_evidence that you actually used as evidence; empty if none were drawn on.",
-    ),
   intents: z
     .array(intentRecordSchema)
     .describe(
@@ -65,7 +60,7 @@ export const TURN_PLAN_TOOL_NAME = "EmitTurnPlan";
 const TURN_PLAN_TOOL: LLMToolDefinition = {
   name: TURN_PLAN_TOOL_NAME,
   description:
-    "Emit a structured plan for this reflective/high-stakes turn before the final engagement decision. The plan is passed back to you in the final-response call so you can execute against it. List the episode_ids from borg_retrieved_evidence that you actually used as evidence; empty if none were drawn on. Emit follow-up intents only for concrete future actions worth carrying in working memory.",
+    "Emit a structured plan for this reflective/high-stakes turn before the final engagement decision. The plan is passed back to you in the final-response call so you can execute against it. Emit follow-up intents only for concrete future actions worth carrying in working memory.",
   inputSchema: toToolInputSchema(turnPlanSchema),
   // Sprint 8d.6.5 placed cache_control here, but v39 traces (codex
   // 1b0384c3) showed it was a no-op: TURN_PLAN_TOOL JSON is ~2.2KB,

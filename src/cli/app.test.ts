@@ -1339,7 +1339,6 @@ describe("cli", () => {
                 verification_steps: ["check the Atlas deploy assumptions"],
                 tensions: [],
                 voice_note: "",
-                referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
                 intents: [],
               },
             },
@@ -1382,15 +1381,7 @@ describe("cli", () => {
     });
 
     const exitCode = await runCli(
-      [
-        "node",
-        "borg",
-        "turn",
-        "Atlas deploy has a pnpm failure",
-        "--stakes",
-        "high",
-        "--verbose",
-      ],
+      ["node", "borg", "turn", "Atlas deploy has a pnpm failure", "--stakes", "high", "--verbose"],
       {
         stdout: stdout.stream,
         stderr: stderr.stream,
@@ -1429,25 +1420,24 @@ describe("cli", () => {
                 verification_steps: [],
                 tensions: [],
                 voice_note: "",
-                referenced_episode_ids: [],
                 intents: [],
               },
             },
           ],
         },
-          {
-            text: "",
-            input_tokens: 8,
-            output_tokens: 4,
-            stop_reason: "tool_use",
-            tool_calls: [
-              {
-                id: "toolu_emit_no_output_cli",
-                name: "EmitNoOutput",
-                input: { reason: "No assistant message is needed." },
-              },
-            ],
-          },
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_emit_no_output_cli",
+              name: "EmitNoOutput",
+              input: { reason: "No assistant message is needed." },
+            },
+          ],
+        },
       ],
     });
 

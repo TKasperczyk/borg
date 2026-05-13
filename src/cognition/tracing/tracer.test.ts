@@ -253,7 +253,6 @@ describe("TurnTracer", () => {
                 verification_steps: [],
                 tensions: [],
                 voice_note: "stay concrete",
-                referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
                 intents: [],
               },
             },

@@ -44,7 +44,7 @@ export const ENTITY_TOOL_NAME = "EmitEntityExtraction";
 export const MODE_TOOL_NAME = "EmitModeDetection";
 export const TEMPORAL_TOOL_NAME = "EmitTemporalCue";
 
-export function createTurnPlanResponse(referencedEpisodeIds: string[] = []) {
+export function createTurnPlanResponse() {
   return {
     text: "",
     input_tokens: 8,
@@ -59,7 +59,6 @@ export function createTurnPlanResponse(referencedEpisodeIds: string[] = []) {
           verification_steps: [],
           tensions: [],
           voice_note: "",
-          referenced_episode_ids: referencedEpisodeIds,
           intents: [],
         },
       },

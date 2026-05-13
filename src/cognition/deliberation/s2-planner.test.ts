@@ -40,7 +40,6 @@ describe("s2 planner", () => {
                 tensions: [],
                 voice_note: "stay direct",
                 emission_recommendation: "emit",
-                referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
                 intents: [
                   {
                     description: "Check rollback status after the next deploy",
@@ -67,7 +66,6 @@ describe("s2 planner", () => {
       verification_steps: ["confirm rollback state"],
       voice_note: "stay direct",
       emission_recommendation: "emit",
-      referenced_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
       intents: [
         {
           description: "Check rollback status after the next deploy",
@@ -106,7 +104,6 @@ describe("s2 planner", () => {
                 tensions: ["Conversation has closed."],
                 voice_note: "Do not narrate silence.",
                 emission_recommendation: "no_output",
-                referenced_episode_ids: [],
                 intents: [],
               },
             },

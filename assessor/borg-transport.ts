@@ -453,7 +453,6 @@ function emptyPlan(): LLMCompleteResult {
       verification_steps: [],
       tensions: [],
       voice_note: "",
-      referenced_episode_ids: [],
       intents: [],
     },
   });

@@ -11,10 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg } from "./borg.js";
 import { DEFAULT_CONFIG } from "./config/index.js";
 import type { EmbeddingClient } from "./embeddings/index.js";
-import {
-  FakeLLMClient,
-  createFakeEmitAnswerResponse,
-} from "./llm/test-support/fake-client.js";
+import { FakeLLMClient, createFakeEmitAnswerResponse } from "./llm/test-support/fake-client.js";
 import { ManualClock } from "./util/clock.js";
 
 class ConstantEmbeddingClient implements EmbeddingClient {
@@ -278,16 +275,15 @@ describe("Sprint 28 integration", () => {
                 tensions: [],
                 voice_note: "Speak honestly about uncertainty.",
                 uncertainty: "high",
-                referenced_episode_ids: [],
                 intents: [],
               },
             },
           ],
           // Finalizer text response.
           createFakeEmitAnswerResponse("I do not have evidence on that yet.", {
-              inputTokens: 10,
-              outputTokens: 5,
-            }),
+            inputTokens: 10,
+            outputTokens: 5,
+          }),
         ],
       }),
     });
