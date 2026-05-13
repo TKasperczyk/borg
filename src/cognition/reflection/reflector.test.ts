@@ -1234,10 +1234,10 @@ describe("reflector", () => {
     expect(goalsRepository.list({ status: "active" })[0]?.progress_notes).toContain(
       "Updated the Atlas release stabilization plan.",
     );
-    expect(episodicRepository.getStats(episode.id)?.use_count).toBe(0);
+    expect(episodicRepository.getStats(episode.id)?.use_count).toBe(1);
     expect(traitsRepository.list()).toEqual([]);
     expect(reflected.pending_trait_attribution).toBeNull();
-    expect(suppressionSet.isSuppressed(episode.id)).toBe(false);
+    expect(suppressionSet.isSuppressed(episode.id)).toBe(true);
     expect(suppressionSet.isSuppressed("ep_stale")).toBe(false);
     // Phase E removed scratchpad/recent_thoughts from working memory. The
     // reflector no longer clears scratchpad or pushes thoughts into the

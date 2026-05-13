@@ -94,7 +94,6 @@ export type ReflectionResult = {
 };
 
 const SURFACED_TTL_TURNS = 4;
-const NOISE_TTL_TURNS = 2;
 const REFLECTION_TOOL_NAME = "EmitTurnReflection";
 const DEFAULT_REFLECTION_MAX_TOKENS = 768;
 
@@ -581,11 +580,9 @@ export class Reflector {
       }
     }
 
-    const referencedEpisodeIds = selectReferencedRetrievedEpisodeIds(
-      context.deliberationResult,
-      context.retrievedEpisodes,
+    const retrievedEpisodeIdSet = new Set(
+      context.retrievedEpisodes.map((result) => result.episode.id),
     );
-    const referencedEpisodeIdSet = new Set(referencedEpisodeIds);
 
     await this.applyResolvedOpenQuestions(
       context,
@@ -594,31 +591,22 @@ export class Reflector {
     );
 
     for (const result of context.retrievedEpisodes) {
-      const used = referencedEpisodeIdSet.has(result.episode.id);
+      const stats = this.options.episodicRepository.getStats(result.episode.id);
 
-      if (used) {
-        const stats = this.options.episodicRepository.getStats(result.episode.id);
-
-        if (stats !== null) {
-          this.options.episodicRepository.updateStats(result.episode.id, {
-            use_count: stats.use_count + 1,
-          });
-          effects.updatedEpisodeStats.push(stats);
-        }
-
-        context.suppressionSet.suppress(result.episode.id, "already surfaced", SURFACED_TTL_TURNS);
-        continue;
+      if (stats !== null) {
+        this.options.episodicRepository.updateStats(result.episode.id, {
+          use_count: stats.use_count + 1,
+        });
+        effects.updatedEpisodeStats.push(stats);
       }
 
-      if (context.deliberationResult.path === "system_2") {
-        context.suppressionSet.suppress(result.episode.id, "noise this session", NOISE_TTL_TURNS);
-      }
+      context.suppressionSet.suppress(result.episode.id, "already surfaced", SURFACED_TTL_TURNS);
     }
 
     await this.applyReflectionOpenQuestions(
       context,
       reflectionOutput.open_questions,
-      referencedEpisodeIdSet,
+      retrievedEpisodeIdSet,
       streamWriter,
       effects,
     );
@@ -1419,7 +1407,7 @@ export class Reflector {
   private async applyReflectionOpenQuestions(
     context: ReflectionContext,
     proposals: readonly ReflectionOutput["open_questions"][number][],
-    referencedEpisodeIdSet: ReadonlySet<EpisodeId>,
+    retrievedEpisodeIdSet: ReadonlySet<EpisodeId>,
     streamWriter: StreamWriter,
     effects: ReflectionEffects,
   ): Promise<void> {
@@ -1447,8 +1435,8 @@ export class Reflector {
       }
 
       const proposedEpisodeIds = [...new Set(proposal.related_episode_ids)];
-      const relatedEpisodeIds = proposedEpisodeIds.filter((id) => referencedEpisodeIdSet.has(id));
-      const droppedEpisodeIds = proposedEpisodeIds.filter((id) => !referencedEpisodeIdSet.has(id));
+      const relatedEpisodeIds = proposedEpisodeIds.filter((id) => retrievedEpisodeIdSet.has(id));
+      const droppedEpisodeIds = proposedEpisodeIds.filter((id) => !retrievedEpisodeIdSet.has(id));
       const existing = this.options.openQuestionsRepository?.getByDedupeKey(
         buildOpenQuestionDedupeKey({
           question,
@@ -1500,10 +1488,6 @@ export class Reflector {
   private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
     const pendingProceduralAttempts = context.workingMemory.pending_procedural_attempts ?? [];
     const pendingActions = context.workingMemory.pending_actions;
-    const referencedEpisodeIds = selectReferencedRetrievedEpisodeIds(
-      context.deliberationResult,
-      context.retrievedEpisodes,
-    );
     const isAutonomousTurn = context.origin === "autonomous";
     const hasUserVisibleTurnPayload =
       !isAutonomousTurn &&
@@ -1517,7 +1501,6 @@ export class Reflector {
       context.selfSnapshot.goals.length > 0 ||
       pendingProceduralAttempts.length > 0 ||
       pendingActions.length > 0 ||
-      referencedEpisodeIds.length > 0 ||
       activeOpenQuestions.length > 0 ||
       hasExecutiveWork ||
       hasUserVisibleTurnPayload;
@@ -1582,17 +1565,6 @@ export class Reflector {
               title: result.episode.title,
               narrative: result.episode.narrative,
             })),
-            referenced_episodes: referencedEpisodeIds.map((episodeId) => {
-              const result = context.retrievedEpisodes.find(
-                (item) => item.episode.id === episodeId,
-              );
-
-              return {
-                id: episodeId,
-                title: result?.episode.title,
-                narrative: result?.episode.narrative,
-              };
-            }),
           }),
         },
       ],
@@ -1618,37 +1590,6 @@ export class Reflector {
 
     return parsed.data;
   }
-}
-
-function selectReferencedRetrievedEpisodeIds(
-  deliberationResult: DeliberationResult,
-  retrievedEpisodes: readonly RetrievedEpisode[],
-): RetrievedEpisode["episode"]["id"][] {
-  if (
-    deliberationResult.referencedEpisodeIds === null ||
-    deliberationResult.referencedEpisodeIds.length === 0
-  ) {
-    return [];
-  }
-
-  const retrievedIds = new Map(
-    retrievedEpisodes.map((result) => [result.episode.id, result.episode.id]),
-  );
-  const selected: RetrievedEpisode["episode"]["id"][] = [];
-  const seen = new Set<string>();
-
-  for (const referencedId of deliberationResult.referencedEpisodeIds) {
-    const retrievedId = retrievedIds.get(referencedId as RetrievedEpisode["episode"]["id"]);
-
-    if (retrievedId === undefined || seen.has(retrievedId)) {
-      continue;
-    }
-
-    seen.add(retrievedId);
-    selected.push(retrievedId);
-  }
-
-  return selected;
 }
 
 function selectTraitDemonstration(

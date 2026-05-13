@@ -987,7 +987,7 @@ describe("Borg", () => {
         expect.arrayContaining([
           expect.objectContaining({
             id: "ep_aaaaaaaaaaaaaaaa",
-            reason: "noise this session",
+            reason: "already surfaced",
           }),
         ]),
       );
