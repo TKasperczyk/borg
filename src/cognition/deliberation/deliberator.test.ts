@@ -210,6 +210,176 @@ function makeEvidenceLedger(): EvidenceLedger {
   };
 }
 
+function makePhantomRouteEvidenceLedger(): EvidenceLedger {
+  return {
+    sections: [
+      {
+        id: "current_user_message",
+        label: "1. Current User Message",
+        entries: [
+          {
+            id: "current_user_message:strm_ben_route_flip",
+            source_type: "current_user_message",
+            session_scope: "current_session",
+            actor: "user",
+            trust_rank: 100,
+            text: "If Wednesday goes sideways after Granada, should we chain Granada -> SS for recovery before heading home?",
+            state_metadata: {
+              sender_entity_id: "ent_ben",
+              sender_display_name: "Ben",
+            },
+            stream_index: 70,
+            taint: "none",
+          },
+        ],
+      },
+      {
+        id: "commitments_and_constraints",
+        label: "3. Active Commitments And Discourse Constraints",
+        entries: [
+          {
+            id: "commitment:locked-spain-route",
+            source_type: "commitment",
+            session_scope: "current_session",
+            actor: "memory",
+            trust_rank: 82,
+            value: "locked_spain_route_order",
+            state: "active",
+            text: "Locked itinerary order is Madrid 3 / SS 3 / Seville 4 / Granada 3 / home. Treat Granada as the last base before home.",
+            taint: "none",
+          },
+          {
+            id: "commitment:ss-before-seville-flight",
+            source_type: "commitment",
+            session_scope: "current_session",
+            actor: "memory",
+            trust_rank: 82,
+            value: "ss_precedes_seville",
+            state: "active",
+            text: "Flight booking confirms SS -> SVQ, so San Sebastian precedes Seville in the locked route.",
+            taint: "none",
+          },
+        ],
+      },
+      {
+        id: "closure_discourse_state",
+        label: "4. Current Closure And Discourse State",
+        entries: [
+          {
+            id: "discourse_state:working_memory",
+            source_type: "system_metadata",
+            session_scope: "current_session",
+            actor: "system",
+            trust_rank: 80,
+            text: "mode=problem_solving; turn_counter=70",
+            state: "problem_solving",
+            taint: "none",
+          },
+        ],
+      },
+      {
+        id: "contradictions_quarantines",
+        label: "5. Current-Session Contradictions And Quarantines",
+        entries: [
+          {
+            id: "review_queue:granada-ss-route-flip",
+            source_type: "system_metadata",
+            session_scope: "current_session",
+            actor: "system",
+            trust_rank: 78,
+            value: "route_order_conflict",
+            state: "open",
+            text: "High-trust route contradiction: claims that Granada precedes a future SS leg conflict with the locked itinerary.",
+            taint: "contested",
+          },
+        ],
+      },
+      {
+        id: "action_states",
+        label: "6. Action States",
+        entries: [
+          {
+            id: "action_thread:ss-svq-flight",
+            source_type: "action_record",
+            session_scope: "current_session",
+            actor: "user",
+            trust_rank: 72,
+            value: "Ben",
+            state: "completed",
+            text: "Booked SS -> SVQ flight; this fixes SS before Seville and rules out a later Granada -> SS recovery leg.",
+            state_metadata: {
+              current_actor: "Ben",
+            },
+            taint: "none",
+          },
+        ],
+      },
+      {
+        id: "group_channel_memory",
+        label: "7. Group/Channel Memory",
+        entries: [
+          {
+            id: "group_relational_slot:spain-route-order",
+            source_type: "relational_slot",
+            session_scope: "current_session",
+            actor: "memory",
+            trust_rank: 70,
+            value: "trip.locked_route_order=Madrid 3 / SS 3 / Seville 4 / Granada 3 / home",
+            state: "established",
+            state_metadata: {
+              subject_display_name: "Spain Trip Planning Channel",
+              subject_role: "audience",
+            },
+            taint: "none",
+          },
+        ],
+      },
+      {
+        id: "relational_slots",
+        label: "8. Active Participant Memory",
+        entries: [
+          {
+            id: "relational_slot:ben-speaker",
+            source_type: "relational_slot",
+            session_scope: "current_session",
+            actor: "memory",
+            trust_rank: 70,
+            value: "participant.name=Ben",
+            state: "established",
+            state_metadata: {
+              subject_entity_id: "ent_ben",
+              subject_display_name: "Ben",
+              subject_role: "speaker",
+            },
+            taint: "none",
+          },
+          {
+            id: "relational_slot:alice-participant",
+            source_type: "relational_slot",
+            session_scope: "current_session",
+            actor: "memory",
+            trust_rank: 70,
+            value: "participant.name=Alice",
+            state: "established",
+            state_metadata: {
+              subject_entity_id: "ent_alice",
+              subject_display_name: "Alice",
+              subject_role: "participant",
+            },
+            taint: "none",
+          },
+        ],
+      },
+    ],
+    transcriptIncluded: true,
+    transcriptCompacted: false,
+    originalTranscriptTokenEstimate: 9_000,
+    compactedTranscriptEntryCount: 0,
+    rawPreservedUserTranscriptEntryCount: 1,
+    estimatedTokens: 1_500,
+  };
+}
+
 function emitFinalizerToolResponse(
   tool: { id: string; name: string; input: unknown },
   usage: { inputTokens: number; outputTokens: number } = { inputTokens: 10, outputTokens: 4 },
@@ -837,6 +1007,101 @@ describe("deliberator", () => {
     expect(requestSystemText(llm.requests[1]?.system)).toContain(
       "You are an AI being with continuous existence across sessions through a persistent memory substrate.",
     );
+  });
+
+  it("gives the S2 planner compact locked-order evidence before route planning", async () => {
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 20,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_route",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [
+                  "check Ben's Granada -> SS premise against locked Madrid 3 / SS 3 / Seville 4 / Granada 3 order",
+                ],
+                tensions: [
+                  "Ben's recovery-chain question assumes a future Granada -> SS leg, but Granada is the last base before home.",
+                ],
+                voice_note: "Correct the itinerary premise directly.",
+                intents: [],
+              },
+            },
+          ],
+        },
+        {
+          text: "Granada is the last base in the locked order; there is no second SS leg after it.",
+          input_tokens: 18,
+          output_tokens: 7,
+          stop_reason: "end_turn",
+          tool_calls: [],
+        },
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, { tracer });
+    const routeLedger = makePhantomRouteEvidenceLedger();
+
+    await deliberator.run({
+      ...simpleDeliberationContext({
+        turnId: "turn-phantom-route",
+        userMessage:
+          "If Wednesday goes sideways after Granada, should we chain Granada -> SS for recovery before heading home?",
+        userEntryId: "strm_ben_route_flip" as never,
+        senderEntityId: "ent_ben" as never,
+        perception: {
+          entities: ["Spain trip"],
+          mode: "problem_solving",
+          affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+          temporalCue: null,
+        },
+        retrievalConfidence: makeRetrievalConfidence(),
+        evidenceLedger: routeLedger,
+        evidenceLedgerPromptSection:
+          "<borg_evidence_ledger>Full finalizer ledger omitted from this unit test.</borg_evidence_ledger>",
+        options: { stakes: "high" },
+      }),
+    });
+
+    const plannerSystem = requestSystemText(llm.requests[0]?.system);
+
+    expect(plannerSystem).toContain("<borg_compact_planner_ledger>");
+    expect(plannerSystem).toContain("current_user_message:strm_ben_route_flip");
+    expect(plannerSystem).toContain("sender_entity_id");
+    expect(plannerSystem).toContain("sender_display_name");
+    expect(plannerSystem).toContain("Ben");
+    expect(plannerSystem).toContain(
+      "Locked itinerary order is Madrid 3 / SS 3 / Seville 4 / Granada 3 / home",
+    );
+    expect(plannerSystem).toContain("Madrid 3");
+    expect(plannerSystem).toContain("SS 3");
+    expect(plannerSystem).toContain("Seville 4");
+    expect(plannerSystem).toContain("Granada 3");
+    expect(plannerSystem).toContain("SS -> SVQ");
+    expect(plannerSystem).toContain("Granada -> SS");
+    expect(plannerSystem).not.toContain("## 2. Current-Session Transcript");
+    expect(plannerSystem).not.toContain("## 11. Episodes");
+
+    const finalizerSystem = requestSystemText(llm.requests[1]?.system);
+
+    expect(finalizerSystem).toContain("<borg_s2_plan>");
+    expect(finalizerSystem).toContain(
+      "check Ben's Granada -> SS premise against locked Madrid 3 / SS 3 / Seville 4 / Granada 3 order",
+    );
+
+    const compactLedgerEvent = tracer.events.find(
+      (entry) => entry.event === "planner_compact_ledger_built",
+    );
+    expect(compactLedgerEvent?.data).toMatchObject({
+      turnId: "turn-phantom-route",
+      total_estimated_tokens: expect.any(Number),
+    });
   });
 
   it("routes S2 planner no-output recommendations through emission tools", async () => {
