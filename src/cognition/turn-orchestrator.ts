@@ -7,6 +7,7 @@ import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
 import type { ActionRepository } from "../memory/actions/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
+import type { DecisionArtifactRepository } from "../memory/decision-artifacts/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
 import { SkillSelector } from "../memory/procedural/index.js";
@@ -105,6 +106,7 @@ export type TurnOrchestratorOptions = {
   relationalSlotRepository: RelationalSlotRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
+  decisionArtifactRepository: DecisionArtifactRepository;
   identityService: IdentityService;
   reviewQueueRepository: ReviewQueueRepository;
   openQuestionsRepository: OpenQuestionsRepository;
@@ -274,6 +276,7 @@ export class TurnOrchestrator {
       relationalSlotRepository: options.relationalSlotRepository,
       actionRepository: options.actionRepository,
       commitmentRepository: options.commitmentRepository,
+      decisionArtifactRepository: options.decisionArtifactRepository,
       goalsRepository: options.goalsRepository,
       openQuestionsRepository: options.openQuestionsRepository,
       toolDispatcher: options.toolDispatcher,

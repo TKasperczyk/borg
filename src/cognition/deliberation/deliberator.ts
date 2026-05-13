@@ -316,6 +316,9 @@ export class Deliberator {
         estimated_tokens_by_section: toTraceJsonValue(
           compactPlannerLedger.traceSummary.estimatedTokensBySection,
         ),
+        decision_artifact_entry_count: compactPlannerLedger.traceSummary.decisionArtifactEntryCount,
+        decision_artifact_rendered_token_estimate:
+          compactPlannerLedger.traceSummary.decisionArtifactRenderedTokens,
         total_estimated_tokens: compactPlannerLedger.traceSummary.totalEstimatedTokens,
         target_tokens: compactPlannerLedger.traceSummary.targetTokens,
         hard_cap_tokens: compactPlannerLedger.traceSummary.hardCapTokens,

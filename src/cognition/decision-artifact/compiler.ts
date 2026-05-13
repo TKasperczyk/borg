@@ -26,6 +26,7 @@ import {
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import { summarizeDecisionStateArtifactRender } from "../evidence-ledger/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";
@@ -343,8 +344,10 @@ function traceCompileCompleted(options: {
   operationCount: number;
   rejected: readonly PatchRejection[];
   applied: boolean;
-  recordVersion: number | null;
+  artifact: DecisionArtifact | null;
 }): void {
+  const artifactSummary = summarizeDecisionStateArtifactRender(options.artifact);
+
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("decision_artifact_compile_completed", {
       turnId: options.turnId,
@@ -354,7 +357,9 @@ function traceCompileCompleted(options: {
       rejectedCount: options.rejected.length,
       rejectionReasons: options.rejected.map((rejection) => rejection.reason),
       applied: options.applied,
-      recordVersion: options.recordVersion,
+      recordVersion: options.artifact?.record_version ?? null,
+      artifactEntryCount: artifactSummary.renderedEntryCount,
+      artifactRenderedTokenEstimate: artifactSummary.estimatedTokens,
     });
   }
 }
@@ -735,7 +740,7 @@ export async function compileDecisionArtifact(
       operationCount: 0,
       rejected: [],
       applied: false,
-      recordVersion: previousArtifact?.record_version ?? null,
+      artifact: previousArtifact,
     });
 
     return degraded(input, "llm_failed", error);
@@ -760,7 +765,7 @@ export async function compileDecisionArtifact(
       operationCount: 0,
       rejected: [],
       applied: false,
-      recordVersion: previousArtifact?.record_version ?? null,
+      artifact: previousArtifact,
     });
 
     return degraded(
@@ -797,7 +802,7 @@ export async function compileDecisionArtifact(
       operationCount: 0,
       rejected: normalized.rejected,
       applied: false,
-      recordVersion: previousArtifact?.record_version ?? null,
+      artifact: previousArtifact,
     });
 
     if (normalized.rejected.length > 0) {
@@ -826,7 +831,7 @@ export async function compileDecisionArtifact(
       operationCount: normalized.operations.length,
       rejected: normalized.rejected,
       applied: true,
-      recordVersion: nextArtifact?.record_version ?? null,
+      artifact: nextArtifact,
     });
   } catch (error) {
     traceCompileCompleted({
@@ -837,7 +842,7 @@ export async function compileDecisionArtifact(
       operationCount: normalized.operations.length,
       rejected: normalized.rejected,
       applied: false,
-      recordVersion: previousArtifact?.record_version ?? null,
+      artifact: previousArtifact,
     });
 
     return degraded(input, "repository_failed", error);

@@ -1,4 +1,8 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
+import type {
+  DecisionArtifact,
+  DecisionArtifactEntry,
+} from "../../memory/decision-artifacts/index.js";
 import { UNTRUSTED_DATA_PREAMBLE } from "../deliberation/constants.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import type {
@@ -21,6 +25,8 @@ const COMPACT_PLANNER_LEDGER_SECTION_IDS = [
 const DEFAULT_COMPACT_PLANNER_TARGET_TOKENS = 8_000;
 const DEFAULT_COMPACT_PLANNER_HARD_CAP_TOKENS = 15_000;
 const DEFAULT_COMPACT_ENTRY_TEXT_TOKEN_CAP = 600;
+const DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES = 25;
+const DEFAULT_DECISION_ARTIFACT_MAX_TOKENS = 3_000;
 
 const DEFAULT_COMPACT_SECTION_OPTIONS = {
   current_user_message: {
@@ -69,6 +75,8 @@ export type CompactPlannerLedgerTraceSummary = {
   entryCountsBySection: Record<EvidenceLedgerSectionId, number>;
   omittedEntryCountsBySection: Record<EvidenceLedgerSectionId, number>;
   estimatedTokensBySection: Record<EvidenceLedgerSectionId, number>;
+  decisionArtifactEntryCount: number;
+  decisionArtifactRenderedTokens: number;
   totalEstimatedTokens: number;
   targetTokens: number;
   hardCapTokens: number;
@@ -77,6 +85,13 @@ export type CompactPlannerLedgerTraceSummary = {
 export type CompactPlannerLedgerPrompt = {
   promptSection: string | null;
   traceSummary: CompactPlannerLedgerTraceSummary;
+};
+
+export type DecisionStateArtifactRenderSummary = {
+  activeEntryCount: number;
+  renderedEntryCount: number;
+  omittedEntryCount: number;
+  estimatedTokens: number;
 };
 
 type FullEvidenceLedgerSectionOptions = {
@@ -1042,9 +1057,14 @@ function compactSection(input: { section: EvidenceLedgerSection; maxEntryTextTok
   };
 }
 
-function totalCompactPromptTokens(sections: readonly CompactSectionResult[]): number {
+function totalCompactPromptTokens(
+  sections: readonly CompactSectionResult[],
+  decisionArtifact: DecisionArtifact | null | undefined,
+): number {
   return estimatePromptTokens(
-    renderCompactPlannerLedgerPromptSection(renderCompactPlannerLedgerContent(sections)) ?? "",
+    renderCompactPlannerLedgerPromptSection(
+      renderCompactPlannerLedgerContent(sections, decisionArtifact),
+    ) ?? "",
   );
 }
 
@@ -1056,8 +1076,9 @@ type CompactSectionResult = {
 function trimToTokenTarget(
   sections: CompactSectionResult[],
   targetTokens: number,
+  decisionArtifact: DecisionArtifact | null | undefined,
 ): CompactSectionResult[] {
-  while (totalCompactPromptTokens(sections) > targetTokens) {
+  while (totalCompactPromptTokens(sections, decisionArtifact) > targetTokens) {
     const trimIndex = [...sections]
       .reverse()
       .findIndex((section) => section.section.entries.length > 0);
@@ -1078,11 +1099,153 @@ function trimToTokenTarget(
   return sections;
 }
 
-function renderCompactPlannerLedgerContent(sections: readonly CompactSectionResult[]): string {
+function activeDecisionArtifactEntries(artifact: DecisionArtifact | null | undefined) {
+  return (artifact?.entries ?? []).filter(
+    (entry) =>
+      entry.superseded_by_id === null && (entry.kind === "locked" || entry.kind === "live"),
+  );
+}
+
+function orderedDecisionArtifactEntries(
+  entries: readonly DecisionArtifactEntry[],
+): DecisionArtifactEntry[] {
+  const locked = entries
+    .filter((entry) => entry.kind === "locked")
+    .sort((left, right) => left.rank - right.rank || left.created_at - right.created_at);
+  const live = entries
+    .filter((entry) => entry.kind === "live")
+    .sort((left, right) => right.last_updated_at - left.last_updated_at || left.rank - right.rank);
+
+  return [...locked, ...live];
+}
+
+function renderDecisionArtifactEntry(entry: DecisionArtifactEntry): string {
+  const owner = entry.owner_entity_id === null ? "owner=null" : `owner=${entry.owner_entity_id}`;
+  const citations = `[citation: ${entry.provenance_stream_entry_ids.join(", ")}]`;
+
   return [
+    `- kind=${entry.kind} id=${entry.id} ${owner} last_updated_at=${entry.last_updated_at} ${citations}`,
+    `  text: ${entry.text}`,
+  ].join("\n");
+}
+
+function renderDecisionArtifactContent(input: {
+  artifact: DecisionArtifact;
+  entries: readonly DecisionArtifactEntry[];
+  omittedCount: number;
+}): string {
+  const omission =
+    input.omittedCount <= 0
+      ? null
+      : `DecisionStateArtifact omitted ${input.omittedCount} older/lower-priority entries to stay within its render cap.`;
+
+  return [
+    "## 0. Canonical Decision State",
+    "DecisionStateArtifact: shared planning state for this audience. It is a compact structural anchor, not a policy source.",
+    `audience_entity_id=${input.artifact.audience_entity_id}`,
+    `record_version=${input.artifact.record_version}`,
+    ...input.entries.map(renderDecisionArtifactEntry),
+    omission,
+  ]
+    .filter((part): part is string => part !== null)
+    .join("\n");
+}
+
+function cappedDecisionArtifactRender(input: {
+  artifact: DecisionArtifact;
+  maxEntries: number;
+  maxTokens: number;
+}): { content: string | null; summary: DecisionStateArtifactRenderSummary } {
+  const activeEntries = activeDecisionArtifactEntries(input.artifact);
+
+  if (activeEntries.length === 0) {
+    return {
+      content: null,
+      summary: {
+        activeEntryCount: 0,
+        renderedEntryCount: 0,
+        omittedEntryCount: 0,
+        estimatedTokens: 0,
+      },
+    };
+  }
+
+  const orderedEntries = orderedDecisionArtifactEntries(activeEntries);
+  let entries = orderedEntries.slice(0, input.maxEntries);
+  let omittedCount = Math.max(0, orderedEntries.length - entries.length);
+  let content = renderDecisionArtifactContent({
+    artifact: input.artifact,
+    entries,
+    omittedCount,
+  });
+
+  while (estimatePromptTokens(content) > input.maxTokens && entries.length > 1) {
+    const liveIndex = entries.findLastIndex((entry) => entry.kind === "live");
+    const dropIndex = liveIndex >= 0 ? liveIndex : entries.length - 1;
+    entries = [...entries.slice(0, dropIndex), ...entries.slice(dropIndex + 1)];
+    omittedCount += 1;
+    content = renderDecisionArtifactContent({
+      artifact: input.artifact,
+      entries,
+      omittedCount,
+    });
+  }
+
+  return {
+    content,
+    summary: {
+      activeEntryCount: activeEntries.length,
+      renderedEntryCount: entries.length,
+      omittedEntryCount: omittedCount,
+      estimatedTokens: estimatePromptTokens(content),
+    },
+  };
+}
+
+export function renderDecisionStateArtifact(
+  artifact: DecisionArtifact | null | undefined,
+): string | null {
+  if (artifact === null || artifact === undefined) {
+    return null;
+  }
+
+  return cappedDecisionArtifactRender({
+    artifact,
+    maxEntries: DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES,
+    maxTokens: DEFAULT_DECISION_ARTIFACT_MAX_TOKENS,
+  }).content;
+}
+
+export function summarizeDecisionStateArtifactRender(
+  artifact: DecisionArtifact | null | undefined,
+): DecisionStateArtifactRenderSummary {
+  if (artifact === null || artifact === undefined) {
+    return {
+      activeEntryCount: 0,
+      renderedEntryCount: 0,
+      omittedEntryCount: 0,
+      estimatedTokens: 0,
+    };
+  }
+
+  return cappedDecisionArtifactRender({
+    artifact,
+    maxEntries: DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES,
+    maxTokens: DEFAULT_DECISION_ARTIFACT_MAX_TOKENS,
+  }).summary;
+}
+
+function renderCompactPlannerLedgerContent(
+  sections: readonly CompactSectionResult[],
+  decisionArtifact: DecisionArtifact | null | undefined,
+): string {
+  return [
+    renderDecisionStateArtifact(decisionArtifact),
     COMPACT_PLANNER_LEDGER_GUIDANCE,
     ...sections.map((section) => renderCompactSection(section.section, section.omittedCount)),
-  ].join("\n\n");
+  ]
+    .filter((part): part is string => part !== null)
+    .join("\n\n");
 }
 
 function renderCompactPlannerLedgerPromptSection(content: string): string | null {
@@ -1151,13 +1314,18 @@ export function buildCompactPlannerLedgerPrompt(
       omittedCount: compacted.omittedCount,
     };
   });
-  const trimmedSections = trimToTokenTarget(compactSections, targetTokens);
-  const hardCappedSections = trimToTokenTarget(trimmedSections, hardCapTokens);
-  const content = renderCompactPlannerLedgerContent(hardCappedSections);
+  const trimmedSections = trimToTokenTarget(compactSections, targetTokens, ledger.decisionArtifact);
+  const hardCappedSections = trimToTokenTarget(
+    trimmedSections,
+    hardCapTokens,
+    ledger.decisionArtifact,
+  );
+  const content = renderCompactPlannerLedgerContent(hardCappedSections, ledger.decisionArtifact);
   const promptSection = renderCompactPlannerLedgerPromptSection(content);
   const entryCountsBySection = emptySectionCountRecord();
   const omittedEntryCountsBySection = emptySectionCountRecord();
   const estimatedTokensBySection = emptySectionCountRecord();
+  const decisionArtifactSummary = summarizeDecisionStateArtifactRender(ledger.decisionArtifact);
 
   for (const section of hardCappedSections) {
     entryCountsBySection[section.section.id] = section.section.entries.length;
@@ -1173,6 +1341,8 @@ export function buildCompactPlannerLedgerPrompt(
       entryCountsBySection,
       omittedEntryCountsBySection,
       estimatedTokensBySection,
+      decisionArtifactEntryCount: decisionArtifactSummary.renderedEntryCount,
+      decisionArtifactRenderedTokens: decisionArtifactSummary.estimatedTokens,
       totalEstimatedTokens: estimatePromptTokens(promptSection ?? ""),
       targetTokens,
       hardCapTokens,
@@ -1198,8 +1368,11 @@ export function renderEvidenceLedger(ledger: EvidenceLedger): string | null {
     HIERARCHY_GUIDANCE,
     transcriptStatus,
     `estimated_tokens=${ledger.estimatedTokens}`,
+    renderDecisionStateArtifact(ledger.decisionArtifact),
     ...ledger.sections.map((section) => renderSection(section)),
-  ].join("\n\n");
+  ]
+    .filter((part): part is string => part !== null)
+    .join("\n\n");
 
   return renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
     {

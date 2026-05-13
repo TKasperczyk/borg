@@ -12,6 +12,7 @@ import {
   resolveOpenQuestionsForCompletedAction,
 } from "../memory/actions/index.js";
 import { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
+import { DecisionArtifactRepository } from "../memory/decision-artifacts/index.js";
 import { EpisodicRepository } from "../memory/episodic/index.js";
 import { IdentityEventRepository, IdentityService } from "../memory/identity/index.js";
 import {
@@ -86,6 +87,7 @@ export type BorgRepositorySetup = Pick<
   | "socialRepository"
   | "entityRepository"
   | "commitmentRepository"
+  | "decisionArtifactRepository"
   | "correctionService"
   | "skillRepository"
   | "proceduralContextStatsRepository"
@@ -254,6 +256,10 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
     identityEventRepository,
+  });
+  const decisionArtifactRepository = new DecisionArtifactRepository({
+    db: sqlite,
+    clock,
   });
   const identityService = new IdentityService({
     valuesRepository,
@@ -434,6 +440,7 @@ export async function buildBorgRepositories(
     socialRepository,
     entityRepository,
     commitmentRepository,
+    decisionArtifactRepository,
     correctionService,
     skillRepository,
     proceduralContextStatsRepository,

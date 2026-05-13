@@ -15,11 +15,13 @@ import {
   compactEvidenceLedger,
   estimateEvidenceLedgerPromptTokens,
   renderEvidenceLedger,
+  summarizeDecisionStateArtifactRender,
   summarizeEvidenceLedgerTrace,
   type EvidenceLedger,
   type EvidenceLedgerBuildInput,
   type EvidenceLedgerCompactionTraceSummary,
 } from "../evidence-ledger/index.js";
+import { compileDecisionArtifact } from "../decision-artifact/index.js";
 import type { TurnDiscourseStateService } from "../generation/turn-discourse-state.js";
 import {
   replyTargetEntityId,
@@ -56,6 +58,10 @@ import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { ActionRepository } from "../../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../../memory/commitments/index.js";
+import type {
+  DecisionArtifact,
+  DecisionArtifactRepository,
+} from "../../memory/decision-artifacts/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
 import {
   appendInternalFailureEvent,
@@ -91,6 +97,10 @@ const DELIBERATION_RELATIONAL_SLOT_LIMIT = 24;
 type EvidenceLedgerFinalizerContext = {
   ledger: EvidenceLedger | null;
   promptSection: string | null;
+};
+
+type EvidenceLedgerFinalizerBuildInput = EvidenceLedgerBuildInput & {
+  isUserTurn: boolean;
 };
 
 function listConstrainedRelationalSlotsForParticipants(
@@ -170,6 +180,7 @@ export type TurnPhaseCoordinatorOptions = {
   actionRepository: Pick<ActionRepository, "get" | "list"> &
     Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
   commitmentRepository: CommitmentRepository;
+  decisionArtifactRepository: Pick<DecisionArtifactRepository, "get" | "upsert">;
   goalsRepository: GoalsRepository;
   openQuestionsRepository: Pick<OpenQuestionsRepository, "findByHandles">;
   toolDispatcher: ToolDispatcher;
@@ -593,6 +604,7 @@ export class TurnPhaseCoordinator {
       pendingCorrections,
       frameAnomaly: currentTurnFrameAnomaly,
       activeParticipants,
+      isUserTurn,
     });
     const deliberator = new Deliberator({
       llmClient,
@@ -1299,7 +1311,7 @@ export class TurnPhaseCoordinator {
   }
 
   private async buildEvidenceLedgerFinalizerContext(
-    input: EvidenceLedgerBuildInput,
+    input: EvidenceLedgerFinalizerBuildInput,
   ): Promise<EvidenceLedgerFinalizerContext> {
     const config = this.options.config.generation.evidenceLedger;
 
@@ -1330,8 +1342,15 @@ export class TurnPhaseCoordinator {
       maxEntryTextTokens: config.finalizerMaxEntryTextTokens,
       sectionOptions: config.sectionOptions,
     });
-    const ledger = compacted.ledger;
+    const ledgerWithoutArtifact = compacted.ledger;
+    const renderedWithoutArtifact = renderEvidenceLedger(ledgerWithoutArtifact);
+    const decisionArtifact = await this.compileDecisionArtifactForEvidenceLedger({
+      input,
+      promptVisibleLedger: renderedWithoutArtifact ?? "",
+    });
+    const ledger = this.withDecisionArtifact(ledgerWithoutArtifact, decisionArtifact);
     const rendered = renderEvidenceLedger(ledger);
+    const decisionArtifactSummary = summarizeDecisionStateArtifactRender(ledger.decisionArtifact);
     const traceSummary = summarizeEvidenceLedgerTrace({
       ...ledger,
       estimatedTokens: estimateEvidenceLedgerPromptTokens(ledger),
@@ -1370,12 +1389,73 @@ export class TurnPhaseCoordinator {
         raw_preserved_user_entry_count: traceSummary.rawPreservedUserEntryCount,
         total_estimated_tokens: traceSummary.totalEstimatedTokens,
         estimated_tokens_by_section: toTraceJsonValue(traceSummary.estimatedTokensBySection),
+        decision_artifact_entry_count: decisionArtifactSummary.renderedEntryCount,
+        decision_artifact_rendered_token_estimate: decisionArtifactSummary.estimatedTokens,
       });
     }
 
     return {
       ledger,
       promptSection: rendered,
+    };
+  }
+
+  private async compileDecisionArtifactForEvidenceLedger(input: {
+    input: EvidenceLedgerFinalizerBuildInput;
+    promptVisibleLedger: string;
+  }): Promise<DecisionArtifact | null> {
+    const audienceEntityId = input.input.audienceEntityId;
+
+    if (audienceEntityId === null) {
+      return null;
+    }
+
+    const previousArtifact = this.options.decisionArtifactRepository.get(audienceEntityId);
+
+    if (!input.input.isUserTurn || input.input.currentUserEntry === undefined) {
+      return previousArtifact;
+    }
+
+    const selfEntityId = this.options.entityRepository.resolve("self", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
+
+    await compileDecisionArtifact({
+      llmClient: this.options.llmFactory(),
+      model: this.options.config.anthropic.models.recallExpansion,
+      repository: this.options.decisionArtifactRepository,
+      audienceEntityId,
+      selfEntityId,
+      speakerEntityId: input.input.currentUserEntry.sender_entity_id,
+      participants: (input.input.activeParticipants ?? []).map((participant) => ({
+        entityId: participant.entityId,
+        displayName: participant.displayName,
+      })),
+      currentUserMessage: input.input.currentUserMessage,
+      currentUserStreamEntryId: input.input.currentUserEntry.id,
+      promptVisibleLedger: input.promptVisibleLedger,
+      previousArtifact,
+      clock: this.options.clock,
+      tracer: this.options.tracer,
+      turnId: input.input.turnId,
+    });
+
+    return this.options.decisionArtifactRepository.get(audienceEntityId);
+  }
+
+  private withDecisionArtifact(
+    ledger: EvidenceLedger,
+    decisionArtifact: DecisionArtifact | null,
+  ): EvidenceLedger {
+    const ledgerWithArtifact = {
+      ...ledger,
+      decisionArtifact,
+    };
+
+    return {
+      ...ledgerWithArtifact,
+      estimatedTokens: estimateEvidenceLedgerPromptTokens(ledgerWithArtifact),
     };
   }
 

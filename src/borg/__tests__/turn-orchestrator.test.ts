@@ -16,6 +16,7 @@ import {
   openDatabase,
   ManualClock,
   createTestConfig,
+  createStreamEntryId,
   Borg,
   EPISODE_TOOL_NAME,
   ScriptedEmbeddingClient,
@@ -29,6 +30,7 @@ import {
   rmSync,
   tmpdir,
 } from "./test-helpers.js";
+import type { BorgDependencies } from "../types.js";
 
 function createEntityDetectionResponse(entities: string[] = []) {
   return {
@@ -1257,6 +1259,93 @@ describe("Borg", () => {
         "agent_msg",
         "internal_event",
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("renders the decision artifact above the compact planner ledger", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createEntityDetectionResponse(["Spain planning", "Ben"]),
+        createModeDetectionResponse("problem_solving"),
+        createNoTemporalCueResponse(),
+        createGenerationGateResponse({
+          decision: "proceed",
+          substantive: true,
+          reason: "planning turn",
+        }),
+        createTurnPlanResponse(),
+        createEmitAnswerResponse("I will keep the locked route order visible.", {
+          inputTokens: 10,
+          outputTokens: 5,
+        }),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: true,
+        },
+        generation: {
+          evidenceLedger: {
+            enabled: true,
+          },
+        },
+      }),
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: llm,
+      clock,
+      liveExtraction: false,
+    });
+
+    try {
+      const internal = borgInternals<{
+        deps: Pick<BorgDependencies, "decisionArtifactRepository" | "entityRepository">;
+      }>(borg);
+      const audience = internal.deps.entityRepository.resolve("Spain planning", {
+        kind: "group",
+        provenance: "transport_audience_label",
+      });
+      const ben = internal.deps.entityRepository.resolve("Ben", {
+        kind: "person",
+        provenance: "user_declared",
+      });
+      const artifactSource = createStreamEntryId();
+
+      internal.deps.decisionArtifactRepository.upsert(audience, [
+        {
+          type: "add",
+          kind: "locked",
+          text: "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
+          owner_entity_id: audience,
+          provenance_stream_entry_ids: [artifactSource],
+        },
+      ]);
+
+      const result = await borg.turn({
+        userMessage:
+          "Ben here. Could we add a Granada to SS leg after Seville, or does that break the route?",
+        audience: "Spain planning",
+        senderEntityId: ben,
+        stakes: "high",
+      });
+      const plannerRequest = llm.requests.find((request) => request.budget === "cognition-plan");
+      const plannerSystem = requestSystemText(plannerRequest);
+      const artifactIndex = plannerSystem.indexOf("## 0. Canonical Decision State");
+      const compactLedgerIndex = plannerSystem.indexOf("CompactPlannerLedger");
+
+      expect(result.path).toBe("system_2");
+      expect(plannerSystem).toContain(
+        "Locked route order: Madrid 3 / SS 3 / Seville 4 / Granada 3",
+      );
+      expect(artifactIndex).toBeGreaterThanOrEqual(0);
+      expect(compactLedgerIndex).toBeGreaterThan(artifactIndex);
     } finally {
       await borg.close();
     }
