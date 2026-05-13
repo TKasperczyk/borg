@@ -348,6 +348,10 @@ function isActionStateExtractorFallbackRequest(options: LLMCompleteOptions): boo
   return options.budget === "action-state-extractor";
 }
 
+function isDecisionArtifactCompilerFallbackRequest(options: LLMCompleteOptions): boolean {
+  return options.budget === "decision-artifact-compiler";
+}
+
 function isFrameAnomalyClassifierFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "frame-anomaly-classifier";
 }
@@ -482,6 +486,24 @@ function isActionStateResponse(response: FakeLLMResponse | undefined): boolean {
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "EmitActionStates",
+    );
+  }
+
+  return false;
+}
+
+function isDecisionArtifactResponse(response: FakeLLMResponse | undefined): boolean {
+  if (response === undefined || typeof response === "function" || typeof response !== "object") {
+    return false;
+  }
+
+  if ("tool_calls" in response) {
+    return response.tool_calls.some((toolCall) => toolCall.name === "EmitDecisionArtifactPatch");
+  }
+
+  if ("messageBlocks" in response) {
+    return response.messageBlocks.some(
+      (block) => block.type === "tool_use" && block.name === "EmitDecisionArtifactPatch",
     );
   }
 
@@ -704,6 +726,24 @@ function defaultActionStateResponse(): LLMCompleteResult {
   };
 }
 
+function defaultDecisionArtifactResponse(): LLMCompleteResult {
+  return {
+    text: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_default_decision_artifact",
+        name: "EmitDecisionArtifactPatch",
+        input: {
+          operations: [],
+        },
+      },
+    ],
+  };
+}
+
 function defaultFrameAnomalyResponse(): LLMCompleteResult {
   return {
     text: "",
@@ -910,6 +950,15 @@ export class FakeLLMClient implements LLMClient {
       !isActionStateResponse(response)
     ) {
       return defaultActionStateResponse();
+    }
+
+    if (
+      isDecisionArtifactCompilerFallbackRequest(options) &&
+      typeof response !== "function" &&
+      scriptedResponseBudget(response) !== "decision-artifact-compiler" &&
+      !isDecisionArtifactResponse(response)
+    ) {
+      return defaultDecisionArtifactResponse();
     }
 
     if (

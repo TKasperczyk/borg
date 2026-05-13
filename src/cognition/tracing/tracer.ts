@@ -17,6 +17,7 @@ export type TurnTraceEventName =
   | "retrieval_completed"
   | "evidence_ledger_built"
   | "evidence_ledger_compacted"
+  | "decision_artifact_compile_completed"
   | "planner_compact_ledger_built"
   | "path_selected"
   | "llm_call_started"
