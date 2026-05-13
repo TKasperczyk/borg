@@ -670,19 +670,26 @@ function semanticTaint(input: {
 }
 
 function semanticNodeStateMetadata(node: {
+  id?: string;
+  source_episode_ids?: readonly string[];
   partial_source_visibility?: boolean;
   source_visibility_fraction?: number;
 }): Record<string, unknown> | undefined {
-  if (node.partial_source_visibility !== true) {
-    return undefined;
+  const metadata: Record<string, unknown> = {
+    ...(node.id === undefined ? {} : { node_id: node.id }),
+    ...(node.source_episode_ids === undefined || node.source_episode_ids.length === 0
+      ? {}
+      : { source_episode_ids: [...node.source_episode_ids] }),
+  };
+
+  if (node.partial_source_visibility === true) {
+    metadata.partial_source_visibility = true;
+    if (node.source_visibility_fraction !== undefined) {
+      metadata.source_visibility_fraction = node.source_visibility_fraction;
+    }
   }
 
-  return {
-    partial_source_visibility: true,
-    ...(node.source_visibility_fraction === undefined
-      ? {}
-      : { source_visibility_fraction: node.source_visibility_fraction }),
-  };
+  return Object.keys(metadata).length === 0 ? undefined : metadata;
 }
 
 function commitmentScope(
@@ -2226,6 +2233,8 @@ export class EvidenceLedgerBuilder {
           value: item.source,
           ...(streamIndex === undefined ? {} : { stream_index: streamIndex }),
           state: `score=${item.score.toFixed(2)}`,
+          state_metadata:
+            itemStreamIds.length === 0 ? undefined : { stream_ids: [...itemStreamIds] },
           taint: "none",
           via_retrieval: true,
           ...persistenceClassFromStreamIds(itemStreamIds, resolver),
@@ -2319,6 +2328,10 @@ export class EvidenceLedgerBuilder {
           text: result.episode.narrative,
           value: result.episode.title,
           state: `confidence=${result.episode.confidence.toFixed(2)} score=${result.score.toFixed(2)}`,
+          state_metadata: {
+            episode_id: result.episode.id,
+            source_stream_ids: [...result.episode.source_stream_ids],
+          },
           taint: "none",
           ...persistenceClassFromProvenance(
             { streamEntryIds: result.episode.source_stream_ids },
@@ -2398,6 +2411,10 @@ export class EvidenceLedgerBuilder {
             text: `${edge.from_node_id} ${edge.relation} ${edge.to_node_id}`,
             value: edge.relation,
             state: edge.valid_to === null ? "valid" : "closed",
+            state_metadata: {
+              edge_id: edge.id,
+              evidence_episode_ids: [...edge.evidence_episode_ids],
+            },
             taint: semanticTaint({
               validTo: edge.valid_to,
               invalidatedAt: edge.invalidated_at,

@@ -68,6 +68,9 @@ describe("config", () => {
       actionThreadRenderLimit: 12,
       actionThreadSimilarityThreshold: 0.85,
       actionThreadSourceRecordLimit: 256,
+      finalizerTargetTokens: 60_000,
+      finalizerHardCapTokens: 100_000,
+      finalizerMaxEntryTextTokens: 1_200,
     });
     expect(config.generation.cognition).toEqual({
       thinking: {
@@ -214,6 +217,9 @@ describe("config", () => {
         BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_RENDER_LIMIT: "8",
         BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SIMILARITY_THRESHOLD: "0.9",
         BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SOURCE_RECORD_LIMIT: "128",
+        BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_TARGET_TOKENS: "60000",
+        BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_HARD_CAP_TOKENS: "100000",
+        BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_MAX_ENTRY_TEXT_TOKENS: "900",
         BORG_GENERATION_COGNITION_THINKING_ENABLED: "true",
         BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS: "8192",
         BORG_MODEL_RECALL_EXPANSION: "env-recall",
@@ -237,6 +243,9 @@ describe("config", () => {
     expect(config.generation.evidenceLedger.actionThreadRenderLimit).toBe(8);
     expect(config.generation.evidenceLedger.actionThreadSimilarityThreshold).toBe(0.9);
     expect(config.generation.evidenceLedger.actionThreadSourceRecordLimit).toBe(128);
+    expect(config.generation.evidenceLedger.finalizerTargetTokens).toBe(60_000);
+    expect(config.generation.evidenceLedger.finalizerHardCapTokens).toBe(100_000);
+    expect(config.generation.evidenceLedger.finalizerMaxEntryTextTokens).toBe(900);
     expect(config.generation.cognition.thinking).toEqual({
       enabled: true,
       budget_tokens: 8192,

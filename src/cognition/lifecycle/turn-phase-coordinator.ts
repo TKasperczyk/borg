@@ -12,6 +12,7 @@ import {
 import { Deliberator, type TurnStakes } from "../deliberation/deliberator.js";
 import {
   EvidenceLedgerBuilder,
+  compactEvidenceLedger,
   estimateEvidenceLedgerPromptTokens,
   renderEvidenceLedger,
   summarizeEvidenceLedgerTrace,
@@ -1304,7 +1305,13 @@ export class TurnPhaseCoordinator {
       actionThreadSourceRecordLimit: config.actionThreadSourceRecordLimit,
       entityRepository: this.options.entityRepository,
     });
-    const ledger = await builder.build(input);
+    const builtLedger = await builder.build(input);
+    const compacted = compactEvidenceLedger(builtLedger, {
+      targetTokens: config.finalizerTargetTokens,
+      hardCapTokens: config.finalizerHardCapTokens,
+      maxEntryTextTokens: config.finalizerMaxEntryTextTokens,
+    });
+    const ledger = compacted.ledger;
     const rendered = renderEvidenceLedger(ledger);
     const traceSummary = summarizeEvidenceLedgerTrace({
       ...ledger,
@@ -1312,6 +1319,19 @@ export class TurnPhaseCoordinator {
     });
 
     if (this.options.tracer.enabled && input.turnId !== undefined) {
+      this.options.tracer.emit("evidence_ledger_compacted", {
+        turnId: input.turnId,
+        pre_dedupe_tokens: compacted.traceSummary.preDedupeTokens,
+        post_dedupe_tokens: compacted.traceSummary.postDedupeTokens,
+        pre_cap_tokens: compacted.traceSummary.preCapTokens,
+        post_section_cap_tokens: compacted.traceSummary.postSectionCapTokens,
+        post_cap_tokens: compacted.traceSummary.postCapTokens,
+        deduped_entry_count: compacted.traceSummary.dedupedEntryCount,
+        omitted_entry_counts: toTraceJsonValue(compacted.traceSummary.omittedEntryCountsBySection),
+        dropped_sections: compacted.traceSummary.droppedSections,
+        target_tokens: compacted.traceSummary.targetTokens,
+        hard_cap_tokens: compacted.traceSummary.hardCapTokens,
+      });
       this.options.tracer.emit("evidence_ledger_built", {
         turnId: input.turnId,
         entry_counts: toTraceJsonValue(traceSummary.entryCountsBySection),

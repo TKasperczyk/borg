@@ -804,9 +804,11 @@ describe("TurnOrchestrator evidence ledger", () => {
       });
 
       const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
-      const traceEvent = readTraceEvents(tracePath).find(
-        (event) => event.event === "evidence_ledger_built",
+      const traceEvents = readTraceEvents(tracePath);
+      const compactTraceEvent = traceEvents.find(
+        (event) => event.event === "evidence_ledger_compacted",
       );
+      const traceEvent = traceEvents.find((event) => event.event === "evidence_ledger_built");
 
       expect(finalizerSystem).toContain("<borg_evidence_ledger>");
       expect(finalizerSystem).toContain(
@@ -814,6 +816,17 @@ describe("TurnOrchestrator evidence ledger", () => {
       );
       expect(finalizerSystem).toContain("Current session says Marta is the tutor.");
       expect(finalizerSystem).not.toContain("<borg_retrieved_evidence>");
+      expect(compactTraceEvent).toMatchObject({
+        event: "evidence_ledger_compacted",
+        pre_dedupe_tokens: expect.any(Number),
+        post_dedupe_tokens: expect.any(Number),
+        pre_cap_tokens: expect.any(Number),
+        post_section_cap_tokens: expect.any(Number),
+        post_cap_tokens: expect.any(Number),
+        dropped_sections: [],
+        target_tokens: 60_000,
+        hard_cap_tokens: 100_000,
+      });
       expect(traceEvent).toMatchObject({
         event: "evidence_ledger_built",
         transcript_included: true,

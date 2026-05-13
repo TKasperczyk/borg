@@ -6,12 +6,16 @@ export {
 } from "./builder.js";
 export {
   buildCompactPlannerLedgerPrompt,
+  compactEvidenceLedger,
   estimateEvidenceLedgerPromptTokens,
   renderCompactPlannerLedger,
   renderEvidenceLedger,
+  type CompactedEvidenceLedger,
   type CompactPlannerLedgerOptions,
   type CompactPlannerLedgerPrompt,
   type CompactPlannerLedgerTraceSummary,
+  type EvidenceLedgerCompactionOptions,
+  type EvidenceLedgerCompactionTraceSummary,
 } from "./renderer.js";
 export {
   evidenceLedgerSourceTypeSchema,

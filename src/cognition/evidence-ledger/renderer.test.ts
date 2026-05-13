@@ -4,6 +4,7 @@ import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { EVIDENCE_LEDGER_SECTION_DEFINITIONS, type EvidenceLedger } from "./types.js";
 import {
   buildCompactPlannerLedgerPrompt,
+  compactEvidenceLedger,
   renderCompactPlannerLedger,
   renderEvidenceLedger,
 } from "./renderer.js";
@@ -36,6 +37,35 @@ function makeLedger(): EvidenceLedger {
             ]
           : [],
     })),
+  };
+}
+
+function section(ledger: EvidenceLedger, id: EvidenceLedger["sections"][number]["id"]) {
+  const found = ledger.sections.find((candidate) => candidate.id === id);
+
+  if (found === undefined) {
+    throw new Error(`Missing section ${id}`);
+  }
+
+  return found;
+}
+
+function syntheticEntry(input: {
+  id: string;
+  source_type?: EvidenceLedger["sections"][number]["entries"][number]["source_type"];
+  text?: string;
+  trust_rank?: number;
+  state_metadata?: Record<string, unknown>;
+}) {
+  return {
+    id: input.id,
+    source_type: input.source_type ?? "system_metadata",
+    session_scope: "current_session" as const,
+    actor: "memory" as const,
+    trust_rank: input.trust_rank ?? 50,
+    text: input.text ?? "synthetic ledger entry",
+    state_metadata: input.state_metadata,
+    taint: "none" as const,
   };
 }
 
@@ -86,6 +116,174 @@ describe("renderEvidenceLedger", () => {
     expect(rendered).toContain(
       'state_metadata={"abandoned_reason":"No longer relevant.","abandoned_at":1800000000000}',
     );
+  });
+});
+
+describe("compactEvidenceLedger", () => {
+  it("dedupes overlapping provenance into the highest-trust section with citations", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      syntheticEntry({
+        id: "current_session_stream:strm_route",
+        source_type: "current_session_stream",
+        text: "Current transcript route fact.",
+        trust_rank: 95,
+      }),
+    );
+    section(ledger, "episodes").entries.push(
+      syntheticEntry({
+        id: "episode:ep_route",
+        source_type: "episode",
+        text: "Episode route fact.",
+        trust_rank: 52,
+        state_metadata: {
+          episode_id: "ep_route",
+          source_stream_ids: ["strm_route"],
+        },
+      }),
+    );
+    section(ledger, "semantic_graph").entries.push(
+      syntheticEntry({
+        id: "semantic_node:semn_route",
+        source_type: "semantic_node",
+        text: "Semantic route fact.",
+        trust_rank: 42,
+        state_metadata: {
+          node_id: "semn_route",
+          source_episode_ids: ["ep_route"],
+        },
+      }),
+    );
+    section(ledger, "prior_session_memory").entries.push(
+      syntheticEntry({
+        id: "retrieved_evidence:prior_route",
+        source_type: "episode",
+        text: "Prior route fact.",
+        trust_rank: 30,
+        state_metadata: {
+          episode_id: "ep_route",
+        },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+    const transcriptEntries = section(compacted.ledger, "current_session_transcript").entries;
+    const canonical = transcriptEntries.find(
+      (entry) => entry.id === "current_session_stream:strm_route",
+    );
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(canonical?.citations).toEqual(["ep_route", "semn_route", "strm_route"]);
+    expect(section(compacted.ledger, "episodes").entries).toEqual([]);
+    expect(section(compacted.ledger, "semantic_graph").entries).toEqual([]);
+    expect(section(compacted.ledger, "prior_session_memory").entries).toEqual([]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(3);
+    expect(rendered).toContain("[citation: ep_route, semn_route, strm_route]");
+  });
+
+  it("caps oversized sections and trims to the global target with omission trailers", () => {
+    const ledger = makeLedger();
+    const pressureText = "budget pressure ".repeat(80);
+
+    section(ledger, "retrieved_memory_evidence").entries = Array.from({ length: 24 }, (_, index) =>
+      syntheticEntry({
+        id: `retrieved_evidence:memory_${index}`,
+        source_type: "episode",
+        text: `${index} ${pressureText}`,
+        trust_rank: 52,
+        state_metadata: {
+          episode_id: `ep_memory_${index}`,
+        },
+      }),
+    );
+    section(ledger, "prior_session_memory").entries = Array.from({ length: 24 }, (_, index) =>
+      syntheticEntry({
+        id: `retrieved_evidence:prior_${index}`,
+        source_type: "episode",
+        text: `${index} ${pressureText}`,
+        trust_rank: 30,
+        state_metadata: {
+          episode_id: `ep_prior_${index}`,
+        },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 1_700,
+      hardCapTokens: 5_000,
+      maxEntryTextTokens: 40,
+      sectionOptions: {
+        retrieved_memory_evidence: {
+          maxEntries: 12,
+          maxTokens: 900,
+        },
+        prior_session_memory: {
+          maxEntries: 12,
+          maxTokens: 900,
+        },
+      },
+    });
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(compacted.traceSummary.preDedupeTokens).toBeGreaterThan(
+      compacted.traceSummary.postCapTokens,
+    );
+    expect(compacted.traceSummary.postCapTokens).toBeLessThanOrEqual(1_700);
+    expect(compacted.traceSummary.omittedEntryCountsBySection.prior_session_memory).toBeGreaterThan(
+      0,
+    );
+    expect(rendered).toContain("Evidence ledger omitted");
+  });
+
+  it("drops lowest-trust sections when the hard cap is exceeded", () => {
+    const ledger = makeLedger();
+    const pressureText = "hard cap pressure ".repeat(160);
+
+    for (const sectionId of ["current_session_transcript", "prior_session_memory"] as const) {
+      section(ledger, sectionId).entries = Array.from({ length: 12 }, (_, index) =>
+        syntheticEntry({
+          id:
+            sectionId === "current_session_transcript"
+              ? `current_session_stream:strm_hard_${index}`
+              : `retrieved_evidence:prior_hard_${index}`,
+          source_type:
+            sectionId === "current_session_transcript" ? "current_session_stream" : "episode",
+          text: `${index} ${pressureText}`,
+          trust_rank: sectionId === "current_session_transcript" ? 95 : 30,
+          state_metadata:
+            sectionId === "prior_session_memory"
+              ? {
+                  episode_id: `ep_hard_${index}`,
+                }
+              : undefined,
+        }),
+      );
+    }
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 2_000,
+      hardCapTokens: 5_000,
+      maxEntryTextTokens: 300,
+      sectionOptions: {
+        current_session_transcript: {
+          maxEntries: 12,
+          maxTokens: 20_000,
+        },
+        prior_session_memory: {
+          maxEntries: 12,
+          maxTokens: 20_000,
+        },
+      },
+    });
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(compacted.traceSummary.droppedSections[0]).toBe("prior_session_memory");
+    expect(compacted.traceSummary.postCapTokens).toBeLessThanOrEqual(5_000);
+    expect(rendered).toContain("Evidence ledger dropped all entries from prior_session_memory");
   });
 });
 

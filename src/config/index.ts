@@ -36,6 +36,9 @@ const evidenceLedgerConfigSchema = z
     actionThreadRenderLimit: z.number().int().positive().default(12),
     actionThreadSimilarityThreshold: z.number().min(0).max(1).default(0.85),
     actionThreadSourceRecordLimit: z.number().int().positive().default(256),
+    finalizerTargetTokens: z.number().int().positive().default(60_000),
+    finalizerHardCapTokens: z.number().int().positive().default(100_000),
+    finalizerMaxEntryTextTokens: z.number().int().positive().default(1_200),
   })
   .prefault({});
 const cognitionThinkingConfigSchema = z
@@ -692,6 +695,21 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["generation", "evidenceLedger", "actionThreadSourceRecordLimit"],
     readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SOURCE_RECORD_LIMIT"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "finalizerTargetTokens"],
+    readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_TARGET_TOKENS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "finalizerHardCapTokens"],
+    readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_HARD_CAP_TOKENS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["generation", "evidenceLedger", "finalizerMaxEntryTextTokens"],
+    readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_MAX_ENTRY_TEXT_TOKENS"),
   );
   setConfigOverride(
     overrides,

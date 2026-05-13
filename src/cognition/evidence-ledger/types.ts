@@ -36,6 +36,7 @@ export type EvidenceLedgerEntry = {
   persistence_class?: StreamEntryPersistenceClass;
   via_retrieval?: boolean;
   stream_index?: number;
+  citations?: string[];
 };
 
 export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
