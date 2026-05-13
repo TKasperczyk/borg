@@ -18,6 +18,7 @@ import {
 import { isNaturalSilenceSuppressionReason } from "../src/cognition/generation/types.js";
 
 import { MetricsCapture } from "./metrics.js";
+import { buildMemorySnapshotMarkdown } from "./memory-snapshot.js";
 import { appendJsonlLine } from "./jsonl.js";
 import {
   classifyPersonaRoleBleed,
@@ -864,12 +865,18 @@ export class SimulatorRunner {
         });
 
         if (overseerDue) {
+          const memorySnapshotMarkdown = await buildMemorySnapshotMarkdown({
+            transport,
+            sessionIds,
+          });
+
           overseerCheckpoints.push(
             await overseerRunner({
               transport,
               metricsPath: this.options.metricsPath,
               turnCounter: turn,
               totalTurns: this.options.totalTurns,
+              memorySnapshotMarkdown,
               mock: this.options.mock,
               env: this.options.env,
             }),

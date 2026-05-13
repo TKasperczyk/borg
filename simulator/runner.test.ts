@@ -76,10 +76,23 @@ function fakeSimulatorBorg(): Borg {
       },
     },
     self: {
+      values: {
+        list: () => [],
+      },
       openQuestions: {
         list: () => [],
       },
       goals: {
+        list: () => [],
+      },
+      traits: {
+        list: () => [],
+      },
+      autobiographical: {
+        currentPeriod: () => null,
+        listPeriods: () => [],
+      },
+      growthMarkers: {
         list: () => [],
       },
     },
@@ -89,6 +102,7 @@ function fakeSimulatorBorg(): Borg {
       countCompletedSince: () => 0,
       latestCompletedAt: () => null,
       listCompletedIds: () => [],
+      list: () => [],
     },
     commitments: {
       list: () => [],
@@ -103,6 +117,9 @@ function fakeSimulatorBorg(): Borg {
     },
     identity: {
       listEvents: () => [],
+    },
+    skills: {
+      list: () => [],
     },
     workmem: {
       load: () => ({ pending_actions: [] }),
@@ -123,6 +140,9 @@ function fakeSimulatorBorg(): Borg {
       },
     },
     review: {
+      list: () => [],
+    },
+    audit: {
       list: () => [],
     },
     close: async () => undefined,

@@ -48,6 +48,7 @@ export type RunOverseerOptions = {
   metricsPath: string;
   turnCounter: number;
   totalTurns: number;
+  memorySnapshotMarkdown?: string;
   mock?: boolean;
   client?: OverseerClient;
   systemPrefix?: TextBlockParam[];
@@ -232,6 +233,7 @@ async function buildPrompt(options: RunOverseerOptions): Promise<string> {
     `Sample window: turns ${startTurn} to ${options.turnCounter} of ${options.totalTurns}.`,
     `Metrics trajectory:\n${metrics.length === 0 ? "No metrics rows yet." : metrics}`,
     `Full conversation transcript:\n${transcript || "No conversation entries."}`,
+    `Memory snapshot:\n${options.memorySnapshotMarkdown ?? "No memory snapshot provided."}`,
     "",
     "Stream entries marked `quarantined=true` were classified as anomalous by the inbound gate and excluded from memory. Treat them as evidence of what the user said, not as evidence Borg processed normally.",
     "",
