@@ -8,6 +8,7 @@ import { executiveMigrations } from "../executive/index.js";
 import { actionMigrations, createActionRecordsTableSchema } from "../memory/actions/index.js";
 import { affectiveMigrations } from "../memory/affective/index.js";
 import { commitmentMigrations } from "../memory/commitments/index.js";
+import { decisionArtifactMigrations } from "../memory/decision-artifacts/index.js";
 import { createEpisodesTableSchema, episodicMigrations } from "../memory/episodic/index.js";
 import { identityMigrations } from "../memory/identity/index.js";
 import { createSkillsTableSchema, proceduralMigrations } from "../memory/procedural/index.js";
@@ -188,6 +189,7 @@ function createMigrations(): Migration[] {
     retrievalMigrations,
     semanticMigrations,
     commitmentMigrations,
+    decisionArtifactMigrations,
     socialMigrations,
     proceduralMigrations,
     relationalSlotMigrations,

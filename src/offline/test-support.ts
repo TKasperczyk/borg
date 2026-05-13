@@ -22,6 +22,7 @@ import {
   EntityRepository,
   commitmentMigrations,
 } from "../memory/commitments/index.js";
+import { decisionArtifactMigrations } from "../memory/decision-artifacts/index.js";
 import {
   EpisodicRepository,
   createEpisodesTableSchema,
@@ -417,6 +418,7 @@ export async function createOfflineTestHarness(
       retrievalMigrations,
       semanticMigrations,
       commitmentMigrations,
+      decisionArtifactMigrations,
       socialMigrations,
       proceduralMigrations,
       actionMigrations,
