@@ -164,7 +164,7 @@ function systemParam(prefix: readonly TextBlockParam[]): string | TextBlockParam
   ];
 }
 
-function readRecentMetrics(path: string, limit: number): MetricsRow[] {
+function readMetrics(path: string): MetricsRow[] {
   if (!existsSync(path)) {
     return [];
   }
@@ -172,7 +172,6 @@ function readRecentMetrics(path: string, limit: number): MetricsRow[] {
   return readFileSync(path, "utf8")
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
-    .slice(-limit)
     .map((line) => JSON.parse(line) as MetricsRow);
 }
 
@@ -180,18 +179,32 @@ function entryContent(entry: StreamEntry): string {
   return typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content);
 }
 
-function auditTranscriptLine(entry: AuditTranscriptEntry, index: number): string {
+function turnCounterByTurnId(rows: readonly MetricsRow[]): Map<string, number> {
+  return new Map(rows.map((row) => [row.turnId, row.turn_counter]));
+}
+
+function auditTranscriptLine(
+  entry: AuditTranscriptEntry,
+  index: number,
+  turnCounters: ReadonlyMap<string, number>,
+): string {
   const quarantineLabel = entry.quarantined
     ? ` quarantined=true reason=${entry.quarantineReason ?? "unknown"}`
     : "";
+  const turnId = entry.entry.turn_id ?? "n/a";
+  const turnCounter =
+    entry.entry.turn_id === undefined ? "n/a" : (turnCounters.get(entry.entry.turn_id) ?? "n/a");
 
   return [
-    `[${index}] session_id=${entry.entry.session_id} timestamp=${entry.entry.timestamp} stream_id=${entry.entry.id} kind=${entry.entry.kind}${quarantineLabel}`,
+    `[${index}] turn_counter=${turnCounter} turn_id=${turnId} session_id=${entry.entry.session_id} timestamp=${entry.entry.timestamp} stream_id=${entry.entry.id} kind=${entry.entry.kind}${quarantineLabel}`,
     entryContent(entry.entry),
   ].join("\n");
 }
 
-async function conversationTranscript(transport: BorgTransport): Promise<string> {
+async function conversationTranscript(
+  transport: BorgTransport,
+  metricsRows: readonly MetricsRow[],
+): Promise<string> {
   const auditReader = (transport as { readAuditTranscript?: () => Promise<AuditTranscriptEntry[]> })
     .readAuditTranscript;
   const entries =
@@ -205,13 +218,37 @@ async function conversationTranscript(transport: BorgTransport): Promise<string>
         )
       : await auditReader.call(transport);
 
-  return entries.map((entry, index) => auditTranscriptLine(entry, index)).join("\n\n");
+  const turnCounters = turnCounterByTurnId(metricsRows);
+
+  return entries
+    .map((entry, index) => auditTranscriptLine(entry, index, turnCounters))
+    .join("\n\n");
+}
+
+function auditWindowTurnMap(
+  rows: readonly MetricsRow[],
+  startTurn: number,
+  endTurn: number,
+): string {
+  const windowRows = rows.filter(
+    (row) => row.turn_counter >= startTurn && row.turn_counter <= endTurn,
+  );
+
+  if (windowRows.length === 0) {
+    return "No metrics rows in this audit window.";
+  }
+
+  return windowRows
+    .map((row) => `turn=${row.turn_counter} turn_id=${row.turnId} event=${row.event}`)
+    .join("\n");
 }
 
 async function buildPrompt(options: RunOverseerOptions): Promise<string> {
   const startTurn = options.auditWindowStartTurn ?? 1;
-  const recentRows = readRecentMetrics(options.metricsPath, 50);
-  const transcript = await conversationTranscript(options.transport);
+  const allRows = readMetrics(options.metricsPath);
+  const recentRows = allRows.slice(-50);
+  const transcript = await conversationTranscript(options.transport, allRows);
+  const turnMap = auditWindowTurnMap(allRows, startTurn, options.turnCounter);
   const metrics = recentRows
     .slice(-5)
     .map((row) =>
@@ -232,6 +269,7 @@ async function buildPrompt(options: RunOverseerOptions): Promise<string> {
 
   return [
     `Audit window: turns ${startTurn} to ${options.turnCounter} of ${options.totalTurns}.`,
+    `Audit window turn map:\n${turnMap}`,
     `Metrics trajectory:\n${metrics.length === 0 ? "No metrics rows yet." : metrics}`,
     `Full conversation transcript:\n${transcript || "No conversation entries."}`,
     `Full memory snapshot for grounding:\n${options.memorySnapshotMarkdown ?? "No memory snapshot provided."}`,

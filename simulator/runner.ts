@@ -648,6 +648,29 @@ export class SimulatorRunner {
           suppressionReason,
         };
       };
+      const checkEvery = this.options.checkEvery;
+      const overseerSchedulingEnabled = Number.isInteger(checkEvery) && checkEvery > 0;
+      const runOverseerCheckpoint = async (turnCounter: number): Promise<void> => {
+        const auditWindowStartTurn = lastOverseerCheckpointTurn + 1;
+        const memorySnapshotMarkdown = await buildMemorySnapshotMarkdown({
+          transport,
+          sessionIds,
+        });
+
+        overseerCheckpoints.push(
+          await overseerRunner({
+            transport,
+            metricsPath: this.options.metricsPath,
+            auditWindowStartTurn,
+            turnCounter,
+            totalTurns: this.options.totalTurns,
+            memorySnapshotMarkdown,
+            mock: this.options.mock,
+            env: this.options.env,
+          }),
+        );
+        lastOverseerCheckpointTurn = turnCounter;
+      };
 
       for (let turn = 1; turn <= this.options.totalTurns; turn += 1) {
         let success: {
@@ -813,10 +836,7 @@ export class SimulatorRunner {
         }
         consecutiveFailures = 0;
 
-        const overseerDue =
-          Number.isInteger(this.options.checkEvery) &&
-          this.options.checkEvery > 0 &&
-          turn % this.options.checkEvery === 0;
+        const overseerDue = overseerSchedulingEnabled && turn % checkEvery === 0;
         const suppressionReason = success.emitted ? undefined : success.suppressionReason;
         const isObserveTurn = !success.emitted && success.emissionKind === "observed";
         const continuesSuppressedSession =
@@ -860,25 +880,7 @@ export class SimulatorRunner {
         });
 
         if (overseerDue) {
-          const auditWindowStartTurn = lastOverseerCheckpointTurn + 1;
-          const memorySnapshotMarkdown = await buildMemorySnapshotMarkdown({
-            transport,
-            sessionIds,
-          });
-
-          overseerCheckpoints.push(
-            await overseerRunner({
-              transport,
-              metricsPath: this.options.metricsPath,
-              auditWindowStartTurn,
-              turnCounter: turn,
-              totalTurns: this.options.totalTurns,
-              memorySnapshotMarkdown,
-              mock: this.options.mock,
-              env: this.options.env,
-            }),
-          );
-          lastOverseerCheckpointTurn = turn;
+          await runOverseerCheckpoint(turn);
         }
 
         if (!success.emitted) {
@@ -932,6 +934,10 @@ export class SimulatorRunner {
 
       if (finalMetrics === undefined) {
         throw new Error("Simulator completed without metrics");
+      }
+
+      if (overseerSchedulingEnabled && lastOverseerCheckpointTurn < finalMetrics.turn_counter) {
+        await runOverseerCheckpoint(finalMetrics.turn_counter);
       }
 
       if (resultState === "completed" && finalMetrics.turn_counter >= currentSessionStartTurn) {

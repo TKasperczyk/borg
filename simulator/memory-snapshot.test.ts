@@ -15,12 +15,200 @@ import {
   type SessionId,
 } from "../src/util/ids.js";
 import { BorgTransport, type AuditTranscriptEntry } from "../assessor/borg-transport.js";
+import { estimatePromptTokens } from "../src/util/token-estimate.js";
 
-import { buildMemorySnapshotMarkdown } from "./memory-snapshot.js";
+import {
+  buildMemorySnapshotMarkdown,
+  MEMORY_SNAPSHOT_TARGET_TOKEN_BUDGET,
+} from "./memory-snapshot.js";
 
 type BorgInternal = {
   deps: BorgDependencies;
 };
+
+function oversizedText(index: number): string {
+  return `oversized fixture row ${index} ${"grounded detail ".repeat(24)}`;
+}
+
+function fixedId(prefix: string, index: number): string {
+  return `${prefix}_${String(index).padStart(16, "0")}`;
+}
+
+function fakeOversizedTransport(count: number): BorgTransport {
+  const rows = Array.from({ length: count }, (_, index) => index + 1);
+  const transcript = rows.map((index): AuditTranscriptEntry => {
+    return {
+      entry: {
+        id: fixedId("strm", index) as never,
+        timestamp: index,
+        kind: index % 2 === 0 ? "agent_msg" : "user_msg",
+        content: oversizedText(index),
+        session_id: DEFAULT_SESSION_ID,
+        compressed: false,
+        sender_entity_id: null,
+        reply_target_entity_id: null,
+      },
+      quarantined: false,
+      quarantineReason: null,
+    };
+  });
+  const records = rows.map((index) => ({
+    id: fixedId("ep", index),
+    start_time: index,
+    end_time: index,
+    updated_at: index,
+    created_at: index,
+    confidence: 0.9,
+    significance: 0.9,
+    source_stream_ids: [fixedId("strm", index)],
+    source_episode_ids: [fixedId("ep", index)],
+    evidence_episode_ids: [fixedId("ep", index)],
+    evidence_stream_entry_ids: [fixedId("strm", index)],
+    provenance_episode_ids: [fixedId("ep", index)],
+    provenance_stream_entry_ids: [fixedId("strm", index)],
+    resolved_episode_ids: [fixedId("ep", index)],
+    key_episode_ids: [fixedId("ep", index)],
+    related_episode_ids: [fixedId("ep", index)],
+    related_semantic_node_ids: [fixedId("semn", index)],
+    label: oversizedText(index),
+    title: oversizedText(index),
+    narrative: oversizedText(index),
+    description: oversizedText(index),
+    directive: oversizedText(index),
+    question: oversizedText(index),
+    what_changed: oversizedText(index),
+    evidence_text: oversizedText(index),
+    applies_when: oversizedText(index),
+    approach: oversizedText(index),
+    progress_notes: oversizedText(index),
+    trigger_reason: oversizedText(index),
+    reason: oversizedText(index),
+    summary: oversizedText(index),
+    kind: "fixture",
+    relation: "related_to",
+    from_node_id: fixedId("semn", index),
+    to_node_id: fixedId("semn", index + 1),
+    valid_from: index,
+    valid_to: null,
+    invalidated_at: null,
+    invalidated_reason: null,
+    state: "active",
+    status: "active",
+    priority: 1,
+    urgency: 1,
+    strength: 1,
+    source: "fixture",
+    provenance: { process: "fixture" },
+    record_type: "value",
+    record_id: fixedId("val", index),
+    action: "upserted",
+    review_item_id: null,
+    type: "promise",
+    directive_family: "fixture",
+    made_to_entity: null,
+    restricted_audience: null,
+    about_entity: null,
+    revoked_at: null,
+    superseded_by: null,
+    actor: "borg",
+    completed_at: null,
+    canonical_name: `Entity ${index}`,
+    aliases: [`Alias ${index}`],
+    name_provenance: "fixture",
+    subject_entity_id: fixedId("ent", index),
+    slot_key: "fixture.slot",
+    value: oversizedText(index),
+    entity_id: fixedId("ent", index),
+    trust: 0.5,
+    attachment: 0.5,
+    interaction_count: index,
+    commitment_count: index,
+    sentiment_summary: oversizedText(index),
+    ts: index,
+    trust_delta: 0,
+    attachment_delta: 0,
+    valence: 0,
+    arousal: 0,
+    session_id: DEFAULT_SESSION_ID,
+    recent_triggers: ["fixture"],
+    attempts: index,
+    successes: index,
+    failures: 0,
+    skill_id: fixedId("skl", index),
+    context_key: "fixture",
+    classification: "success",
+    grounded: true,
+    consumed_at: null,
+    audience_entity_id: null,
+    refs: [fixedId("ep", index)],
+    applied_at: index,
+    reverted_at: null,
+  }));
+  const borg = {
+    episodic: { list: async () => ({ items: records }) },
+    semantic: {
+      nodes: { list: async () => records },
+      edges: { list: async () => records },
+    },
+    self: {
+      values: { list: () => records },
+      goals: { list: () => records.map((record) => ({ ...record, children: [] })) },
+      traits: { list: () => records },
+      autobiographical: { listPeriods: () => records, currentPeriod: () => null },
+      growthMarkers: { list: () => records },
+      openQuestions: { list: () => records },
+    },
+    identity: { listEvents: () => records },
+    commitments: { list: () => records },
+    actions: { list: () => records },
+    skills: { list: () => records },
+    workmem: {
+      load: () => ({
+        session_id: DEFAULT_SESSION_ID,
+        turn_counter: count,
+        updated_at: count,
+        mode: "fixture",
+        hot_entities: [],
+        pending_actions: [],
+        suppressed: [],
+        pending_procedural_attempts: [],
+        discourse_state: null,
+      }),
+    },
+    review: { list: () => records },
+    audit: { list: () => records },
+  } as Record<string, unknown>;
+
+  return {
+    getBorg: () => ({
+      ...borg,
+      deps: {
+        entityRepository: { list: () => records },
+        relationalSlotRepository: {
+          list: () => records,
+          countByState: () => ({ established: count, contested: 0, quarantined: 0, revoked: 0 }),
+        },
+        socialRepository: {
+          list: () => records,
+          listEvents: () => records,
+        },
+        moodRepository: {
+          listStates: () => records,
+          history: () => records,
+        },
+        skillRepository: {
+          batchListContextStatsForSkills: () => new Map([["fixture", records]]),
+        },
+        proceduralEvidenceRepository: {
+          list: () => records,
+        },
+      },
+    }),
+    async readAuditTranscript() {
+      return transcript;
+    },
+  } as unknown as BorgTransport;
+}
 
 describe("simulator memory snapshot", () => {
   const tempDirs: string[] = [];
@@ -251,5 +439,17 @@ describe("simulator memory snapshot", () => {
     } finally {
       await borg.close();
     }
+  });
+
+  it("caps oversized snapshots and reports omitted rows explicitly", async () => {
+    const snapshot = await buildMemorySnapshotMarkdown({
+      transport: fakeOversizedTransport(500),
+      sessionIds: [DEFAULT_SESSION_ID as SessionId],
+    });
+
+    expect(estimatePromptTokens(snapshot)).toBeLessThanOrEqual(MEMORY_SNAPSHOT_TARGET_TOKEN_BUDGET);
+    expect(snapshot).toContain("omitted");
+    expect(snapshot).toContain("per-section cap=");
+    expect(snapshot).toContain("global token budget");
   });
 });

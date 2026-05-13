@@ -459,6 +459,32 @@ function createClosureResponseAuditResponse() {
   };
 }
 
+function createMixedClosureResponseAuditResponse(spanText: string) {
+  return {
+    text: "",
+    input_tokens: 4,
+    output_tokens: 2,
+    stop_reason: "tool_use" as const,
+    tool_calls: [
+      {
+        id: "toolu_closure_response_audit",
+        name: CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
+        input: {
+          spans: [
+            {
+              text: spanText,
+              kind: "imperative_closer",
+              rationale: "Closure tail after substantive content.",
+            },
+          ],
+          response_shape: "mixed",
+          reason: "The response contains substantive content plus a closure-pressure span.",
+        },
+      },
+    ],
+  };
+}
+
 function createCorrectivePreferenceResponse(input: {
   classification: "corrective_preference" | "none";
   type?: "preference" | "rule" | "boundary" | null;
@@ -3728,6 +3754,50 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(result.emitted).toBe(true);
       expect(result.response).toBe("I will leave it there.");
       expect(llm.requests.map((request) => request.budget)).toContain("commitment-revision");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("records closure-pressure history when a mixed closure response is rewritten", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_176_500);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "preference",
+          directive: "Do not add ritual closing lines when the conversation is open.",
+          closure_pressure_relevance: "no_closure",
+          priority: 8,
+          reason: "The user named a future response pattern to stop.",
+          confidence: 0.9,
+        }),
+        createActionStateResponse([]),
+        createGoalPromotionResponse([]),
+        createEmitAnswerResponse("Here is the actual answer. Sleep."),
+        createCommitmentJudgeResponse([]),
+        createMixedClosureResponseAuditResponse("Sleep."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      const result = await borg.turn({
+        userMessage: "Stop adding closing lines; keep the answer open.",
+        audience: "Sam",
+      });
+      const history = borg.workmem.load().discourse_state?.closure_pressure_history ?? [];
+
+      expect(result.emitted).toBe(true);
+      expect(result.response).toBe("Here is the actual answer.");
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        reason: "span_removed",
+      });
+      expect(history[0]?.turn_id).toEqual(expect.any(String));
     } finally {
       await borg.close();
     }

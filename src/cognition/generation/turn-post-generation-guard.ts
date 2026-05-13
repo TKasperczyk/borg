@@ -33,6 +33,7 @@ type TurnPostGenerationGuardEmission = Extract<
   PendingTurnEmission,
   { kind: "message" | "suppressed" }
 >;
+type TurnPostGenerationGuardMessage = Extract<PendingTurnEmission, { kind: "message" }>;
 
 export type TurnPostGenerationGuardRunnerOptions = {
   auditModel: string;
@@ -170,17 +171,17 @@ function leakedInternalIdentifiers(
 
 function applyInternalIdentifierGuard(input: {
   turnId: string;
-  response: string;
+  emission: TurnPostGenerationGuardMessage;
   knownIdentifiers: readonly string[];
   tracer: TurnTracer;
 }): TurnPostGenerationGuardEmission {
-  const leakedIdentifiers = leakedInternalIdentifiers(input.response, input.knownIdentifiers);
+  const leakedIdentifiers = leakedInternalIdentifiers(
+    input.emission.content,
+    input.knownIdentifiers,
+  );
 
   if (leakedIdentifiers.length === 0) {
-    return {
-      kind: "message",
-      content: input.response,
-    };
+    return input.emission;
   }
 
   if (input.tracer.enabled) {
@@ -194,6 +195,9 @@ function applyInternalIdentifierGuard(input: {
   return {
     kind: "suppressed",
     reason: "internal_identifier_leak",
+    ...(input.emission.closure_pressure_history_reason === undefined
+      ? {}
+      : { closure_pressure_history_reason: input.emission.closure_pressure_history_reason }),
   };
 }
 
@@ -231,7 +235,7 @@ export class TurnPostGenerationGuardRunner {
 
     return applyInternalIdentifierGuard({
       turnId: input.turnId,
-      response: closureResult.emission.content,
+      emission: closureResult.emission,
       knownIdentifiers: collectInternalIdentifiers({
         turnId: input.turnId,
         sessionId: input.sessionId,

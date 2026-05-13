@@ -556,6 +556,53 @@ describe("SimulatorRunner", () => {
     expect(metricsRows.at(-1)?.turn_counter).toBe(20);
   });
 
+  it("runs a final overseer checkpoint for trailing partial audit windows", async () => {
+    spyMaintenanceTick();
+
+    for (const input of [
+      {
+        totalTurns: 15,
+        checkEvery: 10,
+        expectedWindows: [
+          [1, 10],
+          [11, 15],
+        ],
+      },
+      {
+        totalTurns: 5,
+        checkEvery: 10,
+        expectedWindows: [[1, 5]],
+      },
+    ] as const) {
+      const dir = tempDir();
+      const auditWindows: Array<[number | undefined, number]> = [];
+
+      const report = await runSimulation({
+        runId: `sim-runner-final-overseer-${input.totalTurns}`,
+        persona: tomPersona,
+        totalTurns: input.totalTurns,
+        checkEvery: input.checkEvery,
+        metricsPath: join(dir, "metrics.jsonl"),
+        dataDir: join(dir, "data"),
+        tracePath: join(dir, "trace.jsonl"),
+        mock: true,
+        overseerRunner: async ({ auditWindowStartTurn, turnCounter }) => {
+          auditWindows.push([auditWindowStartTurn, turnCounter]);
+          return {
+            ts: Date.now(),
+            turn_counter: turnCounter,
+            status: "healthy",
+            observations: ["Mock overseer saw no degradation."],
+            recommendation: "Continue.",
+          };
+        },
+      });
+
+      expect(report.overseerCheckpoints).toHaveLength(input.expectedWindows.length);
+      expect(auditWindows).toEqual(input.expectedWindows);
+    }
+  });
+
   it("runs overseer checkpoints on suppressed turns before continuing", async () => {
     const dir = tempDir();
     const metricsPath = join(dir, "metrics.jsonl");

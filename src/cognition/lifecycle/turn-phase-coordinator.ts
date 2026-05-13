@@ -1220,14 +1220,23 @@ export class TurnPhaseCoordinator {
       reason: input.actionEmission.reason,
       markerEntryId: input.persistedAgentEntry.id,
     };
-    const suppressedWorkingMemory = this.options.discourseStateService.applySuppressedEmissionState(
-      {
-        workingMemory: input.actionResult.workingMemory,
-        reason: input.actionEmission.reason,
-        sourceStreamEntryId: input.persistedAgentEntry.id,
+    let suppressedWorkingMemory = this.options.discourseStateService.applySuppressedEmissionState({
+      workingMemory: input.actionResult.workingMemory,
+      reason: input.actionEmission.reason,
+      sourceStreamEntryId: input.persistedAgentEntry.id,
+      turnId: input.turnId,
+    });
+    if (
+      input.actionEmission.closure_pressure_history_reason !== undefined &&
+      input.actionEmission.reason !== "closure_pressure_only" &&
+      input.actionEmission.reason !== "closure_response_audit_failed_closed"
+    ) {
+      suppressedWorkingMemory = this.options.discourseStateService.appendClosurePressureHistory({
+        workingMemory: suppressedWorkingMemory,
         turnId: input.turnId,
-      },
-    );
+        reason: input.actionEmission.closure_pressure_history_reason,
+      });
+    }
 
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("generation_suppressed", {
