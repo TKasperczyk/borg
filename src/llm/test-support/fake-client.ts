@@ -360,10 +360,6 @@ function isClosureLoopClassifierFallbackRequest(options: LLMCompleteOptions): bo
   return options.budget === "closure-loop-classifier";
 }
 
-function isRelationalClaimAuditorFallbackRequest(options: LLMCompleteOptions): boolean {
-  return options.budget === "relational-claim-auditor";
-}
-
 function isClosureResponseAuditorFallbackRequest(options: LLMCompleteOptions): boolean {
   return options.budget === "closure-response-auditor";
 }
@@ -542,24 +538,6 @@ function isClosureLoopClassificationResponse(response: FakeLLMResponse | undefin
   if ("messageBlocks" in response) {
     return response.messageBlocks.some(
       (block) => block.type === "tool_use" && block.name === "ClassifyClosureLoopDialogueActs",
-    );
-  }
-
-  return false;
-}
-
-function isRelationalClaimAuditResponse(response: FakeLLMResponse | undefined): boolean {
-  if (response === undefined || typeof response === "function" || typeof response !== "object") {
-    return false;
-  }
-
-  if ("tool_calls" in response) {
-    return response.tool_calls.some((toolCall) => toolCall.name === "EmitClaimAudit");
-  }
-
-  if ("messageBlocks" in response) {
-    return response.messageBlocks.some(
-      (block) => block.type === "tool_use" && block.name === "EmitClaimAudit",
     );
   }
 
@@ -838,24 +816,6 @@ function defaultClosureLoopClassificationResponse(
   };
 }
 
-function defaultRelationalClaimAuditResponse(): LLMCompleteResult {
-  return {
-    text: "",
-    input_tokens: 0,
-    output_tokens: 0,
-    stop_reason: "tool_use",
-    tool_calls: [
-      {
-        id: "toolu_default_relational_claim_audit",
-        name: "EmitClaimAudit",
-        input: {
-          claims: [],
-        },
-      },
-    ],
-  };
-}
-
 function defaultClosureResponseAuditResponse(): LLMCompleteResult {
   return {
     text: "",
@@ -974,13 +934,6 @@ export class FakeLLMClient implements LLMClient {
       !isClosureLoopClassificationResponse(response)
     ) {
       return defaultClosureLoopClassificationResponse(options.messages);
-    }
-
-    if (
-      isRelationalClaimAuditorFallbackRequest(options) &&
-      !isRelationalClaimAuditResponse(response)
-    ) {
-      return defaultRelationalClaimAuditResponse();
     }
 
     if (

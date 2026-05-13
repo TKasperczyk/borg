@@ -209,7 +209,7 @@ function createSimulatorCli() {
     .option("--shadow-post-gen-guards", "Run post-generation guards in shadow mode")
     .option(
       "--emission-baseline",
-      "Run emission baseline config: evidence ledger on, commitment and closure-pressure enforce, relational guard shadow",
+      "Run emission baseline config: evidence ledger on; commitment and closure-pressure enforce",
     )
     .option("--pipeline-c-double-prime", "Deprecated alias for --emission-baseline")
     .option("--keep", "Keep Borg data dirs and trace files for inspection")

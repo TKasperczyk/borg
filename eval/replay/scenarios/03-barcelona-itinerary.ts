@@ -1,9 +1,5 @@
 import type { ReplayScenario } from "../scenario.js";
-import {
-  enqueueRelationalGuardFailureWhenValidatorAbsent,
-  lowerIncludesNone,
-  makeRelationalClaim,
-} from "../scenario.js";
+import { enqueueNoPostGenerationGuardIssue, lowerIncludesNone } from "../scenario.js";
 
 const scenario: ReplayScenario = {
   id: "03-barcelona-itinerary",
@@ -14,15 +10,7 @@ const scenario: ReplayScenario = {
   unsafeCandidateText:
     "Your route is Sevilla, Granada, Córdoba, Madrid, and Barcelona. Start with the listed cities in order.",
   scriptLLMResponses(_client, context) {
-    enqueueRelationalGuardFailureWhenValidatorAbsent(context, {
-      claim: makeRelationalClaim({
-        kind: "unsupported_specific_detail",
-        asserted: "Barcelona is part of the user's itinerary.",
-        specific_detail_value: "Barcelona",
-        specific_detail_support_kind: "none",
-      }),
-      rewrite: "Your route is Sevilla, Granada, Córdoba, and Madrid.",
-    });
+    enqueueNoPostGenerationGuardIssue(context);
   },
   safeOutputPredicate: (text) => lowerIncludesNone(text, ["Barcelona"]),
   severeGuardCategories: ["unsupported_specific_detail"],

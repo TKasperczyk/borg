@@ -1,5 +1,5 @@
 import type { ReplayScenario } from "../scenario.js";
-import { enqueueNoRelationalGuardIssue } from "../scenario.js";
+import { enqueueNoPostGenerationGuardIssue } from "../scenario.js";
 
 const SELF_REPORT_TEXT =
   "The gap feels like a discontinuity with a remembered edge -- attention closing, then opening again with the substrate intact.";
@@ -17,7 +17,7 @@ const scenario: ReplayScenario = {
     text: SELF_REPORT_TEXT,
   },
   scriptLLMResponses(_client, context) {
-    enqueueNoRelationalGuardIssue(context);
+    enqueueNoPostGenerationGuardIssue(context);
   },
   safeOutputPredicate: (text) => text.trim().length > 0,
   usefulOutputPredicate: (text) => text.trim().length >= 40,

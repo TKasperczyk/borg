@@ -1,6 +1,6 @@
 import type { ReplayScenario } from "../scenario.js";
 import {
-  enqueueNoRelationalGuardIssue,
+  enqueueNoPostGenerationGuardIssue,
   episodeExtractionResponse,
   promptForBudget,
   semanticExtractionResponse,
@@ -18,7 +18,7 @@ const scenario: ReplayScenario = {
   userMessage: "Run the trip extraction replay check.",
   unsafeCandidateText: "I can run the trip extraction replay check.",
   scriptLLMResponses(_client, context) {
-    enqueueNoRelationalGuardIssue(context);
+    enqueueNoPostGenerationGuardIssue(context);
   },
   safeOutputPredicate: (text) => text.trim().length > 0,
   usefulOutputPredicate: () => true,
@@ -103,9 +103,7 @@ const scenario: ReplayScenario = {
     }
 
     if (!semanticPrompt.includes("prefer the narrower event-scoped interpretation")) {
-      throw new Error(
-        "Scenario 33 expected semantic prompt ambiguity-fallback guidance.",
-      );
+      throw new Error("Scenario 33 expected semantic prompt ambiguity-fallback guidance.");
     }
 
     if (semanticResult.insertedNodes !== 1) {

@@ -129,7 +129,6 @@ export class ScriptedDebugLLM implements LLMClient {
       options.budget === "action-state-extractor" ||
       options.budget === "frame-anomaly-classifier" ||
       options.budget === "closure-loop-classifier" ||
-      options.budget === "relational-claim-auditor" ||
       options.budget === "closure-response-auditor"
     ) {
       return this.respond(options);
@@ -158,14 +157,14 @@ export class ScriptedDebugLLM implements LLMClient {
         reason: "No durable correction detected in the scripted debug prompt.",
         confidence: 0,
         supersedes_commitment_id: null,
-  });
-}
+      });
+    }
 
-function buildAnswerResult(options: LLMCompleteOptions, text: string): LLMCompleteResult {
-  return options.tools?.some((tool) => tool.name === "EmitAnswer") === true
-    ? buildToolResult(options, { text })
-    : buildLlmResult(options, text);
-}
+    function buildAnswerResult(options: LLMCompleteOptions, text: string): LLMCompleteResult {
+      return options.tools?.some((tool) => tool.name === "EmitAnswer") === true
+        ? buildToolResult(options, { text })
+        : buildLlmResult(options, text);
+    }
 
     if (options.budget === "goal-promotion-extractor") {
       return buildToolResult(options, {
@@ -192,12 +191,6 @@ function buildAnswerResult(options: LLMCompleteOptions, text: string): LLMComple
         messages: [],
         confidence: 0,
         rationale: "No closure loop detected in the scripted debug prompt.",
-      });
-    }
-
-    if (options.budget === "relational-claim-auditor") {
-      return buildToolResult(options, {
-        claims: [],
       });
     }
 

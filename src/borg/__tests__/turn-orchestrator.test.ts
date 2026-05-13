@@ -46,7 +46,9 @@ function createEntityDetectionResponse(entities: string[] = []) {
   };
 }
 
-function createModeDetectionResponse(mode: "problem_solving" | "relational" | "reflective" | "idle") {
+function createModeDetectionResponse(
+  mode: "problem_solving" | "relational" | "reflective" | "idle",
+) {
   return {
     text: "",
     input_tokens: 4,
@@ -527,8 +529,9 @@ describe("Borg", () => {
       expect(result.toolCalls).toEqual([]);
       const entries = borg.stream.tail(3);
       expect(entries.map((entry) => entry.kind)).toEqual(["user_msg", "perception", "agent_msg"]);
-      expect(entries.some((entry) => entry.kind === "tool_call" || entry.kind === "tool_result"))
-        .toBe(false);
+      expect(
+        entries.some((entry) => entry.kind === "tool_call" || entry.kind === "tool_result"),
+      ).toBe(false);
     } finally {
       await borg.close();
     }
@@ -852,16 +855,14 @@ describe("Borg", () => {
         "haiku",
         "haiku",
         "haiku",
-        "haiku",
       ]);
       expect(nonCorrectiveRequests[0]?.budget).toBe("procedural-context");
       expect(nonCorrectiveRequests[2]?.budget).toBe("commitment-judge");
       expect(nonCorrectiveRequests[3]?.budget).toBe("commitment-revision");
       expect(nonCorrectiveRequests[4]?.budget).toBe("commitment-judge");
-      expect(nonCorrectiveRequests[5]?.budget).toBe("relational-claim-auditor");
-      expect(nonCorrectiveRequests[6]?.budget).toBe("closure-response-auditor");
-      expect(nonCorrectiveRequests[7]?.budget).toBe("generation-stop-commitment");
-      expect(nonCorrectiveRequests[8]?.budget).toBe("reflection");
+      expect(nonCorrectiveRequests[5]?.budget).toBe("closure-response-auditor");
+      expect(nonCorrectiveRequests[6]?.budget).toBe("generation-stop-commitment");
+      expect(nonCorrectiveRequests[7]?.budget).toBe("reflection");
     } finally {
       await borg.close();
     }

@@ -3,7 +3,7 @@ import type { ReplayScenario } from "../scenario.js";
 import {
   closureAuditResponse,
   closureLoopClassificationResponse,
-  enqueueNoRelationalGuardIssue,
+  enqueueNoPostGenerationGuardIssue,
   lowerIncludesNone,
 } from "../scenario.js";
 
@@ -37,7 +37,7 @@ const scenario: ReplayScenario = {
   unsafeCandidateText: "Use the current shelf. Go read.",
   scriptLLMResponses(_client, context) {
     context.enqueueBeforeRecall(closureLoopClassificationResponse());
-    enqueueNoRelationalGuardIssue(
+    enqueueNoPostGenerationGuardIssue(
       context,
       closureAuditResponse({
         spans: [

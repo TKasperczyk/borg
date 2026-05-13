@@ -7,10 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg } from "../../borg.js";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeEmbeddingClient } from "../../embeddings/index.js";
-import {
-  FakeLLMClient,
-  createFakeEmitAnswerResponse,
-} from "../../llm/test-support/fake-client.js";
+import { FakeLLMClient, createFakeEmitAnswerResponse } from "../../llm/test-support/fake-client.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { JsonlTracer, NoopTracer, createTurnTracer, type TurnTracer } from "./tracer.js";
 
@@ -353,7 +350,6 @@ describe("TurnTracer", () => {
       "llm_call_response",
       "finalizer_emitted",
       "commitment_check",
-      "relational_claim_guard",
       "closure_response_guard",
       "reflection_emitted",
     ]);

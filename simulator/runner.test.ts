@@ -262,9 +262,6 @@ describe("SimulatorRunner", () => {
         postGenerationGuards: {
           commitment: { mode: "enforce" },
           closurePressure: { mode: "enforce" },
-          relationalClaim: {
-            mode: "shadow",
-          },
         },
       },
     });
@@ -1142,7 +1139,7 @@ describe("SimulatorRunner", () => {
         emitted,
         turnId: `turn-${chatSessionIds.length}`,
         sessionId,
-        suppressionReason: "relational_guard_self_correction",
+        suppressionReason: "commitment_revision_failed",
       });
     });
 
@@ -1164,7 +1161,7 @@ describe("SimulatorRunner", () => {
     expect(persona.prepareNextTurn).toHaveBeenCalledTimes(2);
     expect(persona.prepareNextTurn.mock.calls.map(([previous]) => previous)).toEqual([
       { kind: "new_session" },
-      { kind: "continued_suppression", reason: "relational_guard_self_correction" },
+      { kind: "continued_suppression", reason: "commitment_revision_failed" },
     ]);
     expect(persona.startNewSession).not.toHaveBeenCalled();
     expect(report.resultState).toBe("completed");
@@ -1181,7 +1178,7 @@ describe("SimulatorRunner", () => {
         sessionIndex: 0,
         sessionId: chatSessionIds[0],
         turn: 1,
-        reason: "relational_guard_self_correction",
+        reason: "commitment_revision_failed",
       },
     ]);
   });

@@ -1,7 +1,7 @@
 import type { LLMClient } from "../../llm/index.js";
-import type { PostGenerationGuardMode, RelationalClaimGuardMode } from "../../config/index.js";
+import type { PostGenerationGuardMode } from "../../config/index.js";
 import type { ActionRecord, ActionRepository } from "../../memory/actions/index.js";
-import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
+import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type {
   RelationalSlot,
   RelationalSlotRepository,
@@ -23,43 +23,32 @@ import type { TurnTracer } from "../tracing/tracer.js";
 import type { ClosureLoopDialogueAct } from "./closure-loop.js";
 import { ClosurePressureGuard } from "./closure-pressure-guard.js";
 import type { PendingTurnEmission } from "./types.js";
-import {
-  RelationalClaimGuard,
-  actionRecordToRelationalGuardEvidence,
-  commitmentToRelationalGuardEvidence,
-  correctivePreferencesFromCommitments,
-  relationalSlotToRelationalGuardEvidence,
-  retrievedEpisodeToRelationalGuardEvidence,
-  streamEntryToRelationalGuardEvidence,
-  type RelationalGuardCurrentUserMessage,
-  type RelationalGuardStreamEvidence,
-} from "./relational-guard.js";
 
 const COMPLETED_ACTION_LIMIT = 8;
 const RELATIONAL_SLOT_GUARD_LIMIT = 64;
 const INTERNAL_IDENTIFIER_EXACT_PATTERN =
   /^(?:strm|sess|ep|goal|val|trt|abp|grw|oq|semn|seme|cmt|ent|act|rslot|skl|procevi|run|exstep)_[a-z0-9]{16}$|^autonomy_wake_[a-f0-9]{16}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-type TurnRelationalGuardEmission = Extract<PendingTurnEmission, { kind: "message" | "suppressed" }>;
+type TurnPostGenerationGuardEmission = Extract<
+  PendingTurnEmission,
+  { kind: "message" | "suppressed" }
+>;
 
-export type TurnRelationalGuardRunnerOptions = {
+export type TurnPostGenerationGuardRunnerOptions = {
   auditModel: string;
   rewriteModel: string;
-  relationalClaimMode: RelationalClaimGuardMode;
   closurePressureMode: PostGenerationGuardMode;
   createStreamReader: (sessionId: SessionId) => StreamReader;
   actionRepository: Pick<ActionRepository, "list">;
-  commitmentRepository: Pick<CommitmentRepository, "findByEvidenceStreamEntryId">;
   relationalSlotRepository: Pick<RelationalSlotRepository, "list">;
   clock: Clock;
   tracer: TurnTracer;
 };
 
-export type RunTurnRelationalGuardInput = {
+export type RunTurnPostGenerationGuardInput = {
   llmClient: LLMClient;
   turnId: string;
   response: string;
-  userMessage: string;
   sessionId: SessionId;
   persistedUserEntry?: StreamEntry;
   retrievedEpisodes: readonly RetrievedEpisode[];
@@ -91,7 +80,7 @@ function collectInternalIdentifiers(input: {
   turnId: string;
   sessionId: SessionId;
   persistedUserEntry?: StreamEntry;
-  currentSessionStreamEntries: readonly RelationalGuardStreamEvidence[];
+  currentSessionStreamEntries: readonly StreamEntry[];
   retrievedEpisodes: readonly RetrievedEpisode[];
   activeCommitments: readonly CommitmentRecord[];
   closurePressureHistory: readonly ClosurePressureHistoryEntry[];
@@ -107,10 +96,12 @@ function collectInternalIdentifiers(input: {
   addInternalIdentifier(identifiers, input.persistedUserEntry?.id);
   addInternalIdentifier(identifiers, input.persistedUserEntry?.session_id);
   addInternalIdentifier(identifiers, input.audienceEntityId);
-  addInternalIdentifiers(
-    identifiers,
-    input.currentSessionStreamEntries.map((entry) => entry.entry_id),
-  );
+  for (const entry of input.currentSessionStreamEntries) {
+    addInternalIdentifier(identifiers, entry.id);
+    addInternalIdentifier(identifiers, entry.session_id);
+    addInternalIdentifier(identifiers, entry.sender_entity_id);
+    addInternalIdentifier(identifiers, entry.reply_target_entity_id);
+  }
 
   for (const result of input.retrievedEpisodes) {
     addInternalIdentifier(identifiers, result.episode.id);
@@ -182,7 +173,7 @@ function applyInternalIdentifierGuard(input: {
   response: string;
   knownIdentifiers: readonly string[];
   tracer: TurnTracer;
-}): TurnRelationalGuardEmission {
+}): TurnPostGenerationGuardEmission {
   const leakedIdentifiers = leakedInternalIdentifiers(input.response, input.knownIdentifiers);
 
   if (leakedIdentifiers.length === 0) {
@@ -206,51 +197,15 @@ function applyInternalIdentifierGuard(input: {
   };
 }
 
-export class TurnRelationalGuardRunner {
-  constructor(private readonly options: TurnRelationalGuardRunnerOptions) {}
+export class TurnPostGenerationGuardRunner {
+  constructor(private readonly options: TurnPostGenerationGuardRunnerOptions) {}
 
-  async run(input: RunTurnRelationalGuardInput): Promise<TurnRelationalGuardEmission> {
-    const currentUserMessage: RelationalGuardCurrentUserMessage | null =
-      input.persistedUserEntry === undefined
-        ? null
-        : {
-            text: input.userMessage,
-            stream_entry_id: input.persistedUserEntry.id,
-            ts: input.persistedUserEntry.timestamp,
-          };
-    const currentSessionStreamEntries = await this.loadStreamEvidence(input.sessionId);
+  async run(input: RunTurnPostGenerationGuardInput): Promise<TurnPostGenerationGuardEmission> {
+    const currentSessionStreamEntries = await this.loadStreamEntries(input.sessionId);
     const relationalSlots = this.options.relationalSlotRepository.list({
       limit: RELATIONAL_SLOT_GUARD_LIMIT,
     });
     const recentCompletedActions = this.listRecentCompletedActions(input.audienceEntityId);
-    const guard = new RelationalClaimGuard({
-      llmClient: input.llmClient,
-      auditModel: this.options.auditModel,
-      rewriteModel: this.options.rewriteModel,
-      mode: this.options.relationalClaimMode,
-      tracer: this.options.tracer,
-      hasCorrectivePreferenceEvidence: (entryId) =>
-        this.options.commitmentRepository.findByEvidenceStreamEntryId(entryId),
-    });
-    const result = await guard.run({
-      turnId: input.turnId,
-      response: input.response,
-      currentSessionId: input.sessionId,
-      currentTurnTs: input.persistedUserEntry?.timestamp ?? this.options.clock.now(),
-      evidence: {
-        current_user_message: currentUserMessage,
-        current_session_stream_entries: currentSessionStreamEntries,
-        retrieved_episodes: input.retrievedEpisodes.map(retrievedEpisodeToRelationalGuardEvidence),
-        active_commitments: input.activeCommitments.map(commitmentToRelationalGuardEvidence),
-        corrective_preferences: correctivePreferencesFromCommitments(input.activeCommitments),
-        relational_slots: relationalSlots.map(relationalSlotToRelationalGuardEvidence),
-        recent_completed_actions: recentCompletedActions.map(actionRecordToRelationalGuardEvidence),
-      },
-    });
-
-    if (result.emission.kind === "suppressed") {
-      return result.emission;
-    }
 
     const closureGuard = new ClosurePressureGuard({
       llmClient: input.llmClient,
@@ -261,7 +216,7 @@ export class TurnRelationalGuardRunner {
     });
     const closureResult = await closureGuard.run({
       turnId: input.turnId,
-      response: result.emission.content,
+      response: input.response,
       activeCommitments: input.activeCommitments,
       closureLoop: input.closureLoop,
       closurePressureHistory: input.closurePressureHistory,
@@ -320,16 +275,12 @@ export class TurnRelationalGuardRunner {
       .slice(0, COMPLETED_ACTION_LIMIT);
   }
 
-  private async loadStreamEvidence(sessionId: SessionId): Promise<RelationalGuardStreamEvidence[]> {
+  private async loadStreamEntries(sessionId: SessionId): Promise<StreamEntry[]> {
     const reader = this.options.createStreamReader(sessionId);
-    const entries = new Map<string, RelationalGuardStreamEvidence>();
+    const entries = new Map<string, StreamEntry>();
 
     for (const entry of await loadActiveSessionTranscriptEntries(reader)) {
-      const evidence = streamEntryToRelationalGuardEvidence(entry);
-
-      if (evidence !== null) {
-        entries.set(evidence.entry_id, evidence);
-      }
+      entries.set(entry.id, entry);
     }
 
     return [...entries.values()];

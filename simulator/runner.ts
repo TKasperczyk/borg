@@ -105,9 +105,6 @@ export const EMISSION_BASELINE_BORG_CONFIG_OVERRIDES = {
     postGenerationGuards: {
       commitment: { mode: "enforce" },
       closurePressure: { mode: "enforce" },
-      relationalClaim: {
-        mode: "shadow",
-      },
     },
   },
 } satisfies NonNullable<Scenario["borgConfigOverrides"]>;
@@ -122,9 +119,6 @@ const SHADOW_POST_GEN_GUARDS_BORG_CONFIG_OVERRIDES = {
   generation: {
     postGenerationGuards: {
       commitment: {
-        mode: "shadow",
-      },
-      relationalClaim: {
         mode: "shadow",
       },
       closurePressure: {
@@ -558,7 +552,7 @@ export class SimulatorRunner {
     if (this.options.emissionBaseline === true) {
       // eslint-disable-next-line no-console
       console.warn(
-        "[simulator] Emission baseline active: evidence ledger on; commitment and closure-pressure enforce; relational guard shadow.",
+        "[simulator] Emission baseline active: evidence ledger on; commitment and closure-pressure enforce.",
       );
     }
 

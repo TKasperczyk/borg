@@ -233,10 +233,6 @@ export function createTestConfig(
           ...DEFAULT_CONFIG.generation.postGenerationGuards.commitment,
           ...overrides.generation?.postGenerationGuards?.commitment,
         },
-        relationalClaim: {
-          ...DEFAULT_CONFIG.generation.postGenerationGuards.relationalClaim,
-          ...overrides.generation?.postGenerationGuards?.relationalClaim,
-        },
         closurePressure: {
           ...DEFAULT_CONFIG.generation.postGenerationGuards.closurePressure,
           ...overrides.generation?.postGenerationGuards?.closurePressure,

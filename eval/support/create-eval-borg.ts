@@ -21,13 +21,9 @@ type EvalConfigOverrides = {
   };
   generation?: Partial<Omit<Config["generation"], "postGenerationGuards">> & {
     postGenerationGuards?: Partial<
-      Omit<
-        Config["generation"]["postGenerationGuards"],
-        "commitment" | "relationalClaim" | "closurePressure"
-      >
+      Omit<Config["generation"]["postGenerationGuards"], "commitment" | "closurePressure">
     > & {
       commitment?: Partial<Config["generation"]["postGenerationGuards"]["commitment"]>;
-      relationalClaim?: Partial<Config["generation"]["postGenerationGuards"]["relationalClaim"]>;
       closurePressure?: Partial<Config["generation"]["postGenerationGuards"]["closurePressure"]>;
     };
   };
@@ -151,10 +147,6 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
         commitment: {
           ...DEFAULT_CONFIG.generation.postGenerationGuards.commitment,
           ...options.config?.generation?.postGenerationGuards?.commitment,
-        },
-        relationalClaim: {
-          ...DEFAULT_CONFIG.generation.postGenerationGuards.relationalClaim,
-          ...options.config?.generation?.postGenerationGuards?.relationalClaim,
         },
         closurePressure: {
           ...DEFAULT_CONFIG.generation.postGenerationGuards.closurePressure,

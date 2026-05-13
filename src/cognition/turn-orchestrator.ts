@@ -37,7 +37,7 @@ import { CommitmentGuardRunner } from "./commitments/guard-runner.js";
 import { CorrectivePreferenceTurnService } from "./commitments/corrective-preference-service.js";
 import type { SelfSnapshot, TurnStakes } from "./deliberation/deliberator.js";
 import { TurnDiscourseStateService } from "./generation/turn-discourse-state.js";
-import { TurnRelationalGuardRunner } from "./generation/turn-relational-guard.js";
+import { TurnPostGenerationGuardRunner } from "./generation/turn-post-generation-guard.js";
 import type { TurnEmission } from "./generation/types.js";
 import { TurnGoalPromotionService } from "./goals/turn-goal-promotion-service.js";
 import type { StreamIngestionCoordinator } from "./ingestion/index.js";
@@ -237,21 +237,19 @@ export class TurnOrchestrator {
       tracer: this.tracer,
       clock: this.clock,
     });
-    const relationalGuardRunner = new TurnRelationalGuardRunner({
+    const postGenerationGuardRunner = new TurnPostGenerationGuardRunner({
       auditModel: options.config.anthropic.models.background,
       rewriteModel: options.config.anthropic.models.cognition,
-      relationalClaimMode: options.config.generation.postGenerationGuards.relationalClaim.mode,
       closurePressureMode: options.config.generation.postGenerationGuards.closurePressure.mode,
       createStreamReader,
       actionRepository: options.actionRepository,
-      commitmentRepository: options.commitmentRepository,
       relationalSlotRepository: options.relationalSlotRepository,
       clock: this.clock,
       tracer: this.tracer,
     });
     const turnActionCoordinator = new TurnActionCoordinator({
       commitmentGuardRunner,
-      relationalGuardRunner,
+      postGenerationGuardRunner,
       embeddingClient: options.embeddingClient,
       pendingActionJudgeModel: options.config.anthropic.models.background,
       clock: this.clock,
@@ -291,7 +289,7 @@ export class TurnOrchestrator {
       selfContextBuilder: this.selfContextBuilder,
       turnRetrievalCoordinator,
       discourseStateService,
-      relationalGuardRunner,
+      postGenerationGuardRunner,
       turnActionCoordinator,
       turnReflectionCoordinator,
       clock: this.clock,

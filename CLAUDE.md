@@ -10,7 +10,7 @@ Rules:
 
 ## Architecture freeze
 
-Frozen taxonomy as of Sprint 7. ai_phenomenology was removed in Sprint 7; expressive self-claims now route through the manifest's self_report kind with persistence_class: assistant_self_report. New epistemic failure classes route through the ManifestFinalizer architecture, not by re-adding ai_phenomenology or expanding the relational claim taxonomy.
+Frozen taxonomy as of Sprint 7. ai_phenomenology was removed in Sprint 7; expressive self-claims now route through the manifest's self_report kind with persistence_class: assistant_self_report. New epistemic failure classes route through the ManifestFinalizer architecture or post-hoc simulator audit categories, not by re-adding ai_phenomenology.
 
 ## Scope: harness vs model
 
@@ -38,7 +38,7 @@ Allowed and load-bearing in Borg:
 - **Critical-violation enforcement.** Internal-ID leak detection (Sprint 9.13). Schema/structural invariants of emission tools (field non-emptiness, mutex constraints, reference validity, encoding sanity). Narrow scope, clear failure mode, never about semantic judgment.
 
 Pushback expected if proposed (not refused outright, but argue for it explicitly):
-- **In-flight LLM judges of semantic correctness in production.** Examples: relational claim guard, manifest-style claim validators. Precedent: ManifestValidator deletion (Sprint 8d.8-9) chose to drop this shape because the audit had the same blind spots as the generator and prompt-side fixes worked better. When proposing one, name what's critical about the violation. If it isn't critical, the right answer is usually upstream (better extraction, better presentation, better prompt copy).
+- **In-flight LLM judges of semantic correctness in production.** Examples: manifest-style claim validators or other claim-grounding judges that rewrite/suppress user-facing output. Precedent: ManifestValidator deletion (Sprint 8d.8-9) chose to drop this shape because the audit had the same blind spots as the generator and prompt-side fixes worked better. When proposing one, name what's critical about the violation. If it isn't critical, the right answer is usually upstream (better extraction, better presentation, better prompt copy).
 - **Deterministic semantic re-validators in production.** Regex/pattern checks re-verifying claim grounding, citation accuracy, named-entity presence, numeric attribution in emitted text. Same problem one layer down -- if the model needed something the harness didn't give it, fix the harness, don't audit the output.
 
 ## Proposal hygiene

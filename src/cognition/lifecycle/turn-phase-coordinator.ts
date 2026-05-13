@@ -72,7 +72,7 @@ import type { ToolDispatcher } from "../../tools/index.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { StreamIngestionCoordinator } from "../ingestion/index.js";
-import type { TurnRelationalGuardRunner } from "../generation/turn-relational-guard.js";
+import type { TurnPostGenerationGuardRunner } from "../generation/turn-post-generation-guard.js";
 import type { TurnLifecycleTracker } from "./turn-lifecycle-tracker.js";
 import {
   ClosureLoopClassifier,
@@ -182,7 +182,7 @@ export type TurnPhaseCoordinatorOptions = {
   selfContextBuilder: TurnSelfContextBuilder;
   turnRetrievalCoordinator: TurnRetrievalCoordinator;
   discourseStateService: TurnDiscourseStateService;
-  relationalGuardRunner: Pick<TurnRelationalGuardRunner, "listRecentCompletedActions">;
+  postGenerationGuardRunner: Pick<TurnPostGenerationGuardRunner, "listRecentCompletedActions">;
   turnActionCoordinator: TurnActionCoordinator;
   turnReflectionCoordinator: TurnReflectionCoordinator;
   clock: Clock;
@@ -598,7 +598,7 @@ export class TurnPhaseCoordinator {
         entityRepository: this.options.entityRepository,
         workingMemory,
         recentCompletedActions:
-          this.options.relationalGuardRunner.listRecentCompletedActions(audienceEntityId),
+          this.options.postGenerationGuardRunner.listRecentCompletedActions(audienceEntityId),
         affectiveTrajectory,
         selfSnapshot,
         executiveFocus: executiveFocusWithStep,

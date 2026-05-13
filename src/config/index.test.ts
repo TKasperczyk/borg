@@ -80,9 +80,6 @@ describe("config", () => {
       commitment: {
         mode: "enforce",
       },
-      relationalClaim: {
-        mode: "enforce",
-      },
       closurePressure: {
         mode: "enforce",
       },
@@ -198,11 +195,6 @@ describe("config", () => {
             budget_tokens: 2048,
           },
         },
-        postGenerationGuards: {
-          relationalClaim: {
-            mode: "shadow",
-          },
-        },
       },
     });
 
@@ -239,7 +231,6 @@ describe("config", () => {
     expect(config.executive.goalFocusThreshold).toBe(0.6);
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(8);
     expect(config.generation.postGenerationGuards.commitment.mode).toBe("enforce");
-    expect(config.generation.postGenerationGuards.relationalClaim.mode).toBe("shadow");
     expect(config.generation.postGenerationGuards.closurePressure.mode).toBe("enforce");
     expect(config.generation.evidenceLedger.enabled).toBe(true);
     expect(config.generation.evidenceLedger.currentSessionTranscriptTokenBudget).toBe(16_000);
@@ -257,7 +248,7 @@ describe("config", () => {
     expect(config.offline.semanticExtractor.budget).toBe(12_000);
   });
 
-  it("accepts relational claim guard per-category mode while keeping simple modes", () => {
+  it("accepts post-generation guard simple modes", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
 
@@ -266,16 +257,6 @@ describe("config", () => {
         postGenerationGuards: {
           commitment: {
             mode: "enforce",
-          },
-          relationalClaim: {
-            mode: {
-              perCategory: {
-                default: "shadow",
-                overrides: {
-                  unsupported_specific_detail: "enforce",
-                },
-              },
-            },
           },
           closurePressure: {
             mode: "shadow",
@@ -290,14 +271,6 @@ describe("config", () => {
     });
 
     expect(config.generation.postGenerationGuards.commitment.mode).toBe("enforce");
-    expect(config.generation.postGenerationGuards.relationalClaim.mode).toEqual({
-      perCategory: {
-        default: "shadow",
-        overrides: {
-          unsupported_specific_detail: "enforce",
-        },
-      },
-    });
     expect(config.generation.postGenerationGuards.closurePressure.mode).toBe("shadow");
   });
 

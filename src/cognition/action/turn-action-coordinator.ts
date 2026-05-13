@@ -10,7 +10,7 @@ import type { CommitmentGuardRunner } from "../commitments/guard-runner.js";
 import type { DeliberationResult } from "../deliberation/deliberator.js";
 import type { ClosureLoopDialogueAct } from "../generation/closure-loop.js";
 import type { PendingTurnEmission } from "../generation/types.js";
-import type { TurnRelationalGuardRunner } from "../generation/turn-relational-guard.js";
+import type { TurnPostGenerationGuardRunner } from "../generation/turn-post-generation-guard.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import type { PerceptionResult } from "../types.js";
 import {
@@ -22,7 +22,7 @@ import {
 
 export type TurnActionCoordinatorOptions = {
   commitmentGuardRunner: Pick<CommitmentGuardRunner, "run">;
-  relationalGuardRunner: Pick<TurnRelationalGuardRunner, "run">;
+  postGenerationGuardRunner: Pick<TurnPostGenerationGuardRunner, "run">;
   embeddingClient: EmbeddingClient;
   pendingActionJudgeModel: string;
   clock: Clock;
@@ -41,7 +41,7 @@ export type RunTurnActionInput = {
   autonomyTrigger?: AutonomyTriggerContext | null;
   applicableCommitments: readonly CommitmentRecord[];
   perceptionEntities: PerceptionResult["entities"];
-  persistedUserEntry?: Parameters<TurnRelationalGuardRunner["run"]>[0]["persistedUserEntry"];
+  persistedUserEntry?: Parameters<TurnPostGenerationGuardRunner["run"]>[0]["persistedUserEntry"];
   retrievedEpisodes: readonly RetrievedEpisode[];
   currentUserClosureKind?: ClosureLoopDialogueAct | null;
   audienceEntityId: EntityId | null;
@@ -157,11 +157,10 @@ export class TurnActionCoordinator {
       commitmentEmission.kind === "suppressed"
         ? commitmentEmission
         : withMessageMetadata(
-            await this.options.relationalGuardRunner.run({
+            await this.options.postGenerationGuardRunner.run({
               llmClient: input.llmClient,
               turnId: input.turnId,
               response: commitmentEmission.content,
-              userMessage: input.userMessage,
               sessionId: input.sessionId,
               persistedUserEntry: input.persistedUserEntry,
               retrievedEpisodes: input.retrievedEpisodes,

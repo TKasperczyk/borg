@@ -1,6 +1,6 @@
 import { createStreamEntryId } from "../../../src/util/ids.js";
 import type { ReplayScenario } from "../scenario.js";
-import { enqueueNoRelationalGuardIssue } from "../scenario.js";
+import { enqueueNoPostGenerationGuardIssue } from "../scenario.js";
 
 const scenario: ReplayScenario = {
   id: "29-cross-session-partner-name-conflict",
@@ -24,7 +24,7 @@ const scenario: ReplayScenario = {
   userMessage: "Sara is my partner.",
   unsafeCandidateText: "Sara is your partner.",
   scriptLLMResponses(_client, context) {
-    enqueueNoRelationalGuardIssue(context);
+    enqueueNoPostGenerationGuardIssue(context);
   },
   safeOutputPredicate: (text) => text.includes("Sara"),
   severeGuardCategories: [],

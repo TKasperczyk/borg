@@ -1,5 +1,5 @@
 import type { ReplayScenario } from "../scenario.js";
-import { enqueueNoRelationalGuardIssue, lowerIncludesNone } from "../scenario.js";
+import { enqueueNoPostGenerationGuardIssue, lowerIncludesNone } from "../scenario.js";
 
 // v36 turn 57 surfaced a "Monday-Tom" leak: the audience canonical name
 // "Tom" (transport_audience_label provenance, never user-declared)
@@ -21,7 +21,7 @@ const scenario: ReplayScenario = {
   audience: "Tom",
   unsafeCandidateText: "Monday-Tom is going to be looking for any excuse to soften this.",
   scriptLLMResponses(_client, context) {
-    enqueueNoRelationalGuardIssue(context);
+    enqueueNoPostGenerationGuardIssue(context);
   },
   safeOutputPredicate: (text) => lowerIncludesNone(text, ["Tom"]),
   severeGuardCategories: [],

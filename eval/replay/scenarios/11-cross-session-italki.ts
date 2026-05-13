@@ -1,11 +1,7 @@
 import { createEpisodeId, createSessionId } from "../../../src/util/ids.js";
 import { createEpisodeFixture } from "../../../src/offline/test-support.js";
 import type { ReplayScenario } from "../scenario.js";
-import {
-  enqueueRelationalGuardFailureWhenValidatorAbsent,
-  lowerIncludesNone,
-  makeRelationalClaim,
-} from "../scenario.js";
+import { enqueueNoPostGenerationGuardIssue, lowerIncludesNone } from "../scenario.js";
 
 const PRIOR_SESSION_ID = createSessionId();
 const ITALKI_EPISODE_ID = createEpisodeId();
@@ -42,14 +38,7 @@ const scenario: ReplayScenario = {
   unsafeCandidateText:
     "From prior-session memory, your iTalki tutor recommendation involved X. Last time you said your iTalki tutor recommended X.",
   scriptLLMResponses(_client, context) {
-    enqueueRelationalGuardFailureWhenValidatorAbsent(context, {
-      claim: makeRelationalClaim({
-        kind: "callback",
-        asserted: "Last time the user said their iTalki tutor recommended X.",
-        callback_scope: "prior_turn",
-      }),
-      rewrite: "In prior-session memory, your iTalki tutor recommendation involved X.",
-    });
+    enqueueNoPostGenerationGuardIssue(context);
   },
   safeOutputPredicate: (text) => lowerIncludesNone(text, ["Last time you said"]),
   severeGuardCategories: ["callback"],

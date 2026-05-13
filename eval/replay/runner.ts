@@ -53,7 +53,6 @@ const PIPELINES: readonly ReplayPipeline[] = [
     label: "emission tools, enforce guards",
     evidenceLedgerEnabled: false,
     commitmentMode: "enforce",
-    relationalClaimMode: "enforce",
     closurePressureMode: "enforce",
   },
   {
@@ -61,7 +60,6 @@ const PIPELINES: readonly ReplayPipeline[] = [
     label: "emission tools, enforce guards",
     evidenceLedgerEnabled: false,
     commitmentMode: "enforce",
-    relationalClaimMode: "enforce",
     closurePressureMode: "enforce",
   },
   {
@@ -69,7 +67,6 @@ const PIPELINES: readonly ReplayPipeline[] = [
     label: "emission tools, guards shadow",
     evidenceLedgerEnabled: false,
     commitmentMode: "shadow",
-    relationalClaimMode: "shadow",
     closurePressureMode: "shadow",
   },
   {
@@ -77,7 +74,6 @@ const PIPELINES: readonly ReplayPipeline[] = [
     label: "Pipeline C″",
     evidenceLedgerEnabled: true,
     commitmentMode: "enforce",
-    relationalClaimMode: "shadow",
     closurePressureMode: "enforce",
   },
 ];
@@ -115,9 +111,6 @@ function replayConfig(
       postGenerationGuards: {
         commitment: {
           mode: pipeline.commitmentMode,
-        },
-        relationalClaim: {
-          mode: pipeline.relationalClaimMode,
         },
         closurePressure: {
           mode: pipeline.closurePressureMode,
@@ -192,18 +185,6 @@ function objectArray(value: unknown): Array<Record<string, unknown>> {
 }
 
 function eventGuardCategories(event: TraceEvent): string[] {
-  if (event.event === "relational_claim_guard") {
-    const claims = [
-      ...objectArray(event.unsupportedClaims),
-      ...objectArray(event.first_unsupported),
-      ...objectArray(event.rewritten_unsupported),
-    ];
-
-    return claims
-      .map((claim) => stringValue(claim.kind))
-      .filter((kind): kind is string => kind !== null);
-  }
-
   if (event.event === "closure_response_guard") {
     const spanKinds = objectArray(event.spans)
       .map((span) => stringValue(span.kind))
@@ -220,18 +201,6 @@ function eventGuardCategories(event: TraceEvent): string[] {
 }
 
 function eventShadowGuardCategories(event: TraceEvent): string[] {
-  if (event.event === "relational_claim_guard") {
-    if (stringValue(event.mode) === "shadow") {
-      return eventGuardCategories(event);
-    }
-
-    const shadowClaims = objectArray(event.unsupported_shadow);
-
-    return shadowClaims
-      .map((claim) => stringValue(claim.kind))
-      .filter((kind): kind is string => kind !== null);
-  }
-
   if (
     (event.event === "closure_response_guard" || event.event === "commitment_check") &&
     stringValue(event.mode) === "shadow"
@@ -254,11 +223,7 @@ function intersects(left: readonly string[], right: readonly string[]): boolean 
 
 function guardCaught(events: readonly TraceEvent[], scenario: ReplayScenario): boolean {
   return events.some((event) => {
-    if (
-      event.event !== "relational_claim_guard" &&
-      event.event !== "closure_response_guard" &&
-      event.event !== "commitment_check"
-    ) {
+    if (event.event !== "closure_response_guard" && event.event !== "commitment_check") {
       return false;
     }
 
@@ -270,11 +235,7 @@ function guardCaught(events: readonly TraceEvent[], scenario: ReplayScenario): b
 
 function shadowGuardCaught(events: readonly TraceEvent[], scenario: ReplayScenario): boolean {
   return events.some((event) => {
-    if (
-      event.event !== "relational_claim_guard" &&
-      event.event !== "closure_response_guard" &&
-      event.event !== "commitment_check"
-    ) {
+    if (event.event !== "closure_response_guard" && event.event !== "commitment_check") {
       return false;
     }
 

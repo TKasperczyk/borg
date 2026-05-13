@@ -24,7 +24,6 @@ import {
 } from "./generation/closure-loop.js";
 import { CLOSURE_RESPONSE_AUDIT_TOOL_NAME } from "./generation/closure-pressure-guard.js";
 import { setClosureLoopDetected } from "./generation/discourse-state.js";
-import { RelationalClaimGuard } from "./generation/relational-guard.js";
 import type { Episode, EpisodicRepository } from "../memory/episodic/index.js";
 import {
   createTestConfig,
@@ -440,49 +439,6 @@ function createCommitmentJudgeResponse(
   };
 }
 
-function createClaimAuditResponse(
-  claims: Array<{
-    kind:
-      | "relational_identity"
-      | "callback"
-      | "session_scoped"
-      | "action_completion"
-      | "self_correction";
-    asserted: string;
-    cited_stream_entry_ids?: string[];
-    cited_episode_ids?: string[];
-    cited_commitment_ids?: string[];
-    cited_action_ids?: string[];
-    quoted_evidence_text?: string | null;
-    callback_scope?: "current_turn" | "prior_turn";
-  }>,
-) {
-  return {
-    text: "",
-    input_tokens: 4,
-    output_tokens: 2,
-    stop_reason: "tool_use" as const,
-    tool_calls: [
-      {
-        id: "toolu_claim_audit",
-        name: "EmitClaimAudit",
-        input: {
-          claims: claims.map((claim) => ({
-            kind: claim.kind,
-            asserted: claim.asserted,
-            cited_stream_entry_ids: claim.cited_stream_entry_ids ?? [],
-            cited_episode_ids: claim.cited_episode_ids ?? [],
-            cited_commitment_ids: claim.cited_commitment_ids ?? [],
-            cited_action_ids: claim.cited_action_ids ?? [],
-            quoted_evidence_text: claim.quoted_evidence_text ?? null,
-            ...(claim.callback_scope === undefined ? {} : { callback_scope: claim.callback_scope }),
-          })),
-        },
-      },
-    ],
-  };
-}
-
 function createClosureResponseAuditResponse() {
   return {
     text: "",
@@ -768,7 +724,6 @@ describe("TurnOrchestrator evidence ledger", () => {
       createActionStateResponse([]),
       createGoalPromotionResponse([]),
       createEmitAnswerResponse(finalizerText),
-      createClaimAuditResponse([]),
       createClosureResponseAuditResponse(),
       createEmptyReflectionResponse(),
     ];
@@ -875,7 +830,6 @@ describe("TurnOrchestrator evidence ledger", () => {
           name: "EmitAnswer",
           input: { text: finalText },
         }),
-        createClaimAuditResponse([]),
         createClosureResponseAuditResponse(),
         createEmptyReflectionResponse(),
       ],
@@ -925,9 +879,6 @@ describe("TurnOrchestrator evidence ledger", () => {
       expect(finalizerSystem).toContain("<borg_host_capabilities>");
       expect(finalizerSystem).toContain(hostCapabilities);
       expect(finalizerSystem).not.toContain("Real-time polling of external state");
-      expect(llm.requests.some((request) => request.budget === "relational-claim-auditor")).toBe(
-        true,
-      );
       expect(llm.requests.some((request) => request.budget === "closure-response-auditor")).toBe(
         true,
       );
@@ -980,14 +931,12 @@ describe("TurnOrchestrator evidence ledger", () => {
         actionStateForCurrentUser,
         createGoalPromotionResponse([]),
         createEmitAnswerResponse("Alice can own the Alhambra booking."),
-        createClaimAuditResponse([]),
         createClosureResponseAuditResponse(),
         createEmptyReflectionResponse(),
         createCorrectivePreferenceResponse({ classification: "none" }),
         createActionStateResponse([]),
         createGoalPromotionResponse([]),
         createEmitAnswerResponse("I will keep the commitments separated by speaker."),
-        createClaimAuditResponse([]),
         createClosureResponseAuditResponse(),
         createEmptyReflectionResponse(),
       ],
@@ -1078,7 +1027,6 @@ describe("TurnOrchestrator evidence ledger", () => {
             persistence_class: "assistant_self_report",
           },
         }),
-        createClaimAuditResponse([]),
         createClosureResponseAuditResponse(),
         createEmptyReflectionResponse(),
       ],
@@ -2501,135 +2449,6 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         since_turn: 1,
       });
     } finally {
-      await borg.close();
-    }
-  });
-
-  it("suppresses when a commitment rewrite fabricates a self-correction", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
-    const clock = new ManualClock(1_800_000_160_000);
-    const llm = new FakeLLMClient();
-    const borg = await openTestBorg(tempDir, llm, clock);
-
-    try {
-      const commitment = borg.commitments.add({
-        type: "boundary",
-        directiveFamily: "partner_name_boundary",
-        directive: "Do not call the user's partner Sarah.",
-        priority: 10,
-        provenance: { kind: "manual" },
-      });
-
-      llm.pushResponse(
-        createEmitAnswerResponse("Sarah is your partner, and I can help with that."),
-      );
-      llm.pushResponse(
-        createCommitmentJudgeResponse([
-          {
-            commitment_id: commitment.id,
-            reason: "Invents or repeats Sarah as the partner name.",
-          },
-        ]),
-      );
-      llm.pushResponse({
-        text: "I will avoid that name; you corrected me earlier in this conversation.",
-        input_tokens: 8,
-        output_tokens: 4,
-        stop_reason: "end_turn",
-        tool_calls: [],
-      });
-      llm.pushResponse(createCommitmentJudgeResponse([]));
-      llm.pushResponse(
-        createClaimAuditResponse([
-          {
-            kind: "self_correction",
-            asserted: "you corrected me earlier in this conversation",
-          },
-        ]),
-      );
-
-      const result = await borg.turn({
-        userMessage: "Please help me plan dinner.",
-      });
-      const entries = borg.stream.tail(10);
-      const suppressionEntry = entries.find((entry) => entry.kind === "agent_suppressed");
-      const activeStop = borg.workmem.load().discourse_state?.stop_until_substantive_content;
-
-      expect(result.emitted).toBe(false);
-      expect(result.emission).toMatchObject({
-        kind: "suppressed",
-        reason: "relational_guard_self_correction",
-      });
-      expect(entries.some((entry) => entry.kind === "agent_msg")).toBe(false);
-      expect(suppressionEntry?.content).toMatchObject({
-        reason: "relational_guard_self_correction",
-      });
-      expect(activeStop).toMatchObject({
-        provenance: "relational_guard",
-        source_stream_entry_id: suppressionEntry?.id,
-        since_turn: 1,
-      });
-    } finally {
-      await borg.close();
-    }
-  });
-
-  it("passes the persisted user entry timestamp as the relational guard turn boundary", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
-    class AutoAdvanceClock extends ManualClock {
-      override now(): number {
-        const value = super.now();
-
-        super.advance(5);
-
-        return value;
-      }
-    }
-    const clock = new AutoAdvanceClock(1_800_000_170_000);
-    const llm = new FakeLLMClient({
-      responses: [
-        createEmitAnswerResponse("As you said, the invoice is done."),
-        createEmptyReflectionResponse(),
-      ],
-    });
-    const guardRunSpy = vi
-      .spyOn(RelationalClaimGuard.prototype, "run")
-      .mockImplementation(async (input) => {
-        const currentUserMessage = input.evidence.current_user_message;
-
-        expect(currentUserMessage).toMatchObject({
-          text: "The invoice is done.",
-        });
-        expect(input.currentTurnTs).toBe(currentUserMessage?.ts);
-        expect(clock.now()).toBeGreaterThan(input.currentTurnTs);
-        expect(input.evidence.current_user_message).toMatchObject({
-          text: "The invoice is done.",
-        });
-
-        return {
-          emission: {
-            kind: "message",
-            content: input.response,
-          },
-          claims: [],
-          validations: [],
-          verdict: "passed",
-        };
-      });
-    const borg = await openTestBorg(tempDir, llm, clock);
-
-    try {
-      const result = await borg.turn({
-        userMessage: "The invoice is done.",
-      });
-
-      expect(result.emitted).toBe(true);
-      expect(result.response).toBe("As you said, the invoice is done.");
-      expect(guardRunSpy).toHaveBeenCalledOnce();
-    } finally {
-      guardRunSpy.mockRestore();
       await borg.close();
     }
   });

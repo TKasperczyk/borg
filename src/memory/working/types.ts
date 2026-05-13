@@ -108,7 +108,6 @@ export const discourseStopProvenanceSchema = z.enum([
   "no_output_tool",
   "s2_planner_no_output",
   "commitment_guard",
-  "relational_guard",
 ]);
 
 export const stopUntilSubstantiveContentSchema = z

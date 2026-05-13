@@ -1,6 +1,6 @@
 import type { ReplayScenario } from "../scenario.js";
 import {
-  enqueueNoRelationalGuardIssue,
+  enqueueNoPostGenerationGuardIssue,
   episodeExtractionResponse,
   promptForBudget,
 } from "../scenario.js";
@@ -17,7 +17,7 @@ const scenario: ReplayScenario = {
   userMessage: "Run the secondary-thread extraction replay check.",
   unsafeCandidateText: "I can run the secondary-thread extraction replay check.",
   scriptLLMResponses(_client, context) {
-    enqueueNoRelationalGuardIssue(context);
+    enqueueNoPostGenerationGuardIssue(context);
   },
   safeOutputPredicate: (text) => text.trim().length > 0,
   usefulOutputPredicate: () => true,

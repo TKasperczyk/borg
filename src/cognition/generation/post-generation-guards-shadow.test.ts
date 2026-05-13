@@ -12,8 +12,7 @@ import {
   CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
   type ClosureResponseAudit,
 } from "./closure-pressure-guard.js";
-import type { RelationalClaimAuditClaim } from "./relational-guard.js";
-import { TurnRelationalGuardRunner } from "./turn-relational-guard.js";
+import { TurnPostGenerationGuardRunner } from "./turn-post-generation-guard.js";
 
 function commitmentVerdictResponse(violations: unknown[]): LLMCompleteResult {
   return {
@@ -27,24 +26,6 @@ function commitmentVerdictResponse(violations: unknown[]): LLMCompleteResult {
         name: "EmitCommitmentViolations",
         input: {
           violations,
-        },
-      },
-    ],
-  };
-}
-
-function claimAuditResponse(claims: readonly RelationalClaimAuditClaim[]): LLMCompleteResult {
-  return {
-    text: "",
-    input_tokens: 1,
-    output_tokens: 1,
-    stop_reason: "tool_use",
-    tool_calls: [
-      {
-        id: "toolu_claim_audit",
-        name: "EmitClaimAudit",
-        input: {
-          claims,
         },
       },
     ],
@@ -93,25 +74,6 @@ function makeCommitment(): CommitmentRecord {
   };
 }
 
-function makeCallbackClaim(asserted: string): RelationalClaimAuditClaim {
-  return {
-    kind: "callback",
-    asserted,
-    cited_stream_entry_ids: [],
-    cited_episode_ids: [],
-    cited_commitment_ids: [],
-    cited_action_ids: [],
-    support_handles: [],
-    quoted_evidence_text: null,
-    callback_scope: "prior_turn",
-    specific_detail_value: null,
-    specific_detail_support_kind: null,
-    subject_entity_id: null,
-    slot_key: null,
-    relational_slot_value: null,
-  };
-}
-
 function emptyStreamReader(): StreamReader {
   return {
     async *iterate() {
@@ -121,7 +83,7 @@ function emptyStreamReader(): StreamReader {
 }
 
 describe("post-generation guard shadow chain", () => {
-  it("keeps the original candidate through commitment, relational, and closure shadow guards", async () => {
+  it("keeps the original candidate through commitment and closure shadow guards", async () => {
     const original =
       "Launch is tomorrow. You mentioned Marta earlier. The shelf test is the right move. Go read.";
     const commitment = makeCommitment();
@@ -142,15 +104,6 @@ describe("post-generation guard shadow chain", () => {
           tool_calls: [],
         },
         commitmentVerdictResponse([]),
-        claimAuditResponse([makeCallbackClaim("You mentioned Marta earlier.")]),
-        {
-          text: "Launch is tomorrow. The shelf test is the right move. Go read.",
-          input_tokens: 1,
-          output_tokens: 1,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
-        claimAuditResponse([]),
         closureAuditResponse({
           spans: [
             {
@@ -197,17 +150,13 @@ describe("post-generation guard shadow chain", () => {
       content: original,
     });
 
-    const relationalRunner = new TurnRelationalGuardRunner({
+    const postGenerationRunner = new TurnPostGenerationGuardRunner({
       auditModel: "audit",
       rewriteModel: "rewrite",
-      relationalClaimMode: "shadow",
       closurePressureMode: "shadow",
       createStreamReader: () => emptyStreamReader(),
       actionRepository: {
         list: vi.fn(() => []),
-      },
-      commitmentRepository: {
-        findByEvidenceStreamEntryId: vi.fn(() => false),
       },
       relationalSlotRepository: {
         list: vi.fn(() => []),
@@ -216,12 +165,11 @@ describe("post-generation guard shadow chain", () => {
       tracer,
     });
 
-    const finalEmission = await relationalRunner.run({
+    const finalEmission = await postGenerationRunner.run({
       llmClient: llm,
       turnId: "turn-shadow-chain",
       response:
         commitmentResult.emission.kind === "message" ? commitmentResult.emission.content : "",
-      userMessage: "When is launch?",
       sessionId: DEFAULT_SESSION_ID,
       retrievedEpisodes: [],
       activeCommitments: [commitment],
@@ -237,23 +185,12 @@ describe("post-generation guard shadow chain", () => {
       "commitment-judge",
       "commitment-revision",
       "commitment-judge",
-      "relational-claim-auditor",
-      "relational-guard-rewrite",
-      "relational-claim-auditor",
       "closure-response-auditor",
     ]);
     expect(emit.mock.calls).toEqual(
       expect.arrayContaining([
         [
           "commitment_check",
-          expect.objectContaining({
-            mode: "shadow",
-            verdict: "passed",
-            wouldHaveVerdict: "rewritten",
-          }),
-        ],
-        [
-          "relational_claim_guard",
           expect.objectContaining({
             mode: "shadow",
             verdict: "passed",
@@ -286,7 +223,6 @@ describe("post-generation guard shadow chain", () => {
     };
     const llm = new FakeLLMClient({
       responses: [
-        claimAuditResponse([]),
         closureAuditResponse({
           spans: [],
           response_shape: "no_closure",
@@ -300,17 +236,13 @@ describe("post-generation guard shadow chain", () => {
       includePayloads: false,
       emit,
     };
-    const relationalRunner = new TurnRelationalGuardRunner({
+    const postGenerationRunner = new TurnPostGenerationGuardRunner({
       auditModel: "audit",
       rewriteModel: "rewrite",
-      relationalClaimMode: "enforce",
       closurePressureMode: "enforce",
       createStreamReader: () => emptyStreamReader(),
       actionRepository: {
         list: vi.fn(() => []),
-      },
-      commitmentRepository: {
-        findByEvidenceStreamEntryId: vi.fn(() => false),
       },
       relationalSlotRepository: {
         list: vi.fn(() => []),
@@ -319,11 +251,10 @@ describe("post-generation guard shadow chain", () => {
       tracer,
     });
 
-    const finalEmission = await relationalRunner.run({
+    const finalEmission = await postGenerationRunner.run({
       llmClient: llm,
       turnId: "turn-internal-id-leak",
       response: `The source handle was ${userEntryId}.`,
-      userMessage: "What happened?",
       sessionId: DEFAULT_SESSION_ID,
       persistedUserEntry: userEntry,
       retrievedEpisodes: [],
@@ -336,10 +267,7 @@ describe("post-generation guard shadow chain", () => {
       kind: "suppressed",
       reason: "internal_identifier_leak",
     });
-    expect(llm.requests.map((request) => request.budget)).toEqual([
-      "relational-claim-auditor",
-      "closure-response-auditor",
-    ]);
+    expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
     expect(emit).toHaveBeenCalledWith("closure_response_guard", expect.any(Object));
     expect(emit).toHaveBeenCalledWith("internal_identifier_guard", {
       turnId: "turn-internal-id-leak",
@@ -353,7 +281,6 @@ describe("post-generation guard shadow chain", () => {
     const response = `You wrote ${userAuthoredId}.`;
     const llm = new FakeLLMClient({
       responses: [
-        claimAuditResponse([]),
         closureAuditResponse({
           spans: [],
           response_shape: "no_closure",
@@ -367,17 +294,13 @@ describe("post-generation guard shadow chain", () => {
       includePayloads: false,
       emit,
     };
-    const relationalRunner = new TurnRelationalGuardRunner({
+    const postGenerationRunner = new TurnPostGenerationGuardRunner({
       auditModel: "audit",
       rewriteModel: "rewrite",
-      relationalClaimMode: "enforce",
       closurePressureMode: "enforce",
       createStreamReader: () => emptyStreamReader(),
       actionRepository: {
         list: vi.fn(() => []),
-      },
-      commitmentRepository: {
-        findByEvidenceStreamEntryId: vi.fn(() => false),
       },
       relationalSlotRepository: {
         list: vi.fn(() => []),
@@ -386,11 +309,10 @@ describe("post-generation guard shadow chain", () => {
       tracer,
     });
 
-    const finalEmission = await relationalRunner.run({
+    const finalEmission = await postGenerationRunner.run({
       llmClient: llm,
       turnId: "turn-user-authored-id-shaped-string",
       response,
-      userMessage: `Please repeat ${userAuthoredId}.`,
       sessionId: DEFAULT_SESSION_ID,
       retrievedEpisodes: [],
       activeCommitments: [],
@@ -409,7 +331,6 @@ describe("post-generation guard shadow chain", () => {
     const discourseTurnId = "123e4567-e89b-12d3-a456-426614174000";
     const llm = new FakeLLMClient({
       responses: [
-        claimAuditResponse([]),
         closureAuditResponse({
           spans: [],
           response_shape: "no_closure",
@@ -423,17 +344,13 @@ describe("post-generation guard shadow chain", () => {
       includePayloads: false,
       emit,
     };
-    const relationalRunner = new TurnRelationalGuardRunner({
+    const postGenerationRunner = new TurnPostGenerationGuardRunner({
       auditModel: "audit",
       rewriteModel: "rewrite",
-      relationalClaimMode: "enforce",
       closurePressureMode: "enforce",
       createStreamReader: () => emptyStreamReader(),
       actionRepository: {
         list: vi.fn(() => []),
-      },
-      commitmentRepository: {
-        findByEvidenceStreamEntryId: vi.fn(() => false),
       },
       relationalSlotRepository: {
         list: vi.fn(() => []),
@@ -442,11 +359,10 @@ describe("post-generation guard shadow chain", () => {
       tracer,
     });
 
-    const finalEmission = await relationalRunner.run({
+    const finalEmission = await postGenerationRunner.run({
       llmClient: llm,
       turnId: "turn-discourse-uuid-leak",
       response: `The closure-pressure history entry was ${discourseTurnId}.`,
-      userMessage: "What got suppressed?",
       sessionId: DEFAULT_SESSION_ID,
       retrievedEpisodes: [],
       activeCommitments: [],

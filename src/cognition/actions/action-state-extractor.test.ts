@@ -2,19 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import {
-  actionRecordToRelationalGuardEvidence,
-  type RelationalClaimAuditClaim,
-  validateRelationalClaims,
-} from "../generation/relational-guard.js";
 import { FixedClock } from "../../util/clock.js";
-import {
-  createEntityId,
-  createStreamEntryId,
-  DEFAULT_SESSION_ID,
-  type ActionId,
-  type StreamEntryId,
-} from "../../util/ids.js";
+import { createEntityId, createStreamEntryId, type StreamEntryId } from "../../util/ids.js";
 import { ActionStateExtractor } from "./action-state-extractor.js";
 
 type ActionStateInput = {
@@ -60,25 +49,6 @@ function makeExtractorInput(currentUserStreamEntryId: StreamEntryId) {
   };
 }
 
-function makeClaim(citedActionIds: ActionId[]): RelationalClaimAuditClaim {
-  return {
-    kind: "action_completion",
-    asserted: "You booked the tutor Tuesday 7pm.",
-    cited_stream_entry_ids: [],
-    cited_episode_ids: [],
-    cited_commitment_ids: [],
-    cited_action_ids: citedActionIds,
-    support_handles: [],
-    quoted_evidence_text: null,
-    callback_scope: null,
-    specific_detail_value: null,
-    specific_detail_support_kind: null,
-    subject_entity_id: null,
-    slot_key: null,
-    relational_slot_value: null,
-  };
-}
-
 describe("ActionStateExtractor", () => {
   it("writes a completed ActionRecord from current user evidence", async () => {
     const currentUserStreamEntryId = createStreamEntryId();
@@ -116,24 +86,6 @@ describe("ActionStateExtractor", () => {
       updated_at: 2_000,
       completed_at: 2_000,
     });
-
-    const summary = validateRelationalClaims({
-      claims: [makeClaim([records[0]!.id])],
-      evidence: {
-        current_user_message: null,
-        current_session_stream_entries: [],
-        retrieved_episodes: [],
-        active_commitments: [],
-        corrective_preferences: [],
-        relational_slots: [],
-        recent_completed_actions: [actionRecordToRelationalGuardEvidence(records[0]!)],
-      },
-      currentSessionId: DEFAULT_SESSION_ID,
-      currentTurnTs: 3_000,
-      hasCorrectivePreferenceEvidence: () => false,
-    });
-
-    expect(summary.unsupported).toEqual([]);
   });
 
   it("records group-chat first-person user actions on the speaker entity", async () => {

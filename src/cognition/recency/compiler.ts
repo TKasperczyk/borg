@@ -120,10 +120,6 @@ function suppressionCategoryContext(reason: string): string {
     return "prior unsupported response guard suppressed output";
   }
 
-  if (reason.startsWith("relational_guard_")) {
-    return "relational guard rejected the response";
-  }
-
   if (reason === "closure_pressure_only" || reason === "closure_response_audit_failed_closed") {
     return "closure pressure guard rejected the response";
   }

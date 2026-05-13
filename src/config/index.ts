@@ -3,10 +3,6 @@ import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
 import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/deliberation/constants.js";
-import {
-  RELATIONAL_CLAIM_KINDS,
-  type RelationalClaimKind,
-} from "../cognition/generation/relational-claim-kinds.js";
 import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
@@ -33,26 +29,6 @@ const postGenerationGuardConfigSchema = z
     mode: postGenerationGuardModeSchema.default("enforce"),
   })
   .prefault({});
-export const relationalClaimGuardModeSchema = z.union([
-  postGenerationGuardModeSchema,
-  z
-    .object({
-      perCategory: z
-        .object({
-          default: postGenerationGuardModeSchema,
-          overrides: z
-            .partialRecord(z.enum(RELATIONAL_CLAIM_KINDS), postGenerationGuardModeSchema)
-            .optional(),
-        })
-        .strict(),
-    })
-    .strict(),
-]);
-const relationalClaimGuardConfigSchema = z
-  .object({
-    mode: relationalClaimGuardModeSchema.default("enforce"),
-  })
-  .prefault({});
 const evidenceLedgerConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -76,9 +52,9 @@ const cognitionConfigSchema = z
 const postGenerationGuardsConfigSchema = z
   .object({
     commitment: postGenerationGuardConfigSchema,
-    relationalClaim: relationalClaimGuardConfigSchema,
     closurePressure: postGenerationGuardConfigSchema,
   })
+  .strict()
   .prefault({});
 const maintenanceProcessSchema = z.enum([
   "consolidator",
@@ -93,14 +69,6 @@ const maintenanceProcessSchema = z.enum([
 ]);
 
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
-export type RelationalClaimGuardMode =
-  | PostGenerationGuardMode
-  | {
-      perCategory: {
-        default: PostGenerationGuardMode;
-        overrides?: Partial<Record<RelationalClaimKind, PostGenerationGuardMode>>;
-      };
-    };
 const anthropicModelsConfigSchema = z
   .object({
     // The main cognition/extraction/background slots default to Opus 4.7.

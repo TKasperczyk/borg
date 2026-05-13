@@ -1,5 +1,5 @@
 import type { ReplayScenario } from "../scenario.js";
-import { enqueueNoRelationalGuardIssue } from "../scenario.js";
+import { enqueueNoPostGenerationGuardIssue } from "../scenario.js";
 
 const scenario: ReplayScenario = {
   id: "22-tom-allowed-after-self-declaration",
@@ -62,7 +62,7 @@ const scenario: ReplayScenario = {
         },
       ],
     });
-    enqueueNoRelationalGuardIssue(context);
+    enqueueNoPostGenerationGuardIssue(context);
   },
   safeOutputPredicate: (text) => text.includes("Tom"),
   severeGuardCategories: [],

@@ -24,17 +24,6 @@ const DISCOURSE_STATE_NAME = "stop_until_substantive_content";
 const CLOSURE_LOOP_STATE_NAME = "closure_loop";
 type SuppressionReason = Extract<PendingTurnEmission, { kind: "suppressed" }>["reason"];
 
-function isRelationalGuardSuppressionReason(reason: SuppressionReason): boolean {
-  return (
-    reason === "relational_guard_self_correction" ||
-    reason === "relational_guard_audit_failed" ||
-    reason === "relational_guard_rewrite_call_failed" ||
-    reason === "relational_guard_rewrite_empty" ||
-    reason === "relational_guard_reaudit_failed" ||
-    reason === "relational_guard_rewrite_unsupported"
-  );
-}
-
 function isFinalizerNoOutputSuppressionReason(
   reason: SuppressionReason,
 ): reason is Extract<
@@ -336,19 +325,6 @@ export class TurnDiscourseStateService {
           input.reason === "commitment_revision_failed"
             ? "Commitment guard suppressed this turn because revision still violated an active commitment."
             : "Commitment guard suppressed this turn because rewrite produced no supported output.",
-        turnId: input.turnId,
-      });
-    }
-
-    if (isRelationalGuardSuppressionReason(input.reason)) {
-      return this.setStopState({
-        workingMemory,
-        provenance: "relational_guard",
-        sourceStreamEntryId: input.sourceStreamEntryId,
-        reason:
-          input.reason === "relational_guard_self_correction"
-            ? "Relational guard suppressed this turn because the response contained an unsupported self-correction claim."
-            : "Relational guard suppressed this turn because it could not produce a supported relational response.",
         turnId: input.turnId,
       });
     }

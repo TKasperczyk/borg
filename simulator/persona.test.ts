@@ -248,7 +248,7 @@ describe("PersonaSession", () => {
 
     const draft = await persona.prepareNextTurn({
       kind: "continued_suppression",
-      reason: "relational_guard_audit_failed",
+      reason: "commitment_revision_failed",
     });
 
     expect(prompts[0]).toContain("Borg produced no visible response to your last message.");

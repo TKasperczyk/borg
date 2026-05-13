@@ -1,9 +1,5 @@
 import type { ReplayScenario } from "../scenario.js";
-import {
-  enqueueRelationalGuardFailureWhenValidatorAbsent,
-  lowerIncludesNone,
-  makeRelationalClaim,
-} from "../scenario.js";
+import { enqueueNoPostGenerationGuardIssue, lowerIncludesNone } from "../scenario.js";
 
 const scenario: ReplayScenario = {
   id: "04-three-hundred-soups",
@@ -14,15 +10,7 @@ const scenario: ReplayScenario = {
   unsafeCandidateText:
     "A safer phrasing is that the metaphor may take a few tries. Three hundred wrong soups would teach the pattern.",
   scriptLLMResponses(_client, context) {
-    enqueueRelationalGuardFailureWhenValidatorAbsent(context, {
-      claim: makeRelationalClaim({
-        kind: "unsupported_specific_detail",
-        asserted: "The exact count is three hundred soups.",
-        specific_detail_value: "three hundred",
-        specific_detail_support_kind: "none",
-      }),
-      rewrite: "Many wrong soups would teach the pattern.",
-    });
+    enqueueNoPostGenerationGuardIssue(context);
   },
   safeOutputPredicate: (text) => lowerIncludesNone(text, ["three hundred", "300"]),
   severeGuardCategories: ["unsupported_specific_detail"],

@@ -2,7 +2,6 @@ import type { Borg } from "../../src/index.js";
 import {
   type LLMCompleteResult,
   type PostGenerationGuardMode,
-  type RelationalClaimGuardMode,
   type TurnResult,
 } from "../../src/index.js";
 import { FakeLLMClient } from "../../src/llm/test-support/fake-client.js";
@@ -11,10 +10,6 @@ import {
   CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
   type ClosureResponseAudit,
 } from "../../src/cognition/generation/closure-pressure-guard.js";
-import {
-  type RelationalClaimAuditClaim,
-  type RelationalClaimKind,
-} from "../../src/cognition/generation/relational-guard.js";
 import type { FrameAnomalyKind } from "../../src/cognition/frame-anomaly/index.js";
 import type { Clock } from "../../src/util/clock.js";
 
@@ -25,7 +20,6 @@ export type ReplayPipeline = {
   label: string;
   evidenceLedgerEnabled: boolean;
   commitmentMode: PostGenerationGuardMode;
-  relationalClaimMode: RelationalClaimGuardMode;
   closurePressureMode: PostGenerationGuardMode;
 };
 
@@ -214,56 +208,6 @@ export function promptForBudget(client: FakeLLMClient, budget: string, startInde
   return String(request?.messages[0]?.content ?? "");
 }
 
-export function claimAuditResponse(
-  claims: readonly RelationalClaimAuditClaim[],
-): LLMCompleteResult {
-  return {
-    text: "",
-    input_tokens: 1,
-    output_tokens: 1,
-    stop_reason: "tool_use",
-    tool_calls: [
-      {
-        id: "toolu_replay_claim_audit",
-        name: "EmitClaimAudit",
-        input: {
-          claims,
-        },
-      },
-    ],
-  };
-}
-
-export function noClaimAuditResponse(): LLMCompleteResult {
-  return claimAuditResponse([]);
-}
-
-export function makeRelationalClaim(
-  overrides: Partial<RelationalClaimAuditClaim> & { kind: RelationalClaimKind },
-): RelationalClaimAuditClaim {
-  return {
-    kind: overrides.kind,
-    asserted: overrides.asserted ?? "unsupported replay claim",
-    cited_stream_entry_ids: overrides.cited_stream_entry_ids ?? [],
-    cited_episode_ids: overrides.cited_episode_ids ?? [],
-    cited_commitment_ids: overrides.cited_commitment_ids ?? [],
-    cited_action_ids: overrides.cited_action_ids ?? [],
-    support_handles: overrides.support_handles ?? [],
-    quoted_evidence_text: overrides.quoted_evidence_text ?? null,
-    callback_scope:
-      overrides.callback_scope ?? (overrides.kind === "callback" ? "prior_turn" : null),
-    specific_detail_value:
-      overrides.specific_detail_value ??
-      (overrides.kind === "unsupported_specific_detail" ? "unsupported detail" : null),
-    specific_detail_support_kind:
-      overrides.specific_detail_support_kind ??
-      (overrides.kind === "unsupported_specific_detail" ? "none" : null),
-    subject_entity_id: overrides.subject_entity_id ?? null,
-    slot_key: overrides.slot_key ?? null,
-    relational_slot_value: overrides.relational_slot_value ?? null,
-  };
-}
-
 export function noClosureAuditResponse(): LLMCompleteResult {
   return closureAuditResponse({
     spans: [],
@@ -296,52 +240,10 @@ export function commitmentJudgeResponse(
   };
 }
 
-export function enqueueRelationalGuardFailure(
-  context: ScenarioScriptContext,
-  input: {
-    claim: RelationalClaimAuditClaim;
-    rewrite: string;
-    closureAudit?: LLMCompleteResult;
-  },
-): void {
-  context.enqueueAfterFinalizer(claimAuditResponse([input.claim]));
-  context.enqueueAfterFinalizer(textResponse(input.rewrite));
-  context.enqueueAfterFinalizer(noClaimAuditResponse());
-  context.enqueueAfterFinalizer(input.closureAudit ?? noClosureAuditResponse());
-}
-
-export function enqueueRelationalGuardFailureWhenValidatorAbsent(
-  context: ScenarioScriptContext,
-  input: {
-    claim: RelationalClaimAuditClaim;
-    rewrite: string;
-    closureAudit?: LLMCompleteResult;
-  },
-): void {
-  enqueueRelationalGuardFailure(context, input);
-}
-
-export function enqueueRelationalGuardFailureWithShadowTrace(
-  context: ScenarioScriptContext,
-  input: {
-    claim: RelationalClaimAuditClaim;
-    rewrite: string;
-    closureAudit?: LLMCompleteResult;
-  },
-): void {
-  const closureAudit = input.closureAudit ?? noClosureAuditResponse();
-
-  enqueueRelationalGuardFailure(context, {
-    ...input,
-    closureAudit,
-  });
-}
-
-export function enqueueNoRelationalGuardIssue(
+export function enqueueNoPostGenerationGuardIssue(
   context: ScenarioScriptContext,
   closureAudit: LLMCompleteResult = noClosureAuditResponse(),
 ): void {
-  context.enqueueAfterFinalizer(noClaimAuditResponse());
   context.enqueueAfterFinalizer(closureAudit);
 }
 

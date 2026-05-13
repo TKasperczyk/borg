@@ -1,10 +1,6 @@
 import { createRelationalSlotId, createStreamEntryId } from "../../../src/util/ids.js";
 import type { ReplayScenario } from "../scenario.js";
-import {
-  enqueueRelationalGuardFailureWhenValidatorAbsent,
-  lowerIncludesNone,
-  makeRelationalClaim,
-} from "../scenario.js";
+import { enqueueNoPostGenerationGuardIssue, lowerIncludesNone } from "../scenario.js";
 
 const PARTNER_SLOT_ID = createRelationalSlotId();
 const SLOT_EVIDENCE_ID = createStreamEntryId();
@@ -33,16 +29,7 @@ const scenario: ReplayScenario = {
   unsafeCandidateText:
     "Keep the wording neutral and ask about the plan. Did you talk to Sarah today?",
   scriptLLMResponses(_client, context) {
-    enqueueRelationalGuardFailureWhenValidatorAbsent(context, {
-      claim: makeRelationalClaim({
-        kind: "relational_identity",
-        asserted: "Sarah is the user's partner.",
-        subject_entity_id: "ent_replaypartner",
-        slot_key: "partner.name",
-        relational_slot_value: "Sarah",
-      }),
-      rewrite: "Did you talk to your partner today?",
-    });
+    enqueueNoPostGenerationGuardIssue(context);
   },
   safeOutputPredicate: (text) => lowerIncludesNone(text, ["Sarah"]),
   severeGuardCategories: ["relational_identity"],

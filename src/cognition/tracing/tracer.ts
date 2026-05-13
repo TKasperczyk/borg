@@ -54,7 +54,6 @@ export type TurnTraceEventName =
   | "semantic_insert_skipped"
   | "maintenance_snapshot_finalized"
   | "commitment_check"
-  | "relational_claim_guard"
   | "closure_response_guard"
   | "internal_identifier_guard"
   | "closure_pressure_audit_inconsistent"

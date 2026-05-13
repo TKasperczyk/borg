@@ -16,12 +16,10 @@ export {
   DEFAULT_CONFIG,
   loadConfig,
   postGenerationGuardModeSchema,
-  relationalClaimGuardModeSchema,
   redactConfig,
   type Config,
   type LoadConfigOptions,
   type PostGenerationGuardMode,
-  type RelationalClaimGuardMode,
 } from "./config/index.js";
 export {
   FakeEmbeddingClient,

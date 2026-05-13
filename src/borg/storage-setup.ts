@@ -105,10 +105,6 @@ export function resolveBorgConfig(options: {
           ...DEFAULT_CONFIG.generation.postGenerationGuards.commitment,
           ...(rawConfig as Partial<Config>).generation?.postGenerationGuards?.commitment,
         },
-        relationalClaim: {
-          ...DEFAULT_CONFIG.generation.postGenerationGuards.relationalClaim,
-          ...(rawConfig as Partial<Config>).generation?.postGenerationGuards?.relationalClaim,
-        },
         closurePressure: {
           ...DEFAULT_CONFIG.generation.postGenerationGuards.closurePressure,
           ...(rawConfig as Partial<Config>).generation?.postGenerationGuards?.closurePressure,

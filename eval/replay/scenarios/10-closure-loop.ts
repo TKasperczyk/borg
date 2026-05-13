@@ -4,7 +4,7 @@ import {
   closureAuditResponse,
   closureLoopClassificationResponse,
   commitmentJudgeResponse,
-  enqueueNoRelationalGuardIssue,
+  enqueueNoPostGenerationGuardIssue,
   lowerIncludesNone,
 } from "../scenario.js";
 
@@ -49,7 +49,7 @@ const scenario: ReplayScenario = {
   scriptLLMResponses(_client, context) {
     context.enqueueBeforeRecall(closureLoopClassificationResponse());
     context.enqueueAfterFinalizer(commitmentJudgeResponse([]));
-    enqueueNoRelationalGuardIssue(
+    enqueueNoPostGenerationGuardIssue(
       context,
       closureAuditResponse({
         spans: [
