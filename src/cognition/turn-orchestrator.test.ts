@@ -1236,6 +1236,122 @@ describe("TurnOrchestrator participant social profiles", () => {
     }
   });
 
+  it("rejects group-audience user turns without a sender before user persistence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_250);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.entities.resolve("Planning Room", {
+        kind: "group",
+      });
+      const initialWorkingMemory = borg.workmem.load();
+
+      await expect(
+        borg.turn({
+          userMessage: "I can handle flights.",
+          audience: "Planning Room",
+          stakes: "low",
+        }),
+      ).rejects.toMatchObject({
+        code: "GROUP_SENDER_REQUIRED",
+      });
+
+      expect(borg.stream.tail(20).some((entry) => entry.kind === "user_msg")).toBe(false);
+      expect(borg.workmem.load()).toEqual(initialWorkingMemory);
+      expect(borg.actions.list({ limit: 10 })).toEqual([]);
+      expect(borg.social.getProfile("Planning Room")).toBeNull();
+      expect(llm.requests).toEqual([]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("allows non-group user turns without a sender", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_250);
+    const llm = new FakeLLMClient({
+      responses: [
+        createEmitAnswerResponse("Person turn ok."),
+        createEmptyReflectionResponse(),
+        createEmitAnswerResponse("Self turn ok."),
+        createEmptyReflectionResponse(),
+        createEmitAnswerResponse("Abstract turn ok."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+      borg.entities.resolve("Project Atlas", {
+        kind: "abstract",
+      });
+
+      await expect(
+        borg.turn({
+          userMessage: "Person-scoped note.",
+          audience: "Alice",
+          stakes: "low",
+        }),
+      ).resolves.toMatchObject({ response: "Person turn ok." });
+      await expect(
+        borg.turn({
+          userMessage: "Self-scoped note.",
+          audience: "self",
+          stakes: "low",
+        }),
+      ).resolves.toMatchObject({ response: "Self turn ok." });
+      await expect(
+        borg.turn({
+          userMessage: "Project-scoped note.",
+          audience: "Project Atlas",
+          stakes: "low",
+        }),
+      ).resolves.toMatchObject({ response: "Abstract turn ok." });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("allows autonomous group turns without a sender", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_250);
+    const llm = new FakeLLMClient({
+      responses: [
+        createCorrectivePreferenceResponse({ classification: "none" }),
+        createEmitAnswerResponse("Autonomous group turn ok."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.entities.resolve("Planning Room", {
+        kind: "group",
+      });
+
+      await expect(
+        borg.turn({
+          userMessage: "Review the planning room state.",
+          audience: "Planning Room",
+          origin: "autonomous",
+          stakes: "low",
+        }),
+      ).resolves.toMatchObject({ response: "Autonomous group turn ok." });
+
+      expect(borg.stream.tail(20).some((entry) => entry.kind === "user_msg")).toBe(false);
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("renders all active group participants in the social profile prompt section", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

@@ -70,6 +70,7 @@ import {
 } from "../../stream/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
 import type { Clock } from "../../util/clock.js";
+import { CognitionError } from "../../util/errors.js";
 import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
 import type { StreamIngestionCoordinator } from "../ingestion/index.js";
 import type { TurnPostGenerationGuardRunner } from "../generation/turn-post-generation-guard.js";
@@ -232,6 +233,17 @@ export class TurnPhaseCoordinator {
       audienceEntityId === null ? null : this.options.entityRepository.get(audienceEntityId);
     let audienceProfile =
       audienceEntityId === null ? null : this.options.socialRepository.getProfile(audienceEntityId);
+
+    if (
+      audienceEntity?.kind === "group" &&
+      isUserTurn &&
+      (turnInput.senderEntityId === null || turnInput.senderEntityId === undefined)
+    ) {
+      throw new CognitionError("Group-audience user turns require senderEntityId", {
+        code: "GROUP_SENDER_REQUIRED",
+      });
+    }
+
     // In a group channel the social exchange belongs to the current speaker,
     // not to the abstract channel entity. Updating the group too is deferred.
     const socialInteractionEntityId =
