@@ -3,6 +3,10 @@ import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
 import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/deliberation/constants.js";
+import {
+  EVIDENCE_LEDGER_SECTION_DEFINITIONS,
+  type EvidenceLedgerSectionId,
+} from "../cognition/evidence-ledger/types.js";
 import { DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD } from "../executive/index.js";
 import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
@@ -29,6 +33,16 @@ const postGenerationGuardConfigSchema = z
     mode: postGenerationGuardModeSchema.default("enforce"),
   })
   .prefault({});
+const evidenceLedgerSectionIds = EVIDENCE_LEDGER_SECTION_DEFINITIONS.map(
+  (definition) => definition.id,
+) as [EvidenceLedgerSectionId, ...EvidenceLedgerSectionId[]];
+const evidenceLedgerSectionIdSchema = z.enum(evidenceLedgerSectionIds);
+const evidenceLedgerSectionOptionsSchema = z
+  .object({
+    maxEntries: z.number().int().positive().optional(),
+    maxTokens: z.number().int().positive().optional(),
+  })
+  .strict();
 const evidenceLedgerConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -39,6 +53,9 @@ const evidenceLedgerConfigSchema = z
     finalizerTargetTokens: z.number().int().positive().default(60_000),
     finalizerHardCapTokens: z.number().int().positive().default(100_000),
     finalizerMaxEntryTextTokens: z.number().int().positive().default(1_200),
+    sectionOptions: z
+      .partialRecord(evidenceLedgerSectionIdSchema, evidenceLedgerSectionOptionsSchema)
+      .default({}),
   })
   .prefault({});
 const cognitionThinkingConfigSchema = z

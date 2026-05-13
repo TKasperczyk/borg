@@ -18,6 +18,7 @@ import {
   summarizeEvidenceLedgerTrace,
   type EvidenceLedger,
   type EvidenceLedgerBuildInput,
+  type EvidenceLedgerCompactionTraceSummary,
 } from "../evidence-ledger/index.js";
 import type { TurnDiscourseStateService } from "../generation/turn-discourse-state.js";
 import {
@@ -199,6 +200,15 @@ export type RunTurnPhasesInput = {
   lifecycleTracker: TurnLifecycleTracker;
 };
 
+function evidenceLedgerCompactionChanged(summary: EvidenceLedgerCompactionTraceSummary): boolean {
+  return (
+    summary.dedupedEntryCount > 0 ||
+    summary.droppedSections.length > 0 ||
+    summary.postCapTokens < summary.preCapTokens ||
+    Object.values(summary.omittedEntryCountsBySection).some((count) => count > 0)
+  );
+}
+
 export class TurnPhaseCoordinator {
   constructor(private readonly options: TurnPhaseCoordinatorOptions) {}
 
@@ -209,6 +219,25 @@ export class TurnPhaseCoordinator {
     const streamWriter = input.streamWriter;
     const lifecycleTracker = input.lifecycleTracker;
     const isSelfAudience = turnInput.audience === "self";
+    const isUserTurn = turnInput.origin !== "autonomous";
+    const preflightAudienceEntityId =
+      turnInput.audience === undefined || isSelfAudience
+        ? null
+        : this.options.entityRepository.findByName(turnInput.audience);
+    const preflightAudienceEntity =
+      preflightAudienceEntityId === null
+        ? null
+        : this.options.entityRepository.get(preflightAudienceEntityId);
+
+    if (
+      preflightAudienceEntity?.kind === "group" &&
+      isUserTurn &&
+      (turnInput.senderEntityId === null || turnInput.senderEntityId === undefined)
+    ) {
+      throw new CognitionError("Group-audience user turns require senderEntityId", {
+        code: "GROUP_SENDER_REQUIRED",
+      });
+    }
 
     await this.catchUpStreamIngestion(sessionId, streamWriter);
     let workingMemory = this.options.workingMemoryStore.load(sessionId);
@@ -219,7 +248,6 @@ export class TurnPhaseCoordinator {
         this.appendHookFailureEvent(streamWriter, hook, error, details),
     });
     const llmClient = this.options.llmFactory();
-    const isUserTurn = turnInput.origin !== "autonomous";
     const cognitionInput =
       turnInput.autonomyTrigger === null || turnInput.autonomyTrigger === undefined
         ? turnInput.userMessage
@@ -234,16 +262,6 @@ export class TurnPhaseCoordinator {
       audienceEntityId === null ? null : this.options.entityRepository.get(audienceEntityId);
     let audienceProfile =
       audienceEntityId === null ? null : this.options.socialRepository.getProfile(audienceEntityId);
-
-    if (
-      audienceEntity?.kind === "group" &&
-      isUserTurn &&
-      (turnInput.senderEntityId === null || turnInput.senderEntityId === undefined)
-    ) {
-      throw new CognitionError("Group-audience user turns require senderEntityId", {
-        code: "GROUP_SENDER_REQUIRED",
-      });
-    }
 
     // In a group channel the social exchange belongs to the current speaker,
     // not to the abstract channel entity. Updating the group too is deferred.
@@ -1310,6 +1328,7 @@ export class TurnPhaseCoordinator {
       targetTokens: config.finalizerTargetTokens,
       hardCapTokens: config.finalizerHardCapTokens,
       maxEntryTextTokens: config.finalizerMaxEntryTextTokens,
+      sectionOptions: config.sectionOptions,
     });
     const ledger = compacted.ledger;
     const rendered = renderEvidenceLedger(ledger);
@@ -1318,7 +1337,11 @@ export class TurnPhaseCoordinator {
       estimatedTokens: estimateEvidenceLedgerPromptTokens(ledger),
     });
 
-    if (this.options.tracer.enabled && input.turnId !== undefined) {
+    if (
+      this.options.tracer.enabled &&
+      input.turnId !== undefined &&
+      evidenceLedgerCompactionChanged(compacted.traceSummary)
+    ) {
       this.options.tracer.emit("evidence_ledger_compacted", {
         turnId: input.turnId,
         pre_dedupe_tokens: compacted.traceSummary.preDedupeTokens,
@@ -1332,6 +1355,9 @@ export class TurnPhaseCoordinator {
         target_tokens: compacted.traceSummary.targetTokens,
         hard_cap_tokens: compacted.traceSummary.hardCapTokens,
       });
+    }
+
+    if (this.options.tracer.enabled && input.turnId !== undefined) {
       this.options.tracer.emit("evidence_ledger_built", {
         turnId: input.turnId,
         entry_counts: toTraceJsonValue(traceSummary.entryCountsBySection),

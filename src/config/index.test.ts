@@ -71,6 +71,7 @@ describe("config", () => {
       finalizerTargetTokens: 60_000,
       finalizerHardCapTokens: 100_000,
       finalizerMaxEntryTextTokens: 1_200,
+      sectionOptions: {},
     });
     expect(config.generation.cognition).toEqual({
       thinking: {
@@ -191,6 +192,14 @@ describe("config", () => {
           enabled: true,
           currentSessionTranscriptTokenBudget: 12_000,
           actionThreadRenderLimit: 10,
+          sectionOptions: {
+            current_session_transcript: {
+              maxEntries: 24,
+            },
+            prior_session_memory: {
+              maxTokens: 2_500,
+            },
+          },
         },
         cognition: {
           thinking: {
@@ -246,6 +255,14 @@ describe("config", () => {
     expect(config.generation.evidenceLedger.finalizerTargetTokens).toBe(60_000);
     expect(config.generation.evidenceLedger.finalizerHardCapTokens).toBe(100_000);
     expect(config.generation.evidenceLedger.finalizerMaxEntryTextTokens).toBe(900);
+    expect(config.generation.evidenceLedger.sectionOptions).toEqual({
+      current_session_transcript: {
+        maxEntries: 24,
+      },
+      prior_session_memory: {
+        maxTokens: 2_500,
+      },
+    });
     expect(config.generation.cognition.thinking).toEqual({
       enabled: true,
       budget_tokens: 8192,

@@ -777,7 +777,7 @@ describe("TurnOrchestrator evidence ledger", () => {
     }
   });
 
-  it("adds the evidence ledger as a finalizer-only block and emits a trace event when enabled", async () => {
+  it("adds the evidence ledger as a finalizer-only block and omits no-op compaction traces", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -816,17 +816,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       );
       expect(finalizerSystem).toContain("Current session says Marta is the tutor.");
       expect(finalizerSystem).not.toContain("<borg_retrieved_evidence>");
-      expect(compactTraceEvent).toMatchObject({
-        event: "evidence_ledger_compacted",
-        pre_dedupe_tokens: expect.any(Number),
-        post_dedupe_tokens: expect.any(Number),
-        pre_cap_tokens: expect.any(Number),
-        post_section_cap_tokens: expect.any(Number),
-        post_cap_tokens: expect.any(Number),
-        dropped_sections: [],
-        target_tokens: 60_000,
-        hard_cap_tokens: 100_000,
-      });
+      expect(compactTraceEvent).toBeUndefined();
       expect(traceEvent).toMatchObject({
         event: "evidence_ledger_built",
         transcript_included: true,
@@ -1257,9 +1247,17 @@ describe("TurnOrchestrator participant social profiles", () => {
     const borg = await openTestBorg(tempDir, llm, clock);
 
     try {
-      borg.entities.resolve("Planning Room", {
+      const groupId = borg.entities.resolve("Planning Room", {
         kind: "group",
       });
+      const internal = borg as unknown as {
+        deps: {
+          entityRepository: {
+            get: (id: EntityId) => unknown;
+          };
+        };
+      };
+      const initialGroupEntity = internal.deps.entityRepository.get(groupId);
       const initialWorkingMemory = borg.workmem.load();
 
       await expect(
@@ -1274,6 +1272,7 @@ describe("TurnOrchestrator participant social profiles", () => {
 
       expect(borg.stream.tail(20).some((entry) => entry.kind === "user_msg")).toBe(false);
       expect(borg.workmem.load()).toEqual(initialWorkingMemory);
+      expect(internal.deps.entityRepository.get(groupId)).toEqual(initialGroupEntity);
       expect(borg.actions.list({ limit: 10 })).toEqual([]);
       expect(borg.social.getProfile("Planning Room")).toBeNull();
       expect(llm.requests).toEqual([]);

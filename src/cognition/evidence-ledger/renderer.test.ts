@@ -185,6 +185,84 @@ describe("compactEvidenceLedger", () => {
     expect(rendered).toContain("[citation: ep_route, semn_route, strm_route]");
   });
 
+  it("does not treat action-linked open question ids as action provenance", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "action_states").entries.push(
+      syntheticEntry({
+        id: "action_thread:act_followup",
+        source_type: "action_record",
+        text: "Action linked to the open question.",
+        trust_rank: 72,
+        state_metadata: {
+          current_action_id: "act_followup",
+          open_question_id: "oq_followup",
+          record_ids: ["act_followup"],
+        },
+      }),
+    );
+    section(ledger, "open_questions").entries.push(
+      syntheticEntry({
+        id: "open_question:oq_followup",
+        source_type: "system_metadata",
+        text: "True open question entry.",
+        trust_rank: 38,
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(0);
+    expect(section(compacted.ledger, "action_states").entries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "action_thread:act_followup" })]),
+    );
+    expect(section(compacted.ledger, "open_questions").entries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "open_question:oq_followup" })]),
+    );
+  });
+
+  it("preserves newest transcript entries when section caps omit chronological content", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries = Array.from({ length: 5 }, (_, index) =>
+      syntheticEntry({
+        id: `current_session_stream:strm_transcript_${index}`,
+        source_type: "current_session_stream",
+        text: `Transcript entry ${index}`,
+        trust_rank: 95,
+        state_metadata: {
+          stream_ids: [`strm_transcript_${index}`],
+        },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        current_session_transcript: {
+          maxEntries: 2,
+          maxTokens: 20_000,
+        },
+      },
+    });
+    const transcriptEntryIds = section(compacted.ledger, "current_session_transcript")
+      .entries.filter((entry) => entry.source_type === "current_session_stream")
+      .map((entry) => entry.id);
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+
+    expect(transcriptEntryIds).toEqual([
+      "current_session_stream:strm_transcript_3",
+      "current_session_stream:strm_transcript_4",
+    ]);
+    expect(rendered).toContain(
+      "Evidence ledger omitted 3 older entries from current_session_transcript",
+    );
+  });
+
   it("caps oversized sections and trims to the global target with omission trailers", () => {
     const ledger = makeLedger();
     const pressureText = "budget pressure ".repeat(80);
@@ -237,6 +315,7 @@ describe("compactEvidenceLedger", () => {
       0,
     );
     expect(rendered).toContain("Evidence ledger omitted");
+    expect(rendered).toContain("lower-priority entries from prior_session_memory");
   });
 
   it("drops lowest-trust sections when the hard cap is exceeded", () => {

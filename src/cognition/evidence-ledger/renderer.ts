@@ -222,6 +222,12 @@ const LOWEST_TRUST_SECTION_ORDER = [
   "current_user_message",
 ] as const satisfies readonly EvidenceLedgerSectionId[];
 
+type FullLedgerSectionRetentionPolicy = "head" | "tail";
+
+const TAIL_PRESERVING_FULL_LEDGER_SECTIONS = new Set<EvidenceLedgerSectionId>([
+  "current_session_transcript",
+]);
+
 function renderEntry(entry: EvidenceLedgerEntry): string {
   const stateMetadata =
     entry.state_metadata === undefined ? undefined : JSON.stringify(entry.state_metadata);
@@ -348,7 +354,10 @@ function addHandle(handles: Set<string>, type: string, value: string | null): vo
   handles.add(`${type}:${value}`);
 }
 
-function evidenceHandles(entry: EvidenceLedgerEntry): Set<string> {
+function evidenceHandles(
+  sectionId: EvidenceLedgerSectionId,
+  entry: EvidenceLedgerEntry,
+): Set<string> {
   const handles = new Set<string>();
   const metadata = entry.state_metadata;
   const currentSessionStreamId = suffixAfterPrefix(entry.id, "current_session_stream:");
@@ -394,7 +403,10 @@ function evidenceHandles(entry: EvidenceLedgerEntry): Set<string> {
   addHandle(handles, "semantic_node", metadataString(metadata?.["node_id"]));
   addHandle(handles, "semantic_edge", metadataString(metadata?.["edge_id"]));
   addHandle(handles, "commitment", metadataString(metadata?.["commitment_id"]));
-  addHandle(handles, "open_question", metadataString(metadata?.["open_question_id"]));
+
+  if (sectionId === "open_questions") {
+    addHandle(handles, "open_question", metadataString(metadata?.["open_question_id"]));
+  }
 
   for (const actionId of metadataStringArray(metadata, "record_ids")) {
     addHandle(handles, "action", actionId);
@@ -497,7 +509,7 @@ function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
 
   for (const [sectionIndex, section] of ledger.sections.entries()) {
     for (const [entryIndex, entry] of section.entries.entries()) {
-      const handles = evidenceHandles(entry);
+      const handles = evidenceHandles(section.id, entry);
       const refIndex = refs.length;
       refs.push({
         sectionId: section.id,
@@ -609,12 +621,16 @@ type FullLedgerSectionState = {
   section: EvidenceLedgerSection;
   omittedCount: number;
   dropped: boolean;
+  retentionPolicy: FullLedgerSectionRetentionPolicy;
 };
 
 function fullLedgerOmittedEntry(
   section: EvidenceLedgerSection,
   omittedCount: number,
+  retentionPolicy: FullLedgerSectionRetentionPolicy,
 ): EvidenceLedgerEntry {
+  const omittedKind = retentionPolicy === "tail" ? "older" : "lower-priority";
+
   return {
     id: `evidence_ledger_omitted:${section.id}`,
     source_type: "system_metadata",
@@ -622,7 +638,7 @@ function fullLedgerOmittedEntry(
     actor: "system",
     trust_rank: 0,
     state: "omitted",
-    text: `Evidence ledger omitted ${omittedCount} entries from ${section.id} to stay within the finalizer ledger budget.`,
+    text: `Evidence ledger omitted ${omittedCount} ${omittedKind} entries from ${section.id} to stay within the finalizer ledger budget.`,
     taint: "none",
   };
 }
@@ -659,7 +675,10 @@ function materializeFullLedgerSectionState(state: FullLedgerSectionState): Evide
     entries:
       state.omittedCount <= 0
         ? state.section.entries
-        : [...state.section.entries, fullLedgerOmittedEntry(state.section, state.omittedCount)],
+        : [
+            ...state.section.entries,
+            fullLedgerOmittedEntry(state.section, state.omittedCount, state.retentionPolicy),
+          ],
   };
 }
 
@@ -690,19 +709,72 @@ function fullLedgerSectionOptions(
   };
 }
 
+function fullLedgerSectionRetentionPolicy(
+  sectionId: EvidenceLedgerSectionId,
+): FullLedgerSectionRetentionPolicy {
+  return TAIL_PRESERVING_FULL_LEDGER_SECTIONS.has(sectionId) ? "tail" : "head";
+}
+
 function capFullLedgerSection(input: {
   section: EvidenceLedgerSection;
   maxEntryTextTokens: number;
   options: FullEvidenceLedgerSectionOptions;
 }): FullLedgerSectionState {
-  const entries = input.section.entries
-    .slice(0, input.options.maxEntries)
-    .map((entry) => compactFullLedgerEntry(entry, input.maxEntryTextTokens));
+  const retentionPolicy = fullLedgerSectionRetentionPolicy(input.section.id);
+  const entries =
+    retentionPolicy === "tail"
+      ? input.section.entries.slice(-input.options.maxEntries)
+      : input.section.entries.slice(0, input.options.maxEntries);
+  const compactedEntries = entries.map((entry) =>
+    compactFullLedgerEntry(entry, input.maxEntryTextTokens),
+  );
   let includedEntries: EvidenceLedgerEntry[] = [];
-  let omittedCount = Math.max(0, input.section.entries.length - entries.length);
+  let omittedCount = Math.max(0, input.section.entries.length - compactedEntries.length);
 
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index]!;
+  if (retentionPolicy === "tail") {
+    for (let index = compactedEntries.length - 1; index >= 0; index -= 1) {
+      const entry = compactedEntries[index]!;
+      const candidateEntries = [entry, ...includedEntries];
+      const candidateSection = {
+        ...input.section,
+        entries: candidateEntries,
+      };
+      const rendered = renderSection({
+        ...candidateSection,
+        entries:
+          omittedCount <= 0
+            ? candidateEntries
+            : [
+                ...candidateEntries,
+                fullLedgerOmittedEntry(candidateSection, omittedCount, retentionPolicy),
+              ],
+      });
+
+      if (
+        estimatePromptTokens(rendered) <= input.options.maxTokens ||
+        includedEntries.length === 0
+      ) {
+        includedEntries = candidateEntries;
+        continue;
+      }
+
+      omittedCount += index + 1;
+      break;
+    }
+
+    return {
+      section: {
+        ...input.section,
+        entries: includedEntries,
+      },
+      omittedCount,
+      dropped: false,
+      retentionPolicy,
+    };
+  }
+
+  for (let index = 0; index < compactedEntries.length; index += 1) {
+    const entry = compactedEntries[index]!;
     const candidateEntries = [...includedEntries, entry];
     const candidateSection = {
       ...input.section,
@@ -713,7 +785,10 @@ function capFullLedgerSection(input: {
       entries:
         omittedCount <= 0
           ? candidateEntries
-          : [...candidateEntries, fullLedgerOmittedEntry(candidateSection, omittedCount)],
+          : [
+              ...candidateEntries,
+              fullLedgerOmittedEntry(candidateSection, omittedCount, retentionPolicy),
+            ],
     });
 
     if (estimatePromptTokens(rendered) <= input.options.maxTokens || includedEntries.length === 0) {
@@ -721,7 +796,7 @@ function capFullLedgerSection(input: {
       continue;
     }
 
-    omittedCount += entries.length - index;
+    omittedCount += compactedEntries.length - index;
     break;
   }
 
@@ -732,6 +807,7 @@ function capFullLedgerSection(input: {
     },
     omittedCount,
     dropped: false,
+    retentionPolicy,
   };
 }
 
@@ -771,7 +847,10 @@ function trimFullLedgerToTarget(
     const state = states.find((section) => section.section.id === sectionId)!;
     state.section = {
       ...state.section,
-      entries: state.section.entries.slice(0, -1),
+      entries:
+        state.retentionPolicy === "tail"
+          ? state.section.entries.slice(1)
+          : state.section.entries.slice(0, -1),
     };
     state.omittedCount += 1;
   }
