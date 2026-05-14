@@ -352,6 +352,40 @@ export class DecisionArtifactRepository {
     });
   }
 
+  private updateCompileMarker(input: {
+    current: DecisionArtifact;
+    expectedVersion: number;
+    nowMs: number;
+    lastCompiledAt: number | null;
+    lastCompiledStreamEntryId: StreamEntryId | null;
+  }): void {
+    const result = this.db
+      .prepare(
+        `
+          UPDATE decision_artifacts
+          SET updated_at = ?,
+              last_compiled_at = ?,
+              last_compiled_stream_entry_id = ?,
+              record_version = record_version + 1
+          WHERE audience_entity_id = ? AND record_version = ?
+        `,
+      )
+      .run(
+        input.nowMs,
+        input.lastCompiledAt,
+        input.lastCompiledStreamEntryId,
+        input.current.audience_entity_id,
+        input.expectedVersion,
+      );
+
+    assertIdentityCasUpdated({
+      result,
+      recordType: "decision_artifact",
+      recordId: input.current.audience_entity_id,
+      expectedVersion: input.expectedVersion,
+    });
+  }
+
   private insertEntry(entry: DecisionArtifactEntry): void {
     const parsed = decisionArtifactEntrySchema.parse(entry);
 
@@ -545,7 +579,59 @@ export class DecisionArtifactRepository {
     const current = this.get(audienceEntityId);
 
     if (operations.length === 0) {
-      return current;
+      if (options.lastCompiledAt === undefined && options.lastCompiledStreamEntryId === undefined) {
+        return current;
+      }
+
+      const nowMs = options.now ?? this.clock.now();
+      const requestedCompiledStreamEntryId = options.lastCompiledStreamEntryId;
+
+      if (current === null) {
+        if (options.expectedVersion !== undefined) {
+          assertIdentityCasUpdated({
+            result: { changes: 0 },
+            recordType: "decision_artifact",
+            recordId: audienceEntityId,
+            expectedVersion: options.expectedVersion,
+          });
+        }
+
+        if (
+          requestedCompiledStreamEntryId === undefined ||
+          requestedCompiledStreamEntryId === null
+        ) {
+          return null;
+        }
+
+        this.insertParent({
+          audienceEntityId,
+          nowMs,
+          lastCompiledAt: options.lastCompiledAt ?? nowMs,
+          lastCompiledStreamEntryId: requestedCompiledStreamEntryId,
+        });
+
+        return this.get(audienceEntityId);
+      }
+
+      const expectedVersion = expectedRecordVersion(current, options);
+      const lastCompiledAt =
+        options.lastCompiledAt === undefined
+          ? (current.last_compiled_at ?? nowMs)
+          : options.lastCompiledAt;
+      const lastCompiledStreamEntryId =
+        options.lastCompiledStreamEntryId === undefined
+          ? current.last_compiled_stream_entry_id
+          : options.lastCompiledStreamEntryId;
+
+      this.updateCompileMarker({
+        current,
+        expectedVersion,
+        nowMs,
+        lastCompiledAt,
+        lastCompiledStreamEntryId,
+      });
+
+      return this.get(audienceEntityId);
     }
 
     if (current === null && options.expectedVersion !== undefined) {

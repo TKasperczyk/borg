@@ -113,6 +113,101 @@ describe("DecisionArtifactRepository", () => {
     });
   });
 
+  it("creates an empty parent artifact when an empty operation set carries compile metadata", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+
+    const artifact = repository.upsert(audience, [], {
+      lastCompiledAt: 2_000,
+      lastCompiledStreamEntryId: source,
+      now: 2_000,
+    });
+
+    expect(artifact).toMatchObject({
+      audience_entity_id: audience,
+      record_version: 1,
+      last_compiled_at: 2_000,
+      last_compiled_stream_entry_id: source,
+      entries: [],
+    });
+  });
+
+  it("updates compile metadata for an empty operation set and bumps record version", () => {
+    const audience = createEntityId();
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const initial = repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          kind: "live",
+          text: "Question: Granada pacing",
+          provenance_stream_entry_ids: [firstSource],
+        },
+      ],
+      {
+        lastCompiledStreamEntryId: firstSource,
+      },
+    );
+
+    const updated = repository.upsert(audience, [], {
+      expectedVersion: initial?.record_version,
+      lastCompiledAt: 2_000,
+      lastCompiledStreamEntryId: secondSource,
+      now: 2_000,
+    });
+
+    expect(updated?.record_version).toBe((initial?.record_version ?? 0) + 1);
+    expect(updated?.last_compiled_at).toBe(2_000);
+    expect(updated?.last_compiled_stream_entry_id).toBe(secondSource);
+    expect(updated?.entries).toEqual(initial?.entries);
+  });
+
+  it("rejects a stale marker-only write with the existing CAS mismatch error", () => {
+    const audience = createEntityId();
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const staleSource = createStreamEntryId();
+    const initial = repository.upsert(audience, [
+      {
+        type: "add",
+        kind: "live",
+        text: "Question: Granada pacing",
+        provenance_stream_entry_ids: [firstSource],
+      },
+    ]);
+
+    repository.upsert(audience, [], {
+      expectedVersion: initial?.record_version,
+      lastCompiledAt: 2_000,
+      lastCompiledStreamEntryId: secondSource,
+      now: 2_000,
+    });
+
+    const staleWrite = () =>
+      repository.upsert(audience, [], {
+        expectedVersion: initial?.record_version,
+        lastCompiledAt: 1_500,
+        lastCompiledStreamEntryId: staleSource,
+        now: 1_500,
+      });
+
+    let thrown: unknown;
+
+    try {
+      staleWrite();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(IdentityCasMismatchError);
+    expect(thrown).toMatchObject({
+      code: "IDENTITY_CAS_MISMATCH",
+    });
+    expect(repository.get(audience)?.last_compiled_stream_entry_id).toBe(secondSource);
+  });
+
   it("throws a CAS mismatch between concurrent repository instances", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-decision-artifact-"));
     const dbPath = join(tempDir, "borg.db");

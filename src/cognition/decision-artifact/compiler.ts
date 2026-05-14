@@ -18,6 +18,7 @@ import {
 } from "../../memory/decision-artifacts/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 import {
   actionIdHelpers,
   commitmentIdHelpers,
@@ -36,6 +37,9 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import {
+  buildDecisionArtifactPromptSummary,
+  type DecisionArtifactPromptSummary,
+  type DecisionArtifactPromptSummaryOptions,
   summarizeDecisionStateArtifactRender,
   type DecisionArtifactRenderOptions,
 } from "../evidence-ledger/index.js";
@@ -49,6 +53,7 @@ import {
 const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";
 const MAX_OPERATIONS_PER_COMPILE = 40;
 const MAX_PATCH_OUTPUT_TOKENS = 1536;
+const DECISION_ARTIFACT_PROMPT_WARNING_TOKEN_THRESHOLD = 35_000;
 const DEFAULT_MAX_ACTIVE_DECISION_ARTIFACT_ENTRIES = 40;
 const DEFAULT_DECISION_ARTIFACT_KIND_SOFT_CAPS = {
   locked: 24,
@@ -241,6 +246,8 @@ export type DecisionArtifactLifecycleOptions = {
   kindSoftCaps?: Partial<Record<DecisionArtifactEntryKind, number>>;
 };
 
+export type DecisionArtifactLedgerMode = "delta" | "full_fallback";
+
 export type CompileDecisionArtifactInput = {
   llmClient?: LLMClient;
   model?: string;
@@ -261,6 +268,8 @@ export type CompileDecisionArtifactInput = {
   turnId?: string;
   lifecycle?: DecisionArtifactLifecycleOptions;
   renderOptions?: DecisionArtifactRenderOptions;
+  previousArtifactSummaryOptions?: DecisionArtifactPromptSummaryOptions;
+  ledgerMode?: DecisionArtifactLedgerMode;
   onDegraded?: (
     reason: DecisionArtifactCompileDegradedReason,
     error?: unknown,
@@ -313,6 +322,22 @@ function emptyPatch(): EmitDecisionArtifactPatch {
   return { operations: [] };
 }
 
+function buildCanonicalizationCandidatePromptPayload(
+  candidates: DecisionArtifactCanonicalizationCandidates,
+): {
+  active_goals: readonly DecisionArtifactCanonicalizationCandidate[];
+  active_commitments: readonly DecisionArtifactCanonicalizationCandidate[];
+  active_actions: readonly DecisionArtifactCanonicalizationCandidate[];
+  open_questions: readonly DecisionArtifactCanonicalizationCandidate[];
+} {
+  return {
+    active_goals: candidates.goals ?? [],
+    active_commitments: candidates.commitments ?? [],
+    active_actions: candidates.actions ?? [],
+    open_questions: candidates.openQuestions ?? [],
+  };
+}
+
 function buildDecisionArtifactMessages(input: {
   audienceEntityId: EntityId;
   selfEntityId: EntityId;
@@ -321,9 +346,13 @@ function buildDecisionArtifactMessages(input: {
   currentUserMessage: string;
   currentUserStreamEntryId: StreamEntryId;
   promptVisibleLedger: string;
-  previousArtifact: DecisionArtifact | null;
+  previousArtifactSummary: DecisionArtifactPromptSummary | null;
   canonicalizationCandidates: DecisionArtifactCanonicalizationCandidates;
 }): LLMMessage[] {
+  const canonicalizationCandidates = buildCanonicalizationCandidatePromptPayload(
+    input.canonicalizationCandidates,
+  );
+
   return [
     {
       role: "user",
@@ -339,17 +368,61 @@ function buildDecisionArtifactMessages(input: {
           stream_entry_id: input.currentUserStreamEntryId,
           text: input.currentUserMessage,
         },
-        previous_artifact: input.previousArtifact,
-        canonicalization_candidates: {
-          active_goals: input.canonicalizationCandidates.goals ?? [],
-          active_commitments: input.canonicalizationCandidates.commitments ?? [],
-          active_actions: input.canonicalizationCandidates.actions ?? [],
-          open_questions: input.canonicalizationCandidates.openQuestions ?? [],
-        },
+        previous_artifact_summary: input.previousArtifactSummary,
+        canonicalization_candidates: canonicalizationCandidates,
         prompt_visible_ledger: input.promptVisibleLedger,
       }),
     },
   ];
+}
+
+type DecisionArtifactPromptBudget = {
+  inputTokenEstimate: number;
+  breakdown: Record<string, number>;
+};
+
+function estimateDecisionArtifactPromptBudget(input: {
+  messages: readonly LLMMessage[];
+  tools: readonly LLMToolDefinition[];
+  previousArtifactSummary: DecisionArtifactPromptSummary | null;
+  promptVisibleLedger: string;
+  currentUserMessage: string;
+  canonicalizationCandidates: DecisionArtifactCanonicalizationCandidates;
+}): DecisionArtifactPromptBudget {
+  const system = estimatePromptTokens(DECISION_ARTIFACT_SYSTEM_PROMPT);
+  const toolSchema = estimatePromptTokens(JSON.stringify(input.tools));
+  const previousArtifactSummary = estimatePromptTokens(
+    JSON.stringify(input.previousArtifactSummary),
+  );
+  const promptVisibleLedger = estimatePromptTokens(input.promptVisibleLedger);
+  const currentUserTurn = estimatePromptTokens(input.currentUserMessage);
+  const canonicalizationCandidates = estimatePromptTokens(
+    JSON.stringify(buildCanonicalizationCandidatePromptPayload(input.canonicalizationCandidates)),
+  );
+  const inputTokenEstimate =
+    system +
+    toolSchema +
+    input.messages.reduce((sum, message) => sum + estimatePromptTokens(message.content), 0);
+  const accounted =
+    system +
+    toolSchema +
+    previousArtifactSummary +
+    promptVisibleLedger +
+    currentUserTurn +
+    canonicalizationCandidates;
+
+  return {
+    inputTokenEstimate,
+    breakdown: {
+      system,
+      tool_schema: toolSchema,
+      previous_artifact_summary: previousArtifactSummary,
+      prompt_visible_ledger: promptVisibleLedger,
+      current_user_turn: currentUserTurn,
+      canonicalization_candidates: canonicalizationCandidates,
+      prompt_envelope: Math.max(0, inputTokenEstimate - accounted),
+    },
+  };
 }
 
 function parseResponse(result: LLMCompleteResult): EmitDecisionArtifactPatch {
@@ -462,6 +535,8 @@ function traceCompileCompleted(options: {
   renderOptions?: DecisionArtifactRenderOptions;
   prunedEntryCountThisTurn: number;
   supersededEntryCountThisTurn: number;
+  ledgerMode: DecisionArtifactLedgerMode;
+  promptBudget: DecisionArtifactPromptBudget;
 }): void {
   const artifactSummary = summarizeDecisionStateArtifactRender(
     options.artifact,
@@ -486,8 +561,36 @@ function traceCompileCompleted(options: {
       artifact_pruned_entry_count_this_turn: options.prunedEntryCountThisTurn,
       artifact_superseded_count_this_turn: options.supersededEntryCountThisTurn,
       rendered_by_kind: toTraceJsonValue(artifactSummary.renderedByKind),
+      ledger_mode: options.ledgerMode,
+      input_token_estimate: options.promptBudget.inputTokenEstimate,
+      input_token_breakdown: toTraceJsonValue(options.promptBudget.breakdown),
     });
   }
+}
+
+function traceCompileOverBudget(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  audienceEntityId: EntityId;
+  ledgerMode: DecisionArtifactLedgerMode;
+  promptBudget: DecisionArtifactPromptBudget;
+}): void {
+  if (
+    options.promptBudget.inputTokenEstimate <= DECISION_ARTIFACT_PROMPT_WARNING_TOKEN_THRESHOLD ||
+    options.tracer?.enabled !== true ||
+    options.turnId === undefined
+  ) {
+    return;
+  }
+
+  options.tracer.emit("decision_artifact_compile_over_budget", {
+    turnId: options.turnId,
+    audienceEntityId: options.audienceEntityId,
+    ledger_mode: options.ledgerMode,
+    input_token_estimate: options.promptBudget.inputTokenEstimate,
+    input_token_budget: DECISION_ARTIFACT_PROMPT_WARNING_TOKEN_THRESHOLD,
+    breakdown: toTraceJsonValue(options.promptBudget.breakdown),
+  });
 }
 
 function traceReconciliationCompleted(options: {
@@ -1553,6 +1656,11 @@ export async function compileDecisionArtifact(
       : input.previousArtifact;
   const previousEntryCount = previousArtifact?.entries.length ?? 0;
   const speakerEntityId = input.speakerEntityId ?? null;
+  const previousArtifactSummary = buildDecisionArtifactPromptSummary(
+    previousArtifact,
+    input.previousArtifactSummaryOptions,
+  );
+  const canonicalizationCandidates = input.canonicalizationCandidates ?? {};
   const messages = buildDecisionArtifactMessages({
     audienceEntityId: input.audienceEntityId,
     selfEntityId: input.selfEntityId,
@@ -1561,10 +1669,36 @@ export async function compileDecisionArtifact(
     currentUserMessage: input.currentUserMessage,
     currentUserStreamEntryId: input.currentUserStreamEntryId,
     promptVisibleLedger: input.promptVisibleLedger,
-    previousArtifact,
-    canonicalizationCandidates: input.canonicalizationCandidates ?? {},
+    previousArtifactSummary,
+    canonicalizationCandidates,
   });
   const tools = [DECISION_ARTIFACT_TOOL];
+  const ledgerMode = input.ledgerMode ?? "full_fallback";
+  const promptBudget = estimateDecisionArtifactPromptBudget({
+    messages,
+    tools,
+    previousArtifactSummary,
+    promptVisibleLedger: input.promptVisibleLedger,
+    currentUserMessage: input.currentUserMessage,
+    canonicalizationCandidates,
+  });
+
+  traceCompileOverBudget({
+    tracer: input.tracer,
+    turnId: input.turnId,
+    audienceEntityId: input.audienceEntityId,
+    ledgerMode,
+    promptBudget,
+  });
+  const compileCompletedTraceBase = {
+    tracer: input.tracer,
+    turnId: input.turnId,
+    audienceEntityId: input.audienceEntityId,
+    previousEntryCount,
+    renderOptions: input.renderOptions,
+    ledgerMode,
+    promptBudget,
+  };
 
   traceLlmCallStarted({
     tracer: input.tracer,
@@ -1593,15 +1727,11 @@ export async function compileDecisionArtifact(
       error,
     });
     traceCompileCompleted({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      audienceEntityId: input.audienceEntityId,
-      previousEntryCount,
+      ...compileCompletedTraceBase,
       operationCount: 0,
       rejected: [],
       applied: false,
       artifact: previousArtifact,
-      renderOptions: input.renderOptions,
       prunedEntryCountThisTurn: 0,
       supersededEntryCountThisTurn: 0,
     });
@@ -1621,15 +1751,11 @@ export async function compileDecisionArtifact(
     parsed = parseResponse(response);
   } catch (error) {
     traceCompileCompleted({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      audienceEntityId: input.audienceEntityId,
-      previousEntryCount,
+      ...compileCompletedTraceBase,
       operationCount: 0,
       rejected: [],
       applied: false,
       artifact: previousArtifact,
-      renderOptions: input.renderOptions,
       prunedEntryCountThisTurn: 0,
       supersededEntryCountThisTurn: 0,
     });
@@ -1662,15 +1788,11 @@ export async function compileDecisionArtifact(
 
   if (normalized.operations.length === 0 && normalized.rejected.length > 0) {
     traceCompileCompleted({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      audienceEntityId: input.audienceEntityId,
-      previousEntryCount,
+      ...compileCompletedTraceBase,
       operationCount: 0,
       rejected: normalized.rejected,
       applied: false,
       artifact: previousArtifact,
-      renderOptions: input.renderOptions,
       prunedEntryCountThisTurn: 0,
       supersededEntryCountThisTurn: 0,
     });
@@ -1710,16 +1832,35 @@ export async function compileDecisionArtifact(
   ).length;
 
   if (operations.length === 0) {
+    let markedArtifact = previousArtifact;
+
+    try {
+      markedArtifact = input.repository.upsert(input.audienceEntityId, [], {
+        expectedVersion: previousArtifact?.record_version,
+        now: nowMs,
+        lastCompiledAt: nowMs,
+        lastCompiledStreamEntryId: input.currentUserStreamEntryId,
+      });
+    } catch (error) {
+      traceCompileCompleted({
+        ...compileCompletedTraceBase,
+        operationCount: 0,
+        rejected: normalized.rejected,
+        applied: false,
+        artifact: previousArtifact,
+        prunedEntryCountThisTurn,
+        supersededEntryCountThisTurn,
+      });
+
+      return degraded(input, "repository_failed", error);
+    }
+
     traceCompileCompleted({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      audienceEntityId: input.audienceEntityId,
-      previousEntryCount,
+      ...compileCompletedTraceBase,
       operationCount: 0,
       rejected: normalized.rejected,
       applied: false,
-      artifact: previousArtifact,
-      renderOptions: input.renderOptions,
+      artifact: markedArtifact,
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
     });
@@ -1755,29 +1896,21 @@ export async function compileDecisionArtifact(
     });
 
     traceCompileCompleted({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      audienceEntityId: input.audienceEntityId,
-      previousEntryCount,
+      ...compileCompletedTraceBase,
       operationCount: operations.length,
       rejected: normalized.rejected,
       applied: true,
       artifact: nextArtifact,
-      renderOptions: input.renderOptions,
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
     });
   } catch (error) {
     traceCompileCompleted({
-      tracer: input.tracer,
-      turnId: input.turnId,
-      audienceEntityId: input.audienceEntityId,
-      previousEntryCount,
+      ...compileCompletedTraceBase,
       operationCount: operations.length,
       rejected: normalized.rejected,
       applied: false,
       artifact: previousArtifact,
-      renderOptions: input.renderOptions,
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
     });

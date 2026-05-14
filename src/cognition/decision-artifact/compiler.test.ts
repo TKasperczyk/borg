@@ -23,6 +23,9 @@ import {
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
+import { renderEvidenceLedger } from "../evidence-ledger/index.js";
+import { buildDecisionArtifactLedgerPromptContext } from "../lifecycle/turn-phase-coordinator.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import {
   compileDecisionArtifact,
@@ -62,6 +65,41 @@ function createTraceRecorder(): TurnTracer & {
     emit: vi.fn((event: TurnTraceEventName, data: TurnTraceData) => {
       events.push({ event, data });
     }),
+  };
+}
+
+function ledgerEntry(input: {
+  streamEntryId: StreamEntryId;
+  streamIndex: number;
+  text: string;
+}): EvidenceLedgerEntry {
+  return {
+    id: `current_session_stream:${input.streamEntryId}`,
+    source_type: "current_session_stream",
+    session_scope: "current_session",
+    actor: "user",
+    trust_rank: 95,
+    text: input.text,
+    taint: "none",
+    stream_index: input.streamIndex,
+  };
+}
+
+function evidenceLedger(entries: readonly EvidenceLedgerEntry[]): EvidenceLedger {
+  return {
+    transcriptIncluded: true,
+    transcriptCompacted: false,
+    originalTranscriptTokenEstimate: 0,
+    compactedTranscriptEntryCount: 0,
+    rawPreservedUserTranscriptEntryCount: 0,
+    estimatedTokens: 0,
+    sections: [
+      {
+        id: "current_session_transcript",
+        label: "2. Current-Session Transcript",
+        entries: [...entries],
+      },
+    ],
   };
 }
 
@@ -567,7 +605,7 @@ describe("compileDecisionArtifact", () => {
     expect(onDegraded).toHaveBeenCalledWith("llm_failed", expect.any(Error));
   });
 
-  it("does not bump the parent record version for a no-op compile", async () => {
+  it("advances compile metadata and record version for a no-op compile", async () => {
     const initial = repository.upsert(audience, [
       {
         type: "add",
@@ -582,7 +620,169 @@ describe("compileDecisionArtifact", () => {
 
     await compileDecisionArtifact(baseInput(llmClient));
 
-    expect(repository.get(audience)?.record_version).toBe(initial?.record_version);
+    expect(repository.get(audience)?.record_version).toBe((initial?.record_version ?? 0) + 1);
+    expect(repository.get(audience)?.last_compiled_stream_entry_id).toBe(currentStreamEntryId);
+  });
+
+  it("creates an empty artifact on a first no-op compile so later turns can delta from it", async () => {
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const llmClient = new FakeLLMClient({
+      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      currentUserStreamEntryId: firstSource,
+      allowedSourceStreamEntryIds: [firstSource],
+    });
+
+    const artifact = repository.get(audience);
+    const ledger = evidenceLedger([
+      ledgerEntry({ streamEntryId: firstSource, streamIndex: 0, text: "first no-op turn" }),
+      ledgerEntry({ streamEntryId: secondSource, streamIndex: 1, text: "second turn" }),
+    ]);
+    const context = buildDecisionArtifactLedgerPromptContext({
+      ledger,
+      previousArtifact: artifact,
+      fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+      enabled: true,
+      minTailPerSection: 1,
+    });
+
+    expect(artifact).toMatchObject({
+      record_version: 1,
+      last_compiled_stream_entry_id: firstSource,
+      entries: [],
+    });
+    expect(context.ledgerMode).toBe("delta");
+    expect(context.promptVisibleLedger).not.toContain("first no-op turn");
+    expect(context.promptVisibleLedger).toContain("second turn");
+  });
+
+  it("advances no-op compile anchors so the next ledger delta starts after the no-op turn", async () => {
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const thirdSource = createStreamEntryId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "live",
+              text: "Live planning decision",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [firstSource],
+            },
+          ],
+        }),
+        emitDecisionArtifactPatchResponse({ operations: [] }),
+      ],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      currentUserStreamEntryId: firstSource,
+      allowedSourceStreamEntryIds: [firstSource],
+    });
+    const afterFirst = repository.get(audience);
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      currentUserStreamEntryId: secondSource,
+      allowedSourceStreamEntryIds: [firstSource, secondSource],
+    });
+
+    const afterNoOp = repository.get(audience);
+    const ledger = evidenceLedger([
+      ledgerEntry({ streamEntryId: firstSource, streamIndex: 0, text: "first compile turn" }),
+      ledgerEntry({ streamEntryId: secondSource, streamIndex: 1, text: "no-op compile turn" }),
+      ledgerEntry({ streamEntryId: thirdSource, streamIndex: 2, text: "third compile turn" }),
+    ]);
+    const context = buildDecisionArtifactLedgerPromptContext({
+      ledger,
+      previousArtifact: afterNoOp,
+      fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+      enabled: true,
+      minTailPerSection: 1,
+    });
+
+    expect(afterNoOp?.record_version).toBe((afterFirst?.record_version ?? 0) + 1);
+    expect(afterNoOp?.last_compiled_stream_entry_id).toBe(secondSource);
+    expect(context.ledgerMode).toBe("delta");
+    expect(context.promptVisibleLedger).not.toContain("first compile turn");
+    expect(context.promptVisibleLedger).not.toContain("no-op compile turn");
+    expect(context.promptVisibleLedger).toContain("third compile turn");
+  });
+
+  it("sends a summarized previous artifact instead of the full artifact JSON", async () => {
+    repository.upsert(audience, [
+      {
+        type: "add",
+        kind: "live",
+        text: "Live planning decision",
+        provenance_stream_entry_ids: [currentStreamEntryId],
+      },
+    ]);
+    const llmClient = new FakeLLMClient({
+      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+    });
+
+    await compileDecisionArtifact(baseInput(llmClient));
+
+    const prompt = JSON.parse(llmClient.requests[0]?.messages[0]?.content ?? "{}") as {
+      previous_artifact?: unknown;
+      previous_artifact_summary?: {
+        active_entries?: {
+          live?: Array<{ text: string }>;
+        };
+      };
+    };
+
+    expect(prompt.previous_artifact).toBeUndefined();
+    expect(prompt.previous_artifact_summary?.active_entries?.live).toEqual([
+      expect.objectContaining({
+        text: "Live planning decision",
+      }),
+    ]);
+  });
+
+  it("warns when the compiler input estimate exceeds the prompt budget", async () => {
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      promptVisibleLedger: "large ledger entry ".repeat(180_000),
+      tracer: trace,
+      ledgerMode: "delta",
+    });
+
+    const warning = trace.events.find(
+      (event) => event.event === "decision_artifact_compile_over_budget",
+    );
+    const completed = trace.events.find(
+      (event) => event.event === "decision_artifact_compile_completed",
+    );
+
+    expect(warning).toBeDefined();
+    expect(warning?.data.ledger_mode).toBe("delta");
+    expect(typeof warning?.data.input_token_estimate).toBe("number");
+    expect(warning?.data.input_token_estimate as number).toBeGreaterThan(35_000);
+    expect(warning?.data.breakdown).toEqual(
+      expect.objectContaining({
+        prompt_visible_ledger: expect.any(Number),
+      }),
+    );
+    expect(completed?.data).toEqual(
+      expect.objectContaining({
+        ledger_mode: "delta",
+        input_token_estimate: warning?.data.input_token_estimate,
+      }),
+    );
   });
 
   it("enforces the active-entry lifecycle budget on a no-op patch", async () => {

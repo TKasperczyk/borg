@@ -5,6 +5,7 @@ export {
   type EvidenceLedgerBuilderOptions,
 } from "./builder.js";
 export {
+  buildDecisionArtifactPromptSummary,
   buildCompactPlannerLedgerPrompt,
   compactEvidenceLedger,
   estimateEvidenceLedgerPromptTokens,
@@ -13,6 +14,10 @@ export {
   renderEvidenceLedger,
   summarizeDecisionStateArtifactRender,
   type DecisionArtifactKindCounts,
+  type DecisionArtifactPromptSummary,
+  type DecisionArtifactPromptSummaryEntry,
+  type DecisionArtifactPromptSummaryOptions,
+  type DecisionArtifactPromptSummarySupersededEntry,
   type DecisionArtifactRenderOptions,
   type CompactedEvidenceLedger,
   type CompactPlannerLedgerOptions,

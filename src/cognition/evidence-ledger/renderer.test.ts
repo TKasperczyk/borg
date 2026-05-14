@@ -13,6 +13,7 @@ import {
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { EVIDENCE_LEDGER_SECTION_DEFINITIONS, type EvidenceLedger } from "./types.js";
 import {
+  buildDecisionArtifactPromptSummary,
   buildCompactPlannerLedgerPrompt,
   compactEvidenceLedger,
   estimateEvidenceLedgerPromptTokens,
@@ -363,6 +364,159 @@ describe("renderDecisionStateArtifact", () => {
     expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(1_800);
     expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(8);
     expect(rendered.match(/kind=locked/g)?.length ?? 0).toBeLessThan(14);
+  });
+});
+
+describe("buildDecisionArtifactPromptSummary", () => {
+  it("caps active entries by kind while preserving the newest entries", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entries = [
+      ...Array.from({ length: 200 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "locked", index }),
+      ),
+      ...Array.from({ length: 50 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "live", index: 1_000 + index }),
+      ),
+    ];
+    const summary = buildDecisionArtifactPromptSummary(
+      decisionArtifactWithEntries(entries, source),
+      {
+        maxEntries: {
+          locked: 12,
+          live: 6,
+          pending: 0,
+          invalidated: 0,
+          tentative: 0,
+        },
+        summaryTokenBudget: 6_000,
+      },
+    );
+
+    expect(summary).not.toBeNull();
+    expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(6_000);
+    expect(summary?.active_counts_by_kind).toMatchObject({
+      locked: 200,
+      live: 50,
+    });
+    expect(summary?.active_entries.locked).toHaveLength(12);
+    expect(summary?.active_entries.live).toHaveLength(6);
+    expect(summary?.active_entries.pending).toHaveLength(0);
+    expect(summary?.active_entries.invalidated).toHaveLength(0);
+    expect(summary?.active_entries.tentative).toHaveLength(0);
+    expect(summary?.active_entries.locked.map((entry) => entry.text)).toEqual(
+      Array.from({ length: 12 }, (_, index) => `locked decision ${199 - index}`),
+    );
+    expect(summary?.active_entries.live.map((entry) => entry.text)).toEqual(
+      Array.from({ length: 6 }, (_, index) => `live decision ${1_049 - index}`),
+    );
+    expect(summary?.omitted_counts_by_kind).toMatchObject({
+      locked: 188,
+      live: 44,
+    });
+  });
+
+  it("enforces the token budget after count-capping many short locked entries", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entries = [
+      ...Array.from({ length: 200 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "locked", index }),
+      ),
+      ...Array.from({ length: 3 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "live", index: 1_000 + index }),
+      ),
+    ];
+    const summary = buildDecisionArtifactPromptSummary(
+      decisionArtifactWithEntries(entries, source),
+      {
+        maxEntries: {
+          locked: 100,
+          live: 3,
+          pending: 0,
+          invalidated: 0,
+          tentative: 0,
+        },
+        summaryTokenBudget: 2_000,
+      },
+    );
+
+    expect(summary).not.toBeNull();
+    expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(2_000);
+    expect(summary?.active_entries.locked.length).toBeLessThanOrEqual(100);
+    expect(summary?.active_entries.live).toHaveLength(3);
+    expect(summary?.omitted_counts_by_kind.locked).toBeGreaterThan(100);
+  });
+
+  it("trims recent superseded context before dropping a small live state", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const live = decisionArtifactEntry({
+      audience,
+      source,
+      kind: "live",
+      index: 10,
+      text: "Discussing whether Granada should stay at three nights.",
+    });
+    const superseded = {
+      ...decisionArtifactEntry({
+        audience,
+        source,
+        kind: "locked",
+        index: 9,
+        text: "superseded context ".repeat(4_000),
+      }),
+      superseded_by_id: live.id,
+    };
+    const summary = buildDecisionArtifactPromptSummary(
+      decisionArtifactWithEntries([superseded, live], source),
+      {
+        maxEntries: {
+          locked: 1,
+          live: 1,
+          pending: 0,
+          invalidated: 0,
+          tentative: 0,
+        },
+        summaryTokenBudget: 600,
+        maxEntryTextTokens: 120,
+      },
+    );
+
+    expect(summary?.active_entries.live).toHaveLength(1);
+    expect(summary?.active_entries.live[0]?.text).toBe(live.text);
+    expect(summary?.recent_superseded).toHaveLength(0);
+    expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(600);
+  });
+
+  it("truncates a single oversized active entry instead of dropping it", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entry = decisionArtifactEntry({
+      audience,
+      source,
+      kind: "locked",
+      index: 0,
+      text: "oversized locked decision ".repeat(2_000),
+    });
+    const summary = buildDecisionArtifactPromptSummary(
+      decisionArtifactWithEntries([entry], source),
+      {
+        maxEntries: {
+          locked: 1,
+          live: 0,
+          pending: 0,
+          invalidated: 0,
+          tentative: 0,
+        },
+        summaryTokenBudget: 700,
+        maxEntryTextTokens: 80,
+      },
+    );
+
+    expect(summary?.active_entries.locked).toHaveLength(1);
+    expect(summary?.active_entries.locked[0]?.text).toContain(" ... [text truncated]");
+    expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(700);
   });
 });
 

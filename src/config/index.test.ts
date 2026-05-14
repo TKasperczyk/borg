@@ -89,6 +89,24 @@ describe("config", () => {
           pending: 3,
         },
         renderLockedCap: 14,
+        previousArtifactSummary: {
+          maxEntries: {
+            locked: 14,
+            live: 8,
+            pending: 6,
+            invalidated: 4,
+            tentative: 2,
+          },
+          summaryTokenBudget: 6_000,
+          maxEntryTextTokens: 1_000,
+        },
+        compilerPrefilter: {
+          enabled: true,
+        },
+        ledgerDelta: {
+          enabled: true,
+          minTailPerSection: 3,
+        },
       },
     });
     expect(config.generation.cognition).toEqual({

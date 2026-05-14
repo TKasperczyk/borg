@@ -7,6 +7,7 @@ export {
   type DecisionArtifactCanonicalizationCandidate,
   type DecisionArtifactCanonicalizationCandidates,
   type DecisionArtifactCompileDegradedReason,
+  type DecisionArtifactLedgerMode,
   type DecisionArtifactLifecycleOptions,
   type DecisionArtifactParticipantContext,
   type DroppedCanonicalizeId,

@@ -21,10 +21,12 @@ import {
   type EvidenceLedger,
   type EvidenceLedgerBuildInput,
   type EvidenceLedgerCompactionTraceSummary,
+  type EvidenceLedgerEntry,
 } from "../evidence-ledger/index.js";
 import {
   compileDecisionArtifact,
   type DecisionArtifactCanonicalizationCandidates,
+  type DecisionArtifactLedgerMode,
 } from "../decision-artifact/index.js";
 import type { TurnDiscourseStateService } from "../generation/turn-discourse-state.js";
 import {
@@ -56,7 +58,7 @@ import type { TurnReflectionCoordinator } from "../reflection/turn-reflection-co
 import type { TurnRetrievalCoordinator } from "../retrieval/turn-coordinator.js";
 import type { TurnSelfContextBuilder } from "../self/turn-self-context.js";
 import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
-import type { CognitiveMode, IntentRecord } from "../types.js";
+import type { CognitiveMode, IntentRecord, PerceptionResult } from "../types.js";
 import type { Config } from "../../config/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
@@ -64,6 +66,7 @@ import type { ActionRepository } from "../../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../../memory/commitments/index.js";
 import type {
   DecisionArtifact,
+  DecisionArtifactEntryKind,
   DecisionArtifactRepository,
 } from "../../memory/decision-artifacts/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
@@ -110,6 +113,8 @@ type EvidenceLedgerFinalizerContext = {
 
 type EvidenceLedgerFinalizerBuildInput = EvidenceLedgerBuildInput & {
   isUserTurn: boolean;
+  perception: PerceptionResult;
+  closureLoopAssessment: ClosureLoopAssessment | null;
 };
 
 const DECISION_ARTIFACT_LEDGER_STREAM_METADATA_KEYS = [
@@ -195,6 +200,19 @@ function addDecisionArtifactEntryIdStreamHandle(ids: Set<StreamEntryId>, entryId
   addDecisionArtifactAllowedStreamId(ids, source);
 }
 
+function collectDecisionArtifactEntryStreamEntryIds(entry: EvidenceLedgerEntry): StreamEntryId[] {
+  const ids = new Set<StreamEntryId>();
+
+  addDecisionArtifactEntryIdStreamHandle(ids, entry.id);
+  addDecisionArtifactAllowedStreamIds(ids, entry.citations);
+
+  for (const key of DECISION_ARTIFACT_LEDGER_STREAM_METADATA_KEYS) {
+    addDecisionArtifactAllowedStreamIds(ids, entry.state_metadata?.[key]);
+  }
+
+  return [...ids];
+}
+
 function collectDecisionArtifactAllowedStreamEntryIds(
   ledger: EvidenceLedger,
   currentUserStreamEntryId: StreamEntryId,
@@ -203,16 +221,241 @@ function collectDecisionArtifactAllowedStreamEntryIds(
 
   for (const section of ledger.sections) {
     for (const entry of section.entries) {
-      addDecisionArtifactEntryIdStreamHandle(ids, entry.id);
-      addDecisionArtifactAllowedStreamIds(ids, entry.citations);
-
-      for (const key of DECISION_ARTIFACT_LEDGER_STREAM_METADATA_KEYS) {
-        addDecisionArtifactAllowedStreamIds(ids, entry.state_metadata?.[key]);
+      for (const streamEntryId of collectDecisionArtifactEntryStreamEntryIds(entry)) {
+        ids.add(streamEntryId);
       }
     }
   }
 
   return [...ids];
+}
+
+const DECISION_ARTIFACT_IN_FLIGHT_KINDS = [
+  "live",
+  "pending",
+  "tentative",
+] as const satisfies readonly DecisionArtifactEntryKind[];
+
+type DecisionArtifactCompileSkipReason =
+  | "frame_anomaly"
+  | "closure_shaped"
+  | "idle_no_active_decisions";
+
+export type DecisionArtifactCompileSkip = {
+  reason: DecisionArtifactCompileSkipReason;
+  previousActiveEntryCount: number;
+  perceptionMode: CognitiveMode;
+  frameAnomalyKind?: ActualFrameAnomalyClassification["kind"];
+};
+
+function previousDecisionArtifactActiveEntryCount(
+  artifact: DecisionArtifact | null | undefined,
+): number {
+  return (artifact?.entries ?? []).filter((entry) => entry.superseded_by_id === null).length;
+}
+
+function previousDecisionArtifactInFlightEntryCount(
+  artifact: DecisionArtifact | null | undefined,
+): number {
+  return (artifact?.entries ?? []).filter(
+    (entry) =>
+      entry.superseded_by_id === null &&
+      DECISION_ARTIFACT_IN_FLIGHT_KINDS.some((kind) => kind === entry.kind),
+  ).length;
+}
+
+export function shouldSkipDecisionArtifactCompile(input: {
+  enabled: boolean;
+  previousArtifact: DecisionArtifact | null | undefined;
+  perceptionMode: CognitiveMode;
+  frameAnomaly: FrameAnomalyClassification | null | undefined;
+  closureLoopAssessment: ClosureLoopAssessment | null | undefined;
+}): DecisionArtifactCompileSkip | null {
+  if (!input.enabled) {
+    return null;
+  }
+
+  const previousActiveEntryCount = previousDecisionArtifactActiveEntryCount(input.previousArtifact);
+  const frameAnomaly = isFrameAnomaly(input.frameAnomaly) ? input.frameAnomaly : null;
+
+  if (frameAnomaly !== null) {
+    return {
+      reason: "frame_anomaly",
+      previousActiveEntryCount,
+      perceptionMode: input.perceptionMode,
+      frameAnomalyKind: frameAnomaly.kind,
+    };
+  }
+
+  if (
+    input.closureLoopAssessment?.currentUserClosureShaped === true &&
+    input.closureLoopAssessment.currentUserSubstantive === false
+  ) {
+    return {
+      reason: "closure_shaped",
+      previousActiveEntryCount,
+      perceptionMode: input.perceptionMode,
+    };
+  }
+
+  if (
+    input.perceptionMode === "idle" &&
+    previousDecisionArtifactInFlightEntryCount(input.previousArtifact) === 0
+  ) {
+    return {
+      reason: "idle_no_active_decisions",
+      previousActiveEntryCount,
+      perceptionMode: input.perceptionMode,
+    };
+  }
+
+  return null;
+}
+
+function buildLedgerStreamOrder(ledger: EvidenceLedger): Map<StreamEntryId, number> {
+  const streamOrderById = new Map<StreamEntryId, number>();
+
+  for (const section of ledger.sections) {
+    for (const entry of section.entries) {
+      if (entry.stream_index === undefined) {
+        continue;
+      }
+
+      for (const streamEntryId of collectDecisionArtifactEntryStreamEntryIds(entry)) {
+        const currentIndex = streamOrderById.get(streamEntryId);
+
+        if (currentIndex === undefined || entry.stream_index < currentIndex) {
+          streamOrderById.set(streamEntryId, entry.stream_index);
+        }
+      }
+    }
+  }
+
+  return streamOrderById;
+}
+
+function buildRetainedLedgerWindowStreamOrder(ledger: EvidenceLedger): Map<StreamEntryId, number> {
+  const streamOrderById = new Map<StreamEntryId, number>();
+
+  for (const section of ledger.sections) {
+    if (section.id !== "current_user_message" && section.id !== "current_session_transcript") {
+      continue;
+    }
+
+    for (const entry of section.entries) {
+      if (entry.stream_index === undefined) {
+        continue;
+      }
+
+      for (const streamEntryId of collectDecisionArtifactEntryStreamEntryIds(entry)) {
+        const currentIndex = streamOrderById.get(streamEntryId);
+
+        if (currentIndex === undefined || entry.stream_index < currentIndex) {
+          streamOrderById.set(streamEntryId, entry.stream_index);
+        }
+      }
+    }
+  }
+
+  return streamOrderById;
+}
+
+function earliestLedgerStreamIndex(
+  streamOrderById: ReadonlyMap<StreamEntryId, number>,
+): number | null {
+  let earliest: number | null = null;
+
+  for (const streamIndex of streamOrderById.values()) {
+    if (earliest === null || streamIndex < earliest) {
+      earliest = streamIndex;
+    }
+  }
+
+  return earliest;
+}
+
+function isDecisionArtifactLedgerDeltaEntry(input: {
+  entry: EvidenceLedgerEntry;
+  streamOrderById: ReadonlyMap<StreamEntryId, number>;
+  anchorStreamIndex: number;
+}): boolean {
+  for (const streamEntryId of collectDecisionArtifactEntryStreamEntryIds(input.entry)) {
+    const streamIndex = input.streamOrderById.get(streamEntryId);
+
+    if (streamIndex !== undefined && streamIndex > input.anchorStreamIndex) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function buildDecisionArtifactLedgerPromptContext(input: {
+  ledger: EvidenceLedger;
+  previousArtifact: DecisionArtifact | null | undefined;
+  fullPromptVisibleLedger: string;
+  enabled: boolean;
+  minTailPerSection: number;
+}): {
+  promptVisibleLedger: string;
+  ledgerMode: DecisionArtifactLedgerMode;
+} {
+  const anchorStreamEntryId = input.previousArtifact?.last_compiled_stream_entry_id ?? null;
+
+  if (!input.enabled || anchorStreamEntryId === null) {
+    return {
+      promptVisibleLedger: input.fullPromptVisibleLedger,
+      ledgerMode: "full_fallback",
+    };
+  }
+
+  const retainedWindowStreamOrderById = buildRetainedLedgerWindowStreamOrder(input.ledger);
+  const windowFloorStreamIndex = earliestLedgerStreamIndex(retainedWindowStreamOrderById);
+  const anchorStreamIndex = retainedWindowStreamOrderById.get(anchorStreamEntryId);
+
+  if (
+    windowFloorStreamIndex === null ||
+    anchorStreamIndex === undefined ||
+    anchorStreamIndex < windowFloorStreamIndex
+  ) {
+    return {
+      promptVisibleLedger: input.fullPromptVisibleLedger,
+      ledgerMode: "full_fallback",
+    };
+  }
+
+  const streamOrderById = buildLedgerStreamOrder(input.ledger);
+  const minTailPerSection = Math.max(0, Math.floor(input.minTailPerSection));
+  const sections = input.ledger.sections.map((section) => {
+    const tailStartIndex = Math.max(0, section.entries.length - minTailPerSection);
+    const entries = section.entries.filter(
+      (entry, index) =>
+        index >= tailStartIndex ||
+        isDecisionArtifactLedgerDeltaEntry({
+          entry,
+          streamOrderById,
+          anchorStreamIndex,
+        }),
+    );
+
+    return {
+      ...section,
+      entries,
+    };
+  });
+  const deltaLedgerForEstimate = {
+    ...input.ledger,
+    sections,
+  };
+  const deltaLedger = {
+    ...deltaLedgerForEstimate,
+    estimatedTokens: estimateEvidenceLedgerPromptTokens(deltaLedgerForEstimate),
+  };
+
+  return {
+    promptVisibleLedger: renderEvidenceLedger(deltaLedger) ?? "",
+    ledgerMode: "delta",
+  };
 }
 
 export type TurnPhaseInput = {
@@ -679,6 +922,8 @@ export class TurnPhaseCoordinator {
       frameAnomaly: currentTurnFrameAnomaly,
       activeParticipants,
       isUserTurn,
+      perception,
+      closureLoopAssessment,
     });
     const deliberator = new Deliberator({
       llmClient,
@@ -1508,6 +1753,38 @@ export class TurnPhaseCoordinator {
       return previousArtifact;
     }
 
+    const decisionArtifactConfig = this.options.config.generation.evidenceLedger.decisionArtifact;
+    const skip = shouldSkipDecisionArtifactCompile({
+      enabled: decisionArtifactConfig.compilerPrefilter.enabled,
+      previousArtifact,
+      perceptionMode: input.input.perception.mode,
+      frameAnomaly: input.input.frameAnomaly,
+      closureLoopAssessment: input.input.closureLoopAssessment,
+    });
+
+    if (skip !== null) {
+      if (this.options.tracer.enabled && input.input.turnId !== undefined) {
+        this.options.tracer.emit("decision_artifact_compile_skipped", {
+          turnId: input.input.turnId,
+          reason: skip.reason,
+          previous_active_entry_count: skip.previousActiveEntryCount,
+          perception_mode: skip.perceptionMode,
+          ...(skip.frameAnomalyKind === undefined
+            ? {}
+            : { frame_anomaly_kind: skip.frameAnomalyKind }),
+        });
+      }
+
+      return previousArtifact;
+    }
+
+    const ledgerPromptContext = buildDecisionArtifactLedgerPromptContext({
+      ledger: input.ledger,
+      previousArtifact,
+      fullPromptVisibleLedger: input.promptVisibleLedger,
+      enabled: decisionArtifactConfig.ledgerDelta.enabled,
+      minTailPerSection: decisionArtifactConfig.ledgerDelta.minTailPerSection,
+    });
     const selfEntityId = this.options.entityRepository.resolve("self", {
       kind: "self",
       provenance: "assistant_seeded",
@@ -1566,7 +1843,7 @@ export class TurnPhaseCoordinator {
       })),
       currentUserMessage: input.input.currentUserMessage,
       currentUserStreamEntryId: input.input.currentUserEntry.id,
-      promptVisibleLedger: input.promptVisibleLedger,
+      promptVisibleLedger: ledgerPromptContext.promptVisibleLedger,
       previousArtifact,
       allowedSourceStreamEntryIds: collectDecisionArtifactAllowedStreamEntryIds(
         input.ledger,
@@ -1583,11 +1860,16 @@ export class TurnPhaseCoordinator {
       tracer: this.options.tracer,
       turnId: input.input.turnId,
       lifecycle: {
-        maxActiveEntries:
-          this.options.config.generation.evidenceLedger.decisionArtifact.maxActiveEntries,
-        kindSoftCaps: this.options.config.generation.evidenceLedger.decisionArtifact.kindSoftCaps,
+        maxActiveEntries: decisionArtifactConfig.maxActiveEntries,
+        kindSoftCaps: decisionArtifactConfig.kindSoftCaps,
       },
       renderOptions: this.decisionArtifactRenderOptions(),
+      previousArtifactSummaryOptions: {
+        maxEntries: decisionArtifactConfig.previousArtifactSummary.maxEntries,
+        summaryTokenBudget: decisionArtifactConfig.previousArtifactSummary.summaryTokenBudget,
+        maxEntryTextTokens: decisionArtifactConfig.previousArtifactSummary.maxEntryTextTokens,
+      },
+      ledgerMode: ledgerPromptContext.ledgerMode,
     });
 
     return this.options.decisionArtifactRepository.get(audienceEntityId);

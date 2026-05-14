@@ -61,6 +61,37 @@ const decisionArtifactRenderReservedSlotsSchema = z
   })
   .strict()
   .prefault({});
+const decisionArtifactPreviousArtifactSummaryMaxEntriesSchema = z
+  .object({
+    locked: z.number().int().nonnegative().default(14),
+    live: z.number().int().nonnegative().default(8),
+    pending: z.number().int().nonnegative().default(6),
+    invalidated: z.number().int().nonnegative().default(4),
+    tentative: z.number().int().nonnegative().default(2),
+  })
+  .strict()
+  .prefault({});
+const decisionArtifactPreviousArtifactSummaryConfigSchema = z
+  .object({
+    maxEntries: decisionArtifactPreviousArtifactSummaryMaxEntriesSchema,
+    summaryTokenBudget: z.number().int().positive().default(6_000),
+    maxEntryTextTokens: z.number().int().positive().default(1_000),
+  })
+  .strict()
+  .prefault({});
+const decisionArtifactCompilerPrefilterConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+  })
+  .strict()
+  .prefault({});
+const decisionArtifactLedgerDeltaConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    minTailPerSection: z.number().int().nonnegative().default(3),
+  })
+  .strict()
+  .prefault({});
 const decisionArtifactConfigSchema = z
   .object({
     maxActiveEntries: z.number().int().positive().default(40),
@@ -69,6 +100,9 @@ const decisionArtifactConfigSchema = z
     renderMaxTokens: z.number().int().positive().default(3_000),
     renderReservedSlots: decisionArtifactRenderReservedSlotsSchema,
     renderLockedCap: z.number().int().nonnegative().default(14),
+    previousArtifactSummary: decisionArtifactPreviousArtifactSummaryConfigSchema,
+    compilerPrefilter: decisionArtifactCompilerPrefilterConfigSchema,
+    ledgerDelta: decisionArtifactLedgerDeltaConfigSchema,
   })
   .strict()
   .prefault({});

@@ -237,6 +237,24 @@ export function createTestConfig(
             ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact.renderReservedSlots,
             ...overrides.generation?.evidenceLedger?.decisionArtifact?.renderReservedSlots,
           },
+          previousArtifactSummary: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact.previousArtifactSummary,
+            ...overrides.generation?.evidenceLedger?.decisionArtifact?.previousArtifactSummary,
+            maxEntries: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact.previousArtifactSummary
+                .maxEntries,
+              ...overrides.generation?.evidenceLedger?.decisionArtifact?.previousArtifactSummary
+                ?.maxEntries,
+            },
+          },
+          compilerPrefilter: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact.compilerPrefilter,
+            ...overrides.generation?.evidenceLedger?.decisionArtifact?.compilerPrefilter,
+          },
+          ledgerDelta: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact.ledgerDelta,
+            ...overrides.generation?.evidenceLedger?.decisionArtifact?.ledgerDelta,
+          },
         },
       },
       postGenerationGuards: {
