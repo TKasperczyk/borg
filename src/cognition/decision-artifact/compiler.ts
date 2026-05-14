@@ -37,12 +37,14 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import {
+  summarizeDecisionStateArtifactRender,
+  type DecisionArtifactRenderOptions,
+} from "./render.js";
+import {
   buildDecisionArtifactPromptSummary,
   type DecisionArtifactPromptSummary,
   type DecisionArtifactPromptSummaryOptions,
-  summarizeDecisionStateArtifactRender,
-  type DecisionArtifactRenderOptions,
-} from "../evidence-ledger/index.js";
+} from "./summary.js";
 import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import {
   findUnsettledDecisionArtifactReconciliation,
