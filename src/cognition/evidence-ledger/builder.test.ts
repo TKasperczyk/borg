@@ -14,7 +14,11 @@ import {
 } from "../../memory/self/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import type { RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
-import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
+import {
+  createEpisodeFixture,
+  createRetrievalScoreFixture,
+  createSemanticNodeFixture,
+} from "../../offline/test-support.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { StreamReader, StreamWriter, type StreamEntry } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
@@ -34,7 +38,7 @@ import {
   type EntityId,
 } from "../../util/ids.js";
 import { EvidenceLedgerBuilder } from "./builder.js";
-import { renderEvidenceLedger } from "./renderer.js";
+import { renderCompactPlannerLedger, renderEvidenceLedger } from "./renderer.js";
 
 const NOW_MS = 1_800_000_000_000;
 
@@ -1828,6 +1832,113 @@ describe("EvidenceLedgerBuilder", () => {
     });
 
     expect(userEntry.kind).toBe("user_msg");
+  });
+
+  it("surfaces correcting current-session evidence ahead of stale semantic planning state", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const correctionText = "Wait - we agreed on 3 nights in San Sebastian, not 4.";
+    const lockedCorrectionText = "Locked: San Sebastian is 3 nights, not 4.";
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: correctionText,
+    });
+    const assistantEntry = await writer.append({
+      kind: "agent_msg",
+      content: lockedCorrectionText,
+    });
+    const staleEpisodeId = createEpisodeId();
+    const staleNode = createSemanticNodeFixture({
+      label: "Plan: 4 nights in San Sebastian",
+      description: "Plan: 4 nights in San Sebastian.",
+      source_episode_ids: [staleEpisodeId],
+      created_at: NOW_MS - 100_000,
+      updated_at: NOW_MS - 100_000,
+      last_verified_at: NOW_MS - 100_000,
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: {
+        list: () => [],
+      },
+      actionRepository: {
+        list: () => [],
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: {
+        supports: [],
+        contradicts: [],
+        categories: [],
+        matched_node_ids: [staleNode.id],
+        matched_nodes: [staleNode],
+        support_hits: [],
+        causal_hits: [],
+        contradiction_hits: [],
+        category_hits: [],
+      },
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const transcriptSection = ledger.sections.find(
+      (section) => section.id === "current_session_transcript",
+    );
+    const semanticSection = ledger.sections.find((section) => section.id === "semantic_graph");
+    const transcriptCorrection = transcriptSection?.entries.find(
+      (entry) => entry.id === `current_session_stream:${userEntry.id}`,
+    );
+    const assistantCorrection = transcriptSection?.entries.find(
+      (entry) => entry.id === `current_session_stream:${assistantEntry.id}`,
+    );
+    const staleSemantic = semanticSection?.entries.find(
+      (entry) => entry.id === `semantic_node:${staleNode.id}`,
+    );
+    const rendered = renderEvidenceLedger(ledger) ?? "";
+    const compactPlannerLedger = renderCompactPlannerLedger(ledger) ?? "";
+    const transcriptHeader = "## 2. Current-Session Transcript";
+    const semanticHeader = "## 12. Semantic Graph";
+    const transcriptStart = rendered.indexOf(transcriptHeader);
+    const semanticStart = rendered.indexOf(semanticHeader);
+    expect(transcriptStart).toBeGreaterThanOrEqual(0);
+    expect(semanticStart).toBeGreaterThanOrEqual(0);
+
+    const transcriptEnd = rendered.indexOf("\n## ", transcriptStart + transcriptHeader.length);
+    const semanticEnd = rendered.indexOf("\n## ", semanticStart + semanticHeader.length);
+    const renderedTranscriptSection = rendered.slice(
+      transcriptStart,
+      transcriptEnd === -1 ? undefined : transcriptEnd,
+    );
+    const renderedSemanticSection = rendered.slice(
+      semanticStart,
+      semanticEnd === -1 ? undefined : semanticEnd,
+    );
+
+    expect(transcriptCorrection?.text).toContain("3 nights in San Sebastian");
+    expect(assistantCorrection?.text).toContain("3 nights");
+    expect(staleSemantic?.text).toContain("4 nights in San Sebastian");
+    expect((transcriptCorrection?.trust_rank ?? 0)).toBeGreaterThan(
+      staleSemantic?.trust_rank ?? 0,
+    );
+    expect(renderedTranscriptSection).toContain(correctionText);
+    expect(renderedSemanticSection).toContain("Plan: 4 nights in San Sebastian");
+    expect(semanticStart).toBeGreaterThan(transcriptStart);
+    expect(compactPlannerLedger).toContain("3 nights in San Sebastian");
   });
 
   it("labels retrieved assistant self-report raw stream evidence", async () => {

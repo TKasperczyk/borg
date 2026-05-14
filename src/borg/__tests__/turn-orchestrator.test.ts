@@ -107,6 +107,18 @@ function requestSystemText(request: { system?: unknown } | undefined): string {
   return "";
 }
 
+function extractTaggedPromptBlock(prompt: string, tag: string): string {
+  const openTag = `<${tag}>`;
+  const closeTag = `</${tag}>`;
+  const start = prompt.indexOf(openTag);
+  const end = prompt.indexOf(closeTag, start + openTag.length);
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+
+  return prompt.slice(start, end + closeTag.length);
+}
+
 function createNoCorrectivePreferenceResponse() {
   return {
     text: "",
@@ -1375,6 +1387,130 @@ describe("Borg", () => {
       expect(compactLedgerIndex).toBeGreaterThan(artifactIndex);
       expect(finalizerArtifactIndex).toBeGreaterThanOrEqual(0);
       expect(currentUserSectionIndex).toBeGreaterThan(finalizerArtifactIndex);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("surfaces locked route order across artifact, ledger, and prompts for phantom-route turns", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000);
+    const lockedOrder = "Itinerary order: Madrid -> San Sebastian -> Seville -> Granada";
+    const lockedFinalBase = "Granada is the final base before fly-home.";
+    const llm = new FakeLLMClient({
+      responses: [
+        createEntityDetectionResponse(["Spain planning", "Ben"]),
+        createModeDetectionResponse("problem_solving"),
+        createNoTemporalCueResponse(),
+        createGenerationGateResponse({
+          decision: "proceed",
+          substantive: true,
+          reason: "planning turn",
+        }),
+        createTurnPlanResponse(),
+        createEmitAnswerResponse("Context surfaced.", {
+          inputTokens: 10,
+          outputTokens: 5,
+        }),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await Borg.open({
+      config: createTestConfig({
+        dataDir: tempDir,
+        perception: {
+          useLlmFallback: true,
+        },
+        generation: {
+          evidenceLedger: {
+            enabled: true,
+          },
+        },
+      }),
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: llm,
+      clock,
+      liveExtraction: false,
+    });
+
+    try {
+      const internal = borgInternals<{
+        deps: Pick<BorgDependencies, "decisionArtifactRepository" | "entityRepository">;
+      }>(borg);
+      const audience = internal.deps.entityRepository.resolve("Spain planning", {
+        kind: "group",
+        provenance: "transport_audience_label",
+      });
+      const ben = internal.deps.entityRepository.resolve("Ben", {
+        kind: "person",
+        provenance: "user_declared",
+      });
+      const orderEntry = await borg.stream.append({
+        kind: "user_msg",
+        audience: "Spain planning",
+        sender_entity_id: ben,
+        content: `We locked this route: ${lockedOrder}.`,
+      });
+      const finalBaseEntry = await borg.stream.append({
+        kind: "agent_msg",
+        audience: "Spain planning",
+        content: `Locked note: ${lockedFinalBase}`,
+      });
+
+      internal.deps.decisionArtifactRepository.upsert(audience, [
+        {
+          type: "add",
+          kind: "locked",
+          text: lockedOrder,
+          owner_entity_id: audience,
+          provenance_stream_entry_ids: [orderEntry.id],
+        },
+        {
+          type: "add",
+          kind: "locked",
+          text: lockedFinalBase,
+          owner_entity_id: audience,
+          provenance_stream_entry_ids: [finalBaseEntry.id],
+        },
+      ]);
+
+      await borg.turn({
+        userMessage: "Ben here. What if we flew from Granada to San Sebastian directly?",
+        audience: "Spain planning",
+        senderEntityId: ben,
+        stakes: "high",
+      });
+
+      const plannerRequest = llm.requests.find((request) => request.budget === "cognition-plan");
+      const finalizerRequest = llm.requests.find(
+        (request) => request.budget === "cognition-system-2",
+      );
+      const plannerSystem = requestSystemText(plannerRequest);
+      const finalizerSystem = requestSystemText(finalizerRequest);
+      const compactPlannerLedgerBlock = extractTaggedPromptBlock(
+        plannerSystem,
+        "borg_compact_planner_ledger",
+      );
+      const finalizerArtifactStart = finalizerSystem.indexOf("## 0. Canonical Decision State");
+      const finalizerCurrentUserStart = finalizerSystem.indexOf("## 1. Current User Message");
+      const finalizerArtifactSection = finalizerSystem.slice(
+        finalizerArtifactStart,
+        finalizerCurrentUserStart,
+      );
+      const persistedLockedTexts =
+        internal.deps.decisionArtifactRepository
+          .get(audience)
+          ?.entries.filter((entry) => entry.kind === "locked" && entry.superseded_by_id === null)
+          .map((entry) => entry.text) ?? [];
+
+      expect(compactPlannerLedgerBlock).toContain(lockedOrder);
+      expect(compactPlannerLedgerBlock).toContain(lockedFinalBase);
+      expect(finalizerArtifactStart).toBeGreaterThanOrEqual(0);
+      expect(finalizerCurrentUserStart).toBeGreaterThan(finalizerArtifactStart);
+      expect(finalizerArtifactSection).toContain(lockedOrder);
+      expect(finalizerArtifactSection).toContain(lockedFinalBase);
+      expect(persistedLockedTexts).toEqual(expect.arrayContaining([lockedOrder, lockedFinalBase]));
     } finally {
       await borg.close();
     }

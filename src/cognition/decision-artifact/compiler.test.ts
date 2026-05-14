@@ -24,7 +24,7 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
-import { renderEvidenceLedger } from "../evidence-ledger/index.js";
+import { renderDecisionStateArtifact, renderEvidenceLedger } from "../evidence-ledger/index.js";
 import { buildDecisionArtifactLedgerPromptContext } from "../lifecycle/turn-phase-coordinator.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import {
@@ -831,6 +831,105 @@ describe("compileDecisionArtifact", () => {
         }),
       }),
     );
+  });
+
+  it("keeps long compile sequences inside the active artifact budget while reserving live render slots", async () => {
+    const maxActiveEntries = 40;
+    const liveRenderReservation = 8;
+    const responses = Array.from({ length: 60 }, (_, index) =>
+      emitDecisionArtifactPatchResponse({
+        operations: [
+          {
+            type: "add",
+            kind: "locked",
+            text: `Locked long-plan route invariant ${index}`,
+            owner_entity_id: audience,
+            source_stream_entry_ids: [currentStreamEntryId],
+          },
+          {
+            type: "add",
+            kind: "live",
+            text: `Live long-plan detail ${index}`,
+            owner_entity_id: audience,
+            source_stream_entry_ids: [currentStreamEntryId],
+          },
+          {
+            type: "add",
+            kind: "pending",
+            text: `Pending long-plan decision ${index}`,
+            owner_entity_id: audience,
+            source_stream_entry_ids: [currentStreamEntryId],
+          },
+        ],
+      }),
+    );
+    const llmClient = new FakeLLMClient({ responses });
+    const trace = createTraceRecorder();
+    let sawRenderedOmission = false;
+    let sawLifecyclePrune = false;
+
+    for (let index = 0; index < responses.length; index += 1) {
+      await compileDecisionArtifact({
+        ...baseInput(llmClient),
+        currentUserMessage: `Long planning turn ${index}`,
+        tracer: trace,
+      });
+
+      const artifact = repository.get(audience);
+      const active = activeEntries();
+      const activeLive = active.filter((entry) => entry.kind === "live");
+      const expectedLiveEntries = [...activeLive]
+        .sort(
+          (left, right) =>
+            right.last_updated_at - left.last_updated_at ||
+            left.rank - right.rank ||
+            right.created_at - left.created_at ||
+            left.id.localeCompare(right.id),
+        )
+        .slice(0, Math.min(activeLive.length, liveRenderReservation));
+      const rendered = renderDecisionStateArtifact(artifact) ?? "";
+      const renderedLiveEntryCount = rendered.match(/kind=live/g)?.length ?? 0;
+      const completed = trace.events
+        .filter((event) => event.event === "decision_artifact_compile_completed")
+        .at(-1);
+      const artifactTotalEntryCount = completed?.data.artifact_total_entry_count;
+      const artifactActiveEntryCount = completed?.data.artifact_active_entry_count;
+      const artifactOmittedEntryCount = completed?.data.artifact_omitted_entry_count;
+      const artifactRenderedEntryCount = completed?.data.artifactEntryCount;
+      const artifactPrunedEntryCount = completed?.data.artifact_pruned_entry_count_this_turn;
+
+      expect(active.length).toBeLessThanOrEqual(maxActiveEntries);
+      expect(renderedLiveEntryCount).toBeGreaterThanOrEqual(expectedLiveEntries.length);
+      expect(expectedLiveEntries.every((entry) => rendered.includes(entry.text))).toBe(true);
+      expect(completed?.data).toEqual(
+        expect.objectContaining({
+          artifact_total_entry_count: expect.any(Number),
+          artifact_active_entry_count: expect.any(Number),
+          artifact_omitted_entry_count: expect.any(Number),
+          artifact_pruned_entry_count_this_turn: expect.any(Number),
+          artifact_superseded_count_this_turn: expect.any(Number),
+          rendered_by_kind: expect.any(Object),
+        }),
+      );
+      expect(artifactTotalEntryCount as number).toBeGreaterThanOrEqual(active.length);
+      expect(artifactActiveEntryCount as number).toBe(active.length);
+      if (typeof artifactOmittedEntryCount === "number" && artifactOmittedEntryCount > 0) {
+        sawRenderedOmission = true;
+      }
+      if (typeof artifactPrunedEntryCount === "number" && artifactPrunedEntryCount > 0) {
+        sawLifecyclePrune = true;
+      }
+      if (
+        typeof artifactRenderedEntryCount === "number" &&
+        typeof artifactOmittedEntryCount === "number" &&
+        active.length > artifactRenderedEntryCount
+      ) {
+        expect(artifactOmittedEntryCount).toBe(active.length - artifactRenderedEntryCount);
+      }
+    }
+
+    expect(sawRenderedOmission).toBe(true);
+    expect(sawLifecyclePrune).toBe(true);
   });
 
   it("prunes superseded dependencies before pruning a referenced replacement", async () => {
