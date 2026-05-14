@@ -104,4 +104,20 @@ export const actionMigrations = [
       `);
     },
   },
+  {
+    id: 3,
+    name: "action_records_artifact_backref",
+    up: (db) => {
+      if (!tableExists(db, "action_records")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "action_records", "canonicalized_by_artifact_entry_id")) {
+        db.exec(`
+          ALTER TABLE action_records
+            ADD COLUMN canonicalized_by_artifact_entry_id TEXT NULL;
+        `);
+      }
+    },
+  },
 ] as const satisfies readonly Migration[];

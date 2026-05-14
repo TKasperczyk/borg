@@ -181,4 +181,20 @@ export const commitmentMigrations = [
       `);
     },
   },
+  {
+    id: 9,
+    name: "commitment_artifact_backref",
+    up: (db) => {
+      if (!tableExists(db, "commitments")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "commitments", "canonicalized_by_artifact_entry_id")) {
+        db.exec(`
+          ALTER TABLE commitments
+            ADD COLUMN canonicalized_by_artifact_entry_id TEXT NULL;
+        `);
+      }
+    },
+  },
 ] as const satisfies readonly Migration[];

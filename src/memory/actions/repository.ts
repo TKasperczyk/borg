@@ -97,6 +97,11 @@ function mapActionRow(row: Record<string, unknown>): ActionRecord {
       row.not_done_at === null || row.not_done_at === undefined ? null : Number(row.not_done_at),
     unknown_at:
       row.unknown_at === null || row.unknown_at === undefined ? null : Number(row.unknown_at),
+    canonicalized_by_artifact_entry_id:
+      row.canonicalized_by_artifact_entry_id === null ||
+      row.canonicalized_by_artifact_entry_id === undefined
+        ? null
+        : String(row.canonicalized_by_artifact_entry_id),
   });
 
   if (!parsed.success) {
@@ -205,6 +210,9 @@ export type ActionDescriptionSimilarityPair = {
   rightId: ActionId;
   similarity: number;
 };
+export type ActionUpdateOptions = {
+  skipSideEffects?: boolean;
+};
 
 export function createActionRecordsTableSchema(dimensions: number) {
   return schema([
@@ -278,8 +286,9 @@ export class ActionRepository {
           INSERT INTO action_records (
             id, description, actor, audience_entity_id, goal_id, open_question_id, state, confidence,
             provenance_episode_ids, provenance_stream_entry_ids, created_at, updated_at,
-            considering_at, committed_at, scheduled_at, completed_at, not_done_at, unknown_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            considering_at, committed_at, scheduled_at, completed_at, not_done_at, unknown_at,
+            canonicalized_by_artifact_entry_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             description = excluded.description,
             actor = excluded.actor,
@@ -296,7 +305,8 @@ export class ActionRepository {
             scheduled_at = excluded.scheduled_at,
             completed_at = excluded.completed_at,
             not_done_at = excluded.not_done_at,
-            unknown_at = excluded.unknown_at
+            unknown_at = excluded.unknown_at,
+            canonicalized_by_artifact_entry_id = excluded.canonicalized_by_artifact_entry_id
         `,
       )
       .run(
@@ -318,6 +328,7 @@ export class ActionRepository {
         record.completed_at,
         record.not_done_at,
         record.unknown_at,
+        record.canonicalized_by_artifact_entry_id ?? null,
       );
   }
 
@@ -334,7 +345,7 @@ export class ActionRepository {
     }
   }
 
-  update(id: ActionId, patch: ActionRecordPatch): void {
+  update(id: ActionId, patch: ActionRecordPatch, options: ActionUpdateOptions = {}): void {
     const current = this.get(id);
 
     if (current === null) {
@@ -363,7 +374,11 @@ export class ActionRepository {
 
     this.upsertSqlRow(next);
     this.scheduleVectorUpsert(next);
-    if (current.state !== "completed" && next.state === "completed") {
+    if (
+      options.skipSideEffects !== true &&
+      current.state !== "completed" &&
+      next.state === "completed"
+    ) {
       this.options.onCompleted?.(next, current);
     }
   }

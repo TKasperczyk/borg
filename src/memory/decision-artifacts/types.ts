@@ -1,11 +1,19 @@
 import { z } from "zod";
 
 import {
+  actionIdHelpers,
+  commitmentIdHelpers,
   decisionArtifactEntryIdHelpers,
   entityIdHelpers,
+  goalIdHelpers,
+  openQuestionIdHelpers,
   streamEntryIdHelpers,
+  type ActionId,
+  type CommitmentId,
   type DecisionArtifactEntryId,
   type EntityId,
+  type GoalId,
+  type OpenQuestionId,
   type StreamEntryId,
 } from "../../util/ids.js";
 
@@ -42,6 +50,43 @@ export const decisionArtifactStreamEntryIdSchema = z
 
 export const decisionArtifactEntryKindSchema = z.enum(DECISION_ARTIFACT_ENTRY_KINDS);
 
+export const decisionArtifactGoalIdSchema = z
+  .string()
+  .refine((value) => goalIdHelpers.is(value), {
+    message: "Invalid decision artifact canonicalized goal id",
+  })
+  .transform((value) => value as GoalId);
+
+export const decisionArtifactCommitmentIdSchema = z
+  .string()
+  .refine((value) => commitmentIdHelpers.is(value), {
+    message: "Invalid decision artifact canonicalized commitment id",
+  })
+  .transform((value) => value as CommitmentId);
+
+export const decisionArtifactActionIdSchema = z
+  .string()
+  .refine((value) => actionIdHelpers.is(value), {
+    message: "Invalid decision artifact canonicalized action id",
+  })
+  .transform((value) => value as ActionId);
+
+export const decisionArtifactOpenQuestionIdSchema = z
+  .string()
+  .refine((value) => openQuestionIdHelpers.is(value), {
+    message: "Invalid decision artifact canonicalized open question id",
+  })
+  .transform((value) => value as OpenQuestionId);
+
+export const decisionArtifactCanonicalizesSchema = z
+  .object({
+    goal_ids: z.array(decisionArtifactGoalIdSchema).default([]),
+    commitment_ids: z.array(decisionArtifactCommitmentIdSchema).default([]),
+    action_ids: z.array(decisionArtifactActionIdSchema).default([]),
+    open_question_ids: z.array(decisionArtifactOpenQuestionIdSchema).default([]),
+  })
+  .strict();
+
 export const decisionArtifactEntrySchema = z
   .object({
     id: decisionArtifactEntryIdSchema,
@@ -55,6 +100,7 @@ export const decisionArtifactEntrySchema = z
     last_updated_at: z.number().finite(),
     superseded_by_id: decisionArtifactEntryIdSchema.nullable(),
     rank: z.number().int().nonnegative(),
+    canonicalizes: decisionArtifactCanonicalizesSchema,
   })
   .strict();
 
@@ -71,5 +117,6 @@ export const decisionArtifactSchema = z
   .strict();
 
 export type DecisionArtifactEntryKind = z.infer<typeof decisionArtifactEntryKindSchema>;
+export type DecisionArtifactCanonicalizes = z.infer<typeof decisionArtifactCanonicalizesSchema>;
 export type DecisionArtifactEntry = z.infer<typeof decisionArtifactEntrySchema>;
 export type DecisionArtifact = z.infer<typeof decisionArtifactSchema>;

@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn, tableExists } from "../../storage/sqlite/migrations-utils.js";
 
 export const decisionArtifactMigrations = [
   {
@@ -43,5 +44,22 @@ export const decisionArtifactMigrations = [
       CREATE INDEX IF NOT EXISTS idx_decision_artifact_entries_superseded
         ON decision_artifact_entries(superseded_by_id);
     `,
+  },
+  {
+    id: 2,
+    name: "decision_artifact_planning_state_canonicalizes",
+    up: (db) => {
+      if (
+        !tableExists(db, "decision_artifact_entries") ||
+        tableHasColumn(db, "decision_artifact_entries", "canonicalizes")
+      ) {
+        return;
+      }
+
+      db.exec(`
+        ALTER TABLE decision_artifact_entries
+          ADD COLUMN canonicalizes TEXT NOT NULL DEFAULT '{"goal_ids":[],"commitment_ids":[],"action_ids":[],"open_question_ids":[]}';
+      `);
+    },
   },
 ] as const satisfies readonly Migration[];

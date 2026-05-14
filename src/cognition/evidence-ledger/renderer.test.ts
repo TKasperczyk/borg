@@ -100,6 +100,12 @@ function decisionArtifactEntry(input: {
     last_updated_at: 1_000 + input.index,
     superseded_by_id: null,
     rank: input.index,
+    canonicalizes: {
+      goal_ids: [],
+      commitment_ids: [],
+      action_ids: [],
+      open_question_ids: [],
+    },
   };
 }
 
@@ -227,6 +233,12 @@ describe("renderDecisionStateArtifact", () => {
           last_updated_at: now,
           superseded_by_id: null,
           rank: 0,
+          canonicalizes: {
+            goal_ids: [],
+            commitment_ids: [],
+            action_ids: [],
+            open_question_ids: [],
+          },
         },
       ],
     };

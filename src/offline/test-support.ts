@@ -920,6 +920,7 @@ export function createGoalFixture(overrides: Partial<GoalRecord> = {}): GoalReco
     target_at: overrides.target_at ?? null,
     audience_entity_id: overrides.audience_entity_id ?? null,
     owner_entity_id: overrides.owner_entity_id ?? null,
+    canonicalized_by_artifact_entry_id: overrides.canonicalized_by_artifact_entry_id ?? null,
     ...(overrides.source_stream_entry_ids === undefined
       ? {}
       : { source_stream_entry_ids: overrides.source_stream_entry_ids }),

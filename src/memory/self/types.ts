@@ -2,12 +2,14 @@ import { z } from "zod";
 
 import {
   entityIdHelpers,
+  decisionArtifactEntryIdHelpers,
   episodeIdHelpers,
   goalIdHelpers,
   streamEntryIdHelpers,
   traitIdHelpers,
   valueIdHelpers,
   type EntityId,
+  type DecisionArtifactEntryId,
   type EpisodeId,
   type GoalId,
   type StreamEntryId,
@@ -53,6 +55,13 @@ export const goalSourceStreamEntryIdSchema = z
     message: "Invalid goal source stream entry id",
   })
   .transform((value) => value as StreamEntryId);
+
+export const goalCanonicalizedByArtifactEntryIdSchema = z
+  .string()
+  .refine((value) => decisionArtifactEntryIdHelpers.is(value), {
+    message: "Invalid goal canonicalized decision artifact entry id",
+  })
+  .transform((value) => value as DecisionArtifactEntryId);
 
 export const traitIdSchema = z
   .string()
@@ -116,6 +125,9 @@ export const goalSchema = z.object({
   audience_entity_id: goalAudienceEntityIdSchema.nullable().default(null),
   owner_entity_id: goalOwnerEntityIdSchema.nullable().optional(),
   source_stream_entry_ids: z.array(goalSourceStreamEntryIdSchema).min(1).optional(),
+  canonicalized_by_artifact_entry_id: goalCanonicalizedByArtifactEntryIdSchema
+    .nullable()
+    .optional(),
   provenance: provenanceSchema,
 });
 

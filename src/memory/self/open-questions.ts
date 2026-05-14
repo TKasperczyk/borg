@@ -20,11 +20,13 @@ import { SystemClock, type Clock } from "../../util/clock.js";
 import { ProvenanceError, StorageError } from "../../util/errors.js";
 import {
   createOpenQuestionId,
+  decisionArtifactEntryIdHelpers,
   entityIdHelpers,
   openQuestionIdHelpers,
   parseOpenQuestionId,
   streamEntryIdHelpers,
   type EntityId,
+  type DecisionArtifactEntryId,
   type GoalId,
   type OpenQuestionId,
   type StreamEntryId,
@@ -79,6 +81,13 @@ export const openQuestionResolutionStreamEntryIdSchema = z
   })
   .transform((value) => value as StreamEntryId);
 
+export const openQuestionResolvedByArtifactEntryIdSchema = z
+  .string()
+  .refine((value) => decisionArtifactEntryIdHelpers.is(value), {
+    message: "Invalid open question resolved decision artifact entry id",
+  })
+  .transform((value) => value as DecisionArtifactEntryId);
+
 export const openQuestionSchema = z
   .object({
     id: openQuestionIdSchema,
@@ -100,6 +109,9 @@ export const openQuestionSchema = z
     resolved_at: z.number().finite().nullable(),
     abandoned_reason: z.string().nullable(),
     abandoned_at: z.number().finite().nullable(),
+    resolved_by_artifact_entry_id: openQuestionResolvedByArtifactEntryIdSchema
+      .nullable()
+      .optional(),
     unresolved_rumination_ticks: z.number().int().nonnegative().default(0),
     last_ruminated_at: z.number().finite().nullable().default(null),
   })
@@ -144,6 +156,7 @@ export const openQuestionPatchSchema = z.object({
   resolved_at: z.number().finite().nullable().optional(),
   abandoned_reason: z.string().nullable().optional(),
   abandoned_at: z.number().finite().nullable().optional(),
+  resolved_by_artifact_entry_id: openQuestionResolvedByArtifactEntryIdSchema.nullable().optional(),
 });
 
 export type OpenQuestion = z.infer<typeof openQuestionSchema>;
@@ -167,6 +180,10 @@ export type OpenQuestionEmbeddingFailureDetails = {
   operation: "insert" | "update" | "metadata_sync" | "backfill";
   questionId: OpenQuestionId;
   question: string;
+};
+
+export type OpenQuestionResolveOptions = IdentityCasOptions & {
+  resolvedByArtifactEntryId?: DecisionArtifactEntryId | null;
 };
 
 export type OpenQuestionHandleLookupOptions = {
@@ -396,6 +413,10 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
         : String(row.abandoned_reason),
     abandoned_at:
       row.abandoned_at === null || row.abandoned_at === undefined ? null : Number(row.abandoned_at),
+    resolved_by_artifact_entry_id:
+      row.resolved_by_artifact_entry_id === null || row.resolved_by_artifact_entry_id === undefined
+        ? null
+        : String(row.resolved_by_artifact_entry_id),
     unresolved_rumination_ticks:
       row.unresolved_rumination_ticks === null || row.unresolved_rumination_ticks === undefined
         ? 0
@@ -812,6 +833,7 @@ export class OpenQuestionsRepository {
       resolved_at: null,
       abandoned_reason: null,
       abandoned_at: null,
+      resolved_by_artifact_entry_id: null,
       unresolved_rumination_ticks: 0,
       last_ruminated_at: null,
     });
@@ -838,8 +860,8 @@ export class OpenQuestionsRepository {
             provenance_episode_ids, provenance_process, source, created_at, last_touched,
             resolution_evidence_episode_ids, resolution_evidence_stream_entry_ids,
             resolution_note, resolved_at, abandoned_reason, abandoned_at,
-            unresolved_rumination_ticks, last_ruminated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            resolved_by_artifact_entry_id, unresolved_rumination_ticks, last_ruminated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -864,6 +886,7 @@ export class OpenQuestionsRepository {
         question.resolved_at,
         question.abandoned_reason,
         question.abandoned_at,
+        question.resolved_by_artifact_entry_id,
         question.unresolved_rumination_ticks,
         question.last_ruminated_at,
       );
@@ -1091,7 +1114,8 @@ export class OpenQuestionsRepository {
               provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
               resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
               resolution_note = ?, resolved_at = ?, abandoned_reason = ?, abandoned_at = ?,
-              dedupe_key = ?, unresolved_rumination_ticks = ?, last_ruminated_at = ?,
+              resolved_by_artifact_entry_id = ?, dedupe_key = ?,
+              unresolved_rumination_ticks = ?, last_ruminated_at = ?,
               record_version = record_version + 1
           WHERE id = ? AND record_version = ?
         `,
@@ -1115,6 +1139,7 @@ export class OpenQuestionsRepository {
         next.resolved_at,
         next.abandoned_reason,
         next.abandoned_at,
+        next.resolved_by_artifact_entry_id ?? null,
         dedupeKey,
         next.unresolved_rumination_ticks,
         next.last_ruminated_at,
@@ -1157,8 +1182,8 @@ export class OpenQuestionsRepository {
               provenance_episode_ids = ?, provenance_process = ?, source = ?, created_at = ?,
               last_touched = ?, resolution_evidence_episode_ids = ?,
               resolution_evidence_stream_entry_ids = ?, resolution_note = ?, resolved_at = ?,
-              abandoned_reason = ?, abandoned_at = ?, unresolved_rumination_ticks = ?,
-              last_ruminated_at = ?
+              abandoned_reason = ?, abandoned_at = ?, resolved_by_artifact_entry_id = ?,
+              unresolved_rumination_ticks = ?, last_ruminated_at = ?
           WHERE id = ?
         `,
       )
@@ -1183,6 +1208,7 @@ export class OpenQuestionsRepository {
         parsed.resolved_at,
         parsed.abandoned_reason,
         parsed.abandoned_at,
+        parsed.resolved_by_artifact_entry_id ?? null,
         parsed.unresolved_rumination_ticks,
         parsed.last_ruminated_at,
         parsed.id,
@@ -1284,7 +1310,7 @@ export class OpenQuestionsRepository {
       >[];
       resolution_note: string;
     },
-    options: IdentityCasOptions = {},
+    options: OpenQuestionResolveOptions = {},
   ): OpenQuestion {
     const existing = this.get(id);
 
@@ -1325,6 +1351,7 @@ export class OpenQuestionsRepository {
           SET status = 'resolved', resolution_evidence_episode_ids = ?,
               resolution_evidence_stream_entry_ids = ?, resolution_note = ?, resolved_at = ?,
               abandoned_reason = NULL, abandoned_at = NULL, last_touched = ?,
+              resolved_by_artifact_entry_id = ?,
               unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
               record_version = record_version + 1
           WHERE id = ? AND record_version = ?
@@ -1336,6 +1363,7 @@ export class OpenQuestionsRepository {
         input.resolution_note,
         resolvedAt,
         resolvedAt,
+        options.resolvedByArtifactEntryId ?? null,
         id,
         expectedVersion,
       );
@@ -1356,6 +1384,7 @@ export class OpenQuestionsRepository {
       resolved_at: resolvedAt,
       abandoned_reason: null,
       abandoned_at: null,
+      resolved_by_artifact_entry_id: options.resolvedByArtifactEntryId ?? null,
       last_touched: resolvedAt,
       unresolved_rumination_ticks: 0,
       last_ruminated_at: null,
@@ -1394,6 +1423,7 @@ export class OpenQuestionsRepository {
           SET status = 'abandoned', abandoned_reason = ?, abandoned_at = ?,
               resolution_evidence_episode_ids = '[]', resolution_evidence_stream_entry_ids = '[]',
               resolution_note = NULL, resolved_at = NULL, last_touched = ?,
+              resolved_by_artifact_entry_id = NULL,
               unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
               record_version = record_version + 1
           WHERE id = ? AND record_version = ?
@@ -1417,6 +1447,7 @@ export class OpenQuestionsRepository {
       resolved_at: null,
       abandoned_reason: reason,
       abandoned_at: abandonedAt,
+      resolved_by_artifact_entry_id: null,
       last_touched: abandonedAt,
       unresolved_rumination_ticks: 0,
       last_ruminated_at: null,
@@ -1594,6 +1625,7 @@ export class OpenQuestionsRepository {
               resolution_evidence_episode_ids = '[]',
               resolution_evidence_stream_entry_ids = '[]', resolution_note = NULL,
               resolved_at = NULL, abandoned_reason = NULL, abandoned_at = NULL,
+              resolved_by_artifact_entry_id = NULL,
               unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
               record_version = record_version + 1
           WHERE id = ? AND record_version = ?
@@ -1619,6 +1651,7 @@ export class OpenQuestionsRepository {
       resolved_at: null,
       abandoned_reason: null,
       abandoned_at: null,
+      resolved_by_artifact_entry_id: null,
       unresolved_rumination_ticks: 0,
       last_ruminated_at: null,
     };

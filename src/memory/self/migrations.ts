@@ -405,6 +405,31 @@ export const selfMigrations = [
     },
   },
   {
+    id: 8,
+    name: "planning_state_artifact_backrefs",
+    up: (db) => {
+      if (
+        tableExists(db, "goals") &&
+        !tableHasColumn(db, "goals", "canonicalized_by_artifact_entry_id")
+      ) {
+        db.exec(`
+          ALTER TABLE goals
+            ADD COLUMN canonicalized_by_artifact_entry_id TEXT NULL;
+        `);
+      }
+
+      if (
+        tableExists(db, "open_questions") &&
+        !tableHasColumn(db, "open_questions", "resolved_by_artifact_entry_id")
+      ) {
+        db.exec(`
+          ALTER TABLE open_questions
+            ADD COLUMN resolved_by_artifact_entry_id TEXT NULL;
+        `);
+      }
+    },
+  },
+  {
     id: 2,
     name: "goal_audience_and_source_stream_ids",
     up: (db) => {

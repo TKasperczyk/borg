@@ -68,6 +68,7 @@ function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
     completed_at: overrides.completed_at ?? null,
     not_done_at: overrides.not_done_at ?? null,
     unknown_at: overrides.unknown_at ?? null,
+    canonicalized_by_artifact_entry_id: overrides.canonicalized_by_artifact_entry_id ?? null,
   };
 }
 

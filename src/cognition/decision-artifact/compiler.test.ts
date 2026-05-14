@@ -4,6 +4,8 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { decisionArtifactMigrations } from "../../memory/decision-artifacts/migrations.js";
 import { DecisionArtifactRepository } from "../../memory/decision-artifacts/repository.js";
 import type { DecisionArtifactEntryKind } from "../../memory/decision-artifacts/types.js";
+import { selfMigrations } from "../../memory/self/migrations.js";
+import { GoalsRepository } from "../../memory/self/goals-repository.js";
 import {
   composeMigrations,
   openDatabase,
@@ -12,7 +14,11 @@ import {
 import { FixedClock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
 import {
+  createActionId,
+  createCommitmentId,
   createEntityId,
+  createGoalId,
+  createOpenQuestionId,
   createStreamEntryId,
   type EntityId,
   type StreamEntryId,
@@ -70,7 +76,7 @@ describe("compileDecisionArtifact", () => {
 
   beforeEach(() => {
     db = openDatabase(":memory:", {
-      migrations: composeMigrations(decisionArtifactMigrations),
+      migrations: composeMigrations(decisionArtifactMigrations, selfMigrations),
     });
     clock = new FixedClock(2_000);
     repository = new DecisionArtifactRepository({
@@ -143,6 +149,312 @@ describe("compileDecisionArtifact", () => {
       max_tokens: 1536,
       budget: "decision-artifact-compiler",
       tool_choice: { type: "tool", name: DECISION_ARTIFACT_TOOL_NAME },
+    });
+  });
+
+  it("retains valid canonicalization ids in the normalized patch", async () => {
+    const goalId = createGoalId();
+    const commitmentId = createCommitmentId();
+    const actionId = createActionId();
+    const openQuestionId = createOpenQuestionId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Granada is locked for 3 nights",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              canonicalizes: {
+                goal_ids: [goalId],
+                commitment_ids: [commitmentId],
+                action_ids: [actionId],
+                open_question_ids: [openQuestionId],
+              },
+            },
+          ],
+        }),
+      ],
+    });
+
+    const patch = await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      canonicalizationCandidates: {
+        goals: [{ id: goalId, text: "Lock Granada for 3 nights" }],
+        commitments: [{ id: commitmentId, text: "Remember Granada is locked" }],
+        actions: [{ id: actionId, text: "Track Granada planning" }],
+        openQuestions: [{ id: openQuestionId, text: "Is Granada final?" }],
+      },
+    });
+
+    expect(patch.operations[0]).toMatchObject({
+      canonicalizes: {
+        goal_ids: [goalId],
+        commitment_ids: [commitmentId],
+        action_ids: [actionId],
+        open_question_ids: [openQuestionId],
+      },
+    });
+    expect(repository.get(audience)?.entries[0]?.canonicalizes).toEqual({
+      goal_ids: [goalId],
+      commitment_ids: [commitmentId],
+      action_ids: [actionId],
+      open_question_ids: [openQuestionId],
+    });
+  });
+
+  it("drops invalid canonicalization ids and reports them in reconciliation trace", async () => {
+    const trace = createTraceRecorder();
+    const unknownGoalId = createGoalId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Granada is locked for 3 nights",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              canonicalizes: {
+                goal_ids: ["goal_invalid", unknownGoalId],
+              },
+            },
+          ],
+        }),
+      ],
+    });
+
+    const patch = await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      canonicalizationCandidates: {
+        goals: [],
+      },
+    });
+
+    expect(patch.operations[0]).toMatchObject({
+      canonicalizes: {
+        goal_ids: [],
+        commitment_ids: [],
+        action_ids: [],
+        open_question_ids: [],
+      },
+    });
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_reconciliation_completed",
+        data: expect.objectContaining({
+          goals_retired: 0,
+          unknown_ids: [
+            expect.objectContaining({
+              channel: "goal",
+              id: "goal_invalid",
+              reason: "invalid_id",
+            }),
+            expect.objectContaining({
+              channel: "goal",
+              id: unknownGoalId,
+              reason: "unknown_id",
+            }),
+          ] satisfies JsonValue,
+        }),
+      }),
+    );
+  });
+
+  it("drops duplicate canonicalization ids across artifact operations before persisting", async () => {
+    const trace = createTraceRecorder();
+    const goalId = createGoalId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Granada is locked for 3 nights",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              canonicalizes: {
+                goal_ids: [goalId],
+              },
+            },
+            {
+              type: "add",
+              kind: "locked",
+              text: "Granada nights are canonical",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              canonicalizes: {
+                goal_ids: [goalId],
+              },
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      canonicalizationCandidates: {
+        goals: [{ id: goalId, text: "Lock Granada for 3 nights" }],
+      },
+    });
+
+    const entries = repository.get(audience)?.entries ?? [];
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.canonicalizes.goal_ids).toEqual([goalId]);
+    expect(entries[1]?.canonicalizes.goal_ids).toEqual([]);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_reconciliation_completed",
+        data: expect.objectContaining({
+          canonicalization_duplicates_dropped: [
+            expect.objectContaining({
+              kind: "locked",
+              dropped_ids: expect.objectContaining({
+                goal_ids: [goalId],
+              }),
+            }),
+          ],
+        }),
+      }),
+    );
+  });
+
+  it("lets a surviving entry keep canonicalization ids claimed by a pruned entry", async () => {
+    const trace = createTraceRecorder();
+    const goalsRepository = new GoalsRepository({
+      db,
+      clock,
+    });
+    const goal = goalsRepository.add({
+      description: "Lock Granada for 3 nights",
+      priority: 1,
+      provenance: {
+        kind: "online",
+        process: "test",
+      },
+      audienceEntityId: audience,
+      sourceStreamEntryIds: [currentStreamEntryId],
+    });
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Older Granada lock duplicate",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              canonicalizes: {
+                goal_ids: [goal.id],
+              },
+            },
+            {
+              type: "add",
+              kind: "locked",
+              text: "Surviving Granada lock",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              canonicalizes: {
+                goal_ids: [goal.id],
+              },
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      canonicalizationCandidates: {
+        goals: [{ id: goal.id, text: goal.description }],
+      },
+      reconciliation: {
+        goalsRepository,
+      },
+      lifecycle: {
+        maxActiveEntries: 1,
+      },
+    });
+
+    const entries = repository.get(audience)?.entries ?? [];
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      text: "Surviving Granada lock",
+      canonicalizes: {
+        goal_ids: [goal.id],
+      },
+    });
+    expect(goalsRepository.get(goal.id)).toMatchObject({
+      status: "done",
+      canonicalized_by_artifact_entry_id: entries[0]?.id,
+    });
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_reconciliation_completed",
+        data: expect.objectContaining({
+          canonicalization_duplicates_dropped: [],
+        }),
+      }),
+    );
+  });
+
+  it("canonicalizes a locked entry and retires an active goal after upsert", async () => {
+    const goalsRepository = new GoalsRepository({
+      db,
+      clock,
+    });
+    const goal = goalsRepository.add({
+      description: "Lock Granada for 3 nights",
+      priority: 1,
+      provenance: {
+        kind: "online",
+        process: "test",
+      },
+      audienceEntityId: audience,
+      sourceStreamEntryIds: [currentStreamEntryId],
+    });
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Granada is locked for 3 nights",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              canonicalizes: {
+                goal_ids: [goal.id],
+              },
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      canonicalizationCandidates: {
+        goals: [{ id: goal.id, text: goal.description }],
+      },
+      reconciliation: {
+        goalsRepository,
+      },
+    });
+
+    const artifactEntry = repository.get(audience)?.entries[0];
+    expect(goalsRepository.get(goal.id)).toMatchObject({
+      status: "done",
+      canonicalized_by_artifact_entry_id: artifactEntry?.id,
     });
   });
 

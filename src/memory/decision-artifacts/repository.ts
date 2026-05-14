@@ -18,8 +18,10 @@ import {
 } from "../common/cas.js";
 import {
   decisionArtifactEntrySchema,
+  decisionArtifactCanonicalizesSchema,
   decisionArtifactSchema,
   type DecisionArtifact,
+  type DecisionArtifactCanonicalizes,
   type DecisionArtifactEntry,
   type DecisionArtifactEntryKind,
 } from "./types.js";
@@ -28,6 +30,13 @@ const DECISION_ARTIFACT_JSON_ARRAY_CODEC = {
   errorCode: "DECISION_ARTIFACT_ROW_INVALID",
   errorMessage: (label: string) => `Failed to parse decision artifact ${label}`,
 } satisfies JsonArrayCodecOptions;
+
+const EMPTY_DECISION_ARTIFACT_CANONICALIZES: DecisionArtifactCanonicalizes = {
+  goal_ids: [],
+  commitment_ids: [],
+  action_ids: [],
+  open_question_ids: [],
+};
 
 export type DecisionArtifactAddOperation = {
   type: "add";
@@ -40,6 +49,7 @@ export type DecisionArtifactAddOperation = {
   created_at?: number;
   last_updated_at?: number;
   rank?: number;
+  canonicalizes?: DecisionArtifactCanonicalizes;
 };
 
 export type DecisionArtifactUpdateOperation = {
@@ -52,6 +62,7 @@ export type DecisionArtifactUpdateOperation = {
   last_updated_stream_entry_ids: readonly StreamEntryId[];
   last_updated_at?: number;
   rank?: number;
+  canonicalizes?: DecisionArtifactCanonicalizes;
 };
 
 export type DecisionArtifactSupersedeOperation = {
@@ -92,6 +103,66 @@ function uniqueStreamEntryIds(values: readonly StreamEntryId[]): StreamEntryId[]
   return [...new Set(values)];
 }
 
+function emptyCanonicalizes(): DecisionArtifactCanonicalizes {
+  return {
+    goal_ids: [],
+    commitment_ids: [],
+    action_ids: [],
+    open_question_ids: [],
+  };
+}
+
+function uniqueCanonicalizes(
+  value: DecisionArtifactCanonicalizes | undefined,
+): DecisionArtifactCanonicalizes {
+  const source = value ?? EMPTY_DECISION_ARTIFACT_CANONICALIZES;
+
+  return decisionArtifactCanonicalizesSchema.parse({
+    goal_ids: [...new Set(source.goal_ids)],
+    commitment_ids: [...new Set(source.commitment_ids)],
+    action_ids: [...new Set(source.action_ids)],
+    open_question_ids: [...new Set(source.open_question_ids)],
+  });
+}
+
+function mergeCanonicalizes(
+  current: DecisionArtifactCanonicalizes,
+  next: DecisionArtifactCanonicalizes | undefined,
+): DecisionArtifactCanonicalizes {
+  if (next === undefined) {
+    return current;
+  }
+
+  return uniqueCanonicalizes({
+    goal_ids: [...current.goal_ids, ...next.goal_ids],
+    commitment_ids: [...current.commitment_ids, ...next.commitment_ids],
+    action_ids: [...current.action_ids, ...next.action_ids],
+    open_question_ids: [...current.open_question_ids, ...next.open_question_ids],
+  });
+}
+
+function parseCanonicalizes(value: unknown): DecisionArtifactCanonicalizes {
+  if (value === null || value === undefined) {
+    return emptyCanonicalizes();
+  }
+
+  try {
+    const parsed = JSON.parse(String(value)) as unknown;
+    const result = decisionArtifactCanonicalizesSchema.safeParse(parsed);
+
+    if (!result.success) {
+      throw result.error;
+    }
+
+    return uniqueCanonicalizes(result.data);
+  } catch (error) {
+    throw new StorageError("Failed to parse decision artifact canonicalizes", {
+      cause: error,
+      code: "DECISION_ARTIFACT_ROW_INVALID",
+    });
+  }
+}
+
 function mapEntryRow(row: Record<string, unknown>): DecisionArtifactEntry {
   const parsed = decisionArtifactEntrySchema.safeParse({
     id: row.id,
@@ -117,6 +188,7 @@ function mapEntryRow(row: Record<string, unknown>): DecisionArtifactEntry {
         ? null
         : row.superseded_by_id,
     rank: Number(row.rank ?? 0),
+    canonicalizes: parseCanonicalizes(row.canonicalizes),
   });
 
   if (!parsed.success) {
@@ -289,8 +361,8 @@ export class DecisionArtifactRepository {
           INSERT INTO decision_artifact_entries (
             id, audience_entity_id, kind, text, owner_entity_id,
             provenance_stream_entry_ids, last_updated_stream_entry_ids,
-            created_at, last_updated_at, superseded_by_id, rank
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, last_updated_at, superseded_by_id, rank, canonicalizes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -305,6 +377,7 @@ export class DecisionArtifactRepository {
         parsed.last_updated_at,
         parsed.superseded_by_id,
         parsed.rank,
+        serializeJsonValue(parsed.canonicalizes),
       );
   }
 
@@ -331,6 +404,7 @@ export class DecisionArtifactRepository {
       last_updated_at: operation.last_updated_at ?? operation.created_at ?? nowMs,
       superseded_by_id: null,
       rank: operation.rank ?? 0,
+      canonicalizes: uniqueCanonicalizes(operation.canonicalizes),
     });
 
     this.insertEntry(entry);
@@ -361,6 +435,7 @@ export class DecisionArtifactRepository {
       ]),
       last_updated_at: operation.last_updated_at ?? nowMs,
       rank: operation.rank ?? current.rank,
+      canonicalizes: mergeCanonicalizes(current.canonicalizes, operation.canonicalizes),
     });
 
     this.db
@@ -373,7 +448,8 @@ export class DecisionArtifactRepository {
               provenance_stream_entry_ids = ?,
               last_updated_stream_entry_ids = ?,
               last_updated_at = ?,
-              rank = ?
+              rank = ?,
+              canonicalizes = ?
           WHERE id = ? AND audience_entity_id = ?
         `,
       )
@@ -385,6 +461,7 @@ export class DecisionArtifactRepository {
         serializeJsonValue(next.last_updated_stream_entry_ids),
         next.last_updated_at,
         next.rank,
+        serializeJsonValue(next.canonicalizes),
         next.id,
         next.audience_entity_id,
       );

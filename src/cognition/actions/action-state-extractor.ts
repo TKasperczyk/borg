@@ -235,6 +235,7 @@ function toActionRecord(input: {
     completed_at: null,
     not_done_at: null,
     unknown_at: null,
+    canonicalized_by_artifact_entry_id: null,
     ...stateTimestampPatch(input.candidate.state, input.nowMs),
   };
 }

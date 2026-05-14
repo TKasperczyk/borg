@@ -7,6 +7,7 @@ export {
 export {
   GoalsRepository,
   type GoalListOptions,
+  type GoalStatusUpdateOptions,
   type GoalsRepositoryOptions,
 } from "./goals-repository.js";
 export {

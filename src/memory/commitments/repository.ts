@@ -7,6 +7,7 @@ import {
   parseCommitmentId,
   parseEntityId,
   type CommitmentId,
+  type DecisionArtifactEntryId,
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
@@ -152,6 +153,11 @@ function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
       row.superseded_by === null || row.superseded_by === undefined
         ? null
         : parseCommitmentId(String(row.superseded_by)),
+    canonicalized_by_artifact_entry_id:
+      row.canonicalized_by_artifact_entry_id === null ||
+      row.canonicalized_by_artifact_entry_id === undefined
+        ? null
+        : String(row.canonicalized_by_artifact_entry_id),
     last_reinforced_at: Number(row.last_reinforced_at),
   });
 
@@ -186,6 +192,10 @@ export type EntityAddInput = {
 export type EntityResolveOptions = {
   provenance?: NameProvenance;
   kind?: EntityKind;
+};
+
+export type CommitmentRevokeOptions = IdentityCasOptions & {
+  canonicalizedByArtifactEntryId?: DecisionArtifactEntryId | null;
 };
 
 export class EntityRepository {
@@ -630,6 +640,7 @@ export class CommitmentRepository {
       revoked_reason: null,
       revoke_provenance: null,
       superseded_by: null,
+      canonicalized_by_artifact_entry_id: null,
       last_reinforced_at: createdAt,
     });
     const storedProvenance = toStoredProvenance(record.provenance);
@@ -649,8 +660,8 @@ export class CommitmentRepository {
               source_episode_ids, provenance_kind, provenance_episode_ids, provenance_process,
               source_stream_entry_ids, created_at, expires_at, expired_at, revoked_at, revoked_reason,
               revoke_provenance_kind, revoke_provenance_episode_ids, revoke_provenance_process,
-              superseded_by, last_reinforced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              superseded_by, canonicalized_by_artifact_entry_id, last_reinforced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -682,6 +693,7 @@ export class CommitmentRepository {
           null,
           null,
           record.superseded_by,
+          record.canonicalized_by_artifact_entry_id ?? null,
           record.last_reinforced_at,
         );
 
@@ -798,7 +810,7 @@ export class CommitmentRepository {
     reason: string,
     provenance: CommitmentRecord["provenance"],
     timestamp = this.clock.now(),
-    options: IdentityCasOptions = {},
+    options: CommitmentRevokeOptions = {},
   ): CommitmentRecord | null {
     const current = this.get(id);
 
@@ -818,6 +830,7 @@ export class CommitmentRepository {
             UPDATE commitments
             SET revoked_at = ?, revoked_reason = ?, revoke_provenance_kind = ?,
                 revoke_provenance_episode_ids = ?, revoke_provenance_process = ?,
+                canonicalized_by_artifact_entry_id = ?,
                 record_version = record_version + 1
             WHERE id = ? AND record_version = ?
           `,
@@ -828,6 +841,9 @@ export class CommitmentRepository {
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
+          options.canonicalizedByArtifactEntryId === undefined
+            ? (current.canonicalized_by_artifact_entry_id ?? null)
+            : options.canonicalizedByArtifactEntryId,
           id,
           expectedVersion,
         );
@@ -843,6 +859,10 @@ export class CommitmentRepository {
         revoked_at: timestamp,
         revoked_reason: parsedReason,
         revoke_provenance: parsedProvenance,
+        canonicalized_by_artifact_entry_id:
+          options.canonicalizedByArtifactEntryId === undefined
+            ? (current.canonicalized_by_artifact_entry_id ?? null)
+            : options.canonicalizedByArtifactEntryId,
       };
       this.identityEventRepository?.record({
         record_type: "commitment",
@@ -967,7 +987,8 @@ export class CommitmentRepository {
                 provenance_episode_ids = ?,
                 provenance_process = ?, source_stream_entry_ids = ?, expires_at = ?, expired_at = ?, revoked_at = ?, revoked_reason = ?,
                 revoke_provenance_kind = ?, revoke_provenance_episode_ids = ?, revoke_provenance_process = ?,
-                superseded_by = ?, last_reinforced_at = ?, record_version = record_version + 1
+                superseded_by = ?, canonicalized_by_artifact_entry_id = ?,
+                last_reinforced_at = ?, record_version = record_version + 1
             WHERE id = ? AND record_version = ?
           `,
         )
@@ -998,6 +1019,7 @@ export class CommitmentRepository {
           storedRevokeProvenance?.provenance_episode_ids ?? null,
           storedRevokeProvenance?.provenance_process ?? null,
           next.superseded_by,
+          next.canonicalized_by_artifact_entry_id ?? null,
           next.last_reinforced_at,
           id,
           expectedVersion,

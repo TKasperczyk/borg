@@ -3,9 +3,11 @@ import { z } from "zod";
 import { provenanceSchema, type Provenance } from "../common/provenance.js";
 import {
   commitmentIdHelpers,
+  decisionArtifactEntryIdHelpers,
   entityIdHelpers,
   streamEntryIdHelpers,
   type CommitmentId,
+  type DecisionArtifactEntryId,
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
@@ -72,6 +74,13 @@ export const streamEntryIdSchema = z
   })
   .transform((value) => value as StreamEntryId);
 
+export const commitmentCanonicalizedByArtifactEntryIdSchema = z
+  .string()
+  .refine((value) => decisionArtifactEntryIdHelpers.is(value), {
+    message: "Invalid commitment canonicalized decision artifact entry id",
+  })
+  .transform((value) => value as DecisionArtifactEntryId);
+
 export const commitmentTypeSchema = z.enum(COMMITMENT_TYPES);
 export const closurePressureRelevanceSchema = z.enum(CLOSURE_PRESSURE_RELEVANCE);
 export const entityKindSchema = z.enum(ENTITY_KINDS);
@@ -113,6 +122,9 @@ export const commitmentSchema = z.object({
   revoked_reason: z.string().nullable(),
   revoke_provenance: provenanceSchema.nullable(),
   superseded_by: commitmentIdSchema.nullable(),
+  canonicalized_by_artifact_entry_id: commitmentCanonicalizedByArtifactEntryIdSchema
+    .nullable()
+    .optional(),
   last_reinforced_at: z.number().finite(),
 });
 

@@ -4,7 +4,13 @@ import type { ExecutiveStepsRepository } from "../../executive/index.js";
 import { type SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
-import { createGoalId, type EntityId, type GoalId, type StreamEntryId } from "../../util/ids.js";
+import {
+  createGoalId,
+  type DecisionArtifactEntryId,
+  type EntityId,
+  type GoalId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { toStoredProvenance, type Provenance } from "../common/provenance.js";
 import {
@@ -45,8 +51,12 @@ export type GoalListOptions = {
 const GOAL_SELECT_COLUMNS = `
   id, record_version, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
   created_at, target_at, audience_entity_id, owner_entity_id, source_stream_entry_ids,
-  provenance_kind, provenance_episode_ids, provenance_process
+  canonicalized_by_artifact_entry_id, provenance_kind, provenance_episode_ids, provenance_process
 `;
+
+export type GoalStatusUpdateOptions = IdentityCasOptions & {
+  canonicalizedByArtifactEntryId?: DecisionArtifactEntryId | null;
+};
 
 export class GoalsRepository {
   private readonly clock: Clock;
@@ -151,6 +161,7 @@ export class GoalsRepository {
       target_at: input.targetAt ?? null,
       audience_entity_id: input.audienceEntityId ?? null,
       owner_entity_id: input.ownerEntityId ?? null,
+      canonicalized_by_artifact_entry_id: null,
       ...(input.sourceStreamEntryIds === undefined || input.sourceStreamEntryIds.length === 0
         ? {}
         : { source_stream_entry_ids: [...input.sourceStreamEntryIds] }),
@@ -165,8 +176,9 @@ export class GoalsRepository {
             INSERT INTO goals (
               id, description, priority, parent_goal_id, status, progress_notes, last_progress_ts,
               created_at, target_at, audience_entity_id, owner_entity_id, source_stream_entry_ids,
-              provenance_kind, provenance_episode_ids, provenance_process
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              canonicalized_by_artifact_entry_id, provenance_kind, provenance_episode_ids,
+              provenance_process
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -184,6 +196,7 @@ export class GoalsRepository {
           goal.source_stream_entry_ids === undefined
             ? null
             : serializeJsonValue(goal.source_stream_entry_ids),
+          goal.canonicalized_by_artifact_entry_id,
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
@@ -266,7 +279,7 @@ export class GoalsRepository {
     goalId: GoalId,
     status: GoalStatus,
     provenance: Provenance,
-    options: IdentityCasOptions = {},
+    options: GoalStatusUpdateOptions = {},
   ): void {
     const current = this.get(goalId);
 
@@ -287,6 +300,7 @@ export class GoalsRepository {
           `
             UPDATE goals
             SET status = ?, provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?,
+                canonicalized_by_artifact_entry_id = ?,
                 record_version = record_version + 1
             WHERE id = ? AND record_version = ?
           `,
@@ -296,6 +310,9 @@ export class GoalsRepository {
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
+          options.canonicalizedByArtifactEntryId === undefined
+            ? (current.canonicalized_by_artifact_entry_id ?? null)
+            : options.canonicalizedByArtifactEntryId,
           goalId,
           expectedVersion,
         );
@@ -320,6 +337,10 @@ export class GoalsRepository {
           ...current,
           record_version: nextRecordVersion(expectedVersion),
           status: parsedStatus,
+          canonicalized_by_artifact_entry_id:
+            options.canonicalizedByArtifactEntryId === undefined
+              ? (current.canonicalized_by_artifact_entry_id ?? null)
+              : options.canonicalizedByArtifactEntryId,
           provenance: parsedProvenance,
         },
         provenance: parsedProvenance,
@@ -442,6 +463,7 @@ export class GoalsRepository {
             SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
                 last_progress_ts = ?, target_at = ?, audience_entity_id = ?, owner_entity_id = ?,
                 source_stream_entry_ids = ?,
+                canonicalized_by_artifact_entry_id = ?,
                 provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?,
                 record_version = record_version + 1
             WHERE id = ? AND record_version = ?
@@ -460,6 +482,7 @@ export class GoalsRepository {
           next.source_stream_entry_ids === undefined
             ? null
             : serializeJsonValue(next.source_stream_entry_ids),
+          next.canonicalized_by_artifact_entry_id ?? null,
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,
@@ -506,7 +529,8 @@ export class GoalsRepository {
             UPDATE goals
             SET description = ?, priority = ?, parent_goal_id = ?, status = ?, progress_notes = ?,
                 last_progress_ts = ?, created_at = ?, target_at = ?, audience_entity_id = ?,
-                owner_entity_id = ?, source_stream_entry_ids = ?, provenance_kind = ?, provenance_episode_ids = ?,
+                owner_entity_id = ?, source_stream_entry_ids = ?,
+                canonicalized_by_artifact_entry_id = ?, provenance_kind = ?, provenance_episode_ids = ?,
                 provenance_process = ?
             WHERE id = ?
           `,
@@ -525,6 +549,7 @@ export class GoalsRepository {
           parsed.source_stream_entry_ids === undefined
             ? null
             : serializeJsonValue(parsed.source_stream_entry_ids),
+          parsed.canonicalized_by_artifact_entry_id ?? null,
           storedProvenance.provenance_kind,
           storedProvenance.provenance_episode_ids,
           storedProvenance.provenance_process,

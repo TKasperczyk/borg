@@ -11,6 +11,7 @@ import { FixedClock } from "../../util/clock.js";
 import { IdentityCasMismatchError, ProvenanceError } from "../../util/errors.js";
 import {
   createEntityId,
+  createDecisionArtifactEntryId,
   createEpisodeId,
   createSemanticNodeId,
   createStreamEntryId,
@@ -175,6 +176,52 @@ describe("OpenQuestionsRepository", () => {
         urgency: 0.8,
         record_version: concurrent.record_version,
       });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("clears artifact resolution back-reference when reopening for reversal", () => {
+    const clock = new FixedClock(10_000);
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const artifactEntryId = createDecisionArtifactEntryId();
+      const streamEntryId = createStreamEntryId();
+      const question = repository.add({
+        question: "Is Granada locked?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      repository.resolve(
+        question.id,
+        {
+          resolution_evidence_stream_entry_ids: [streamEntryId],
+          resolution_note: "Resolved by artifact.",
+        },
+        {
+          resolvedByArtifactEntryId: artifactEntryId,
+        },
+      );
+
+      const reopened = repository.reopenForReversal(question.id, 0.8);
+
+      expect(reopened).toMatchObject({
+        status: "open",
+        urgency: 0.8,
+        resolved_by_artifact_entry_id: null,
+        resolution_evidence_stream_entry_ids: [],
+        resolution_note: null,
+        resolved_at: null,
+      });
+      expect(repository.get(question.id)?.resolved_by_artifact_entry_id).toBeNull();
     } finally {
       db.close();
     }

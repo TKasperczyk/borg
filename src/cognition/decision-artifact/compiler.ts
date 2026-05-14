@@ -10,6 +10,7 @@ import {
 import {
   DECISION_ARTIFACT_ENTRY_KINDS,
   type DecisionArtifact,
+  type DecisionArtifactCanonicalizes,
   type DecisionArtifactEntry,
   type DecisionArtifactEntryKind,
   type DecisionArtifactOperation,
@@ -18,12 +19,20 @@ import {
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
 import {
+  actionIdHelpers,
+  commitmentIdHelpers,
   createDecisionArtifactEntryId,
   decisionArtifactEntryIdHelpers,
   entityIdHelpers,
+  goalIdHelpers,
+  openQuestionIdHelpers,
   streamEntryIdHelpers,
+  type ActionId,
+  type CommitmentId,
   type DecisionArtifactEntryId,
   type EntityId,
+  type GoalId,
+  type OpenQuestionId,
   type StreamEntryId,
 } from "../../util/ids.js";
 import {
@@ -31,6 +40,11 @@ import {
   type DecisionArtifactRenderOptions,
 } from "../evidence-ledger/index.js";
 import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
+import {
+  reconcileDecisionArtifactCanonicalizations,
+  type DecisionArtifactReconciliationRepositories,
+  type DecisionArtifactReconciliationResult,
+} from "./reconciliation.js";
 
 const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";
 const MAX_OPERATIONS_PER_COMPILE = 40;
@@ -55,6 +69,16 @@ const decisionArtifactToolKindSchema = z.enum(DECISION_ARTIFACT_ENTRY_KINDS);
 const sourceStreamEntryIdsSchema = z
   .array(z.string().trim().min(1))
   .describe("Stream entry ids that support this artifact operation.");
+const canonicalizesSchema = z
+  .object({
+    goal_ids: z.array(z.string().trim().min(1)).optional(),
+    commitment_ids: z.array(z.string().trim().min(1)).optional(),
+    action_ids: z.array(z.string().trim().min(1)).optional(),
+    open_question_ids: z.array(z.string().trim().min(1)).optional(),
+  })
+  .strict()
+  .optional()
+  .describe("Active planning state ids this locked artifact entry makes canonical.");
 const ownerEntityIdSchema = z
   .string()
   .trim()
@@ -70,6 +94,7 @@ const addOperationSchema = z
     text: z.string().trim().min(1),
     owner_entity_id: ownerEntityIdSchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema,
+    canonicalizes: canonicalizesSchema,
   })
   .strict();
 
@@ -81,6 +106,7 @@ const updateOperationSchema = z
     text: z.string().trim().min(1).optional(),
     owner_entity_id: ownerEntityIdSchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema,
+    canonicalizes: canonicalizesSchema,
   })
   .strict();
 
@@ -99,6 +125,7 @@ const supersedeOperationSchema = z
     id: z.string().trim().min(1),
     replacement: replacementEntrySchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema.optional(),
+    canonicalizes: canonicalizesSchema,
   })
   .strict();
 
@@ -133,7 +160,7 @@ const DECISION_ARTIFACT_TOOL = {
 } satisfies LLMToolDefinition;
 
 const DECISION_ARTIFACT_SYSTEM_PROMPT = [
-  "Compile shared planning state from the previous artifact, the current user turn, and the prompt-visible ledger.",
+  "Compile canonical shared planning state from the previous artifact, the current user turn, and the prompt-visible ledger.",
   "Return only the required tool call.",
   "",
   "Scope:",
@@ -142,12 +169,27 @@ const DECISION_ARTIFACT_SYSTEM_PROMPT = [
   "- It must not invent facts, owners, or commitments.",
   "- Prefer no operations when uncertain.",
   "",
-  "Artifact kinds:",
-  '- locked: canonical decisions the group has agreed to, such as "Granada 3 nights".',
-  "- live: under-active-discussion decisions or proposals the group is currently working on.",
-  "- tentative: weak proposals not yet endorsed; trial-balloon facts.",
-  "- invalidated: assumptions explicitly overturned by later evidence; kept for context, not action.",
-  '- pending: items awaiting verification or external information, such as "Ben to check Alhambra booking windows".',
+  "The decision artifact is the canonical planning surface.",
+  "It captures canonical decisions about the plan itself, not tasks, commitments, observations, or social facts.",
+  "",
+  "What belongs:",
+  '- locked: group-agreed canonical decisions about what, where, or when, such as "Granada is the final base, 3 nights".',
+  "- live: currently-under-discussion plan decisions the group is actively working on.",
+  '- pending: items awaiting verification or external information, such as "Alhambra booking window verification needed".',
+  "- invalidated: assumptions explicitly overturned by later evidence; kept for context.",
+  "- tentative: weak proposals not yet endorsed.",
+  "",
+  "What does not belong:",
+  '- Participant tasks, such as "Ben will check Alhambra booking"; those stay as action records.',
+  '- Assistant commitments, such as "Borg will wait for Ben\'s numbers"; those stay as commitment records.',
+  "- Observations or social facts such as mood, signoffs, or group dynamics; those stay in the semantic graph or stream.",
+  "- Stream-level chitchat such as greetings, emoji closures, or thanks.",
+  "",
+  "Canonicalization handles:",
+  "- The input includes active_goals, active_commitments, active_actions, and open_questions as compact id:text lists.",
+  "- When a locked add, update, or supersede replacement makes listed active state redundant, set canonicalizes with only those exact ids.",
+  "- Do not canonicalize ids for live, pending, tentative, or invalidated entries.",
+  "- Do not infer ids that are not supplied.",
   "",
   "Identity and ownership:",
   "- Cite stream ids for every add, update, and supersede replacement.",
@@ -171,6 +213,18 @@ export type EmitDecisionArtifactPatch = z.infer<typeof decisionArtifactPatchSche
 export type DecisionArtifactParticipantContext = {
   entityId: EntityId;
   displayName?: string | null;
+};
+
+export type DecisionArtifactCanonicalizationCandidate = {
+  id: string;
+  text: string;
+};
+
+export type DecisionArtifactCanonicalizationCandidates = {
+  goals?: readonly DecisionArtifactCanonicalizationCandidate[];
+  commitments?: readonly DecisionArtifactCanonicalizationCandidate[];
+  actions?: readonly DecisionArtifactCanonicalizationCandidate[];
+  openQuestions?: readonly DecisionArtifactCanonicalizationCandidate[];
 };
 
 export type DecisionArtifactCompileDegradedReason =
@@ -200,6 +254,8 @@ export type CompileDecisionArtifactInput = {
   promptVisibleLedger: string;
   previousArtifact?: DecisionArtifact | null;
   allowedSourceStreamEntryIds?: readonly StreamEntryId[];
+  canonicalizationCandidates?: DecisionArtifactCanonicalizationCandidates;
+  reconciliation?: DecisionArtifactReconciliationRepositories;
   clock?: Clock;
   tracer?: TurnTracer;
   turnId?: string;
@@ -212,6 +268,7 @@ export type CompileDecisionArtifactInput = {
 };
 
 type ParsedPatchOperation = EmitDecisionArtifactPatch["operations"][number];
+type ParsedCanonicalizes = NonNullable<z.infer<typeof canonicalizesSchema>>;
 
 type PatchRejection = {
   reason:
@@ -225,6 +282,29 @@ type PatchRejection = {
     | "empty_update";
   operationType: ParsedPatchOperation["type"];
   operationIndex: number;
+};
+
+type CanonicalizeIdChannel = "goal" | "commitment" | "action" | "open_question";
+
+export type DroppedCanonicalizeId = {
+  channel: CanonicalizeIdChannel;
+  id: string;
+  reason: "invalid_id" | "unknown_id";
+  operationType: ParsedPatchOperation["type"];
+  operationIndex: number;
+};
+
+type CanonicalizationDuplicateDrop = {
+  artifact_entry_id: DecisionArtifactEntryId;
+  kind: DecisionArtifactEntryKind;
+  dropped_ids: DecisionArtifactCanonicalizes;
+};
+
+type AllowedCanonicalizationIds = {
+  goalIds: ReadonlySet<GoalId>;
+  commitmentIds: ReadonlySet<CommitmentId>;
+  actionIds: ReadonlySet<ActionId>;
+  openQuestionIds: ReadonlySet<OpenQuestionId>;
 };
 
 class MissingDecisionArtifactToolCallError extends Error {}
@@ -242,6 +322,7 @@ function buildDecisionArtifactMessages(input: {
   currentUserStreamEntryId: StreamEntryId;
   promptVisibleLedger: string;
   previousArtifact: DecisionArtifact | null;
+  canonicalizationCandidates: DecisionArtifactCanonicalizationCandidates;
 }): LLMMessage[] {
   return [
     {
@@ -259,6 +340,12 @@ function buildDecisionArtifactMessages(input: {
           text: input.currentUserMessage,
         },
         previous_artifact: input.previousArtifact,
+        canonicalization_candidates: {
+          active_goals: input.canonicalizationCandidates.goals ?? [],
+          active_commitments: input.canonicalizationCandidates.commitments ?? [],
+          active_actions: input.canonicalizationCandidates.actions ?? [],
+          open_questions: input.canonicalizationCandidates.openQuestions ?? [],
+        },
         prompt_visible_ledger: input.promptVisibleLedger,
       }),
     },
@@ -403,6 +490,28 @@ function traceCompileCompleted(options: {
   }
 }
 
+function traceReconciliationCompleted(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  result: DecisionArtifactReconciliationResult;
+  canonicalizationDuplicateDrops?: readonly CanonicalizationDuplicateDrop[];
+}): void {
+  if (options.tracer?.enabled === true && options.turnId !== undefined) {
+    options.tracer.emit("decision_artifact_reconciliation_completed", {
+      turnId: options.turnId,
+      goals_retired: options.result.goals_retired,
+      commitments_retired: options.result.commitments_retired,
+      actions_retired: options.result.actions_retired,
+      open_questions_retired: options.result.open_questions_retired,
+      unknown_ids: toTraceJsonValue(options.result.unknown_ids),
+      canonicalization_duplicates_dropped: toTraceJsonValue(
+        options.canonicalizationDuplicateDrops ?? [],
+      ),
+      errors: toTraceJsonValue(options.result.errors),
+    });
+  }
+}
+
 function parseEntryId(value: string): DecisionArtifactEntryId | null {
   try {
     return decisionArtifactEntryIdHelpers.parse(value);
@@ -453,6 +562,147 @@ function normalizeOwnerEntityId(
   return allowedOwnerEntityIds.has(value) ? value : "invalid";
 }
 
+function emptyCanonicalizes(): DecisionArtifactCanonicalizes {
+  return {
+    goal_ids: [],
+    commitment_ids: [],
+    action_ids: [],
+    open_question_ids: [],
+  };
+}
+
+function hasCanonicalizes(value: DecisionArtifactCanonicalizes | undefined): boolean {
+  return (
+    value !== undefined &&
+    (value.goal_ids.length > 0 ||
+      value.commitment_ids.length > 0 ||
+      value.action_ids.length > 0 ||
+      value.open_question_ids.length > 0)
+  );
+}
+
+function allowedCanonicalizationIds(
+  candidates: DecisionArtifactCanonicalizationCandidates | undefined,
+): AllowedCanonicalizationIds {
+  return {
+    goalIds: new Set(
+      (candidates?.goals ?? [])
+        .map((candidate) => candidate.id)
+        .filter((id): id is GoalId => goalIdHelpers.is(id)),
+    ),
+    commitmentIds: new Set(
+      (candidates?.commitments ?? [])
+        .map((candidate) => candidate.id)
+        .filter((id): id is CommitmentId => commitmentIdHelpers.is(id)),
+    ),
+    actionIds: new Set(
+      (candidates?.actions ?? [])
+        .map((candidate) => candidate.id)
+        .filter((id): id is ActionId => actionIdHelpers.is(id)),
+    ),
+    openQuestionIds: new Set(
+      (candidates?.openQuestions ?? [])
+        .map((candidate) => candidate.id)
+        .filter((id): id is OpenQuestionId => openQuestionIdHelpers.is(id)),
+    ),
+  };
+}
+
+function normalizeCanonicalizeIds<TId extends string>(input: {
+  values: readonly string[] | undefined;
+  channel: CanonicalizeIdChannel;
+  isId: (value: string) => value is TId;
+  allowedIds: ReadonlySet<TId>;
+  operation: ParsedPatchOperation;
+  operationIndex: number;
+  dropped: DroppedCanonicalizeId[];
+}): TId[] {
+  const ids: TId[] = [];
+
+  for (const value of input.values ?? []) {
+    if (!input.isId(value)) {
+      input.dropped.push({
+        channel: input.channel,
+        id: value,
+        reason: "invalid_id",
+        operationType: input.operation.type,
+        operationIndex: input.operationIndex,
+      });
+      continue;
+    }
+
+    if (!input.allowedIds.has(value)) {
+      input.dropped.push({
+        channel: input.channel,
+        id: value,
+        reason: "unknown_id",
+        operationType: input.operation.type,
+        operationIndex: input.operationIndex,
+      });
+      continue;
+    }
+
+    if (!ids.some((id) => id === value)) {
+      ids.push(value);
+    }
+  }
+
+  return ids;
+}
+
+function normalizeCanonicalizes(input: {
+  value: ParsedCanonicalizes | undefined;
+  allowedIds: AllowedCanonicalizationIds;
+  operation: ParsedPatchOperation;
+  operationIndex: number;
+  dropped: DroppedCanonicalizeId[];
+}): DecisionArtifactCanonicalizes | undefined {
+  if (input.value === undefined) {
+    return undefined;
+  }
+
+  const canonicalizes: DecisionArtifactCanonicalizes = {
+    goal_ids: normalizeCanonicalizeIds({
+      values: input.value.goal_ids,
+      channel: "goal",
+      isId: goalIdHelpers.is,
+      allowedIds: input.allowedIds.goalIds,
+      operation: input.operation,
+      operationIndex: input.operationIndex,
+      dropped: input.dropped,
+    }),
+    commitment_ids: normalizeCanonicalizeIds({
+      values: input.value.commitment_ids,
+      channel: "commitment",
+      isId: commitmentIdHelpers.is,
+      allowedIds: input.allowedIds.commitmentIds,
+      operation: input.operation,
+      operationIndex: input.operationIndex,
+      dropped: input.dropped,
+    }),
+    action_ids: normalizeCanonicalizeIds({
+      values: input.value.action_ids,
+      channel: "action",
+      isId: actionIdHelpers.is,
+      allowedIds: input.allowedIds.actionIds,
+      operation: input.operation,
+      operationIndex: input.operationIndex,
+      dropped: input.dropped,
+    }),
+    open_question_ids: normalizeCanonicalizeIds({
+      values: input.value.open_question_ids,
+      channel: "open_question",
+      isId: openQuestionIdHelpers.is,
+      allowedIds: input.allowedIds.openQuestionIds,
+      operation: input.operation,
+      operationIndex: input.operationIndex,
+      dropped: input.dropped,
+    }),
+  };
+
+  return hasCanonicalizes(canonicalizes) ? canonicalizes : emptyCanonicalizes();
+}
+
 function previousEntryById(
   previousEntries: ReadonlyMap<DecisionArtifactEntryId, DecisionArtifactEntry>,
   id: string,
@@ -489,7 +739,12 @@ function normalizePatch(input: {
   speakerEntityId: EntityId | null;
   participants: readonly DecisionArtifactParticipantContext[];
   allowedSourceStreamEntryIds: ReadonlySet<StreamEntryId> | null;
-}): { operations: DecisionArtifactOperation[]; rejected: PatchRejection[] } {
+  allowedCanonicalizationIds: AllowedCanonicalizationIds;
+}): {
+  operations: DecisionArtifactOperation[];
+  rejected: PatchRejection[];
+  droppedCanonicalizeIds: DroppedCanonicalizeId[];
+} {
   const allowedOwnerEntityIds = new Set<EntityId>([
     input.audienceEntityId,
     input.selfEntityId,
@@ -505,6 +760,7 @@ function normalizePatch(input: {
   );
   const operations: DecisionArtifactOperation[] = [];
   const rejected: PatchRejection[] = [];
+  const droppedCanonicalizeIds: DroppedCanonicalizeId[] = [];
   const baseRank = input.previousArtifact?.entries.length ?? 0;
 
   input.patch.operations.forEach((operation, operationIndex) => {
@@ -530,6 +786,14 @@ function normalizePatch(input: {
           return;
         }
 
+        const canonicalizes = normalizeCanonicalizes({
+          value: operation.canonicalizes,
+          allowedIds: input.allowedCanonicalizationIds,
+          operation,
+          operationIndex,
+          dropped: droppedCanonicalizeIds,
+        });
+
         operations.push({
           type: "add",
           kind: operation.kind,
@@ -538,6 +802,7 @@ function normalizePatch(input: {
           provenance_stream_entry_ids: citations.streamEntryIds,
           last_updated_stream_entry_ids: citations.streamEntryIds,
           rank: baseRank + operations.length,
+          ...(canonicalizes === undefined ? {} : { canonicalizes }),
         });
         return;
       }
@@ -560,7 +825,8 @@ function normalizePatch(input: {
         if (
           operation.kind === undefined &&
           operation.text === undefined &&
-          operation.owner_entity_id === undefined
+          operation.owner_entity_id === undefined &&
+          operation.canonicalizes === undefined
         ) {
           rejected.push(rejection(operation, operationIndex, "empty_update"));
           return;
@@ -586,6 +852,14 @@ function normalizePatch(input: {
           return;
         }
 
+        const canonicalizes = normalizeCanonicalizes({
+          value: operation.canonicalizes,
+          allowedIds: input.allowedCanonicalizationIds,
+          operation,
+          operationIndex,
+          dropped: droppedCanonicalizeIds,
+        });
+
         operations.push({
           type: "update",
           id,
@@ -594,6 +868,7 @@ function normalizePatch(input: {
           owner_entity_id: operation.owner_entity_id === undefined ? undefined : ownerEntityId,
           add_provenance_stream_entry_ids: citations.streamEntryIds,
           last_updated_stream_entry_ids: citations.streamEntryIds,
+          ...(canonicalizes === undefined ? {} : { canonicalizes }),
         });
         return;
       }
@@ -643,6 +918,14 @@ function normalizePatch(input: {
           return;
         }
 
+        const canonicalizes = normalizeCanonicalizes({
+          value: operation.canonicalizes,
+          allowedIds: input.allowedCanonicalizationIds,
+          operation,
+          operationIndex,
+          dropped: droppedCanonicalizeIds,
+        });
+
         operations.push({
           type: "supersede",
           id,
@@ -653,6 +936,7 @@ function normalizePatch(input: {
             provenance_stream_entry_ids: replacementCitations.streamEntryIds,
             last_updated_stream_entry_ids: replacementCitations.streamEntryIds,
             rank: baseRank + operations.length,
+            ...(canonicalizes === undefined ? {} : { canonicalizes }),
           },
           last_updated_stream_entry_ids: updateCitations.streamEntryIds,
         });
@@ -680,7 +964,7 @@ function normalizePatch(input: {
     }
   });
 
-  return { operations, rejected };
+  return { operations, rejected, droppedCanonicalizeIds };
 }
 
 type LifecycleEntry = Pick<
@@ -728,6 +1012,176 @@ function operationIdsMaterialized(
         return operation;
     }
   });
+}
+
+function canonicalizedEntryIdsFromOperations(
+  operations: readonly DecisionArtifactOperation[],
+): Set<DecisionArtifactEntryId> {
+  const ids = new Set<DecisionArtifactEntryId>();
+
+  for (const operation of operations) {
+    switch (operation.type) {
+      case "add":
+        if (operation.id !== undefined && hasCanonicalizes(operation.canonicalizes)) {
+          ids.add(operation.id);
+        }
+        break;
+      case "update":
+        if (hasCanonicalizes(operation.canonicalizes)) {
+          ids.add(operation.id);
+        }
+        break;
+      case "supersede":
+        if (
+          operation.replacement.id !== undefined &&
+          hasCanonicalizes(operation.replacement.canonicalizes)
+        ) {
+          ids.add(operation.replacement.id);
+        }
+        break;
+      case "prune":
+        break;
+    }
+  }
+
+  return ids;
+}
+
+function canonicalizedEntriesFromOperations(input: {
+  artifact: DecisionArtifact;
+  operations: readonly DecisionArtifactOperation[];
+}): DecisionArtifactEntry[] {
+  const ids = canonicalizedEntryIdsFromOperations(input.operations);
+
+  if (ids.size === 0) {
+    return [];
+  }
+
+  return input.artifact.entries.filter((entry) => ids.has(entry.id));
+}
+
+function dedupeCanonicalizeIds<TId extends string>(
+  ids: readonly TId[],
+  seen: Set<TId>,
+): { kept: TId[]; dropped: TId[] } {
+  const kept: TId[] = [];
+  const dropped: TId[] = [];
+
+  for (const id of ids) {
+    if (seen.has(id)) {
+      dropped.push(id);
+      continue;
+    }
+
+    seen.add(id);
+    kept.push(id);
+  }
+
+  return { kept, dropped };
+}
+
+function dedupeCanonicalizesAcrossOperations(operations: readonly DecisionArtifactOperation[]): {
+  operations: DecisionArtifactOperation[];
+  duplicateDrops: CanonicalizationDuplicateDrop[];
+} {
+  const prunedEntryIds = new Set(
+    operations
+      .filter((operation): operation is Extract<DecisionArtifactOperation, { type: "prune" }> => {
+        return operation.type === "prune";
+      })
+      .map((operation) => operation.id),
+  );
+  const seenGoalIds = new Set<GoalId>();
+  const seenCommitmentIds = new Set<CommitmentId>();
+  const seenActionIds = new Set<ActionId>();
+  const seenOpenQuestionIds = new Set<OpenQuestionId>();
+  const duplicateDrops: CanonicalizationDuplicateDrop[] = [];
+
+  const dedupe = (input: {
+    id: DecisionArtifactEntryId | undefined;
+    kind: DecisionArtifactEntryKind;
+    canonicalizes: DecisionArtifactCanonicalizes | undefined;
+  }): DecisionArtifactCanonicalizes | undefined => {
+    if (
+      input.canonicalizes === undefined ||
+      input.id === undefined ||
+      prunedEntryIds.has(input.id)
+    ) {
+      return input.canonicalizes;
+    }
+
+    const goals = dedupeCanonicalizeIds(input.canonicalizes.goal_ids, seenGoalIds);
+    const commitments = dedupeCanonicalizeIds(
+      input.canonicalizes.commitment_ids,
+      seenCommitmentIds,
+    );
+    const actions = dedupeCanonicalizeIds(input.canonicalizes.action_ids, seenActionIds);
+    const openQuestions = dedupeCanonicalizeIds(
+      input.canonicalizes.open_question_ids,
+      seenOpenQuestionIds,
+    );
+    const dropped: DecisionArtifactCanonicalizes = {
+      goal_ids: goals.dropped,
+      commitment_ids: commitments.dropped,
+      action_ids: actions.dropped,
+      open_question_ids: openQuestions.dropped,
+    };
+
+    if (hasCanonicalizes(dropped)) {
+      duplicateDrops.push({
+        artifact_entry_id: input.id,
+        kind: input.kind,
+        dropped_ids: dropped,
+      });
+    }
+
+    return {
+      goal_ids: goals.kept,
+      commitment_ids: commitments.kept,
+      action_ids: actions.kept,
+      open_question_ids: openQuestions.kept,
+    };
+  };
+
+  return {
+    duplicateDrops,
+    operations: operations.map((operation) => {
+      switch (operation.type) {
+        case "add":
+          return {
+            ...operation,
+            canonicalizes: dedupe({
+              id: operation.id,
+              kind: operation.kind,
+              canonicalizes: operation.canonicalizes,
+            }),
+          };
+        case "update":
+          return {
+            ...operation,
+            canonicalizes: dedupe({
+              id: operation.id,
+              kind: operation.kind ?? "locked",
+              canonicalizes: operation.canonicalizes,
+            }),
+          };
+        case "supersede":
+          return {
+            ...operation,
+            replacement: {
+              ...operation.replacement,
+              canonicalizes: dedupe({
+                id: operation.replacement.id,
+                kind: operation.replacement.kind,
+                canonicalizes: operation.replacement.canonicalizes,
+              }),
+            },
+          };
+        case "prune":
+          return operation;
+      }
+    }),
+  };
 }
 
 function lifecycleEntryFromDecisionEntry(entry: DecisionArtifactEntry): LifecycleEntry {
@@ -1108,6 +1562,7 @@ export async function compileDecisionArtifact(
     currentUserStreamEntryId: input.currentUserStreamEntryId,
     promptVisibleLedger: input.promptVisibleLedger,
     previousArtifact,
+    canonicalizationCandidates: input.canonicalizationCandidates ?? {},
   });
   const tools = [DECISION_ARTIFACT_TOOL];
 
@@ -1202,6 +1657,7 @@ export async function compileDecisionArtifact(
     speakerEntityId,
     participants: input.participants,
     allowedSourceStreamEntryIds,
+    allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
   });
 
   if (normalized.operations.length === 0 && normalized.rejected.length > 0) {
@@ -1239,11 +1695,13 @@ export async function compileDecisionArtifact(
       overCapDelta: lifecycle.overCapDelta,
     });
   }
-  const operations = expandPruneDependencies({
+  const expandedOperations = expandPruneDependencies({
     previousArtifact,
     operations: lifecycle.operations,
     nowMs,
   });
+  const dedupedCanonicalizations = dedupeCanonicalizesAcrossOperations(expandedOperations);
+  const operations = dedupedCanonicalizations.operations;
   const prunedEntryCountThisTurn = operations.filter(
     (operation) => operation.type === "prune",
   ).length;
@@ -1275,6 +1733,25 @@ export async function compileDecisionArtifact(
       now: nowMs,
       lastCompiledAt: nowMs,
       lastCompiledStreamEntryId: input.currentUserStreamEntryId,
+    });
+
+    const reconciliationResult = reconcileDecisionArtifactCanonicalizations({
+      entries:
+        nextArtifact === null
+          ? []
+          : canonicalizedEntriesFromOperations({
+              artifact: nextArtifact,
+              operations,
+            }),
+      repositories: input.reconciliation,
+      unknownIds: normalized.droppedCanonicalizeIds,
+    });
+
+    traceReconciliationCompleted({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      result: reconciliationResult,
+      canonicalizationDuplicateDrops: dedupedCanonicalizations.duplicateDrops,
     });
 
     traceCompileCompleted({
@@ -1318,6 +1795,9 @@ export async function compileDecisionArtifact(
             text: operation.text,
             owner_entity_id: operation.owner_entity_id,
             source_stream_entry_ids: [...operation.provenance_stream_entry_ids],
+            ...(operation.canonicalizes === undefined
+              ? {}
+              : { canonicalizes: operation.canonicalizes }),
           };
         case "update":
           return {
@@ -1327,6 +1807,9 @@ export async function compileDecisionArtifact(
             text: operation.text,
             owner_entity_id: operation.owner_entity_id,
             source_stream_entry_ids: [...operation.last_updated_stream_entry_ids],
+            ...(operation.canonicalizes === undefined
+              ? {}
+              : { canonicalizes: operation.canonicalizes }),
           };
         case "supersede":
           return {
@@ -1339,6 +1822,9 @@ export async function compileDecisionArtifact(
               source_stream_entry_ids: [...operation.replacement.provenance_stream_entry_ids],
             },
             source_stream_entry_ids: [...operation.last_updated_stream_entry_ids],
+            ...(operation.replacement.canonicalizes === undefined
+              ? {}
+              : { canonicalizes: operation.replacement.canonicalizes }),
           };
         case "prune":
           return {

@@ -22,7 +22,10 @@ import {
   type EvidenceLedgerBuildInput,
   type EvidenceLedgerCompactionTraceSummary,
 } from "../evidence-ledger/index.js";
-import { compileDecisionArtifact } from "../decision-artifact/index.js";
+import {
+  compileDecisionArtifact,
+  type DecisionArtifactCanonicalizationCandidates,
+} from "../decision-artifact/index.js";
 import type { TurnDiscourseStateService } from "../generation/turn-discourse-state.js";
 import {
   replyTargetEntityId,
@@ -174,6 +177,12 @@ function addDecisionArtifactAllowedStreamIds(ids: Set<StreamEntryId>, value: unk
   }
 }
 
+function compactDecisionArtifactCandidateText(value: string, maxLength = 180): string {
+  const trimmed = value.trim();
+
+  return trimmed.length <= maxLength ? trimmed : `${trimmed.slice(0, maxLength - 3)}...`;
+}
+
 function addDecisionArtifactEntryIdStreamHandle(ids: Set<StreamEntryId>, entryId: string): void {
   const currentSessionPrefix = "current_session_stream:";
   const currentUserPrefix = "current_user_message:";
@@ -242,12 +251,12 @@ export type TurnPhaseCoordinatorOptions = {
   entityRepository: EntityRepository;
   socialRepository: SocialRepository;
   relationalSlotRepository: RelationalSlotRepository;
-  actionRepository: Pick<ActionRepository, "get" | "list"> &
+  actionRepository: Pick<ActionRepository, "get" | "list" | "update"> &
     Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
   commitmentRepository: CommitmentRepository;
   decisionArtifactRepository: Pick<DecisionArtifactRepository, "get" | "upsert">;
   goalsRepository: GoalsRepository;
-  openQuestionsRepository: Pick<OpenQuestionsRepository, "findByHandles">;
+  openQuestionsRepository: Pick<OpenQuestionsRepository, "findByHandles" | "list" | "resolve">;
   toolDispatcher: ToolDispatcher;
   createStreamReader: (sessionId: SessionId) => StreamReader;
   streamIngestionCoordinator?: StreamIngestionCoordinator;
@@ -1503,6 +1512,46 @@ export class TurnPhaseCoordinator {
       kind: "self",
       provenance: "assistant_seeded",
     });
+    const canonicalizationCandidates: DecisionArtifactCanonicalizationCandidates = {
+      goals: this.options.goalsRepository
+        .list({
+          status: "active",
+          visibleToAudienceEntityId: audienceEntityId,
+        })
+        .map((goal) => ({
+          id: goal.id,
+          text: compactDecisionArtifactCandidateText(goal.description),
+        })),
+      commitments: this.options.commitmentRepository
+        .list({
+          activeOnly: true,
+          audience: audienceEntityId,
+        })
+        .map((commitment) => ({
+          id: commitment.id,
+          text: compactDecisionArtifactCandidateText(commitment.directive),
+        })),
+      actions: this.options.actionRepository
+        .list({
+          states: ["considering", "committed_to_do", "scheduled", "unknown"],
+          audienceEntityId,
+          limit: 80,
+        })
+        .map((action) => ({
+          id: action.id,
+          text: compactDecisionArtifactCandidateText(action.description),
+        })),
+      openQuestions: this.options.openQuestionsRepository
+        .list({
+          status: "open",
+          visibleToAudienceEntityId: audienceEntityId,
+          limit: 80,
+        })
+        .map((question) => ({
+          id: question.id,
+          text: compactDecisionArtifactCandidateText(question.question),
+        })),
+    };
 
     await compileDecisionArtifact({
       llmClient: this.options.llmFactory(),
@@ -1523,6 +1572,13 @@ export class TurnPhaseCoordinator {
         input.ledger,
         input.input.currentUserEntry.id,
       ),
+      canonicalizationCandidates,
+      reconciliation: {
+        goalsRepository: this.options.goalsRepository,
+        commitmentRepository: this.options.commitmentRepository,
+        actionRepository: this.options.actionRepository,
+        openQuestionsRepository: this.options.openQuestionsRepository,
+      },
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.input.turnId,

@@ -7,6 +7,7 @@ export {
   type ActionDescriptionSimilarityPair,
   type ActionRecordListFilter,
   type ActionRepositoryOptions,
+  type ActionUpdateOptions,
 } from "./repository.js";
 export {
   ACTION_STATES,

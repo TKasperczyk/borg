@@ -15,10 +15,12 @@ export {
   decisionArtifactEntryIdSchema,
   decisionArtifactEntryKindSchema,
   decisionArtifactEntrySchema,
+  decisionArtifactCanonicalizesSchema,
   decisionArtifactEntityIdSchema,
   decisionArtifactSchema,
   decisionArtifactStreamEntryIdSchema,
   type DecisionArtifact,
+  type DecisionArtifactCanonicalizes,
   type DecisionArtifactEntry,
   type DecisionArtifactEntryKind,
 } from "./types.js";
