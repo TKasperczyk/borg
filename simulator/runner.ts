@@ -57,6 +57,7 @@ export type SimulatorRunnerOptions = {
   personaScheduler?: PersonaScheduler;
   totalTurns: number;
   metricsPath: string;
+  overseerAuditPath?: string;
   checkEvery: number;
   maintenanceEvery?: number;
   maxSessions?: number;
@@ -344,6 +345,18 @@ function recordPersonaRoleBleed(input: {
       action: input.action,
     })}\n`,
   );
+}
+
+function defaultOverseerAuditPath(metricsPath: string): string {
+  if (metricsPath.endsWith("-metrics.jsonl")) {
+    return `${metricsPath.slice(0, -"-metrics.jsonl".length)}-overseer-audit.jsonl`;
+  }
+
+  if (metricsPath.endsWith(".jsonl")) {
+    return `${metricsPath.slice(0, -".jsonl".length)}-overseer-audit.jsonl`;
+  }
+
+  return `${metricsPath}-overseer-audit.jsonl`;
 }
 
 // Walks the Error.cause chain to surface diagnostics that LLMError and
@@ -661,6 +674,8 @@ export class SimulatorRunner {
           await overseerRunner({
             transport,
             metricsPath: this.options.metricsPath,
+            auditContextPath:
+              this.options.overseerAuditPath ?? defaultOverseerAuditPath(this.options.metricsPath),
             auditWindowStartTurn,
             turnCounter,
             totalTurns: this.options.totalTurns,
@@ -975,6 +990,34 @@ export async function runSimulation(options: SimulatorRunnerOptions): Promise<Si
   return new SimulatorRunner(options).run();
 }
 
+function reportValue(value: string | number | undefined): string {
+  return value === undefined ? "n/a" : String(value);
+}
+
+function reportQuotedSpan(value: string | undefined): string {
+  if (value === undefined) {
+    return "n/a";
+  }
+
+  return value.length <= 180 ? value : `${value.slice(0, 177)}...`;
+}
+
+function reportFindingLine(
+  finding: OverseerVerdict["findings"][number] | OverseerVerdict["rejected_findings"][number],
+): string {
+  return [
+    `[${finding.category} ${finding.claim_status}]`,
+    `source=${finding.source_kind}`,
+    `impact=${finding.status_impact ?? "n/a"}`,
+    `stream=${reportValue(finding.assistant_stream_entry_id)}`,
+    `ts=${reportValue(finding.assistant_ts)}`,
+    `turn=${reportValue(finding.metrics_turn_counter)}`,
+    `temporal=${finding.temporal_direction ?? "n/a"}`,
+    `quote="${reportQuotedSpan(finding.quoted_emitted_span)}"`,
+    `evidence=${finding.evidence_summary}`,
+  ].join(" ");
+}
+
 export function formatSimulatorReport(report: SimulatorRunReport): string {
   const participantLine =
     report.personas.length <= 1
@@ -1033,8 +1076,28 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
       lines.push(
         `- Turn ${checkpoint.turn_counter}: ${checkpoint.status} -- ${checkpoint.recommendation}`,
       );
-      for (const observation of checkpoint.observations) {
-        lines.push(`  - ${observation}`);
+      if (checkpoint.raw_verdict.status !== checkpoint.status) {
+        lines.push(`  - Original LLM status: ${checkpoint.raw_verdict.status}`);
+        lines.push("  - Original LLM observations (some findings rejected):");
+        for (const observation of checkpoint.observations) {
+          lines.push(`    - ${observation}`);
+        }
+      } else {
+        for (const observation of checkpoint.observations) {
+          lines.push(`  - ${observation}`);
+        }
+      }
+      if (checkpoint.findings.length > 0) {
+        lines.push("  - Validated findings:");
+        for (const finding of checkpoint.findings) {
+          lines.push(`    - ${reportFindingLine(finding)}`);
+        }
+      }
+      if (checkpoint.rejected_findings.length > 0) {
+        lines.push("  - Rejected findings:");
+        for (const finding of checkpoint.rejected_findings) {
+          lines.push(`    - ${reportFindingLine(finding)} warning=${finding.validation_warning}`);
+        }
       }
     }
     lines.push("");

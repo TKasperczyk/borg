@@ -70,6 +70,51 @@ export type OverseerVerdict = {
   status: "healthy" | "concerning" | "failing";
   observations: string[];
   recommendation: string;
+  findings: OverseerFinding[];
+  rejected_findings: RejectedOverseerFinding[];
+  raw_verdict: RawOverseerVerdict;
+};
+
+export type OverseerFindingCategory = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J";
+
+export type OverseerClaimStatus = "grounded" | "unsupported" | "contradicted" | "unclear";
+
+export type OverseerFindingSourceKind =
+  | "emitted_output"
+  | "prompt_visible_memory"
+  | "snapshot_memory";
+
+export type OverseerFindingStatusImpact = "none" | "concerning" | "failing";
+
+export type OverseerTemporalDirection =
+  | "claim_before_evidence"
+  | "claim_after_evidence"
+  | "claim_simultaneous";
+
+export type OverseerFinding = {
+  category: OverseerFindingCategory;
+  claim_status: OverseerClaimStatus;
+  source_kind: OverseerFindingSourceKind;
+  status_impact?: OverseerFindingStatusImpact;
+  assistant_stream_entry_id?: string;
+  assistant_ts?: number;
+  metrics_turn_counter?: number;
+  quoted_emitted_span?: string;
+  cited_evidence_stream_ids?: string[];
+  cited_evidence_ts?: number[];
+  temporal_direction?: OverseerTemporalDirection;
+  evidence_summary: string;
+};
+
+export type RejectedOverseerFinding = OverseerFinding & {
+  validation_warning: string;
+};
+
+export type RawOverseerVerdict = {
+  status: "healthy" | "concerning" | "failing";
+  observations: string[];
+  recommendation: string;
+  findings: OverseerFinding[];
 };
 
 export type SimulatorResultState = "completed" | "max_sessions_reached";

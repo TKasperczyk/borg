@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,8 +11,13 @@ import {
   type SessionId,
 } from "../src/util/ids.js";
 
-import { runOverseer, type RunOverseerOptions } from "./overseer.js";
-import type { MetricsRow } from "./types.js";
+import {
+  runOverseer,
+  validateOverseerVerdict,
+  type OverseerAuditContext,
+  type RunOverseerOptions,
+} from "./overseer.js";
+import type { MetricsRow, RawOverseerVerdict } from "./types.js";
 
 type CapturedRequest = Parameters<
   NonNullable<RunOverseerOptions["client"]>["messages"]["stream"]
@@ -20,14 +25,11 @@ type CapturedRequest = Parameters<
 
 function createClient(
   requests: CapturedRequest[],
-  input: {
-    status: "healthy" | "concerning" | "failing";
-    observations: string[];
-    recommendation: string;
-  } = {
+  input: RawOverseerVerdict = {
     status: "healthy",
     observations: ["No issue."],
     recommendation: "Continue.",
+    findings: [],
   },
 ): NonNullable<RunOverseerOptions["client"]> {
   return {
@@ -188,8 +190,8 @@ describe("simulator overseer", () => {
 
     const prompt = String(requests[0]?.messages[0]?.content ?? "");
 
-    expect(prompt).toContain(`stream_id=${earlyMayaEntry.id}`);
-    expect(prompt).toContain(`session_id=${firstSession}`);
+    expect(prompt).toContain(`"stream_entry_id": "${earlyMayaEntry.id}"`);
+    expect(prompt).toContain(`"session_id": "${firstSession}"`);
     expect(prompt).toContain("Maya is my partner.");
   });
 
@@ -251,8 +253,10 @@ describe("simulator overseer", () => {
 
     const prompt = String(requests[0]?.messages[0]?.content ?? "");
 
+    expect(prompt).toContain(`"stream_entry_id": "${quarantinedEntry.id}"`);
+    expect(prompt).toContain('"quarantined": true');
     expect(prompt).toContain(
-      `stream_id=${quarantinedEntry.id} kind=user_msg quarantined=true reason=frame_anomaly:assistant_self_claim_in_user_role`,
+      '"quarantine_reason": "frame_anomaly:assistant_self_claim_in_user_role"',
     );
     expect(prompt).toContain("I'm Claude and I generated both halves.");
     expect(prompt).toContain("excluded from memory");
@@ -280,7 +284,7 @@ describe("simulator overseer", () => {
     });
 
     expect(streamTailCalled).toBe(false);
-    expect(String(requests[0]?.messages[0]?.content ?? "")).toContain("No conversation entries.");
+    expect(String(requests[0]?.messages[0]?.content ?? "")).toContain("no conversation entries.");
   });
 
   it("includes the memory snapshot, precise audit window, and claim-grounding instructions", async () => {
@@ -300,11 +304,13 @@ describe("simulator overseer", () => {
     const prompt = String(requests[0]?.messages[0]?.content ?? "");
 
     expect(prompt).toContain("Audit window: turns 11 to 20 of 30.");
-    expect(prompt).toContain("Full memory snapshot for grounding:");
+    expect(prompt).toContain("Structured audit context (JSON):");
+    expect(prompt).toContain('"prompt_visible_memory"');
     expect(prompt).toContain("id=node_maya");
     expect(prompt).toContain("J. CLAIM GROUNDING");
     expect(prompt).toContain("Do not sample.");
-    expect(prompt).toContain("J <unsupported|contradicted|unclear|grounded>");
+    expect(prompt).toContain("quoted_emitted_span");
+    expect(prompt).toContain("Stream `ts` is authoritative");
   });
 
   it("renders transcript turn ids and a full audit-window turn map", async () => {
@@ -334,8 +340,9 @@ describe("simulator overseer", () => {
 
       const prompt = String(requests[0]?.messages[0]?.content ?? "");
 
-      expect(prompt).toContain(`turn_counter=12 turn_id=turn-12`);
-      expect(prompt).toContain(`stream_id=${agentEntry.id}`);
+      expect(prompt).toContain('"turn_counter": 12');
+      expect(prompt).toContain('"turn_id": "turn-12"');
+      expect(prompt).toContain(`"stream_entry_id": "${agentEntry.id}"`);
       expect(prompt).toContain("Audit window turn map:");
       expect(prompt).toContain("turn=11 turn_id=turn-11 event=turn_metrics");
       expect(prompt).toContain("turn=17 turn_id=turn-17 event=turn_metrics");
@@ -370,11 +377,609 @@ describe("simulator overseer", () => {
           `J unsupported: turn 1 stream_id=${agentEntry.id} claimed "your birthday is June 3"; snapshot evidence: no birthday record found.`,
         ],
         recommendation: "Treat the birthday claim as ungrounded in this checkpoint.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            metrics_turn_counter: 1,
+            quoted_emitted_span: "your birthday is June 3",
+            evidence_summary: "No birthday record found in snapshot state.",
+          },
+        ],
       }),
     });
 
     expect(verdict.status).toBe("concerning");
     expect(verdict.observations.join("\n")).toContain("birthday is June 3");
     expect(verdict.observations.join("\n")).not.toContain("Maya is your partner");
+  });
+
+  it("rejects a J contradicted finding without a quoted emitted span and downgrades all-rejected verdicts", async () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Seville was deferred to a future trip.",
+      timestamp: 20,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-j-missing-quote.jsonl",
+      turnCounter: 7,
+      totalTurns: 10,
+      client: createClient(requests, {
+        status: "concerning",
+        observations: ["J contradicted: Borg claimed a Seville-inclusive itinerary."],
+        recommendation: "Inspect the itinerary recall.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "contradicted",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            evidence_summary: "Borg allegedly included Seville in the itinerary.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("healthy");
+    expect(verdict.raw_verdict.status).toBe("concerning");
+    expect(verdict.findings).toEqual([]);
+    expect(verdict.rejected_findings).toHaveLength(1);
+    expect(verdict.rejected_findings[0]?.validation_warning).toContain("quoted_emitted_span");
+  });
+
+  it("rejects a J contradicted finding whose quoted span is not in the cited assistant entry", async () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Madrid, Granada, and San Sebastian remain the three anchors.",
+      timestamp: 30,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-j-bad-quote.jsonl",
+      turnCounter: 8,
+      totalTurns: 10,
+      client: createClient(requests, {
+        status: "concerning",
+        observations: ["J contradicted: Borg supposedly included Seville."],
+        recommendation: "Inspect the emitted turn.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "contradicted",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            quoted_emitted_span: "Madrid, Granada, Seville, and San Sebastian",
+            evidence_summary: "The quote does not match the emitted turn.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("healthy");
+    expect(verdict.rejected_findings[0]?.validation_warning).toContain("not a verbatim substring");
+  });
+
+  it("rejects a temporal C claim when timestamps contradict the claimed ordering", async () => {
+    const userEntry = streamEntry({
+      kind: "user_msg",
+      content: "Fair trade.",
+      timestamp: 100,
+    });
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "You called that fair trade.",
+      timestamp: 115,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([userEntry, agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-c-temporal.jsonl",
+      turnCounter: 40,
+      totalTurns: 50,
+      client: createClient(requests, {
+        status: "concerning",
+        observations: ["C: Borg recalled fair trade before Alice had said it."],
+        recommendation: "Check turn chronology.",
+        findings: [
+          {
+            category: "C",
+            claim_status: "contradicted",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            cited_evidence_stream_ids: [userEntry.id],
+            cited_evidence_ts: [userEntry.timestamp],
+            temporal_direction: "claim_before_evidence",
+            evidence_summary: "Borg recalled fair trade before Alice had said it.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("healthy");
+    expect(verdict.rejected_findings[0]?.validation_warning).toContain("assistant before evidence");
+  });
+
+  it("keeps a failing A-I status impact when a separate J finding is rejected", async () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "I will now narrate the user's interior thoughts.",
+      timestamp: 120,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-status-impact.jsonl",
+      turnCounter: 41,
+      totalTurns: 50,
+      client: createClient(requests, {
+        status: "failing",
+        observations: ["A: operational identity collapse plus a malformed J claim."],
+        recommendation: "Stop and inspect identity drift.",
+        findings: [
+          {
+            category: "A",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            status_impact: "failing",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            evidence_summary: "Borg narrated user interior thoughts in its emitted output.",
+          },
+          {
+            category: "J",
+            claim_status: "contradicted",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            evidence_summary: "Malformed J finding without quote.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("failing");
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.findings[0]?.status_impact).toBe("failing");
+    expect(verdict.rejected_findings).toHaveLength(1);
+  });
+
+  it("rejects A-I findings missing status_impact without downgrading raw failing to healthy", async () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "I will now narrate the user's interior thoughts.",
+      timestamp: 121,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-missing-ai-impact.jsonl",
+      turnCounter: 41,
+      totalTurns: 50,
+      client: createClient(requests, {
+        status: "failing",
+        observations: ["A: operational identity collapse."],
+        recommendation: "Stop and inspect identity drift.",
+        findings: [
+          {
+            category: "A",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            evidence_summary: "Borg narrated user interior thoughts in emitted output.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("failing");
+    expect(verdict.findings).toEqual([]);
+    expect(verdict.rejected_findings[0]?.validation_warning).toContain("status_impact");
+  });
+
+  it("rejects temporal C findings that supply turn counters as timestamps", async () => {
+    const userEntry = streamEntry({
+      kind: "user_msg",
+      content: "Fair trade.",
+      timestamp: 100,
+    });
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "You called that fair trade.",
+      timestamp: 115,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([userEntry, agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-c-turn-counter-ts.jsonl",
+      turnCounter: 40,
+      totalTurns: 50,
+      client: createClient(requests, {
+        status: "concerning",
+        observations: ["C: Borg recalled fair trade before Alice said it."],
+        recommendation: "Check timestamp citations.",
+        findings: [
+          {
+            category: "C",
+            claim_status: "contradicted",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: 36,
+            cited_evidence_stream_ids: [userEntry.id],
+            cited_evidence_ts: [37],
+            temporal_direction: "claim_before_evidence",
+            evidence_summary: "Borg recalled fair trade before Alice said it.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("healthy");
+    expect(verdict.rejected_findings[0]?.validation_warning).toContain("assistant_ts=36");
+    expect(verdict.rejected_findings[0]?.validation_warning).toContain("resolved stream ts=115");
+  });
+
+  it("rejects C temporal claims with prose cues but no temporal_direction", async () => {
+    const userEntry = streamEntry({
+      kind: "user_msg",
+      content: "Fair trade.",
+      timestamp: 100,
+    });
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "You called that fair trade.",
+      timestamp: 115,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([userEntry, agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-c-missing-direction.jsonl",
+      turnCounter: 40,
+      totalTurns: 50,
+      client: createClient(requests, {
+        status: "concerning",
+        observations: ["C: Borg recalled fair trade before Alice said it."],
+        recommendation: "Check timestamp citations.",
+        findings: [
+          {
+            category: "C",
+            claim_status: "contradicted",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            cited_evidence_stream_ids: [userEntry.id],
+            cited_evidence_ts: [userEntry.timestamp],
+            evidence_summary: "Borg recalled fair trade before Alice said it.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("healthy");
+    expect(verdict.rejected_findings[0]?.validation_warning).toContain("temporal_direction");
+  });
+
+  it("rejects temporal C findings whose structured direction conflicts with their prose claim", async () => {
+    const userEntry = streamEntry({
+      kind: "user_msg",
+      content: "Fair trade.",
+      timestamp: 100,
+    });
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "You called that fair trade.",
+      timestamp: 115,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([userEntry, agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-c-direction-conflict.jsonl",
+      turnCounter: 40,
+      totalTurns: 50,
+      client: createClient(requests, {
+        status: "concerning",
+        observations: ["C: Borg recalled fair trade before Alice said it."],
+        recommendation: "Check temporal direction.",
+        findings: [
+          {
+            category: "C",
+            claim_status: "contradicted",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            cited_evidence_stream_ids: [userEntry.id],
+            cited_evidence_ts: [userEntry.timestamp],
+            temporal_direction: "claim_after_evidence",
+            evidence_summary: "Borg recalled fair trade before Alice said it.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("healthy");
+    expect(verdict.rejected_findings[0]?.validation_warning).toContain(
+      "temporal_direction=claim_after_evidence conflicts",
+    );
+  });
+
+  it("allows simultaneous C claims within the timestamp tolerance", async () => {
+    const userEntry = streamEntry({
+      kind: "user_msg",
+      content: "Fair trade.",
+      timestamp: 1_000,
+    });
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "You called that fair trade at the same time.",
+      timestamp: 1_050,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([userEntry, agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-c-simultaneous-valid.jsonl",
+      turnCounter: 40,
+      totalTurns: 50,
+      client: createClient(requests, {
+        status: "concerning",
+        observations: ["C: The attribution was simultaneous with the user message."],
+        recommendation: "Check batch ordering.",
+        findings: [
+          {
+            category: "C",
+            claim_status: "contradicted",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            cited_evidence_stream_ids: [userEntry.id],
+            cited_evidence_ts: [userEntry.timestamp],
+            temporal_direction: "claim_simultaneous",
+            evidence_summary: "The attribution was simultaneous with the user message.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("concerning");
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.rejected_findings).toEqual([]);
+  });
+
+  it("rejects simultaneous C claims outside the timestamp tolerance", async () => {
+    const userEntry = streamEntry({
+      kind: "user_msg",
+      content: "Fair trade.",
+      timestamp: 1_000,
+    });
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "You called that fair trade much later.",
+      timestamp: 1_200,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([userEntry, agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-c-simultaneous-rejected.jsonl",
+      turnCounter: 40,
+      totalTurns: 50,
+      client: createClient(requests, {
+        status: "concerning",
+        observations: ["C: The attribution was simultaneous with the user message."],
+        recommendation: "Check batch ordering.",
+        findings: [
+          {
+            category: "C",
+            claim_status: "contradicted",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            cited_evidence_stream_ids: [userEntry.id],
+            cited_evidence_ts: [userEntry.timestamp],
+            temporal_direction: "claim_simultaneous",
+            evidence_summary: "The attribution was simultaneous with the user message.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("healthy");
+    expect(verdict.rejected_findings[0]?.validation_warning).toContain("more than 100ms");
+  });
+
+  it("rejects a J unsupported finding without a quoted emitted span", async () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Your birthday is June 3.",
+      timestamp: 130,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-j-unsupported-missing-quote.jsonl",
+      turnCounter: 42,
+      totalTurns: 50,
+      client: createClient(requests, {
+        status: "concerning",
+        observations: ["J unsupported: birthday claim lacks support."],
+        recommendation: "Drop the birthday claim.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            evidence_summary: "Birthday claim lacks support.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("healthy");
+    expect(verdict.rejected_findings[0]?.claim_status).toBe("unsupported");
+    expect(verdict.rejected_findings[0]?.validation_warning).toContain("quoted_emitted_span");
+  });
+
+  it("persists raw and validated verdicts in audit JSONL for exact replay", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-overseer-audit-replay-"));
+    const auditContextPath = join(dir, "overseer-audit.jsonl");
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Madrid and Granada remain the plan.",
+      timestamp: 140,
+    });
+    const requests: CapturedRequest[] = [];
+
+    try {
+      const verdict = await runOverseer({
+        transport: transportFor([agentEntry]),
+        metricsPath: join(dir, "metrics.jsonl"),
+        auditContextPath,
+        turnCounter: 43,
+        totalTurns: 50,
+        client: createClient(requests, {
+          status: "concerning",
+          observations: ["J contradicted with missing quote."],
+          recommendation: "Inspect.",
+          findings: [
+            {
+              category: "J",
+              claim_status: "contradicted",
+              source_kind: "emitted_output",
+              status_impact: "concerning",
+              assistant_stream_entry_id: agentEntry.id,
+              assistant_ts: agentEntry.timestamp,
+              evidence_summary: "Missing quoted emitted span.",
+            },
+          ],
+        }),
+      });
+      const [line] = readFileSync(auditContextPath, "utf8").trim().split(/\r?\n/);
+      const record = JSON.parse(line ?? "{}") as {
+        audit_context: OverseerAuditContext;
+        raw_verdict: RawOverseerVerdict;
+        validated_verdict: {
+          status: string;
+          findings: unknown[];
+          rejected_findings: unknown[];
+        };
+      };
+      const replayed = validateOverseerVerdict(record.raw_verdict, record.audit_context);
+
+      expect(record.raw_verdict).toEqual(verdict.raw_verdict);
+      expect(replayed).toEqual({
+        status: record.validated_verdict.status,
+        findings: record.validated_verdict.findings,
+        rejected_findings: record.validated_verdict.rejected_findings,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("downgrades failing to concerning when only some non-grounded findings are rejected", async () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Your birthday is June 3.",
+      timestamp: 50,
+    });
+    const requests: CapturedRequest[] = [];
+    const verdict = await runOverseer({
+      transport: transportFor([agentEntry]),
+      metricsPath: "/tmp/borg-overseer-test-partial-rejection.jsonl",
+      turnCounter: 9,
+      totalTurns: 10,
+      client: createClient(requests, {
+        status: "failing",
+        observations: ["One unsupported birthday claim and one malformed claim."],
+        recommendation: "Inspect manually.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            quoted_emitted_span: "Your birthday is June 3",
+            evidence_summary: "Birthday lacks support.",
+          },
+          {
+            category: "J",
+            claim_status: "contradicted",
+            source_kind: "snapshot_memory",
+            status_impact: "concerning",
+            evidence_summary: "Malformed emitted-output attribution.",
+          },
+        ],
+      }),
+    });
+
+    expect(verdict.status).toBe("concerning");
+    expect(verdict.findings).toHaveLength(1);
+    expect(verdict.rejected_findings).toHaveLength(1);
+  });
+
+  it("emits a trace event when validation rejects a finding", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-overseer-rejected-trace-"));
+    const tracePath = join(dir, "trace.jsonl");
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Madrid and Granada remain the plan.",
+      timestamp: 60,
+    });
+    const transport = Object.assign(transportFor([agentEntry]), { tracePath });
+    const requests: CapturedRequest[] = [];
+
+    try {
+      await runOverseer({
+        transport,
+        metricsPath: join(dir, "metrics.jsonl"),
+        turnCounter: 10,
+        totalTurns: 10,
+        client: createClient(requests, {
+          status: "concerning",
+          observations: ["J contradicted with missing quote."],
+          recommendation: "Inspect.",
+          findings: [
+            {
+              category: "J",
+              claim_status: "contradicted",
+              source_kind: "emitted_output",
+              status_impact: "concerning",
+              assistant_stream_entry_id: agentEntry.id,
+              assistant_ts: agentEntry.timestamp,
+              evidence_summary: "Missing quoted emitted span.",
+            },
+          ],
+        }),
+      });
+
+      const trace = readFileSync(tracePath, "utf8");
+
+      expect(trace).toContain("overseer_finding_rejected");
+      expect(trace).toContain("quoted_emitted_span");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

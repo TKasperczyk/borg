@@ -21,9 +21,10 @@ import {
 } from "../src/offline/scheduler.js";
 import { BorgTransport, type ChatWithBorgResult } from "../assessor/borg-transport.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
-import { createSimulatorScenario, runSimulation } from "./runner.js";
+import { createSimulatorScenario, formatSimulatorReport, runSimulation } from "./runner.js";
 import type { PersonaSession, PriorBorgTurn } from "./persona.js";
 import { tomPersona } from "./personas/tom.js";
+import type { OverseerVerdict } from "./types.js";
 
 const tempDirs: string[] = [];
 
@@ -247,6 +248,27 @@ function chatResult(input: {
       arousal: 0,
     },
     toolCalls: [],
+  };
+}
+
+function healthyOverseerVerdict(
+  turnCounter: number,
+  observations: string[],
+  recommendation = "Continue.",
+): OverseerVerdict {
+  const raw_verdict = {
+    status: "healthy" as const,
+    observations,
+    recommendation,
+    findings: [],
+  };
+
+  return {
+    ts: Date.now(),
+    turn_counter: turnCounter,
+    ...raw_verdict,
+    rejected_findings: [],
+    raw_verdict,
   };
 }
 
@@ -531,13 +553,7 @@ describe("SimulatorRunner", () => {
       mock: true,
       overseerRunner: async ({ auditWindowStartTurn, turnCounter }) => {
         auditWindows.push([auditWindowStartTurn, turnCounter]);
-        return {
-          ts: Date.now(),
-          turn_counter: turnCounter,
-          status: "healthy",
-          observations: ["Mock overseer saw no degradation."],
-          recommendation: "Continue.",
-        };
+        return healthyOverseerVerdict(turnCounter, ["Mock overseer saw no degradation."]);
       },
     });
     const metricsRows = readFileSync(metricsPath, "utf8")
@@ -588,13 +604,7 @@ describe("SimulatorRunner", () => {
         mock: true,
         overseerRunner: async ({ auditWindowStartTurn, turnCounter }) => {
           auditWindows.push([auditWindowStartTurn, turnCounter]);
-          return {
-            ts: Date.now(),
-            turn_counter: turnCounter,
-            status: "healthy",
-            observations: ["Mock overseer saw no degradation."],
-            recommendation: "Continue.",
-          };
+          return healthyOverseerVerdict(turnCounter, ["Mock overseer saw no degradation."]);
         },
       });
 
@@ -632,13 +642,7 @@ describe("SimulatorRunner", () => {
       mock: true,
       overseerRunner: async ({ turnCounter }) => {
         overseerTurns.push(turnCounter);
-        return {
-          ts: Date.now(),
-          turn_counter: turnCounter,
-          status: "healthy",
-          observations: ["Suppression checkpoint inspected."],
-          recommendation: "Continue.",
-        };
+        return healthyOverseerVerdict(turnCounter, ["Suppression checkpoint inspected."]);
       },
     });
     const [metricsRow] = readFileSync(metricsPath, "utf8")
