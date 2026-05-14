@@ -25,7 +25,10 @@ import {
 } from "../../util/ids.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { renderDecisionStateArtifact, renderEvidenceLedger } from "../evidence-ledger/index.js";
-import { buildDecisionArtifactLedgerPromptContext } from "../lifecycle/turn-phase-coordinator.js";
+import {
+  advanceDecisionArtifactCompileSkipAnchor,
+  buildDecisionArtifactLedgerPromptContext,
+} from "../lifecycle/turn-phase-coordinator.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 import {
   compileDecisionArtifact,
@@ -496,6 +499,253 @@ describe("compileDecisionArtifact", () => {
     });
   });
 
+  it("retries stranded canonicalizes on an otherwise no-op compile", async () => {
+    const trace = createTraceRecorder();
+    const goalsRepository = new GoalsRepository({
+      db,
+      clock,
+    });
+    const strandedSource = createStreamEntryId();
+    const goal = goalsRepository.add({
+      description: "Lock Granada for 3 nights",
+      priority: 1,
+      provenance: {
+        kind: "online",
+        process: "test",
+      },
+      audienceEntityId: audience,
+      sourceStreamEntryIds: [strandedSource],
+    });
+    repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          kind: "locked",
+          text: "Granada is locked for 3 nights",
+          provenance_stream_entry_ids: [strandedSource],
+          canonicalizes: {
+            goal_ids: [goal.id],
+            commitment_ids: [],
+            action_ids: [],
+            open_question_ids: [],
+          },
+        },
+      ],
+      {
+        lastCompiledStreamEntryId: strandedSource,
+      },
+    );
+    const llmClient = new FakeLLMClient({
+      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      allowedSourceStreamEntryIds: [strandedSource, currentStreamEntryId],
+      reconciliation: {
+        goalsRepository,
+      },
+    });
+
+    const artifactEntry = repository.get(audience)?.entries[0];
+    expect(goalsRepository.get(goal.id)).toMatchObject({
+      status: "done",
+      canonicalized_by_artifact_entry_id: artifactEntry?.id,
+    });
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_reconciliation_completed",
+        data: expect.objectContaining({
+          goals_retired: 1,
+          current_operation_canonicalization_count: 0,
+          retried_stranded_canonicalization_count: 1,
+          retry_unsettled_summary: expect.objectContaining({
+            unsettled_goal_count: 1,
+            unsettled_total_count: 1,
+          }) as JsonValue,
+        }),
+      }),
+    );
+  });
+
+  it("reconciles retried stranded handles and new canonicalizes in one compile", async () => {
+    const trace = createTraceRecorder();
+    const goalsRepository = new GoalsRepository({
+      db,
+      clock,
+    });
+    const strandedSource = createStreamEntryId();
+    const strandedGoal = goalsRepository.add({
+      description: "Lock Granada for 3 nights",
+      priority: 1,
+      provenance: {
+        kind: "online",
+        process: "test",
+      },
+      audienceEntityId: audience,
+      sourceStreamEntryIds: [strandedSource],
+    });
+    const newGoal = goalsRepository.add({
+      description: "Lock Seville for 4 nights",
+      priority: 1,
+      provenance: {
+        kind: "online",
+        process: "test",
+      },
+      audienceEntityId: audience,
+      sourceStreamEntryIds: [currentStreamEntryId],
+    });
+    repository.upsert(
+      audience,
+      [
+        {
+          type: "add",
+          kind: "locked",
+          text: "Granada is locked for 3 nights",
+          provenance_stream_entry_ids: [strandedSource],
+          canonicalizes: {
+            goal_ids: [strandedGoal.id],
+            commitment_ids: [],
+            action_ids: [],
+            open_question_ids: [],
+          },
+        },
+      ],
+      {
+        lastCompiledStreamEntryId: strandedSource,
+      },
+    );
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Seville is locked for 4 nights",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              canonicalizes: {
+                goal_ids: [newGoal.id],
+              },
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      allowedSourceStreamEntryIds: [strandedSource, currentStreamEntryId],
+      canonicalizationCandidates: {
+        goals: [{ id: newGoal.id, text: newGoal.description }],
+      },
+      reconciliation: {
+        goalsRepository,
+      },
+    });
+
+    expect(goalsRepository.get(strandedGoal.id)).toMatchObject({
+      status: "done",
+    });
+    expect(goalsRepository.get(newGoal.id)).toMatchObject({
+      status: "done",
+    });
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_reconciliation_completed",
+        data: expect.objectContaining({
+          goals_retired: 2,
+          current_operation_canonicalization_count: 1,
+          retried_stranded_canonicalization_count: 1,
+        }),
+      }),
+    );
+  });
+
+  it("drops canonicalizes emitted on non-locked entries before reconciliation", async () => {
+    const trace = createTraceRecorder();
+    const goalsRepository = new GoalsRepository({
+      db,
+      clock,
+    });
+    const goal = goalsRepository.add({
+      description: "Lock Granada for 3 nights",
+      priority: 1,
+      provenance: {
+        kind: "online",
+        process: "test",
+      },
+      audienceEntityId: audience,
+      sourceStreamEntryIds: [currentStreamEntryId],
+    });
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "live",
+              text: "Granada is under discussion",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [currentStreamEntryId],
+              canonicalizes: {
+                goal_ids: [goal.id],
+              },
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      canonicalizationCandidates: {
+        goals: [{ id: goal.id, text: goal.description }],
+      },
+      reconciliation: {
+        goalsRepository,
+      },
+    });
+
+    expect(repository.get(audience)?.entries[0]).toMatchObject({
+      kind: "live",
+      canonicalizes: {
+        goal_ids: [],
+        commitment_ids: [],
+        action_ids: [],
+        open_question_ids: [],
+      },
+    });
+    expect(goalsRepository.get(goal.id)).toMatchObject({
+      status: "active",
+      canonicalized_by_artifact_entry_id: null,
+    });
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_compile_completed",
+        data: expect.objectContaining({
+          canonicalizes_rejected_non_locked: [
+            {
+              operation_index: 0,
+              kind: "live",
+              dropped_ids: {
+                goal_ids: [goal.id],
+                commitment_ids: [],
+                action_ids: [],
+                open_question_ids: [],
+              },
+            },
+          ] satisfies JsonValue,
+        }),
+      }),
+    );
+  });
+
   it("rejects an invalid owner entity id with a traced reason", async () => {
     const trace = createTraceRecorder();
     const llmClient = new FakeLLMClient({
@@ -713,6 +963,123 @@ describe("compileDecisionArtifact", () => {
     expect(context.ledgerMode).toBe("delta");
     expect(context.promptVisibleLedger).not.toContain("first compile turn");
     expect(context.promptVisibleLedger).not.toContain("no-op compile turn");
+    expect(context.promptVisibleLedger).toContain("third compile turn");
+  });
+
+  it("rejects citations hidden by the delta-rendered ledger context", async () => {
+    const trace = createTraceRecorder();
+    const olderSource = createStreamEntryId();
+    const anchorSource = createStreamEntryId();
+    const deltaSource = createStreamEntryId();
+    repository.upsert(audience, [], {
+      lastCompiledStreamEntryId: anchorSource,
+    });
+    const ledger = evidenceLedger([
+      ledgerEntry({ streamEntryId: olderSource, streamIndex: 0, text: "older hidden turn" }),
+      ledgerEntry({ streamEntryId: anchorSource, streamIndex: 1, text: "anchor turn" }),
+      ledgerEntry({ streamEntryId: deltaSource, streamIndex: 2, text: "visible delta turn" }),
+    ]);
+    const context = buildDecisionArtifactLedgerPromptContext({
+      ledger,
+      previousArtifact: repository.get(audience),
+      fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+      enabled: true,
+      minTailPerSection: 1,
+    });
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Hidden citation should not be accepted",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [olderSource],
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      currentUserStreamEntryId: deltaSource,
+      promptVisibleLedger: context.promptVisibleLedger,
+      previousArtifact: repository.get(audience),
+      allowedSourceStreamEntryIds: context.visibleStreamEntryIds,
+      tracer: trace,
+      ledgerMode: context.ledgerMode,
+    });
+
+    expect(context.ledgerMode).toBe("delta");
+    expect(context.visibleStreamEntryIds).toEqual([deltaSource]);
+    expect(repository.get(audience)?.entries).toHaveLength(0);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_compile_completed",
+        data: expect.objectContaining({
+          rejectedCount: 1,
+          rejectionReasons: ["disallowed_source_stream_entry_id"] satisfies JsonValue,
+          applied: false,
+        }),
+      }),
+    );
+  });
+
+  it("advances safe prefilter skip markers so the next ledger delta starts after the skip turn", async () => {
+    const firstSource = createStreamEntryId();
+    const skippedSource = createStreamEntryId();
+    const thirdSource = createStreamEntryId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "live",
+              text: "Live planning decision",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [firstSource],
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      currentUserStreamEntryId: firstSource,
+      allowedSourceStreamEntryIds: [firstSource],
+    });
+
+    const afterFirst = repository.get(audience);
+    const skipped = advanceDecisionArtifactCompileSkipAnchor({
+      repository,
+      audienceEntityId: audience,
+      previousArtifact: afterFirst,
+      currentUserStreamEntryId: skippedSource,
+      nowMs: clock.now(),
+    });
+    const ledger = evidenceLedger([
+      ledgerEntry({ streamEntryId: firstSource, streamIndex: 0, text: "first compile turn" }),
+      ledgerEntry({ streamEntryId: skippedSource, streamIndex: 1, text: "skipped closure turn" }),
+      ledgerEntry({ streamEntryId: thirdSource, streamIndex: 2, text: "third compile turn" }),
+    ]);
+    const context = buildDecisionArtifactLedgerPromptContext({
+      ledger,
+      previousArtifact: skipped.artifact,
+      fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+      enabled: true,
+      minTailPerSection: 1,
+    });
+
+    expect(skipped.advanced).toBe(true);
+    expect(skipped.artifact?.record_version).toBe((afterFirst?.record_version ?? 0) + 1);
+    expect(skipped.artifact?.last_compiled_stream_entry_id).toBe(skippedSource);
+    expect(context.ledgerMode).toBe("delta");
+    expect(context.promptVisibleLedger).not.toContain("first compile turn");
+    expect(context.promptVisibleLedger).not.toContain("skipped closure turn");
     expect(context.promptVisibleLedger).toContain("third compile turn");
   });
 

@@ -45,9 +45,11 @@ import {
 } from "../evidence-ledger/index.js";
 import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import {
+  findUnsettledDecisionArtifactReconciliation,
   reconcileDecisionArtifactCanonicalizations,
   type DecisionArtifactReconciliationRepositories,
   type DecisionArtifactReconciliationResult,
+  type DecisionArtifactUnsettledReconciliationSummary,
 } from "./reconciliation.js";
 
 const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";
@@ -309,6 +311,17 @@ type CanonicalizationDuplicateDrop = {
   dropped_ids: DecisionArtifactCanonicalizes;
 };
 
+type NonLockedCanonicalizesDrop = {
+  operation_index: number;
+  kind: DecisionArtifactEntryKind;
+  dropped_ids: {
+    goal_ids: string[];
+    commitment_ids: string[];
+    action_ids: string[];
+    open_question_ids: string[];
+  };
+};
+
 type AllowedCanonicalizationIds = {
   goalIds: ReadonlySet<GoalId>;
   commitmentIds: ReadonlySet<CommitmentId>;
@@ -537,6 +550,7 @@ function traceCompileCompleted(options: {
   supersededEntryCountThisTurn: number;
   ledgerMode: DecisionArtifactLedgerMode;
   promptBudget: DecisionArtifactPromptBudget;
+  nonLockedCanonicalizesDrops?: readonly NonLockedCanonicalizesDrop[];
 }): void {
   const artifactSummary = summarizeDecisionStateArtifactRender(
     options.artifact,
@@ -564,6 +578,9 @@ function traceCompileCompleted(options: {
       ledger_mode: options.ledgerMode,
       input_token_estimate: options.promptBudget.inputTokenEstimate,
       input_token_breakdown: toTraceJsonValue(options.promptBudget.breakdown),
+      canonicalizes_rejected_non_locked: toTraceJsonValue(
+        options.nonLockedCanonicalizesDrops ?? [],
+      ),
     });
   }
 }
@@ -598,6 +615,9 @@ function traceReconciliationCompleted(options: {
   turnId?: string;
   result: DecisionArtifactReconciliationResult;
   canonicalizationDuplicateDrops?: readonly CanonicalizationDuplicateDrop[];
+  currentOperationCanonicalizationCount?: number;
+  retriedStrandedCanonicalizationCount?: number;
+  retrySummary?: DecisionArtifactUnsettledReconciliationSummary | null;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("decision_artifact_reconciliation_completed", {
@@ -610,6 +630,11 @@ function traceReconciliationCompleted(options: {
       canonicalization_duplicates_dropped: toTraceJsonValue(
         options.canonicalizationDuplicateDrops ?? [],
       ),
+      current_operation_canonicalization_count:
+        options.currentOperationCanonicalizationCount ?? 0,
+      retried_stranded_canonicalization_count:
+        options.retriedStrandedCanonicalizationCount ?? 0,
+      retry_unsettled_summary: toTraceJsonValue(options.retrySummary ?? null),
       errors: toTraceJsonValue(options.result.errors),
     });
   }
@@ -684,6 +709,28 @@ function hasCanonicalizes(value: DecisionArtifactCanonicalizes | undefined): boo
   );
 }
 
+function parsedCanonicalizesTraceIds(
+  value: ParsedCanonicalizes | undefined,
+): NonLockedCanonicalizesDrop["dropped_ids"] | null {
+  if (value === undefined) {
+    return null;
+  }
+
+  const droppedIds = {
+    goal_ids: [...(value.goal_ids ?? [])],
+    commitment_ids: [...(value.commitment_ids ?? [])],
+    action_ids: [...(value.action_ids ?? [])],
+    open_question_ids: [...(value.open_question_ids ?? [])],
+  };
+
+  return droppedIds.goal_ids.length > 0 ||
+    droppedIds.commitment_ids.length > 0 ||
+    droppedIds.action_ids.length > 0 ||
+    droppedIds.open_question_ids.length > 0
+    ? droppedIds
+    : null;
+}
+
 function allowedCanonicalizationIds(
   candidates: DecisionArtifactCanonicalizationCandidates | undefined,
 ): AllowedCanonicalizationIds {
@@ -755,12 +802,26 @@ function normalizeCanonicalizeIds<TId extends string>(input: {
 
 function normalizeCanonicalizes(input: {
   value: ParsedCanonicalizes | undefined;
+  kind: DecisionArtifactEntryKind;
   allowedIds: AllowedCanonicalizationIds;
   operation: ParsedPatchOperation;
   operationIndex: number;
   dropped: DroppedCanonicalizeId[];
+  nonLockedDrops: NonLockedCanonicalizesDrop[];
 }): DecisionArtifactCanonicalizes | undefined {
   if (input.value === undefined) {
+    return undefined;
+  }
+
+  const nonLockedDroppedIds = parsedCanonicalizesTraceIds(input.value);
+
+  if (input.kind !== "locked" && nonLockedDroppedIds !== null) {
+    input.nonLockedDrops.push({
+      operation_index: input.operationIndex,
+      kind: input.kind,
+      dropped_ids: nonLockedDroppedIds,
+    });
+
     return undefined;
   }
 
@@ -847,6 +908,7 @@ function normalizePatch(input: {
   operations: DecisionArtifactOperation[];
   rejected: PatchRejection[];
   droppedCanonicalizeIds: DroppedCanonicalizeId[];
+  nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[];
 } {
   const allowedOwnerEntityIds = new Set<EntityId>([
     input.audienceEntityId,
@@ -864,6 +926,7 @@ function normalizePatch(input: {
   const operations: DecisionArtifactOperation[] = [];
   const rejected: PatchRejection[] = [];
   const droppedCanonicalizeIds: DroppedCanonicalizeId[] = [];
+  const nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[] = [];
   const baseRank = input.previousArtifact?.entries.length ?? 0;
 
   input.patch.operations.forEach((operation, operationIndex) => {
@@ -891,10 +954,12 @@ function normalizePatch(input: {
 
         const canonicalizes = normalizeCanonicalizes({
           value: operation.canonicalizes,
+          kind: operation.kind,
           allowedIds: input.allowedCanonicalizationIds,
           operation,
           operationIndex,
           dropped: droppedCanonicalizeIds,
+          nonLockedDrops: nonLockedCanonicalizesDrops,
         });
 
         operations.push({
@@ -957,10 +1022,12 @@ function normalizePatch(input: {
 
         const canonicalizes = normalizeCanonicalizes({
           value: operation.canonicalizes,
+          kind: nextKind,
           allowedIds: input.allowedCanonicalizationIds,
           operation,
           operationIndex,
           dropped: droppedCanonicalizeIds,
+          nonLockedDrops: nonLockedCanonicalizesDrops,
         });
 
         operations.push({
@@ -1023,10 +1090,12 @@ function normalizePatch(input: {
 
         const canonicalizes = normalizeCanonicalizes({
           value: operation.canonicalizes,
+          kind: operation.replacement.kind,
           allowedIds: input.allowedCanonicalizationIds,
           operation,
           operationIndex,
           dropped: droppedCanonicalizeIds,
+          nonLockedDrops: nonLockedCanonicalizesDrops,
         });
 
         operations.push({
@@ -1067,7 +1136,7 @@ function normalizePatch(input: {
     }
   });
 
-  return { operations, rejected, droppedCanonicalizeIds };
+  return { operations, rejected, droppedCanonicalizeIds, nonLockedCanonicalizesDrops };
 }
 
 type LifecycleEntry = Pick<
@@ -1161,6 +1230,151 @@ function canonicalizedEntriesFromOperations(input: {
   }
 
   return input.artifact.entries.filter((entry) => ids.has(entry.id));
+}
+
+type DecisionArtifactReconciliationWorkSet = {
+  entries: DecisionArtifactEntry[];
+  currentOperationCanonicalizationCount: number;
+  retriedStrandedCanonicalizationCount: number;
+  retrySummary: DecisionArtifactUnsettledReconciliationSummary | null;
+};
+
+function canonicalizationKey(input: {
+  entryId: DecisionArtifactEntryId;
+  channel: CanonicalizeIdChannel;
+  id: string;
+}): string {
+  return `${input.entryId}:${input.channel}:${input.id}`;
+}
+
+function emptyReconciliationEntry(entry: DecisionArtifactEntry): DecisionArtifactEntry {
+  return {
+    ...entry,
+    canonicalizes: emptyCanonicalizes(),
+  };
+}
+
+function appendReconciliationEntry(input: {
+  entry: DecisionArtifactEntry;
+  entriesById: Map<DecisionArtifactEntryId, DecisionArtifactEntry>;
+  seen: Set<string>;
+}): number {
+  const mergedEntry =
+    input.entriesById.get(input.entry.id) ?? emptyReconciliationEntry(input.entry);
+  let count = 0;
+
+  if (!input.entriesById.has(input.entry.id)) {
+    input.entriesById.set(input.entry.id, mergedEntry);
+  }
+
+  for (const goalId of input.entry.canonicalizes.goal_ids) {
+    const key = canonicalizationKey({
+      entryId: input.entry.id,
+      channel: "goal",
+      id: goalId,
+    });
+
+    if (!input.seen.has(key)) {
+      input.seen.add(key);
+      mergedEntry.canonicalizes.goal_ids.push(goalId);
+      count += 1;
+    }
+  }
+
+  for (const commitmentId of input.entry.canonicalizes.commitment_ids) {
+    const key = canonicalizationKey({
+      entryId: input.entry.id,
+      channel: "commitment",
+      id: commitmentId,
+    });
+
+    if (!input.seen.has(key)) {
+      input.seen.add(key);
+      mergedEntry.canonicalizes.commitment_ids.push(commitmentId);
+      count += 1;
+    }
+  }
+
+  for (const actionId of input.entry.canonicalizes.action_ids) {
+    const key = canonicalizationKey({
+      entryId: input.entry.id,
+      channel: "action",
+      id: actionId,
+    });
+
+    if (!input.seen.has(key)) {
+      input.seen.add(key);
+      mergedEntry.canonicalizes.action_ids.push(actionId);
+      count += 1;
+    }
+  }
+
+  for (const openQuestionId of input.entry.canonicalizes.open_question_ids) {
+    const key = canonicalizationKey({
+      entryId: input.entry.id,
+      channel: "open_question",
+      id: openQuestionId,
+    });
+
+    if (!input.seen.has(key)) {
+      input.seen.add(key);
+      mergedEntry.canonicalizes.open_question_ids.push(openQuestionId);
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
+function buildDecisionArtifactReconciliationWorkSet(input: {
+  artifact: DecisionArtifact | null;
+  operations: readonly DecisionArtifactOperation[];
+  repositories?: DecisionArtifactReconciliationRepositories;
+}): DecisionArtifactReconciliationWorkSet {
+  if (input.artifact === null) {
+    return {
+      entries: [],
+      currentOperationCanonicalizationCount: 0,
+      retriedStrandedCanonicalizationCount: 0,
+      retrySummary: null,
+    };
+  }
+
+  const entriesById = new Map<DecisionArtifactEntryId, DecisionArtifactEntry>();
+  const seen = new Set<string>();
+  let currentOperationCanonicalizationCount = 0;
+  let retriedStrandedCanonicalizationCount = 0;
+
+  for (const entry of canonicalizedEntriesFromOperations({
+    artifact: input.artifact,
+    operations: input.operations,
+  })) {
+    currentOperationCanonicalizationCount += appendReconciliationEntry({
+      entry,
+      entriesById,
+      seen,
+    });
+  }
+
+  const retry = findUnsettledDecisionArtifactReconciliation({
+    previousArtifact: input.artifact,
+    repositories: input.repositories,
+  });
+
+  for (const entry of retry?.entries ?? []) {
+    retriedStrandedCanonicalizationCount += appendReconciliationEntry({
+      entry,
+      entriesById,
+      seen,
+    });
+  }
+
+  return {
+    entries: [...entriesById.values()].filter((entry) => hasCanonicalizes(entry.canonicalizes)),
+    currentOperationCanonicalizationCount,
+    retriedStrandedCanonicalizationCount,
+    retrySummary: retry?.summary ?? null,
+  };
 }
 
 function dedupeCanonicalizeIds<TId extends string>(
@@ -1795,6 +2009,7 @@ export async function compileDecisionArtifact(
       artifact: previousArtifact,
       prunedEntryCountThisTurn: 0,
       supersededEntryCountThisTurn: 0,
+      nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 
     return degraded(input, "invalid_patch");
@@ -1850,10 +2065,34 @@ export async function compileDecisionArtifact(
         artifact: previousArtifact,
         prunedEntryCountThisTurn,
         supersededEntryCountThisTurn,
+        nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
       });
 
       return degraded(input, "repository_failed", error);
     }
+
+    const reconciliationWorkSet = buildDecisionArtifactReconciliationWorkSet({
+      artifact: markedArtifact,
+      operations: [],
+      repositories: input.reconciliation,
+    });
+    const reconciliationResult = reconcileDecisionArtifactCanonicalizations({
+      entries: reconciliationWorkSet.entries,
+      repositories: input.reconciliation,
+      unknownIds: normalized.droppedCanonicalizeIds,
+    });
+
+    traceReconciliationCompleted({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      result: reconciliationResult,
+      canonicalizationDuplicateDrops: dedupedCanonicalizations.duplicateDrops,
+      currentOperationCanonicalizationCount:
+        reconciliationWorkSet.currentOperationCanonicalizationCount,
+      retriedStrandedCanonicalizationCount:
+        reconciliationWorkSet.retriedStrandedCanonicalizationCount,
+      retrySummary: reconciliationWorkSet.retrySummary,
+    });
 
     traceCompileCompleted({
       ...compileCompletedTraceBase,
@@ -1863,6 +2102,7 @@ export async function compileDecisionArtifact(
       artifact: markedArtifact,
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
+      nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 
     return emptyPatch();
@@ -1876,14 +2116,13 @@ export async function compileDecisionArtifact(
       lastCompiledStreamEntryId: input.currentUserStreamEntryId,
     });
 
+    const reconciliationWorkSet = buildDecisionArtifactReconciliationWorkSet({
+      artifact: nextArtifact,
+      operations,
+      repositories: input.reconciliation,
+    });
     const reconciliationResult = reconcileDecisionArtifactCanonicalizations({
-      entries:
-        nextArtifact === null
-          ? []
-          : canonicalizedEntriesFromOperations({
-              artifact: nextArtifact,
-              operations,
-            }),
+      entries: reconciliationWorkSet.entries,
       repositories: input.reconciliation,
       unknownIds: normalized.droppedCanonicalizeIds,
     });
@@ -1893,6 +2132,11 @@ export async function compileDecisionArtifact(
       turnId: input.turnId,
       result: reconciliationResult,
       canonicalizationDuplicateDrops: dedupedCanonicalizations.duplicateDrops,
+      currentOperationCanonicalizationCount:
+        reconciliationWorkSet.currentOperationCanonicalizationCount,
+      retriedStrandedCanonicalizationCount:
+        reconciliationWorkSet.retriedStrandedCanonicalizationCount,
+      retrySummary: reconciliationWorkSet.retrySummary,
     });
 
     traceCompileCompleted({
@@ -1903,6 +2147,7 @@ export async function compileDecisionArtifact(
       artifact: nextArtifact,
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
+      nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
   } catch (error) {
     traceCompileCompleted({
@@ -1913,6 +2158,7 @@ export async function compileDecisionArtifact(
       artifact: previousArtifact,
       prunedEntryCountThisTurn,
       supersededEntryCountThisTurn,
+      nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
     });
 
     return degraded(input, "repository_failed", error);

@@ -18,6 +18,7 @@ export type TurnTraceEventName =
   | "evidence_ledger_built"
   | "evidence_ledger_compacted"
   | "decision_artifact_compile_skipped"
+  | "decision_artifact_compile_unblocked"
   | "decision_artifact_compile_completed"
   | "decision_artifact_compile_over_budget"
   | "decision_artifact_lifecycle_unable_to_cap"

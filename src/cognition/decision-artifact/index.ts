@@ -14,9 +14,13 @@ export {
   type EmitDecisionArtifactPatch,
 } from "./compiler.js";
 export {
+  findUnsettledDecisionArtifactReconciliation,
   reconcileDecisionArtifactCanonicalizations,
   type DecisionArtifactReconciliationError,
+  type DecisionArtifactReconciliationLookupRepositories,
   type DecisionArtifactReconciliationRepositories,
   type DecisionArtifactReconciliationResult,
+  type DecisionArtifactUnsettledReconciliation,
+  type DecisionArtifactUnsettledReconciliationSummary,
   type ReconcileDecisionArtifactCanonicalizationsInput,
 } from "./reconciliation.js";
