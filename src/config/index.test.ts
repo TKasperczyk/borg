@@ -72,6 +72,24 @@ describe("config", () => {
       finalizerHardCapTokens: 100_000,
       finalizerMaxEntryTextTokens: 1_200,
       sectionOptions: {},
+      decisionArtifact: {
+        maxActiveEntries: 40,
+        kindSoftCaps: {
+          locked: 24,
+          live: 10,
+          invalidated: 4,
+          pending: 4,
+          tentative: 2,
+        },
+        renderMaxEntries: 30,
+        renderMaxTokens: 3_000,
+        renderReservedSlots: {
+          live: 8,
+          invalidated: 3,
+          pending: 3,
+        },
+        renderLockedCap: 14,
+      },
     });
     expect(config.generation.cognition).toEqual({
       thinking: {
@@ -255,6 +273,11 @@ describe("config", () => {
     expect(config.generation.evidenceLedger.finalizerTargetTokens).toBe(60_000);
     expect(config.generation.evidenceLedger.finalizerHardCapTokens).toBe(100_000);
     expect(config.generation.evidenceLedger.finalizerMaxEntryTextTokens).toBe(900);
+    expect(config.generation.evidenceLedger.decisionArtifact).toMatchObject({
+      maxActiveEntries: 40,
+      renderMaxEntries: 30,
+      renderLockedCap: 14,
+    });
     expect(config.generation.evidenceLedger.sectionOptions).toEqual({
       current_session_transcript: {
         maxEntries: 24,

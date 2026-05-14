@@ -43,6 +43,35 @@ const evidenceLedgerSectionOptionsSchema = z
     maxTokens: z.number().int().positive().optional(),
   })
   .strict();
+const decisionArtifactKindSoftCapsSchema = z
+  .object({
+    locked: z.number().int().positive().default(24),
+    live: z.number().int().positive().default(10),
+    invalidated: z.number().int().positive().default(4),
+    pending: z.number().int().positive().default(4),
+    tentative: z.number().int().positive().default(2),
+  })
+  .strict()
+  .prefault({});
+const decisionArtifactRenderReservedSlotsSchema = z
+  .object({
+    live: z.number().int().nonnegative().default(8),
+    invalidated: z.number().int().nonnegative().default(3),
+    pending: z.number().int().nonnegative().default(3),
+  })
+  .strict()
+  .prefault({});
+const decisionArtifactConfigSchema = z
+  .object({
+    maxActiveEntries: z.number().int().positive().default(40),
+    kindSoftCaps: decisionArtifactKindSoftCapsSchema,
+    renderMaxEntries: z.number().int().positive().default(30),
+    renderMaxTokens: z.number().int().positive().default(3_000),
+    renderReservedSlots: decisionArtifactRenderReservedSlotsSchema,
+    renderLockedCap: z.number().int().nonnegative().default(14),
+  })
+  .strict()
+  .prefault({});
 const evidenceLedgerConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -56,6 +85,7 @@ const evidenceLedgerConfigSchema = z
     sectionOptions: z
       .partialRecord(evidenceLedgerSectionIdSchema, evidenceLedgerSectionOptionsSchema)
       .default({}),
+    decisionArtifact: decisionArtifactConfigSchema,
   })
   .prefault({});
 const cognitionThinkingConfigSchema = z

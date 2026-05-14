@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { decisionArtifactMigrations } from "../../memory/decision-artifacts/migrations.js";
 import { DecisionArtifactRepository } from "../../memory/decision-artifacts/repository.js";
+import type { DecisionArtifactEntryKind } from "../../memory/decision-artifacts/types.js";
 import {
   composeMigrations,
   openDatabase,
@@ -102,6 +103,12 @@ describe("compileDecisionArtifact", () => {
       clock,
       turnId: "turn_decision_artifact_test",
     };
+  }
+
+  function activeEntries() {
+    return (repository.get(audience)?.entries ?? []).filter(
+      (entry) => entry.superseded_by_id === null,
+    );
   }
 
   it("adds a locked decision emitted by the LLM", async () => {
@@ -264,5 +271,322 @@ describe("compileDecisionArtifact", () => {
     await compileDecisionArtifact(baseInput(llmClient));
 
     expect(repository.get(audience)?.record_version).toBe(initial?.record_version);
+  });
+
+  it("enforces the active-entry lifecycle budget on a no-op patch", async () => {
+    const source = createStreamEntryId();
+
+    repository.upsert(
+      audience,
+      Array.from({ length: 50 }, (_, index) => ({
+        type: "add" as const,
+        kind: "locked" as const,
+        text: `Locked planning entry ${index}`,
+        provenance_stream_entry_ids: [source],
+        created_at: 1_000 + index,
+        last_updated_at: 1_000 + index,
+        rank: index,
+      })),
+      {
+        lastCompiledStreamEntryId: source,
+      },
+    );
+
+    const llmClient = new FakeLLMClient({
+      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+    });
+    const trace = createTraceRecorder();
+    const patch = await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      allowedSourceStreamEntryIds: [source, currentStreamEntryId],
+      tracer: trace,
+    });
+
+    expect(activeEntries()).toHaveLength(40);
+    expect(patch.operations.filter((operation) => operation.type === "prune")).toHaveLength(10);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_compile_completed",
+        data: expect.objectContaining({
+          artifact_total_entry_count: 40,
+          artifact_active_entry_count: 40,
+          artifact_omitted_entry_count: 26,
+          artifact_pruned_entry_count_this_turn: 10,
+          artifact_superseded_count_this_turn: 0,
+          rendered_by_kind: expect.objectContaining({
+            locked: 14,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("prunes superseded dependencies before pruning a referenced replacement", async () => {
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const extraSource = createStreamEntryId();
+    const initial = repository.upsert(audience, [
+      {
+        type: "add",
+        kind: "locked",
+        text: "Original locked route",
+        provenance_stream_entry_ids: [firstSource],
+        created_at: 1_000,
+        last_updated_at: 1_000,
+        rank: 0,
+      },
+    ]);
+    const originalId = initial?.entries[0]?.id;
+
+    expect(originalId).toBeDefined();
+    const superseded = repository.upsert(audience, [
+      {
+        type: "supersede",
+        id: originalId!,
+        replacement: {
+          kind: "locked",
+          text: "Replacement locked route",
+          provenance_stream_entry_ids: [secondSource],
+          created_at: 1_100,
+          last_updated_at: 1_100,
+          rank: 1,
+        },
+        last_updated_stream_entry_ids: [secondSource],
+      },
+      {
+        type: "add",
+        kind: "locked",
+        text: "Extra locked route 1",
+        provenance_stream_entry_ids: [extraSource],
+        created_at: 2_000,
+        last_updated_at: 2_000,
+        rank: 2,
+      },
+      {
+        type: "add",
+        kind: "locked",
+        text: "Extra locked route 2",
+        provenance_stream_entry_ids: [extraSource],
+        created_at: 3_000,
+        last_updated_at: 3_000,
+        rank: 3,
+      },
+    ]);
+    const replacementId = superseded?.entries.find((entry) => entry.id !== originalId)?.id;
+
+    expect(replacementId).toBeDefined();
+
+    const llmClient = new FakeLLMClient({
+      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+    });
+
+    const patch = await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      allowedSourceStreamEntryIds: [firstSource, secondSource, extraSource, currentStreamEntryId],
+      lifecycle: {
+        maxActiveEntries: 1,
+        kindSoftCaps: {
+          locked: 0,
+        },
+      },
+    });
+
+    const artifact = repository.get(audience);
+
+    expect(activeEntries()).toHaveLength(1);
+    expect(activeEntries()[0]?.text).toBe("Extra locked route 2");
+    expect(artifact?.entries.find((entry) => entry.id === originalId)).toBeUndefined();
+    expect(artifact?.entries.find((entry) => entry.id === replacementId)).toBeUndefined();
+    expect(
+      patch.operations
+        .filter((operation) => operation.type === "prune")
+        .map((operation) => operation.id),
+    ).toEqual(expect.arrayContaining([originalId, replacementId]));
+  });
+
+  it("keeps the active-entry cap hard when every replacement has a superseded referrer", async () => {
+    const source = createStreamEntryId();
+    const originalIds: string[] = [];
+    const replacementIds: string[] = [];
+
+    for (let index = 0; index < 42; index += 1) {
+      const originalText = `Original locked route ${index}`;
+      const replacementText = `Replacement locked route ${index}`;
+      const original = repository.upsert(audience, [
+        {
+          type: "add",
+          kind: "locked",
+          text: originalText,
+          provenance_stream_entry_ids: [source],
+          created_at: 1_000 + index,
+          last_updated_at: 1_000 + index,
+          rank: index,
+        },
+      ]);
+      const originalId = original?.entries.find((entry) => entry.text === originalText)?.id;
+
+      expect(originalId).toBeDefined();
+
+      const superseded = repository.upsert(audience, [
+        {
+          type: "supersede",
+          id: originalId!,
+          replacement: {
+            kind: "locked",
+            text: replacementText,
+            provenance_stream_entry_ids: [source],
+            created_at: 10_000 + index,
+            last_updated_at: 10_000 + index,
+            rank: index,
+          },
+          last_updated_stream_entry_ids: [source],
+        },
+      ]);
+      const replacementId = superseded?.entries.find((entry) => entry.text === replacementText)?.id;
+
+      expect(replacementId).toBeDefined();
+      originalIds.push(originalId!);
+      replacementIds.push(replacementId!);
+    }
+
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [emitDecisionArtifactPatchResponse({ operations: [] })],
+    });
+    const patch = await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      allowedSourceStreamEntryIds: [source, currentStreamEntryId],
+      tracer: trace,
+      lifecycle: {
+        maxActiveEntries: 40,
+        kindSoftCaps: {
+          locked: 40,
+        },
+      },
+    });
+    const pruneIds = patch.operations
+      .filter((operation) => operation.type === "prune")
+      .map((operation) => operation.id);
+
+    expect(activeEntries()).toHaveLength(40);
+    expect(pruneIds).toHaveLength(4);
+    for (const replacementId of replacementIds.filter((id) => pruneIds.includes(id))) {
+      const originalId = originalIds[replacementIds.indexOf(replacementId)];
+
+      expect(pruneIds.indexOf(originalId!)).toBeGreaterThanOrEqual(0);
+      expect(pruneIds.indexOf(originalId!)).toBeLessThan(pruneIds.indexOf(replacementId));
+    }
+    expect(
+      trace.events.find((event) => event.event === "decision_artifact_lifecycle_unable_to_cap"),
+    ).toBeUndefined();
+  });
+
+  it("expands dependencies for an LLM-emitted prune of a referenced replacement", async () => {
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const initial = repository.upsert(audience, [
+      {
+        type: "add",
+        kind: "locked",
+        text: "Original locked route",
+        provenance_stream_entry_ids: [firstSource],
+        created_at: 1_000,
+        last_updated_at: 1_000,
+        rank: 0,
+      },
+    ]);
+    const originalId = initial?.entries[0]?.id;
+
+    expect(originalId).toBeDefined();
+
+    const superseded = repository.upsert(audience, [
+      {
+        type: "supersede",
+        id: originalId!,
+        replacement: {
+          kind: "locked",
+          text: "Replacement locked route",
+          provenance_stream_entry_ids: [secondSource],
+          created_at: 1_100,
+          last_updated_at: 1_100,
+          rank: 1,
+        },
+        last_updated_stream_entry_ids: [secondSource],
+      },
+    ]);
+    const replacementId = superseded?.entries.find((entry) => entry.id !== originalId)?.id;
+
+    expect(replacementId).toBeDefined();
+
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "prune",
+              id: replacementId!,
+            },
+          ],
+        }),
+      ],
+    });
+    const patch = await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      allowedSourceStreamEntryIds: [firstSource, secondSource, currentStreamEntryId],
+    });
+    const pruneIds = patch.operations
+      .filter((operation) => operation.type === "prune")
+      .map((operation) => operation.id);
+    const artifact = repository.get(audience);
+
+    expect(pruneIds).toEqual([originalId, replacementId]);
+    expect(artifact?.entries.find((entry) => entry.id === originalId)).toBeUndefined();
+    expect(artifact?.entries.find((entry) => entry.id === replacementId)).toBeUndefined();
+  });
+
+  it("accepts all decision artifact kinds emitted by the compiler", async () => {
+    const kinds = [
+      "locked",
+      "live",
+      "tentative",
+      "invalidated",
+      "pending",
+    ] as const satisfies readonly DecisionArtifactEntryKind[];
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: kinds.map((kind) => ({
+            type: "add" as const,
+            kind,
+            text: `Artifact entry kind ${kind}`,
+            owner_entity_id: audience,
+            source_stream_entry_ids: [currentStreamEntryId],
+          })),
+        }),
+      ],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+    });
+
+    expect(
+      repository
+        .get(audience)
+        ?.entries.map((entry) => entry.kind)
+        .sort(),
+    ).toEqual([...kinds].sort());
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_compile_completed",
+        data: expect.objectContaining({
+          rejectedCount: 0,
+          rejectionReasons: [],
+          applied: true,
+        }),
+      }),
+    );
   });
 });

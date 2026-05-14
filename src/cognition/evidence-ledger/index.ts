@@ -12,6 +12,8 @@ export {
   renderDecisionStateArtifact,
   renderEvidenceLedger,
   summarizeDecisionStateArtifactRender,
+  type DecisionArtifactKindCounts,
+  type DecisionArtifactRenderOptions,
   type CompactedEvidenceLedger,
   type CompactPlannerLedgerOptions,
   type CompactPlannerLedgerPrompt,

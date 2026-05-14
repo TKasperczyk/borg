@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import type { DecisionArtifact } from "../../memory/decision-artifacts/index.js";
+import type {
+  DecisionArtifact,
+  DecisionArtifactEntry,
+  DecisionArtifactEntryKind,
+} from "../../memory/decision-artifacts/index.js";
 import {
   createDecisionArtifactEntryId,
   createEntityId,
@@ -11,6 +15,7 @@ import { EVIDENCE_LEDGER_SECTION_DEFINITIONS, type EvidenceLedger } from "./type
 import {
   buildCompactPlannerLedgerPrompt,
   compactEvidenceLedger,
+  estimateEvidenceLedgerPromptTokens,
   renderCompactPlannerLedger,
   renderDecisionStateArtifact,
   renderEvidenceLedger,
@@ -76,6 +81,45 @@ function syntheticEntry(input: {
   };
 }
 
+function decisionArtifactEntry(input: {
+  audience: DecisionArtifact["audience_entity_id"];
+  kind: DecisionArtifactEntryKind;
+  index: number;
+  source: DecisionArtifactEntry["provenance_stream_entry_ids"][number];
+  text?: string;
+}): DecisionArtifactEntry {
+  return {
+    id: createDecisionArtifactEntryId(),
+    audience_entity_id: input.audience,
+    kind: input.kind,
+    text: input.text ?? `${input.kind} decision ${input.index}`,
+    owner_entity_id: input.audience,
+    provenance_stream_entry_ids: [input.source],
+    last_updated_stream_entry_ids: [input.source],
+    created_at: 1_000 + input.index,
+    last_updated_at: 1_000 + input.index,
+    superseded_by_id: null,
+    rank: input.index,
+  };
+}
+
+function decisionArtifactWithEntries(
+  entries: readonly DecisionArtifactEntry[],
+  source: DecisionArtifactEntry["provenance_stream_entry_ids"][number],
+): DecisionArtifact {
+  const audience = entries[0]?.audience_entity_id ?? createEntityId();
+
+  return {
+    audience_entity_id: audience,
+    record_version: 1,
+    created_at: 1_000,
+    updated_at: 1_000,
+    last_compiled_at: 1_000,
+    last_compiled_stream_entry_id: source,
+    entries: [...entries],
+  };
+}
+
 describe("renderEvidenceLedger", () => {
   it("renders a tagged prompt block with hierarchy guidance and entry metadata", () => {
     const rendered = renderEvidenceLedger(makeLedger());
@@ -124,6 +168,38 @@ describe("renderEvidenceLedger", () => {
       'state_metadata={"abandoned_reason":"No longer relevant.","abandoned_at":1800000000000}',
     );
   });
+
+  it("estimates tokens with configured decision artifact render options", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const ledger = makeLedger();
+    const entries = [
+      ...Array.from({ length: 4 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "live", index }),
+      ),
+      ...Array.from({ length: 20 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "locked", index: 100 + index }),
+      ),
+    ];
+    const options = {
+      decisionArtifact: {
+        maxEntries: 5,
+        reservedSlots: {
+          live: 4,
+        },
+        lockedMaxEntries: 1,
+      },
+    };
+
+    ledger.decisionArtifact = decisionArtifactWithEntries(entries, source);
+    const rendered = renderEvidenceLedger(ledger, options) ?? "";
+
+    expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(4);
+    expect(rendered.match(/kind=locked/g)?.length ?? 0).toBe(1);
+    expect(estimateEvidenceLedgerPromptTokens(ledger, options)).toBe(
+      estimatePromptTokens(rendered),
+    );
+  });
 });
 
 describe("renderDecisionStateArtifact", () => {
@@ -158,6 +234,123 @@ describe("renderDecisionStateArtifact", () => {
 
     expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(3_000);
     expect(rendered).toContain(" ... [text truncated]");
+  });
+
+  it("reserves room for live entries instead of rendering locked entries first", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entries = [
+      ...Array.from({ length: 20 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "locked", index }),
+      ),
+      ...Array.from({ length: 10 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "live", index: 100 + index }),
+      ),
+    ];
+    const rendered =
+      renderDecisionStateArtifact(decisionArtifactWithEntries(entries, source)) ?? "";
+
+    expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(10);
+    expect(rendered.match(/kind=locked/g)?.length ?? 0).toBe(14);
+    expect(rendered).toContain("DecisionStateArtifact omitted:");
+    expect(rendered).toContain("6 locked");
+  });
+
+  it("honors category reservations and backfills under the locked cap", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const entries = [
+      ...Array.from({ length: 5 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "live", index }),
+      ),
+      ...Array.from({ length: 5 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "invalidated", index: 100 + index }),
+      ),
+      ...Array.from({ length: 5 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "pending", index: 200 + index }),
+      ),
+      ...Array.from({ length: 25 }, (_, index) =>
+        decisionArtifactEntry({ audience, source, kind: "locked", index: 300 + index }),
+      ),
+    ];
+    const rendered =
+      renderDecisionStateArtifact(decisionArtifactWithEntries(entries, source)) ?? "";
+
+    expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(5);
+    expect(rendered.match(/kind=invalidated/g)?.length ?? 0).toBe(5);
+    expect(rendered.match(/kind=pending/g)?.length ?? 0).toBe(5);
+    expect(rendered.match(/kind=locked/g)?.length ?? 0).toBe(14);
+    expect(rendered).toContain("11 locked");
+  });
+
+  it("keeps one entry from each reserved category under token pressure", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const pressureText = "token pressure ".repeat(120);
+    const entries = (["live", "invalidated", "pending", "locked"] as const).flatMap(
+      (kind, kindIndex) =>
+        Array.from({ length: 3 }, (_, index) =>
+          decisionArtifactEntry({
+            audience,
+            source,
+            kind,
+            index: kindIndex * 100 + index,
+            text: `${kind} ${index} ${pressureText}`,
+          }),
+        ),
+    );
+    const rendered =
+      renderDecisionStateArtifact(decisionArtifactWithEntries(entries, source), {
+        maxEntries: 12,
+        maxTokens: 1_800,
+      }) ?? "";
+
+    expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(1_800);
+    expect(rendered.match(/kind=live/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(rendered.match(/kind=invalidated/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(rendered.match(/kind=pending/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(rendered).toContain("DecisionStateArtifact omitted:");
+  });
+
+  it("drops locked entries before collapsing the configured live reservation under token pressure", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const pressureText = "locked token pressure ".repeat(40);
+    const entries = [
+      ...Array.from({ length: 20 }, (_, index) =>
+        decisionArtifactEntry({
+          audience,
+          source,
+          kind: "locked",
+          index,
+          text: `locked ${index} ${pressureText}`,
+        }),
+      ),
+      ...Array.from({ length: 8 }, (_, index) =>
+        decisionArtifactEntry({
+          audience,
+          source,
+          kind: "live",
+          index: 100 + index,
+          text: `live ${index}`,
+        }),
+      ),
+    ];
+    const rendered =
+      renderDecisionStateArtifact(decisionArtifactWithEntries(entries, source), {
+        maxEntries: 22,
+        maxTokens: 1_800,
+        reservedSlots: {
+          live: 8,
+          invalidated: 0,
+          pending: 0,
+        },
+        lockedMaxEntries: 14,
+      }) ?? "";
+
+    expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(1_800);
+    expect(rendered.match(/kind=live/g)?.length ?? 0).toBe(8);
+    expect(rendered.match(/kind=locked/g)?.length ?? 0).toBeLessThan(14);
   });
 });
 

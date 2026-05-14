@@ -17,6 +17,7 @@ import {
   renderEvidenceLedger,
   summarizeDecisionStateArtifactRender,
   summarizeEvidenceLedgerTrace,
+  type DecisionArtifactRenderOptions,
   type EvidenceLedger,
   type EvidenceLedgerBuildInput,
   type EvidenceLedgerCompactionTraceSummary,
@@ -678,6 +679,7 @@ export class TurnPhaseCoordinator {
       clock: this.options.clock,
       tracer: this.options.tracer,
       hostCapabilities: this.options.config.host_capabilities,
+      decisionArtifactRenderOptions: this.decisionArtifactRenderOptions(),
     });
     const deliberation = await deliberator.run(
       {
@@ -1413,12 +1415,24 @@ export class TurnPhaseCoordinator {
       ledger: ledgerWithoutArtifact,
       promptVisibleLedger: renderedWithoutArtifact ?? "",
     });
-    const ledger = this.withDecisionArtifact(ledgerWithoutArtifact, decisionArtifact);
-    const rendered = renderEvidenceLedger(ledger);
-    const decisionArtifactSummary = summarizeDecisionStateArtifactRender(ledger.decisionArtifact);
+    const decisionArtifactRender = this.decisionArtifactRenderOptions();
+    const ledger = this.withDecisionArtifact(
+      ledgerWithoutArtifact,
+      decisionArtifact,
+      decisionArtifactRender,
+    );
+    const rendered = renderEvidenceLedger(ledger, {
+      decisionArtifact: decisionArtifactRender,
+    });
+    const decisionArtifactSummary = summarizeDecisionStateArtifactRender(
+      ledger.decisionArtifact,
+      decisionArtifactRender,
+    );
     const traceSummary = summarizeEvidenceLedgerTrace({
       ...ledger,
-      estimatedTokens: estimateEvidenceLedgerPromptTokens(ledger),
+      estimatedTokens: estimateEvidenceLedgerPromptTokens(ledger, {
+        decisionArtifact: decisionArtifactRender,
+      }),
     });
 
     if (
@@ -1456,6 +1470,9 @@ export class TurnPhaseCoordinator {
         estimated_tokens_by_section: toTraceJsonValue(traceSummary.estimatedTokensBySection),
         decision_artifact_entry_count: decisionArtifactSummary.renderedEntryCount,
         decision_artifact_rendered_token_estimate: decisionArtifactSummary.estimatedTokens,
+        decision_artifact_rendered_by_kind: toTraceJsonValue(
+          decisionArtifactSummary.renderedByKind,
+        ),
       });
     }
 
@@ -1509,14 +1526,32 @@ export class TurnPhaseCoordinator {
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.input.turnId,
+      lifecycle: {
+        maxActiveEntries:
+          this.options.config.generation.evidenceLedger.decisionArtifact.maxActiveEntries,
+        kindSoftCaps: this.options.config.generation.evidenceLedger.decisionArtifact.kindSoftCaps,
+      },
+      renderOptions: this.decisionArtifactRenderOptions(),
     });
 
     return this.options.decisionArtifactRepository.get(audienceEntityId);
   }
 
+  private decisionArtifactRenderOptions(): DecisionArtifactRenderOptions {
+    const config = this.options.config.generation.evidenceLedger.decisionArtifact;
+
+    return {
+      maxEntries: config.renderMaxEntries,
+      maxTokens: config.renderMaxTokens,
+      reservedSlots: config.renderReservedSlots,
+      lockedMaxEntries: config.renderLockedCap,
+    };
+  }
+
   private withDecisionArtifact(
     ledger: EvidenceLedger,
     decisionArtifact: DecisionArtifact | null,
+    decisionArtifactRender: DecisionArtifactRenderOptions,
   ): EvidenceLedger {
     const ledgerWithArtifact = {
       ...ledger,
@@ -1525,7 +1560,9 @@ export class TurnPhaseCoordinator {
 
     return {
       ...ledgerWithArtifact,
-      estimatedTokens: estimateEvidenceLedgerPromptTokens(ledgerWithArtifact),
+      estimatedTokens: estimateEvidenceLedgerPromptTokens(ledgerWithArtifact, {
+        decisionArtifact: decisionArtifactRender,
+      }),
     };
   }
 

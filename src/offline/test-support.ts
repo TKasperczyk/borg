@@ -226,6 +226,18 @@ export function createTestConfig(
       evidenceLedger: {
         ...DEFAULT_CONFIG.generation.evidenceLedger,
         ...overrides.generation?.evidenceLedger,
+        decisionArtifact: {
+          ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+          ...overrides.generation?.evidenceLedger?.decisionArtifact,
+          kindSoftCaps: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact.kindSoftCaps,
+            ...overrides.generation?.evidenceLedger?.decisionArtifact?.kindSoftCaps,
+          },
+          renderReservedSlots: {
+            ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact.renderReservedSlots,
+            ...overrides.generation?.evidenceLedger?.decisionArtifact?.renderReservedSlots,
+          },
+        },
       },
       postGenerationGuards: {
         ...DEFAULT_CONFIG.generation.postGenerationGuards,

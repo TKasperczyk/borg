@@ -2,7 +2,9 @@ import { estimatePromptTokens } from "../../util/token-estimate.js";
 import type {
   DecisionArtifact,
   DecisionArtifactEntry,
+  DecisionArtifactEntryKind,
 } from "../../memory/decision-artifacts/index.js";
+import { DECISION_ARTIFACT_ENTRY_KINDS } from "../../memory/decision-artifacts/index.js";
 import { UNTRUSTED_DATA_PREAMBLE } from "../deliberation/constants.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import type {
@@ -25,8 +27,26 @@ const COMPACT_PLANNER_LEDGER_SECTION_IDS = [
 const DEFAULT_COMPACT_PLANNER_TARGET_TOKENS = 8_000;
 const DEFAULT_COMPACT_PLANNER_HARD_CAP_TOKENS = 15_000;
 const DEFAULT_COMPACT_ENTRY_TEXT_TOKEN_CAP = 600;
-const DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES = 25;
+const DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES = 30;
 const DEFAULT_DECISION_ARTIFACT_MAX_TOKENS = 3_000;
+const DEFAULT_DECISION_ARTIFACT_RESERVED_SLOTS = {
+  live: 8,
+  invalidated: 3,
+  pending: 3,
+} as const satisfies Partial<Record<DecisionArtifactEntryKind, number>>;
+const DEFAULT_DECISION_ARTIFACT_LOCKED_CAP = 14;
+const DECISION_ARTIFACT_RESERVED_KINDS = [
+  "live",
+  "invalidated",
+  "pending",
+] as const satisfies readonly DecisionArtifactEntryKind[];
+const DECISION_ARTIFACT_RENDER_FILL_ORDER = [
+  "live",
+  "pending",
+  "invalidated",
+  "locked",
+  "tentative",
+] as const satisfies readonly DecisionArtifactEntryKind[];
 const DECISION_ARTIFACT_SINGLE_ENTRY_FLOOR_TOKENS = 200;
 const DECISION_ARTIFACT_TEXT_TRUNCATION_MARKER = " ... [text truncated]";
 
@@ -71,6 +91,7 @@ export type CompactPlannerLedgerOptions = {
   targetTokens?: number;
   hardCapTokens?: number;
   maxEntryTextTokens?: number;
+  decisionArtifact?: DecisionArtifactRenderOptions;
 };
 
 export type CompactPlannerLedgerTraceSummary = {
@@ -79,6 +100,7 @@ export type CompactPlannerLedgerTraceSummary = {
   estimatedTokensBySection: Record<EvidenceLedgerSectionId, number>;
   decisionArtifactEntryCount: number;
   decisionArtifactRenderedTokens: number;
+  decisionArtifactRenderedByKind: DecisionArtifactKindCounts;
   totalEstimatedTokens: number;
   targetTokens: number;
   hardCapTokens: number;
@@ -90,10 +112,22 @@ export type CompactPlannerLedgerPrompt = {
 };
 
 export type DecisionStateArtifactRenderSummary = {
+  totalEntryCount: number;
   activeEntryCount: number;
   renderedEntryCount: number;
   omittedEntryCount: number;
   estimatedTokens: number;
+  renderedByKind: DecisionArtifactKindCounts;
+  omittedByKind: DecisionArtifactKindCounts;
+};
+
+export type DecisionArtifactKindCounts = Record<DecisionArtifactEntryKind, number>;
+
+export type DecisionArtifactRenderOptions = {
+  maxEntries?: number;
+  maxTokens?: number;
+  reservedSlots?: Partial<Record<DecisionArtifactEntryKind, number>>;
+  lockedMaxEntries?: number;
 };
 
 type FullEvidenceLedgerSectionOptions = {
@@ -1062,10 +1096,11 @@ function compactSection(input: { section: EvidenceLedgerSection; maxEntryTextTok
 function totalCompactPromptTokens(
   sections: readonly CompactSectionResult[],
   decisionArtifact: DecisionArtifact | null | undefined,
+  decisionArtifactOptions: DecisionArtifactRenderOptions | undefined,
 ): number {
   return estimatePromptTokens(
     renderCompactPlannerLedgerPromptSection(
-      renderCompactPlannerLedgerContent(sections, decisionArtifact),
+      renderCompactPlannerLedgerContent(sections, decisionArtifact, decisionArtifactOptions),
     ) ?? "",
   );
 }
@@ -1079,8 +1114,11 @@ function trimToTokenTarget(
   sections: CompactSectionResult[],
   targetTokens: number,
   decisionArtifact: DecisionArtifact | null | undefined,
+  decisionArtifactOptions: DecisionArtifactRenderOptions | undefined,
 ): CompactSectionResult[] {
-  while (totalCompactPromptTokens(sections, decisionArtifact) > targetTokens) {
+  while (
+    totalCompactPromptTokens(sections, decisionArtifact, decisionArtifactOptions) > targetTokens
+  ) {
     const trimIndex = [...sections]
       .reverse()
       .findIndex((section) => section.section.entries.length > 0);
@@ -1101,24 +1139,302 @@ function trimToTokenTarget(
   return sections;
 }
 
+function emptyDecisionArtifactKindCounts(): DecisionArtifactKindCounts {
+  return Object.fromEntries(
+    DECISION_ARTIFACT_ENTRY_KINDS.map((kind) => [kind, 0]),
+  ) as DecisionArtifactKindCounts;
+}
+
+function countDecisionArtifactEntriesByKind(
+  entries: readonly DecisionArtifactEntry[],
+): DecisionArtifactKindCounts {
+  const counts = emptyDecisionArtifactKindCounts();
+
+  for (const entry of entries) {
+    counts[entry.kind] += 1;
+  }
+
+  return counts;
+}
+
+function subtractDecisionArtifactKindCounts(
+  left: DecisionArtifactKindCounts,
+  right: DecisionArtifactKindCounts,
+): DecisionArtifactKindCounts {
+  const counts = emptyDecisionArtifactKindCounts();
+
+  for (const kind of DECISION_ARTIFACT_ENTRY_KINDS) {
+    counts[kind] = Math.max(0, left[kind] - right[kind]);
+  }
+
+  return counts;
+}
+
 function activeDecisionArtifactEntries(artifact: DecisionArtifact | null | undefined) {
-  return (artifact?.entries ?? []).filter(
-    (entry) =>
-      entry.superseded_by_id === null && (entry.kind === "locked" || entry.kind === "live"),
+  return (artifact?.entries ?? []).filter((entry) => entry.superseded_by_id === null);
+}
+
+function compareDecisionArtifactEntriesByRecency(
+  left: DecisionArtifactEntry,
+  right: DecisionArtifactEntry,
+): number {
+  return (
+    right.last_updated_at - left.last_updated_at ||
+    left.rank - right.rank ||
+    right.created_at - left.created_at ||
+    left.id.localeCompare(right.id)
   );
 }
 
-function orderedDecisionArtifactEntries(
-  entries: readonly DecisionArtifactEntry[],
-): DecisionArtifactEntry[] {
-  const locked = entries
-    .filter((entry) => entry.kind === "locked")
-    .sort((left, right) => left.rank - right.rank || left.created_at - right.created_at);
-  const live = entries
-    .filter((entry) => entry.kind === "live")
-    .sort((left, right) => right.last_updated_at - left.last_updated_at || left.rank - right.rank);
+function decisionArtifactRenderOptions(
+  options: DecisionArtifactRenderOptions = {},
+): Required<DecisionArtifactRenderOptions> {
+  return {
+    maxEntries: normalizePositiveInteger(options.maxEntries, DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES),
+    maxTokens: normalizePositiveInteger(options.maxTokens, DEFAULT_DECISION_ARTIFACT_MAX_TOKENS),
+    reservedSlots: {
+      ...DEFAULT_DECISION_ARTIFACT_RESERVED_SLOTS,
+      ...(options.reservedSlots ?? {}),
+    },
+    lockedMaxEntries:
+      options.lockedMaxEntries === undefined || !Number.isFinite(options.lockedMaxEntries)
+        ? DEFAULT_DECISION_ARTIFACT_LOCKED_CAP
+        : Math.max(0, Math.floor(options.lockedMaxEntries)),
+  };
+}
 
-  return [...locked, ...live];
+function selectDecisionArtifactEntriesForRender(input: {
+  entries: readonly DecisionArtifactEntry[];
+  maxEntries: number;
+  reservedSlots: Partial<Record<DecisionArtifactEntryKind, number>>;
+  lockedMaxEntries: number;
+}): DecisionArtifactEntry[] {
+  const byKind = new Map<DecisionArtifactEntryKind, DecisionArtifactEntry[]>();
+
+  for (const kind of DECISION_ARTIFACT_ENTRY_KINDS) {
+    byKind.set(
+      kind,
+      input.entries
+        .filter((entry) => entry.kind === kind)
+        .sort(compareDecisionArtifactEntriesByRecency),
+    );
+  }
+
+  const selected: DecisionArtifactEntry[] = [];
+  const selectedIds = new Set<DecisionArtifactEntry["id"]>();
+  const selectedByKind = emptyDecisionArtifactKindCounts();
+
+  const takeFromKind = (kind: DecisionArtifactEntryKind, limit: number): void => {
+    if (limit <= 0 || selected.length >= input.maxEntries) {
+      return;
+    }
+
+    const candidates = byKind.get(kind) ?? [];
+
+    for (const candidate of candidates) {
+      if (selected.length >= input.maxEntries || selectedByKind[kind] >= limit) {
+        return;
+      }
+
+      if (kind === "locked" && selectedByKind.locked >= input.lockedMaxEntries) {
+        return;
+      }
+
+      if (selectedIds.has(candidate.id)) {
+        continue;
+      }
+
+      selected.push(candidate);
+      selectedIds.add(candidate.id);
+      selectedByKind[kind] += 1;
+    }
+  };
+
+  for (const kind of DECISION_ARTIFACT_RESERVED_KINDS) {
+    takeFromKind(kind, input.reservedSlots[kind] ?? 0);
+  }
+
+  for (const kind of DECISION_ARTIFACT_RENDER_FILL_ORDER) {
+    const categoryLimit = kind === "locked" ? input.lockedMaxEntries : Number.POSITIVE_INFINITY;
+    takeFromKind(kind, categoryLimit);
+  }
+
+  const orderByKind = new Map(
+    DECISION_ARTIFACT_RENDER_FILL_ORDER.map((kind, index) => [kind, index]),
+  );
+
+  return selected.sort(
+    (left, right) =>
+      (orderByKind.get(left.kind) ?? Number.MAX_SAFE_INTEGER) -
+        (orderByKind.get(right.kind) ?? Number.MAX_SAFE_INTEGER) ||
+      compareDecisionArtifactEntriesByRecency(left, right),
+  );
+}
+
+function decisionArtifactRenderedCounts(input: {
+  activeEntries: readonly DecisionArtifactEntry[];
+  renderedEntries: readonly DecisionArtifactEntry[];
+}): {
+  renderedByKind: DecisionArtifactKindCounts;
+  omittedByKind: DecisionArtifactKindCounts;
+  omittedEntryCount: number;
+} {
+  const activeByKind = countDecisionArtifactEntriesByKind(input.activeEntries);
+  const renderedByKind = countDecisionArtifactEntriesByKind(input.renderedEntries);
+  const omittedByKind = subtractDecisionArtifactKindCounts(activeByKind, renderedByKind);
+
+  return {
+    renderedByKind,
+    omittedByKind,
+    omittedEntryCount: Math.max(0, input.activeEntries.length - input.renderedEntries.length),
+  };
+}
+
+function formatDecisionArtifactKindCounts(
+  counts: DecisionArtifactKindCounts,
+  options: { suffix?: string } = {},
+): string {
+  const parts = DECISION_ARTIFACT_ENTRY_KINDS.flatMap((kind) =>
+    counts[kind] <= 0 ? [] : [`${counts[kind]} ${kind}${options.suffix ?? ""}`],
+  );
+
+  return parts.length === 0 ? "0 entries" : parts.join(", ");
+}
+
+function onePerKindTokenDropFloor(
+  kind: DecisionArtifactEntryKind,
+  activeCounts: DecisionArtifactKindCounts,
+): number {
+  if (activeCounts[kind] <= 0) {
+    return 0;
+  }
+
+  if (kind === "tentative") {
+    return 0;
+  }
+
+  return 1;
+}
+
+function reservedTokenDropMinimum(input: {
+  kind: DecisionArtifactEntryKind;
+  activeCounts: DecisionArtifactKindCounts;
+  reservedSlots: Partial<Record<DecisionArtifactEntryKind, number>>;
+}): number {
+  const floor = onePerKindTokenDropFloor(input.kind, input.activeCounts);
+  const reserved = input.reservedSlots[input.kind] ?? 0;
+
+  if (reserved <= 0) {
+    return floor;
+  }
+
+  return Math.max(floor, Math.min(input.activeCounts[input.kind], Math.floor(reserved)));
+}
+
+function latestDecisionArtifactDropIndex(
+  entries: readonly DecisionArtifactEntry[],
+  kind: DecisionArtifactEntryKind,
+): number | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index]?.kind === kind) {
+      return index;
+    }
+  }
+
+  return null;
+}
+
+function tokenDropIndexForKinds(input: {
+  entries: readonly DecisionArtifactEntry[];
+  kinds: readonly DecisionArtifactEntryKind[];
+  minimumForKind: (kind: DecisionArtifactEntryKind) => number;
+}): number | null {
+  const renderedCounts = countDecisionArtifactEntriesByKind(input.entries);
+  let selectedKind: DecisionArtifactEntryKind | null = null;
+  let selectedSurplus = 0;
+
+  for (const kind of input.kinds) {
+    const surplus = renderedCounts[kind] - input.minimumForKind(kind);
+
+    if (surplus > selectedSurplus) {
+      selectedKind = kind;
+      selectedSurplus = surplus;
+    }
+  }
+
+  return selectedKind === null
+    ? null
+    : latestDecisionArtifactDropIndex(input.entries, selectedKind);
+}
+
+function tokenDropIndex(input: {
+  entries: readonly DecisionArtifactEntry[];
+  activeCounts: DecisionArtifactKindCounts;
+  reservedSlots: Partial<Record<DecisionArtifactEntryKind, number>>;
+  lockedMaxEntries: number;
+}): number {
+  const dropTentative = tokenDropIndexForKinds({
+    entries: input.entries,
+    kinds: ["tentative"],
+    minimumForKind: () => 0,
+  });
+
+  if (dropTentative !== null) {
+    return dropTentative;
+  }
+
+  const dropLockedAboveCap = tokenDropIndexForKinds({
+    entries: input.entries,
+    kinds: ["locked"],
+    minimumForKind: () => input.lockedMaxEntries,
+  });
+
+  if (dropLockedAboveCap !== null) {
+    return dropLockedAboveCap;
+  }
+
+  const dropReservedAboveMinimum = tokenDropIndexForKinds({
+    entries: input.entries,
+    kinds: DECISION_ARTIFACT_RESERVED_KINDS,
+    minimumForKind: (kind) =>
+      reservedTokenDropMinimum({
+        kind,
+        activeCounts: input.activeCounts,
+        reservedSlots: input.reservedSlots,
+      }),
+  });
+
+  if (dropReservedAboveMinimum !== null) {
+    return dropReservedAboveMinimum;
+  }
+
+  const dropLockedAboveFloor = tokenDropIndexForKinds({
+    entries: input.entries,
+    kinds: ["locked"],
+    minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
+  });
+
+  if (dropLockedAboveFloor !== null) {
+    return dropLockedAboveFloor;
+  }
+
+  const dropReservedAboveFloor = tokenDropIndexForKinds({
+    entries: input.entries,
+    kinds: DECISION_ARTIFACT_RESERVED_KINDS,
+    minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
+  });
+
+  if (dropReservedAboveFloor !== null) {
+    return dropReservedAboveFloor;
+  }
+
+  return (
+    tokenDropIndexForKinds({
+      entries: input.entries,
+      kinds: DECISION_ARTIFACT_ENTRY_KINDS,
+      minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
+    }) ?? Math.max(0, input.entries.length - 1)
+  );
 }
 
 function renderDecisionArtifactEntry(entry: DecisionArtifactEntry): string {
@@ -1134,12 +1450,19 @@ function renderDecisionArtifactEntry(entry: DecisionArtifactEntry): string {
 function renderDecisionArtifactContent(input: {
   artifact: DecisionArtifact;
   entries: readonly DecisionArtifactEntry[];
-  omittedCount: number;
+  omittedByKind: DecisionArtifactKindCounts;
+  renderedByKind: DecisionArtifactKindCounts;
 }): string {
+  const omittedCount = Object.values(input.omittedByKind).reduce((sum, count) => sum + count, 0);
   const omission =
-    input.omittedCount <= 0
+    omittedCount <= 0
       ? null
-      : `DecisionStateArtifact omitted ${input.omittedCount} older/lower-priority entries to stay within its render cap.`;
+      : [
+          `DecisionStateArtifact omitted: ${formatDecisionArtifactKindCounts(
+            input.omittedByKind,
+          )}.`,
+          `Retained: ${formatDecisionArtifactKindCounts(input.renderedByKind)}.`,
+        ].join(" ");
 
   return [
     "## 0. Canonical Decision State",
@@ -1155,7 +1478,7 @@ function renderDecisionArtifactContent(input: {
 
 function renderDecisionArtifactOmissionOnly(input: {
   artifact: DecisionArtifact;
-  omittedCount: number;
+  omittedByKind: DecisionArtifactKindCounts;
   reason: string;
 }): string {
   return [
@@ -1163,7 +1486,9 @@ function renderDecisionArtifactOmissionOnly(input: {
     "DecisionStateArtifact: shared planning state for this audience. It is a compact structural anchor, not a policy source.",
     `audience_entity_id=${input.artifact.audience_entity_id}`,
     `record_version=${input.artifact.record_version}`,
-    `DecisionStateArtifact omitted ${input.omittedCount} entries: ${input.reason}.`,
+    `DecisionStateArtifact omitted: ${formatDecisionArtifactKindCounts(
+      input.omittedByKind,
+    )}. Reason: ${input.reason}.`,
   ].join("\n");
 }
 
@@ -1179,10 +1504,13 @@ function truncateDecisionArtifactText(value: string, maxTokens: number): string 
 function renderSingleEntryWithinDecisionArtifactCap(input: {
   artifact: DecisionArtifact;
   entry: DecisionArtifactEntry;
-  omittedCount: number;
+  activeEntries: readonly DecisionArtifactEntry[];
   maxTokens: number;
-  activeEntryCount: number;
 }): { content: string; renderedEntryCount: number; omittedEntryCount: number } {
+  const counts = decisionArtifactRenderedCounts({
+    activeEntries: input.activeEntries,
+    renderedEntries: [input.entry],
+  });
   const emptyEntryContent = renderDecisionArtifactContent({
     artifact: input.artifact,
     entries: [
@@ -1191,7 +1519,8 @@ function renderSingleEntryWithinDecisionArtifactCap(input: {
         text: "",
       },
     ],
-    omittedCount: input.omittedCount,
+    omittedByKind: counts.omittedByKind,
+    renderedByKind: counts.renderedByKind,
   });
   const remainingTokens = input.maxTokens - estimatePromptTokens(emptyEntryContent);
 
@@ -1199,11 +1528,11 @@ function renderSingleEntryWithinDecisionArtifactCap(input: {
     return {
       content: renderDecisionArtifactOmissionOnly({
         artifact: input.artifact,
-        omittedCount: input.activeEntryCount,
+        omittedByKind: countDecisionArtifactEntriesByKind(input.activeEntries),
         reason: "artifact entry too large to render",
       }),
       renderedEntryCount: 0,
-      omittedEntryCount: input.activeEntryCount,
+      omittedEntryCount: input.activeEntries.length,
     };
   }
 
@@ -1215,95 +1544,122 @@ function renderSingleEntryWithinDecisionArtifactCap(input: {
         text: truncateDecisionArtifactText(input.entry.text, remainingTokens),
       },
     ],
-    omittedCount: input.omittedCount,
+    omittedByKind: counts.omittedByKind,
+    renderedByKind: counts.renderedByKind,
   });
 
   if (estimatePromptTokens(content) <= input.maxTokens) {
     return {
       content,
       renderedEntryCount: 1,
-      omittedEntryCount: input.omittedCount,
+      omittedEntryCount: counts.omittedEntryCount,
     };
   }
 
   return {
     content: renderDecisionArtifactOmissionOnly({
       artifact: input.artifact,
-      omittedCount: input.activeEntryCount,
+      omittedByKind: countDecisionArtifactEntriesByKind(input.activeEntries),
       reason: "artifact entry too large to render",
     }),
     renderedEntryCount: 0,
-    omittedEntryCount: input.activeEntryCount,
+    omittedEntryCount: input.activeEntries.length,
   };
 }
 
 function cappedDecisionArtifactRender(input: {
   artifact: DecisionArtifact;
-  maxEntries: number;
-  maxTokens: number;
+  options?: DecisionArtifactRenderOptions;
 }): { content: string | null; summary: DecisionStateArtifactRenderSummary } {
+  const options = decisionArtifactRenderOptions(input.options);
   const activeEntries = activeDecisionArtifactEntries(input.artifact);
 
   if (activeEntries.length === 0) {
     return {
       content: null,
       summary: {
+        totalEntryCount: input.artifact.entries.length,
         activeEntryCount: 0,
         renderedEntryCount: 0,
         omittedEntryCount: 0,
         estimatedTokens: 0,
+        renderedByKind: emptyDecisionArtifactKindCounts(),
+        omittedByKind: emptyDecisionArtifactKindCounts(),
       },
     };
   }
 
-  const orderedEntries = orderedDecisionArtifactEntries(activeEntries);
-  let entries = orderedEntries.slice(0, input.maxEntries);
-  let omittedCount = Math.max(0, orderedEntries.length - entries.length);
+  const activeCounts = countDecisionArtifactEntriesByKind(activeEntries);
+  let entries = selectDecisionArtifactEntriesForRender({
+    entries: activeEntries,
+    maxEntries: options.maxEntries,
+    reservedSlots: options.reservedSlots,
+    lockedMaxEntries: options.lockedMaxEntries,
+  });
+  let counts = decisionArtifactRenderedCounts({
+    activeEntries,
+    renderedEntries: entries,
+  });
   let content = renderDecisionArtifactContent({
     artifact: input.artifact,
     entries,
-    omittedCount,
+    omittedByKind: counts.omittedByKind,
+    renderedByKind: counts.renderedByKind,
   });
 
-  while (estimatePromptTokens(content) > input.maxTokens && entries.length > 1) {
-    const liveIndex = entries.findLastIndex((entry) => entry.kind === "live");
-    const dropIndex = liveIndex >= 0 ? liveIndex : entries.length - 1;
+  while (estimatePromptTokens(content) > options.maxTokens && entries.length > 1) {
+    const dropIndex = tokenDropIndex({
+      entries,
+      activeCounts,
+      reservedSlots: options.reservedSlots,
+      lockedMaxEntries: options.lockedMaxEntries,
+    });
     entries = [...entries.slice(0, dropIndex), ...entries.slice(dropIndex + 1)];
-    omittedCount += 1;
+    counts = decisionArtifactRenderedCounts({
+      activeEntries,
+      renderedEntries: entries,
+    });
     content = renderDecisionArtifactContent({
       artifact: input.artifact,
       entries,
-      omittedCount,
+      omittedByKind: counts.omittedByKind,
+      renderedByKind: counts.renderedByKind,
     });
   }
 
-  if (estimatePromptTokens(content) > input.maxTokens && entries.length === 1) {
+  if (estimatePromptTokens(content) > options.maxTokens && entries.length === 1) {
     const singleEntryRender = renderSingleEntryWithinDecisionArtifactCap({
       artifact: input.artifact,
       entry: entries[0]!,
-      omittedCount,
-      maxTokens: input.maxTokens,
-      activeEntryCount: activeEntries.length,
+      activeEntries,
+      maxTokens: options.maxTokens,
     });
 
     content = singleEntryRender.content;
     entries = entries.slice(0, singleEntryRender.renderedEntryCount);
-    omittedCount = singleEntryRender.omittedEntryCount;
+    counts = decisionArtifactRenderedCounts({
+      activeEntries,
+      renderedEntries: entries,
+    });
   }
 
   return {
     content,
     summary: {
+      totalEntryCount: input.artifact.entries.length,
       activeEntryCount: activeEntries.length,
       renderedEntryCount: entries.length,
-      omittedEntryCount: omittedCount,
+      omittedEntryCount: counts.omittedEntryCount,
       estimatedTokens: estimatePromptTokens(content),
+      renderedByKind: counts.renderedByKind,
+      omittedByKind: counts.omittedByKind,
     },
   };
 }
 
 export function renderDecisionStateArtifact(
   artifact: DecisionArtifact | null | undefined,
+  options?: DecisionArtifactRenderOptions,
 ): string | null {
   if (artifact === null || artifact === undefined) {
     return null;
@@ -1311,36 +1667,39 @@ export function renderDecisionStateArtifact(
 
   return cappedDecisionArtifactRender({
     artifact,
-    maxEntries: DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES,
-    maxTokens: DEFAULT_DECISION_ARTIFACT_MAX_TOKENS,
+    options,
   }).content;
 }
 
 export function summarizeDecisionStateArtifactRender(
   artifact: DecisionArtifact | null | undefined,
+  options?: DecisionArtifactRenderOptions,
 ): DecisionStateArtifactRenderSummary {
   if (artifact === null || artifact === undefined) {
     return {
+      totalEntryCount: 0,
       activeEntryCount: 0,
       renderedEntryCount: 0,
       omittedEntryCount: 0,
       estimatedTokens: 0,
+      renderedByKind: emptyDecisionArtifactKindCounts(),
+      omittedByKind: emptyDecisionArtifactKindCounts(),
     };
   }
 
   return cappedDecisionArtifactRender({
     artifact,
-    maxEntries: DEFAULT_DECISION_ARTIFACT_MAX_ENTRIES,
-    maxTokens: DEFAULT_DECISION_ARTIFACT_MAX_TOKENS,
+    options,
   }).summary;
 }
 
 function renderCompactPlannerLedgerContent(
   sections: readonly CompactSectionResult[],
   decisionArtifact: DecisionArtifact | null | undefined,
+  decisionArtifactOptions: DecisionArtifactRenderOptions | undefined,
 ): string {
   return [
-    renderDecisionStateArtifact(decisionArtifact),
+    renderDecisionStateArtifact(decisionArtifact, decisionArtifactOptions),
     COMPACT_PLANNER_LEDGER_GUIDANCE,
     ...sections.map((section) => renderCompactSection(section.section, section.omittedCount)),
   ]
@@ -1414,18 +1773,31 @@ export function buildCompactPlannerLedgerPrompt(
       omittedCount: compacted.omittedCount,
     };
   });
-  const trimmedSections = trimToTokenTarget(compactSections, targetTokens, ledger.decisionArtifact);
+  const trimmedSections = trimToTokenTarget(
+    compactSections,
+    targetTokens,
+    ledger.decisionArtifact,
+    options.decisionArtifact,
+  );
   const hardCappedSections = trimToTokenTarget(
     trimmedSections,
     hardCapTokens,
     ledger.decisionArtifact,
+    options.decisionArtifact,
   );
-  const content = renderCompactPlannerLedgerContent(hardCappedSections, ledger.decisionArtifact);
+  const content = renderCompactPlannerLedgerContent(
+    hardCappedSections,
+    ledger.decisionArtifact,
+    options.decisionArtifact,
+  );
   const promptSection = renderCompactPlannerLedgerPromptSection(content);
   const entryCountsBySection = emptySectionCountRecord();
   const omittedEntryCountsBySection = emptySectionCountRecord();
   const estimatedTokensBySection = emptySectionCountRecord();
-  const decisionArtifactSummary = summarizeDecisionStateArtifactRender(ledger.decisionArtifact);
+  const decisionArtifactSummary = summarizeDecisionStateArtifactRender(
+    ledger.decisionArtifact,
+    options.decisionArtifact,
+  );
 
   for (const section of hardCappedSections) {
     entryCountsBySection[section.section.id] = section.section.entries.length;
@@ -1443,6 +1815,7 @@ export function buildCompactPlannerLedgerPrompt(
       estimatedTokensBySection,
       decisionArtifactEntryCount: decisionArtifactSummary.renderedEntryCount,
       decisionArtifactRenderedTokens: decisionArtifactSummary.estimatedTokens,
+      decisionArtifactRenderedByKind: decisionArtifactSummary.renderedByKind,
       totalEstimatedTokens: estimatePromptTokens(promptSection ?? ""),
       targetTokens,
       hardCapTokens,
@@ -1457,7 +1830,10 @@ export function renderCompactPlannerLedger(
   return buildCompactPlannerLedgerPrompt(ledger, options).promptSection;
 }
 
-export function renderEvidenceLedger(ledger: EvidenceLedger): string | null {
+export function renderEvidenceLedger(
+  ledger: EvidenceLedger,
+  options: { decisionArtifact?: DecisionArtifactRenderOptions } = {},
+): string | null {
   const transcriptStatus = ledger.transcriptIncluded
     ? ledger.transcriptCompacted
       ? "current_session_transcript=included compacted=true"
@@ -1468,7 +1844,7 @@ export function renderEvidenceLedger(ledger: EvidenceLedger): string | null {
     HIERARCHY_GUIDANCE,
     transcriptStatus,
     `estimated_tokens=${ledger.estimatedTokens}`,
-    renderDecisionStateArtifact(ledger.decisionArtifact),
+    renderDecisionStateArtifact(ledger.decisionArtifact, options.decisionArtifact),
     ...ledger.sections.map((section) => renderSection(section)),
   ]
     .filter((part): part is string => part !== null)
@@ -1482,6 +1858,9 @@ export function renderEvidenceLedger(ledger: EvidenceLedger): string | null {
   ]);
 }
 
-export function estimateEvidenceLedgerPromptTokens(ledger: EvidenceLedger): number {
-  return estimatePromptTokens(renderEvidenceLedger(ledger) ?? "");
+export function estimateEvidenceLedgerPromptTokens(
+  ledger: EvidenceLedger,
+  options: { decisionArtifact?: DecisionArtifactRenderOptions } = {},
+): number {
+  return estimatePromptTokens(renderEvidenceLedger(ledger, options) ?? "");
 }

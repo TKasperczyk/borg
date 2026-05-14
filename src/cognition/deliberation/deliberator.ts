@@ -304,7 +304,9 @@ export class Deliberator {
     const compactPlannerLedger =
       context.evidenceLedger === undefined || context.evidenceLedger === null
         ? null
-        : buildCompactPlannerLedgerPrompt(context.evidenceLedger);
+        : buildCompactPlannerLedgerPrompt(context.evidenceLedger, {
+            decisionArtifact: this.options.decisionArtifactRenderOptions,
+          });
 
     if (compactPlannerLedger !== null && this.tracer.enabled && context.turnId !== undefined) {
       this.tracer.emit("planner_compact_ledger_built", {
@@ -319,6 +321,9 @@ export class Deliberator {
         decision_artifact_entry_count: compactPlannerLedger.traceSummary.decisionArtifactEntryCount,
         decision_artifact_rendered_token_estimate:
           compactPlannerLedger.traceSummary.decisionArtifactRenderedTokens,
+        decision_artifact_rendered_by_kind: toTraceJsonValue(
+          compactPlannerLedger.traceSummary.decisionArtifactRenderedByKind,
+        ),
         total_estimated_tokens: compactPlannerLedger.traceSummary.totalEstimatedTokens,
         target_tokens: compactPlannerLedger.traceSummary.targetTokens,
         hard_cap_tokens: compactPlannerLedger.traceSummary.hardCapTokens,

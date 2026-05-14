@@ -18,6 +18,7 @@ export type TurnTraceEventName =
   | "evidence_ledger_built"
   | "evidence_ledger_compacted"
   | "decision_artifact_compile_completed"
+  | "decision_artifact_lifecycle_unable_to_cap"
   | "planner_compact_ledger_built"
   | "path_selected"
   | "llm_call_started"

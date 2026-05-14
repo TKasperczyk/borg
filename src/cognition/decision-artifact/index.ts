@@ -5,6 +5,7 @@ export {
   MAX_PATCH_OUTPUT_TOKENS,
   type CompileDecisionArtifactInput,
   type DecisionArtifactCompileDegradedReason,
+  type DecisionArtifactLifecycleOptions,
   type DecisionArtifactParticipantContext,
   type EmitDecisionArtifactPatch,
 } from "./compiler.js";

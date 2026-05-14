@@ -8,7 +8,6 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import {
-  ACTIVE_DECISION_ARTIFACT_ENTRY_KINDS,
   DECISION_ARTIFACT_ENTRY_KINDS,
   type DecisionArtifact,
   type DecisionArtifactEntry,
@@ -19,6 +18,7 @@ import {
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
 import {
+  createDecisionArtifactEntryId,
   decisionArtifactEntryIdHelpers,
   entityIdHelpers,
   streamEntryIdHelpers,
@@ -26,14 +26,30 @@ import {
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
-import { summarizeDecisionStateArtifactRender } from "../evidence-ledger/index.js";
-import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
+import {
+  summarizeDecisionStateArtifactRender,
+  type DecisionArtifactRenderOptions,
+} from "../evidence-ledger/index.js";
+import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 
 const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";
 const MAX_OPERATIONS_PER_COMPILE = 40;
 const MAX_PATCH_OUTPUT_TOKENS = 1536;
-
-const activeKindSet = new Set<DecisionArtifactEntryKind>(ACTIVE_DECISION_ARTIFACT_ENTRY_KINDS);
+const DEFAULT_MAX_ACTIVE_DECISION_ARTIFACT_ENTRIES = 40;
+const DEFAULT_DECISION_ARTIFACT_KIND_SOFT_CAPS = {
+  locked: 24,
+  live: 10,
+  invalidated: 4,
+  pending: 4,
+  tentative: 2,
+} as const satisfies Record<DecisionArtifactEntryKind, number>;
+const DECISION_ARTIFACT_LIFECYCLE_PRUNE_ORDER = [
+  "tentative",
+  "locked",
+  "invalidated",
+  "pending",
+  "live",
+] as const satisfies readonly DecisionArtifactEntryKind[];
 
 const decisionArtifactToolKindSchema = z.enum(DECISION_ARTIFACT_ENTRY_KINDS);
 const sourceStreamEntryIdsSchema = z
@@ -126,10 +142,12 @@ const DECISION_ARTIFACT_SYSTEM_PROMPT = [
   "- It must not invent facts, owners, or commitments.",
   "- Prefer no operations when uncertain.",
   "",
-  "V1 artifact kinds:",
-  "- locked: a planning fact, choice, route, constraint, or decision the group or user has committed to.",
-  "- live: an unresolved planning edge or in-flight question the group still needs to decide.",
-  "- Do not emit tentative, invalidated, or pending in v1.",
+  "Artifact kinds:",
+  '- locked: canonical decisions the group has agreed to, such as "Granada 3 nights".',
+  "- live: under-active-discussion decisions or proposals the group is currently working on.",
+  "- tentative: weak proposals not yet endorsed; trial-balloon facts.",
+  "- invalidated: assumptions explicitly overturned by later evidence; kept for context, not action.",
+  '- pending: items awaiting verification or external information, such as "Ben to check Alhambra booking windows".',
   "",
   "Identity and ownership:",
   "- Cite stream ids for every add, update, and supersede replacement.",
@@ -140,10 +158,12 @@ const DECISION_ARTIFACT_SYSTEM_PROMPT = [
   "- Borg is the self entity.",
   "",
   "Operation guidance:",
-  "- add creates a new locked/live entry when no existing entry already represents it.",
+  "- add creates a new entry when no existing entry already represents it.",
   "- update modifies an existing entry while preserving its id.",
   "- supersede replaces an existing entry when the conversation changes or narrows it.",
   "- prune removes stale artifact clutter only when the supplied context makes it clearly obsolete.",
+  "- If a similar entry already exists, prefer update or supersede instead of adding a new one.",
+  "- Prefer update, supersede, and prune over add whenever the existing artifact already carries the relevant planning state.",
 ].join("\n");
 
 export type EmitDecisionArtifactPatch = z.infer<typeof decisionArtifactPatchSchema>;
@@ -162,6 +182,11 @@ export type DecisionArtifactCompileDegradedReason =
   | "invalid_patch"
   | "repository_failed";
 
+export type DecisionArtifactLifecycleOptions = {
+  maxActiveEntries?: number;
+  kindSoftCaps?: Partial<Record<DecisionArtifactEntryKind, number>>;
+};
+
 export type CompileDecisionArtifactInput = {
   llmClient?: LLMClient;
   model?: string;
@@ -178,6 +203,8 @@ export type CompileDecisionArtifactInput = {
   clock?: Clock;
   tracer?: TurnTracer;
   turnId?: string;
+  lifecycle?: DecisionArtifactLifecycleOptions;
+  renderOptions?: DecisionArtifactRenderOptions;
   onDegraded?: (
     reason: DecisionArtifactCompileDegradedReason,
     error?: unknown,
@@ -345,8 +372,14 @@ function traceCompileCompleted(options: {
   rejected: readonly PatchRejection[];
   applied: boolean;
   artifact: DecisionArtifact | null;
+  renderOptions?: DecisionArtifactRenderOptions;
+  prunedEntryCountThisTurn: number;
+  supersededEntryCountThisTurn: number;
 }): void {
-  const artifactSummary = summarizeDecisionStateArtifactRender(options.artifact);
+  const artifactSummary = summarizeDecisionStateArtifactRender(
+    options.artifact,
+    options.renderOptions,
+  );
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
     options.tracer.emit("decision_artifact_compile_completed", {
@@ -360,6 +393,12 @@ function traceCompileCompleted(options: {
       recordVersion: options.artifact?.record_version ?? null,
       artifactEntryCount: artifactSummary.renderedEntryCount,
       artifactRenderedTokenEstimate: artifactSummary.estimatedTokens,
+      artifact_total_entry_count: artifactSummary.totalEntryCount,
+      artifact_active_entry_count: artifactSummary.activeEntryCount,
+      artifact_omitted_entry_count: artifactSummary.omittedEntryCount,
+      artifact_pruned_entry_count_this_turn: options.prunedEntryCountThisTurn,
+      artifact_superseded_count_this_turn: options.supersededEntryCountThisTurn,
+      rendered_by_kind: toTraceJsonValue(artifactSummary.renderedByKind),
     });
   }
 }
@@ -412,10 +451,6 @@ function normalizeOwnerEntityId(
   }
 
   return allowedOwnerEntityIds.has(value) ? value : "invalid";
-}
-
-function isActiveKind(kind: DecisionArtifactEntryKind): boolean {
-  return activeKindSet.has(kind);
 }
 
 function previousEntryById(
@@ -475,11 +510,6 @@ function normalizePatch(input: {
   input.patch.operations.forEach((operation, operationIndex) => {
     switch (operation.type) {
       case "add": {
-        if (!isActiveKind(operation.kind)) {
-          rejected.push(rejection(operation, operationIndex, "unsupported_kind"));
-          return;
-        }
-
         const ownerEntityId = normalizeOwnerEntityId(
           operation.owner_entity_id,
           allowedOwnerEntityIds,
@@ -526,11 +556,6 @@ function normalizePatch(input: {
         }
 
         const nextKind = operation.kind ?? entry.kind;
-
-        if (!isActiveKind(nextKind)) {
-          rejected.push(rejection(operation, operationIndex, "unsupported_kind"));
-          return;
-        }
 
         if (
           operation.kind === undefined &&
@@ -583,11 +608,6 @@ function normalizePatch(input: {
 
         if (entry === null) {
           rejected.push(rejection(operation, operationIndex, "unknown_entry_id"));
-          return;
-        }
-
-        if (!isActiveKind(operation.replacement.kind)) {
-          rejected.push(rejection(operation, operationIndex, "unsupported_kind"));
           return;
         }
 
@@ -661,6 +681,391 @@ function normalizePatch(input: {
   });
 
   return { operations, rejected };
+}
+
+type LifecycleEntry = Pick<
+  DecisionArtifactEntry,
+  "id" | "kind" | "created_at" | "last_updated_at" | "superseded_by_id" | "rank"
+>;
+
+function normalizeLifecycleKindSoftCaps(
+  options: DecisionArtifactLifecycleOptions | undefined,
+): Record<DecisionArtifactEntryKind, number> {
+  return {
+    ...DEFAULT_DECISION_ARTIFACT_KIND_SOFT_CAPS,
+    ...(options?.kindSoftCaps ?? {}),
+  };
+}
+
+function lifecycleMaxActiveEntries(options: DecisionArtifactLifecycleOptions | undefined): number {
+  const value = options?.maxActiveEntries ?? DEFAULT_MAX_ACTIVE_DECISION_ARTIFACT_ENTRIES;
+
+  return Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : DEFAULT_MAX_ACTIVE_DECISION_ARTIFACT_ENTRIES;
+}
+
+function operationIdsMaterialized(
+  operations: readonly DecisionArtifactOperation[],
+): DecisionArtifactOperation[] {
+  return operations.map((operation) => {
+    switch (operation.type) {
+      case "add":
+        return {
+          ...operation,
+          id: operation.id ?? createDecisionArtifactEntryId(),
+        };
+      case "supersede":
+        return {
+          ...operation,
+          replacement: {
+            ...operation.replacement,
+            id: operation.replacement.id ?? createDecisionArtifactEntryId(),
+          },
+        };
+      case "update":
+      case "prune":
+        return operation;
+    }
+  });
+}
+
+function lifecycleEntryFromDecisionEntry(entry: DecisionArtifactEntry): LifecycleEntry {
+  return {
+    id: entry.id,
+    kind: entry.kind,
+    created_at: entry.created_at,
+    last_updated_at: entry.last_updated_at,
+    superseded_by_id: entry.superseded_by_id,
+    rank: entry.rank,
+  };
+}
+
+function materializePostPatchLifecycleEntries(input: {
+  previousArtifact: DecisionArtifact | null;
+  operations: readonly DecisionArtifactOperation[];
+  nowMs: number;
+  applyPrunes?: boolean;
+}): LifecycleEntry[] {
+  const entries = new Map<DecisionArtifactEntryId, LifecycleEntry>();
+
+  for (const entry of input.previousArtifact?.entries ?? []) {
+    entries.set(entry.id, lifecycleEntryFromDecisionEntry(entry));
+  }
+
+  for (const operation of input.operations) {
+    switch (operation.type) {
+      case "add": {
+        const id = operation.id ?? createDecisionArtifactEntryId();
+        entries.set(id, {
+          id,
+          kind: operation.kind,
+          created_at: operation.created_at ?? input.nowMs,
+          last_updated_at: operation.last_updated_at ?? operation.created_at ?? input.nowMs,
+          superseded_by_id: null,
+          rank: operation.rank ?? entries.size,
+        });
+        break;
+      }
+      case "update": {
+        const current = entries.get(operation.id);
+
+        if (current === undefined) {
+          break;
+        }
+
+        entries.set(operation.id, {
+          ...current,
+          kind: operation.kind ?? current.kind,
+          last_updated_at: operation.last_updated_at ?? input.nowMs,
+          rank: operation.rank ?? current.rank,
+        });
+        break;
+      }
+      case "supersede": {
+        const current = entries.get(operation.id);
+        const replacementId = operation.replacement.id ?? createDecisionArtifactEntryId();
+
+        if (current !== undefined) {
+          entries.set(operation.id, {
+            ...current,
+            superseded_by_id: replacementId,
+            last_updated_at: operation.last_updated_at ?? input.nowMs,
+          });
+        }
+
+        entries.set(replacementId, {
+          id: replacementId,
+          kind: operation.replacement.kind,
+          created_at: operation.replacement.created_at ?? input.nowMs,
+          last_updated_at:
+            operation.replacement.last_updated_at ??
+            operation.replacement.created_at ??
+            input.nowMs,
+          superseded_by_id: null,
+          rank: operation.replacement.rank ?? entries.size,
+        });
+        break;
+      }
+      case "prune":
+        if (input.applyPrunes !== false) {
+          entries.delete(operation.id);
+        }
+        break;
+    }
+  }
+
+  return [...entries.values()];
+}
+
+function activeLifecycleEntries(entries: readonly LifecycleEntry[]): LifecycleEntry[] {
+  return entries.filter((entry) => entry.superseded_by_id === null);
+}
+
+function lifecycleKindCounts(
+  entries: readonly LifecycleEntry[],
+): Record<DecisionArtifactEntryKind, number> {
+  const counts = Object.fromEntries(
+    DECISION_ARTIFACT_ENTRY_KINDS.map((kind) => [kind, 0]),
+  ) as Record<DecisionArtifactEntryKind, number>;
+
+  for (const entry of entries) {
+    counts[entry.kind] += 1;
+  }
+
+  return counts;
+}
+
+function compareLifecyclePrunePriority(left: LifecycleEntry, right: LifecycleEntry): number {
+  return (
+    left.last_updated_at - right.last_updated_at ||
+    left.rank - right.rank ||
+    left.created_at - right.created_at ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function nextLifecyclePruneCandidate(input: {
+  entries: readonly LifecycleEntry[];
+  kind: DecisionArtifactEntryKind;
+  prunedIds: ReadonlySet<DecisionArtifactEntryId>;
+}): LifecycleEntry | null {
+  return (
+    activeLifecycleEntries(input.entries)
+      .filter((entry) => entry.kind === input.kind && !input.prunedIds.has(entry.id))
+      .sort(compareLifecyclePrunePriority)[0] ?? null
+  );
+}
+
+function lifecycleEntriesById(
+  entries: readonly LifecycleEntry[],
+): Map<DecisionArtifactEntryId, LifecycleEntry> {
+  const byId = new Map<DecisionArtifactEntryId, LifecycleEntry>();
+
+  for (const entry of entries) {
+    byId.set(entry.id, entry);
+  }
+
+  return byId;
+}
+
+function lifecycleReferrersByReplacement(
+  entries: readonly LifecycleEntry[],
+): Map<DecisionArtifactEntryId, LifecycleEntry[]> {
+  const byReplacement = new Map<DecisionArtifactEntryId, LifecycleEntry[]>();
+
+  for (const entry of entries) {
+    if (entry.superseded_by_id === null) {
+      continue;
+    }
+
+    const referrers = byReplacement.get(entry.superseded_by_id) ?? [];
+    referrers.push(entry);
+    byReplacement.set(entry.superseded_by_id, referrers);
+  }
+
+  return byReplacement;
+}
+
+function appendPruneWithDependencies(input: {
+  entryId: DecisionArtifactEntryId;
+  entriesById: ReadonlyMap<DecisionArtifactEntryId, LifecycleEntry>;
+  referrersByReplacement: ReadonlyMap<DecisionArtifactEntryId, readonly LifecycleEntry[]>;
+  prunedIds: Set<DecisionArtifactEntryId>;
+  visitingIds: Set<DecisionArtifactEntryId>;
+  pruneOperations: DecisionArtifactOperation[];
+}): boolean {
+  if (input.prunedIds.has(input.entryId)) {
+    return true;
+  }
+
+  if (input.visitingIds.has(input.entryId)) {
+    return false;
+  }
+
+  if (!input.entriesById.has(input.entryId)) {
+    return true;
+  }
+
+  input.visitingIds.add(input.entryId);
+
+  for (const referrer of input.referrersByReplacement.get(input.entryId) ?? []) {
+    if (input.prunedIds.has(referrer.id)) {
+      continue;
+    }
+
+    if (
+      !appendPruneWithDependencies({
+        ...input,
+        entryId: referrer.id,
+      })
+    ) {
+      input.visitingIds.delete(input.entryId);
+      return false;
+    }
+  }
+
+  input.visitingIds.delete(input.entryId);
+  input.prunedIds.add(input.entryId);
+  input.pruneOperations.push({
+    type: "prune",
+    id: input.entryId,
+  });
+
+  return true;
+}
+
+function expandPruneDependencies(input: {
+  previousArtifact: DecisionArtifact | null;
+  operations: readonly DecisionArtifactOperation[];
+  nowMs: number;
+}): DecisionArtifactOperation[] {
+  const entries = materializePostPatchLifecycleEntries({
+    previousArtifact: input.previousArtifact,
+    operations: input.operations,
+    nowMs: input.nowMs,
+    applyPrunes: false,
+  });
+  const entriesById = lifecycleEntriesById(entries);
+  const referrersByReplacement = lifecycleReferrersByReplacement(entries);
+  const expandedOperations: DecisionArtifactOperation[] = [];
+  const prunedIds = new Set<DecisionArtifactEntryId>();
+
+  for (const operation of input.operations) {
+    if (operation.type !== "prune") {
+      expandedOperations.push(operation);
+      continue;
+    }
+
+    const previousPrunedIds = new Set(prunedIds);
+    const previousOperationCount = expandedOperations.length;
+    const appended = appendPruneWithDependencies({
+      entryId: operation.id,
+      entriesById,
+      referrersByReplacement,
+      prunedIds,
+      visitingIds: new Set<DecisionArtifactEntryId>(),
+      pruneOperations: expandedOperations,
+    });
+
+    if (!appended) {
+      expandedOperations.splice(previousOperationCount);
+      prunedIds.clear();
+      for (const prunedId of previousPrunedIds) {
+        prunedIds.add(prunedId);
+      }
+      expandedOperations.push(operation);
+    }
+  }
+
+  return expandedOperations;
+}
+
+function applyDecisionArtifactLifecycleCap(input: {
+  previousArtifact: DecisionArtifact | null;
+  operations: readonly DecisionArtifactOperation[];
+  options?: DecisionArtifactLifecycleOptions;
+  nowMs: number;
+}): {
+  operations: DecisionArtifactOperation[];
+  maxActiveEntries: number;
+  postPlanActiveEntryCount: number;
+  overCapDelta: number;
+} {
+  const operations = operationIdsMaterialized(input.operations);
+  const entries = materializePostPatchLifecycleEntries({
+    previousArtifact: input.previousArtifact,
+    operations,
+    nowMs: input.nowMs,
+  });
+  const maxActiveEntries = lifecycleMaxActiveEntries(input.options);
+  const kindSoftCaps = normalizeLifecycleKindSoftCaps(input.options);
+  const prunedIds = new Set<DecisionArtifactEntryId>();
+  const pruneOperations: DecisionArtifactOperation[] = [];
+  let activeEntries = activeLifecycleEntries(entries);
+  let activeCounts = lifecycleKindCounts(activeEntries);
+
+  const selectFromKind = (kind: DecisionArtifactEntryKind): boolean => {
+    const candidate = nextLifecyclePruneCandidate({
+      entries,
+      kind,
+      prunedIds,
+    });
+
+    if (candidate === null) {
+      return false;
+    }
+
+    prunedIds.add(candidate.id);
+    pruneOperations.push({
+      type: "prune",
+      id: candidate.id,
+    });
+    activeCounts[candidate.kind] -= 1;
+    activeEntries = activeEntries.filter((entry) => entry.id !== candidate.id);
+    return true;
+  };
+
+  while (activeEntries.length > maxActiveEntries) {
+    let pruned = false;
+
+    for (const kind of DECISION_ARTIFACT_LIFECYCLE_PRUNE_ORDER) {
+      if (activeCounts[kind] <= kindSoftCaps[kind]) {
+        continue;
+      }
+
+      pruned = selectFromKind(kind);
+
+      if (pruned) {
+        break;
+      }
+    }
+
+    if (pruned) {
+      continue;
+    }
+
+    for (const kind of DECISION_ARTIFACT_LIFECYCLE_PRUNE_ORDER) {
+      pruned = selectFromKind(kind);
+
+      if (pruned) {
+        break;
+      }
+    }
+
+    if (!pruned) {
+      break;
+    }
+  }
+
+  const postPlanActiveEntryCount = activeEntries.length;
+
+  return {
+    operations: [...operations, ...pruneOperations],
+    maxActiveEntries,
+    postPlanActiveEntryCount,
+    overCapDelta: Math.max(0, postPlanActiveEntryCount - maxActiveEntries),
+  };
 }
 
 async function degraded(
@@ -741,6 +1146,9 @@ export async function compileDecisionArtifact(
       rejected: [],
       applied: false,
       artifact: previousArtifact,
+      renderOptions: input.renderOptions,
+      prunedEntryCountThisTurn: 0,
+      supersededEntryCountThisTurn: 0,
     });
 
     return degraded(input, "llm_failed", error);
@@ -766,6 +1174,9 @@ export async function compileDecisionArtifact(
       rejected: [],
       applied: false,
       artifact: previousArtifact,
+      renderOptions: input.renderOptions,
+      prunedEntryCountThisTurn: 0,
+      supersededEntryCountThisTurn: 0,
     });
 
     return degraded(
@@ -793,7 +1204,7 @@ export async function compileDecisionArtifact(
     allowedSourceStreamEntryIds,
   });
 
-  if (normalized.operations.length === 0) {
+  if (normalized.operations.length === 0 && normalized.rejected.length > 0) {
     traceCompileCompleted({
       tracer: input.tracer,
       turnId: input.turnId,
@@ -803,20 +1214,63 @@ export async function compileDecisionArtifact(
       rejected: normalized.rejected,
       applied: false,
       artifact: previousArtifact,
+      renderOptions: input.renderOptions,
+      prunedEntryCountThisTurn: 0,
+      supersededEntryCountThisTurn: 0,
     });
 
-    if (normalized.rejected.length > 0) {
-      return degraded(input, "invalid_patch");
-    }
-
-    return emptyPatch();
+    return degraded(input, "invalid_patch");
   }
 
   const clock = input.clock ?? new SystemClock();
   const nowMs = clock.now();
+  const lifecycle = applyDecisionArtifactLifecycleCap({
+    previousArtifact,
+    operations: normalized.operations,
+    options: input.lifecycle,
+    nowMs,
+  });
+  if (lifecycle.overCapDelta > 0 && input.tracer?.enabled === true && input.turnId !== undefined) {
+    input.tracer.emit("decision_artifact_lifecycle_unable_to_cap", {
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      maxActiveEntries: lifecycle.maxActiveEntries,
+      postPlanActiveEntryCount: lifecycle.postPlanActiveEntryCount,
+      overCapDelta: lifecycle.overCapDelta,
+    });
+  }
+  const operations = expandPruneDependencies({
+    previousArtifact,
+    operations: lifecycle.operations,
+    nowMs,
+  });
+  const prunedEntryCountThisTurn = operations.filter(
+    (operation) => operation.type === "prune",
+  ).length;
+  const supersededEntryCountThisTurn = operations.filter(
+    (operation) => operation.type === "supersede",
+  ).length;
+
+  if (operations.length === 0) {
+    traceCompileCompleted({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      previousEntryCount,
+      operationCount: 0,
+      rejected: normalized.rejected,
+      applied: false,
+      artifact: previousArtifact,
+      renderOptions: input.renderOptions,
+      prunedEntryCountThisTurn,
+      supersededEntryCountThisTurn,
+    });
+
+    return emptyPatch();
+  }
 
   try {
-    const nextArtifact = input.repository.upsert(input.audienceEntityId, normalized.operations, {
+    const nextArtifact = input.repository.upsert(input.audienceEntityId, operations, {
       expectedVersion: previousArtifact?.record_version,
       now: nowMs,
       lastCompiledAt: nowMs,
@@ -828,10 +1282,13 @@ export async function compileDecisionArtifact(
       turnId: input.turnId,
       audienceEntityId: input.audienceEntityId,
       previousEntryCount,
-      operationCount: normalized.operations.length,
+      operationCount: operations.length,
       rejected: normalized.rejected,
       applied: true,
       artifact: nextArtifact,
+      renderOptions: input.renderOptions,
+      prunedEntryCountThisTurn,
+      supersededEntryCountThisTurn,
     });
   } catch (error) {
     traceCompileCompleted({
@@ -839,17 +1296,20 @@ export async function compileDecisionArtifact(
       turnId: input.turnId,
       audienceEntityId: input.audienceEntityId,
       previousEntryCount,
-      operationCount: normalized.operations.length,
+      operationCount: operations.length,
       rejected: normalized.rejected,
       applied: false,
       artifact: previousArtifact,
+      renderOptions: input.renderOptions,
+      prunedEntryCountThisTurn,
+      supersededEntryCountThisTurn,
     });
 
     return degraded(input, "repository_failed", error);
   }
 
   return {
-    operations: normalized.operations.map((operation) => {
+    operations: operations.map((operation) => {
       switch (operation.type) {
         case "add":
           return {
