@@ -202,6 +202,13 @@ export type OpenQuestionSimilarLookupOptions = {
   question: string;
   audienceEntityId?: EntityId | null;
 };
+export type OpenQuestionListOptions = {
+  status?: OpenQuestionStatus;
+  source?: OpenQuestionSource;
+  minUrgency?: number;
+  visibleToAudienceEntityId?: EntityId | null;
+  limit?: number;
+};
 
 type OpenQuestionVectorRow = {
   id: string;
@@ -1020,14 +1027,7 @@ export class OpenQuestionsRepository {
     return rows.map((row) => mapOpenQuestionRow(row));
   }
 
-  list(
-    options: {
-      status?: OpenQuestionStatus;
-      minUrgency?: number;
-      visibleToAudienceEntityId?: EntityId | null;
-      limit?: number;
-    } = {},
-  ): OpenQuestion[] {
+  list(options: OpenQuestionListOptions = {}): OpenQuestion[] {
     const filters: string[] = [];
     const values: unknown[] = [];
 
@@ -1035,6 +1035,12 @@ export class OpenQuestionsRepository {
       openQuestionStatusSchema.parse(options.status);
       filters.push("status = ?");
       values.push(options.status);
+    }
+
+    if (options.source !== undefined) {
+      openQuestionSourceSchema.parse(options.source);
+      filters.push("source = ?");
+      values.push(options.source);
     }
 
     if (options.minUrgency !== undefined) {

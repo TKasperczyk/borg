@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 
 import { chooseDeliberationPath } from "./path-selector.js";
 
@@ -205,5 +206,127 @@ describe("chooseDeliberationPath", () => {
 
     expect(decision.path).toBe("system_2");
     expect(decision.reason).toMatch(/contradiction/i);
+  });
+
+  it("honors a forced S2 routing override and traces the base path", () => {
+    const emit = vi.fn<TurnTracer["emit"]>();
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit,
+    } satisfies TurnTracer;
+    const decision = chooseDeliberationPath(
+      "problem_solving",
+      "low",
+      [makeEpisode(0.9)],
+      false,
+      makeConfidence(0.9),
+      {
+        tracer,
+        turnId: "turn-forced",
+      },
+      {
+        forceSystem2: true,
+        reason: "open_question_contradiction",
+        forcedBy: "open_question_contradiction",
+        oqIds: ["oq_aaaaaaaaaaaaaaaa"],
+        openQuestions: [
+          {
+            id: "oq_aaaaaaaaaaaaaaaa" as never,
+            question: "Which itinerary claim is current?",
+            source: "contradiction",
+          },
+        ],
+        audienceEntityId: null,
+        isOperational: true,
+      },
+    );
+
+    expect(decision).toMatchObject({
+      path: "system_2",
+      reason: "open_question_contradiction",
+      forced_by: "open_question_contradiction",
+    });
+    expect(emit).toHaveBeenCalledWith("s2_routing_forced_by_contradiction", {
+      turnId: "turn-forced",
+      perceptionMode: "problem_solving",
+      isOperational: true,
+      audienceEntityId: null,
+      openQuestionIds: ["oq_aaaaaaaaaaaaaaaa"],
+      openQuestionSources: ["contradiction"],
+      openQuestionLocalHandleMap: {
+        contradiction_1: "oq_aaaaaaaaaaaaaaaa",
+      },
+      basePath: "system_1",
+      baseReason: "Retrieval confidence is strong enough for a direct response.",
+      forcedPath: "system_2",
+    });
+    expect(emit).toHaveBeenCalledWith("path_selected", {
+      turnId: "turn-forced",
+      path: "system_2",
+      reason: "open_question_contradiction",
+      confidenceOverall: 0.9,
+      contradictionPresent: false,
+      forced_by: "open_question_contradiction",
+    });
+  });
+
+  it("preserves the natural S2 reason when the override does not change the path", () => {
+    const emit = vi.fn<TurnTracer["emit"]>();
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit,
+    } satisfies TurnTracer;
+    const decision = chooseDeliberationPath(
+      "reflective",
+      "low",
+      [makeEpisode(0.9)],
+      false,
+      makeConfidence(0.9),
+      {
+        tracer,
+        turnId: "turn-natural-s2",
+      },
+      {
+        forceSystem2: true,
+        reason: "open_question_contradiction",
+        forcedBy: "open_question_contradiction",
+        oqIds: ["oq_aaaaaaaaaaaaaaaa"],
+        openQuestions: [
+          {
+            id: "oq_aaaaaaaaaaaaaaaa" as never,
+            question: "Which itinerary claim is current?",
+            source: "contradiction",
+            localHandle: "contradiction_1",
+          },
+        ],
+        audienceEntityId: null,
+        isOperational: true,
+      },
+    );
+
+    expect(decision).toMatchObject({
+      path: "system_2",
+      reason: "Reflective mode always takes the deeper reasoning path.",
+      forced_by: null,
+    });
+    expect(emit).toHaveBeenCalledWith(
+      "path_selected",
+      expect.objectContaining({
+        turnId: "turn-natural-s2",
+        path: "system_2",
+        reason: "Reflective mode always takes the deeper reasoning path.",
+        forced_by: null,
+      }),
+    );
+    expect(emit).toHaveBeenCalledWith(
+      "s2_routing_forced_by_contradiction",
+      expect.objectContaining({
+        turnId: "turn-natural-s2",
+        basePath: "system_2",
+        baseReason: "Reflective mode always takes the deeper reasoning path.",
+      }),
+    );
   });
 });

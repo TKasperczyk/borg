@@ -22,6 +22,7 @@ import {
 } from "../decision-artifact/index.js";
 import {
   buildDecisionArtifactLedgerPromptContext,
+  buildContradictionRoutingOverride,
   shouldSkipDecisionArtifactCompile,
   TurnPhaseCoordinator,
 } from "./turn-phase-coordinator.js";
@@ -108,6 +109,123 @@ function evidenceLedger(entries: readonly EvidenceLedgerEntry[]): EvidenceLedger
     ],
   };
 }
+
+function contradictionOpenQuestion(
+  id = "oq_aaaaaaaaaaaaaaaa",
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    question: "Which itinerary shape is current?",
+    source: "contradiction",
+    status: "open",
+    audience_entity_id: null,
+    ...overrides,
+  } as never;
+}
+
+function ledgerWithOpenQuestionIds(ids: readonly string[]): EvidenceLedger {
+  return {
+    transcriptIncluded: false,
+    transcriptCompacted: false,
+    originalTranscriptTokenEstimate: 0,
+    compactedTranscriptEntryCount: 0,
+    rawPreservedUserTranscriptEntryCount: 0,
+    estimatedTokens: 0,
+    sections: [
+      {
+        id: "open_questions",
+        label: "13. Open Questions",
+        entries: ids.map((id) => ({
+          id: `open_question:${id}`,
+          source_type: "system_metadata",
+          session_scope: "current_session",
+          actor: "memory",
+          trust_rank: 38,
+          text: "Which itinerary shape is current?",
+          value: "contradiction",
+          state: "open",
+          taint: "none",
+        })),
+      },
+    ],
+  };
+}
+
+function openQuestionsById(questions: ReadonlyArray<{ id: string }>) {
+  const byId = new Map(questions.map((question) => [question.id, question]));
+
+  return {
+    get: (id: string) => (byId.get(id) ?? null) as never,
+  };
+}
+
+describe("buildContradictionRoutingOverride", () => {
+  it("forces S2 for operational user turns with ledger-surfaced unresolved contradiction OQs", () => {
+    const audienceEntityId = createEntityId();
+    const override = buildContradictionRoutingOverride({
+      isUserTurn: true,
+      perception: { isOperational: true },
+      audienceEntityId,
+      openQuestionsRepository: openQuestionsById([
+        contradictionOpenQuestion("oq_aaaaaaaaaaaaaaaa", {
+          audience_entity_id: audienceEntityId,
+        }),
+      ]),
+      evidenceLedger: ledgerWithOpenQuestionIds(["oq_aaaaaaaaaaaaaaaa"]),
+    });
+
+    expect(override).toMatchObject({
+      forceSystem2: true,
+      reason: "open_question_contradiction",
+      forcedBy: "open_question_contradiction",
+      oqIds: ["oq_aaaaaaaaaaaaaaaa"],
+      audienceEntityId,
+      isOperational: true,
+      openQuestions: [
+        expect.objectContaining({
+          localHandle: "contradiction_1",
+        }),
+      ],
+    });
+  });
+
+  it("does not force S2 for operational turns without surfaced contradiction OQs", () => {
+    const override = buildContradictionRoutingOverride({
+      isUserTurn: true,
+      perception: { isOperational: true },
+      audienceEntityId: null,
+      openQuestionsRepository: openQuestionsById([contradictionOpenQuestion()]),
+      evidenceLedger: ledgerWithOpenQuestionIds([]),
+    });
+
+    expect(override).toBeNull();
+  });
+
+  it("does not force S2 for non-operational turns", () => {
+    const override = buildContradictionRoutingOverride({
+      isUserTurn: true,
+      perception: { isOperational: false },
+      audienceEntityId: null,
+      openQuestionsRepository: openQuestionsById([contradictionOpenQuestion()]),
+      evidenceLedger: ledgerWithOpenQuestionIds(["oq_aaaaaaaaaaaaaaaa"]),
+    });
+
+    expect(override).toBeNull();
+  });
+
+  it("does not force S2 for autonomous turns", () => {
+    const override = buildContradictionRoutingOverride({
+      isUserTurn: false,
+      perception: { isOperational: true },
+      audienceEntityId: null,
+      openQuestionsRepository: openQuestionsById([contradictionOpenQuestion()]),
+      evidenceLedger: ledgerWithOpenQuestionIds(["oq_aaaaaaaaaaaaaaaa"]),
+    });
+
+    expect(override).toBeNull();
+  });
+});
 
 describe("shouldSkipDecisionArtifactCompile", () => {
   it("does not skip frame-anomaly turns", () => {

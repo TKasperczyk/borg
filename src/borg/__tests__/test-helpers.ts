@@ -198,7 +198,7 @@ export function createInvalidModeClassifierResponse() {
       {
         id: "toolu_mode",
         name: MODE_TOOL_NAME,
-        input: { mode: "unknown" },
+        input: { mode: "unknown", is_operational: false },
       },
     ],
   };

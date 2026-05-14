@@ -175,7 +175,7 @@ export class Perceiver {
     }
 
     const nowMs = this.clock.now();
-    const [entityExtraction, mode, affective, temporalCue] = await Promise.all([
+    const [entityExtraction, modeDetection, affective, temporalCue] = await Promise.all([
       runPerceptionClassifierSafely({
         classifier: "entity_extractor",
         run: () => this.entityExtractor.extract(text),
@@ -194,7 +194,10 @@ export class Perceiver {
       runPerceptionClassifierSafely({
         classifier: "mode_detector",
         run: () => this.modeDetector.detectMode(text, recentHistory),
-        fallback: () => "idle",
+        fallback: () => ({
+          mode: "idle",
+          isOperational: false,
+        }),
         onFailure: this.onClassifierFailure,
       }),
       this.detectAffectiveSignalSafely(text, recentHistory),
@@ -231,7 +234,8 @@ export class Perceiver {
       entities: entityExtraction.entities,
       entityMentions: entityExtraction.entityMentions,
       userIdentityNames: entityExtraction.userIdentityNames,
-      mode,
+      mode: modeDetection.mode,
+      isOperational: modeDetection.isOperational,
       affectiveSignal: affective.signal,
       affectiveSignalDegraded: affective.degraded,
       temporalCue,
@@ -241,6 +245,7 @@ export class Perceiver {
       this.tracer.emit("perception_completed", {
         turnId: this.turnId,
         mode: perception.mode,
+        isOperational: perception.isOperational === true,
         entities: perception.entities,
         temporalCue: perception.temporalCue,
       });

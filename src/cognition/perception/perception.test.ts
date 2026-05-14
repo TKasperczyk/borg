@@ -50,15 +50,15 @@ function entityResponse(entities: readonly unknown[], userIdentityNames: readonl
     stop_reason: "tool_use",
     tool_calls: [
       {
-              id: "toolu_entity",
-              name: ENTITY_TOOL_NAME,
-              input: { entities, user_identity_names: userIdentityNames },
-            },
+        id: "toolu_entity",
+        name: ENTITY_TOOL_NAME,
+        input: { entities, user_identity_names: userIdentityNames },
+      },
     ],
   };
 }
 
-function modeResponse(mode: string) {
+function modeResponse(mode: string, isOperational = false) {
   return {
     text: "",
     input_tokens: 1,
@@ -68,7 +68,7 @@ function modeResponse(mode: string) {
       {
         id: "toolu_mode",
         name: MODE_TOOL_NAME,
-        input: { mode },
+        input: { mode, is_operational: isOperational },
       },
     ],
   };
@@ -151,9 +151,18 @@ describe("perception", () => {
     // The heuristic tier was removed; without an LLM, the safe neutral
     // default is "idle" (skips S2 planning, uses default retrieval weights).
     const detector = new ModeDetector({ useLlmFallback: false });
-    expect(await detector.detectMode("pnpm build throws an error trace")).toBe("idle");
-    expect(await detector.detectMode("Why do I keep avoiding this?")).toBe("idle");
-    expect(await detector.detectMode("ok")).toBe("idle");
+    await expect(detector.detectMode("pnpm build throws an error trace")).resolves.toEqual({
+      mode: "idle",
+      isOperational: false,
+    });
+    await expect(detector.detectMode("Why do I keep avoiding this?")).resolves.toEqual({
+      mode: "idle",
+      isOperational: false,
+    });
+    await expect(detector.detectMode("ok")).resolves.toEqual({
+      mode: "idle",
+      isOperational: false,
+    });
   });
 
   it("classifies every message via the LLM when configured", async () => {
@@ -181,7 +190,7 @@ describe("perception", () => {
             {
               id: "toolu_2",
               name: MODE_TOOL_NAME,
-              input: { mode: "reflective" },
+              input: { mode: "reflective", is_operational: true },
             },
           ],
         },
@@ -198,7 +207,10 @@ describe("perception", () => {
     });
 
     expect(await entityExtractor.extractEntities("something vague")).toEqual(["Atlas"]);
-    expect(await modeDetector.detectMode("maybe this", [])).toBe("reflective");
+    expect(await modeDetector.detectMode("maybe this", [])).toEqual({
+      mode: "reflective",
+      isOperational: true,
+    });
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
       name: ENTITY_TOOL_NAME,
@@ -207,6 +219,23 @@ describe("perception", () => {
       type: "tool",
       name: MODE_TOOL_NAME,
     });
+  });
+
+  it("surfaces the LLM operational-turn signal on perception results", async () => {
+    const llm = new FakeLLMClient({
+      responses: [entityResponse(["Atlas"]), modeResponse("problem_solving", true)],
+    });
+    const perceiver = new Perceiver({
+      llmClient: llm,
+      model: "haiku",
+      affectiveUseLlmFallback: false,
+      temporalCueUseLlmFallback: false,
+    });
+
+    const perceived = await perceiver.perceive("Recap the locked Atlas deployment state.");
+
+    expect(perceived.mode).toBe("problem_solving");
+    expect(perceived.isOperational).toBe(true);
   });
 
   it("passes the full message text to the entity LLM without truncation", async () => {
@@ -326,6 +355,7 @@ describe("perception", () => {
     const perceived = await perceiver.perceive("plain lower text");
 
     expect(perceived.mode).toBe("idle");
+    expect(perceived.isOperational).toBe(false);
     expect(perceived.entities).toEqual(["Atlas"]);
     expect(onClassifierFailure).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -359,6 +389,7 @@ describe("perception", () => {
 
     expect(perceived.entities).toEqual([]);
     expect(perceived.mode).toBe("problem_solving");
+    expect(perceived.isOperational).toBe(false);
     expect(onClassifierFailure).toHaveBeenCalledWith(
       expect.objectContaining({
         classifier: "entity_extractor",
@@ -384,6 +415,7 @@ describe("perception", () => {
 
     expect(perceived.entities).toEqual([]);
     expect(perceived.mode).toBe("idle");
+    expect(perceived.isOperational).toBe(false);
     expect(onClassifierFailure).toHaveBeenCalledTimes(2);
     expect(onClassifierFailure).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -423,6 +455,7 @@ describe("perception", () => {
       entities: successful.entities,
       entityMentions: successful.entityMentions,
       mode: successful.mode,
+      isOperational: successful.isOperational,
     }).toEqual(successful);
   });
 
@@ -442,6 +475,7 @@ describe("perception", () => {
     expect(perceived.entities).toEqual([]);
     expect(perceived.temporalCue).toBeNull();
     expect(perceived.mode).toBe("idle");
+    expect(perceived.isOperational).toBe(false);
     expect(perceived.affectiveSignal).toEqual({
       valence: 0,
       arousal: 0,

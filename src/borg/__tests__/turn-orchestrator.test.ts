@@ -52,6 +52,7 @@ function createEntityDetectionResponse(entities: string[] = []) {
 
 function createModeDetectionResponse(
   mode: "problem_solving" | "relational" | "reflective" | "idle",
+  isOperational = false,
 ) {
   return {
     text: "",
@@ -62,7 +63,7 @@ function createModeDetectionResponse(
       {
         id: "toolu_mode",
         name: "EmitModeDetection",
-        input: { mode },
+        input: { mode, is_operational: isOperational },
       },
     ],
   };

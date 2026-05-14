@@ -139,6 +139,35 @@ describe("OpenQuestionsRepository", () => {
     db.close();
   });
 
+  it("filters listed questions by source", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const contradiction = repository.add({
+        question: "Which route claim contradicts the current plan?",
+        urgency: 0.8,
+        source: "contradiction",
+        provenance: manualProvenance,
+      });
+      repository.add({
+        question: "What should be reflected later?",
+        urgency: 0.9,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+
+      expect(repository.list({ status: "open", source: "contradiction" })).toEqual([contradiction]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("CAS-protects open question deletion", async () => {
     const clock = new FixedClock(10_000);
     const db = openDatabase(":memory:", {

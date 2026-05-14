@@ -7,10 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Borg } from "./borg.js";
 import { DEFAULT_CONFIG } from "./config/index.js";
 import type { EmbeddingClient } from "./embeddings/index.js";
-import {
-  FakeLLMClient,
-  createFakeEmitAnswerResponse,
-} from "./llm/test-support/fake-client.js";
+import { FakeLLMClient, createFakeEmitAnswerResponse } from "./llm/test-support/fake-client.js";
 import { affectiveMigrations } from "./memory/affective/index.js";
 import { commitmentMigrations } from "./memory/commitments/index.js";
 import {
@@ -64,7 +61,10 @@ function createEntityDetectionResponse(entities: string[] = []) {
   };
 }
 
-function createModeDetectionResponse(mode: "problem_solving" | "relational" | "reflective" | "idle") {
+function createModeDetectionResponse(
+  mode: "problem_solving" | "relational" | "reflective" | "idle",
+  isOperational = false,
+) {
   return {
     text: "",
     input_tokens: 4,
@@ -74,7 +74,7 @@ function createModeDetectionResponse(mode: "problem_solving" | "relational" | "r
       {
         id: "toolu_mode",
         name: "EmitModeDetection",
-        input: { mode },
+        input: { mode, is_operational: isOperational },
       },
     ],
   };
@@ -230,10 +230,13 @@ describe("Borg Sprint 7", () => {
             },
           ],
         },
-        createFakeEmitAnswerResponse("Try shrinking the borrow scope and introducing an intermediate binding.", {
+        createFakeEmitAnswerResponse(
+          "Try shrinking the borrow scope and introducing an intermediate binding.",
+          {
             inputTokens: 20,
             outputTokens: 20,
-          }),
+          },
+        ),
         createEmptyReflectionResponse(),
         createEntityDetectionResponse(["Rust", "E0597"]),
         createModeDetectionResponse("problem_solving"),
@@ -255,10 +258,13 @@ describe("Borg Sprint 7", () => {
             },
           ],
         },
-        createFakeEmitAnswerResponse("Reuse the scoped-binding approach; it still fits the Rust lifetime issue.", {
+        createFakeEmitAnswerResponse(
+          "Reuse the scoped-binding approach; it still fits the Rust lifetime issue.",
+          {
             inputTokens: 20,
             outputTokens: 20,
-          }),
+          },
+        ),
         {
           text: "",
           input_tokens: 20,

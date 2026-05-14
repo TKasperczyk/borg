@@ -11,15 +11,21 @@ import { CognitionError, LLMError } from "../../util/errors.js";
 
 const modeFallbackSchema = z.object({
   mode: cognitiveModeSchema,
+  is_operational: z.boolean(),
 });
 const MODE_FALLBACK_TOOL_NAME = "EmitModeDetection";
 export const MODE_FALLBACK_TOOL = {
   name: MODE_FALLBACK_TOOL_NAME,
-  description: "Emit the detected cognitive mode for the message.",
+  description: "Emit the detected cognitive mode and operational-turn signal for the message.",
   inputSchema: toToolInputSchema(modeFallbackSchema),
 } satisfies LLMToolDefinition;
 
-function parseModeFallback(result: LLMCompleteResult): CognitiveMode {
+export type ModeDetectionResult = {
+  mode: CognitiveMode;
+  isOperational: boolean;
+};
+
+function parseModeFallback(result: LLMCompleteResult): ModeDetectionResult {
   const call = result.tool_calls.find((toolCall) => toolCall.name === MODE_FALLBACK_TOOL_NAME);
 
   if (call === undefined) {
@@ -37,7 +43,10 @@ function parseModeFallback(result: LLMCompleteResult): CognitiveMode {
     });
   }
 
-  return parsed.data.mode;
+  return {
+    mode: parsed.data.mode,
+    isOperational: parsed.data.is_operational,
+  };
 }
 
 export type ModeDetectorOptions = {
@@ -65,13 +74,19 @@ export class ModeDetector {
     this.useLlmFallback = options.useLlmFallback ?? true;
   }
 
-  async detectMode(text: string, recentHistory: readonly string[] = []): Promise<CognitiveMode> {
+  async detectMode(
+    text: string,
+    recentHistory: readonly string[] = [],
+  ): Promise<ModeDetectionResult> {
     if (
       !this.useLlmFallback ||
       this.options.llmClient === undefined ||
       this.options.model === undefined
     ) {
-      return "idle";
+      return {
+        mode: "idle",
+        isOperational: false,
+      };
     }
 
     try {
@@ -86,6 +101,9 @@ export class ModeDetector {
           "- idle: trivial acknowledgments, filler, brief greetings with no topic, nothing substantive to engage with.",
           "",
           'When ambiguous, prefer the more engaged mode ("reflective" over "idle", "problem_solving" over "relational", etc.). "idle" is only for genuinely contentless input like "ok", "thanks", "hmm".',
+          "",
+          "Also set is_operational: true when the user's turn asks for one of: recap of current state, lock-in/confirmation of a decision, booking action, alignment check ('are we aligned'), or explicit operational summary.",
+          "Set is_operational: false for chit-chat, exploration, open-ended discussion, individual fact-sharing, or turns that add context without asking to align, confirm, recap, lock, book, or summarize current operational state.",
         ].join("\n"),
         messages: [
           {

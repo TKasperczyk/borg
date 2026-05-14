@@ -23,7 +23,10 @@ import {
 import { runS2Planner } from "./s2-planner.js";
 import { formatTurnPlanForThought, persistDeliberationThoughts } from "./thoughts.js";
 import { NOOP_TRACER, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
-import { buildCompactPlannerLedgerPrompt } from "../evidence-ledger/index.js";
+import {
+  buildCompactPlannerLedgerPrompt,
+  truncateTextForCompactPlannerLedger,
+} from "../evidence-ledger/index.js";
 import type { GenerationSuppressionReason, PendingTurnEmission } from "../generation/types.js";
 import type {
   DeliberationContext,
@@ -89,6 +92,38 @@ function dedupeRetrievedEpisodes(results: readonly RetrievedEpisode[]): Retrieve
   }
 
   return deduped;
+}
+
+function renderForcedContradictionOpenQuestionsPrompt(context: DeliberationContext): string | null {
+  const routingOverride = context.routingOverride;
+  const openQuestions = routingOverride?.openQuestions ?? [];
+
+  if (
+    routingOverride?.forceSystem2 !== true ||
+    routingOverride.forcedBy !== "open_question_contradiction" ||
+    openQuestions.length === 0
+  ) {
+    return null;
+  }
+
+  const contradictionQuestionLines = openQuestions
+    .slice(0, 5)
+    .map(
+      (question, index) =>
+        `${index + 1}. ${question.localHandle ?? `contradiction_${index + 1}`} [source=${
+          question.source
+        }]: ${truncateTextForCompactPlannerLedger(question.question, 75) ?? ""}`,
+    );
+
+  return [
+    "Planner routing note: An unresolved contradiction is flagged in the open questions above. Either reconcile it via your plan, or explicitly name the conflict in the planning output rather than ignoring it.",
+    renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
+      {
+        tag: "borg_unresolved_contradiction_open_questions",
+        content: contradictionQuestionLines.join("\n"),
+      },
+    ]),
+  ].join("\n\n");
 }
 
 type FinalizerEmission = {
@@ -231,6 +266,7 @@ export class Deliberator {
       context.contradictionPresent,
       retrievalConfidence,
       trace,
+      context.routingOverride,
     );
     const baseSystemPromptOptions = {
       retrievalContextBudget,
@@ -307,6 +343,12 @@ export class Deliberator {
         : buildCompactPlannerLedgerPrompt(context.evidenceLedger, {
             decisionArtifact: this.options.decisionArtifactRenderOptions,
           });
+    const forcedContradictionOpenQuestionsPrompt =
+      renderForcedContradictionOpenQuestionsPrompt(context);
+    const plannerAdditionalPromptSections = [
+      compactPlannerLedger?.promptSection ?? null,
+      forcedContradictionOpenQuestionsPrompt,
+    ];
 
     if (compactPlannerLedger !== null && this.tracer.enabled && context.turnId !== undefined) {
       this.tracer.emit("planner_compact_ledger_built", {
@@ -336,10 +378,7 @@ export class Deliberator {
       baseSystemPrompt,
       dialogueMessages,
       selfSnapshot: context.selfSnapshot,
-      ...(compactPlannerLedger?.promptSection === undefined ||
-      compactPlannerLedger.promptSection === null
-        ? {}
-        : { additionalPromptSections: [compactPlannerLedger.promptSection] }),
+      additionalPromptSections: plannerAdditionalPromptSections,
       maxTokens: planningMaxTokens,
       ...(thinking === undefined ? {} : { thinking }),
       tracer: this.tracer,

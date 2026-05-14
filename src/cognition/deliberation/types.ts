@@ -43,6 +43,19 @@ import type { TurnTracer } from "../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
 
 export type TurnStakes = "low" | "medium" | "high";
+export type DeliberationRoutingForcedBy = "open_question_contradiction";
+
+export type DeliberationRoutingOverride = {
+  forceSystem2: boolean;
+  reason: DeliberationRoutingForcedBy;
+  forcedBy: DeliberationRoutingForcedBy;
+  oqIds: readonly string[];
+  openQuestions?: readonly (Pick<OpenQuestion, "id" | "question" | "source"> & {
+    localHandle?: string;
+  })[];
+  audienceEntityId?: EntityId | null;
+  isOperational?: boolean;
+};
 
 export type SelfSnapshot = {
   values: ValueRecord[];
@@ -133,6 +146,7 @@ export type DeliberationContext = {
    * finalization uses this to keep prompt-visible IDs tied to evidence prose.
    */
   evidenceLedger?: EvidenceLedger | null;
+  routingOverride?: DeliberationRoutingOverride | null;
   options?: {
     stakes?: TurnStakes;
     maxThinkingTokens?: number;

@@ -85,7 +85,8 @@ function phaseFor(event: string): Phase {
     event.startsWith("llm_call_") ||
     event.startsWith("plan_") ||
     event === "s2_planner_exhausted" ||
-    event === "path_selected"
+    event === "path_selected" ||
+    event === "s2_routing_forced_by_contradiction"
   ) {
     return "deliberation";
   }

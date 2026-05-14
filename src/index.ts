@@ -237,6 +237,7 @@ export {
   type GrowthMarkerCategory,
   type GrowthMarkersSummary,
   type OpenQuestion,
+  type OpenQuestionListOptions,
   type OpenQuestionSource,
   type OpenQuestionStatus,
   type TraitRecord,

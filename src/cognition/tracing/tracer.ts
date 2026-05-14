@@ -25,6 +25,7 @@ export type TurnTraceEventName =
   | "decision_artifact_reconciliation_completed"
   | "planner_compact_ledger_built"
   | "path_selected"
+  | "s2_routing_forced_by_contradiction"
   | "llm_call_started"
   | "llm_call_response"
   | "plan_extraction"

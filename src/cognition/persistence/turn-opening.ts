@@ -68,6 +68,7 @@ export class TurnOpeningPersistence {
       turn_status: ACTIVE_TURN_STATUS,
       content: {
         mode: input.perception.mode,
+        isOperational: input.perception.isOperational === true,
         entities: input.perception.entities,
         userIdentityNames: input.perception.userIdentityNames ?? [],
         temporalCue: input.perception.temporalCue,

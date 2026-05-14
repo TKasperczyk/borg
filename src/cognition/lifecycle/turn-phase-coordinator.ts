@@ -10,6 +10,7 @@ import {
   type CorrectivePreferenceTurnService,
 } from "../commitments/corrective-preference-service.js";
 import { Deliberator, type TurnStakes } from "../deliberation/deliberator.js";
+import type { DeliberationRoutingOverride } from "../deliberation/types.js";
 import {
   EvidenceLedgerBuilder,
   compactEvidenceLedger,
@@ -75,6 +76,7 @@ import type { RelationalSlotRepository } from "../../memory/relational-slots/ind
 import {
   appendInternalFailureEvent,
   type GoalsRepository,
+  type OpenQuestion,
   type OpenQuestionsRepository,
 } from "../../memory/self/index.js";
 import type { SocialRepository } from "../../memory/social/index.js";
@@ -107,6 +109,7 @@ import {
 
 const ACTIVE_TURN_STATUS = "active";
 const DELIBERATION_RELATIONAL_SLOT_LIMIT = 24;
+const EVIDENCE_LEDGER_OPEN_QUESTION_ID_PREFIX = "open_question:";
 
 type EvidenceLedgerFinalizerContext = {
   ledger: EvidenceLedger | null;
@@ -118,6 +121,80 @@ type EvidenceLedgerFinalizerBuildInput = EvidenceLedgerBuildInput & {
   perception: PerceptionResult;
   closureLoopAssessment: ClosureLoopAssessment | null;
 };
+
+export type BuildContradictionRoutingOverrideInput = {
+  isUserTurn: boolean;
+  perception: Pick<PerceptionResult, "isOperational">;
+  audienceEntityId: EntityId | null;
+  openQuestionsRepository: Pick<OpenQuestionsRepository, "get">;
+  evidenceLedger: EvidenceLedger | null;
+};
+
+export function buildContradictionRoutingOverride(
+  input: BuildContradictionRoutingOverrideInput,
+): DeliberationRoutingOverride | null {
+  if (!input.isUserTurn) {
+    return null;
+  }
+
+  if (input.perception.isOperational !== true) {
+    return null;
+  }
+
+  const evidenceVisibleOpenQuestionIds = collectEvidenceLedgerOpenQuestionIds(input.evidenceLedger);
+  const openQuestions = [...evidenceVisibleOpenQuestionIds]
+    .map((id) => input.openQuestionsRepository.get(id as OpenQuestion["id"]))
+    .filter(
+      (question): question is OpenQuestion =>
+        question !== null &&
+        question.status === "open" &&
+        question.source === "contradiction" &&
+        openQuestionScopesToAudience(question, input.audienceEntityId),
+    );
+
+  if (openQuestions.length === 0) {
+    return null;
+  }
+
+  return {
+    forceSystem2: true,
+    reason: "open_question_contradiction",
+    forcedBy: "open_question_contradiction",
+    oqIds: openQuestions.map((question) => question.id),
+    openQuestions: openQuestions.map((question, index) => ({
+      id: question.id,
+      question: question.question,
+      source: question.source,
+      localHandle: `contradiction_${index + 1}`,
+    })),
+    audienceEntityId: input.audienceEntityId,
+    isOperational: true,
+  };
+}
+
+function collectEvidenceLedgerOpenQuestionIds(ledger: EvidenceLedger | null): Set<string> {
+  const ids = new Set<string>();
+  const openQuestionsSection = ledger?.sections.find((section) => section.id === "open_questions");
+
+  if (openQuestionsSection === undefined) {
+    return ids;
+  }
+
+  for (const entry of openQuestionsSection.entries) {
+    if (entry.id.startsWith(EVIDENCE_LEDGER_OPEN_QUESTION_ID_PREFIX)) {
+      ids.add(entry.id.slice(EVIDENCE_LEDGER_OPEN_QUESTION_ID_PREFIX.length));
+    }
+  }
+
+  return ids;
+}
+
+function openQuestionScopesToAudience(
+  question: Pick<OpenQuestion, "audience_entity_id">,
+  audienceEntityId: EntityId | null,
+): boolean {
+  return question.audience_entity_id === null || question.audience_entity_id === audienceEntityId;
+}
 
 const DECISION_ARTIFACT_LEDGER_STREAM_METADATA_KEYS = [
   "stream_ids",
@@ -953,6 +1030,13 @@ export class TurnPhaseCoordinator {
       perception,
       closureLoopAssessment,
     });
+    const routingOverride = buildContradictionRoutingOverride({
+      isUserTurn,
+      perception,
+      audienceEntityId,
+      openQuestionsRepository: this.options.openQuestionsRepository,
+      evidenceLedger: evidenceLedgerContext.ledger,
+    });
     const deliberator = new Deliberator({
       llmClient,
       toolDispatcher: this.options.toolDispatcher,
@@ -998,6 +1082,7 @@ export class TurnPhaseCoordinator {
         frameAnomaly: currentTurnFrameAnomaly,
         evidenceLedgerPromptSection: evidenceLedgerContext.promptSection,
         evidenceLedger: evidenceLedgerContext.ledger,
+        routingOverride,
         options: {
           stakes: turnInput.stakes,
         },

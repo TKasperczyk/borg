@@ -247,7 +247,7 @@ describe("Sprint 28 integration", () => {
               {
                 id: "toolu_mode",
                 name: "EmitModeDetection",
-                input: { mode: "problem_solving" },
+                input: { mode: "problem_solving", is_operational: false },
               },
             ],
           },

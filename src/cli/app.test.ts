@@ -1258,7 +1258,7 @@ describe("cli", () => {
             {
               id: "toolu_mode_cli",
               name: "EmitModeDetection",
-              input: { mode: "problem_solving" },
+              input: { mode: "problem_solving", is_operational: false },
             },
           ],
         },

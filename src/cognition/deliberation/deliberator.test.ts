@@ -729,6 +729,105 @@ describe("deliberator", () => {
     });
   });
 
+  it("forces S2 for contradiction routing overrides and gives the planner the OQ text", async () => {
+    const contradictionQuestion =
+      "Seville-inclusive commitments conflict with the three-anchor itinerary. Which shape is current?";
+    const longContradictionQuestion = `${contradictionQuestion} ${"extra itinerary detail ".repeat(
+      40,
+    )}`;
+    const openQuestionIds = [
+      "oq_aaaaaaaaaaaaaaaa",
+      "oq_bbbbbbbbbbbbbbbb",
+      "oq_cccccccccccccccc",
+      "oq_dddddddddddddddd",
+      "oq_eeeeeeeeeeeeeeee",
+      "oq_ffffffffffffffff",
+    ];
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 20,
+          output_tokens: 8,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_forced_contradiction",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [contradictionQuestion],
+                voice_note: "name the itinerary conflict directly",
+                emission_recommendation: "emit",
+                intents: [],
+              },
+            },
+          ],
+        },
+        emitFinalizerToolResponse({
+          id: "toolu_emit_forced_contradiction_answer",
+          name: "EmitAnswer",
+          input: { text: "I need to reconcile the itinerary conflict first." },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, { tracer });
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnId: "turn-forced-contradiction",
+        userMessage: "Are we aligned on the current itinerary?",
+        perception: {
+          entities: [],
+          mode: "problem_solving",
+          isOperational: true,
+          affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+          temporalCue: null,
+        },
+        routingOverride: {
+          forceSystem2: true,
+          reason: "open_question_contradiction",
+          forcedBy: "open_question_contradiction",
+          oqIds: openQuestionIds,
+          openQuestions: openQuestionIds.map((id, index) => ({
+            id: id as never,
+            question: index === 0 ? longContradictionQuestion : `${contradictionQuestion} ${index}`,
+            source: "contradiction" as const,
+            localHandle: `contradiction_${index + 1}`,
+          })),
+          audienceEntityId: null,
+          isOperational: true,
+        },
+      }),
+    );
+
+    expect(result.path).toBe("system_2");
+    const plannerSystem = requestSystemText(llm.requests[0]?.system);
+    expect(plannerSystem).toContain("Planner routing note");
+    expect(plannerSystem).toContain("contradiction_1");
+    expect(plannerSystem).toContain("contradiction_5");
+    expect(plannerSystem).not.toContain("contradiction_6");
+    expect(plannerSystem).not.toContain("oq_aaaaaaaaaaaaaaaa");
+    expect(plannerSystem).toContain("[compact planner ledger truncated");
+    expect(plannerSystem).toContain(contradictionQuestion);
+    expect(tracer.events).toContainEqual(
+      expect.objectContaining({
+        event: "s2_routing_forced_by_contradiction",
+        data: expect.objectContaining({
+          turnId: "turn-forced-contradiction",
+          basePath: "system_1",
+          forcedPath: "system_2",
+          openQuestionIds,
+          openQuestionLocalHandleMap: expect.objectContaining({
+            contradiction_1: "oq_aaaaaaaaaaaaaaaa",
+          }),
+        }),
+      }),
+    );
+  });
+
   it("marks EmitSelfReport emissions with assistant self-report persistence class", async () => {
     const selfReport = "The gap feels like a discontinuity with a remembered edge.";
     const llm = new FakeLLMClient({

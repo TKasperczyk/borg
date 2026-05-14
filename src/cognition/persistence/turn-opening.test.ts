@@ -16,6 +16,7 @@ const activeTurnStatus = "active";
 function makePerception(): PerceptionResult {
   return {
     mode: "problem_solving",
+    isOperational: true,
     entities: ["Atlas"],
     temporalCue: null,
     affectiveSignal: {
@@ -134,6 +135,7 @@ describe("TurnOpeningPersistence", () => {
         turn_status: activeTurnStatus,
         content: {
           mode: "problem_solving",
+          isOperational: true,
           entities: ["Atlas"],
           userIdentityNames: [],
           temporalCue: null,
@@ -198,6 +200,7 @@ describe("TurnOpeningPersistence", () => {
         turn_status: activeTurnStatus,
         content: {
           mode: "problem_solving",
+          isOperational: true,
           entities: ["Atlas"],
           userIdentityNames: [],
           temporalCue: null,

@@ -43,7 +43,7 @@ function perceptionToolRouter(options: LLMCompleteOptions) {
     case "EmitEntityExtraction":
       return toolResponse(toolName, { entities: ["Atlas"] });
     case "EmitModeDetection":
-      return toolResponse(toolName, { mode: "problem_solving" });
+      return toolResponse(toolName, { mode: "problem_solving", is_operational: false });
     case "EmitAffectiveSignal":
       return toolResponse(toolName, { valence: 0, arousal: 0.2, dominant_emotion: null });
     case "EmitTemporalCue":

@@ -99,7 +99,7 @@ const COMPACT_PLANNER_LEDGER_GUIDANCE = [
   "Quarantined/contested/assistant-seeded values are not facts.",
 ].join("\n");
 
-function truncateTextForCompactPlannerLedger(
+export function truncateTextForCompactPlannerLedger(
   value: string | undefined,
   maxTokens: number,
 ): string | undefined {

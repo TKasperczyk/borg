@@ -43,6 +43,7 @@ const scenario: ReplayScenario = {
           name: "EmitModeDetection",
           input: {
             mode: "idle",
+            is_operational: false,
           },
         },
       ],

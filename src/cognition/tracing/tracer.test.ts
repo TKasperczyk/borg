@@ -222,7 +222,7 @@ describe("TurnTracer", () => {
             {
               id: "toolu_mode",
               name: "EmitModeDetection",
-              input: { mode: "reflective" },
+              input: { mode: "reflective", is_operational: false },
             },
           ],
         },
