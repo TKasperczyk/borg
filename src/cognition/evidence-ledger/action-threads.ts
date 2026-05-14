@@ -1,0 +1,309 @@
+import {
+  ACTION_STATES,
+  type ActionDescriptionSimilarityPair,
+  type ActionRecord,
+  type ActionState,
+} from "../../memory/actions/index.js";
+import type { EntityRepository } from "../../memory/commitments/index.js";
+import type { EntityId } from "../../util/ids.js";
+import type { ActiveParticipant } from "../participants.js";
+import type { ActionLedgerRepository } from "./builder-types.js";
+import { isActionVisibleToSession } from "./audience-visibility.js";
+import { actionScope, combineScopes, type ScopeResolver } from "./scope-resolver.js";
+import type { EvidenceLedgerSessionScope } from "./types.js";
+
+export const DEFAULT_ACTION_THREAD_RENDER_LIMIT = 12;
+export const DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD = 0.85;
+export const DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT = 256;
+
+const OLDER_ACTION_THREAD_SAMPLE_LIMIT = 4;
+const OLDER_ACTION_THREAD_SAMPLE_MAX_CHARS = 80;
+
+export type ActionThread = {
+  id: string;
+  records: ActionRecord[];
+  origin: ActionRecord;
+  current: ActionRecord;
+  scope: EvidenceLedgerSessionScope;
+};
+
+export function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+  return value === undefined ? fallback : Math.max(1, Math.floor(value));
+}
+
+export function normalizeUnitInterval(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.max(0, Math.min(1, value));
+}
+
+export function listVisibleActions(
+  actionRepository: ActionLedgerRepository,
+  audienceEntityId: EntityId | null,
+  activeParticipants: readonly ActiveParticipant[] | undefined,
+  limit: number,
+): ActionRecord[] {
+  const records: ActionRecord[] = [...actionRepository.list({ audienceEntityId: null, limit })];
+  const activeParticipantIds = new Set(
+    (activeParticipants ?? []).map((participant) => participant.entityId),
+  );
+
+  if (audienceEntityId !== null) {
+    records.push(...actionRepository.list({ audienceEntityId, limit }));
+  }
+
+  for (const participant of activeParticipants ?? []) {
+    records.push(
+      ...actionRepository
+        .list({ actor: participant.entityId })
+        .filter((action) =>
+          isActionVisibleToSession(action, audienceEntityId, activeParticipantIds),
+        ),
+    );
+    records.push(...actionRepository.list({ audienceEntityId: participant.entityId, limit }));
+  }
+
+  return [...new Map(records.map((record) => [record.id, record])).values()]
+    .sort((left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id))
+    .slice(0, limit);
+}
+
+export function actionActorDisplay(
+  actor: ActionRecord["actor"],
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): string {
+  if (actor === "borg") {
+    return "assistant";
+  }
+
+  if (actor === "user") {
+    return "user";
+  }
+
+  return entityRepository?.get(actor)?.canonical_name ?? "participant";
+}
+
+function findParent(parents: Map<string, string>, id: string): string {
+  const parent = parents.get(id);
+
+  if (parent === undefined || parent === id) {
+    parents.set(id, id);
+    return id;
+  }
+
+  const root = findParent(parents, parent);
+  parents.set(id, root);
+  return root;
+}
+
+function unionParents(parents: Map<string, string>, leftId: string, rightId: string): void {
+  const leftRoot = findParent(parents, leftId);
+  const rightRoot = findParent(parents, rightId);
+
+  if (leftRoot === rightRoot) {
+    return;
+  }
+
+  const root = leftRoot < rightRoot ? leftRoot : rightRoot;
+  const child = root === leftRoot ? rightRoot : leftRoot;
+  parents.set(child, root);
+}
+
+function actionTimestampForState(action: ActionRecord): number {
+  switch (action.state) {
+    case "considering":
+      return action.considering_at ?? action.updated_at;
+    case "committed_to_do":
+      return action.committed_at ?? action.updated_at;
+    case "scheduled":
+      return action.scheduled_at ?? action.updated_at;
+    case "completed":
+      return action.completed_at ?? action.updated_at;
+    case "not_done":
+      return action.not_done_at ?? action.updated_at;
+    case "unknown":
+      return action.unknown_at ?? action.updated_at;
+  }
+}
+
+function combineActionScopes(
+  records: readonly ActionRecord[],
+  resolver: ScopeResolver,
+): EvidenceLedgerSessionScope {
+  return combineScopes(records.map((record) => actionScope(record, resolver)));
+}
+
+function selectThreadOrigin(records: readonly ActionRecord[]): ActionRecord {
+  return [...records].sort(
+    (left, right) => left.created_at - right.created_at || left.id.localeCompare(right.id),
+  )[0] as ActionRecord;
+}
+
+function selectThreadCurrent(records: readonly ActionRecord[]): ActionRecord {
+  return [...records].sort(
+    (left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id),
+  )[0] as ActionRecord;
+}
+
+function canThreadActions(left: ActionRecord, right: ActionRecord): boolean {
+  return (
+    left.goal_id !== null &&
+    right.goal_id !== null &&
+    left.goal_id === right.goal_id &&
+    left.actor === right.actor
+  );
+}
+
+function sameThreadablePair(
+  pair: ActionDescriptionSimilarityPair,
+  actionsById: ReadonlyMap<string, ActionRecord>,
+  threshold: number,
+): [ActionRecord, ActionRecord] | null {
+  if (pair.similarity < threshold) {
+    return null;
+  }
+
+  const left = actionsById.get(pair.leftId);
+  const right = actionsById.get(pair.rightId);
+
+  if (left === undefined || right === undefined || !canThreadActions(left, right)) {
+    return null;
+  }
+
+  return [left, right];
+}
+
+export async function buildActionThreads(input: {
+  records: readonly ActionRecord[];
+  repository: ActionLedgerRepository;
+  resolver: ScopeResolver;
+  similarityThreshold: number;
+}): Promise<ActionThread[]> {
+  const parents = new Map<string, string>();
+  const actionsById = new Map(input.records.map((record) => [record.id, record]));
+
+  for (const record of input.records) {
+    parents.set(record.id, record.id);
+  }
+
+  const pairs =
+    input.repository.findSimilarDescriptionPairs === undefined
+      ? []
+      : await input.repository.findSimilarDescriptionPairs(
+          input.records.filter((record) => record.goal_id !== null),
+          input.similarityThreshold,
+        );
+
+  for (const pair of pairs) {
+    const records = sameThreadablePair(pair, actionsById, input.similarityThreshold);
+
+    if (records === null) {
+      continue;
+    }
+
+    unionParents(parents, records[0].id, records[1].id);
+  }
+
+  const groups = new Map<string, ActionRecord[]>();
+
+  for (const record of input.records) {
+    const root = findParent(parents, record.id);
+    groups.set(root, [...(groups.get(root) ?? []), record]);
+  }
+
+  return [...groups.entries()]
+    .map(([id, records]) => {
+      const origin = selectThreadOrigin(records);
+      const current = selectThreadCurrent(records);
+
+      return {
+        id,
+        records: [...records].sort(
+          (left, right) => left.updated_at - right.updated_at || left.id.localeCompare(right.id),
+        ),
+        origin,
+        current,
+        scope: combineActionScopes(records, input.resolver),
+      };
+    })
+    .sort(
+      (left, right) =>
+        right.current.updated_at - left.current.updated_at ||
+        left.current.id.localeCompare(right.current.id),
+    );
+}
+
+export function renderActionThreadText(
+  thread: ActionThread,
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): string {
+  const currentAt = new Date(actionTimestampForState(thread.current)).toISOString();
+  const actor = actionActorDisplay(thread.current.actor, entityRepository);
+  const lines = [
+    `actor: ${actor}`,
+    `originating_intent: ${thread.origin.description}`,
+    `transitions: ${thread.records.length}, current: ${thread.current.state} at ${currentAt}`,
+  ];
+
+  if (thread.current.id !== thread.origin.id) {
+    lines.push(`current_intent: ${thread.current.description}`);
+  }
+
+  return lines.join("\n");
+}
+
+export function actionThreadStateMetadata(
+  thread: ActionThread,
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): Record<string, unknown> {
+  return {
+    record_ids: thread.records.map((record) => record.id),
+    transitions: thread.records.length,
+    current_action_id: thread.current.id,
+    current_updated_at: thread.current.updated_at,
+    current_actor: actionActorDisplay(thread.current.actor, entityRepository),
+    goal_id: thread.current.goal_id,
+    open_question_id: thread.current.open_question_id,
+  };
+}
+
+export function actionThreadState(thread: ActionThread): ActionState {
+  return thread.current.state;
+}
+
+function truncateOlderActionThreadSample(text: string): string {
+  if (text.length <= OLDER_ACTION_THREAD_SAMPLE_MAX_CHARS) {
+    return text;
+  }
+
+  return `${text.slice(0, OLDER_ACTION_THREAD_SAMPLE_MAX_CHARS - 3)}...`;
+}
+
+export function renderOlderActionThreadsSummary(olderThreads: readonly ActionThread[]): string {
+  const olderRecordCount = olderThreads.reduce((count, thread) => count + thread.records.length, 0);
+  const stateCounts = new Map<ActionState, number>(ACTION_STATES.map((state) => [state, 0]));
+
+  for (const thread of olderThreads) {
+    stateCounts.set(thread.current.state, (stateCounts.get(thread.current.state) ?? 0) + 1);
+  }
+
+  const stateSummary = ACTION_STATES.map((state) => {
+    const count = stateCounts.get(state) ?? 0;
+    return count > 0 ? `${state}=${count}` : null;
+  })
+    .filter((entry): entry is string => entry !== null)
+    .join(" ");
+  const samples = olderThreads
+    .slice(0, OLDER_ACTION_THREAD_SAMPLE_LIMIT)
+    .map(
+      (thread) =>
+        `${thread.current.state}: ${JSON.stringify(
+          truncateOlderActionThreadSample(thread.current.description),
+        )}`,
+    )
+    .join(" | ");
+
+  return `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}, states=${stateSummary}, recent_samples=${samples}.`;
+}
