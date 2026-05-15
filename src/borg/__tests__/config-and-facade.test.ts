@@ -179,6 +179,69 @@ describe("Borg", () => {
     }
   });
 
+  it("preserves omitted and null commitment list filters through the facade", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+    const sortedIds = (records: ReturnType<typeof borg.commitments.list>) =>
+      records.map((record) => record.id).sort();
+
+    try {
+      const globalCommitment = borg.commitments.add({
+        type: "promise",
+        directiveFamily: "global_trip_followup",
+        directive: "Follow up on the trip plan.",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      const restrictedCommitment = borg.commitments.add({
+        type: "boundary",
+        directiveFamily: "trip_group_private_details",
+        directive: "Keep trip group private details in the trip group.",
+        priority: 10,
+        audience: "Trip Group",
+        provenance: { kind: "manual" },
+      });
+      const madeToCommitment = borg.commitments.add({
+        type: "promise",
+        directiveFamily: "trip_group_booking_followup",
+        directive: "Follow up with the trip group about bookings.",
+        priority: 8,
+        madeTo: "Trip Group",
+        provenance: { kind: "manual" },
+      });
+      const visibleIds = [globalCommitment.id, restrictedCommitment.id, madeToCommitment.id].sort();
+
+      expect(sortedIds(borg.commitments.list({}))).toEqual(visibleIds);
+      expect(sortedIds(borg.commitments.list({ audience: null }))).toEqual([globalCommitment.id]);
+      expect(sortedIds(borg.commitments.list({ audience: "Trip Group" }))).toEqual(visibleIds);
+      expect(sortedIds(borg.commitments.list({ aboutEntity: null }))).toEqual(visibleIds);
+
+      const revokedCommitment = borg.commitments.add({
+        type: "promise",
+        directiveFamily: "revoked_trip_group_followup",
+        directive: "This trip group follow-up was revoked.",
+        priority: 7,
+        audience: "Trip Group",
+        provenance: { kind: "manual" },
+      });
+      borg.commitments.revoke(revokedCommitment.id, "test revocation", { kind: "manual" });
+
+      expect(sortedIds(borg.commitments.list({ activeOnly: false }))).toEqual(
+        [...visibleIds, revokedCommitment.id].sort(),
+      );
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("exposes self writes through the identity guard instead of raw repositories", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

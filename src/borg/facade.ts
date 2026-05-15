@@ -390,13 +390,17 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         deps.commitmentRepository.list({
           activeOnly: options.activeOnly,
           audience:
-            options.audience === undefined || options.audience === null
-              ? null
-              : deps.entityRepository.resolve(options.audience),
+            options.audience === undefined
+              ? undefined
+              : options.audience === null
+                ? null
+                : deps.entityRepository.resolve(options.audience),
           aboutEntity:
-            options.aboutEntity === undefined || options.aboutEntity === null
-              ? null
-              : deps.entityRepository.resolve(options.aboutEntity),
+            options.aboutEntity === undefined
+              ? undefined
+              : options.aboutEntity === null
+                ? null
+                : deps.entityRepository.resolve(options.aboutEntity),
         }),
       countActive: () => deps.commitmentRepository.countActive(),
       countSuperseded: () => deps.commitmentRepository.countSuperseded(),

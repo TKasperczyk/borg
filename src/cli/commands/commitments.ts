@@ -25,7 +25,7 @@ export function registerCommitmentCommands(cli: CAC, deps: CliCommandDeps): void
     .option("--priority <priority>", "Priority", {
       type: [Number],
     })
-    .option("--audience <entity>", "Restricted audience name")
+    .option("--audience <entity>", "Restricted audience name; list without it shows all")
     .option("--about <entity>", "About-entity name")
     .option("--made-to <entity>", "Made-to entity name")
     .option("--source-episodes <ids>", "Comma-separated episode ids")

@@ -441,6 +441,53 @@ describe("simulator memory snapshot", () => {
     }
   });
 
+  it("renders audience-scoped commitments in audit snapshots", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-sim-snapshot-"));
+    tempDirs.push(tempDir);
+    const borg = await createEvalBorg({
+      tempDir,
+      llm: new FakeLLMClient({ responses: [] }),
+      clock: new ManualClock(1_000),
+    });
+
+    try {
+      borg.commitments.add({
+        type: "boundary",
+        directiveFamily: "trip_group_private_details",
+        directive: "Keep Alice and Ben trip details inside the trip group.",
+        priority: 10,
+        audience: "Trip Group",
+        provenance: { kind: "manual" },
+      });
+      borg.commitments.add({
+        type: "promise",
+        directiveFamily: "trip_group_booking_followup",
+        directive: "Follow up with the trip group about booking constraints.",
+        priority: 8,
+        madeTo: "Trip Group",
+        provenance: { kind: "manual" },
+      });
+
+      const transport = {
+        getBorg: () => borg,
+        async readAuditTranscript() {
+          return [];
+        },
+      } as unknown as BorgTransport;
+      const snapshot = await buildMemorySnapshotMarkdown({
+        transport,
+        sessionIds: [DEFAULT_SESSION_ID as SessionId],
+      });
+
+      expect(snapshot).toContain("### Commitments");
+      expect(snapshot).toContain("Keep Alice and Ben trip details inside the trip group.");
+      expect(snapshot).toContain("Follow up with the trip group about booking constraints.");
+      expect(snapshot).not.toContain("No commitments recorded.");
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("caps oversized snapshots and reports omitted rows explicitly", async () => {
     const snapshot = await buildMemorySnapshotMarkdown({
       transport: fakeOversizedTransport(500),

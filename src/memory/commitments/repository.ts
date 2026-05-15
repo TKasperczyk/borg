@@ -725,6 +725,9 @@ export class CommitmentRepository {
     const filters: string[] = [];
     const values: unknown[] = [];
 
+    // audience: undefined = all, null = global-scoped only, id = global + that audience.
+    // aboutEntity: undefined or null = ignored, id = matches that entity or unscoped.
+
     if (options.activeOnly === true) {
       filters.push("revoked_at IS NULL");
       filters.push("superseded_by IS NULL");
