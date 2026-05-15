@@ -61,6 +61,18 @@ export type DecisionArtifactReconciliationResult = {
   commitments_retired: number;
   actions_retired: number;
   open_questions_retired: number;
+  goals_canonicalized_attempted: number;
+  goals_canonicalized_succeeded: number;
+  goals_canonicalized_skipped: number;
+  commitments_revoked_attempted: number;
+  commitments_revoked_succeeded: number;
+  commitments_revoked_skipped: number;
+  actions_completed_attempted: number;
+  actions_completed_succeeded: number;
+  actions_completed_skipped: number;
+  open_questions_resolved_attempted: number;
+  open_questions_resolved_succeeded: number;
+  open_questions_resolved_skipped: number;
   unknown_ids: readonly DroppedCanonicalizeId[];
   errors: DecisionArtifactReconciliationError[];
 };
@@ -69,6 +81,7 @@ export type ReconcileDecisionArtifactCanonicalizationsInput = {
   entries: readonly DecisionArtifactEntry[];
   repositories?: DecisionArtifactReconciliationRepositories;
   unknownIds?: readonly DroppedCanonicalizeId[];
+  nowMs?: number;
 };
 
 function errorMessage(error: unknown): string {
@@ -108,8 +121,14 @@ function isTerminalGoalStatus(status: string): boolean {
 
 function isTerminalCommitment(
   commitment: NonNullable<ReturnType<CommitmentRepository["get"]>>,
+  nowMs: number,
 ): boolean {
-  return commitment.revoked_at !== null || commitment.superseded_by !== null;
+  return (
+    commitment.revoked_at !== null ||
+    commitment.expired_at !== null ||
+    (commitment.expires_at !== null && commitment.expires_at <= nowMs) ||
+    commitment.superseded_by !== null
+  );
 }
 
 function isTerminalActionState(state: string): boolean {
@@ -139,9 +158,31 @@ function retryEntry(
   return next;
 }
 
+function recordUnknownIdSkips(
+  result: DecisionArtifactReconciliationResult,
+  unknownIds: readonly DroppedCanonicalizeId[],
+): void {
+  for (const unknownId of unknownIds) {
+    if (unknownId.channel === "goal") {
+      result.goals_canonicalized_attempted += 1;
+      result.goals_canonicalized_skipped += 1;
+    } else if (unknownId.channel === "commitment") {
+      result.commitments_revoked_attempted += 1;
+      result.commitments_revoked_skipped += 1;
+    } else if (unknownId.channel === "action") {
+      result.actions_completed_attempted += 1;
+      result.actions_completed_skipped += 1;
+    } else {
+      result.open_questions_resolved_attempted += 1;
+      result.open_questions_resolved_skipped += 1;
+    }
+  }
+}
+
 export function findUnsettledDecisionArtifactReconciliation(input: {
   previousArtifact: DecisionArtifact | null | undefined;
   repositories?: DecisionArtifactReconciliationLookupRepositories;
+  nowMs?: number;
 }): DecisionArtifactUnsettledReconciliation | null {
   const entries = activeLockedEntries(input.previousArtifact?.entries ?? []);
 
@@ -149,6 +190,7 @@ export function findUnsettledDecisionArtifactReconciliation(input: {
     return null;
   }
 
+  const nowMs = input.nowMs ?? Date.now();
   const goalsRepository = input.repositories?.goalsRepository;
   const commitmentRepository = input.repositories?.commitmentRepository;
   const actionRepository = input.repositories?.actionRepository;
@@ -178,7 +220,7 @@ export function findUnsettledDecisionArtifactReconciliation(input: {
     for (const commitmentId of entry.canonicalizes.commitment_ids) {
       const commitment = commitmentRepository?.get?.(commitmentId) ?? null;
 
-      if (commitment !== null && !isTerminalCommitment(commitment)) {
+      if (commitment !== null && !isTerminalCommitment(commitment, nowMs)) {
         retryEntry(retryEntriesById, entry).canonicalizes.commitment_ids.push(commitmentId);
         unsettledCommitmentCount += 1;
       }
@@ -238,9 +280,23 @@ export function reconcileDecisionArtifactCanonicalizations(
     commitments_retired: 0,
     actions_retired: 0,
     open_questions_retired: 0,
+    goals_canonicalized_attempted: 0,
+    goals_canonicalized_succeeded: 0,
+    goals_canonicalized_skipped: 0,
+    commitments_revoked_attempted: 0,
+    commitments_revoked_succeeded: 0,
+    commitments_revoked_skipped: 0,
+    actions_completed_attempted: 0,
+    actions_completed_succeeded: 0,
+    actions_completed_skipped: 0,
+    open_questions_resolved_attempted: 0,
+    open_questions_resolved_succeeded: 0,
+    open_questions_resolved_skipped: 0,
     unknown_ids: input.unknownIds ?? [],
     errors: [],
   };
+  recordUnknownIdSkips(result, result.unknown_ids);
+  const nowMs = input.nowMs ?? Date.now();
   const entries = activeLockedEntries(input.entries);
   const goalsRepository = input.repositories?.goalsRepository;
   const commitmentRepository = input.repositories?.commitmentRepository;
@@ -253,20 +309,32 @@ export function reconcileDecisionArtifactCanonicalizations(
 
   for (const entry of entries) {
     for (const goalId of entry.canonicalizes.goal_ids) {
+      result.goals_canonicalized_attempted += 1;
+
       if (retiredGoals.has(goalId)) {
+        result.goals_canonicalized_skipped += 1;
         continue;
       }
 
       if (goalsRepository === undefined) {
+        result.goals_canonicalized_skipped += 1;
         continue;
       }
 
       try {
+        const goal = goalsRepository.get?.(goalId) ?? null;
+
+        if (goal !== null && isTerminalGoalStatus(goal.status)) {
+          result.goals_canonicalized_skipped += 1;
+          continue;
+        }
+
         goalsRepository.updateStatus(goalId, "done", RECONCILIATION_PROVENANCE, {
           canonicalizedByArtifactEntryId: entry.id,
         });
         retiredGoals.add(goalId);
         result.goals_retired += 1;
+        result.goals_canonicalized_succeeded += 1;
       } catch (error) {
         result.errors.push({
           channel: "goal",
@@ -278,15 +346,26 @@ export function reconcileDecisionArtifactCanonicalizations(
     }
 
     for (const commitmentId of entry.canonicalizes.commitment_ids) {
+      result.commitments_revoked_attempted += 1;
+
       if (retiredCommitments.has(commitmentId)) {
+        result.commitments_revoked_skipped += 1;
         continue;
       }
 
       if (commitmentRepository === undefined) {
+        result.commitments_revoked_skipped += 1;
         continue;
       }
 
       try {
+        const commitment = commitmentRepository.get?.(commitmentId) ?? null;
+
+        if (commitment !== null && isTerminalCommitment(commitment, nowMs)) {
+          result.commitments_revoked_skipped += 1;
+          continue;
+        }
+
         const retired = commitmentRepository.revoke(
           commitmentId,
           `canonicalized_by_artifact_entry_id=${entry.id}`,
@@ -298,6 +377,7 @@ export function reconcileDecisionArtifactCanonicalizations(
         );
 
         if (retired === null) {
+          result.commitments_revoked_skipped += 1;
           result.errors.push({
             channel: "commitment",
             id: commitmentId,
@@ -309,6 +389,7 @@ export function reconcileDecisionArtifactCanonicalizations(
 
         retiredCommitments.add(commitmentId);
         result.commitments_retired += 1;
+        result.commitments_revoked_succeeded += 1;
       } catch (error) {
         result.errors.push({
           channel: "commitment",
@@ -320,15 +401,26 @@ export function reconcileDecisionArtifactCanonicalizations(
     }
 
     for (const actionId of entry.canonicalizes.action_ids) {
+      result.actions_completed_attempted += 1;
+
       if (retiredActions.has(actionId)) {
+        result.actions_completed_skipped += 1;
         continue;
       }
 
       if (actionRepository === undefined) {
+        result.actions_completed_skipped += 1;
         continue;
       }
 
       try {
+        const action = actionRepository.get?.(actionId) ?? null;
+
+        if (action !== null && isTerminalActionState(action.state)) {
+          result.actions_completed_skipped += 1;
+          continue;
+        }
+
         actionRepository.update(
           actionId,
           {
@@ -341,6 +433,7 @@ export function reconcileDecisionArtifactCanonicalizations(
         );
         retiredActions.add(actionId);
         result.actions_retired += 1;
+        result.actions_completed_succeeded += 1;
       } catch (error) {
         result.errors.push({
           channel: "action",
@@ -352,15 +445,26 @@ export function reconcileDecisionArtifactCanonicalizations(
     }
 
     for (const openQuestionId of entry.canonicalizes.open_question_ids) {
+      result.open_questions_resolved_attempted += 1;
+
       if (retiredOpenQuestions.has(openQuestionId)) {
+        result.open_questions_resolved_skipped += 1;
         continue;
       }
 
       if (openQuestionsRepository === undefined) {
+        result.open_questions_resolved_skipped += 1;
         continue;
       }
 
       try {
+        const openQuestion = openQuestionsRepository.get?.(openQuestionId) ?? null;
+
+        if (openQuestion !== null && isTerminalOpenQuestionStatus(openQuestion.status)) {
+          result.open_questions_resolved_skipped += 1;
+          continue;
+        }
+
         openQuestionsRepository.resolve(
           openQuestionId,
           {
@@ -373,6 +477,7 @@ export function reconcileDecisionArtifactCanonicalizations(
         );
         retiredOpenQuestions.add(openQuestionId);
         result.open_questions_retired += 1;
+        result.open_questions_resolved_succeeded += 1;
       } catch (error) {
         result.errors.push({
           channel: "open_question",

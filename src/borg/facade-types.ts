@@ -291,6 +291,9 @@ export type BorgCommitmentsFacade = {
   }) => ReturnType<CommitmentRepository["list"]>;
   countActive: () => ReturnType<CommitmentRepository["countActive"]>;
   countSuperseded: () => ReturnType<CommitmentRepository["countSuperseded"]>;
+  countRevoked: () => ReturnType<CommitmentRepository["countRevoked"]>;
+  countExpired: () => ReturnType<CommitmentRepository["countExpired"]>;
+  countCanonicalized: () => ReturnType<CommitmentRepository["countCanonicalized"]>;
 };
 
 export type BorgIdentityFacade = {

@@ -404,6 +404,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         }),
       countActive: () => deps.commitmentRepository.countActive(),
       countSuperseded: () => deps.commitmentRepository.countSuperseded(),
+      countRevoked: () => deps.commitmentRepository.countRevoked(),
+      countExpired: () => deps.commitmentRepository.countExpired(),
+      countCanonicalized: () => deps.commitmentRepository.countCanonicalized(),
     },
     identity: {
       updateValue: (...args) => deps.identityService.updateValue(...args),

@@ -331,9 +331,7 @@ const DECISION_ARTIFACT_IN_FLIGHT_KINDS = [
   "tentative",
 ] as const satisfies readonly DecisionArtifactEntryKind[];
 
-type DecisionArtifactCompileSkipReason =
-  | "closure_shaped"
-  | "idle_no_active_decisions";
+type DecisionArtifactCompileSkipReason = "closure_shaped" | "idle_no_active_decisions";
 
 export type DecisionArtifactCompileSkip = {
   reason: DecisionArtifactCompileSkipReason;
@@ -399,7 +397,6 @@ export function shouldSkipDecisionArtifactCompile(input: {
 
   return null;
 }
-
 
 export function advanceDecisionArtifactCompileSkipAnchor(input: {
   repository: Pick<DecisionArtifactRepository, "upsert">;
@@ -843,6 +840,7 @@ export class TurnPhaseCoordinator {
           })
         : Promise.resolve({
             commitment: null,
+            commitmentSupersession: null,
             workingMemory,
           }),
       this.options.turnActionStateService.extract({
@@ -880,6 +878,7 @@ export class TurnPhaseCoordinator {
           }),
     ]);
     const correctiveCommitment = correctivePreferenceTurn.commitment;
+    const correctiveCommitmentSupersession = correctivePreferenceTurn.commitmentSupersession;
     workingMemory = correctivePreferenceTurn.workingMemory;
     lifecycleTracker.trackCreatedActionIds(createdActionIds);
     lifecycleTracker.trackCreatedGoalIds(persistedPromotions.goalIds);
@@ -913,6 +912,7 @@ export class TurnPhaseCoordinator {
         workingMemory,
         persistedUserEntryId,
         correctiveCommitment,
+        correctiveCommitmentSupersession,
         perceptionMode: perception.mode,
         reason: closureLoopAssessment.reason,
       });
@@ -969,6 +969,7 @@ export class TurnPhaseCoordinator {
         persistedUserEntryId,
         gateResult,
         correctiveCommitment,
+        correctiveCommitmentSupersession,
         perceptionMode: perception.mode,
       });
     }
@@ -1187,6 +1188,7 @@ export class TurnPhaseCoordinator {
         actionEmission,
         persistedAgentEntry,
         correctiveCommitment,
+        correctiveCommitmentSupersession,
         perceptionMode: perception.mode,
         deliberation,
       });
@@ -1300,7 +1302,12 @@ export class TurnPhaseCoordinator {
       onHookFailure: (hook, error) => this.appendHookFailureEvent(streamWriter, hook, error),
       trackReflectionEffects: (effects) => lifecycleTracker.trackReflectionEffects(effects),
     });
-    await this.persistCorrectiveCommitment(streamWriter, correctiveCommitment);
+    await this.persistCorrectiveCommitment(
+      streamWriter,
+      turnId,
+      correctiveCommitment,
+      correctiveCommitmentSupersession,
+    );
     this.startLiveIngestion(sessionId);
 
     return {
@@ -1521,6 +1528,9 @@ export class TurnPhaseCoordinator {
     correctiveCommitment: Parameters<
       CorrectivePreferenceTurnService["persistCommitment"]
     >[0]["commitment"];
+    correctiveCommitmentSupersession: Parameters<
+      CorrectivePreferenceTurnService["persistCommitment"]
+    >[0]["supersession"];
     perceptionMode: CognitiveMode;
     reason: string;
   }): Promise<TurnPhaseResult> {
@@ -1585,7 +1595,12 @@ export class TurnPhaseCoordinator {
       ...suppressedWorkingMemory,
       updated_at: this.options.clock.now(),
     });
-    await this.persistCorrectiveCommitment(input.streamWriter, input.correctiveCommitment);
+    await this.persistCorrectiveCommitment(
+      input.streamWriter,
+      input.turnId,
+      input.correctiveCommitment,
+      input.correctiveCommitmentSupersession,
+    );
 
     return {
       mode: input.perceptionMode,
@@ -1616,6 +1631,9 @@ export class TurnPhaseCoordinator {
     correctiveCommitment: Parameters<
       CorrectivePreferenceTurnService["persistCommitment"]
     >[0]["commitment"];
+    correctiveCommitmentSupersession: Parameters<
+      CorrectivePreferenceTurnService["persistCommitment"]
+    >[0]["supersession"];
     perceptionMode: CognitiveMode;
   }): Promise<TurnPhaseResult> {
     let workingMemory = input.workingMemory;
@@ -1680,7 +1698,12 @@ export class TurnPhaseCoordinator {
       ...suppressedWorkingMemory,
       updated_at: this.options.clock.now(),
     });
-    await this.persistCorrectiveCommitment(input.streamWriter, input.correctiveCommitment);
+    await this.persistCorrectiveCommitment(
+      input.streamWriter,
+      input.turnId,
+      input.correctiveCommitment,
+      input.correctiveCommitmentSupersession,
+    );
 
     return {
       mode: input.perceptionMode,
@@ -1711,6 +1734,9 @@ export class TurnPhaseCoordinator {
     correctiveCommitment: Parameters<
       CorrectivePreferenceTurnService["persistCommitment"]
     >[0]["commitment"];
+    correctiveCommitmentSupersession: Parameters<
+      CorrectivePreferenceTurnService["persistCommitment"]
+    >[0]["supersession"];
     perceptionMode: CognitiveMode;
     deliberation: Awaited<ReturnType<Deliberator["run"]>>;
   }): Promise<TurnPhaseResult> {
@@ -1749,7 +1775,12 @@ export class TurnPhaseCoordinator {
       ...suppressedWorkingMemory,
       updated_at: this.options.clock.now(),
     });
-    await this.persistCorrectiveCommitment(input.streamWriter, input.correctiveCommitment);
+    await this.persistCorrectiveCommitment(
+      input.streamWriter,
+      input.turnId,
+      input.correctiveCommitment,
+      input.correctiveCommitmentSupersession,
+    );
 
     return {
       mode: input.perceptionMode,
@@ -1900,6 +1931,7 @@ export class TurnPhaseCoordinator {
               actionRepository: this.options.actionRepository,
               openQuestionsRepository: this.options.openQuestionsRepository,
             },
+            nowMs: this.options.clock.now(),
           })
         : null;
 
@@ -2081,10 +2113,16 @@ export class TurnPhaseCoordinator {
 
   private async persistCorrectiveCommitment(
     streamWriter: StreamWriter,
+    turnId: string,
     commitment: Parameters<CorrectivePreferenceTurnService["persistCommitment"]>[0]["commitment"],
+    supersession: Parameters<
+      CorrectivePreferenceTurnService["persistCommitment"]
+    >[0]["supersession"],
   ): Promise<void> {
     await this.options.correctivePreferenceTurnService.persistCommitment({
       commitment,
+      supersession,
+      turnId,
       onHookFailure: (hook, error, details) =>
         this.appendHookFailureEvent(streamWriter, hook, error, details),
     });

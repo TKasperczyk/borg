@@ -40,7 +40,12 @@ import { ReviewQueueRepository, semanticMigrations } from "../src/memory/semanti
 import { WorkingMemoryStore } from "../src/memory/working/index.js";
 import { composeMigrations, openDatabase } from "../src/storage/sqlite/index.js";
 import { ABORTED_TURN_EVENT, type StreamEntry } from "../src/stream/index.js";
-import { createActionId, createEntityId, createStreamEntryId } from "../src/util/ids.js";
+import {
+  createActionId,
+  createDecisionArtifactEntryId,
+  createEntityId,
+  createStreamEntryId,
+} from "../src/util/ids.js";
 
 import { MetricsCapture } from "./metrics.js";
 import type { MetricsRow } from "./types.js";
@@ -71,9 +76,13 @@ const TURN_METRICS_KEY_ORDER = [
   "open_question_resolved_count",
   "action_record_count_total",
   "action_record_count_by_state",
+  "action_record_count_committed_to_do",
   "recent_completed_action_count",
   "commitment_count_active",
   "commitment_count_superseded",
+  "commitment_count_revoked",
+  "commitment_count_expired",
+  "commitment_count_canonicalized",
   "pending_action_count",
   "pending_action_merge_count",
   "relational_slot_count_by_state",
@@ -192,6 +201,9 @@ function fakeBorg(
       list: () => [],
       countActive: () => 0,
       countSuperseded: () => 0,
+      countRevoked: () => 0,
+      countExpired: () => 0,
+      countCanonicalized: () => 0,
     },
     relationalSlots: {
       countByState: () => zeroCounts(RELATIONAL_SLOT_STATES),
@@ -687,7 +699,40 @@ describe("MetricsCapture", () => {
         priority: 3,
         provenance: { kind: "manual" },
       });
+      const revokedCommitment = commitments.add({
+        type: "promise",
+        directiveFamily: "metrics revoked",
+        directive: "Retire the old metric commitment.",
+        priority: 3,
+        provenance: { kind: "manual" },
+      });
+      commitments.add({
+        type: "promise",
+        directiveFamily: "metrics expired",
+        directive: "Expire the old metric commitment.",
+        priority: 3,
+        provenance: { kind: "manual" },
+        createdAt: 500,
+        expiresAt: 900,
+      });
+      const canonicalizedCommitment = commitments.add({
+        type: "promise",
+        directiveFamily: "metrics canonicalized",
+        directive: "Canonicalize the old metric commitment.",
+        priority: 3,
+        provenance: { kind: "manual" },
+      });
       commitments.supersede(supersededCommitment.id, activeCommitment.id);
+      commitments.revoke(revokedCommitment.id, "metrics test revocation", { kind: "manual" });
+      commitments.revoke(
+        canonicalizedCommitment.id,
+        "metrics test canonicalization",
+        { kind: "manual" },
+        undefined,
+        {
+          canonicalizedByArtifactEntryId: createDecisionArtifactEntryId(),
+        },
+      );
 
       const workingMemoryStore = new WorkingMemoryStore({ dataDir: dir, clock });
       const embeddingClient = new SameVectorEmbeddingClient();
@@ -793,6 +838,9 @@ describe("MetricsCapture", () => {
           list: (options = {}) => commitments.list(options),
           countActive: () => commitments.countActive(),
           countSuperseded: () => commitments.countSuperseded(),
+          countRevoked: () => commitments.countRevoked(),
+          countExpired: () => commitments.countExpired(),
+          countCanonicalized: () => commitments.countCanonicalized(),
         },
         relationalSlots: {
           countByState: () => relationalSlots.countByState(),
@@ -821,9 +869,13 @@ describe("MetricsCapture", () => {
         considering: 1,
         completed: 2,
       });
+      expect(row.action_record_count_committed_to_do).toBe(0);
       expect(row.recent_completed_action_count).toBe(2);
       expect(row.commitment_count_active).toBe(2);
       expect(row.commitment_count_superseded).toBe(1);
+      expect(row.commitment_count_revoked).toBe(2);
+      expect(row.commitment_count_expired).toBe(1);
+      expect(row.commitment_count_canonicalized).toBe(1);
       expect(row.pending_action_count).toBe(1);
       expect(row.pending_action_merge_count).toBe(1);
       expect(row.relational_slot_count_by_state).toEqual({

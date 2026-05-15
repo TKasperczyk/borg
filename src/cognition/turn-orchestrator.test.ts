@@ -492,6 +492,7 @@ function createCorrectivePreferenceResponse(input: {
   priority?: number | null;
   reason?: string;
   confidence?: number;
+  supersedes_commitment_id?: string | null;
   slot_negations?: unknown[];
 }) {
   return {
@@ -516,7 +517,7 @@ function createCorrectivePreferenceResponse(input: {
           priority: input.priority ?? null,
           reason: input.reason ?? "The current user turn corrected future response behavior.",
           confidence: input.confidence ?? 0.9,
-          supersedes_commitment_id: null,
+          supersedes_commitment_id: input.supersedes_commitment_id ?? null,
           slot_negations: input.slot_negations ?? [],
         },
       },
@@ -2660,6 +2661,72 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           source_stream_entry_ids: [userEntry?.id],
         }),
       ]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("supersedes active corrective preferences selected by the extractor during a turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_180_000);
+    const llm = new FakeLLMClient();
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const internal = borg as unknown as {
+      deps: Pick<BorgDependencies, "commitmentRepository">;
+    };
+
+    try {
+      const original = borg.commitments.add({
+        type: "preference",
+        directiveFamily: "ritual_closing",
+        directive: "Avoid ritual closing lines.",
+        priority: 6,
+        provenance: { kind: "manual" },
+      });
+      llm.pushResponse(
+        createCorrectivePreferenceResponse({
+          classification: "corrective_preference",
+          type: "preference",
+          directive: "Do not add ritual closing lines when the user has not asked for closure.",
+          directive_family: "ritual_closing",
+          closure_pressure_relevance: "no_closure",
+          priority: 9,
+          reason: "The user tightened an existing durable response preference.",
+          confidence: 0.93,
+          supersedes_commitment_id: original.id,
+        }),
+      );
+      llm.pushResponse(createEmitAnswerResponse("I will keep it direct."));
+      llm.pushResponse(createCommitmentJudgeResponse([]));
+      llm.pushResponse(createEmptyReflectionResponse());
+
+      await borg.turn({
+        userMessage: "Tighter rule: no ritual closing lines unless I ask for closure.",
+      });
+
+      const replacement = borg.commitments
+        .list({ activeOnly: true })
+        .find((commitment) => commitment.directive_family === "ritual_closing");
+      const sameFamilyRows = borg.commitments
+        .list({ activeOnly: false })
+        .filter((commitment) => commitment.directive_family === "ritual_closing");
+
+      expect(replacement).toBeDefined();
+      expect(replacement?.id).not.toBe(original.id);
+      expect(sameFamilyRows).toHaveLength(2);
+      expect(internal.deps.commitmentRepository.get(original.id)).toMatchObject({
+        superseded_by: replacement?.id,
+      });
+      expect(
+        borg.commitments
+          .list({ activeOnly: true })
+          .filter((commitment) => commitment.directive_family === "ritual_closing"),
+      ).toEqual([replacement]);
+      expect(replacement).toMatchObject({
+        revoked_at: null,
+        superseded_by: null,
+      });
     } finally {
       await borg.close();
     }

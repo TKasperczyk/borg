@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ActionRepository, actionMigrations } from "../../memory/actions/index.js";
+import { CommitmentRepository, commitmentMigrations } from "../../memory/commitments/index.js";
 import type { DecisionArtifactEntry } from "../../memory/decision-artifacts/index.js";
 import { OpenQuestionsRepository, selfMigrations } from "../../memory/self/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
@@ -249,6 +250,93 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
         message: `Unknown commitment id: ${commitmentId}`,
       },
     ]);
+  });
+
+  it("counts already terminal action canonicalizations as skipped", () => {
+    const actionId = createActionId();
+    const entry = lockedEntry({
+      canonicalizes: {
+        goal_ids: [],
+        commitment_ids: [],
+        action_ids: [actionId],
+        open_question_ids: [],
+      },
+    });
+    const actionRepository = {
+      get: vi.fn(() => ({ id: actionId, state: "completed" }) as never),
+      update: vi.fn(),
+    };
+
+    const result = reconcileDecisionArtifactCanonicalizations({
+      entries: [entry],
+      repositories: {
+        actionRepository,
+      },
+    });
+
+    expect(result).toMatchObject({
+      actions_retired: 0,
+      actions_completed_attempted: 1,
+      actions_completed_succeeded: 0,
+      actions_completed_skipped: 1,
+      errors: [],
+    });
+    expect(actionRepository.update).not.toHaveBeenCalled();
+  });
+
+  it("skips unmaterialized expired commitment canonicalizations", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const clock = new FixedClock(1_000);
+    const commitmentRepository = new CommitmentRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const expired = commitmentRepository.add({
+        type: "promise",
+        directiveFamily: "expired artifact fixture",
+        directive: "Use the expired artifact fixture.",
+        priority: 5,
+        provenance: { kind: "manual" },
+        createdAt: 500,
+        expiresAt: 900,
+      });
+      const revoke = vi.spyOn(commitmentRepository, "revoke");
+      const entry = lockedEntry({
+        canonicalizes: {
+          goal_ids: [],
+          commitment_ids: [expired.id],
+          action_ids: [],
+          open_question_ids: [],
+        },
+      });
+
+      const result = reconcileDecisionArtifactCanonicalizations({
+        entries: [entry],
+        repositories: {
+          commitmentRepository,
+        },
+        nowMs: clock.now(),
+      });
+
+      expect(result).toMatchObject({
+        commitments_retired: 0,
+        commitments_revoked_attempted: 1,
+        commitments_revoked_succeeded: 0,
+        commitments_revoked_skipped: 1,
+        errors: [],
+      });
+      expect(revoke).not.toHaveBeenCalled();
+      expect(commitmentRepository.get(expired.id)).toMatchObject({
+        expired_at: null,
+        revoked_at: null,
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it("ignores non-locked entries", () => {

@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import { ProvenanceError } from "../../util/errors.js";
-import { createStreamEntryId } from "../../util/ids.js";
+import { createDecisionArtifactEntryId, createStreamEntryId } from "../../util/ids.js";
 import { identityMigrations, IdentityEventRepository } from "../identity/index.js";
 import { commitmentMigrations } from "./migrations.js";
 import { CommitmentRepository, EntityRepository } from "./repository.js";
@@ -122,6 +122,69 @@ describe("commitment repository", () => {
       expect(commitments.countActive()).toBe(0);
       expect(commitmentRows()).toEqual(beforeCommitments);
       expect(identityEventRows()).toEqual(beforeEvents);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("counts revoked, expired, and canonicalized commitments", () => {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
+    });
+    const clock = new FixedClock(1_000);
+    const identityEvents = new IdentityEventRepository({
+      db,
+      clock,
+    });
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+      identityEventRepository: identityEvents,
+    });
+
+    try {
+      const active = commitments.add({
+        type: "promise",
+        directiveFamily: "active fixture",
+        directive: "Keep the active fixture.",
+        priority: 5,
+        provenance: manualProvenance,
+      });
+      const revoked = commitments.add({
+        type: "promise",
+        directiveFamily: "revoked fixture",
+        directive: "Retire the revoked fixture.",
+        priority: 5,
+        provenance: manualProvenance,
+      });
+      const expired = commitments.add({
+        type: "promise",
+        directiveFamily: "expired fixture",
+        directive: "Expire the old fixture.",
+        priority: 5,
+        provenance: manualProvenance,
+        createdAt: 500,
+        expiresAt: 900,
+      });
+      const canonicalized = commitments.add({
+        type: "promise",
+        directiveFamily: "canonicalized fixture",
+        directive: "Canonicalize the fixture.",
+        priority: 5,
+        provenance: manualProvenance,
+      });
+
+      commitments.revoke(revoked.id, "test revocation", manualProvenance);
+      commitments.revoke(canonicalized.id, "canonicalized", manualProvenance, undefined, {
+        canonicalizedByArtifactEntryId: createDecisionArtifactEntryId(),
+      });
+
+      expect(commitments.countActive()).toBe(1);
+      expect(commitments.countRevoked()).toBe(2);
+      expect(commitments.countExpired()).toBe(1);
+      expect(commitments.countCanonicalized()).toBe(1);
+      expect(commitments.get(active.id)?.revoked_at).toBeNull();
+      expect(commitments.get(expired.id)?.expires_at).toBe(900);
     } finally {
       db.close();
     }
@@ -681,6 +744,47 @@ describe("commitment repository", () => {
       });
 
       expect(commitments.list({ activeOnly: true })).toHaveLength(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("can bypass directive-family merge for explicit replacement inserts", () => {
+    const db = openDatabase(":memory:", {
+      migrations: composeMigrations(commitmentMigrations, identityMigrations),
+    });
+    const clock = new ManualClock(1_000);
+    const commitments = new CommitmentRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const first = commitments.add({
+        type: "preference",
+        directiveFamily: "no_terminal_valediction",
+        directive: "Do not add terminal valedictions.",
+        priority: 7,
+        provenance: manualProvenance,
+      });
+
+      clock.set(2_000);
+
+      const replacement = commitments.add({
+        type: "preference",
+        directiveFamily: "no_terminal_valediction",
+        directive: "Do not close with ritual farewell lines.",
+        priority: 9,
+        provenance: manualProvenance,
+        skipDirectiveFamilyMerge: true,
+      });
+
+      expect(replacement.id).not.toBe(first.id);
+      expect(
+        commitments
+          .list({ activeOnly: true })
+          .filter((commitment) => commitment.directive_family === "no_terminal_valediction"),
+      ).toHaveLength(2);
     } finally {
       db.close();
     }

@@ -628,14 +628,24 @@ function traceReconciliationCompleted(options: {
       commitments_retired: options.result.commitments_retired,
       actions_retired: options.result.actions_retired,
       open_questions_retired: options.result.open_questions_retired,
+      goals_canonicalized_attempted: options.result.goals_canonicalized_attempted,
+      goals_canonicalized_succeeded: options.result.goals_canonicalized_succeeded,
+      goals_canonicalized_skipped: options.result.goals_canonicalized_skipped,
+      commitments_revoked_attempted: options.result.commitments_revoked_attempted,
+      commitments_revoked_succeeded: options.result.commitments_revoked_succeeded,
+      commitments_revoked_skipped: options.result.commitments_revoked_skipped,
+      actions_completed_attempted: options.result.actions_completed_attempted,
+      actions_completed_succeeded: options.result.actions_completed_succeeded,
+      actions_completed_skipped: options.result.actions_completed_skipped,
+      open_questions_resolved_attempted: options.result.open_questions_resolved_attempted,
+      open_questions_resolved_succeeded: options.result.open_questions_resolved_succeeded,
+      open_questions_resolved_skipped: options.result.open_questions_resolved_skipped,
       unknown_ids: toTraceJsonValue(options.result.unknown_ids),
       canonicalization_duplicates_dropped: toTraceJsonValue(
         options.canonicalizationDuplicateDrops ?? [],
       ),
-      current_operation_canonicalization_count:
-        options.currentOperationCanonicalizationCount ?? 0,
-      retried_stranded_canonicalization_count:
-        options.retriedStrandedCanonicalizationCount ?? 0,
+      current_operation_canonicalization_count: options.currentOperationCanonicalizationCount ?? 0,
+      retried_stranded_canonicalization_count: options.retriedStrandedCanonicalizationCount ?? 0,
       retry_unsettled_summary: toTraceJsonValue(options.retrySummary ?? null),
       errors: toTraceJsonValue(options.result.errors),
     });
@@ -1332,6 +1342,7 @@ function buildDecisionArtifactReconciliationWorkSet(input: {
   artifact: DecisionArtifact | null;
   operations: readonly DecisionArtifactOperation[];
   repositories?: DecisionArtifactReconciliationRepositories;
+  nowMs: number;
 }): DecisionArtifactReconciliationWorkSet {
   if (input.artifact === null) {
     return {
@@ -1361,6 +1372,7 @@ function buildDecisionArtifactReconciliationWorkSet(input: {
   const retry = findUnsettledDecisionArtifactReconciliation({
     previousArtifact: input.artifact,
     repositories: input.repositories,
+    nowMs: input.nowMs,
   });
 
   for (const entry of retry?.entries ?? []) {
@@ -2077,11 +2089,13 @@ export async function compileDecisionArtifact(
       artifact: markedArtifact,
       operations: [],
       repositories: input.reconciliation,
+      nowMs,
     });
     const reconciliationResult = reconcileDecisionArtifactCanonicalizations({
       entries: reconciliationWorkSet.entries,
       repositories: input.reconciliation,
       unknownIds: normalized.droppedCanonicalizeIds,
+      nowMs,
     });
 
     traceReconciliationCompleted({
@@ -2122,11 +2136,13 @@ export async function compileDecisionArtifact(
       artifact: nextArtifact,
       operations,
       repositories: input.reconciliation,
+      nowMs,
     });
     const reconciliationResult = reconcileDecisionArtifactCanonicalizations({
       entries: reconciliationWorkSet.entries,
       repositories: input.reconciliation,
       unknownIds: normalized.droppedCanonicalizeIds,
+      nowMs,
     });
 
     traceReconciliationCompleted({

@@ -45,9 +45,15 @@ export type MetricsRow = {
   open_question_resolved_count: number;
   action_record_count_total: number;
   action_record_count_by_state: Record<ActionState, number>;
+  action_record_count_committed_to_do: number;
   recent_completed_action_count: number;
   commitment_count_active: number;
   commitment_count_superseded: number;
+  // These lifecycle counts are not mutually exclusive: commitments canonicalized
+  // through the decision artifact are revoked by design.
+  commitment_count_revoked: number;
+  commitment_count_expired: number;
+  commitment_count_canonicalized: number;
   pending_action_count: number;
   pending_action_merge_count: number;
   relational_slot_count_by_state: Record<RelationalSlotState, number>;

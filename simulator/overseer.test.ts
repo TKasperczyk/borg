@@ -116,9 +116,13 @@ function metricsRow(turn: number): MetricsRow {
       not_done: 0,
       unknown: 0,
     },
+    action_record_count_committed_to_do: 0,
     recent_completed_action_count: 0,
     commitment_count_active: 0,
     commitment_count_superseded: 0,
+    commitment_count_revoked: 0,
+    commitment_count_expired: 0,
+    commitment_count_canonicalized: 0,
     pending_action_count: 0,
     pending_action_merge_count: 0,
     relational_slot_count_by_state: {

@@ -28,7 +28,7 @@ const CORRECTIVE_RELATIONAL_SLOT_LIMIT = 32;
 
 export type CorrectivePreferenceTurnServiceOptions = {
   model: string;
-  commitmentRepository: Pick<CommitmentRepository, "getApplicable">;
+  commitmentRepository: Pick<CommitmentRepository, "get" | "getApplicable" | "supersede">;
   identityService: Pick<IdentityService, "addCommitment">;
   relationalSlotRepository: Pick<RelationalSlotRepository, "list" | "applyNegation">;
   workingMemoryStore: Pick<WorkingMemoryStore, "load" | "sanitizePendingActionsForRelationalSlot">;
@@ -52,7 +52,13 @@ export type ExtractCorrectivePreferenceForTurnInput = {
 
 export type CorrectivePreferenceTurnResult = {
   commitment: CommitmentRecord | null;
+  commitmentSupersession: CorrectivePreferenceSupersessionClaim | null;
   workingMemory: WorkingMemory;
+};
+
+export type CorrectivePreferenceSupersessionClaim = {
+  supersededId: CommitmentRecord["id"];
+  allowedActiveCommitmentIds: readonly CommitmentRecord["id"][];
 };
 
 function buildCorrectivePreferenceCommitment(input: {
@@ -110,6 +116,92 @@ export function appendCommitmentIfMissing(
 
 export class CorrectivePreferenceTurnService {
   constructor(private readonly options: CorrectivePreferenceTurnServiceOptions) {}
+
+  private traceSupersessionRejected(input: {
+    turnId?: string;
+    supersededId: CommitmentRecord["id"];
+    newId?: CommitmentRecord["id"];
+    reason: string;
+    error?: unknown;
+  }): void {
+    if (!this.options.tracer.enabled || input.turnId === undefined) {
+      return;
+    }
+
+    this.options.tracer.emit("commitment_supersession_rejected", {
+      turnId: input.turnId,
+      supersededId: input.supersededId,
+      ...(input.newId === undefined ? {} : { newId: input.newId }),
+      validationStatus: "rejected",
+      reason: input.reason,
+      ...(this.options.tracer.includePayloads && input.error !== undefined
+        ? { error: input.error instanceof Error ? input.error.message : String(input.error) }
+        : {}),
+    });
+  }
+
+  private traceSupersededViaExtractor(input: {
+    turnId?: string;
+    supersededId: CommitmentRecord["id"];
+    newId: CommitmentRecord["id"];
+  }): void {
+    if (!this.options.tracer.enabled || input.turnId === undefined) {
+      return;
+    }
+
+    this.options.tracer.emit("commitment_superseded_via_extractor", {
+      turnId: input.turnId,
+      supersededId: input.supersededId,
+      newId: input.newId,
+      validationStatus: "accepted",
+    });
+  }
+
+  private validateSupersessionClaim(input: {
+    claim: CorrectivePreferenceSupersessionClaim;
+    newId: CommitmentRecord["id"];
+  }): { accepted: true } | { accepted: false; reason: string } {
+    const allowedIds = new Set(input.claim.allowedActiveCommitmentIds);
+
+    if (!allowedIds.has(input.claim.supersededId)) {
+      return {
+        accepted: false,
+        reason: "not_in_allowed_active_commitments",
+      };
+    }
+
+    if (input.claim.supersededId === input.newId) {
+      return {
+        accepted: false,
+        reason: "self_supersession",
+      };
+    }
+
+    const current = this.options.commitmentRepository.get(input.claim.supersededId);
+
+    if (current === null) {
+      return {
+        accepted: false,
+        reason: "unknown_commitment_id",
+      };
+    }
+
+    const nowMs = this.options.clock.now();
+    const active =
+      current.revoked_at === null &&
+      current.superseded_by === null &&
+      current.expired_at === null &&
+      (current.expires_at === null || current.expires_at > nowMs);
+
+    if (!active) {
+      return {
+        accepted: false,
+        reason: "commitment_not_active",
+      };
+    }
+
+    return { accepted: true };
+  }
 
   async extractAndApply(
     input: ExtractCorrectivePreferenceForTurnInput,
@@ -199,12 +291,24 @@ export class CorrectivePreferenceTurnService {
 
     return {
       commitment: correctiveCommitment,
+      commitmentSupersession:
+        correctiveCandidate?.supersedes_commitment_id === undefined ||
+        correctiveCandidate.supersedes_commitment_id === null
+          ? null
+          : {
+              supersededId: correctiveCandidate.supersedes_commitment_id,
+              allowedActiveCommitmentIds: activeCommitmentsForExtractor.map(
+                (commitment) => commitment.id,
+              ),
+            },
       workingMemory: this.options.workingMemoryStore.load(input.sessionId),
     };
   }
 
   async persistCommitment(input: {
     commitment: CommitmentRecord | null;
+    supersession?: CorrectivePreferenceSupersessionClaim | null;
+    turnId?: string;
     onHookFailure: (
       hook: string,
       error: unknown,
@@ -217,8 +321,27 @@ export class CorrectivePreferenceTurnService {
       return;
     }
 
+    const supersession = input.supersession ?? null;
+    const validation =
+      supersession === null
+        ? null
+        : this.validateSupersessionClaim({
+            claim: supersession,
+            newId: commitment.id,
+          });
+
+    if (supersession !== null && validation !== null && !validation.accepted) {
+      this.traceSupersessionRejected({
+        turnId: input.turnId,
+        supersededId: supersession.supersededId,
+        reason: validation.reason,
+      });
+    }
+
+    let persisted: CommitmentRecord;
+
     try {
-      this.options.identityService.addCommitment({
+      persisted = this.options.identityService.addCommitment({
         id: commitment.id,
         type: commitment.type,
         directiveFamily: commitment.directive_family,
@@ -233,10 +356,47 @@ export class CorrectivePreferenceTurnService {
         sourceStreamEntryIds: commitment.source_stream_entry_ids,
         createdAt: commitment.created_at,
         expiresAt: commitment.expires_at,
+        ...(validation?.accepted === true ? { skipDirectiveFamilyMerge: true } : {}),
       });
     } catch (error) {
       await input.onHookFailure("corrective_preference_commitment_persist", error, {
         commitmentId: commitment.id,
+      });
+      return;
+    }
+
+    if (supersession === null || validation?.accepted !== true) {
+      return;
+    }
+
+    try {
+      const superseded = this.options.commitmentRepository.supersede(
+        supersession.supersededId,
+        persisted.id,
+      );
+
+      if (superseded === null) {
+        this.traceSupersessionRejected({
+          turnId: input.turnId,
+          supersededId: supersession.supersededId,
+          newId: persisted.id,
+          reason: "unknown_commitment_id",
+        });
+        return;
+      }
+
+      this.traceSupersededViaExtractor({
+        turnId: input.turnId,
+        supersededId: supersession.supersededId,
+        newId: persisted.id,
+      });
+    } catch (error) {
+      this.traceSupersessionRejected({
+        turnId: input.turnId,
+        supersededId: supersession.supersededId,
+        newId: persisted.id,
+        reason: "supersede_failed",
+        error,
       });
     }
   }

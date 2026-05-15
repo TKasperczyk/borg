@@ -313,6 +313,96 @@ function commitmentRow(record: RecordLike): string {
   return `- id=${scalar(record.id)} type=${scalar(record.type)} family=${scalar(record.directive_family)} priority=${scalar(record.priority)} made_to=${scalar(record.made_to_entity)} audience=${scalar(record.restricted_audience)} about=${scalar(record.about_entity)} revoked=${ts(record.revoked_at)} superseded_by=${scalar(record.superseded_by)} sources=${ids(record.source_stream_entry_ids)} directive="${oneLine(record.directive)}"`;
 }
 
+function commitmentExpired(record: RecordLike, nowMs: number): boolean {
+  return (
+    (record.expired_at !== null && record.expired_at !== undefined) ||
+    (typeof record.expires_at === "number" && record.expires_at <= nowMs)
+  );
+}
+
+function commitmentActive(record: RecordLike, nowMs: number): boolean {
+  return (
+    (record.revoked_at === null || record.revoked_at === undefined) &&
+    (record.superseded_by === null || record.superseded_by === undefined) &&
+    !commitmentExpired(record, nowMs)
+  );
+}
+
+type CommitmentLifecycleCounts = {
+  active: number;
+  revoked: number;
+  expired: number;
+  canonicalized: number;
+  superseded: number;
+};
+
+function countFromSource(source: unknown, method: string): number | null {
+  const record = asRecord(source);
+  const candidate = record?.[method];
+
+  if (typeof candidate !== "function") {
+    return null;
+  }
+
+  const value = candidate();
+
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function commitmentLifecycleCounts(input: {
+  commitments: readonly RecordLike[];
+  nowMs: number;
+  source: unknown;
+}): CommitmentLifecycleCounts {
+  const active = input.commitments.filter((commitment) =>
+    commitmentActive(commitment, input.nowMs),
+  );
+  const revoked = input.commitments.filter(
+    (commitment) => commitment.revoked_at !== null && commitment.revoked_at !== undefined,
+  );
+  const expired = input.commitments.filter((commitment) =>
+    commitmentExpired(commitment, input.nowMs),
+  );
+  const canonicalized = input.commitments.filter(
+    (commitment) =>
+      commitment.canonicalized_by_artifact_entry_id !== null &&
+      commitment.canonicalized_by_artifact_entry_id !== undefined,
+  );
+  const superseded = input.commitments.filter(
+    (commitment) => commitment.superseded_by !== null && commitment.superseded_by !== undefined,
+  );
+
+  return {
+    active: countFromSource(input.source, "countActive") ?? active.length,
+    revoked: countFromSource(input.source, "countRevoked") ?? revoked.length,
+    expired: countFromSource(input.source, "countExpired") ?? expired.length,
+    canonicalized: countFromSource(input.source, "countCanonicalized") ?? canonicalized.length,
+    superseded: countFromSource(input.source, "countSuperseded") ?? superseded.length,
+  };
+}
+
+function commitmentLifecycleRows(input: {
+  commitments: readonly RecordLike[];
+  nowMs: number;
+  countsSource: unknown;
+}): string[] {
+  const commitments = input.commitments;
+  const counts = commitmentLifecycleCounts({
+    commitments,
+    nowMs: input.nowMs,
+    source: input.countsSource,
+  });
+  const active = commitments.filter((commitment) => commitmentActive(commitment, input.nowMs));
+
+  return [
+    `- total_commitments=${commitments.length}`,
+    `- lifecycle_counts active=${counts.active} revoked=${counts.revoked} expired=${counts.expired} canonicalized=${counts.canonicalized} superseded=${counts.superseded}`,
+    ...rankedRecords(active, {
+      timeFields: ["last_reinforced_at", "created_at"],
+    }).map(commitmentRow),
+  ];
+}
+
 function actionRow(record: RecordLike): string {
   return `- id=${scalar(record.id)} actor=${scalar(record.actor)} state=${scalar(record.state)} confidence=${scalar(record.confidence)} updated=${ts(record.updated_at)} completed=${ts(record.completed_at)} episodes=${ids(record.provenance_episode_ids)} streams=${ids(record.provenance_stream_entry_ids)} description="${oneLine(record.description)}"`;
 }
@@ -375,11 +465,27 @@ function streamSessions(entries: readonly StreamEntry[]): SessionId[] {
   return [...new Set(entries.map((entry) => entry.session_id))];
 }
 
+function snapshotNowMs(deps: BorgDependencies | null): number {
+  const clock = asRecord(deps)?.clock;
+  const now = asRecord(clock)?.now;
+
+  if (typeof now === "function") {
+    const value = now.call(clock);
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return Date.now();
+}
+
 export async function buildMemorySnapshotMarkdown(
   options: BuildMemorySnapshotOptions,
 ): Promise<string> {
   const borg = options.transport.getBorg();
   const deps = borgDeps(options.transport);
+  const nowMs = snapshotNowMs(deps);
   const auditTranscript = await options.transport.readAuditTranscript();
   const sessionIds = [
     ...new Set([
@@ -531,9 +637,11 @@ export async function buildMemorySnapshotMarkdown(
     },
     {
       title: "Commitments",
-      rows: rankedRecords(commitments, {
-        timeFields: ["last_reinforced_at", "created_at", "revoked_at"],
-      }).map(commitmentRow),
+      rows: commitmentLifecycleRows({
+        commitments,
+        nowMs,
+        countsSource: borg.commitments,
+      }),
       empty: "No commitments recorded.",
     },
     {

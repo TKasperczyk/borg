@@ -607,6 +607,7 @@ export class CommitmentRepository {
     sourceStreamEntryIds?: readonly StreamEntryId[];
     createdAt?: number;
     expiresAt?: number | null;
+    skipDirectiveFamilyMerge?: boolean;
   }): CommitmentRecord {
     if (input.provenance === undefined) {
       throw new ProvenanceError("Commitment requires provenance", {
@@ -644,7 +645,10 @@ export class CommitmentRepository {
       last_reinforced_at: createdAt,
     });
     const storedProvenance = toStoredProvenance(record.provenance);
-    const familyMatches = this.findActiveDirectiveFamilyMatches(record, createdAt);
+    const familyMatches =
+      input.skipDirectiveFamilyMerge === true
+        ? []
+        : this.findActiveDirectiveFamilyMatches(record, createdAt);
 
     return runIdentityWrite(this.identityEventRepository, () => {
       if (familyMatches.length > 0) {
@@ -801,6 +805,49 @@ export class CommitmentRepository {
           SELECT COUNT(*) AS count
           FROM commitments
           WHERE superseded_by IS NOT NULL
+        `,
+      )
+      .get() as { count: number } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  countRevoked(): number {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM commitments
+          WHERE revoked_at IS NOT NULL
+        `,
+      )
+      .get() as { count: number } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  countExpired(nowMs = this.clock.now()): number {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM commitments
+          WHERE expired_at IS NOT NULL
+             OR (expires_at IS NOT NULL AND expires_at <= ?)
+        `,
+      )
+      .get(nowMs) as { count: number } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  countCanonicalized(): number {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM commitments
+          WHERE canonicalized_by_artifact_entry_id IS NOT NULL
         `,
       )
       .get() as { count: number } | undefined;

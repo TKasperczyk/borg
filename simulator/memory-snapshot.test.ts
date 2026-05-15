@@ -11,6 +11,7 @@ import { ManualClock } from "../src/util/clock.js";
 import {
   DEFAULT_SESSION_ID,
   createActionId,
+  createDecisionArtifactEntryId,
   createEpisodeId,
   type SessionId,
 } from "../src/util/ids.js";
@@ -21,6 +22,7 @@ import {
   buildMemorySnapshotMarkdown,
   MEMORY_SNAPSHOT_TARGET_TOKEN_BUDGET,
 } from "./memory-snapshot.js";
+import { MetricsCapture } from "./metrics.js";
 
 type BorgInternal = {
   deps: BorgDependencies;
@@ -226,7 +228,7 @@ describe("simulator memory snapshot", () => {
   it("renders all snapshot sections from a small Borg fixture", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-sim-snapshot-"));
     tempDirs.push(tempDir);
-    const clock = new ManualClock(1_000);
+    const clock = new ManualClock(1_700_000_000_000);
     const borg = await createEvalBorg({
       tempDir,
       llm: new FakeLLMClient({ responses: [] }),
@@ -483,6 +485,115 @@ describe("simulator memory snapshot", () => {
       expect(snapshot).toContain("Keep Alice and Ben trip details inside the trip group.");
       expect(snapshot).toContain("Follow up with the trip group about booking constraints.");
       expect(snapshot).not.toContain("No commitments recorded.");
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("renders commitment lifecycle breakdowns and active details", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-sim-snapshot-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_000);
+    const borg = await createEvalBorg({
+      tempDir,
+      llm: new FakeLLMClient({ responses: [] }),
+      clock,
+    });
+    const internal = borg as unknown as BorgInternal;
+    const commitments = internal.deps.commitmentRepository;
+
+    try {
+      const active = commitments.add({
+        type: "promise",
+        directiveFamily: "snapshot active",
+        directive: "Keep the active snapshot fixture visible.",
+        priority: 7,
+        provenance: { kind: "manual" },
+      });
+      const revoked = commitments.add({
+        type: "promise",
+        directiveFamily: "snapshot revoked",
+        directive: "Retire the revoked snapshot fixture.",
+        priority: 6,
+        provenance: { kind: "manual" },
+      });
+      const expired = commitments.add({
+        type: "promise",
+        directiveFamily: "snapshot expired",
+        directive: "Expire the snapshot fixture.",
+        priority: 5,
+        provenance: { kind: "manual" },
+        createdAt: 1_700_000_000_000,
+        expiresAt: 1_750_000_000_000,
+      });
+      const canonicalized = commitments.add({
+        type: "promise",
+        directiveFamily: "snapshot canonicalized",
+        directive: "Canonicalize the snapshot fixture.",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      const superseded = commitments.add({
+        type: "promise",
+        directiveFamily: "snapshot superseded",
+        directive: "Replace the superseded snapshot fixture.",
+        priority: 4,
+        provenance: { kind: "manual" },
+      });
+      const replacement = commitments.add({
+        type: "promise",
+        directiveFamily: "snapshot replacement",
+        directive: "Keep the replacement snapshot fixture visible.",
+        priority: 8,
+        provenance: { kind: "manual" },
+      });
+      commitments.revoke(revoked.id, "snapshot revoked", { kind: "manual" });
+      commitments.revoke(
+        canonicalized.id,
+        "snapshot canonicalized",
+        { kind: "manual" },
+        undefined,
+        {
+          canonicalizedByArtifactEntryId: createDecisionArtifactEntryId(),
+        },
+      );
+      commitments.supersede(superseded.id, replacement.id);
+
+      const transport = {
+        getBorg: () => borg,
+        async readAuditTranscript() {
+          return [];
+        },
+      } as unknown as BorgTransport;
+      const snapshot = await buildMemorySnapshotMarkdown({
+        transport,
+        sessionIds: [DEFAULT_SESSION_ID as SessionId],
+      });
+      const metrics = await new MetricsCapture(join(tempDir, "metrics.jsonl")).capture(
+        borg,
+        "turn-snapshot-commitment-lifecycle",
+        1,
+        {
+          sessionId: DEFAULT_SESSION_ID as SessionId,
+          sessionIds: [DEFAULT_SESSION_ID as SessionId],
+          transportChatAttempts: 1,
+        },
+      );
+
+      expect(snapshot).toContain("### Commitments");
+      expect(snapshot).toContain("- total_commitments=6");
+      expect(snapshot).toContain(
+        `- lifecycle_counts active=${metrics.commitment_count_active} revoked=${metrics.commitment_count_revoked} expired=${metrics.commitment_count_expired} canonicalized=${metrics.commitment_count_canonicalized} superseded=${metrics.commitment_count_superseded}`,
+      );
+      expect(metrics.commitment_count_expired).toBe(0);
+      expect(snapshot).toContain("expired=0");
+      expect(snapshot).toContain(active.id);
+      expect(snapshot).toContain(replacement.id);
+      expect(snapshot).toContain("Keep the active snapshot fixture visible.");
+      expect(snapshot).toContain("Keep the replacement snapshot fixture visible.");
+      expect(snapshot).not.toContain('directive="Retire the revoked snapshot fixture.');
+      expect(snapshot).not.toContain('directive="Replace the superseded snapshot fixture.');
+      expect(snapshot).toContain("Expire the snapshot fixture.");
     } finally {
       await borg.close();
     }

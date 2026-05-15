@@ -32,9 +32,13 @@ type MemoryBandMetricCounts = Pick<
   MetricsRow,
   | "action_record_count_total"
   | "action_record_count_by_state"
+  | "action_record_count_committed_to_do"
   | "recent_completed_action_count"
   | "commitment_count_active"
   | "commitment_count_superseded"
+  | "commitment_count_revoked"
+  | "commitment_count_expired"
+  | "commitment_count_canonicalized"
   | "pending_action_count"
   | "pending_action_merge_count"
   | "relational_slot_count_by_state"
@@ -297,9 +301,13 @@ export class MetricsCapture {
         ...zeroCounts<ActionState>(ACTION_STATES),
         ...actionRecordCountByState,
       },
+      action_record_count_committed_to_do: actionRecordCountByState.committed_to_do ?? 0,
       recent_completed_action_count: recentCompletedActionCount,
       commitment_count_active: borg.commitments.countActive(),
       commitment_count_superseded: borg.commitments.countSuperseded(),
+      commitment_count_revoked: borg.commitments.countRevoked(),
+      commitment_count_expired: borg.commitments.countExpired(),
+      commitment_count_canonicalized: borg.commitments.countCanonicalized(),
       pending_action_count: workingMemory.pending_actions.length,
       pending_action_merge_count: borg.workmem.getPendingActionMergeCount(),
       relational_slot_count_by_state: {
@@ -378,9 +386,13 @@ export class MetricsCapture {
       open_question_resolved_count: memoryBandMetrics.open_question_resolved_count,
       action_record_count_total: memoryBandMetrics.action_record_count_total,
       action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
+      action_record_count_committed_to_do: memoryBandMetrics.action_record_count_committed_to_do,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
+      commitment_count_revoked: memoryBandMetrics.commitment_count_revoked,
+      commitment_count_expired: memoryBandMetrics.commitment_count_expired,
+      commitment_count_canonicalized: memoryBandMetrics.commitment_count_canonicalized,
       pending_action_count: memoryBandMetrics.pending_action_count,
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
@@ -457,9 +469,13 @@ export class MetricsCapture {
       open_question_resolved_count: memoryBandMetrics.open_question_resolved_count,
       action_record_count_total: memoryBandMetrics.action_record_count_total,
       action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
+      action_record_count_committed_to_do: memoryBandMetrics.action_record_count_committed_to_do,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
+      commitment_count_revoked: memoryBandMetrics.commitment_count_revoked,
+      commitment_count_expired: memoryBandMetrics.commitment_count_expired,
+      commitment_count_canonicalized: memoryBandMetrics.commitment_count_canonicalized,
       pending_action_count: memoryBandMetrics.pending_action_count,
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,

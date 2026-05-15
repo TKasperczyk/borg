@@ -109,6 +109,9 @@ function fakeSimulatorBorg(): Borg {
       list: () => [],
       countActive: () => 0,
       countSuperseded: () => 0,
+      countRevoked: () => 0,
+      countExpired: () => 0,
+      countCanonicalized: () => 0,
     },
     entities: {
       resolve: () => createEntityId(),

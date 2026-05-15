@@ -43,6 +43,8 @@ export type TurnTraceEventName =
   | "tool_call_dispatched"
   | "tool_call_completed"
   | "commitment_extractor_degraded"
+  | "commitment_supersession_rejected"
+  | "commitment_superseded_via_extractor"
   | "action_state_extractor_degraded"
   | "goal_promotion_extractor_degraded"
   | "frame_anomaly_classifier_degraded"
