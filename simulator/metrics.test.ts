@@ -77,6 +77,10 @@ const TURN_METRICS_KEY_ORDER = [
   "action_record_count_total",
   "action_record_count_by_state",
   "action_record_count_committed_to_do",
+  "action_record_count_canonicalized",
+  "action_record_count_active",
+  "action_record_creation_source_per_turn",
+  "action_record_creation_count_this_turn",
   "recent_completed_action_count",
   "commitment_count_active",
   "commitment_count_superseded",
@@ -139,6 +143,7 @@ function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
     completed_at: overrides.completed_at ?? null,
     not_done_at: overrides.not_done_at ?? null,
     unknown_at: overrides.unknown_at ?? null,
+    canonicalized_by_artifact_entry_id: overrides.canonicalized_by_artifact_entry_id ?? null,
   };
 }
 
@@ -185,6 +190,14 @@ function fakeBorg(
     actions: {
       count: () => 0,
       countByState: () => zeroCounts(ACTION_STATES),
+      countCanonicalized: () => 0,
+      countActive: () => 0,
+      getCreationCountsBySource: () => ({
+        extractor: 0,
+        reflector: 0,
+        api: 0,
+        unknown: 0,
+      }),
       countCompletedSince: () => 0,
       latestCompletedAt: () => null,
       listCompletedIds: () => [],
@@ -674,6 +687,7 @@ describe("MetricsCapture", () => {
           created_at: 1_200,
           updated_at: 1_200,
           completed_at: 1_200,
+          canonicalized_by_artifact_entry_id: createDecisionArtifactEntryId(),
         }),
       );
 
@@ -870,6 +884,15 @@ describe("MetricsCapture", () => {
         completed: 2,
       });
       expect(row.action_record_count_committed_to_do).toBe(0);
+      expect(row.action_record_count_canonicalized).toBe(1);
+      expect(row.action_record_count_active).toBe(1);
+      expect(row.action_record_creation_source_per_turn).toEqual({
+        extractor: 0,
+        reflector: 0,
+        api: 0,
+        unknown: 3,
+      });
+      expect(row.action_record_creation_count_this_turn).toBe(3);
       expect(row.recent_completed_action_count).toBe(2);
       expect(row.commitment_count_active).toBe(2);
       expect(row.commitment_count_superseded).toBe(1);
@@ -894,6 +917,81 @@ describe("MetricsCapture", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("emits checkpoint duplicate-pressure traces without merging action records", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+    const first = makeAction({
+      description: "Review Atlas rollout",
+      state: "committed_to_do",
+    });
+    const second = makeAction({
+      description: "Check Atlas deployment",
+      state: "scheduled",
+    });
+    const third = makeAction({
+      description: "Draft billing follow-up",
+      state: "considering",
+    });
+    const records = [first, second, third];
+    const actions = {
+      count: () => records.length,
+      countByState: () => ({
+        ...zeroCounts(ACTION_STATES),
+        considering: 1,
+        committed_to_do: 1,
+        scheduled: 1,
+      }),
+      countCanonicalized: () => 0,
+      countActive: () => records.length,
+      getCreationCountsBySource: () => ({
+        extractor: 0,
+        reflector: 0,
+        api: 0,
+        unknown: 0,
+      }),
+      countCompletedSince: () => 0,
+      latestCompletedAt: () => null,
+      listCompletedIds: () => [],
+      list: () => records,
+      findSimilarDescriptionPairs: async () => [
+        {
+          leftId: first.id,
+          rightId: second.id,
+          similarity: 0.9,
+        },
+      ],
+    };
+    const borg = {
+      ...fakeBorg(),
+      actions,
+    } as unknown as Borg;
+
+    await new MetricsCapture(metricsPath, { tracePath }).capture(borg, "turn-duplicate", 10, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+
+    const trace = readFileSync(tracePath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    expect(records).toHaveLength(3);
+    expect(trace).toContainEqual(
+      expect.objectContaining({
+        event: "action_duplicate_pressure_observed",
+        turnId: "turn-duplicate",
+        cluster_count: 1,
+        max_cluster_size: 2,
+        total_actions_in_clusters: 2,
+        threshold_used: 0.85,
+      }),
+    );
   });
 
   it("captures aborted turns with a failure reason", async () => {

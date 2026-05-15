@@ -25,6 +25,7 @@ import {
   type EvidenceLedgerCompactionTraceSummary,
   type EvidenceLedgerEntry,
 } from "../evidence-ledger/index.js";
+import { isActionVisibleToSession } from "../evidence-ledger/audience-visibility.js";
 import {
   compileDecisionArtifact,
   findUnsettledDecisionArtifactReconciliation,
@@ -66,7 +67,7 @@ import type { CognitiveMode, IntentRecord, PerceptionResult } from "../types.js"
 import type { Config } from "../../config/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
-import type { ActionRepository } from "../../memory/actions/index.js";
+import type { ActionRecord, ActionRepository, ActionState } from "../../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../../memory/commitments/index.js";
 import type {
   DecisionArtifact,
@@ -284,6 +285,106 @@ function compactDecisionArtifactCandidateText(value: string, maxLength = 180): s
   return trimmed.length <= maxLength ? trimmed : `${trimmed.slice(0, maxLength - 3)}...`;
 }
 
+function addScopedActionCandidates(input: {
+  target: Map<string, ScopedDecisionArtifactActionCandidate>;
+  actions: readonly ActionRecord[];
+  scope: DecisionArtifactActionCandidateScope;
+  audienceEntityId: EntityId | null;
+  activeParticipantIds: ReadonlySet<EntityId>;
+}): void {
+  for (const action of input.actions) {
+    if (!isActionVisibleToSession(action, input.audienceEntityId, input.activeParticipantIds)) {
+      continue;
+    }
+
+    if (!input.target.has(action.id)) {
+      input.target.set(action.id, {
+        action,
+        scope: input.scope,
+      });
+    }
+  }
+}
+
+function selectDecisionArtifactActionCandidates(input: {
+  actionRepository: TurnPhaseCoordinatorOptions["actionRepository"];
+  audienceEntityId: EntityId | null;
+  activeParticipants: readonly ActiveParticipant[] | undefined;
+}): {
+  candidates: DecisionArtifactCanonicalizationCandidates["actions"];
+  countByScope: Record<DecisionArtifactActionCandidateScope, number>;
+} {
+  const activeParticipantIds = new Set(
+    (input.activeParticipants ?? []).map((participant) => participant.entityId),
+  );
+  const scoped = new Map<string, ScopedDecisionArtifactActionCandidate>();
+
+  if (input.audienceEntityId !== null) {
+    addScopedActionCandidates({
+      target: scoped,
+      actions: input.actionRepository.list({
+        states: DECISION_ARTIFACT_ACTION_CANDIDATE_STATES,
+        audienceEntityId: input.audienceEntityId,
+        limit: DECISION_ARTIFACT_ACTION_CANDIDATE_LIMIT,
+      }),
+      scope: "audience",
+      audienceEntityId: input.audienceEntityId,
+      activeParticipantIds,
+    });
+  }
+
+  addScopedActionCandidates({
+    target: scoped,
+    actions: input.actionRepository.list({
+      states: DECISION_ARTIFACT_ACTION_CANDIDATE_STATES,
+      audienceEntityId: null,
+      limit: DECISION_ARTIFACT_ACTION_CANDIDATE_LIMIT,
+    }),
+    scope: "global",
+    audienceEntityId: input.audienceEntityId,
+    activeParticipantIds,
+  });
+
+  for (const participant of input.activeParticipants ?? []) {
+    addScopedActionCandidates({
+      target: scoped,
+      actions: input.actionRepository.list({
+        states: DECISION_ARTIFACT_ACTION_CANDIDATE_STATES,
+        actor: participant.entityId,
+        limit: DECISION_ARTIFACT_ACTION_CANDIDATE_LIMIT,
+      }),
+      scope: "actor",
+      audienceEntityId: input.audienceEntityId,
+      activeParticipantIds,
+    });
+  }
+
+  const selected = [...scoped.values()]
+    .sort(
+      (left, right) =>
+        right.action.updated_at - left.action.updated_at ||
+        left.action.id.localeCompare(right.action.id),
+    )
+    .slice(0, DECISION_ARTIFACT_ACTION_CANDIDATE_LIMIT);
+  const countByScope: Record<DecisionArtifactActionCandidateScope, number> = {
+    audience: 0,
+    global: 0,
+    actor: 0,
+  };
+
+  for (const candidate of selected) {
+    countByScope[candidate.scope] += 1;
+  }
+
+  return {
+    candidates: selected.map(({ action }) => ({
+      id: action.id,
+      text: compactDecisionArtifactCandidateText(action.description),
+    })),
+    countByScope,
+  };
+}
+
 function addDecisionArtifactEntryIdStreamHandle(ids: Set<StreamEntryId>, entryId: string): void {
   const currentSessionPrefix = "current_session_stream:";
   const currentUserPrefix = "current_user_message:";
@@ -330,6 +431,18 @@ const DECISION_ARTIFACT_IN_FLIGHT_KINDS = [
   "pending",
   "tentative",
 ] as const satisfies readonly DecisionArtifactEntryKind[];
+const DECISION_ARTIFACT_ACTION_CANDIDATE_LIMIT = 80;
+const DECISION_ARTIFACT_ACTION_CANDIDATE_STATES: readonly ActionState[] = [
+  "considering",
+  "committed_to_do",
+  "scheduled",
+  "unknown",
+];
+type DecisionArtifactActionCandidateScope = "audience" | "global" | "actor";
+type ScopedDecisionArtifactActionCandidate = {
+  action: ActionRecord;
+  scope: DecisionArtifactActionCandidateScope;
+};
 
 type DecisionArtifactCompileSkipReason = "closure_shaped" | "idle_no_active_decisions";
 
@@ -1999,6 +2112,11 @@ export class TurnPhaseCoordinator {
       kind: "self",
       provenance: "assistant_seeded",
     });
+    const actionCanonicalizationCandidates = selectDecisionArtifactActionCandidates({
+      actionRepository: this.options.actionRepository,
+      audienceEntityId,
+      activeParticipants: input.input.activeParticipants,
+    });
     const canonicalizationCandidates: DecisionArtifactCanonicalizationCandidates = {
       goals: this.options.goalsRepository
         .list({
@@ -2018,16 +2136,7 @@ export class TurnPhaseCoordinator {
           id: commitment.id,
           text: compactDecisionArtifactCandidateText(commitment.directive),
         })),
-      actions: this.options.actionRepository
-        .list({
-          states: ["considering", "committed_to_do", "scheduled", "unknown"],
-          audienceEntityId,
-          limit: 80,
-        })
-        .map((action) => ({
-          id: action.id,
-          text: compactDecisionArtifactCandidateText(action.description),
-        })),
+      actions: actionCanonicalizationCandidates.candidates ?? [],
       openQuestions: this.options.openQuestionsRepository
         .list({
           status: "open",
@@ -2039,6 +2148,14 @@ export class TurnPhaseCoordinator {
           text: compactDecisionArtifactCandidateText(question.question),
         })),
     };
+
+    if (this.options.tracer.enabled && input.input.turnId !== undefined) {
+      this.options.tracer.emit("decision_artifact_canonicalization_candidates", {
+        turnId: input.input.turnId,
+        candidate_count_by_scope: actionCanonicalizationCandidates.countByScope,
+        candidate_count_total: (actionCanonicalizationCandidates.candidates ?? []).length,
+      });
+    }
 
     await compileDecisionArtifact({
       llmClient: this.options.llmFactory(),

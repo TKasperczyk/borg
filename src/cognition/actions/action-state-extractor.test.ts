@@ -129,7 +129,9 @@ describe("ActionStateExtractor", () => {
       audience_entity_id: group,
       state: "committed_to_do",
     });
-    expect(add).toHaveBeenCalledWith(expect.objectContaining({ actor: alice }));
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ actor: alice }), {
+      creationSource: "extractor",
+    });
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       `"speaker_entity_id":"${alice}"`,
     );
@@ -158,6 +160,7 @@ describe("ActionStateExtractor", () => {
     const currentUserStreamEntryId = createStreamEntryId();
     const otherStreamEntryId = createStreamEntryId();
     const add = vi.fn();
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
     const llm = new FakeLLMClient({
       responses: [
         actionStateResponse([
@@ -179,12 +182,37 @@ describe("ActionStateExtractor", () => {
       model: "haiku",
       actionRepository: { add },
       clock: new FixedClock(2_000),
+      turnId: "turn_action_trace",
+      tracer: {
+        enabled: true,
+        includePayloads: true,
+        emit: (event, data) => events.push({ event, data }),
+      },
     });
 
     const records = await extractor.extract(makeExtractorInput(currentUserStreamEntryId));
 
     expect(add).toHaveBeenCalledOnce();
     expect(records.map((record) => record.description)).toEqual(["booked the tutor Tuesday 7pm"]);
+    expect(events).toContainEqual({
+      event: "action_state_extractor_completed",
+      data: {
+        turnId: "turn_action_trace",
+        candidates_emitted: 2,
+        persisted_count: 1,
+        skipped_count: 1,
+        skipped_reasons: [{ reason: "missing_current_user_evidence", count: 1 }],
+        persisted_by_state: {
+          considering: 0,
+          committed_to_do: 0,
+          scheduled: 0,
+          completed: 1,
+          not_done: 0,
+          unknown: 0,
+        },
+        degraded: false,
+      },
+    });
   });
 
   it("uses the configured recallExpansion model slot", async () => {

@@ -334,6 +334,7 @@ describe("TurnTracer", () => {
       "llm_call_started",
       "llm_call_response",
       "llm_call_response",
+      "action_state_extractor_completed",
       "llm_call_response",
       "retrieval_started",
       "llm_call_started",

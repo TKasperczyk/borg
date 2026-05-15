@@ -9,6 +9,20 @@ const LARGE_LIMIT = 1_000;
 export const MEMORY_SNAPSHOT_TARGET_TOKEN_BUDGET = 80_000;
 export const MEMORY_SNAPSHOT_FAILSAFE_TOKEN_CAP = 150_000;
 const MEMORY_SNAPSHOT_ROW_TOKEN_BUDGET = MEMORY_SNAPSHOT_TARGET_TOKEN_BUDGET - 512;
+const ACTION_SNAPSHOT_STATES = [
+  "considering",
+  "committed_to_do",
+  "scheduled",
+  "completed",
+  "not_done",
+  "unknown",
+] as const;
+const ACTION_SNAPSHOT_ACTIVE_STATES = new Set([
+  "considering",
+  "committed_to_do",
+  "scheduled",
+  "unknown",
+]);
 const SECTION_ROW_LIMITS = {
   "Scope And Counts": 8,
   "Stream Transcript": 240,
@@ -344,7 +358,7 @@ function countFromSource(source: unknown, method: string): number | null {
     return null;
   }
 
-  const value = candidate();
+  const value = candidate.call(record);
 
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -400,6 +414,69 @@ function commitmentLifecycleRows(input: {
     ...rankedRecords(active, {
       timeFields: ["last_reinforced_at", "created_at"],
     }).map(commitmentRow),
+  ];
+}
+
+type ActionLifecycleCounts = {
+  total: number;
+  active: number;
+  canonicalized: number;
+  byState: Record<(typeof ACTION_SNAPSHOT_STATES)[number], number>;
+};
+
+function actionLifecycleCounts(input: {
+  actions: readonly RecordLike[];
+  source: unknown;
+}): ActionLifecycleCounts {
+  const byState = Object.fromEntries(ACTION_SNAPSHOT_STATES.map((state) => [state, 0])) as Record<
+    (typeof ACTION_SNAPSHOT_STATES)[number],
+    number
+  >;
+
+  for (const action of input.actions) {
+    const state = action.state;
+
+    if (typeof state === "string" && state in byState) {
+      byState[state as (typeof ACTION_SNAPSHOT_STATES)[number]] += 1;
+    }
+  }
+
+  const active = input.actions.filter(
+    (action) => typeof action.state === "string" && ACTION_SNAPSHOT_ACTIVE_STATES.has(action.state),
+  );
+  const canonicalized = input.actions.filter(
+    (action) =>
+      action.canonicalized_by_artifact_entry_id !== null &&
+      action.canonicalized_by_artifact_entry_id !== undefined,
+  );
+
+  return {
+    total: countFromSource(input.source, "count") ?? input.actions.length,
+    active: countFromSource(input.source, "countActive") ?? active.length,
+    canonicalized: countFromSource(input.source, "countCanonicalized") ?? canonicalized.length,
+    byState,
+  };
+}
+
+function actionLifecycleRows(input: {
+  actions: readonly RecordLike[];
+  countsSource: unknown;
+}): string[] {
+  const counts = actionLifecycleCounts({
+    actions: input.actions,
+    source: input.countsSource,
+  });
+  const byStateText = ACTION_SNAPSHOT_STATES.map((state) => `${state}=${counts.byState[state]}`)
+    .join(" ");
+
+  return [
+    `- total_actions=${counts.total}`,
+    `- state_counts ${byStateText}`,
+    `- lifecycle_counts active=${counts.active} canonicalized=${counts.canonicalized}`,
+    ...rankedRecords(input.actions, {
+      timeFields: ["updated_at", "completed_at", "created_at"],
+      salienceFields: ["confidence"],
+    }).map(actionRow),
   ];
 }
 
@@ -646,10 +723,10 @@ export async function buildMemorySnapshotMarkdown(
     },
     {
       title: "Actions",
-      rows: rankedRecords(actions, {
-        timeFields: ["updated_at", "completed_at", "created_at"],
-        salienceFields: ["confidence"],
-      }).map(actionRow),
+      rows: actionLifecycleRows({
+        actions,
+        countsSource: borg.actions,
+      }),
       empty: "No action records recorded.",
     },
     {

@@ -3,8 +3,11 @@ export { resolveOpenQuestionsForCompletedAction } from "./open-question-resoluti
 export {
   ActionRepository,
   createActionRecordsTableSchema,
+  type ActionAddOptions,
   type ActionCountByState,
+  type ActionCreationCountsBySource,
   type ActionDescriptionSimilarityPair,
+  type ActionRecordCreationSource,
   type ActionRecordListFilter,
   type ActionRepositoryOptions,
   type ActionUpdateOptions,

@@ -205,10 +205,15 @@ export type ActionRepositoryOptions = {
 };
 
 export type ActionCountByState = Record<ActionState, number>;
+export type ActionRecordCreationSource = "extractor" | "reflector" | "api" | "unknown";
+export type ActionCreationCountsBySource = Record<ActionRecordCreationSource, number>;
 export type ActionDescriptionSimilarityPair = {
   leftId: ActionId;
   rightId: ActionId;
   similarity: number;
+};
+export type ActionAddOptions = {
+  creationSource?: ActionRecordCreationSource;
 };
 export type ActionUpdateOptions = {
   skipSideEffects?: boolean;
@@ -229,6 +234,12 @@ export function createActionRecordsTableSchema(dimensions: number) {
 export class ActionRepository {
   private readonly clock: Clock;
   private readonly pendingEmbeddingTasks = new Set<Promise<void>>();
+  private readonly creationCountsBySource: ActionCreationCountsBySource = {
+    extractor: 0,
+    reflector: 0,
+    api: 0,
+    unknown: 0,
+  };
 
   constructor(private readonly options: ActionRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -332,14 +343,20 @@ export class ActionRepository {
       );
   }
 
-  add(record: ActionRecord): void {
+  add(record: ActionRecord, options: ActionAddOptions = {}): void {
     const parsed = actionRecordSchema.parse({
       ...record,
       id: record.id ?? createActionId(),
     });
+    const existing = this.db
+      .prepare("SELECT 1 FROM action_records WHERE id = ?")
+      .get(parsed.id) as { 1: number } | undefined;
 
     this.upsertSqlRow(parsed);
     this.scheduleVectorUpsert(parsed);
+    if (existing === undefined) {
+      this.creationCountsBySource[options.creationSource ?? "unknown"] += 1;
+    }
     if (parsed.state === "completed") {
       this.options.onCompleted?.(parsed, null);
     }
@@ -492,6 +509,40 @@ export class ActionRepository {
     }
 
     return counts;
+  }
+
+  countCanonicalized(): number {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM action_records
+          WHERE canonicalized_by_artifact_entry_id IS NOT NULL
+        `,
+      )
+      .get() as { count: number } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  countActive(): number {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) AS count
+          FROM action_records
+          -- Active means non-terminal: still pressure-creating for
+          -- canonicalization and durable action bloat observability.
+          WHERE state IN ('considering', 'committed_to_do', 'scheduled', 'unknown')
+        `,
+      )
+      .get() as { count: number } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
+  getCreationCountsBySource(): ActionCreationCountsBySource {
+    return { ...this.creationCountsBySource };
   }
 
   countCompletedSince(timestampMs: number): number {

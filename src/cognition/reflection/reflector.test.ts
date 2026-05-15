@@ -1571,11 +1571,13 @@ describe("reflector", () => {
       llmClient: llm,
     });
     cleanup.push(harness.cleanup);
+    const tracer = new CaptureTracer();
     const reflector = createHarnessReflector(harness, {
       clock: harness.clock,
       llmClient: harness.llmClient,
       model: "haiku",
       proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+      tracer,
     });
     const workingMemory = createWorkingMemoryFixture({
       turn_counter: 2,
@@ -1587,6 +1589,7 @@ describe("reflector", () => {
 
     const { workingMemory: reflected } = await reflector.reflect(
       {
+        turnId: "turn_intent_updates",
         userMessage: "The rollout passed and don't open a new incident.",
         workingMemory,
         selfSnapshot: {
@@ -1646,6 +1649,18 @@ describe("reflector", () => {
         provenance_stream_entry_ids: currentTurnStreamEntryIds,
       }),
     ]);
+    expect(tracer.events).toContainEqual({
+      event: "reflector_intent_updates_persisted",
+      data: {
+        turnId: "turn_intent_updates",
+        created_durable_actions_count: 2,
+        by_state: {
+          completed: 1,
+          not_done: 1,
+        },
+        working_memory_pending_resolved_count: 2,
+      },
+    });
     expect(llm.requests[0]?.messages[0]?.content).toContain("pending_actions");
   });
 

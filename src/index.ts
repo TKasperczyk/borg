@@ -175,9 +175,12 @@ export {
 export {
   ACTION_STATES,
   ActionRepository,
+  type ActionAddOptions,
   type ActionActor,
   type ActionCountByState,
+  type ActionCreationCountsBySource,
   type ActionRecord,
+  type ActionRecordCreationSource,
   type ActionRecordPatch,
   type ActionRepositoryOptions,
   type ActionState,

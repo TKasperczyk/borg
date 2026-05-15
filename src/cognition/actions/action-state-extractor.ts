@@ -8,6 +8,7 @@ import {
   toToolInputSchema,
 } from "../../llm/index.js";
 import {
+  ACTION_STATES,
   actionEntityIdSchema,
   actionActorSchema,
   type ActionRecord,
@@ -93,6 +94,7 @@ const ACTION_STATE_SYSTEM_PROMPT = [
 
 type ActionStateToolInput = z.infer<typeof actionStateOutputSchema>;
 type ParsedActionStateCandidate = z.infer<typeof actionStateCandidateSchema>;
+type ActionStateSkippedReason = "missing_current_user_evidence" | "repository_failed";
 
 class MissingActionStateToolCallError extends Error {}
 
@@ -320,6 +322,54 @@ function traceLlmCallError(options: {
   }
 }
 
+function zeroActionStateCounts(): Record<ActionState, number> {
+  return Object.fromEntries(ACTION_STATES.map((state) => [state, 0])) as Record<
+    ActionState,
+    number
+  >;
+}
+
+function traceExtractorCompleted(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  candidatesEmitted: number;
+  persisted: readonly ActionRecord[];
+  skippedReasons: ReadonlyMap<ActionStateSkippedReason, number>;
+  degraded: boolean;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  const persistedByState = zeroActionStateCounts();
+
+  for (const record of options.persisted) {
+    persistedByState[record.state] += 1;
+  }
+
+  const skippedReasons = [...options.skippedReasons.entries()].map(([reason, count]) => ({
+    reason,
+    count,
+  }));
+
+  options.tracer.emit("action_state_extractor_completed", {
+    turnId: options.turnId,
+    candidates_emitted: options.candidatesEmitted,
+    persisted_count: options.persisted.length,
+    skipped_count: skippedReasons.reduce((sum, reason) => sum + reason.count, 0),
+    skipped_reasons: skippedReasons,
+    persisted_by_state: persistedByState,
+    degraded: options.degraded,
+  });
+}
+
+function incrementSkippedReason(
+  reasons: Map<ActionStateSkippedReason, number>,
+  reason: ActionStateSkippedReason,
+): void {
+  reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+}
+
 export class ActionStateExtractor {
   private readonly clock: Clock;
 
@@ -340,13 +390,31 @@ export class ActionStateExtractor {
     return [];
   }
 
+  private async degradedWithTrace(
+    reason: ActionStateExtractorDegradedReason,
+    error?: unknown,
+  ): Promise<ActionRecord[]> {
+    const result = await this.degraded(reason, error);
+
+    traceExtractorCompleted({
+      tracer: this.options.tracer,
+      turnId: this.options.turnId,
+      candidatesEmitted: 0,
+      persisted: result,
+      skippedReasons: new Map(),
+      degraded: true,
+    });
+
+    return result;
+  }
+
   async extract(input: ExtractActionStatesInput): Promise<ActionRecord[]> {
     if (this.options.llmClient === undefined || this.options.model === undefined) {
-      return this.degraded("llm_unavailable");
+      return this.degradedWithTrace("llm_unavailable");
     }
 
     if (this.options.actionRepository === undefined) {
-      return this.degraded("repository_unavailable");
+      return this.degradedWithTrace("repository_unavailable");
     }
 
     const messages = buildActionStateMessages(input);
@@ -379,7 +447,7 @@ export class ActionStateExtractor {
         error,
       });
 
-      return this.degraded("llm_failed", error);
+      return this.degradedWithTrace("llm_failed", error);
     }
 
     traceLlmCallResponse({
@@ -393,7 +461,7 @@ export class ActionStateExtractor {
     try {
       parsed = parseResponse(response);
     } catch (error) {
-      return this.degraded(
+      return this.degradedWithTrace(
         error instanceof MissingActionStateToolCallError
           ? "missing_tool_call"
           : error instanceof z.ZodError
@@ -404,10 +472,13 @@ export class ActionStateExtractor {
     }
 
     const persisted: ActionRecord[] = [];
+    const skippedReasons = new Map<ActionStateSkippedReason, number>();
+    let degraded = false;
     const nowMs = this.clock.now();
 
     for (const candidate of parsed.action_states) {
       if (!hasCurrentUserEvidence(candidate, input.currentUserStreamEntryId)) {
+        incrementSkippedReason(skippedReasons, "missing_current_user_evidence");
         continue;
       }
 
@@ -422,12 +493,23 @@ export class ActionStateExtractor {
       });
 
       try {
-        this.options.actionRepository.add(record);
+        this.options.actionRepository.add(record, { creationSource: "extractor" });
         persisted.push(record);
       } catch (error) {
+        degraded = true;
+        incrementSkippedReason(skippedReasons, "repository_failed");
         await this.degraded("repository_failed", error);
       }
     }
+
+    traceExtractorCompleted({
+      tracer: this.options.tracer,
+      turnId: this.options.turnId,
+      candidatesEmitted: parsed.action_states.length,
+      persisted,
+      skippedReasons,
+      degraded,
+    });
 
     return persisted;
   }

@@ -360,6 +360,7 @@ describe("simulator memory snapshot", () => {
         not_done_at: null,
         unknown_at: null,
       });
+      expect(borg.actions.getCreationCountsBySource().api).toBe(1);
       internal.deps.relationalSlotRepository.applyAssertion({
         subject_entity_id: mayaEntity,
         slot_key: "relationship.role",
@@ -436,6 +437,11 @@ describe("simulator memory snapshot", () => {
       expect(snapshot).toContain("Maya relationship note");
       expect(snapshot).toContain("Keep Maya grounded in memory.");
       expect(snapshot).toContain("Remember Maya as the user's partner");
+      expect(snapshot).toContain("- total_actions=1");
+      expect(snapshot).toContain(
+        "- state_counts considering=0 committed_to_do=0 scheduled=0 completed=1 not_done=0 unknown=0",
+      );
+      expect(snapshot).toContain("- lifecycle_counts active=0 canonicalized=0");
       expect(snapshot).toContain("relationship.role");
       expect(snapshot).toContain("a user asks about a named partner");
     } finally {

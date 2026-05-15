@@ -1,14 +1,21 @@
+import { performance } from "node:perf_hooks";
+
 import {
   QUARANTINED_USER_ENTRY_EVENT,
   ACTION_STATES,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
+  type ActionRecordCreationSource,
   type ActionState,
   type Borg,
   type RelationalSlotState,
   type ReviewKind,
   type SessionId,
 } from "../src/index.js";
+import {
+  DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
+  DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
+} from "../src/cognition/evidence-ledger/action-threads.js";
 import { filterActiveStreamEntries } from "../src/stream/index.js";
 import type { ActionId } from "../src/util/ids.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
@@ -23,6 +30,14 @@ const ABORTED_TURN_EVENT = "aborted_turn";
 const ABORTED_ATTEMPT_EVENT = "aborted_attempt";
 const OPEN_QUESTION_RECORD_TYPE = "open_question";
 const RESOLVED_STATUS = "resolved";
+const ACTION_CREATION_SOURCES = ["extractor", "reflector", "api", "unknown"] as const;
+const ACTIVE_ACTION_STATES: readonly ActionState[] = [
+  "considering",
+  "committed_to_do",
+  "scheduled",
+  "unknown",
+];
+const ACTION_DUPLICATE_PRESSURE_CHECK_EVERY_TURNS = 10;
 
 type GoalTreeNodeLike = {
   children?: GoalTreeNodeLike[];
@@ -33,6 +48,10 @@ type MemoryBandMetricCounts = Pick<
   | "action_record_count_total"
   | "action_record_count_by_state"
   | "action_record_count_committed_to_do"
+  | "action_record_count_canonicalized"
+  | "action_record_count_active"
+  | "action_record_creation_source_per_turn"
+  | "action_record_creation_count_this_turn"
   | "recent_completed_action_count"
   | "commitment_count_active"
   | "commitment_count_superseded"
@@ -240,6 +259,60 @@ function zeroCounts<K extends string>(keys: readonly K[]): Record<K, number> {
   return Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
 }
 
+function zeroActionCreationCounts(): Record<ActionRecordCreationSource, number> {
+  return zeroCounts(ACTION_CREATION_SOURCES);
+}
+
+function actionCreationCountsFromRepository(
+  borg: Borg,
+): Record<ActionRecordCreationSource, number> {
+  const source = borg.actions as unknown as {
+    getCreationCountsBySource?: () => Partial<Record<ActionRecordCreationSource, number>>;
+  };
+  const counts = source.getCreationCountsBySource?.() ?? {};
+
+  return {
+    ...zeroActionCreationCounts(),
+    ...counts,
+  };
+}
+
+function diffActionCreationCounts(input: {
+  previous: Record<ActionRecordCreationSource, number>;
+  current: Record<ActionRecordCreationSource, number>;
+}): Record<ActionRecordCreationSource, number> {
+  const diff = zeroActionCreationCounts();
+
+  for (const source of ACTION_CREATION_SOURCES) {
+    diff[source] = Math.max(0, (input.current[source] ?? 0) - (input.previous[source] ?? 0));
+  }
+
+  return diff;
+}
+
+function actionCreationCountTotal(
+  counts: Record<ActionRecordCreationSource, number>,
+): number {
+  return ACTION_CREATION_SOURCES.reduce((sum, source) => sum + counts[source], 0);
+}
+
+function actionCountFromRepository(borg: Borg, method: string): number | null {
+  const actions = borg.actions as unknown as Record<string, unknown>;
+  const candidate = actions[method];
+
+  if (typeof candidate !== "function") {
+    return null;
+  }
+
+  const value = candidate.call(actions);
+
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function activeActionCountFromStateCounts(counts: Record<ActionState, number>): number {
+  return ACTIVE_ACTION_STATES.reduce((sum, state) => sum + (counts[state] ?? 0), 0);
+}
+
 function reviewQueueOpenCountByType(borg: Borg): Record<ReviewKind, number> {
   const counts = zeroCounts(REVIEW_KINDS);
 
@@ -276,6 +349,8 @@ export class MetricsCapture {
   private readonly tracePath?: string;
   private previousSemanticNodeCount?: number;
   private previousSemanticEdgeCount?: number;
+  private previousActionCreationCountsBySource: Record<ActionRecordCreationSource, number> =
+    zeroActionCreationCounts();
   private readonly completedActionIdsSeen = new Set<ActionId>();
 
   constructor(filepath: string, options: MetricsCaptureOptions = {}) {
@@ -285,6 +360,11 @@ export class MetricsCapture {
 
   private captureMemoryBandMetrics(borg: Borg, sessionId: SessionId): MemoryBandMetricCounts {
     const actionRecordCountByState = borg.actions.countByState();
+    const currentActionCreationCounts = actionCreationCountsFromRepository(borg);
+    const actionCreationSourcePerTurn = diffActionCreationCounts({
+      previous: this.previousActionCreationCountsBySource,
+      current: currentActionCreationCounts,
+    });
     const completedActionIds = borg.actions.listCompletedIds();
     const recentCompletedActionCount = completedActionIds.filter(
       (id) => !this.completedActionIdsSeen.has(id),
@@ -302,6 +382,15 @@ export class MetricsCapture {
         ...actionRecordCountByState,
       },
       action_record_count_committed_to_do: actionRecordCountByState.committed_to_do ?? 0,
+      action_record_count_canonicalized:
+        actionCountFromRepository(borg, "countCanonicalized") ?? 0,
+      action_record_count_active:
+        actionCountFromRepository(borg, "countActive") ??
+        activeActionCountFromStateCounts(actionRecordCountByState),
+      action_record_creation_source_per_turn: actionCreationSourcePerTurn,
+      action_record_creation_count_this_turn: actionCreationCountTotal(
+        actionCreationSourcePerTurn,
+      ),
       recent_completed_action_count: recentCompletedActionCount,
       commitment_count_active: borg.commitments.countActive(),
       commitment_count_superseded: borg.commitments.countSuperseded(),
@@ -317,6 +406,83 @@ export class MetricsCapture {
       review_queue_open_count_by_type: reviewQueueOpenCountByType(borg),
       open_question_resolved_count: openQuestionResolvedCount(borg),
     };
+  }
+
+  private async emitActionDuplicatePressureTrace(input: {
+    borg: Borg;
+    turnId: string;
+    turnCounter: number;
+  }): Promise<void> {
+    if (
+      this.tracePath === undefined ||
+      input.turnCounter % ACTION_DUPLICATE_PRESSURE_CHECK_EVERY_TURNS !== 0 ||
+      typeof input.borg.actions.findSimilarDescriptionPairs !== "function"
+    ) {
+      return;
+    }
+
+    const activeActions = input.borg.actions.list({
+      states: ACTIVE_ACTION_STATES,
+      limit: DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
+    });
+    const threshold = DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD;
+    const pairs = await input.borg.actions.findSimilarDescriptionPairs(activeActions, threshold);
+    const parents = new Map<string, string>();
+    const find = (id: string): string => {
+      const parent = parents.get(id);
+
+      if (parent === undefined || parent === id) {
+        parents.set(id, id);
+        return id;
+      }
+
+      const root = find(parent);
+      parents.set(id, root);
+      return root;
+    };
+    const union = (leftId: string, rightId: string): void => {
+      const left = find(leftId);
+      const right = find(rightId);
+
+      if (left !== right) {
+        parents.set(right, left);
+      }
+    };
+
+    for (const action of activeActions) {
+      parents.set(action.id, action.id);
+    }
+
+    for (const pair of pairs) {
+      union(pair.leftId, pair.rightId);
+    }
+
+    const clusterSizes = new Map<string, number>();
+
+    for (const action of activeActions) {
+      if (!pairs.some((pair) => pair.leftId === action.id || pair.rightId === action.id)) {
+        continue;
+      }
+
+      const root = find(action.id);
+      clusterSizes.set(root, (clusterSizes.get(root) ?? 0) + 1);
+    }
+
+    const sizes = [...clusterSizes.values()].filter((size) => size > 1);
+
+    appendJsonlLine(
+      this.tracePath,
+      `${JSON.stringify({
+        ts: Date.now(),
+        wallMs: performance.now(),
+        turnId: input.turnId,
+        event: "action_duplicate_pressure_observed",
+        cluster_count: sizes.length,
+        max_cluster_size: sizes.length === 0 ? 0 : Math.max(...sizes),
+        total_actions_in_clusters: sizes.reduce((sum, size) => sum + size, 0),
+        threshold_used: threshold,
+      })}\n`,
+    );
   }
 
   async capture(
@@ -355,6 +521,11 @@ export class MetricsCapture {
       sessionIds: context.sessionIds,
       turnId,
     });
+    await this.emitActionDuplicatePressureTrace({
+      borg,
+      turnId,
+      turnCounter,
+    });
     const row: MetricsRow = {
       event: TURN_METRICS_EVENT,
       ts: Date.now(),
@@ -387,6 +558,12 @@ export class MetricsCapture {
       action_record_count_total: memoryBandMetrics.action_record_count_total,
       action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
       action_record_count_committed_to_do: memoryBandMetrics.action_record_count_committed_to_do,
+      action_record_count_canonicalized: memoryBandMetrics.action_record_count_canonicalized,
+      action_record_count_active: memoryBandMetrics.action_record_count_active,
+      action_record_creation_source_per_turn:
+        memoryBandMetrics.action_record_creation_source_per_turn,
+      action_record_creation_count_this_turn:
+        memoryBandMetrics.action_record_creation_count_this_turn,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
@@ -413,6 +590,7 @@ export class MetricsCapture {
 
     this.previousSemanticNodeCount = semanticNodes.length;
     this.previousSemanticEdgeCount = semanticEdges.length;
+    this.previousActionCreationCountsBySource = actionCreationCountsFromRepository(borg);
     appendJsonlLine(this.filepath, `${JSON.stringify(row)}\n`);
     return row;
   }
@@ -470,6 +648,12 @@ export class MetricsCapture {
       action_record_count_total: memoryBandMetrics.action_record_count_total,
       action_record_count_by_state: memoryBandMetrics.action_record_count_by_state,
       action_record_count_committed_to_do: memoryBandMetrics.action_record_count_committed_to_do,
+      action_record_count_canonicalized: memoryBandMetrics.action_record_count_canonicalized,
+      action_record_count_active: memoryBandMetrics.action_record_count_active,
+      action_record_creation_source_per_turn:
+        memoryBandMetrics.action_record_creation_source_per_turn,
+      action_record_creation_count_this_turn:
+        memoryBandMetrics.action_record_creation_count_this_turn,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
@@ -494,6 +678,7 @@ export class MetricsCapture {
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 
+    this.previousActionCreationCountsBySource = actionCreationCountsFromRepository(borg);
     appendJsonlLine(this.filepath, `${JSON.stringify(row)}\n`);
     return row;
   }

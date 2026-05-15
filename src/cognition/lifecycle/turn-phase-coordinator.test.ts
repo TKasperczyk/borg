@@ -8,12 +8,14 @@ import type {
   DecisionArtifactEntryKind,
 } from "../../memory/decision-artifacts/index.js";
 import {
+  createActionId,
   createDecisionArtifactEntryId,
   createEntityId,
   createGoalId,
   createStreamEntryId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import type { ActionRecord } from "../../memory/actions/index.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { renderEvidenceLedger } from "../evidence-ledger/index.js";
 import {
@@ -122,6 +124,35 @@ function contradictionOpenQuestion(
     audience_entity_id: null,
     ...overrides,
   } as never;
+}
+
+function actionRecord(input: {
+  description: string;
+  actor?: ActionRecord["actor"];
+  audienceEntityId: ActionRecord["audience_entity_id"];
+  updatedAt: number;
+}): ActionRecord {
+  return {
+    id: createActionId(),
+    description: input.description,
+    actor: input.actor ?? "borg",
+    audience_entity_id: input.audienceEntityId,
+    goal_id: null,
+    open_question_id: null,
+    state: "committed_to_do",
+    confidence: 0.9,
+    provenance_episode_ids: [],
+    provenance_stream_entry_ids: [createStreamEntryId()],
+    created_at: input.updatedAt,
+    updated_at: input.updatedAt,
+    considering_at: null,
+    committed_at: input.updatedAt,
+    scheduled_at: null,
+    completed_at: null,
+    not_done_at: null,
+    unknown_at: null,
+    canonicalized_by_artifact_entry_id: null,
+  };
 }
 
 function ledgerWithOpenQuestionIds(ids: readonly string[]): EvidenceLedger {
@@ -570,6 +601,161 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
         }),
       }),
     );
+  });
+
+  it("surfaces global, audience, and participant-actor action canonicalization candidates", async () => {
+    const audience = createEntityId();
+    const self = createEntityId();
+    const alice = createEntityId();
+    const current = createStreamEntryId();
+    const audienceAction = actionRecord({
+      description: "Audience-scoped itinerary action",
+      audienceEntityId: audience,
+      updatedAt: 2_000,
+    });
+    const globalAction = actionRecord({
+      description: "Global itinerary action",
+      audienceEntityId: null,
+      updatedAt: 1_000,
+    });
+    const actorAction = actionRecord({
+      description: "Alice actor-scoped itinerary action",
+      actor: alice,
+      audienceEntityId: alice,
+      updatedAt: 3_000,
+    });
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_decision_patch",
+              name: DECISION_ARTIFACT_TOOL_NAME,
+              input: { operations: [] },
+            },
+          ],
+        },
+      ],
+    });
+    const coordinator = new TurnPhaseCoordinator({
+      config: DEFAULT_CONFIG,
+      decisionArtifactRepository: {
+        get: () => null,
+        upsert: () => null,
+      },
+      goalsRepository: {
+        list: () => [],
+        get: () => null,
+        updateStatus: () => ({}),
+      },
+      commitmentRepository: {
+        list: () => [],
+        get: () => null,
+      },
+      actionRepository: {
+        get: () => null,
+        update: () => undefined,
+        list: (filter: {
+          audienceEntityId?: typeof audience | typeof alice | null;
+          actor?: typeof alice;
+        }) => {
+          if ("audienceEntityId" in filter && filter.audienceEntityId === audience) {
+            return [audienceAction];
+          }
+
+          if ("audienceEntityId" in filter && filter.audienceEntityId === null) {
+            return [globalAction];
+          }
+
+          if (filter.actor === alice) {
+            return [actorAction];
+          }
+
+          return [];
+        },
+      },
+      openQuestionsRepository: {
+        get: () => null,
+        list: () => [],
+      },
+      entityRepository: {
+        resolve: () => self,
+      },
+      llmFactory: () => llmClient,
+      clock: {
+        now: () => 2_000,
+      },
+      tracer: {
+        enabled: true,
+        includePayloads: true,
+        emit: (event: string, data: Record<string, unknown>) => {
+          events.push({ event, data });
+        },
+      },
+    } as never);
+    const ledger = evidenceLedger([
+      ledgerEntry({ streamEntryId: current, streamIndex: 0, text: "itinerary closure turn" }),
+    ]);
+
+    await (
+      coordinator as unknown as {
+        compileDecisionArtifactForEvidenceLedger(input: {
+          input: Record<string, unknown>;
+          ledger: EvidenceLedger;
+          promptVisibleLedger: string;
+        }): Promise<DecisionArtifact | null>;
+      }
+    ).compileDecisionArtifactForEvidenceLedger({
+      input: {
+        audienceEntityId: audience,
+        isUserTurn: true,
+        currentUserEntry: {
+          id: current,
+          sender_entity_id: alice,
+        },
+        currentUserMessage: "Lock the itinerary.",
+        perception: {
+          mode: "problem_solving",
+        },
+        frameAnomaly: null,
+        closureLoopAssessment: null,
+        activeParticipants: [{ entityId: alice, displayName: "Alice" }],
+        turnId: "turn_candidate_coverage",
+      },
+      ledger,
+      promptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+    });
+
+    const requestPayload = JSON.parse(
+      String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
+    ) as {
+      canonicalization_candidates?: {
+        active_actions?: Array<{ id: string; text: string }>;
+      };
+    };
+
+    expect(requestPayload.canonicalization_candidates?.active_actions).toEqual([
+      { id: actorAction.id, text: "Alice actor-scoped itinerary action" },
+      { id: audienceAction.id, text: "Audience-scoped itinerary action" },
+      { id: globalAction.id, text: "Global itinerary action" },
+    ]);
+    expect(events).toContainEqual({
+      event: "decision_artifact_canonicalization_candidates",
+      data: {
+        turnId: "turn_candidate_coverage",
+        candidate_count_by_scope: {
+          audience: 1,
+          global: 1,
+          actor: 1,
+        },
+        candidate_count_total: 3,
+      },
+    });
   });
 });
 

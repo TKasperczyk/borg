@@ -10,6 +10,7 @@ import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   createActionId,
+  createDecisionArtifactEntryId,
   createEntityId,
   createStreamEntryId,
   type ActionId,
@@ -150,6 +151,51 @@ describe("ActionRepository", () => {
     expect(repository.list({ audienceEntityId: null }).map((record) => record.id)).toEqual([
       second.id,
     ]);
+  });
+
+  it("counts active and canonicalized action records", async () => {
+    const repository = await openFixture();
+
+    repository.add(
+      makeAction({
+        state: "considering",
+        considering_at: 1_000,
+      }),
+      { creationSource: "extractor" },
+    );
+    repository.add(
+      makeAction({
+        description: "Schedule Atlas rollout",
+        state: "scheduled",
+        scheduled_at: 1_000,
+      }),
+      { creationSource: "api" },
+    );
+    repository.add(
+      makeAction({
+        description: "Complete Atlas rollout",
+        state: "completed",
+        completed_at: 1_000,
+        canonicalized_by_artifact_entry_id: createDecisionArtifactEntryId(),
+      }),
+      { creationSource: "reflector" },
+    );
+    repository.add(
+      makeAction({
+        description: "Unknown Atlas action",
+        state: "unknown",
+        unknown_at: 1_000,
+      }),
+    );
+
+    expect(repository.countActive()).toBe(3);
+    expect(repository.countCanonicalized()).toBe(1);
+    expect(repository.getCreationCountsBySource()).toEqual({
+      extractor: 1,
+      reflector: 1,
+      api: 1,
+      unknown: 1,
+    });
   });
 
   it("finds action records by description vector similarity", async () => {

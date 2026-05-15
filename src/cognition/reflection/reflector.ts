@@ -343,9 +343,11 @@ function selectResolvedIntentUpdates(
   return selected;
 }
 
+type IntentUpdateActionState = "completed" | "not_done";
+
 function actionStateFromIntentStatus(
   status: ReflectionOutput["intent_updates"][number]["status"],
-): ActionState {
+): IntentUpdateActionState {
   return status === "completed" ? "completed" : "not_done";
 }
 
@@ -947,6 +949,11 @@ export class Reflector {
     const provenanceEpisodeIds = currentTurnEpisode === null ? [] : [currentTurnEpisode.id];
     const selectedGoalId = context.executiveFocus?.selected_goal?.id ?? null;
     const selectedOpenQuestionId = focusedReflectionOpenQuestionId(context, selectedGoalId);
+    const createdActionIdsBefore = effects.createdActionIds.length;
+    const byState: Record<"completed" | "not_done", number> = {
+      completed: 0,
+      not_done: 0,
+    };
 
     for (const update of updates) {
       const state = actionStateFromIntentStatus(update.status);
@@ -962,29 +969,33 @@ export class Reflector {
       }
 
       try {
-        repository.add({
-          id,
-          description: update.description.trim(),
-          actor,
-          audience_entity_id: context.audienceEntityId ?? null,
-          goal_id: selectedGoalId,
-          open_question_id: selectedOpenQuestionId,
-          state,
-          confidence: update.confidence,
-          provenance_episode_ids: provenanceEpisodeIds,
-          provenance_stream_entry_ids: sourceStreamIds,
-          created_at: nowMs,
-          updated_at: nowMs,
-          considering_at: null,
-          committed_at: null,
-          scheduled_at: null,
-          completed_at: null,
-          not_done_at: null,
-          unknown_at: null,
-          canonicalized_by_artifact_entry_id: null,
-          ...stateTimestampPatch(state, nowMs),
-        });
+        repository.add(
+          {
+            id,
+            description: update.description.trim(),
+            actor,
+            audience_entity_id: context.audienceEntityId ?? null,
+            goal_id: selectedGoalId,
+            open_question_id: selectedOpenQuestionId,
+            state,
+            confidence: update.confidence,
+            provenance_episode_ids: provenanceEpisodeIds,
+            provenance_stream_entry_ids: sourceStreamIds,
+            created_at: nowMs,
+            updated_at: nowMs,
+            considering_at: null,
+            committed_at: null,
+            scheduled_at: null,
+            completed_at: null,
+            not_done_at: null,
+            unknown_at: null,
+            canonicalized_by_artifact_entry_id: null,
+            ...stateTimestampPatch(state, nowMs),
+          },
+          { creationSource: "reflector" },
+        );
         effects.createdActionIds.push(id);
+        byState[state] += 1;
       } catch (error) {
         await appendInternalFailureEvent(streamWriter, "action_record_persist", error, {
           description: update.description,
@@ -992,6 +1003,34 @@ export class Reflector {
         });
       }
     }
+
+    this.emitReflectorIntentUpdatesPersisted(context, {
+      createdDurableActionsCount: effects.createdActionIds.length - createdActionIdsBefore,
+      byState,
+      workingMemoryPendingResolvedCount: updates.length,
+    });
+  }
+
+  private emitReflectorIntentUpdatesPersisted(
+    context: ReflectionContext,
+    input: {
+      createdDurableActionsCount: number;
+      byState: Record<"completed" | "not_done", number>;
+      workingMemoryPendingResolvedCount: number;
+    },
+  ): void {
+    const tracer = this.options.tracer;
+
+    if (tracer?.enabled !== true || context.turnId === undefined) {
+      return;
+    }
+
+    tracer.emit("reflector_intent_updates_persisted", {
+      turnId: context.turnId,
+      created_durable_actions_count: input.createdDurableActionsCount,
+      by_state: input.byState,
+      working_memory_pending_resolved_count: input.workingMemoryPendingResolvedCount,
+    });
   }
 
   private emitGroupIntentUpdateSuppressed(context: ReflectionContext, description: string): void {

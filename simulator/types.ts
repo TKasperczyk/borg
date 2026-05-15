@@ -1,4 +1,5 @@
 import type {
+  ActionRecordCreationSource,
   ActionState,
   GenerationSuppressionReason,
   RelationalSlotState,
@@ -46,6 +47,10 @@ export type MetricsRow = {
   action_record_count_total: number;
   action_record_count_by_state: Record<ActionState, number>;
   action_record_count_committed_to_do: number;
+  action_record_count_canonicalized: number;
+  action_record_count_active: number;
+  action_record_creation_source_per_turn: Record<ActionRecordCreationSource, number>;
+  action_record_creation_count_this_turn: number;
   recent_completed_action_count: number;
   commitment_count_active: number;
   commitment_count_superseded: number;

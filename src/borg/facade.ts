@@ -15,6 +15,24 @@ import type {
   BorgEpisodeSearchOptions,
 } from "./types.js";
 
+function createActionsFacade(deps: BorgDependencies): BorgFacades["actions"] {
+  return new Proxy(deps.actionRepository, {
+    get(target, property) {
+      if (property === "add") {
+        return (...args: Parameters<typeof target.add>) =>
+          target.add(args[0], {
+            ...args[1],
+            creationSource: "api",
+          });
+      }
+
+      const value = Reflect.get(target, property, target);
+
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 export function createBorgFacades(deps: BorgDependencies): BorgFacades {
   const resolveEpisodeAudienceEntityId = (
     options:
@@ -292,7 +310,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       history: (...args) => deps.moodRepository.history(...args),
       update: (...args) => deps.moodRepository.update(...args),
     },
-    actions: deps.actionRepository,
+    actions: createActionsFacade(deps),
     social: {
       getProfile: (entity) =>
         deps.socialRepository.getProfile(deps.entityRepository.resolve(entity)),
