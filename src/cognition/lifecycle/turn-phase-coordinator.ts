@@ -51,9 +51,9 @@ import {
 import type { TurnGoalPromotionService } from "../goals/turn-goal-promotion-service.js";
 import type { PerceptionGateway } from "../perception/gateway.js";
 import {
-  loadRecentParticipantStreamEntries,
   resolveActiveParticipants,
   resolveParticipantProfiles,
+  scanRecentParticipantStreamEntries,
   type ActiveParticipant,
   type ParticipantProfileContext,
 } from "../participants.js";
@@ -890,13 +890,34 @@ export class TurnPhaseCoordinator {
     const persistedPerceptionEntry = openingPersistence.persistedPerceptionEntry;
     workingMemory = openingPersistence.workingMemory;
     const activeParticipantLimit = this.options.config.generation.activeParticipantLimit;
+    const participantScan =
+      audienceEntity?.kind === "group"
+        ? scanRecentParticipantStreamEntries(
+            this.options.createStreamReader(sessionId),
+            activeParticipantLimit,
+          )
+        : null;
+
+    if (
+      participantScan !== null &&
+      participantScan.capReached !== null &&
+      participantScan.foundUniqueParticipants < activeParticipantLimit &&
+      this.options.tracer.enabled
+    ) {
+      this.options.tracer.emit("participant_scan_cap_reached", {
+        turnId,
+        cap: participantScan.capReached,
+        scanned_entries: participantScan.scannedEntries,
+        scanned_bytes: participantScan.scannedBytes,
+        found_unique_participants: participantScan.foundUniqueParticipants,
+        requested_limit: activeParticipantLimit,
+      });
+    }
+
     const activeParticipants = resolveActiveParticipants({
       audienceEntityId,
       senderEntityId: turnInput.senderEntityId ?? null,
-      streamEntries: loadRecentParticipantStreamEntries(
-        this.options.createStreamReader(sessionId),
-        activeParticipantLimit,
-      ),
+      streamEntries: participantScan?.entries ?? [],
       entityRepository: this.options.entityRepository,
       limit: activeParticipantLimit,
     });

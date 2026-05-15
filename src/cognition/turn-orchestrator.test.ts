@@ -31,6 +31,7 @@ import {
   type DeepPartial,
 } from "../offline/test-support.js";
 import type { Config } from "../config/index.js";
+import { StreamReader, StreamWriter } from "../stream/index.js";
 import {
   createEpisodeId,
   createGoalId,
@@ -1332,6 +1333,44 @@ describe("TurnOrchestrator participant social profiles", () => {
     }
   });
 
+  it("skips active participant scans for non-group audiences", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_250);
+    const llm = new FakeLLMClient({
+      responses: [createEmitAnswerResponse("Person turn ok."), createEmptyReflectionResponse()],
+    });
+    const scanSpy = vi.spyOn(StreamReader.prototype, "scanReverse");
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+
+      await expect(
+        borg.turn({
+          userMessage: "Person-scoped note.",
+          audience: "Alice",
+          stakes: "low",
+        }),
+      ).resolves.toMatchObject({ response: "Person turn ok." });
+
+      const participantScanCalls = scanSpy.mock.calls.filter(([options]) => {
+        return (
+          options?.maxEntries === 500 &&
+          options.maxBytes === 512 * 1024 &&
+          options.filter !== undefined
+        );
+      });
+
+      expect(participantScanCalls).toHaveLength(0);
+    } finally {
+      scanSpy.mockRestore();
+      await borg.close();
+    }
+  });
+
   it("allows autonomous group turns without a sender", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -1417,6 +1456,67 @@ describe("TurnOrchestrator participant social profiles", () => {
       expect(finalizerSystem).toContain("Bob (participant): trust=0.50");
       expect(finalizerSystem).not.toContain("Talking to:");
     } finally {
+      await borg.close();
+    }
+  });
+
+  it("traces participant scan caps for noisy group streams", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const clock = new ManualClock(1_700_000_000_000);
+    const llm = new FakeLLMClient({
+      responses: [createEmitAnswerResponse("Flights next."), createEmptyReflectionResponse()],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+      tracerPath: tracePath,
+    });
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock,
+    });
+
+    try {
+      borg.entities.resolve("Planning Room", {
+        kind: "group",
+      });
+      const alice = borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+
+      for (let index = 0; index < 600; index += 1) {
+        clock.advance(1);
+        await writer.append({
+          kind: "internal_event",
+          content: { event: "maintenance_audit", index },
+        });
+      }
+
+      writer.close();
+
+      await borg.turn({
+        userMessage: "I can handle flights.",
+        audience: "Planning Room",
+        senderEntityId: alice,
+      });
+
+      const traceEvents = readTraceEvents(tracePath);
+
+      expect(traceEvents).toContainEqual(
+        expect.objectContaining({
+          event: "participant_scan_cap_reached",
+          turnId: expect.any(String),
+          cap: "entries",
+          scanned_entries: 500,
+          found_unique_participants: 1,
+          requested_limit: 8,
+        }),
+      );
+      expect(
+        traceEvents.find((event) => event.event === "participant_scan_cap_reached")?.scanned_bytes,
+      ).toEqual(expect.any(Number));
+    } finally {
+      writer.close();
       await borg.close();
     }
   });

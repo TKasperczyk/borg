@@ -1,11 +1,19 @@
 import { DEFAULT_ACTIVE_PARTICIPANT_LIMIT } from "../config/index.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
 import type { SocialProfile, SocialRepository } from "../memory/social/index.js";
-import type { StreamEntry, StreamReader } from "../stream/index.js";
+import {
+  filterActiveStreamEntries,
+  isAbortedTurnMarker,
+  isQuarantinedUserEntryMarker,
+  type StreamEntry,
+  type StreamReader,
+  type StreamReverseScanResult,
+} from "../stream/index.js";
 import type { EntityId } from "../util/ids.js";
 import { resolveSpeakerDisplayName } from "./speaker-tags.js";
 
-const ACTIVE_PARTICIPANT_SCAN_MULTIPLIER = 4;
+const ACTIVE_PARTICIPANT_MAX_SCAN_ENTRIES = 500;
+const ACTIVE_PARTICIPANT_MAX_SCAN_BYTES = 512 * 1024;
 
 export type ActiveParticipantRole = "speaker" | "participant" | "audience";
 
@@ -32,6 +40,13 @@ type MutableParticipant = {
   role: ActiveParticipantRole;
 };
 
+export type RecentParticipantStreamEntryScanResult = StreamReverseScanResult & {
+  foundUniqueParticipants: number;
+};
+
+type ParticipantStreamReader = Pick<StreamReader, "tail"> &
+  Partial<Pick<StreamReader, "scanReverse">>;
+
 function appendParticipant(
   participants: MutableParticipant[],
   seen: Set<EntityId>,
@@ -49,15 +64,118 @@ function appendParticipant(
   });
 }
 
-export function activeParticipantStreamEntryScanLimit(participantLimit: number): number {
-  return Math.max(1, Math.floor(participantLimit)) * ACTIVE_PARTICIPANT_SCAN_MULTIPLIER;
+function normalizedParticipantLimit(participantLimit: number): number {
+  return Math.max(1, Math.floor(participantLimit));
+}
+
+export function activeParticipantStreamEntryScanLimit(_participantLimit: number): number {
+  return ACTIVE_PARTICIPANT_MAX_SCAN_ENTRIES;
+}
+
+function participantScanEntryFilter(entry: StreamEntry): boolean {
+  return (
+    entry.kind === "user_msg" || isAbortedTurnMarker(entry) || isQuarantinedUserEntryMarker(entry)
+  );
+}
+
+function activeParticipantUserEntries(entries: readonly StreamEntry[]): StreamEntry[] {
+  return filterActiveStreamEntries(entries).filter(
+    (entry) =>
+      entry.kind === "user_msg" &&
+      entry.sender_entity_id !== null &&
+      entry.sender_entity_id !== undefined,
+  );
+}
+
+function estimatedStreamEntryBytes(entry: StreamEntry): number {
+  return Buffer.byteLength(JSON.stringify(entry), "utf8");
+}
+
+function fallbackScanRecentParticipantStreamEntries(
+  reader: Pick<StreamReader, "tail">,
+  participantLimit: number,
+): RecentParticipantStreamEntryScanResult {
+  const limit = normalizedParticipantLimit(participantLimit);
+  const tailEntries = reader.tail(ACTIVE_PARTICIPANT_MAX_SCAN_ENTRIES);
+  const scanned: StreamEntry[] = [];
+  let scannedEntries = 0;
+  let scannedBytes = 0;
+  let capReached: RecentParticipantStreamEntryScanResult["capReached"] = null;
+
+  for (let index = tailEntries.length - 1; index >= 0; index -= 1) {
+    const entry = tailEntries[index];
+
+    if (entry === undefined) {
+      continue;
+    }
+
+    const entryBytes = estimatedStreamEntryBytes(entry);
+
+    if (scannedBytes + entryBytes > ACTIVE_PARTICIPANT_MAX_SCAN_BYTES) {
+      scannedBytes = ACTIVE_PARTICIPANT_MAX_SCAN_BYTES;
+      capReached = "bytes";
+      break;
+    }
+
+    scannedBytes += entryBytes;
+    scannedEntries += 1;
+
+    if (participantScanEntryFilter(entry)) {
+      scanned.push(entry);
+    }
+
+    if (recentSenderEntityIds(activeParticipantUserEntries(scanned), limit).length >= limit) {
+      break;
+    }
+
+    if (scannedEntries >= ACTIVE_PARTICIPANT_MAX_SCAN_ENTRIES) {
+      capReached = "entries";
+      break;
+    }
+  }
+
+  const entries = activeParticipantUserEntries(scanned.reverse());
+
+  return {
+    entries,
+    scannedEntries,
+    scannedBytes,
+    capReached,
+    foundUniqueParticipants: recentSenderEntityIds(entries, limit).length,
+  };
+}
+
+export function scanRecentParticipantStreamEntries(
+  reader: ParticipantStreamReader,
+  participantLimit: number = DEFAULT_ACTIVE_PARTICIPANT_LIMIT,
+): RecentParticipantStreamEntryScanResult {
+  const limit = normalizedParticipantLimit(participantLimit);
+
+  if (reader.scanReverse === undefined) {
+    return fallbackScanRecentParticipantStreamEntries(reader, limit);
+  }
+
+  const scan = reader.scanReverse({
+    maxEntries: ACTIVE_PARTICIPANT_MAX_SCAN_ENTRIES,
+    maxBytes: ACTIVE_PARTICIPANT_MAX_SCAN_BYTES,
+    filter: participantScanEntryFilter,
+    stop: (entries) =>
+      recentSenderEntityIds(activeParticipantUserEntries(entries), limit).length >= limit,
+  });
+  const entries = activeParticipantUserEntries(scan.entries);
+
+  return {
+    ...scan,
+    entries,
+    foundUniqueParticipants: recentSenderEntityIds(entries, limit).length,
+  };
 }
 
 export function loadRecentParticipantStreamEntries(
-  reader: Pick<StreamReader, "tail">,
+  reader: ParticipantStreamReader,
   participantLimit: number = DEFAULT_ACTIVE_PARTICIPANT_LIMIT,
 ): StreamEntry[] {
-  return reader.tail(activeParticipantStreamEntryScanLimit(participantLimit));
+  return scanRecentParticipantStreamEntries(reader, participantLimit).entries;
 }
 
 function recentSenderEntityIds(streamEntries: readonly StreamEntry[], limit: number): EntityId[] {

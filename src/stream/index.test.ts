@@ -331,6 +331,94 @@ describe("stream", () => {
     );
   });
 
+  it("scanReverse filters returned entries while counting all scanned entries", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+    });
+
+    try {
+      await writer.append({ kind: "user_msg", content: "alpha" });
+      await writer.append({ kind: "thought", content: { note: "scratch" } });
+      await writer.append({ kind: "user_msg", content: "beta" });
+      await writer.append({ kind: "agent_msg", content: "gamma" });
+    } finally {
+      writer.close();
+    }
+
+    const scan = new StreamReader({
+      dataDir: tempDir,
+    }).scanReverse({
+      filter: (entry) => entry.kind === "user_msg",
+      stop: (entries) => entries.length >= 2,
+    });
+
+    expect(scan.entries.map((entry) => entry.content)).toEqual(["alpha", "beta"]);
+    expect(scan.scannedEntries).toBe(4);
+    expect(scan.scannedBytes).toBeGreaterThan(0);
+    expect(scan.capReached).toBeNull();
+  });
+
+  it("scanReverse only evaluates stop after accepted entries", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+    });
+
+    try {
+      await writer.append({ kind: "user_msg", content: "accepted" });
+      await writer.append({ kind: "internal_event", content: { event: "ignored" } });
+    } finally {
+      writer.close();
+    }
+
+    const stopEntryLengths: number[] = [];
+    const scan = new StreamReader({
+      dataDir: tempDir,
+    }).scanReverse({
+      filter: (entry) => entry.kind === "user_msg",
+      stop: (entries) => {
+        stopEntryLengths.push(entries.length);
+        return true;
+      },
+    });
+
+    expect(scan.entries.map((entry) => entry.content)).toEqual(["accepted"]);
+    expect(scan.scannedEntries).toBe(2);
+    expect(stopEntryLengths).toEqual([1]);
+  });
+
+  it("scanReverse stops at the entry cap", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      clock: new ManualClock(100),
+    });
+
+    try {
+      await writer.append({ kind: "user_msg", content: "one" });
+      await writer.append({ kind: "user_msg", content: "two" });
+      await writer.append({ kind: "user_msg", content: "three" });
+    } finally {
+      writer.close();
+    }
+
+    const scan = new StreamReader({
+      dataDir: tempDir,
+    }).scanReverse({
+      maxEntries: 2,
+    });
+
+    expect(scan.entries.map((entry) => entry.content)).toEqual(["two", "three"]);
+    expect(scan.scannedEntries).toBe(2);
+    expect(scan.capReached).toBe("entries");
+  });
+
   it("parses entries that straddle the 64KB reverse-read chunk boundary", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

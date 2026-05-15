@@ -22,7 +22,13 @@ export {
   type StreamIterateOptions,
 } from "./types.js";
 export { getSessionStreamPath, getStreamDirectory } from "./path.js";
-export { StreamReader, type StreamReaderOptions } from "./stream-reader.js";
+export {
+  StreamReader,
+  type StreamReaderOptions,
+  type StreamReverseScanCap,
+  type StreamReverseScanOptions,
+  type StreamReverseScanResult,
+} from "./stream-reader.js";
 export { StreamWriter, type StreamWriterOptions } from "./stream-writer.js";
 export {
   StreamEntryIndexRepository,

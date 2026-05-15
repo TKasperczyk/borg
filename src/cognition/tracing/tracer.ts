@@ -11,6 +11,7 @@ export type TurnTraceEventName =
   | "perception_classifier_degraded"
   | "working_memory_degraded"
   | "recency_compiled"
+  | "participant_scan_cap_reached"
   | "retrieval_degraded"
   | "recall_expansion_clipped"
   | "retrieval_started"

@@ -15,8 +15,26 @@ import {
 
 type LoggerLike = Pick<Console, "error">;
 
+const DEFAULT_REVERSE_SCAN_MAX_ENTRIES = 500;
+const DEFAULT_REVERSE_SCAN_MAX_BYTES = 512 * 1024;
 const REVERSE_TAIL_CHUNK_SIZE_BYTES = 64 * 1024;
 const NEWLINE_BYTE = 0x0a;
+
+export type StreamReverseScanCap = "entries" | "bytes";
+
+export type StreamReverseScanOptions = {
+  maxEntries?: number;
+  maxBytes?: number;
+  filter?: (entry: StreamEntry) => boolean;
+  stop?: (entries: StreamEntry[]) => boolean;
+};
+
+export type StreamReverseScanResult = {
+  entries: StreamEntry[];
+  scannedEntries: number;
+  scannedBytes: number;
+  capReached: StreamReverseScanCap | null;
+};
 
 function reverseLineToString(
   lineSegment: Buffer,
@@ -285,26 +303,82 @@ export class StreamReader {
     }
   }
 
-  tail(n: number): StreamEntry[] {
-    if (n <= 0 || !existsSync(this.streamPath)) {
-      return [];
+  scanReverse(options: StreamReverseScanOptions = {}): StreamReverseScanResult {
+    const maxEntries =
+      options.maxEntries === undefined
+        ? DEFAULT_REVERSE_SCAN_MAX_ENTRIES
+        : Math.max(0, Math.floor(options.maxEntries));
+    const maxBytes =
+      options.maxBytes === undefined
+        ? DEFAULT_REVERSE_SCAN_MAX_BYTES
+        : Math.max(0, Math.floor(options.maxBytes));
+    const entries: StreamEntry[] = [];
+    let scannedEntries = 0;
+    let scannedBytes = 0;
+    let capReached: StreamReverseScanCap | null = null;
+
+    if (maxEntries <= 0) {
+      return { entries, scannedEntries, scannedBytes, capReached: "entries" };
+    }
+
+    if (maxBytes <= 0) {
+      return { entries, scannedEntries, scannedBytes, capReached: "bytes" };
+    }
+
+    if (!existsSync(this.streamPath)) {
+      return { entries, scannedEntries, scannedBytes, capReached };
     }
 
     const fileDescriptor = openSync(this.streamPath, "r");
-    const entries: StreamEntry[] = [];
 
     try {
       const fileSize = fstatSync(fileDescriptor).size;
 
       if (fileSize === 0) {
-        return [];
+        return { entries, scannedEntries, scannedBytes, capReached };
       }
 
       let position = fileSize;
       const carryChunks: Buffer[] = [];
       let carryLength = 0;
+      let shouldStop = false;
 
-      while (position > 0 && entries.length < n) {
+      const processLine = (lineSegment: Buffer): void => {
+        const lineLength = lineSegment.length + carryLength;
+
+        if (scannedBytes + lineLength > maxBytes) {
+          scannedBytes = maxBytes;
+          capReached = "bytes";
+          shouldStop = true;
+          return;
+        }
+
+        scannedBytes += lineLength;
+
+        const entry = this.parseLine(reverseLineToString(lineSegment, carryChunks, carryLength));
+
+        if (entry === undefined) {
+          return;
+        }
+
+        scannedEntries += 1;
+
+        if (options.filter === undefined || options.filter(entry)) {
+          entries.push(entry);
+
+          if (options.stop?.(entries) === true) {
+            shouldStop = true;
+            return;
+          }
+        }
+
+        if (scannedEntries >= maxEntries) {
+          capReached = "entries";
+          shouldStop = true;
+        }
+      };
+
+      while (position > 0 && !shouldStop) {
         const chunkSize = Math.min(REVERSE_TAIL_CHUNK_SIZE_BYTES, position);
         position -= chunkSize;
 
@@ -317,42 +391,54 @@ export class StreamReader {
         const chunkBytes = bytesRead === chunkSize ? chunk : chunk.subarray(0, bytesRead);
         let lineEnd = chunkBytes.length;
 
-        for (let index = chunkBytes.length - 1; index >= 0 && entries.length < n; index -= 1) {
+        for (let index = chunkBytes.length - 1; index >= 0 && !shouldStop; index -= 1) {
           if (chunkBytes[index] !== NEWLINE_BYTE) {
             continue;
           }
 
-          const entry = this.parseLine(
-            reverseLineToString(chunkBytes.subarray(index + 1, lineEnd), carryChunks, carryLength),
-          );
-
-          if (entry !== undefined) {
-            entries.push(entry);
-          }
+          processLine(chunkBytes.subarray(index + 1, lineEnd));
 
           carryChunks.length = 0;
           carryLength = 0;
           lineEnd = index;
         }
 
+        if (shouldStop) {
+          break;
+        }
+
         if (lineEnd > 0) {
           const remainder = chunkBytes.subarray(0, lineEnd);
           carryChunks.unshift(remainder);
           carryLength += remainder.length;
+
+          if (carryLength > maxBytes) {
+            scannedBytes = maxBytes;
+            capReached = "bytes";
+            shouldStop = true;
+          }
         }
       }
 
-      if (entries.length < n && carryLength > 0) {
-        const entry = this.parseLine(Buffer.concat(carryChunks, carryLength).toString("utf8"));
-
-        if (entry !== undefined) {
-          entries.push(entry);
-        }
+      if (!shouldStop && carryLength > 0) {
+        processLine(Buffer.alloc(0));
       }
     } finally {
       closeSync(fileDescriptor);
     }
 
-    return entries.reverse();
+    return {
+      entries: entries.reverse(),
+      scannedEntries,
+      scannedBytes,
+      capReached,
+    };
+  }
+
+  tail(n: number): StreamEntry[] {
+    return this.scanReverse({
+      maxEntries: n,
+      maxBytes: Number.MAX_SAFE_INTEGER,
+    }).entries;
   }
 }
