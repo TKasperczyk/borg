@@ -14,6 +14,7 @@ import {
 import {
   runOverseer,
   validateOverseerVerdict,
+  type FindingCarryoverCache,
   type OverseerAuditContext,
   type RunOverseerOptions,
 } from "./overseer.js";
@@ -164,7 +165,528 @@ function transportFor(entries: readonly StreamEntry[]) {
   } as unknown as RunOverseerOptions["transport"];
 }
 
+function auditContextFor(
+  entries: readonly StreamEntry[],
+  window: OverseerAuditContext["window"],
+): OverseerAuditContext {
+  return {
+    window,
+    chronology_rule: "Stream ts is authoritative for tests.",
+    assistant_emitted: entries
+      .filter((entry) => entry.kind === "agent_msg")
+      .map((entry) => ({
+        stream_entry_id: entry.id,
+        ts: entry.timestamp,
+        turn_counter: null,
+        turn_id: entry.turn_id ?? null,
+        session_id: entry.session_id,
+        text: entry.content as string,
+      })),
+    user_messages: entries
+      .filter((entry) => entry.kind === "user_msg")
+      .map((entry) => ({
+        stream_entry_id: entry.id,
+        ts: entry.timestamp,
+        turn_counter: null,
+        turn_id: entry.turn_id ?? null,
+        session_id: entry.session_id,
+        text: entry.content as string,
+        sender_entity_id: entry.sender_entity_id,
+        quarantined: false,
+        quarantine_reason: null,
+      })),
+    prompt_visible_memory: {
+      summary: "Test memory.",
+      note: "Test prompt-visible memory.",
+    },
+    snapshot_state: {
+      markdown: "Test memory.",
+      note: "Test snapshot state.",
+    },
+    metrics_window: [],
+  };
+}
+
 describe("simulator overseer", () => {
+  it("demotes same-impact carryover findings without changing the cached incident", () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Your birthday is June 3.",
+      timestamp: 10,
+    });
+    const cache: FindingCarryoverCache = new Map([
+      [
+        agentEntry.id,
+        {
+          status_impact: "concerning",
+          cached_at_turn: 40,
+          category: "J",
+          claim_status: "unsupported",
+        },
+      ],
+    ]);
+    const validated = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Birthday claim still lacks support."],
+        recommendation: "Do not double count.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            quoted_emitted_span: "Your birthday is June 3",
+            evidence_summary: "Birthday claim lacks support.",
+          },
+        ],
+      },
+      auditContextFor([agentEntry], { from_turn: 41, to_turn: 50 }),
+      cache,
+    );
+
+    expect(validated.status).toBe("healthy");
+    expect(validated.findings[0]).toMatchObject({
+      status_impact: "none",
+      carryover_demoted: true,
+      carryover_original_status_impact: "concerning",
+      carryover_cached_status_impact: "concerning",
+      carryover_cached_stream_entry_id: agentEntry.id,
+      carryover_cached_at_turn: 40,
+    });
+    expect(cache.get(agentEntry.id)).toMatchObject({
+      status_impact: "concerning",
+      cached_at_turn: 40,
+    });
+  });
+
+  it("passes through higher-impact carryover findings as escalations", () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Your birthday is June 3.",
+      timestamp: 11,
+    });
+    const cache: FindingCarryoverCache = new Map([
+      [
+        agentEntry.id,
+        {
+          status_impact: "concerning",
+          cached_at_turn: 40,
+          category: "J",
+          claim_status: "unsupported",
+        },
+      ],
+    ]);
+    const validated = validateOverseerVerdict(
+      {
+        status: "failing",
+        observations: ["Birthday claim escalated."],
+        recommendation: "Treat as serious.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "failing",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            quoted_emitted_span: "Your birthday is June 3",
+            evidence_summary: "The same unsupported claim became a failing pattern.",
+          },
+        ],
+      },
+      auditContextFor([agentEntry], { from_turn: 41, to_turn: 50 }),
+      cache,
+    );
+
+    expect(validated.status).toBe("failing");
+    expect(validated.findings[0]?.carryover_demoted).toBeUndefined();
+    expect(cache.get(agentEntry.id)).toMatchObject({
+      status_impact: "failing",
+      cached_at_turn: 50,
+    });
+  });
+
+  it("does not dedup findings without assistant stream IDs", () => {
+    const cache: FindingCarryoverCache = new Map([
+      [
+        "strm_cached",
+        {
+          status_impact: "concerning",
+          cached_at_turn: 40,
+          category: "I",
+          claim_status: "grounded",
+        },
+      ],
+    ]);
+    const validated = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Instrumentation concern in this metrics window."],
+        recommendation: "Inspect metrics.",
+        findings: [
+          {
+            category: "I",
+            claim_status: "grounded",
+            source_kind: "snapshot_memory",
+            status_impact: "concerning",
+            metrics_turn_counter: 50,
+            evidence_summary: "Retrieval latency grew in the current metrics window.",
+          },
+        ],
+      },
+      auditContextFor([], { from_turn: 41, to_turn: 50 }),
+      cache,
+    );
+
+    expect(validated.status).toBe("concerning");
+    expect(validated.findings[0]).toMatchObject({
+      status_impact: "concerning",
+    });
+    expect(validated.findings[0]?.carryover_demoted).toBeUndefined();
+    expect(cache.size).toBe(1);
+  });
+
+  it("dedups same-verdict duplicate stream IDs only against the pre-verdict cache snapshot", () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "I fabricated one detail and then another.",
+      timestamp: 12,
+    });
+    const cache: FindingCarryoverCache = new Map();
+    const validated = validateOverseerVerdict(
+      {
+        status: "failing",
+        observations: ["Two findings cite the same emitted entry."],
+        recommendation: "Cache the max impact after the checkpoint.",
+        findings: [
+          {
+            category: "H",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            evidence_summary: "The emitted entry contained a soft epistemic issue.",
+          },
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "failing",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            quoted_emitted_span: "I fabricated one detail",
+            evidence_summary: "The emitted entry contained a failing unsupported claim.",
+          },
+        ],
+      },
+      auditContextFor([agentEntry], { from_turn: 1, to_turn: 10 }),
+      cache,
+    );
+
+    expect(validated.status).toBe("failing");
+    expect(validated.findings.map((finding) => finding.carryover_demoted)).toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(cache.get(agentEntry.id)).toMatchObject({
+      status_impact: "failing",
+      cached_at_turn: 10,
+    });
+  });
+
+  it("recomputes status as healthy when all status-driving findings are carryover", () => {
+    const firstEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Your birthday is June 3.",
+      timestamp: 13,
+    });
+    const secondEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Your birthday is June 3 again.",
+      timestamp: 14,
+    });
+    const cache: FindingCarryoverCache = new Map([
+      [
+        firstEntry.id,
+        {
+          status_impact: "concerning",
+          cached_at_turn: 40,
+          category: "J",
+          claim_status: "unsupported",
+        },
+      ],
+      [
+        secondEntry.id,
+        {
+          status_impact: "concerning",
+          cached_at_turn: 40,
+          category: "J",
+          claim_status: "unsupported",
+        },
+      ],
+    ]);
+    const validated = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Both unsupported findings are prior incidents."],
+        recommendation: "Do not downgrade this checkpoint.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: firstEntry.id,
+            assistant_ts: firstEntry.timestamp,
+            quoted_emitted_span: "Your birthday is June 3",
+            evidence_summary: "Prior unsupported birthday claim.",
+          },
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: secondEntry.id,
+            assistant_ts: secondEntry.timestamp,
+            quoted_emitted_span: "Your birthday is June 3 again",
+            evidence_summary: "Prior unsupported birthday claim repeated.",
+          },
+        ],
+      },
+      auditContextFor([firstEntry, secondEntry], { from_turn: 41, to_turn: 50 }),
+      cache,
+    );
+
+    expect(validated.status).toBe("healthy");
+    expect(validated.findings.every((finding) => finding.carryover_demoted === true)).toBe(true);
+  });
+
+  it("backfills legacy status-driving findings from cited assistant source handles", () => {
+    const userEntry = streamEntry({
+      kind: "user_msg",
+      content: "The night 14 plan is too dense.",
+      timestamp: 20,
+    });
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "I should have fixed that density instead of flagging it.",
+      timestamp: 21,
+    });
+    const cache: FindingCarryoverCache = new Map();
+    const initial = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Legacy B finding cited source handles only in prose."],
+        recommendation: "Seed carryover from the assistant handle.",
+        findings: [
+          {
+            category: "B",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            evidence_summary: `Ben (${userEntry.id}) caught the issue; Borg acknowledged it in ${agentEntry.id}.`,
+          },
+        ],
+      },
+      auditContextFor([userEntry, agentEntry], { from_turn: 31, to_turn: 40 }),
+      cache,
+    );
+
+    expect(initial.findings[0]).toMatchObject({
+      assistant_stream_entry_id: agentEntry.id,
+      status_impact: "concerning",
+    });
+    expect(cache.get(agentEntry.id)).toMatchObject({
+      status_impact: "concerning",
+      cached_at_turn: 40,
+      category: "B",
+      claim_status: "grounded",
+    });
+
+    const repeated = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Same incident surfaced in the next window."],
+        recommendation: "Demote as carryover.",
+        findings: [
+          {
+            category: "B",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            evidence_summary: "Borg repeated the same density-fix incident.",
+          },
+        ],
+      },
+      auditContextFor([userEntry, agentEntry], { from_turn: 41, to_turn: 50 }),
+      cache,
+    );
+
+    expect(repeated.status).toBe("healthy");
+    expect(repeated.findings[0]).toMatchObject({
+      status_impact: "none",
+      carryover_demoted: true,
+      carryover_cached_stream_entry_id: agentEntry.id,
+      carryover_cached_at_turn: 40,
+    });
+  });
+
+  it("does not backfill legacy findings from user-only source handles", () => {
+    const firstUserEntry = streamEntry({
+      kind: "user_msg",
+      content: "I caught the issue.",
+      timestamp: 30,
+    });
+    const secondUserEntry = streamEntry({
+      kind: "user_msg",
+      content: "I confirmed the issue.",
+      timestamp: 31,
+    });
+    const cache: FindingCarryoverCache = new Map();
+    const initial = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Finding cites only user stream handles."],
+        recommendation: "Do not seed carryover from user messages.",
+        findings: [
+          {
+            category: "B",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            evidence_summary: `Ben ${firstUserEntry.id} and Alice ${secondUserEntry.id} caught the issue.`,
+          },
+        ],
+      },
+      auditContextFor([firstUserEntry, secondUserEntry], { from_turn: 31, to_turn: 40 }),
+      cache,
+    );
+
+    expect(initial.findings[0]?.assistant_stream_entry_id).toBeUndefined();
+    expect(cache.size).toBe(0);
+
+    const repeated = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["A later malformed finding cites the user handle directly."],
+        recommendation: "It should not be demoted.",
+        findings: [
+          {
+            category: "B",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: firstUserEntry.id,
+            evidence_summary: "The user handle was never a cached Borg output incident.",
+          },
+        ],
+      },
+      auditContextFor([firstUserEntry, secondUserEntry], { from_turn: 41, to_turn: 50 }),
+      cache,
+    );
+
+    expect(repeated.status).toBe("concerning");
+    expect(repeated.findings[0]?.carryover_demoted).toBeUndefined();
+  });
+
+  it("does not backfill legacy findings from unknown source handles", () => {
+    const cache: FindingCarryoverCache = new Map();
+    const validated = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Finding cites a stream handle outside the audit context."],
+        recommendation: "Do not seed unknown handles.",
+        findings: [
+          {
+            category: "B",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            evidence_summary: "Borg allegedly acknowledged the issue in strm_unknownlegacy123.",
+          },
+        ],
+      },
+      auditContextFor([], { from_turn: 31, to_turn: 40 }),
+      cache,
+    );
+
+    expect(validated.status).toBe("concerning");
+    expect(validated.findings[0]?.assistant_stream_entry_id).toBeUndefined();
+    expect(cache.size).toBe(0);
+  });
+
+  it("dedups same-stream findings across different categories", () => {
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "I should have fixed that density instead of flagging it.",
+      timestamp: 40,
+    });
+    const cache: FindingCarryoverCache = new Map();
+    const initial = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Category B finding seeded the incident."],
+        recommendation: "Cache by stream ID.",
+        findings: [
+          {
+            category: "B",
+            claim_status: "grounded",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            evidence_summary: "Borg acknowledged a density issue instead of preventing it.",
+          },
+        ],
+      },
+      auditContextFor([agentEntry], { from_turn: 31, to_turn: 40 }),
+      cache,
+    );
+
+    expect(initial.status).toBe("concerning");
+    expect(cache.get(agentEntry.id)).toMatchObject({
+      status_impact: "concerning",
+      category: "B",
+    });
+
+    const repeated = validateOverseerVerdict(
+      {
+        status: "concerning",
+        observations: ["Category J finding cites the same emitted entry."],
+        recommendation: "Dedup by stream ID alone.",
+        findings: [
+          {
+            category: "J",
+            claim_status: "unsupported",
+            source_kind: "emitted_output",
+            status_impact: "concerning",
+            assistant_stream_entry_id: agentEntry.id,
+            assistant_ts: agentEntry.timestamp,
+            quoted_emitted_span: "fixed that density",
+            evidence_summary: "Same emitted entry, different category.",
+          },
+        ],
+      },
+      auditContextFor([agentEntry], { from_turn: 41, to_turn: 50 }),
+      cache,
+    );
+
+    expect(repeated.status).toBe("healthy");
+    expect(repeated.findings[0]).toMatchObject({
+      category: "J",
+      status_impact: "none",
+      carryover_demoted: true,
+      carryover_cached_stream_entry_id: agentEntry.id,
+      carryover_cached_at_turn: 40,
+    });
+  });
+
   it("renders the full multi-session transcript instead of a recent tail", async () => {
     const firstSession = createSessionId();
     const secondSession = createSessionId();
@@ -982,6 +1504,63 @@ describe("simulator overseer", () => {
 
       expect(trace).toContain("overseer_finding_rejected");
       expect(trace).toContain("quoted_emitted_span");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits a trace event when carryover dedup demotes a finding", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-overseer-carryover-trace-"));
+    const tracePath = join(dir, "trace.jsonl");
+    const agentEntry = streamEntry({
+      kind: "agent_msg",
+      content: "Your birthday is June 3.",
+      timestamp: 70,
+    });
+    const transport = Object.assign(transportFor([agentEntry]), { tracePath });
+    const requests: CapturedRequest[] = [];
+    const carryoverCache: FindingCarryoverCache = new Map([
+      [
+        agentEntry.id,
+        {
+          status_impact: "concerning",
+          cached_at_turn: 40,
+          category: "J",
+          claim_status: "unsupported",
+        },
+      ],
+    ]);
+
+    try {
+      await runOverseer({
+        transport,
+        metricsPath: join(dir, "metrics.jsonl"),
+        turnCounter: 50,
+        totalTurns: 50,
+        carryoverCache,
+        client: createClient(requests, {
+          status: "concerning",
+          observations: ["J unsupported: birthday claim lacks support."],
+          recommendation: "Do not double count.",
+          findings: [
+            {
+              category: "J",
+              claim_status: "unsupported",
+              source_kind: "emitted_output",
+              status_impact: "concerning",
+              assistant_stream_entry_id: agentEntry.id,
+              assistant_ts: agentEntry.timestamp,
+              quoted_emitted_span: "Your birthday is June 3",
+              evidence_summary: "Birthday claim lacks support.",
+            },
+          ],
+        }),
+      });
+
+      const trace = readFileSync(tracePath, "utf8");
+
+      expect(trace).toContain("overseer_finding_carryover_demoted");
+      expect(trace).toContain('"cached_at_turn":40');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

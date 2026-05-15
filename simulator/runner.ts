@@ -28,7 +28,7 @@ import {
   type PersonaRoleBleedDetection,
   type PriorBorgTurn,
 } from "./persona.js";
-import { runOverseer, type RunOverseerOptions } from "./overseer.js";
+import { runOverseer, type FindingCarryoverCache, type RunOverseerOptions } from "./overseer.js";
 import type {
   MetricsRow,
   OverseerVerdict,
@@ -593,6 +593,7 @@ export class SimulatorRunner {
       (this.options.mock === true ? undefined : new AnthropicLLMClient({ env: this.options.env }));
     const overseerRunner = this.options.overseerRunner ?? runOverseer;
     const overseerCheckpoints: SimulatorRunReport["overseerCheckpoints"] = [];
+    const overseerFindingCarryoverCache: FindingCarryoverCache = new Map();
     let priorBorgTurn: PriorBorgTurn = { kind: "new_session" };
     let finalMetrics: MetricsRow | undefined;
     let resultState: SimulatorRunReport["resultState"] = "completed";
@@ -682,6 +683,7 @@ export class SimulatorRunner {
             memorySnapshotMarkdown,
             mock: this.options.mock,
             env: this.options.env,
+            carryoverCache: overseerFindingCarryoverCache,
           }),
         );
         lastOverseerCheckpointTurn = turnCounter;
@@ -1018,6 +1020,26 @@ function reportFindingLine(
   ].join(" ");
 }
 
+function isCarryoverDemotedFinding(finding: OverseerVerdict["findings"][number]): boolean {
+  return finding.carryover_demoted === true;
+}
+
+function reportCarryoverFindingLine(finding: OverseerVerdict["findings"][number]): string {
+  return [
+    `[${finding.category} ${finding.claim_status}]`,
+    `source=${finding.source_kind}`,
+    `original_impact=${finding.carryover_original_status_impact ?? "n/a"}`,
+    `cached_impact=${finding.carryover_cached_status_impact ?? "n/a"}`,
+    `carryover from turn ${reportValue(finding.carryover_cached_at_turn)}`,
+    `stream=${reportValue(finding.assistant_stream_entry_id)}`,
+    `ts=${reportValue(finding.assistant_ts)}`,
+    `turn=${reportValue(finding.metrics_turn_counter)}`,
+    `temporal=${finding.temporal_direction ?? "n/a"}`,
+    `quote="${reportQuotedSpan(finding.quoted_emitted_span)}"`,
+    `evidence=${finding.evidence_summary}`,
+  ].join(" ");
+}
+
 export function formatSimulatorReport(report: SimulatorRunReport): string {
   const participantLine =
     report.personas.length <= 1
@@ -1078,7 +1100,7 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
       );
       if (checkpoint.raw_verdict.status !== checkpoint.status) {
         lines.push(`  - Original LLM status: ${checkpoint.raw_verdict.status}`);
-        lines.push("  - Original LLM observations (some findings rejected):");
+        lines.push("  - Original LLM observations (validator adjusted findings):");
         for (const observation of checkpoint.observations) {
           lines.push(`    - ${observation}`);
         }
@@ -1087,10 +1109,21 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
           lines.push(`  - ${observation}`);
         }
       }
-      if (checkpoint.findings.length > 0) {
+      const activeFindings = checkpoint.findings.filter(
+        (finding) => !isCarryoverDemotedFinding(finding),
+      );
+      const carryoverFindings = checkpoint.findings.filter(isCarryoverDemotedFinding);
+
+      if (activeFindings.length > 0) {
         lines.push("  - Validated findings:");
-        for (const finding of checkpoint.findings) {
+        for (const finding of activeFindings) {
           lines.push(`    - ${reportFindingLine(finding)}`);
+        }
+      }
+      if (carryoverFindings.length > 0) {
+        lines.push("  - Carryover from earlier checkpoints:");
+        for (const finding of carryoverFindings) {
+          lines.push(`    - ${reportCarryoverFindingLine(finding)}`);
         }
       }
       if (checkpoint.rejected_findings.length > 0) {

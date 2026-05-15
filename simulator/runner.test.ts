@@ -22,9 +22,14 @@ import {
 import { BorgTransport, type ChatWithBorgResult } from "../assessor/borg-transport.js";
 import { readTraceEvents } from "../assessor/trace-reader.js";
 import { createSimulatorScenario, formatSimulatorReport, runSimulation } from "./runner.js";
+import {
+  validateOverseerVerdict,
+  type FindingCarryoverCache,
+  type OverseerAuditContext,
+} from "./overseer.js";
 import type { PersonaSession, PriorBorgTurn } from "./persona.js";
 import { tomPersona } from "./personas/tom.js";
-import type { OverseerVerdict } from "./types.js";
+import type { MetricsRow, OverseerVerdict, RawOverseerVerdict } from "./types.js";
 
 const tempDirs: string[] = [];
 
@@ -275,7 +280,161 @@ function healthyOverseerVerdict(
   };
 }
 
+function emptyOverseerAuditContext(turnCounter: number): OverseerAuditContext {
+  return {
+    window: {
+      from_turn: Math.max(1, turnCounter - 9),
+      to_turn: turnCounter,
+    },
+    chronology_rule: "Stream ts is authoritative for tests.",
+    assistant_emitted: [],
+    user_messages: [],
+    prompt_visible_memory: {
+      summary: "Test memory.",
+      note: "Test prompt-visible memory.",
+    },
+    snapshot_state: {
+      markdown: "Test memory.",
+      note: "Test snapshot state.",
+    },
+    metrics_window: [],
+  };
+}
+
+function validateRunnerOverseerVerdict(input: {
+  turnCounter: number;
+  rawVerdict: RawOverseerVerdict;
+  carryoverCache: FindingCarryoverCache;
+}): OverseerVerdict {
+  const validated = validateOverseerVerdict(
+    input.rawVerdict,
+    emptyOverseerAuditContext(input.turnCounter),
+    input.carryoverCache,
+  );
+
+  return {
+    ts: Date.now(),
+    turn_counter: input.turnCounter,
+    status: validated.status,
+    observations: input.rawVerdict.observations,
+    recommendation: input.rawVerdict.recommendation,
+    findings: validated.findings,
+    rejected_findings: validated.rejected_findings,
+    raw_verdict: input.rawVerdict,
+  };
+}
+
+function metricsRow(turnCounter: number): MetricsRow {
+  return {
+    event: "turn_metrics",
+    ts: turnCounter,
+    turn_counter: turnCounter,
+    turnId: `turn-${turnCounter}`,
+    transport_chat_attempts: 1,
+    episode_count: 0,
+    semantic_node_count: 0,
+    semantic_edge_count: 0,
+    semantic_nodes_added_since_last_check: 0,
+    semantic_edges_added_since_last_check: 0,
+    open_question_count: 0,
+    active_goal_count: 0,
+    generation_suppression_count: 0,
+    mood_valence: 0,
+    mood_arousal: 0,
+    retrieval_latency_ms: null,
+    deliberation_latency_ms: null,
+    borg_input_tokens: 0,
+    borg_output_tokens: 0,
+    open_question_resolved_count: 0,
+    action_record_count_total: 0,
+    action_record_count_by_state: zeroCounts(ACTION_STATES),
+    action_record_count_committed_to_do: 0,
+    recent_completed_action_count: 0,
+    commitment_count_active: 0,
+    commitment_count_superseded: 0,
+    commitment_count_revoked: 0,
+    commitment_count_expired: 0,
+    commitment_count_canonicalized: 0,
+    pending_action_count: 0,
+    pending_action_merge_count: 0,
+    relational_slot_count_by_state: zeroCounts(RELATIONAL_SLOT_STATES),
+    review_queue_open_count_by_type: {
+      contradiction: 0,
+      duplicate: 0,
+      new_insight: 0,
+      misattribution: 0,
+      temporal_drift: 0,
+      identity_inconsistency: 0,
+      correction: 0,
+      belief_revision: 0,
+      skill_split: 0,
+    },
+    frame_anomaly_classifier_calls: 0,
+    frame_anomaly_classified_normal_count: 0,
+    frame_anomaly_actual_anomaly_count: 0,
+    frame_anomaly_degraded_count: 0,
+    frame_anomaly_degraded_fallback_match_count: 0,
+    quarantined_user_entry_count: 0,
+    early_extractors_skipped_frame_anomaly_count: 0,
+    overseer_due_on_suppressed_turn: false,
+  };
+}
+
 describe("SimulatorRunner", () => {
+  it("formats carryover findings in a separate audit subsection", () => {
+    const raw_verdict: RawOverseerVerdict = {
+      status: "concerning",
+      observations: ["Repeated prior incident."],
+      recommendation: "Do not double count.",
+      findings: [],
+    };
+    const report = formatSimulatorReport({
+      runId: "sim-runner-format-carryover-test",
+      persona: tomPersona.key,
+      personas: [tomPersona.key],
+      audience: "Tom",
+      totalTurns: 20,
+      resultState: "completed",
+      sessions: [],
+      suppressionEvents: [],
+      overseerCheckpoints: [
+        {
+          ts: Date.now(),
+          turn_counter: 20,
+          status: "healthy",
+          observations: raw_verdict.observations,
+          recommendation: raw_verdict.recommendation,
+          findings: [
+            {
+              category: "H",
+              claim_status: "grounded",
+              source_kind: "emitted_output",
+              status_impact: "none",
+              assistant_stream_entry_id: "strm_carryover_report",
+              assistant_ts: 12,
+              evidence_summary: "Prior hedged unsupported claim.",
+              carryover_demoted: true,
+              carryover_original_status_impact: "concerning",
+              carryover_cached_status_impact: "concerning",
+              carryover_cached_stream_entry_id: "strm_carryover_report",
+              carryover_cached_at_turn: 10,
+            },
+          ],
+          rejected_findings: [],
+          raw_verdict,
+        },
+      ],
+      turnFailures: [],
+      finalMetrics: metricsRow(20),
+      durationMs: 1,
+    });
+
+    expect(report).toContain("Carryover from earlier checkpoints");
+    expect(report).toContain("original_impact=concerning");
+    expect(report).toContain("carryover from turn 10");
+    expect(report).not.toContain("Validated findings");
+  });
+
   it("builds emission baseline config overrides", () => {
     const scenario = createSimulatorScenario(tomPersona, 100, {
       emissionBaseline: true,
@@ -573,6 +732,114 @@ describe("SimulatorRunner", () => {
     ]);
     expect(metricsRows).toHaveLength(20);
     expect(metricsRows.at(-1)?.turn_counter).toBe(20);
+  });
+
+  it("carries overseer finding dedup state across checkpoints", async () => {
+    const dir = tempDir();
+    const streamId = "strm_runner_carryover";
+    spyMaintenanceTick();
+
+    const report = await runSimulation({
+      runId: "sim-runner-carryover-dedup-test",
+      persona: tomPersona,
+      totalTurns: 20,
+      checkEvery: 10,
+      metricsPath: join(dir, "metrics.jsonl"),
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+      overseerRunner: async ({ turnCounter, carryoverCache }) => {
+        if (carryoverCache === undefined) {
+          throw new Error("missing carryover cache");
+        }
+
+        return validateRunnerOverseerVerdict({
+          turnCounter,
+          carryoverCache,
+          rawVerdict: {
+            status: "concerning",
+            observations: ["Same incident was surfaced."],
+            recommendation: "Dedup repeated finding.",
+            findings: [
+              {
+                category: "H",
+                claim_status: "grounded",
+                source_kind: "emitted_output",
+                status_impact: "concerning",
+                assistant_stream_entry_id: streamId,
+                assistant_ts: turnCounter,
+                evidence_summary: "Borg hedged around a specific unsupported claim.",
+              },
+            ],
+          },
+        });
+      },
+    });
+
+    expect(report.overseerCheckpoints).toHaveLength(2);
+    expect(report.overseerCheckpoints[0]?.status).toBe("concerning");
+    expect(report.overseerCheckpoints[1]?.status).toBe("healthy");
+    expect(report.overseerCheckpoints[1]?.findings[0]).toMatchObject({
+      status_impact: "none",
+      carryover_demoted: true,
+      carryover_original_status_impact: "concerning",
+      carryover_cached_status_impact: "concerning",
+      carryover_cached_stream_entry_id: streamId,
+      carryover_cached_at_turn: 10,
+    });
+  });
+
+  it("keeps higher-impact overseer findings as cross-checkpoint escalations", async () => {
+    const dir = tempDir();
+    const streamId = "strm_runner_escalation";
+    spyMaintenanceTick();
+
+    const report = await runSimulation({
+      runId: "sim-runner-carryover-escalation-test",
+      persona: tomPersona,
+      totalTurns: 20,
+      checkEvery: 10,
+      metricsPath: join(dir, "metrics.jsonl"),
+      dataDir: join(dir, "data"),
+      tracePath: join(dir, "trace.jsonl"),
+      mock: true,
+      overseerRunner: async ({ turnCounter, carryoverCache }) => {
+        if (carryoverCache === undefined) {
+          throw new Error("missing carryover cache");
+        }
+
+        const statusImpact = turnCounter === 10 ? "concerning" : "failing";
+
+        return validateRunnerOverseerVerdict({
+          turnCounter,
+          carryoverCache,
+          rawVerdict: {
+            status: statusImpact,
+            observations: ["Same incident escalated."],
+            recommendation: "Treat higher impact as real escalation.",
+            findings: [
+              {
+                category: "H",
+                claim_status: "grounded",
+                source_kind: "emitted_output",
+                status_impact: statusImpact,
+                assistant_stream_entry_id: streamId,
+                assistant_ts: turnCounter,
+                evidence_summary: "Borg hedged around a specific unsupported claim.",
+              },
+            ],
+          },
+        });
+      },
+    });
+
+    expect(report.overseerCheckpoints).toHaveLength(2);
+    expect(report.overseerCheckpoints[0]?.status).toBe("concerning");
+    expect(report.overseerCheckpoints[1]?.status).toBe("failing");
+    expect(report.overseerCheckpoints[1]?.findings[0]).toMatchObject({
+      status_impact: "failing",
+    });
+    expect(report.overseerCheckpoints[1]?.findings[0]?.carryover_demoted).toBeUndefined();
   });
 
   it("runs a final overseer checkpoint for trailing partial audit windows", async () => {

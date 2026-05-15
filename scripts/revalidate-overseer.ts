@@ -5,7 +5,11 @@ import { pathToFileURL } from "node:url";
 import { readOverseerAuditTranscript } from "../assessor/borg-transport.ts";
 import type { AuditTranscriptEntry } from "../assessor/borg-transport.ts";
 import type { StreamEntry } from "../src/stream/index.ts";
-import { validateOverseerVerdict, type OverseerAuditContext } from "../simulator/overseer.ts";
+import {
+  validateOverseerVerdict,
+  type FindingCarryoverCache,
+  type OverseerAuditContext,
+} from "../simulator/overseer.ts";
 import type { OverseerVerdict, RawOverseerVerdict } from "../simulator/types.ts";
 
 type LegacyCheckpoint = {
@@ -466,17 +470,57 @@ function readPersistedAuditRecords(path: string): PersistedAuditRecord[] {
     .map((line) => JSON.parse(line) as PersistedAuditRecord);
 }
 
-function renderStatusTable(records: readonly PersistedAuditRecord[]): void {
-  console.log("| Turn | Original status | Persisted validated | Fresh revalidation |");
-  console.log("| ---: | --- | --- | --- |");
+function persistedValidationSubset(record: PersistedAuditRecord): {
+  status: string;
+  findings: unknown[];
+  rejected_findings: unknown[];
+} | null {
+  if (record.validated_verdict === undefined) {
+    return null;
+  }
 
-  for (const record of records) {
-    const fresh = validateOverseerVerdict(record.raw_verdict, record.audit_context);
+  return {
+    status: record.validated_verdict.status,
+    findings: record.validated_verdict.findings,
+    rejected_findings: record.validated_verdict.rejected_findings,
+  };
+}
+
+function validationMatches(
+  record: PersistedAuditRecord,
+  fresh: ReturnType<typeof validateOverseerVerdict>,
+): boolean {
+  const persisted = persistedValidationSubset(record);
+
+  if (persisted === null) {
+    return false;
+  }
+
+  return JSON.stringify(persisted) === JSON.stringify(fresh);
+}
+
+function renderStatusTable(records: readonly PersistedAuditRecord[]): void {
+  const carryoverCache: FindingCarryoverCache = new Map();
+  const orderedRecords = [...records].sort((left, right) => left.turn_counter - right.turn_counter);
+
+  console.log("| Turn | Original status | Persisted validated | Fresh revalidation | Notes |");
+  console.log("| ---: | --- | --- | --- | --- |");
+
+  for (const record of orderedRecords) {
+    const fresh = validateOverseerVerdict(record.raw_verdict, record.audit_context, carryoverCache);
     const persistedStatus = record.validated_verdict?.status ?? "n/a";
-    const drift = persistedStatus === fresh.status ? "" : " drift";
+    const demotedCount = fresh.findings.filter(
+      (finding) => finding.carryover_demoted === true,
+    ).length;
+    const notes = [
+      validationMatches(record, fresh) ? "" : "drift",
+      demotedCount > 0 ? `carryover_demoted=${demotedCount}` : "",
+    ]
+      .filter((note) => note.length > 0)
+      .join(", ");
 
     console.log(
-      `| ${record.turn_counter} | ${record.raw_verdict.status} | ${persistedStatus} | ${fresh.status}${drift} |`,
+      `| ${record.turn_counter} | ${record.raw_verdict.status} | ${persistedStatus} | ${fresh.status} | ${notes} |`,
     );
   }
 }

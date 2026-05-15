@@ -110,6 +110,11 @@ export type OverseerFinding = {
   cited_evidence_ts?: number[];
   temporal_direction?: OverseerTemporalDirection;
   evidence_summary: string;
+  carryover_demoted?: boolean;
+  carryover_original_status_impact?: OverseerFindingStatusImpact;
+  carryover_cached_status_impact?: OverseerFindingStatusImpact;
+  carryover_cached_stream_entry_id?: string;
+  carryover_cached_at_turn?: number;
 };
 
 export type RejectedOverseerFinding = OverseerFinding & {
