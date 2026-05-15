@@ -340,6 +340,7 @@ describe("TurnTracer", () => {
       "llm_call_response",
       "retrieval_degraded",
       "retrieval_completed",
+      "contradiction_routing_classified",
       "path_selected",
       "llm_call_started",
       "llm_call_response",

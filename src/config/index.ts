@@ -133,6 +133,19 @@ const cognitionConfigSchema = z
     thinking: cognitionThinkingConfigSchema,
   })
   .prefault({});
+const contradictionRoutingConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    cooldownTurns: z.number().int().nonnegative().default(5),
+  })
+  .strict()
+  .prefault({});
+const deliberationConfigSchema = z
+  .object({
+    contradictionRouting: contradictionRoutingConfigSchema,
+  })
+  .strict()
+  .prefault({});
 const postGenerationGuardsConfigSchema = z
   .object({
     commitment: postGenerationGuardConfigSchema,
@@ -215,6 +228,7 @@ const configBaseSchema = z.object({
         .prefault({}),
     })
     .prefault({}),
+  deliberation: deliberationConfigSchema,
   generation: z
     .object({
       discourseStateHardCapTurns: z.number().int().positive().default(50),
@@ -725,6 +739,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["retrieval", "semantic", "underReviewMultiplier"],
     readOptionalEnvUnitInterval(env, "BORG_RETRIEVAL_SEMANTIC_UNDER_REVIEW_MULTIPLIER"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "contradictionRouting", "enabled"],
+    readOptionalEnvBoolean(env, "BORG_DELIBERATION_CONTRADICTION_ROUTING_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "contradictionRouting", "cooldownTurns"],
+    readOptionalEnvNumber(env, "BORG_DELIBERATION_CONTRADICTION_ROUTING_COOLDOWN_TURNS"),
   );
   setConfigOverride(
     overrides,

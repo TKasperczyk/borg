@@ -34,7 +34,11 @@ import {
   VOICE_AND_POSTURE_SECTION,
 } from "../constants.js";
 import type { DeliberationContext, SelfSnapshot } from "../types.js";
-import { summarizeRetrievedEvidence, summarizeRetrievalConfidence } from "./retrieval.js";
+import {
+  summarizeContradictionSignal,
+  summarizeRetrievedEvidence,
+  summarizeRetrievalConfidence,
+} from "./retrieval.js";
 import {
   renderTaggedPromptBlock,
   renderTaggedPromptSection,
@@ -141,6 +145,15 @@ function buildBaseSystemPromptSections(
     {
       tag: "borg_retrieval_confidence",
       content: summarizeRetrievalConfidence(context.retrievalConfidence ?? null),
+    },
+    {
+      tag: "contradiction_signal",
+      content: summarizeContradictionSignal(
+        context.contradictionRouting ?? null,
+        context.contradictionRoutingTier ?? null,
+        context.retrievalConfidence ?? null,
+        context.deliberationPath ?? null,
+      ),
     },
     {
       tag: "borg_open_questions",

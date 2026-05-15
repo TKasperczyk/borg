@@ -170,6 +170,8 @@ describe("buildContradictionRoutingOverride", () => {
       openQuestionsRepository: openQuestionsById([
         contradictionOpenQuestion("oq_aaaaaaaaaaaaaaaa", {
           audience_entity_id: audienceEntityId,
+          related_semantic_node_ids: ["sem_aaaaaaaaaaaaaaaa", "sem_bbbbbbbbbbbbbbbb"],
+          related_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
         }),
       ]),
       evidenceLedger: ledgerWithOpenQuestionIds(["oq_aaaaaaaaaaaaaaaa"]),
@@ -180,6 +182,7 @@ describe("buildContradictionRoutingOverride", () => {
       reason: "open_question_contradiction",
       forcedBy: "open_question_contradiction",
       oqIds: ["oq_aaaaaaaaaaaaaaaa"],
+      contradictionFingerprints: ["open_question:oq_aaaaaaaaaaaaaaaa"],
       audienceEntityId,
       isOperational: true,
       openQuestions: [
@@ -188,6 +191,57 @@ describe("buildContradictionRoutingOverride", () => {
         }),
       ],
     });
+  });
+
+  it("does not build the v55 P2 override when contradiction routing is disabled", () => {
+    const override = buildContradictionRoutingOverride({
+      enabled: false,
+      isUserTurn: true,
+      perception: { isOperational: true },
+      audienceEntityId: null,
+      openQuestionsRepository: openQuestionsById([contradictionOpenQuestion()]),
+      evidenceLedger: ledgerWithOpenQuestionIds(["oq_aaaaaaaaaaaaaaaa"]),
+    });
+
+    expect(override).toBeNull();
+  });
+
+  it("keeps the OQ cooldown fingerprint stable when linked evidence grows", () => {
+    const firstOverride = buildContradictionRoutingOverride({
+      isUserTurn: true,
+      perception: { isOperational: true },
+      audienceEntityId: null,
+      openQuestionsRepository: openQuestionsById([
+        contradictionOpenQuestion("oq_aaaaaaaaaaaaaaaa", {
+          related_semantic_node_ids: ["sem_aaaaaaaaaaaaaaaa"],
+          related_episode_ids: ["ep_aaaaaaaaaaaaaaaa"],
+        }),
+      ]),
+      evidenceLedger: ledgerWithOpenQuestionIds(["oq_aaaaaaaaaaaaaaaa"]),
+    });
+    const secondOverride = buildContradictionRoutingOverride({
+      isUserTurn: true,
+      perception: { isOperational: true },
+      audienceEntityId: null,
+      openQuestionsRepository: openQuestionsById([
+        contradictionOpenQuestion("oq_aaaaaaaaaaaaaaaa", {
+          related_semantic_node_ids: ["sem_aaaaaaaaaaaaaaaa", "sem_bbbbbbbbbbbbbbbb"],
+          related_episode_ids: [
+            "ep_aaaaaaaaaaaaaaaa",
+            "ep_bbbbbbbbbbbbbbbb",
+            "ep_cccccccccccccccc",
+          ],
+        }),
+      ]),
+      evidenceLedger: ledgerWithOpenQuestionIds(["oq_aaaaaaaaaaaaaaaa"]),
+    });
+
+    expect(firstOverride?.contradictionFingerprints).toEqual([
+      "open_question:oq_aaaaaaaaaaaaaaaa",
+    ]);
+    expect(secondOverride?.contradictionFingerprints).toEqual(
+      firstOverride?.contradictionFingerprints,
+    );
   });
 
   it("does not force S2 for operational turns without surfaced contradiction OQs", () => {

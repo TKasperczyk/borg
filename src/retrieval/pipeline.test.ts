@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -1170,6 +1171,19 @@ describe("retrieval pipeline", () => {
     expect(historical.contradiction_present).toBe(true);
     expect(historical.semantic.contradiction_hits[0]?.edgePath[0]?.id).toBe(edge.id);
     expect(historical.confidence.contradictionPresent).toBe(true);
+    expect(historical.contradictionRouting.contradictions).toEqual([
+      expect.objectContaining({
+        edgeId: edge.id,
+        nodeIds: [atlas.id, contradiction.id].sort(),
+        sourceEpisodeIds: ["ep_aaaaaaaaaaaaaaaa"],
+        validUntil: 1_000_500,
+        sessionScope: "unknown",
+        linkedOpenQuestionIds: [],
+        fingerprint: createHash("sha1")
+          .update([`edge:${edge.id}`, `node:${atlas.id}`, `node:${contradiction.id}`].sort().join("|"))
+          .digest("hex"),
+      }),
+    ]);
   });
 
   it("attaches relevant open questions when requested", async () => {

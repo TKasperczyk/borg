@@ -95,7 +95,12 @@ import {
 } from "./semantic-retrieval.js";
 import { resolveTimeSignals } from "./time-signals.js";
 
-export type { RetrievedContext } from "./context-assembly.js";
+export type {
+  RetrievedContext,
+  RetrievedContradictionRouting,
+  RetrievedContradictionRoutingItem,
+  RetrievedContradictionSessionScope,
+} from "./context-assembly.js";
 export type { RetrievedEpisode } from "./scoring.js";
 export type {
   RetrievedSemantic,

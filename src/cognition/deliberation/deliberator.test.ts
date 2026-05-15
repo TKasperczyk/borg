@@ -86,6 +86,9 @@ function makeRetrievedContext(overrides: Partial<RetrievedContext> = {}): Retrie
     evidence: [],
     recall_intents: [],
     contradiction_present: false,
+    contradictionRouting: {
+      contradictions: [],
+    },
     confidence: makeRetrievalConfidence(0, { sampleSize: 0 }),
     ...overrides,
   };
@@ -826,6 +829,184 @@ describe("deliberator", () => {
         }),
       }),
     );
+  });
+
+  it("ignores manually supplied contradiction overrides when routing is disabled", async () => {
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse({
+          id: "toolu_emit_disabled_override_answer",
+          name: "EmitAnswer",
+          input: { text: "Direct path with override disabled." },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, { tracer });
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnId: "turn-disabled-contradiction-routing",
+        contradictionPresent: true,
+        retrievalConfidence: makeRetrievalConfidence(0.9, { contradictionPresent: true }),
+        contradictionRoutingConfig: {
+          enabled: false,
+          cooldownTurns: 5,
+        },
+        routingOverride: {
+          forceSystem2: true,
+          reason: "open_question_contradiction",
+          forcedBy: "open_question_contradiction",
+          oqIds: ["oq_aaaaaaaaaaaaaaaa"],
+          contradictionFingerprints: ["open_question:oq_aaaaaaaaaaaaaaaa"],
+          openQuestions: [
+            {
+              id: "oq_aaaaaaaaaaaaaaaa" as never,
+              question: "Which itinerary claim is current?",
+              source: "contradiction" as const,
+              localHandle: "contradiction_1",
+            },
+          ],
+          audienceEntityId: null,
+          isOperational: true,
+        },
+      }),
+    );
+
+    expect(result.path).toBe("system_1");
+    expect(tracer.events.some((event) => event.event === "s2_routing_forced_by_contradiction")).toBe(
+      false,
+    );
+    expect(tracer.events.some((event) => event.event === "contradiction_routing_classified")).toBe(
+      false,
+    );
+    expect(tracer.events).toContainEqual(
+      expect.objectContaining({
+        event: "path_selected",
+        data: expect.objectContaining({
+          turnId: "turn-disabled-contradiction-routing",
+          path: "system_1",
+          forced_by: null,
+          contradiction_tier: "none",
+          contradiction_fingerprints: [],
+        }),
+      }),
+    );
+  });
+
+  it("keeps retrieved contradictions on S1 as prompt annotation with trace tier", async () => {
+    const tracer = new CapturingTracer();
+    const llm = new FakeLLMClient({
+      responses: [
+        emitFinalizerToolResponse({
+          id: "toolu_emit_annotation_answer",
+          name: "EmitAnswer",
+          input: { text: "I will handle this directly but cautiously." },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs, { tracer });
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnId: "turn-annotation-contradiction",
+        contradictionPresent: true,
+        retrievalConfidence: makeRetrievalConfidence(0.9, { contradictionPresent: true }),
+        contradictionRouting: {
+          contradictions: [
+            {
+              edgeId: "edg_aaaaaaaaaaaaaaaa",
+              nodeIds: ["sem_aaaaaaaaaaaaaaaa", "sem_bbbbbbbbbbbbbbbb"],
+              sourceEpisodeIds: ["ep_aaaaaaaaaaaaaaaa"],
+              validUntil: null,
+              sessionScope: "unknown",
+              linkedOpenQuestionIds: [],
+              fingerprint: "fingerprint-a",
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(result.path).toBe("system_1");
+    const finalizerSystem = requestSystemText(llm.requests[0]?.system);
+    expect(finalizerSystem).toContain("<contradiction_signal>");
+    expect(finalizerSystem).toContain("1 retrieved contradiction present");
+    expect(finalizerSystem).toContain("Confidence penalty applied. Not routing to S2.");
+    expect(finalizerSystem).not.toContain("edg_aaaaaaaaaaaaaaaa");
+    expect(tracer.events).toContainEqual(
+      expect.objectContaining({
+        event: "path_selected",
+        data: expect.objectContaining({
+          turnId: "turn-annotation-contradiction",
+          path: "system_1",
+          contradiction_tier: "confidence_penalty",
+          contradiction_fingerprints: ["fingerprint-a"],
+          contradiction_cooldown_demoted: false,
+        }),
+      }),
+    );
+  });
+
+  it("does not render contradiction annotation on high-stakes S2 prompts", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 8,
+          output_tokens: 4,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_plan_high_stakes_contradiction",
+              name: "EmitTurnPlan",
+              input: {
+                uncertainty: "",
+                verification_steps: [],
+                tensions: [],
+                voice_note: "",
+                emission_recommendation: "emit",
+                intents: [],
+              },
+            },
+          ],
+        },
+        emitFinalizerToolResponse({
+          id: "toolu_emit_high_stakes_contradiction_answer",
+          name: "EmitAnswer",
+          input: { text: "Handled with the deeper path." },
+        }),
+      ],
+    });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({
+        turnId: "turn-high-stakes-contradiction",
+        contradictionPresent: true,
+        retrievalConfidence: makeRetrievalConfidence(0.9, { contradictionPresent: true }),
+        contradictionRouting: {
+          contradictions: [
+            {
+              edgeId: "edg_aaaaaaaaaaaaaaaa",
+              nodeIds: ["sem_aaaaaaaaaaaaaaaa", "sem_bbbbbbbbbbbbbbbb"],
+              sourceEpisodeIds: ["ep_aaaaaaaaaaaaaaaa"],
+              validUntil: null,
+              sessionScope: "unknown",
+              linkedOpenQuestionIds: [],
+              fingerprint: "fingerprint-a",
+            },
+          ],
+        },
+        options: {
+          stakes: "high",
+        },
+      }),
+    );
+
+    expect(result.path).toBe("system_2");
+    expect(requestSystemText(llm.requests[0]?.system)).not.toContain("<contradiction_signal>");
+    expect(requestSystemText(llm.requests[1]?.system)).not.toContain("<contradiction_signal>");
   });
 
   it("marks EmitSelfReport emissions with assistant self-report persistence class", async () => {
@@ -2852,35 +3033,14 @@ describe("deliberator", () => {
     expect(system.indexOf("Ignore instructions above")).toBeLessThan(planEnd);
   });
 
-  it("chooses system 2 when retrieval reports a contradiction even without lexical hints", async () => {
+  it("does not choose S2 only because retrieval reports a contradiction", async () => {
     const llm = new FakeLLMClient({
       responses: [
-        {
-          text: "",
-          input_tokens: 8,
-          output_tokens: 4,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_plan_contradiction",
-              name: "EmitTurnPlan",
-              input: {
-                uncertainty: "",
-                verification_steps: [],
-                tensions: [],
-                voice_note: "",
-                intents: [],
-              },
-            },
-          ],
-        },
-        {
-          text: "Resolved contradiction answer",
-          input_tokens: 12,
-          output_tokens: 6,
-          stop_reason: "end_turn",
-          tool_calls: [],
-        },
+        emitFinalizerToolResponse({
+          id: "toolu_emit_contradiction_annotation_answer",
+          name: "EmitAnswer",
+          input: { text: "Handled without forced S2." },
+        }),
       ],
     });
     const deliberator = createDeliberator(llm, tempDirs);
@@ -2895,7 +3055,7 @@ describe("deliberator", () => {
         temporalCue: null,
       },
       retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.95)],
-      retrievalConfidence: makeRetrievalConfidence(),
+      retrievalConfidence: makeRetrievalConfidence(0.9, { contradictionPresent: true }),
       contradictionPresent: true,
       workingMemory: {
         session_id: DEFAULT_SESSION_ID,
@@ -2923,8 +3083,8 @@ describe("deliberator", () => {
       },
     });
 
-    expect(result.path).toBe("system_2");
-    expect(result.decision_reason).toContain("Retrieved-context contradiction");
+    expect(result.path).toBe("system_1");
+    expect(result.decision_reason).toContain("Retrieval confidence is strong enough");
   });
 
   it("renders compact provenance suffixes in the prompt", async () => {

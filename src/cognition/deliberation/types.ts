@@ -23,6 +23,7 @@ import type { WorkingMemory } from "../../memory/working/index.js";
 import type {
   EvidenceItem,
   RetrievedContext,
+  RetrievedContradictionRouting,
   RetrievalConfidence,
   RetrievedEpisode,
   RetrievedSemantic,
@@ -41,9 +42,21 @@ import type { ActiveParticipant, ParticipantProfileContext } from "../participan
 import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { IntentRecord, PerceptionResult } from "../types.js";
+import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
 
 export type TurnStakes = "low" | "medium" | "high";
 export type DeliberationRoutingForcedBy = "open_question_contradiction";
+export type ContradictionRoutingTier =
+  | "none"
+  | "annotation_only"
+  | "confidence_penalty"
+  | "s2_recommended"
+  | "s2_forced";
+
+export type DeliberationContradictionRoutingConfig = {
+  enabled: boolean;
+  cooldownTurns: number;
+};
 
 export type DeliberationRoutingOverride = {
   forceSystem2: boolean;
@@ -53,6 +66,7 @@ export type DeliberationRoutingOverride = {
   openQuestions?: readonly (Pick<OpenQuestion, "id" | "question" | "source"> & {
     localHandle?: string;
   })[];
+  contradictionFingerprints?: readonly string[];
   audienceEntityId?: EntityId | null;
   isOperational?: boolean;
 };
@@ -97,6 +111,9 @@ export type DeliberationContext = {
   retrievedSemantic?: RetrievedSemantic | null;
   retrievedEvidence?: readonly EvidenceItem[];
   contradictionPresent?: boolean;
+  contradictionRouting?: RetrievedContradictionRouting | null;
+  contradictionRoutingTier?: ContradictionRoutingTier;
+  deliberationPath?: "system_1" | "system_2";
   retrievalConfidence?: RetrievalConfidence | null;
   applicableCommitments?: readonly CommitmentRecord[];
   openQuestionsContext?: readonly OpenQuestion[];
@@ -147,6 +164,8 @@ export type DeliberationContext = {
    */
   evidenceLedger?: EvidenceLedger | null;
   routingOverride?: DeliberationRoutingOverride | null;
+  contradictionRoutingCooldown?: ContradictionRoutingCooldown;
+  contradictionRoutingConfig?: DeliberationContradictionRoutingConfig;
   options?: {
     stakes?: TurnStakes;
     maxThinkingTokens?: number;

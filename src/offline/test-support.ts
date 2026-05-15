@@ -212,6 +212,14 @@ export function createTestConfig(
         ...overrides.retrieval?.semantic,
       },
     },
+    deliberation: {
+      ...DEFAULT_CONFIG.deliberation,
+      ...overrides.deliberation,
+      contradictionRouting: {
+        ...DEFAULT_CONFIG.deliberation.contradictionRouting,
+        ...overrides.deliberation?.contradictionRouting,
+      },
+    },
     generation: {
       ...DEFAULT_CONFIG.generation,
       ...overrides.generation,

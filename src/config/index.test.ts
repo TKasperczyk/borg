@@ -62,6 +62,10 @@ describe("config", () => {
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(100);
+    expect(config.deliberation.contradictionRouting).toEqual({
+      enabled: true,
+      cooldownTurns: 5,
+    });
     expect(config.generation.evidenceLedger).toEqual({
       enabled: false,
       currentSessionTranscriptTokenBudget: 2_500,
@@ -265,6 +269,8 @@ describe("config", () => {
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_TARGET_TOKENS: "60000",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_HARD_CAP_TOKENS: "100000",
         BORG_GENERATION_EVIDENCE_LEDGER_FINALIZER_MAX_ENTRY_TEXT_TOKENS: "900",
+        BORG_DELIBERATION_CONTRADICTION_ROUTING_ENABLED: "false",
+        BORG_DELIBERATION_CONTRADICTION_ROUTING_COOLDOWN_TURNS: "3",
         BORG_GENERATION_COGNITION_THINKING_ENABLED: "true",
         BORG_GENERATION_COGNITION_THINKING_BUDGET_TOKENS: "8192",
         BORG_MODEL_RECALL_EXPANSION: "env-recall",
@@ -281,6 +287,10 @@ describe("config", () => {
     expect(config.anthropic.models.recallExpansion).toBe("env-recall");
     expect(config.executive.goalFocusThreshold).toBe(0.6);
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(8);
+    expect(config.deliberation.contradictionRouting).toEqual({
+      enabled: false,
+      cooldownTurns: 3,
+    });
     expect(config.generation.postGenerationGuards.commitment.mode).toBe("enforce");
     expect(config.generation.postGenerationGuards.closurePressure.mode).toBe("enforce");
     expect(config.generation.evidenceLedger.enabled).toBe(true);

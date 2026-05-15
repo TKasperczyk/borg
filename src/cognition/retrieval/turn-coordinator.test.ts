@@ -175,6 +175,9 @@ function makeRetrievedContext(): RetrievedContext {
     evidence: [],
     recall_intents: [],
     contradiction_present: false,
+    contradictionRouting: {
+      contradictions: [],
+    },
     confidence: {
       overall: 0,
       evidenceStrength: 0,

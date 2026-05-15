@@ -24,6 +24,8 @@ export type TurnTraceEventName =
   | "decision_artifact_lifecycle_unable_to_cap"
   | "decision_artifact_reconciliation_completed"
   | "planner_compact_ledger_built"
+  | "contradiction_routing_classified"
+  | "contradiction_routing_cooldown_demoted"
   | "path_selected"
   | "s2_routing_forced_by_contradiction"
   | "llm_call_started"

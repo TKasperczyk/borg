@@ -255,7 +255,7 @@ export class Deliberator {
         contradictionPresent: context.contradictionPresent ?? false,
         nowMs: this.clock.now(),
       });
-    const effectiveContext: DeliberationContext = {
+    let effectiveContext: DeliberationContext = {
       ...context,
       retrievalConfidence,
     };
@@ -267,7 +267,20 @@ export class Deliberator {
       retrievalConfidence,
       trace,
       context.routingOverride,
+      {
+        routing: context.contradictionRouting ?? null,
+        cooldown: context.contradictionRoutingCooldown,
+        audienceKey: context.audienceEntityId ?? context.audience ?? context.sessionId,
+        currentTurn: context.workingMemory.turn_counter,
+        cooldownTurns: context.contradictionRoutingConfig?.cooldownTurns,
+        enabled: context.contradictionRoutingConfig?.enabled ?? true,
+      },
     );
+    effectiveContext = {
+      ...effectiveContext,
+      contradictionRoutingTier: decision.contradiction_tier,
+      deliberationPath: decision.path,
+    };
     const baseSystemPromptOptions = {
       retrievalContextBudget,
       semanticContextBudget,

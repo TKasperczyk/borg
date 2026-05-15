@@ -30,6 +30,9 @@ export { applyMmr, type MmrCandidate } from "./mmr.js";
 export {
   RetrievalPipeline,
   type RetrievedContext,
+  type RetrievedContradictionRouting,
+  type RetrievedContradictionRoutingItem,
+  type RetrievedContradictionSessionScope,
   type RetrievedEpisode,
   type RetrievedSemanticHit,
   type RetrievedSemanticNode,

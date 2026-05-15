@@ -245,6 +245,87 @@ describe("buildBaseSystemPrompt", () => {
     expect(prompt).toContain("<borg_working_state>");
   });
 
+  it("renders compact contradiction annotation when S2 is not forced", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        deliberationPath: "system_1",
+        contradictionRoutingTier: "confidence_penalty",
+        retrievalConfidence: {
+          overall: 0.9,
+          evidenceStrength: 0.9,
+          coverage: 1,
+          sourceDiversity: 1,
+          contradictionPresent: true,
+          sampleSize: 4,
+        },
+        contradictionRouting: {
+          contradictions: [
+            {
+              edgeId: "edg_aaaaaaaaaaaaaaaa",
+              nodeIds: ["sem_aaaaaaaaaaaaaaaa", "sem_bbbbbbbbbbbbbbbb"],
+              sourceEpisodeIds: ["ep_aaaaaaaaaaaaaaaa"],
+              validUntil: null,
+              sessionScope: "unknown",
+              linkedOpenQuestionIds: [],
+              fingerprint: "fingerprint-a",
+            },
+            {
+              edgeId: "edg_bbbbbbbbbbbbbbbb",
+              nodeIds: ["sem_cccccccccccccccc", "sem_dddddddddddddddd"],
+              sourceEpisodeIds: ["ep_bbbbbbbbbbbbbbbb"],
+              validUntil: null,
+              sessionScope: "unknown",
+              linkedOpenQuestionIds: [],
+              fingerprint: "fingerprint-b",
+            },
+          ],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    const block = extractBlock(prompt, "contradiction_signal");
+
+    expect(block).toContain("2 retrieved contradictions present");
+    expect(block).toContain("edges: contradiction_1_edge, contradiction_2_edge");
+    expect(block).toContain("Confidence penalty applied. Not routing to S2.");
+    expect(block).not.toContain("edg_");
+    expect(block).not.toContain("sem_");
+  });
+
+  it("omits contradiction annotation on S2 prompts", () => {
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        deliberationPath: "system_2",
+        contradictionRoutingTier: "confidence_penalty",
+        retrievalConfidence: {
+          overall: 0.9,
+          evidenceStrength: 0.9,
+          coverage: 1,
+          sourceDiversity: 1,
+          contradictionPresent: true,
+          sampleSize: 4,
+        },
+        contradictionRouting: {
+          contradictions: [
+            {
+              edgeId: "edg_aaaaaaaaaaaaaaaa",
+              nodeIds: ["sem_aaaaaaaaaaaaaaaa", "sem_bbbbbbbbbbbbbbbb"],
+              sourceEpisodeIds: ["ep_aaaaaaaaaaaaaaaa"],
+              validUntil: null,
+              sessionScope: "unknown",
+              linkedOpenQuestionIds: [],
+              fingerprint: "fingerprint-a",
+            },
+          ],
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+
+    expect(prompt).not.toContain("<contradiction_signal>");
+  });
+
   it("renders pending actions in working state", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({

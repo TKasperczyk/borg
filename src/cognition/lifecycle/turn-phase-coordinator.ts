@@ -10,6 +10,7 @@ import {
   type CorrectivePreferenceTurnService,
 } from "../commitments/corrective-preference-service.js";
 import { Deliberator, type TurnStakes } from "../deliberation/deliberator.js";
+import { ContradictionRoutingCooldown } from "../deliberation/contradiction-routing-cooldown.js";
 import type { DeliberationRoutingOverride } from "../deliberation/types.js";
 import {
   EvidenceLedgerBuilder,
@@ -128,11 +129,16 @@ export type BuildContradictionRoutingOverrideInput = {
   audienceEntityId: EntityId | null;
   openQuestionsRepository: Pick<OpenQuestionsRepository, "get">;
   evidenceLedger: EvidenceLedger | null;
+  enabled?: boolean;
 };
 
 export function buildContradictionRoutingOverride(
   input: BuildContradictionRoutingOverrideInput,
 ): DeliberationRoutingOverride | null {
+  if (input.enabled === false) {
+    return null;
+  }
+
   if (!input.isUserTurn) {
     return null;
   }
@@ -161,6 +167,7 @@ export function buildContradictionRoutingOverride(
     reason: "open_question_contradiction",
     forcedBy: "open_question_contradiction",
     oqIds: openQuestions.map((question) => question.id),
+    contradictionFingerprints: contradictionFingerprintsForOpenQuestions(openQuestions),
     openQuestions: openQuestions.map((question, index) => ({
       id: question.id,
       question: question.question,
@@ -170,6 +177,16 @@ export function buildContradictionRoutingOverride(
     audienceEntityId: input.audienceEntityId,
     isOperational: true,
   };
+}
+
+function contradictionFingerprintsForOpenQuestions(
+  openQuestions: readonly OpenQuestion[],
+): string[] {
+  // Open-question evidence handles can grow as reflection links more records.
+  // The OQ id is the stable contradiction identity used for cooldown.
+  return [...new Set(openQuestions.map((question) => `open_question:${question.id}`))].sort(
+    (left, right) => left.localeCompare(right),
+  );
 }
 
 function collectEvidenceLedgerOpenQuestionIds(ledger: EvidenceLedger | null): Set<string> {
@@ -643,6 +660,8 @@ function evidenceLedgerCompactionChanged(summary: EvidenceLedgerCompactionTraceS
 }
 
 export class TurnPhaseCoordinator {
+  private readonly contradictionRoutingCooldown = new ContradictionRoutingCooldown();
+
   constructor(private readonly options: TurnPhaseCoordinatorOptions) {}
 
   async run(input: RunTurnPhasesInput): Promise<TurnPhaseResult> {
@@ -1036,6 +1055,7 @@ export class TurnPhaseCoordinator {
       audienceEntityId,
       openQuestionsRepository: this.options.openQuestionsRepository,
       evidenceLedger: evidenceLedgerContext.ledger,
+      enabled: this.options.config.deliberation.contradictionRouting.enabled,
     });
     const deliberator = new Deliberator({
       llmClient,
@@ -1062,6 +1082,7 @@ export class TurnPhaseCoordinator {
         retrievedSemantic,
         retrievedEvidence: retrieval.evidence,
         contradictionPresent: retrieval.contradiction_present,
+        contradictionRouting: retrieval.contradictionRouting,
         retrievalConfidence: retrieval.confidence,
         applicableCommitments,
         openQuestionsContext: retrieval.open_questions,
@@ -1083,6 +1104,8 @@ export class TurnPhaseCoordinator {
         evidenceLedgerPromptSection: evidenceLedgerContext.promptSection,
         evidenceLedger: evidenceLedgerContext.ledger,
         routingOverride,
+        contradictionRoutingCooldown: this.contradictionRoutingCooldown,
+        contradictionRoutingConfig: this.options.config.deliberation.contradictionRouting,
         options: {
           stakes: turnInput.stakes,
         },

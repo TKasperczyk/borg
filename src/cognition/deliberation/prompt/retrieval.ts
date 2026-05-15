@@ -3,6 +3,7 @@ import type { SemanticNode } from "../../../memory/semantic/index.js";
 import type {
   EvidenceItem,
   RetrievalConfidence,
+  RetrievedContradictionRouting,
   RetrievedEpisode,
   RetrievedSemantic,
   RetrievedSemanticHit,
@@ -10,6 +11,7 @@ import type {
 } from "../../../retrieval/index.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../constants.js";
+import type { ContradictionRoutingTier } from "../types.js";
 
 const LOW_RETRIEVAL_CONFIDENCE_THRESHOLD = 0.45;
 
@@ -58,6 +60,45 @@ export function summarizeRetrievalConfidence(
   // Not user-facing -- the LLM phrases uncertainty naturally rather than
   // emitting the percentage. This is the signal, not the phrasing.
   return lines.join("\n");
+}
+
+export function summarizeContradictionSignal(
+  routing: RetrievedContradictionRouting | null | undefined,
+  tier: ContradictionRoutingTier | null | undefined,
+  confidence: RetrievalConfidence | null | undefined,
+  path: "system_1" | "system_2" | null | undefined,
+): string | null {
+  const contradictions = routing?.contradictions ?? [];
+
+  if (
+    path !== "system_1" ||
+    contradictions.length === 0 ||
+    tier === "none" ||
+    tier === "s2_forced"
+  ) {
+    return null;
+  }
+
+  const localEdgeHandles = contradictions
+    .filter((contradiction) => contradiction.edgeId !== undefined)
+    .slice(0, 5)
+    .map((_, index) => `contradiction_${index + 1}_edge`);
+  const localHandles =
+    localEdgeHandles.length === 0
+      ? contradictions.slice(0, 5).map((_, index) => `contradiction_${index + 1}`)
+      : localEdgeHandles;
+  const omittedCount = Math.max(0, contradictions.length - localHandles.length);
+  const handleSummary =
+    omittedCount === 0
+      ? localHandles.join(", ")
+      : `${localHandles.join(", ")}, +${omittedCount} more`;
+  const noun = contradictions.length === 1 ? "contradiction" : "contradictions";
+  const confidencePenalty =
+    confidence?.contradictionPresent === true
+      ? "Confidence penalty applied."
+      : "Confidence penalty not applied.";
+
+  return `${contradictions.length} retrieved ${noun} present (edges: ${handleSummary}). ${confidencePenalty} Not routing to S2.`;
 }
 
 function summarizeCitationChain(result: RetrievedEpisode): string | null {

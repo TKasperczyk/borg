@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
+import type {
+  RetrievalConfidence,
+  RetrievedContradictionRouting,
+  RetrievedEpisode,
+} from "../../retrieval/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 
+import { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
 import { chooseDeliberationPath } from "./path-selector.js";
+
+const CONTRADICTION_FINGERPRINT = "fingerprint-linked-contradiction";
+const OPEN_QUESTION_FINGERPRINT = "open_question:oq_aaaaaaaaaaaaaaaa";
 
 function makeEpisode(score: number, tags: string[] = []): RetrievedEpisode {
   return {
@@ -55,6 +63,22 @@ function makeConfidence(overall: number, contradictionPresent = false): Retrieva
     sourceDiversity: 1,
     contradictionPresent,
     sampleSize: 5,
+  };
+}
+
+function makeContradictionRouting(): RetrievedContradictionRouting {
+  return {
+    contradictions: [
+      {
+        edgeId: "edg_aaaaaaaaaaaaaaaa",
+        nodeIds: ["sem_aaaaaaaaaaaaaaaa", "sem_bbbbbbbbbbbbbbbb"],
+        sourceEpisodeIds: ["ep_aaaaaaaaaaaaaaaa"],
+        validUntil: null,
+        sessionScope: "unknown",
+        linkedOpenQuestionIds: ["oq_aaaaaaaaaaaaaaaa"],
+        fingerprint: CONTRADICTION_FINGERPRINT,
+      },
+    ],
   };
 }
 
@@ -116,19 +140,19 @@ describe("chooseDeliberationPath", () => {
     expect(decision.path).toBe("system_2");
   });
 
-  it("routes to S1 in idle mode regardless of confidence", () => {
+  it("routes to S1 in idle mode when confidence is high", () => {
     const decision = chooseDeliberationPath(
       "idle",
       "low",
-      [makeEpisode(0.1)],
+      [makeEpisode(0.9)],
       false,
-      makeConfidence(0.1),
+      makeConfidence(0.9),
     );
 
     expect(decision.path).toBe("system_1");
   });
 
-  it("routes to S2 when contradiction flag is set even if confidence is high", () => {
+  it("routes to S1 when contradiction is present without an operational OQ force", () => {
     const decision = chooseDeliberationPath(
       "problem_solving",
       "low",
@@ -137,11 +161,11 @@ describe("chooseDeliberationPath", () => {
       makeConfidence(0.9, true),
     );
 
-    expect(decision.path).toBe("system_2");
-    expect(decision.reason).toMatch(/contradiction/i);
+    expect(decision.path).toBe("system_1");
+    expect(decision.contradiction_tier).toBe("confidence_penalty");
   });
 
-  it("routes to S2 when only confidence.contradictionPresent is set (boolean flag omitted)", () => {
+  it("does not force S2 when only confidence.contradictionPresent is set", () => {
     const decision = chooseDeliberationPath(
       "problem_solving",
       "low",
@@ -150,8 +174,8 @@ describe("chooseDeliberationPath", () => {
       makeConfidence(0.9, true),
     );
 
-    expect(decision.path).toBe("system_2");
-    expect(decision.reason).toMatch(/contradiction/i);
+    expect(decision.path).toBe("system_1");
+    expect(decision.contradiction_tier).toBe("confidence_penalty");
   });
 
   it("ignores warning/recommended tags as contradiction cues", () => {
@@ -195,7 +219,7 @@ describe("chooseDeliberationPath", () => {
     expect(decision.reason).toMatch(/high-stakes/i);
   });
 
-  it("escalates idle mode to S2 when retrieved context contradicts", () => {
+  it("does not escalate idle mode when only retrieved context contradicts", () => {
     const decision = chooseDeliberationPath(
       "idle",
       "low",
@@ -204,8 +228,8 @@ describe("chooseDeliberationPath", () => {
       makeConfidence(0.9, true),
     );
 
-    expect(decision.path).toBe("system_2");
-    expect(decision.reason).toMatch(/contradiction/i);
+    expect(decision.path).toBe("system_1");
+    expect(decision.contradiction_tier).toBe("confidence_penalty");
   });
 
   it("honors a forced S2 routing override and traces the base path", () => {
@@ -230,6 +254,7 @@ describe("chooseDeliberationPath", () => {
         reason: "open_question_contradiction",
         forcedBy: "open_question_contradiction",
         oqIds: ["oq_aaaaaaaaaaaaaaaa"],
+        contradictionFingerprints: [CONTRADICTION_FINGERPRINT],
         openQuestions: [
           {
             id: "oq_aaaaaaaaaaaaaaaa" as never,
@@ -240,12 +265,16 @@ describe("chooseDeliberationPath", () => {
         audienceEntityId: null,
         isOperational: true,
       },
+      {
+        routing: makeContradictionRouting(),
+      },
     );
 
     expect(decision).toMatchObject({
       path: "system_2",
       reason: "open_question_contradiction",
       forced_by: "open_question_contradiction",
+      contradiction_tier: "s2_forced",
     });
     expect(emit).toHaveBeenCalledWith("s2_routing_forced_by_contradiction", {
       turnId: "turn-forced",
@@ -257,6 +286,7 @@ describe("chooseDeliberationPath", () => {
       openQuestionLocalHandleMap: {
         contradiction_1: "oq_aaaaaaaaaaaaaaaa",
       },
+      contradictionFingerprints: [CONTRADICTION_FINGERPRINT],
       basePath: "system_1",
       baseReason: "Retrieval confidence is strong enough for a direct response.",
       forcedPath: "system_2",
@@ -268,6 +298,122 @@ describe("chooseDeliberationPath", () => {
       confidenceOverall: 0.9,
       contradictionPresent: false,
       forced_by: "open_question_contradiction",
+      contradiction_tier: "s2_forced",
+      contradiction_fingerprints: [CONTRADICTION_FINGERPRINT],
+      contradiction_cooldown_demoted: false,
+    });
+  });
+
+  it("keeps v55 P2 forced S2 for an operational OQ-linked contradiction", () => {
+    const decision = chooseDeliberationPath(
+      "problem_solving",
+      "low",
+      [makeEpisode(0.9)],
+      true,
+      makeConfidence(0.9, true),
+      undefined,
+      {
+        forceSystem2: true,
+        reason: "open_question_contradiction",
+        forcedBy: "open_question_contradiction",
+        oqIds: ["oq_aaaaaaaaaaaaaaaa"],
+        openQuestions: [
+          {
+            id: "oq_aaaaaaaaaaaaaaaa" as never,
+            question: "Which itinerary claim is current?",
+            source: "contradiction",
+          },
+        ],
+        audienceEntityId: null,
+        isOperational: true,
+      },
+      {
+        routing: makeContradictionRouting(),
+      },
+    );
+
+    expect(decision).toMatchObject({
+      path: "system_2",
+      forced_by: "open_question_contradiction",
+      contradiction_tier: "s2_forced",
+      contradiction_fingerprints: [CONTRADICTION_FINGERPRINT],
+    });
+  });
+
+  it("demotes a repeated forced contradiction within the cooldown window", () => {
+    const emit = vi.fn<TurnTracer["emit"]>();
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit,
+    } satisfies TurnTracer;
+    const cooldown = new ContradictionRoutingCooldown();
+    const routingOverride = {
+      forceSystem2: true,
+      reason: "open_question_contradiction" as const,
+      forcedBy: "open_question_contradiction" as const,
+      oqIds: ["oq_aaaaaaaaaaaaaaaa"],
+      contradictionFingerprints: [OPEN_QUESTION_FINGERPRINT],
+      openQuestions: [
+        {
+          id: "oq_aaaaaaaaaaaaaaaa" as never,
+          question: "Which itinerary claim is current?",
+          source: "contradiction" as const,
+        },
+      ],
+      audienceEntityId: null,
+      isOperational: true,
+    };
+
+    const first = chooseDeliberationPath(
+      "problem_solving",
+      "low",
+      [makeEpisode(0.9)],
+      true,
+      makeConfidence(0.9, true),
+      {
+        tracer,
+        turnId: "turn-first",
+      },
+      routingOverride,
+      {
+        cooldown,
+        audienceKey: "audience",
+        currentTurn: 10,
+        cooldownTurns: 5,
+      },
+    );
+    const second = chooseDeliberationPath(
+      "problem_solving",
+      "low",
+      [makeEpisode(0.9)],
+      true,
+      makeConfidence(0.9, true),
+      {
+        tracer,
+        turnId: "turn-second",
+      },
+      routingOverride,
+      {
+        cooldown,
+        audienceKey: "audience",
+        currentTurn: 12,
+        cooldownTurns: 5,
+      },
+    );
+
+    expect(first.path).toBe("system_2");
+    expect(second).toMatchObject({
+      path: "system_1",
+      forced_by: null,
+      contradiction_tier: "s2_recommended",
+      contradiction_cooldown_demoted: true,
+    });
+    expect(emit).toHaveBeenCalledWith("contradiction_routing_cooldown_demoted", {
+      turnId: "turn-second",
+      fingerprint: OPEN_QUESTION_FINGERPRINT,
+      last_forced_turn: 10,
+      current_turn: 12,
     });
   });
 
@@ -293,6 +439,7 @@ describe("chooseDeliberationPath", () => {
         reason: "open_question_contradiction",
         forcedBy: "open_question_contradiction",
         oqIds: ["oq_aaaaaaaaaaaaaaaa"],
+        contradictionFingerprints: [CONTRADICTION_FINGERPRINT],
         openQuestions: [
           {
             id: "oq_aaaaaaaaaaaaaaaa" as never,
@@ -304,12 +451,16 @@ describe("chooseDeliberationPath", () => {
         audienceEntityId: null,
         isOperational: true,
       },
+      {
+        routing: makeContradictionRouting(),
+      },
     );
 
     expect(decision).toMatchObject({
       path: "system_2",
       reason: "Reflective mode always takes the deeper reasoning path.",
       forced_by: null,
+      contradiction_tier: "s2_forced",
     });
     expect(emit).toHaveBeenCalledWith(
       "path_selected",
@@ -318,6 +469,7 @@ describe("chooseDeliberationPath", () => {
         path: "system_2",
         reason: "Reflective mode always takes the deeper reasoning path.",
         forced_by: null,
+        contradiction_tier: "s2_forced",
       }),
     );
     expect(emit).toHaveBeenCalledWith(
@@ -326,6 +478,7 @@ describe("chooseDeliberationPath", () => {
         turnId: "turn-natural-s2",
         basePath: "system_2",
         baseReason: "Reflective mode always takes the deeper reasoning path.",
+        contradictionFingerprints: [CONTRADICTION_FINGERPRINT],
       }),
     );
   });

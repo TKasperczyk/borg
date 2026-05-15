@@ -1,8 +1,14 @@
 // Chooses the S1/S2 deliberation path from perception, stakes, and retrieval signals.
-import type { RetrievalConfidence, RetrievedEpisode } from "../../retrieval/index.js";
+import type {
+  RetrievalConfidence,
+  RetrievedContradictionRouting,
+  RetrievedEpisode,
+} from "../../retrieval/index.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { CognitiveMode } from "../types.js";
+import type { ContradictionRoutingCooldown } from "./contradiction-routing-cooldown.js";
 import type {
+  ContradictionRoutingTier,
   DeliberationRoutingForcedBy,
   DeliberationRoutingOverride,
   TurnStakes,
@@ -12,11 +18,28 @@ export type DeliberationPathDecision = {
   path: "system_1" | "system_2";
   reason: string;
   forced_by?: DeliberationRoutingForcedBy | null;
+  contradiction_tier: ContradictionRoutingTier;
+  contradiction_fingerprints: string[];
+  contradiction_cooldown_demoted: boolean;
 };
+
+type NaturalDeliberationPathDecision = Pick<
+  DeliberationPathDecision,
+  "path" | "reason" | "forced_by"
+>;
 
 export type DeliberationPathTrace = {
   tracer: TurnTracer;
   turnId: string;
+};
+
+export type DeliberationPathContradictionRoutingOptions = {
+  routing?: RetrievedContradictionRouting | null;
+  cooldown?: ContradictionRoutingCooldown;
+  audienceKey?: string | null;
+  currentTurn?: number;
+  cooldownTurns?: number;
+  enabled?: boolean;
 };
 
 export function chooseDeliberationPath(
@@ -27,25 +50,54 @@ export function chooseDeliberationPath(
   retrievalConfidence: RetrievalConfidence,
   trace?: DeliberationPathTrace,
   routingOverride?: DeliberationRoutingOverride | null,
+  contradictionRoutingOptions?: DeliberationPathContradictionRoutingOptions,
 ): DeliberationPathDecision {
   const confidence = retrievalConfidence.overall;
   const contextContradiction =
     contradictionPresent || retrievalConfidence.contradictionPresent === true;
+  const contradictionRoutingEnabled = contradictionRoutingOptions?.enabled !== false;
+  const contradictionFingerprints = contradictionRoutingEnabled
+    ? uniqueSorted(
+        contradictionRoutingOptions?.routing?.contradictions.map(
+          (contradiction) => contradiction.fingerprint,
+        ) ?? [],
+      )
+    : [];
+  const baseContradictionClassification = classifyContradictionRouting({
+    contradictionPresent: contextContradiction,
+    retrievalConfidenceContradiction: retrievalConfidence.contradictionPresent === true,
+    contradictionFingerprints,
+    enabled: contradictionRoutingEnabled,
+  });
+  const effectiveRoutingOverride = contradictionRoutingEnabled ? routingOverride : null;
 
   const select = (
     path: DeliberationPathDecision["path"],
     reason: string,
-    effectiveContradiction = contextContradiction,
+    classification = baseContradictionClassification,
     forcedBy: DeliberationRoutingForcedBy | null = null,
+    cooldownDemoted = false,
+    selectedFingerprints = contradictionFingerprints,
   ): DeliberationPathDecision => {
     if (trace?.tracer.enabled === true) {
+      if (contradictionRoutingEnabled) {
+        trace.tracer.emit("contradiction_routing_classified", {
+          turnId: trace.turnId,
+          fingerprints: selectedFingerprints,
+          tier: classification.tier,
+          reason: classification.reason,
+        });
+      }
       trace.tracer.emit("path_selected", {
         turnId: trace.turnId,
         path,
         reason,
         confidenceOverall: confidence,
-        contradictionPresent: effectiveContradiction,
+        contradictionPresent: contextContradiction,
         forced_by: forcedBy,
+        contradiction_tier: classification.tier,
+        contradiction_fingerprints: selectedFingerprints,
+        contradiction_cooldown_demoted: cooldownDemoted,
       });
     }
 
@@ -53,25 +105,18 @@ export function chooseDeliberationPath(
       path,
       reason,
       forced_by: forcedBy,
+      contradiction_tier: classification.tier,
+      contradiction_fingerprints: selectedFingerprints,
+      contradiction_cooldown_demoted: cooldownDemoted,
     };
   };
 
-  const naturalDecision = (): DeliberationPathDecision => {
+  const naturalDecision = (): NaturalDeliberationPathDecision => {
     // Reflective always wins -- it's an explicit request for deeper thought.
     if (mode === "reflective") {
       return {
         path: "system_2",
         reason: "Reflective mode always takes the deeper reasoning path.",
-        forced_by: null,
-      };
-    }
-
-    // High-stakes and contradiction must escalate even in idle mode -- a
-    // misclassified high-stakes idle turn can't be allowed to skip S2.
-    if (contextContradiction) {
-      return {
-        path: "system_2",
-        reason: "Retrieved-context contradiction triggered deeper reasoning.",
         forced_by: null,
       };
     }
@@ -107,10 +152,28 @@ export function chooseDeliberationPath(
     };
   };
 
-  if (routingOverride?.forceSystem2 === true) {
+  if (effectiveRoutingOverride?.forceSystem2 === true) {
     const baseDecision = naturalDecision();
+    const overrideFingerprints = fingerprintsForRoutingOverride(
+      effectiveRoutingOverride,
+      contradictionRoutingOptions?.routing ?? null,
+    );
+    const cooldownHits = cooldownHitsForOverride({
+      fingerprints: overrideFingerprints,
+      contradictionRoutingOptions,
+    });
+    const cooldownDemoted =
+      overrideFingerprints.length > 0 && cooldownHits.length === overrideFingerprints.length;
+    const forcedClassification = {
+      tier: "s2_forced" as const,
+      reason: "Operational contradiction open question forces S2.",
+    };
+    const demotedClassification = {
+      tier: "s2_recommended" as const,
+      reason: "Operational contradiction open question force demoted by fingerprint cooldown.",
+    };
     const openQuestionLocalHandleMap = Object.fromEntries(
-      (routingOverride.openQuestions ?? []).map((question, index) => [
+      (effectiveRoutingOverride.openQuestions ?? []).map((question, index) => [
         question.localHandle ?? `contradiction_${index + 1}`,
         question.id,
       ]),
@@ -120,31 +183,176 @@ export function chooseDeliberationPath(
       trace.tracer.emit("s2_routing_forced_by_contradiction", {
         turnId: trace.turnId,
         perceptionMode: mode,
-        isOperational: routingOverride.isOperational === true,
-        audienceEntityId: routingOverride.audienceEntityId ?? null,
-        openQuestionIds: [...routingOverride.oqIds],
+        isOperational: effectiveRoutingOverride.isOperational === true,
+        audienceEntityId: effectiveRoutingOverride.audienceEntityId ?? null,
+        openQuestionIds: [...effectiveRoutingOverride.oqIds],
         openQuestionSources: [
-          ...new Set((routingOverride.openQuestions ?? []).map((question) => question.source)),
+          ...new Set(
+            (effectiveRoutingOverride.openQuestions ?? []).map((question) => question.source),
+          ),
         ],
         openQuestionLocalHandleMap,
+        contradictionFingerprints: overrideFingerprints,
         basePath: baseDecision.path,
         baseReason: baseDecision.reason,
-        forcedPath: "system_2",
+        forcedPath: cooldownDemoted ? baseDecision.path : "system_2",
       });
     }
 
-    if (baseDecision.path === "system_2") {
-      return select(baseDecision.path, baseDecision.reason, contextContradiction);
+    if (cooldownDemoted && trace?.tracer.enabled === true) {
+      for (const hit of cooldownHits) {
+        trace.tracer.emit("contradiction_routing_cooldown_demoted", {
+          turnId: trace.turnId,
+          fingerprint: hit.fingerprint,
+          last_forced_turn: hit.lastForcedTurn,
+          current_turn: hit.currentTurn,
+        });
+      }
     }
+
+    if (cooldownDemoted) {
+      return select(
+        baseDecision.path,
+        baseDecision.reason,
+        demotedClassification,
+        null,
+        true,
+        overrideFingerprints,
+      );
+    }
+
+    if (baseDecision.path === "system_2") {
+      return select(
+        baseDecision.path,
+        baseDecision.reason,
+        forcedClassification,
+        null,
+        false,
+        overrideFingerprints,
+      );
+    }
+
+    recordForcedContradictions({
+      fingerprints: overrideFingerprints,
+      contradictionRoutingOptions,
+    });
 
     return select(
       "system_2",
-      routingOverride.reason,
-      contextContradiction,
-      routingOverride.forcedBy,
+      effectiveRoutingOverride.reason,
+      forcedClassification,
+      effectiveRoutingOverride.forcedBy,
+      false,
+      overrideFingerprints,
     );
   }
 
   const baseDecision = naturalDecision();
   return select(baseDecision.path, baseDecision.reason);
+}
+
+function classifyContradictionRouting(input: {
+  contradictionPresent: boolean;
+  retrievalConfidenceContradiction: boolean;
+  contradictionFingerprints: readonly string[];
+  enabled: boolean;
+}): { tier: ContradictionRoutingTier; reason: string } {
+  if (!input.enabled || (!input.contradictionPresent && input.contradictionFingerprints.length === 0)) {
+    return {
+      tier: "none",
+      reason: "No retrieved contradiction signal.",
+    };
+  }
+
+  if (input.retrievalConfidenceContradiction) {
+    return {
+      tier: "confidence_penalty",
+      reason: "Retrieved contradiction is applied as a confidence penalty and prompt annotation.",
+    };
+  }
+
+  return {
+    tier: "annotation_only",
+    reason: "Retrieved contradiction is surfaced as a prompt annotation only.",
+  };
+}
+
+function fingerprintsForRoutingOverride(
+  routingOverride: DeliberationRoutingOverride,
+  routing: RetrievedContradictionRouting | null,
+): string[] {
+  if (
+    routingOverride.contradictionFingerprints !== undefined &&
+    routingOverride.contradictionFingerprints.length > 0
+  ) {
+    return uniqueSorted(routingOverride.contradictionFingerprints);
+  }
+
+  if (routing === null || routing.contradictions.length === 0 || routingOverride.oqIds.length === 0) {
+    return [];
+  }
+
+  const oqIds = new Set(routingOverride.oqIds);
+
+  return uniqueSorted(
+    routing.contradictions
+      .filter((contradiction) =>
+        contradiction.linkedOpenQuestionIds.some((openQuestionId) => oqIds.has(openQuestionId)),
+      )
+      .map((contradiction) => contradiction.fingerprint),
+  );
+}
+
+function cooldownHitsForOverride(input: {
+  fingerprints: readonly string[];
+  contradictionRoutingOptions?: DeliberationPathContradictionRoutingOptions;
+}) {
+  const options = input.contradictionRoutingOptions;
+
+  if (
+    options?.enabled === false ||
+    options?.cooldown === undefined ||
+    options.audienceKey === null ||
+    options.audienceKey === undefined ||
+    options.currentTurn === undefined ||
+    options.cooldownTurns === undefined ||
+    input.fingerprints.length === 0
+  ) {
+    return [];
+  }
+
+  return options.cooldown.getCoolingFingerprints({
+    audience: options.audienceKey,
+    fingerprints: input.fingerprints,
+    currentTurn: options.currentTurn,
+    cooldownTurns: options.cooldownTurns,
+  });
+}
+
+function recordForcedContradictions(input: {
+  fingerprints: readonly string[];
+  contradictionRoutingOptions?: DeliberationPathContradictionRoutingOptions;
+}): void {
+  const options = input.contradictionRoutingOptions;
+
+  if (
+    options?.enabled === false ||
+    options?.cooldown === undefined ||
+    options.audienceKey === null ||
+    options.audienceKey === undefined ||
+    options.currentTurn === undefined ||
+    input.fingerprints.length === 0
+  ) {
+    return;
+  }
+
+  options.cooldown.recordForced({
+    audience: options.audienceKey,
+    fingerprints: input.fingerprints,
+    currentTurn: options.currentTurn,
+  });
+}
+
+function uniqueSorted(values: readonly string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
