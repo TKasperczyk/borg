@@ -62,6 +62,7 @@ describe("config", () => {
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.autonomy.executiveFocus.wakeCooldownSec).toBe(3_600);
     expect(config.streamIngestion.preTurnCatchup.maxEntries).toBe(100);
+    expect(config.retrieval.semanticOverfetchMultiplier).toBe(3);
     expect(config.deliberation.contradictionRouting).toEqual({
       enabled: true,
       cooldownTurns: 5,
@@ -132,6 +133,24 @@ describe("config", () => {
 
   it("derives exported defaults from schema defaults", () => {
     expect(configSchema.parse({})).toEqual(DEFAULT_CONFIG);
+  });
+
+  it("caps semantic retrieval overfetch multiplier in config", () => {
+    expect(
+      configSchema.parse({
+        retrieval: {
+          semanticOverfetchMultiplier: 10,
+        },
+      }).retrieval.semanticOverfetchMultiplier,
+    ).toBe(10);
+
+    expect(() =>
+      configSchema.parse({
+        retrieval: {
+          semanticOverfetchMultiplier: 11,
+        },
+      }),
+    ).toThrow();
   });
 
   it("keeps schema defaults when only one env var is set", () => {

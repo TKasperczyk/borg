@@ -319,6 +319,26 @@ function summarizeUnderReviewPrefix(node: {
   return `[under re-evaluation: ${node.under_review.reason_code}] `;
 }
 
+function summarizeSemanticStatusPrefix(
+  node: Pick<SemanticNode, "status" | "superseded_at">,
+): string {
+  if (node.status === "active") {
+    return "";
+  }
+
+  const supersededAt = node.superseded_at === null ? "" : `, t=${Math.trunc(node.superseded_at)}`;
+
+  return `[status=${node.status}${supersededAt}] `;
+}
+
+function summarizeSemanticNodePrefixes(
+  node: Pick<SemanticNode, "status" | "superseded_at"> & {
+    under_review?: RetrievedSemanticNode["under_review"];
+  },
+): string {
+  return `${summarizeSemanticStatusPrefix(node)}${summarizeUnderReviewPrefix(node)}`;
+}
+
 function summarizePartialSourceTag(node: {
   partial_source_visibility?: RetrievedSemanticNode["partial_source_visibility"];
 }): string {
@@ -346,14 +366,14 @@ function summarizeSemanticNode(
     under_review?: RetrievedSemanticNode["under_review"];
   },
 ): string {
-  return `${summarizeUnderReviewPrefix(node)}${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}${summarizePartialSourceTag(node)})`;
+  return `${summarizeSemanticNodePrefixes(node)}${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}${summarizePartialSourceTag(node)})`;
 }
 
 function summarizeSemanticNodeWithSources(
   node: RetrievedSemantic["matched_nodes"][number],
 ): string {
   const label = [
-    `${summarizeUnderReviewPrefix(node)}${node.label}`,
+    `${summarizeSemanticNodePrefixes(node)}${node.label}`,
     node.historical === true ? " [historical]" : "",
   ].join("");
 
@@ -390,7 +410,7 @@ function summarizeSemanticHit(
     pathParts.push("...");
   }
 
-  return `${summarizeUnderReviewPrefix(hit.node)}${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}${summarizePartialSourceTag(hit.node)}; path ${pathParts.join(" ")})`;
+  return `${summarizeSemanticNodePrefixes(hit.node)}${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}${summarizePartialSourceTag(hit.node)}; path ${pathParts.join(" ")})`;
 }
 
 function summarizeSemanticBucket(

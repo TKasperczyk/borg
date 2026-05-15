@@ -12,6 +12,7 @@ import { SemanticGraph } from "../../memory/semantic/index.js";
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
+  createSemanticEdgeFixture,
   createSemanticNodeFixture,
   createTestConfig,
   TestEmbeddingClient,
@@ -411,6 +412,43 @@ describe("internal tools", () => {
     } finally {
       await borg.close();
     }
+  });
+
+  it("omits corrected_by from semantic walk node output", async () => {
+    const rootId = createSemanticNodeId();
+    const correctedBy = createSemanticNodeId();
+    const node = createSemanticNodeFixture({
+      status: "superseded",
+      corrected_by: correctedBy,
+      superseded_at: 1_250,
+    });
+    const edge = createSemanticEdgeFixture({
+      from_node_id: rootId,
+      to_node_id: node.id,
+    });
+    const tool = createSemanticWalkTool({
+      walkGraph: async () => [
+        {
+          node,
+          edgePath: [edge],
+        },
+      ],
+    });
+
+    const result = await tool.invoke(
+      {
+        node_id: rootId,
+        relation: "supports",
+      },
+      {
+        sessionId: DEFAULT_SESSION_ID,
+        origin: "deliberator",
+      },
+    );
+
+    expect(result.steps[0]?.node.status).toBe("superseded");
+    expect(result.steps[0]?.node.superseded_at).toBe(1_250);
+    expect(result.steps[0]?.node).not.toHaveProperty("corrected_by");
   });
 
   it("forwards semantic walk as-of to the graph", async () => {

@@ -29,7 +29,9 @@ import {
 } from "../../util/ids.js";
 import type { ReviewQueueInsertInput } from "./review-queue.js";
 import {
+  SEMANTIC_NODE_STATUSES,
   invalidationProcessSchema,
+  semanticNodeCorrectionRefSchema,
   semanticEdgeIdSchema,
   semanticEdgePatchSchema,
   semanticEdgeSchema,
@@ -37,13 +39,16 @@ import {
   semanticNodePatchSchema,
   semanticNodeSchema,
   semanticRelationSchema,
+  semanticNodeStatusSchema,
   type SemanticEdge,
   type SemanticEdgeListOptions,
   type SemanticNode,
+  type SemanticNodeCorrectionRef,
   type SemanticNodeListOptions,
   type SemanticNodePatch,
   type SemanticNodeSearchCandidate,
   type SemanticNodeSearchOptions,
+  type SemanticNodeStatus,
 } from "./types.js";
 import { canonicalizeDomain } from "./domain.js";
 
@@ -70,6 +75,13 @@ type SemanticNodeRow = {
   archived: number | boolean;
   superseded_by: string | null;
   _distance?: number;
+};
+type SemanticNodeLifecycleRow = {
+  archived: number | boolean;
+  superseded_by: string | null;
+  status: string | null;
+  corrected_by: string | null;
+  superseded_at: number | null;
 };
 
 const SEMANTIC_JSON_ARRAY_CODEC = {
@@ -200,10 +212,52 @@ function nodeFromRow(row: Record<string, unknown>): SemanticNode {
       row.superseded_by === null || row.superseded_by === undefined
         ? null
         : parseSemanticNodeId(String(row.superseded_by)),
+    status: row.status === undefined || row.status === null ? "active" : row.status,
+    corrected_by:
+      row.corrected_by === null || row.corrected_by === undefined ? null : String(row.corrected_by),
+    superseded_at:
+      row.superseded_at === null || row.superseded_at === undefined
+        ? null
+        : Number(row.superseded_at),
   });
 
   if (!parsed.success) {
     throw new SemanticError("Semantic node row failed validation", {
+      cause: parsed.error,
+      code: "SEMANTIC_ROW_INVALID",
+    });
+  }
+
+  return parsed.data;
+}
+
+function lifecycleFromRow(
+  row: SemanticNodeLifecycleRow,
+): Pick<SemanticNode, "archived" | "superseded_by" | "status" | "corrected_by" | "superseded_at"> {
+  const parsed = z
+    .object({
+      archived: z.boolean(),
+      superseded_by: semanticNodeIdSchema.nullable(),
+      status: semanticNodeStatusSchema,
+      corrected_by: semanticNodeCorrectionRefSchema.nullable(),
+      superseded_at: z.number().finite().nullable(),
+    })
+    .safeParse({
+      archived: row.archived === true || Number(row.archived) === 1,
+      superseded_by:
+        row.superseded_by === null || row.superseded_by === undefined
+          ? null
+          : parseSemanticNodeId(String(row.superseded_by)),
+      status: row.status ?? "active",
+      corrected_by: row.corrected_by ?? null,
+      superseded_at:
+        row.superseded_at === null || row.superseded_at === undefined
+          ? null
+          : Number(row.superseded_at),
+    });
+
+  if (!parsed.success) {
+    throw new SemanticError("Semantic node lifecycle row failed validation", {
       cause: parsed.error,
       code: "SEMANTIC_ROW_INVALID",
     });
@@ -299,6 +353,16 @@ export type SemanticNodeConfidenceAdjustment = {
   updatedAt: number;
 };
 
+export type SemanticNodeStatusCounts = Record<SemanticNodeStatus, number>;
+
+export type SemanticNodeStatusTransition = {
+  id: SemanticNodeId;
+  fromStatus: SemanticNodeStatus;
+  toStatus: SemanticNodeStatus;
+  correctedBy: SemanticNodeCorrectionRef | null;
+  supersededAt: number | null;
+};
+
 export type SemanticNodeVectorSyncFailure = {
   outboxId: number;
   nodeId: SemanticNodeId;
@@ -355,7 +419,8 @@ export class SemanticNodeRepository {
       .prepare(
         `
           SELECT id, kind, label, description, domain, aliases, confidence, source_episode_ids,
-                 created_at, updated_at, last_verified_at, archived, superseded_by
+                 created_at, updated_at, last_verified_at, archived, superseded_by,
+                 status, corrected_by, superseded_at
           FROM semantic_nodes
           WHERE id = ?
         `,
@@ -363,6 +428,36 @@ export class SemanticNodeRepository {
       .get(id) as Record<string, unknown> | undefined;
 
     return row ?? null;
+  }
+
+  private getSqlNodeLifecycle(
+    id: SemanticNodeId,
+  ): Pick<
+    SemanticNode,
+    "archived" | "superseded_by" | "status" | "corrected_by" | "superseded_at"
+  > | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT archived, superseded_by, status, corrected_by, superseded_at
+          FROM semantic_nodes
+          WHERE id = ?
+        `,
+      )
+      .get(id) as SemanticNodeLifecycleRow | undefined;
+
+    return row === undefined ? null : lifecycleFromRow(row);
+  }
+
+  private withSqlLifecycle(node: SemanticNode): SemanticNode {
+    const lifecycle = this.getSqlNodeLifecycle(node.id);
+
+    return lifecycle === null
+      ? node
+      : semanticNodeSchema.parse({
+          ...node,
+          ...lifecycle,
+        });
   }
 
   private enqueueVectorSyncRow(input: {
@@ -547,8 +642,9 @@ export class SemanticNodeRepository {
         `
           INSERT INTO semantic_nodes (
             id, kind, label, description, domain, aliases, confidence, source_episode_ids,
-            created_at, updated_at, last_verified_at, archived, superseded_by
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, updated_at, last_verified_at, archived, superseded_by, status,
+            corrected_by, superseded_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             kind = excluded.kind,
             label = excluded.label,
@@ -560,7 +656,10 @@ export class SemanticNodeRepository {
             updated_at = excluded.updated_at,
             last_verified_at = excluded.last_verified_at,
             archived = excluded.archived,
-            superseded_by = excluded.superseded_by
+            superseded_by = excluded.superseded_by,
+            status = excluded.status,
+            corrected_by = excluded.corrected_by,
+            superseded_at = excluded.superseded_at
         `,
       )
       .run(
@@ -577,6 +676,9 @@ export class SemanticNodeRepository {
         node.last_verified_at,
         node.archived ? 1 : 0,
         node.superseded_by,
+        node.status,
+        node.corrected_by,
+        node.superseded_at,
       );
   }
 
@@ -659,7 +761,7 @@ export class SemanticNodeRepository {
     });
     const row = rows[0];
 
-    return row === undefined ? null : nodeFromRow(row);
+    return row === undefined ? null : this.withSqlLifecycle(nodeFromRow(row));
   }
 
   getStoredConfidence(id: SemanticNodeId): number | null {
@@ -804,7 +906,9 @@ export class SemanticNodeRepository {
     const rows = await this.table.list({
       where,
     });
-    const byId = new Map(rows.map((row) => [String(row.id), nodeFromRow(row)]));
+    const byId = new Map(
+      rows.map((row) => [String(row.id), this.withSqlLifecycle(nodeFromRow(row))]),
+    );
 
     return ids.map((id) => {
       const node = byId.get(id) ?? null;
@@ -886,7 +990,7 @@ export class SemanticNodeRepository {
     const results: SemanticNodeSearchCandidate[] = [];
 
     for (const row of rows) {
-      const node = nodeFromRow(row);
+      const node = this.withSqlLifecycle(nodeFromRow(row));
       const similarity = toSimilarity(getDistance(row));
 
       if (options.minSimilarity !== undefined && similarity < options.minSimilarity) {
@@ -918,6 +1022,134 @@ export class SemanticNodeRepository {
     return results;
   }
 
+  private async markStatus(input: {
+    id: SemanticNodeId;
+    status: SemanticNodeStatus;
+    correctedBy: SemanticNodeCorrectionRef | null;
+    supersededAt: number | null;
+  }): Promise<SemanticNodeStatusTransition | null> {
+    const id = semanticNodeIdSchema.parse(input.id);
+    const status = semanticNodeStatusSchema.parse(input.status);
+    const correctedBy =
+      input.correctedBy === null ? null : semanticNodeCorrectionRefSchema.parse(input.correctedBy);
+    const supersededAt = input.supersededAt;
+
+    if (supersededAt !== null && !Number.isFinite(supersededAt)) {
+      throw new SemanticError("Semantic node superseded_at must be finite", {
+        code: "SEMANTIC_NODE_STATUS_TIME_INVALID",
+      });
+    }
+
+    const current = this.getSqlNodeRow(id);
+
+    if (current === null) {
+      return null;
+    }
+
+    const lifecycle = lifecycleFromRow({
+      archived: current.archived as number | boolean,
+      superseded_by: current.superseded_by as string | null,
+      status: current.status as string | null,
+      corrected_by: current.corrected_by as string | null,
+      superseded_at: current.superseded_at as number | null,
+    });
+    const updatedAt = supersededAt ?? this.clock.now();
+    const result = this.db
+      .prepare(
+        `
+          UPDATE semantic_nodes
+          SET status = ?,
+              corrected_by = ?,
+              superseded_at = ?,
+              updated_at = ?
+          WHERE id = ?
+        `,
+      )
+      .run(status, correctedBy, supersededAt, updatedAt, id);
+
+    if (result.changes !== 1) {
+      return null;
+    }
+
+    return {
+      id,
+      fromStatus: lifecycle.status,
+      toStatus: status,
+      correctedBy,
+      supersededAt,
+    };
+  }
+
+  markSuperseded(
+    id: SemanticNodeId,
+    correctedBy: SemanticNodeCorrectionRef,
+    supersededAt: number,
+  ): Promise<SemanticNodeStatusTransition | null> {
+    return this.markStatus({
+      id,
+      status: "superseded",
+      correctedBy,
+      supersededAt,
+    });
+  }
+
+  markContradicted(
+    id: SemanticNodeId,
+    correctedBy: SemanticNodeCorrectionRef,
+    supersededAt: number,
+  ): Promise<SemanticNodeStatusTransition | null> {
+    return this.markStatus({
+      id,
+      status: "contradicted",
+      correctedBy,
+      supersededAt,
+    });
+  }
+
+  markQuarantined(
+    id: SemanticNodeId,
+    supersededAt: number,
+  ): Promise<SemanticNodeStatusTransition | null> {
+    return this.markStatus({
+      id,
+      status: "quarantined",
+      correctedBy: null,
+      supersededAt,
+    });
+  }
+
+  restoreActive(id: SemanticNodeId): Promise<SemanticNodeStatusTransition | null> {
+    return this.markStatus({
+      id,
+      status: "active",
+      correctedBy: null,
+      supersededAt: null,
+    });
+  }
+
+  countByStatus(): SemanticNodeStatusCounts {
+    const counts = Object.fromEntries(
+      SEMANTIC_NODE_STATUSES.map((status) => [status, 0]),
+    ) as SemanticNodeStatusCounts;
+    const rows = this.db
+      .prepare(
+        `
+          SELECT status, COUNT(*) AS count
+          FROM semantic_nodes
+          WHERE archived = 0
+          GROUP BY status
+        `,
+      )
+      .all() as Array<{ status: string; count: number }>;
+
+    for (const row of rows) {
+      const status = semanticNodeStatusSchema.parse(row.status);
+      counts[status] = Number(row.count);
+    }
+
+    return counts;
+  }
+
   async list(options: SemanticNodeListOptions = {}): Promise<SemanticNode[]> {
     const filters: string[] = [];
     const values: unknown[] = [];
@@ -945,9 +1177,14 @@ export class SemanticNodeRepository {
       )
       .all(...values, limit) as Array<{ id: string }>;
 
-    return (await this.getMany(rows.map((row) => parseSemanticNodeId(row.id)))).filter(
-      (value): value is SemanticNode => value !== null,
-    );
+    return (
+      await this.getMany(
+        rows.map((row) => parseSemanticNodeId(row.id)),
+        {
+          includeArchived: options.includeArchived,
+        },
+      )
+    ).filter((value): value is SemanticNode => value !== null);
   }
 
   async update(id: SemanticNodeId, patch: SemanticNodePatch): Promise<SemanticNode | null> {
@@ -958,9 +1195,24 @@ export class SemanticNodeRepository {
     }
 
     const parsedPatch = semanticNodePatchSchema.parse(patch);
+    const patchKeys = new Set(Object.keys(patch as Record<string, unknown>));
+    const appliedPatch: SemanticNodePatch = { ...parsedPatch };
+
+    for (const field of [
+      "archived",
+      "superseded_by",
+      "status",
+      "corrected_by",
+      "superseded_at",
+    ] as const) {
+      if (!patchKeys.has(field)) {
+        delete appliedPatch[field];
+      }
+    }
+
     const next = semanticNodeSchema.parse({
       ...current,
-      ...parsedPatch,
+      ...appliedPatch,
       domain: canonicalizeDomain(parsedPatch.domain ?? current.domain),
       aliases:
         parsedPatch.aliases === undefined

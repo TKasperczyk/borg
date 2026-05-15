@@ -211,6 +211,42 @@ describe("semantic repositories", () => {
     );
   });
 
+  it("migrates semantic node lifecycle status columns and index", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    let db: ReturnType<typeof openDatabase> | null = null;
+
+    cleanup.push(async () => {
+      db?.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    db = openDatabase(join(tempDir, "borg.db"), {
+      migrations: semanticMigrations,
+    });
+
+    const columns = db.prepare("PRAGMA table_info(semantic_nodes)").all() as Array<{
+      name: string;
+      dflt_value: string | null;
+    }>;
+    const columnNames = new Set(columns.map((column) => column.name));
+    const status = columns.find((column) => column.name === "status");
+    const indexes = db.prepare("PRAGMA index_list(semantic_nodes)").all() as Array<{
+      name: string;
+    }>;
+
+    expect(columnNames.has("status")).toBe(true);
+    expect(columnNames.has("corrected_by")).toBe(true);
+    expect(columnNames.has("superseded_at")).toBe(true);
+    expect(status?.dflt_value).toBe("'active'");
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "semantic_nodes_status_updated_idx",
+        }),
+      ]),
+    );
+  });
+
   it("supports semantic node CRUD and vector search", async () => {
     const fixture = await createSemanticFixture();
 
@@ -240,6 +276,116 @@ describe("semantic repositories", () => {
     expect(listed).toHaveLength(1);
     expect(deleted).toBe(true);
     expect(await fixture.nodeRepository.get(inserted.id)).toBeNull();
+  });
+
+  it("updates semantic node lifecycle status without archiving", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const replacement = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Replacement"),
+    );
+    const superseded = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Superseded"),
+    );
+    const transition = await fixture.nodeRepository.markSuperseded(
+      superseded.id,
+      replacement.id,
+      2_000,
+    );
+    const fetched = await fixture.nodeRepository.get(superseded.id);
+    const matches = await fixture.nodeRepository.searchByVector(Float32Array.from([1, 0, 0, 0]), {
+      limit: 5,
+    });
+
+    expect(transition).toMatchObject({
+      id: superseded.id,
+      fromStatus: "active",
+      toStatus: "superseded",
+      correctedBy: replacement.id,
+      supersededAt: 2_000,
+    });
+    expect(fetched).toMatchObject({
+      archived: false,
+      status: "superseded",
+      corrected_by: replacement.id,
+      superseded_at: 2_000,
+    });
+    expect(matches.map((item) => item.node.id)).toContain(superseded.id);
+  });
+
+  it("restores active status and preserves archived hard exclusion", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const node = await fixture.nodeRepository.insert(buildNode(createSemanticNodeId(), "Restore"));
+    const replacement = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Replacement"),
+    );
+    await fixture.nodeRepository.markContradicted(node.id, replacement.id, 2_000);
+    await fixture.nodeRepository.update(node.id, {
+      archived: true,
+    });
+    await fixture.nodeRepository.restoreActive(node.id);
+    const defaultFetch = await fixture.nodeRepository.getMany([node.id]);
+    const archivedFetch = await fixture.nodeRepository.getMany([node.id], {
+      includeArchived: true,
+    });
+
+    expect(defaultFetch).toEqual([null]);
+    expect(archivedFetch[0]).toMatchObject({
+      archived: true,
+      status: "active",
+      corrected_by: null,
+      superseded_at: null,
+    });
+  });
+
+  it("counts non-archived semantic nodes by lifecycle status", async () => {
+    const fixture = await createSemanticFixture();
+
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+
+    const active = await fixture.nodeRepository.insert(buildNode(createSemanticNodeId(), "Active"));
+    const superseded = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Superseded"),
+    );
+    const contradicted = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Contradicted"),
+    );
+    const quarantined = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Quarantined"),
+    );
+    const archived = await fixture.nodeRepository.insert(
+      buildNode(createSemanticNodeId(), "Archived"),
+    );
+    await fixture.nodeRepository.markSuperseded(superseded.id, active.id, 2_000);
+    await fixture.nodeRepository.markContradicted(contradicted.id, active.id, 2_000);
+    await fixture.nodeRepository.markQuarantined(quarantined.id, 2_000);
+    await fixture.nodeRepository.update(archived.id, {
+      archived: true,
+    });
+
+    expect(fixture.nodeRepository.countByStatus()).toEqual({
+      active: 1,
+      superseded: 1,
+      contradicted: 1,
+      quarantined: 1,
+    });
   });
 
   it("adjusts semantic node confidence transactionally and drains vector sync work", async () => {

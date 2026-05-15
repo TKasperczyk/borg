@@ -207,9 +207,16 @@ export function createTestConfig(
     retrieval: {
       ...DEFAULT_CONFIG.retrieval,
       ...overrides.retrieval,
+      semanticOverfetchMultiplier:
+        overrides.retrieval?.semanticOverfetchMultiplier ??
+        DEFAULT_CONFIG.retrieval.semanticOverfetchMultiplier,
       semantic: {
         ...DEFAULT_CONFIG.retrieval.semantic,
         ...overrides.retrieval?.semantic,
+        statusMultipliers: {
+          ...DEFAULT_CONFIG.retrieval.semantic.statusMultipliers,
+          ...overrides.retrieval?.semantic?.statusMultipliers,
+        },
       },
     },
     deliberation: {
@@ -694,6 +701,7 @@ export async function createOfflineTestHarness(
     entryIndex,
     clock,
     semanticUnderReviewMultiplier: config.retrieval.semantic.underReviewMultiplier,
+    semanticStatusMultipliers: config.retrieval.semantic.statusMultipliers,
   });
   const correctionService = new CorrectionService({
     config,
@@ -905,6 +913,9 @@ export function createSemanticNodeFixture(
     embedding: overrides.embedding ?? Float32Array.from(vector),
     archived: overrides.archived ?? false,
     superseded_by: overrides.superseded_by ?? null,
+    status: overrides.status ?? "active",
+    corrected_by: overrides.corrected_by ?? null,
+    superseded_at: overrides.superseded_at ?? null,
   };
 }
 

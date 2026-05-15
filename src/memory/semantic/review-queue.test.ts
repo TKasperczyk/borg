@@ -291,8 +291,9 @@ describe("review queue", () => {
     const updatedSecond = await nodeRepository.get(second.id);
 
     expect(resolved?.resolution).toBe("invalidate");
-    expect(updatedSecond?.archived).toBe(true);
-    expect(updatedSecond?.confidence).toBe(0);
+    expect(updatedSecond?.archived).toBe(false);
+    expect(updatedSecond?.status).toBe("contradicted");
+    expect(updatedSecond?.corrected_by).toBe(first.id);
   });
 
   it("closes loser semantic edges on contradiction review invalidation", async () => {

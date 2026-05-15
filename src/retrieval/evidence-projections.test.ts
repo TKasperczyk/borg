@@ -266,6 +266,9 @@ function semanticNode(id: SemanticNodeId, label: string): SemanticNode {
     embedding: Float32Array.from([1, 0, 0, 0]),
     archived: false,
     superseded_by: null,
+    status: "active",
+    corrected_by: null,
+    superseded_at: null,
   };
 }
 

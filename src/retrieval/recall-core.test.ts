@@ -121,6 +121,7 @@ function createTracedRetrievalPipeline(harness: OfflineTestHarness, tracer: Turn
     clock: harness.clock,
     tracer,
     semanticUnderReviewMultiplier: harness.config.retrieval.semantic.underReviewMultiplier,
+    semanticStatusMultipliers: harness.config.retrieval.semantic.statusMultipliers,
   });
 }
 

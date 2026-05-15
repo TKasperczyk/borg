@@ -391,6 +391,8 @@ export async function buildBorgRepositories(
     clock,
     tracer: options.tracer,
     semanticUnderReviewMultiplier: config.retrieval.semantic.underReviewMultiplier,
+    semanticStatusMultipliers: config.retrieval.semantic.statusMultipliers,
+    semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
   });
   const correctionService = new CorrectionService({
     config,

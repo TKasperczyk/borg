@@ -14,8 +14,10 @@ import {
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
   semanticEdgeIdSchema,
+  semanticNodeCorrectionRefSchema,
   semanticNodeIdSchema,
   semanticNodeSchema,
+  semanticNodeStatusSchema,
   type SemanticNode,
 } from "../../memory/semantic/index.js";
 import { bestVectorSimilarity, cosineSimilarity } from "../../retrieval/embedding-similarity.js";
@@ -62,6 +64,9 @@ const serializableSemanticNodeSchema = z.object({
   embedding: z.array(z.number().finite()),
   archived: z.boolean(),
   superseded_by: semanticNodeIdSchema.nullable(),
+  status: semanticNodeStatusSchema.default("active"),
+  corrected_by: semanticNodeCorrectionRefSchema.nullable().default(null),
+  superseded_at: z.number().finite().nullable().default(null),
 });
 
 const reflectorTargetSchema = z.discriminatedUnion("mode", [

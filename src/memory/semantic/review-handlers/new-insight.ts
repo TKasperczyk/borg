@@ -4,8 +4,10 @@ import { episodeIdSchema } from "../../episodic/index.js";
 import { SemanticError } from "../../../util/errors.js";
 import {
   semanticEdgeIdSchema,
+  semanticNodeCorrectionRefSchema,
   semanticNodeIdSchema,
   semanticNodeSchema,
+  semanticNodeStatusSchema,
   type SemanticNode,
 } from "../types.js";
 import {
@@ -36,6 +38,9 @@ const reviewSemanticNodePayloadSchema = z
     embedding: z.array(z.number().finite()),
     archived: z.boolean(),
     superseded_by: semanticNodeIdSchema.nullable(),
+    status: semanticNodeStatusSchema.default("active"),
+    corrected_by: semanticNodeCorrectionRefSchema.nullable().default(null),
+    superseded_at: z.number().finite().nullable().default(null),
   })
   .strict();
 

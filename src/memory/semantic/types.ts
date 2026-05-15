@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { episodeIdSchema } from "../episodic/types.js";
+import { episodeIdSchema, streamEntryIdSchema } from "../episodic/types.js";
 import {
   semanticEdgeIdHelpers,
   semanticNodeIdHelpers,
@@ -10,6 +10,12 @@ import {
 } from "../../util/ids.js";
 
 export const SEMANTIC_NODE_KINDS = ["concept", "entity", "proposition"] as const;
+export const SEMANTIC_NODE_STATUSES = [
+  "active",
+  "superseded",
+  "contradicted",
+  "quarantined",
+] as const;
 export const SEMANTIC_RELATIONS = [
   "is_a",
   "part_of",
@@ -43,8 +49,14 @@ export const semanticEdgeIdSchema = z
   .transform((value) => value as SemanticEdgeId);
 
 export const semanticNodeKindSchema = z.enum(SEMANTIC_NODE_KINDS);
+export const semanticNodeStatusSchema = z.enum(SEMANTIC_NODE_STATUSES);
 export const semanticRelationSchema = z.enum(SEMANTIC_RELATIONS);
 export const invalidationProcessSchema = z.enum(INVALIDATION_PROCESSES);
+export const semanticNodeCorrectionRefSchema = z.union([
+  semanticNodeIdSchema,
+  semanticEdgeIdSchema,
+  streamEntryIdSchema,
+]);
 
 const float32ArraySchema = z.custom<Float32Array>((value) => value instanceof Float32Array, {
   message: "Expected Float32Array embedding",
@@ -65,6 +77,9 @@ export const semanticNodeSchema = z.object({
   embedding: float32ArraySchema,
   archived: z.boolean().default(false),
   superseded_by: semanticNodeIdSchema.nullable().default(null),
+  status: semanticNodeStatusSchema.default("active"),
+  corrected_by: semanticNodeCorrectionRefSchema.nullable().default(null),
+  superseded_at: z.number().finite().nullable().default(null),
 });
 
 export const semanticNodeInsertSchema = semanticNodeSchema;
@@ -117,6 +132,8 @@ export const semanticEdgePatchSchema = semanticEdgeBaseSchema
   .partial();
 
 export type SemanticNode = z.infer<typeof semanticNodeSchema>;
+export type SemanticNodeStatus = z.infer<typeof semanticNodeStatusSchema>;
+export type SemanticNodeCorrectionRef = z.infer<typeof semanticNodeCorrectionRefSchema>;
 export type SemanticNodePatch = z.infer<typeof semanticNodePatchSchema>;
 export type SemanticNodeKind = z.infer<typeof semanticNodeKindSchema>;
 export type SemanticRelation = z.infer<typeof semanticRelationSchema>;

@@ -92,6 +92,7 @@ import {
   toRetrievedSemantic,
   type ResolvedSemanticRetrieval,
   type RetrievedSemantic,
+  type SemanticStatusMultipliers,
 } from "./semantic-retrieval.js";
 import { resolveTimeSignals } from "./time-signals.js";
 
@@ -130,6 +131,8 @@ export type RetrievalPipelineOptions = {
   mmrLambda?: number;
   decayOptions?: Omit<DecayOptions, "nowMs">;
   semanticUnderReviewMultiplier?: number;
+  semanticStatusMultipliers?: Partial<SemanticStatusMultipliers>;
+  semanticOverfetchMultiplier?: number;
   commitmentEvidenceSimilarityThreshold?: number;
   recallStateTtlTurns?: number;
   recallStateWarmSuppressionTurns?: number;
@@ -155,6 +158,8 @@ export type RetrievalSearchOptions = EpisodeSearchOptions & {
   maxGraphNodes?: number;
   asOf?: number;
   underReviewMultiplier?: number;
+  statusMultipliers?: Partial<SemanticStatusMultipliers>;
+  semanticOverfetchMultiplier?: number;
   includeOpenQuestions?: boolean;
   openQuestionsLimit?: number;
   moodState?: RetrievalMoodState | null;
@@ -1224,6 +1229,10 @@ export class RetrievalPipeline {
               exactTerms: intent.kind === "known_term" ? intent.terms : [],
               underReviewMultiplier:
                 options.underReviewMultiplier ?? this.options.semanticUnderReviewMultiplier,
+              statusMultipliers:
+                options.statusMultipliers ?? this.options.semanticStatusMultipliers,
+              overfetchMultiplier:
+                options.semanticOverfetchMultiplier ?? this.options.semanticOverfetchMultiplier,
             },
             {
               embeddingClient: this.options.embeddingClient,
@@ -2049,7 +2058,11 @@ function semanticRetrievalToEvidence(
       },
       recallIntentId: intent.id,
       matchedTerms: [],
-      score: averageEdgeConfidence(hit.edgePath),
+      score: clamp(
+        averageEdgeConfidence(hit.edgePath) * (hit.node.status_retrieval_multiplier ?? 1),
+        0,
+        1,
+      ),
       scoreBreakdown: {
         provenance: hit.edgePath.length > 0 ? 1 : 0,
       },

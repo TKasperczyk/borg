@@ -4,12 +4,14 @@ import { entityIdSchema } from "../../memory/commitments/index.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
   semanticEdgeIdSchema,
+  semanticNodeCorrectionRefSchema,
   semanticNodeIdSchema,
   type ReviewQueueItem,
   type ReviewResolution,
   type ReviewQueueInsertInput,
   type SemanticEdge,
   type SemanticNode,
+  type SemanticNodeCorrectionRef,
   type SemanticNodeVectorSyncFailure,
 } from "../../memory/semantic/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
@@ -119,6 +121,8 @@ const beliefRevisionApplyingSchema = z
     target_id: semanticNodeIdSchema,
     confidence: z.number().min(0).max(1).optional(),
     archived: z.boolean().optional(),
+    corrected_by: semanticNodeCorrectionRefSchema.optional(),
+    superseded_at: z.number().finite().optional(),
   })
   .strict();
 
@@ -203,6 +207,8 @@ type NodeVectorSync =
       reviewId: ReviewQueueItem["id"];
       expectedClaim: BeliefRevisionClaim;
       targetId: SemanticNode["id"];
+      correctedBy: SemanticNodeCorrectionRef;
+      supersededAt: number;
     };
 type PreparedVerdict = {
   verdict: BeliefRevisionVerdict;
@@ -1028,6 +1034,23 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       return true;
     }
 
+    const transition = await ctx.semanticNodeRepository.markContradicted(
+      sync.targetId,
+      sync.correctedBy,
+      sync.supersededAt,
+    );
+
+    if (transition !== null && ctx.tracer?.enabled === true) {
+      ctx.tracer.emit("semantic_node_status_transitioned", {
+        turnId: String(ctx.runId),
+        nodeId: transition.id,
+        fromStatus: transition.fromStatus,
+        toStatus: transition.toStatus,
+        correctedBy: transition.correctedBy,
+        source: "belief_reviser",
+      });
+    }
+
     await ctx.semanticNodeRepository.update(sync.targetId, {
       archived: true,
     });
@@ -1273,11 +1296,17 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     state: z.infer<typeof beliefRevisionApplyingSchema>,
   ): NodeVectorSync {
     if (state.archived === true) {
+      if (state.corrected_by === undefined || state.superseded_at === undefined) {
+        throw new Error("Belief revision archive applying state is missing status transition");
+      }
+
       return {
         kind: "archive",
         reviewId,
         expectedClaim,
         targetId: state.target_id,
+        correctedBy: state.corrected_by,
+        supersededAt: state.superseded_at,
       };
     }
 
@@ -1452,12 +1481,15 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       }
 
       if (verdict.verdict === "archive_node") {
+        const now = ctx.clock.now();
         const applying = {
           run_id: expectedClaim.run_id,
           claimed_at: expectedClaim.claimed_at,
           verdict: "archive_node",
           target_id: refs.target_id,
           archived: true,
+          corrected_by: refs.invalidated_edge_id,
+          superseded_at: now,
         } satisfies z.infer<typeof beliefRevisionApplyingSchema>;
         const result = this.options.db
           .prepare(

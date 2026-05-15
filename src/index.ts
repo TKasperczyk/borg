@@ -259,6 +259,7 @@ export {
 export {
   REVIEW_KINDS,
   REVIEW_RESOLUTIONS,
+  SEMANTIC_NODE_STATUSES,
   type ExtractSemanticResult,
   type ReviewKind,
   type ReviewQueueItem,
@@ -270,6 +271,7 @@ export {
   type SemanticNodeKind,
   type SemanticNodePatch,
   type SemanticNodeSearchCandidate,
+  type SemanticNodeStatus,
   type SemanticRelation,
   type SemanticWalkOptions,
   type SemanticWalkStep,

@@ -14,11 +14,25 @@ import type {
   SemanticContext,
   SemanticEdge,
   SemanticNode,
+  SemanticNodeStatus,
   SemanticWalkStep,
 } from "../memory/semantic/types.js";
+import { SEMANTIC_NODE_STATUSES } from "../memory/semantic/types.js";
 import type { EntityId } from "../util/ids.js";
 
 const DEFAULT_UNDER_REVIEW_MULTIPLIER = 0.5;
+const DEFAULT_SEMANTIC_OVERFETCH_MULTIPLIER = 3;
+const MAX_SEMANTIC_OVERFETCH_MULTIPLIER = 10;
+const MAX_SEMANTIC_CANDIDATE_FETCH_LIMIT = 50;
+const DEFAULT_VECTOR_MATCH_LIMIT = 3;
+const DEFAULT_EXACT_MATCH_LIMIT = 5;
+export const DEFAULT_SEMANTIC_STATUS_MULTIPLIERS = {
+  active: 1,
+  superseded: 0.5,
+  contradicted: 0.3,
+  quarantined: 0.2,
+} as const satisfies Record<SemanticNodeStatus, number>;
+export type SemanticStatusMultipliers = Record<SemanticNodeStatus, number>;
 const DEFAULT_SEMANTIC_NODE_MIN_SIMILARITY = 0.01;
 
 export type RetrievedSemanticUnderReview = {
@@ -32,6 +46,7 @@ export type RetrievedSemanticNode = SemanticNode & {
   historical?: boolean;
   base_retrieval_score?: number;
   retrieval_score?: number;
+  status_retrieval_multiplier?: number;
   under_review?: RetrievedSemanticUnderReview;
   partial_source_visibility?: boolean;
   source_visibility_fraction?: number;
@@ -65,6 +80,8 @@ export type SemanticRetrievalOptions = {
   maxGraphNodes?: number;
   asOf?: number;
   underReviewMultiplier?: number;
+  statusMultipliers?: Partial<SemanticStatusMultipliers>;
+  overfetchMultiplier?: number;
   queryVector?: Float32Array;
   exactTerms?: readonly string[];
 };
@@ -332,6 +349,39 @@ function normalizeUnderReviewMultiplier(value: number | undefined): number {
   return multiplier;
 }
 
+function normalizeStatusMultipliers(
+  value: Partial<SemanticStatusMultipliers> | undefined,
+): SemanticStatusMultipliers {
+  const multipliers: SemanticStatusMultipliers = {
+    ...DEFAULT_SEMANTIC_STATUS_MULTIPLIERS,
+    ...(value ?? {}),
+  };
+
+  for (const status of SEMANTIC_NODE_STATUSES) {
+    const multiplier = multipliers[status];
+
+    if (!Number.isFinite(multiplier) || multiplier < 0 || multiplier > 1) {
+      throw new TypeError(`status multiplier for ${status} must be between 0 and 1`);
+    }
+  }
+
+  return multipliers;
+}
+
+function normalizeOverfetchMultiplier(value: number | undefined): number {
+  const multiplier = value ?? DEFAULT_SEMANTIC_OVERFETCH_MULTIPLIER;
+
+  if (!Number.isFinite(multiplier)) {
+    throw new TypeError("semantic overfetch multiplier must be a positive integer");
+  }
+
+  return Math.min(MAX_SEMANTIC_OVERFETCH_MULTIPLIER, Math.max(1, Math.trunc(multiplier)));
+}
+
+function overfetchLimit(baseLimit: number, multiplier: number): number {
+  return Math.min(baseLimit * multiplier, MAX_SEMANTIC_CANDIDATE_FETCH_LIMIT);
+}
+
 function semanticNodeTargetKey(nodeId: SemanticNode["id"]): string {
   return JSON.stringify(["semantic_node", nodeId]);
 }
@@ -366,12 +416,49 @@ function buildUnderReviewStatus(
   };
 }
 
+function semanticCandidateScore(
+  candidate: MatchedNodeCandidate,
+  input: {
+    underReviewByNodeId: ReadonlyMap<string, OpenBeliefRevisionStatus>;
+    underReviewMultiplier: number;
+    statusMultipliers: SemanticStatusMultipliers;
+  },
+): number {
+  const underReviewMultiplier = input.underReviewByNodeId.has(
+    semanticNodeTargetKey(candidate.node.id),
+  )
+    ? input.underReviewMultiplier
+    : 1;
+
+  return (
+    candidate.baseScore * input.statusMultipliers[candidate.node.status] * underReviewMultiplier
+  );
+}
+
+function compareMatchedNodeCandidates(
+  left: MatchedNodeCandidate,
+  right: MatchedNodeCandidate,
+  input: {
+    underReviewByNodeId: ReadonlyMap<string, OpenBeliefRevisionStatus>;
+    underReviewMultiplier: number;
+    statusMultipliers: SemanticStatusMultipliers;
+  },
+): number {
+  return (
+    semanticCandidateScore(right, input) - semanticCandidateScore(left, input) ||
+    right.baseScore - left.baseScore ||
+    right.node.updated_at - left.node.updated_at ||
+    left.node.id.localeCompare(right.node.id)
+  );
+}
+
 function annotateSemanticNode(
   node: SemanticNode,
   input: {
     baseScore?: number;
     underReviewByNodeId: ReadonlyMap<string, OpenBeliefRevisionStatus>;
     underReviewMultiplier: number;
+    statusMultipliers: SemanticStatusMultipliers;
     visibleEpisodeIds: ReadonlySet<string> | null;
   },
 ): RetrievedSemanticNode {
@@ -379,21 +466,29 @@ function annotateSemanticNode(
     input.underReviewByNodeId.get(semanticNodeTargetKey(node.id)),
   );
   const visibleNode = withVisibleSemanticSources(node, input.visibleEpisodeIds);
+  const statusMultiplier = input.statusMultipliers[node.status];
+  const multiplierFields =
+    statusMultiplier === 1 ? {} : { status_retrieval_multiplier: statusMultiplier };
 
   if (input.baseScore === undefined) {
     return status === undefined
-      ? visibleNode
+      ? {
+          ...visibleNode,
+          ...multiplierFields,
+        }
       : {
           ...visibleNode,
+          ...multiplierFields,
           under_review: status,
         };
   }
 
   const retrievalScore =
-    status === undefined ? input.baseScore : input.baseScore * input.underReviewMultiplier;
+    input.baseScore * (status === undefined ? 1 : input.underReviewMultiplier) * statusMultiplier;
 
   return {
     ...visibleNode,
+    ...multiplierFields,
     base_retrieval_score: input.baseScore,
     retrieval_score: retrievalScore,
     ...(status === undefined ? {} : { under_review: status }),
@@ -474,11 +569,16 @@ export async function resolveSemanticContext(
   }
 
   const underReviewMultiplier = normalizeUnderReviewMultiplier(options.underReviewMultiplier);
+  const statusMultipliers = normalizeStatusMultipliers(options.statusMultipliers);
+  const overfetchMultiplier = normalizeOverfetchMultiplier(options.overfetchMultiplier);
+  const exactTerms = options.exactTerms ?? [];
+  const directMatchLimit =
+    exactTerms.length > 0 ? DEFAULT_EXACT_MATCH_LIMIT : DEFAULT_VECTOR_MATCH_LIMIT;
   const matchedNodeCandidatesById = new Map<SemanticNode["id"], MatchedNodeCandidate>();
 
   const queryVector = options.queryVector ?? (await embeddingClient.embed(query));
   const byVector = await semanticNodeRepository.searchByVector(queryVector, {
-    limit: 3,
+    limit: overfetchLimit(DEFAULT_VECTOR_MATCH_LIMIT, overfetchMultiplier),
     minSimilarity: DEFAULT_SEMANTIC_NODE_MIN_SIMILARITY,
     includeArchived: false,
   });
@@ -487,10 +587,14 @@ export async function resolveSemanticContext(
     recordMatchedNode(matchedNodeCandidatesById, item.node, item.similarity);
   }
 
-  for (const term of options.exactTerms ?? []) {
-    const exactMatches = await semanticNodeRepository.findByExactLabelOrAlias(term, 5, {
-      includeArchived: false,
-    });
+  for (const term of exactTerms) {
+    const exactMatches = await semanticNodeRepository.findByExactLabelOrAlias(
+      term,
+      overfetchLimit(DEFAULT_EXACT_MATCH_LIMIT, overfetchMultiplier),
+      {
+        includeArchived: false,
+      },
+    );
 
     for (const node of exactMatches) {
       recordMatchedNode(matchedNodeCandidatesById, node, 1);
@@ -508,6 +612,20 @@ export async function resolveSemanticContext(
       .filter(({ node }) => isSemanticNodeVisible(node, matchedNodeVisibility))
       .map((candidate) => [candidate.node.id, candidate] as const),
   );
+  const candidateUnderReviewByNodeId = await collectUnderReviewStatuses(
+    [...uniqueNodes.values()].map(({ node }) => node),
+    dependencies,
+    options,
+  );
+  const selectedNodeCandidates = [...uniqueNodes.values()]
+    .sort((left, right) =>
+      compareMatchedNodeCandidates(left, right, {
+        underReviewByNodeId: candidateUnderReviewByNodeId,
+        underReviewMultiplier,
+        statusMultipliers,
+      }),
+    )
+    .slice(0, directMatchLimit);
   const supports = new Map<string, SemanticNode>();
   const contradicts = new Map<string, SemanticNode>();
   const categories = new Map<string, SemanticNode>();
@@ -523,7 +641,7 @@ export async function resolveSemanticContext(
   const contradictionHits: RetrievedSemanticHit[] = [];
   const categoryHits: RetrievedSemanticHit[] = [];
 
-  for (const node of uniqueNodes.values()) {
+  for (const node of selectedNodeCandidates) {
     const walkedSupports = await semanticGraph.walk(node.node.id, {
       relations: ["supports"],
       direction: "out",
@@ -577,7 +695,7 @@ export async function resolveSemanticContext(
   const semanticVisibility = await resolveVisibleEpisodeIds(
     episodicRepository,
     [
-      ...[...uniqueNodes.values()].flatMap(({ node }) => node.source_episode_ids),
+      ...selectedNodeCandidates.flatMap(({ node }) => node.source_episode_ids),
       ...supportNeighbors.flatMap(({ step }) => [
         ...step.node.source_episode_ids,
         ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
@@ -624,7 +742,7 @@ export async function resolveSemanticContext(
     }));
   const underReviewByNodeId = await collectUnderReviewStatuses(
     [
-      ...[...uniqueNodes.values()].map(({ node }) => node),
+      ...selectedNodeCandidates.map(({ node }) => node),
       ...visibleSupportNeighbors.map(({ step }) => step.node),
       ...visibleCausalNeighbors.map(({ step }) => step.node),
       ...visibleContradictionNeighbors.map(({ step }) => step.node),
@@ -634,13 +752,14 @@ export async function resolveSemanticContext(
     options,
   );
   const visibleMatchedNodes = await Promise.all(
-    [...uniqueNodes.values()]
+    selectedNodeCandidates
       .filter(({ node }) => isSemanticNodeVisible(node, semanticVisibility))
       .map(async (candidate): Promise<RetrievedSemanticNode> => {
         const annotated = annotateSemanticNode(candidate.node, {
           baseScore: candidate.baseScore,
           underReviewByNodeId,
           underReviewMultiplier,
+          statusMultipliers,
           visibleEpisodeIds: semanticVisibility,
         });
 
@@ -666,6 +785,7 @@ export async function resolveSemanticContext(
     const node = annotateSemanticNode(item.step.node, {
       underReviewByNodeId,
       underReviewMultiplier,
+      statusMultipliers,
       visibleEpisodeIds: semanticVisibility,
     });
     supports.set(item.step.node.id, node);
@@ -682,6 +802,7 @@ export async function resolveSemanticContext(
       node: annotateSemanticNode(item.step.node, {
         underReviewByNodeId,
         underReviewMultiplier,
+        statusMultipliers,
         visibleEpisodeIds: semanticVisibility,
       }),
       edgePath: item.step.edgePath,
@@ -692,6 +813,7 @@ export async function resolveSemanticContext(
     const node = annotateSemanticNode(item.step.node, {
       underReviewByNodeId,
       underReviewMultiplier,
+      statusMultipliers,
       visibleEpisodeIds: semanticVisibility,
     });
     contradicts.set(item.step.node.id, node);
@@ -706,6 +828,7 @@ export async function resolveSemanticContext(
     const node = annotateSemanticNode(item.step.node, {
       underReviewByNodeId,
       underReviewMultiplier,
+      statusMultipliers,
       visibleEpisodeIds: semanticVisibility,
     });
     categories.set(item.step.node.id, node);

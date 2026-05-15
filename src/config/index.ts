@@ -221,9 +221,19 @@ const configBaseSchema = z.object({
     .prefault({}),
   retrieval: z
     .object({
+      semanticOverfetchMultiplier: z.number().int().min(1).max(10).default(3),
       semantic: z
         .object({
           underReviewMultiplier: z.number().min(0).max(1).default(0.5),
+          statusMultipliers: z
+            .object({
+              active: z.number().min(0).max(1).default(1),
+              superseded: z.number().min(0).max(1).default(0.5),
+              contradicted: z.number().min(0).max(1).default(0.3),
+              quarantined: z.number().min(0).max(1).default(0.2),
+            })
+            .strict()
+            .prefault({}),
         })
         .prefault({}),
     })
@@ -1352,6 +1362,7 @@ export function redactConfig(config: Config): Config {
       ...config.procedural,
     },
     retrieval: {
+      semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
       semantic: {
         ...config.retrieval.semantic,
       },

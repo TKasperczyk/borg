@@ -70,6 +70,7 @@ export type TurnTraceEventName =
   | "semantic_extractor_invoked"
   | "semantic_extractor_partial_failure"
   | "semantic_insert_skipped"
+  | "semantic_node_status_transitioned"
   | "maintenance_snapshot_finalized"
   | "commitment_check"
   | "closure_response_guard"

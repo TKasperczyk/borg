@@ -160,6 +160,7 @@ export type ReviewApplyOutcome = {
 export type ReviewHandlerContext = {
   db: SqliteDatabase;
   clock: Clock;
+  tracer?: TurnTracer;
   episodicRepository?: EpisodicRepository;
   semanticNodeRepository?: SemanticNodeRepository;
   semanticEdgeRepository?: SemanticEdgeRepository;
@@ -332,6 +333,7 @@ export class ReviewQueueRepository {
     return {
       db: this.db,
       clock: this.clock,
+      tracer: this.tracer,
       episodicRepository: this.options.episodicRepository,
       semanticNodeRepository: this.options.semanticNodeRepository,
       semanticEdgeRepository: this.options.semanticEdgeRepository,

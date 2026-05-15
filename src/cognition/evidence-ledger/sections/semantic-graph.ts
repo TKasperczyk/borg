@@ -1,17 +1,28 @@
 import type { BuilderSectionContext } from "../builder-context.js";
-import {
-  semanticNodeStateMetadata,
-  semanticTaint,
-} from "../entry-metadata.js";
-import {
-  SEMANTIC_TRUST_RANK,
-  addEntry,
-  cappedTrustRank,
-} from "../section-buckets.js";
-import {
-  persistenceClassFromProvenance,
-  scopeFromEpisodeIds,
-} from "../scope-resolver.js";
+import { semanticNodeStateMetadata, semanticTaint } from "../entry-metadata.js";
+import { SEMANTIC_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
+import { persistenceClassFromProvenance, scopeFromEpisodeIds } from "../scope-resolver.js";
+
+function semanticNodeStatusAnnotation(node: {
+  status: string;
+  superseded_at?: number | null;
+}): string {
+  if (node.status === "active") {
+    return "";
+  }
+
+  const supersededAt = node.superseded_at == null ? "" : `, t=${Math.trunc(node.superseded_at)}`;
+
+  return `[status=${node.status}${supersededAt}] `;
+}
+
+function semanticNodeState(node: { kind: string; status: string; under_review?: unknown }): string {
+  if (node.status !== "active") {
+    return `${node.status}:${node.kind}`;
+  }
+
+  return node.under_review === undefined ? node.kind : `under_review:${node.kind}`;
+}
 
 export function addSemanticGraphSection(context: BuilderSectionContext): void {
   const semantic = context.input.retrievedSemantic;
@@ -30,11 +41,11 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
         session_scope: scopeFromEpisodeIds(node.source_episode_ids, context.resolver),
         actor: "memory",
         trust_rank: SEMANTIC_TRUST_RANK,
-        text: node.description,
+        text: `${semanticNodeStatusAnnotation(node)}${node.description}`,
         value: node.label,
-        state: node.under_review === undefined ? node.kind : `under_review:${node.kind}`,
+        state: semanticNodeState(node),
         state_metadata: semanticNodeStateMetadata(node),
-        taint: semanticTaint({ underReview: node.under_review }),
+        taint: semanticTaint({ underReview: node.under_review, status: node.status }),
         ...persistenceClassFromProvenance(
           { episodeIds: node.source_episode_ids },
           context.resolver,
@@ -58,12 +69,11 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
         session_scope: scopeFromEpisodeIds(hit.node.source_episode_ids, context.resolver),
         actor: "memory",
         trust_rank: SEMANTIC_TRUST_RANK,
-        text: hit.node.description,
+        text: `${semanticNodeStatusAnnotation(hit.node)}${hit.node.description}`,
         value: hit.node.label,
-        state:
-          hit.node.under_review === undefined ? hit.node.kind : `under_review:${hit.node.kind}`,
+        state: semanticNodeState(hit.node),
         state_metadata: semanticNodeStateMetadata(hit.node),
-        taint: semanticTaint({ underReview: hit.node.under_review }),
+        taint: semanticTaint({ underReview: hit.node.under_review, status: hit.node.status }),
         ...persistenceClassFromProvenance(
           { episodeIds: hit.node.source_episode_ids },
           context.resolver,

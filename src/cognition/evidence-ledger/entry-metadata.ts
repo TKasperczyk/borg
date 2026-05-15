@@ -1,17 +1,10 @@
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
-import type {
-  StreamEntry,
-  TranscriptStreamEntry,
-} from "../../stream/index.js";
+import type { StreamEntry, TranscriptStreamEntry } from "../../stream/index.js";
 import type { EntityId } from "../../util/ids.js";
 import type { EvidenceLedgerBuildInput } from "./builder-types.js";
 import { resolveSpeakerDisplayName, type SpeakerEntityRepository } from "../speaker-tags.js";
 import type { ScopeResolver } from "./scope-resolver.js";
-import type {
-  EvidenceLedgerActor,
-  EvidenceLedgerEntry,
-  EvidenceLedgerTaint,
-} from "./types.js";
+import type { EvidenceLedgerActor, EvidenceLedgerEntry, EvidenceLedgerTaint } from "./types.js";
 
 export function actorForStreamEntry(entry: Pick<StreamEntry, "kind">): EvidenceLedgerActor {
   if (entry.kind === "user_msg") {
@@ -123,11 +116,13 @@ export function slotTaint(slot: RelationalSlot): EvidenceLedgerTaint {
 
 export function semanticTaint(input: {
   underReview?: unknown;
+  status?: string;
   validTo?: number | null;
   invalidatedAt?: number | null;
 }): EvidenceLedgerTaint {
   if (
     input.underReview !== undefined ||
+    (input.status !== undefined && input.status !== "active") ||
     (input.validTo !== undefined && input.validTo !== null) ||
     (input.invalidatedAt !== undefined && input.invalidatedAt !== null)
   ) {
@@ -140,11 +135,19 @@ export function semanticTaint(input: {
 export function semanticNodeStateMetadata(node: {
   id?: string;
   source_episode_ids?: readonly string[];
+  status?: string;
+  corrected_by?: string | null;
+  superseded_at?: number | null;
   partial_source_visibility?: boolean;
   source_visibility_fraction?: number;
 }): Record<string, unknown> | undefined {
+  const nonActiveStatus = node.status !== undefined && node.status !== "active";
   const metadata: Record<string, unknown> = {
     ...(node.id === undefined ? {} : { node_id: node.id }),
+    ...(!nonActiveStatus ? {} : { status: node.status }),
+    ...(!nonActiveStatus || node.superseded_at === undefined || node.superseded_at === null
+      ? {}
+      : { superseded_at: node.superseded_at }),
     ...(node.source_episode_ids === undefined || node.source_episode_ids.length === 0
       ? {}
       : { source_episode_ids: [...node.source_episode_ids] }),

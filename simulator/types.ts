@@ -4,6 +4,7 @@ import type {
   GenerationSuppressionReason,
   RelationalSlotState,
   ReviewKind,
+  SemanticNodeStatus,
   SessionId,
 } from "../src/index.js";
 
@@ -30,6 +31,7 @@ export type MetricsRow = {
   failure_reason?: string;
   episode_count: number;
   semantic_node_count: number;
+  semantic_node_count_by_status: Record<SemanticNodeStatus, number>;
   semantic_edge_count: number;
   semantic_nodes_added_since_last_check: number;
   semantic_edges_added_since_last_check: number;

@@ -95,6 +95,12 @@ function metricsRow(turn: number): MetricsRow {
     transport_chat_attempts: 1,
     episode_count: 0,
     semantic_node_count: 0,
+    semantic_node_count_by_status: {
+      active: 0,
+      superseded: 0,
+      contradicted: 0,
+      quarantined: 0,
+    },
     semantic_edge_count: 0,
     semantic_nodes_added_since_last_check: 0,
     semantic_edges_added_since_last_check: 0,

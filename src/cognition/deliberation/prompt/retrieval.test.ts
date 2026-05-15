@@ -45,6 +45,9 @@ function makeNode(overrides: Partial<SemanticNode> = {}): SemanticNode {
     embedding: overrides.embedding ?? Float32Array.from([1, 0, 0, 0]),
     archived: overrides.archived ?? false,
     superseded_by: overrides.superseded_by ?? null,
+    status: overrides.status ?? "active",
+    corrected_by: overrides.corrected_by ?? null,
+    superseded_at: overrides.superseded_at ?? null,
   };
 }
 
@@ -354,6 +357,34 @@ describe("semantic retrieval prompt rendering", () => {
 
     expect(summary).toContain("[under re-evaluation: support_chain_collapsed]");
     expect(summary).toContain("Atlas claim under review");
+  });
+
+  it("labels non-active semantic nodes with status metadata", () => {
+    const superseded = makeNode({
+      label: "Four night itinerary",
+      description: "The itinerary has four nights in San Sebastian.",
+      status: "superseded",
+      corrected_by: "semn_bbbbbbbbbbbbbbbb" as SemanticNode["id"],
+      superseded_at: 12_345,
+    });
+    const summary = summarizeSemanticContext(
+      {
+        matched_node_ids: [superseded.id],
+        matched_nodes: [superseded],
+        supports: [],
+        contradicts: [],
+        categories: [],
+        support_hits: [],
+        causal_hits: [],
+        contradiction_hits: [],
+        category_hits: [],
+      } satisfies RetrievedSemantic,
+      1_000,
+    );
+
+    expect(summary).toContain("[status=superseded, t=12345]");
+    expect(summary).not.toContain("semn_bbbbbbbbbbbbbbbb");
+    expect(summary).toContain("Four night itinerary");
   });
 
   it("does not label nodes without an open under-review marker", () => {

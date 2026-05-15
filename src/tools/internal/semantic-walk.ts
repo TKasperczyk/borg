@@ -20,6 +20,7 @@ const semanticWalkInputSchema = z.object({
 
 const semanticWalkNodeOutputSchema = semanticNodeSchema
   .omit({
+    corrected_by: true,
     embedding: true,
   })
   .extend({
@@ -56,6 +57,8 @@ function toSemanticWalkNodeOutput(
     last_verified_at: node.last_verified_at,
     archived: node.archived,
     superseded_by: node.superseded_by,
+    status: node.status,
+    superseded_at: node.superseded_at,
     ...(node.partial_source_visibility === undefined
       ? {}
       : { partial_source_visibility: node.partial_source_visibility }),

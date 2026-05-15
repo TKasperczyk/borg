@@ -2,7 +2,11 @@ import { z } from "zod";
 
 import { entityIdSchema } from "../../commitments/index.js";
 import { episodeIdSchema } from "../../episodic/index.js";
-import { semanticEdgeIdSchema, semanticNodeIdSchema } from "../types.js";
+import {
+  semanticEdgeIdSchema,
+  semanticNodeCorrectionRefSchema,
+  semanticNodeIdSchema,
+} from "../types.js";
 import type { ReviewQueueHandler, ReviewResolution } from "../review-queue.js";
 
 const BELIEF_REVISION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>(["dismiss"]);
@@ -22,6 +26,8 @@ const beliefRevisionApplyingSchema = z
     target_id: semanticNodeIdSchema,
     confidence: z.number().min(0).max(1).optional(),
     archived: z.boolean().optional(),
+    corrected_by: semanticNodeCorrectionRefSchema.optional(),
+    superseded_at: z.number().finite().optional(),
   })
   .strict();
 

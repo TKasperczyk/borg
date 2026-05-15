@@ -5,11 +5,14 @@ import {
   ACTION_STATES,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
+  SEMANTIC_NODE_STATUSES,
   type ActionRecordCreationSource,
   type ActionState,
   type Borg,
   type RelationalSlotState,
   type ReviewKind,
+  type SemanticNode,
+  type SemanticNodeStatus,
   type SessionId,
 } from "../src/index.js";
 import {
@@ -290,9 +293,7 @@ function diffActionCreationCounts(input: {
   return diff;
 }
 
-function actionCreationCountTotal(
-  counts: Record<ActionRecordCreationSource, number>,
-): number {
+function actionCreationCountTotal(counts: Record<ActionRecordCreationSource, number>): number {
   return ACTION_CREATION_SOURCES.reduce((sum, source) => sum + counts[source], 0);
 }
 
@@ -318,6 +319,23 @@ function reviewQueueOpenCountByType(borg: Borg): Record<ReviewKind, number> {
 
   for (const item of borg.review.list({ openOnly: true })) {
     counts[item.kind] += 1;
+  }
+
+  return counts;
+}
+
+function semanticNodeStatusCounts(
+  nodes: readonly Pick<SemanticNode, "status">[],
+): Record<SemanticNodeStatus, number> {
+  const counts = zeroCounts<SemanticNodeStatus>(SEMANTIC_NODE_STATUSES);
+  const knownStatuses = new Set<string>(SEMANTIC_NODE_STATUSES);
+
+  for (const node of nodes) {
+    if (!knownStatuses.has(node.status)) {
+      continue;
+    }
+
+    counts[node.status] += 1;
   }
 
   return counts;
@@ -382,15 +400,12 @@ export class MetricsCapture {
         ...actionRecordCountByState,
       },
       action_record_count_committed_to_do: actionRecordCountByState.committed_to_do ?? 0,
-      action_record_count_canonicalized:
-        actionCountFromRepository(borg, "countCanonicalized") ?? 0,
+      action_record_count_canonicalized: actionCountFromRepository(borg, "countCanonicalized") ?? 0,
       action_record_count_active:
         actionCountFromRepository(borg, "countActive") ??
         activeActionCountFromStateCounts(actionRecordCountByState),
       action_record_creation_source_per_turn: actionCreationSourcePerTurn,
-      action_record_creation_count_this_turn: actionCreationCountTotal(
-        actionCreationSourcePerTurn,
-      ),
+      action_record_creation_count_this_turn: actionCreationCountTotal(actionCreationSourcePerTurn),
       recent_completed_action_count: recentCompletedActionCount,
       commitment_count_active: borg.commitments.countActive(),
       commitment_count_superseded: borg.commitments.countSuperseded(),
@@ -534,6 +549,7 @@ export class MetricsCapture {
       transport_chat_attempts: context.transportChatAttempts,
       episode_count: episodeResult.items.length,
       semantic_node_count: semanticNodes.length,
+      semantic_node_count_by_status: semanticNodeStatusCounts(semanticNodes),
       semantic_edge_count: semanticEdges.length,
       semantic_nodes_added_since_last_check: semanticNodesAdded,
       semantic_edges_added_since_last_check: semanticEdgesAdded,
@@ -632,6 +648,7 @@ export class MetricsCapture {
       failure_reason: context.failureReason,
       episode_count: episodeResult.items.length,
       semantic_node_count: semanticNodes.length,
+      semantic_node_count_by_status: semanticNodeStatusCounts(semanticNodes),
       semantic_edge_count: semanticEdges.length,
       semantic_nodes_added_since_last_check: 0,
       semantic_edges_added_since_last_check: 0,

@@ -2,9 +2,11 @@ import { z } from "zod";
 
 import { SemanticError } from "../../../util/errors.js";
 import { semanticEdgeIdSchema, semanticNodeIdSchema, type SemanticNode } from "../types.js";
+import type { SemanticNodeStatusTransition } from "../repository.js";
 import {
   reviewResolutionSchema,
   type ReviewKind,
+  type ReviewHandlerContext,
   type ReviewQueueHandler,
   type ReviewResolution,
 } from "../review-queue.js";
@@ -98,6 +100,24 @@ function requireWinner(input: {
   return input.winnerNodeId;
 }
 
+function traceStatusTransition(input: {
+  ctx: ReviewHandlerContext;
+  transition: SemanticNodeStatusTransition | null;
+}): void {
+  if (input.transition === null || input.ctx.tracer?.enabled !== true) {
+    return;
+  }
+
+  input.ctx.tracer.emit("semantic_node_status_transitioned", {
+    turnId: "review_queue",
+    nodeId: input.transition.id,
+    fromStatus: input.transition.fromStatus,
+    toStatus: input.transition.toStatus,
+    correctedBy: input.transition.correctedBy,
+    source: "review_handler",
+  });
+}
+
 export function createSemanticPairReviewQueueHandler(
   kind: SemanticPairReviewKind,
 ): ReviewQueueHandler<SemanticPairReviewKind, SemanticPairReviewRefs, SemanticPairApplyingState> {
@@ -183,16 +203,24 @@ export function createSemanticPairReviewQueueHandler(
       const loser = winner.id === first.id ? second : first;
 
       if (resolution.decision === "supersede") {
-        await ctx.semanticNodeRepository.update(loser.id, {
-          superseded_by: winner.id,
-          archived: true,
+        traceStatusTransition({
+          ctx,
+          transition: await ctx.semanticNodeRepository.markSuperseded(
+            loser.id,
+            winner.id,
+            ctx.clock.now(),
+          ),
         });
         return;
       }
 
-      await ctx.semanticNodeRepository.update(loser.id, {
-        confidence: 0,
-        archived: true,
+      traceStatusTransition({
+        ctx,
+        transition: await ctx.semanticNodeRepository.markContradicted(
+          loser.id,
+          winner.id,
+          ctx.clock.now(),
+        ),
       });
     },
   };

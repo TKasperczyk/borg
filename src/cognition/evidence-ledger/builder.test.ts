@@ -101,6 +101,9 @@ function makeSemanticNode(input: {
     embedding: new Float32Array([0, 1, 0, 0]),
     archived: false,
     superseded_by: null,
+    status: "active",
+    corrected_by: null,
+    superseded_at: null,
   };
 }
 
@@ -1821,6 +1824,9 @@ describe("EvidenceLedgerBuilder", () => {
       persistence_class: "assistant_self_report",
     });
     expect(
+      allEntries.find((entry) => entry.id === `semantic_node:${matchedNode.id}`)?.state_metadata,
+    ).not.toHaveProperty("status");
+    expect(
       allEntries.find((entry) => entry.id === `semantic_node:${supportNode.id}`),
     ).toMatchObject({
       persistence_class: "assistant_self_report",
@@ -1860,6 +1866,9 @@ describe("EvidenceLedgerBuilder", () => {
       created_at: NOW_MS - 100_000,
       updated_at: NOW_MS - 100_000,
       last_verified_at: NOW_MS - 100_000,
+      status: "superseded",
+      corrected_by: createSemanticNodeId(),
+      superseded_at: NOW_MS,
     });
     const builder = new EvidenceLedgerBuilder({
       createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
@@ -1932,9 +1941,14 @@ describe("EvidenceLedgerBuilder", () => {
     expect(transcriptCorrection?.text).toContain("3 nights in San Sebastian");
     expect(assistantCorrection?.text).toContain("3 nights");
     expect(staleSemantic?.text).toContain("4 nights in San Sebastian");
-    expect((transcriptCorrection?.trust_rank ?? 0)).toBeGreaterThan(
-      staleSemantic?.trust_rank ?? 0,
-    );
+    expect(staleSemantic?.text).toContain("[status=superseded");
+    expect(staleSemantic?.state).toBe("superseded:proposition");
+    expect(staleSemantic?.state_metadata).toMatchObject({
+      status: "superseded",
+      superseded_at: NOW_MS,
+    });
+    expect(staleSemantic?.text).not.toContain(staleNode.corrected_by);
+    expect(transcriptCorrection?.trust_rank ?? 0).toBeGreaterThan(staleSemantic?.trust_rank ?? 0);
     expect(renderedTranscriptSection).toContain(correctionText);
     expect(renderedSemanticSection).toContain("Plan: 4 nights in San Sebastian");
     expect(semanticStart).toBeGreaterThan(transcriptStart);

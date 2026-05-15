@@ -1,4 +1,5 @@
 import type { Migration } from "../../storage/sqlite/index.js";
+import { tableHasColumn, tableExists } from "../../storage/sqlite/migrations-utils.js";
 
 export const semanticMigrations = [
   {
@@ -130,6 +131,32 @@ export const semanticMigrations = [
 
         CREATE INDEX IF NOT EXISTS semantic_node_vector_sync_outbox_created_idx
           ON semantic_node_vector_sync_outbox(created_at, id);
+      `);
+    },
+  },
+  {
+    id: 2,
+    name: "semantic_node_lifecycle_status",
+    up: (db) => {
+      if (!tableExists(db, "semantic_nodes")) {
+        return;
+      }
+
+      if (!tableHasColumn(db, "semantic_nodes", "status")) {
+        db.exec("ALTER TABLE semantic_nodes ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+      }
+
+      if (!tableHasColumn(db, "semantic_nodes", "corrected_by")) {
+        db.exec("ALTER TABLE semantic_nodes ADD COLUMN corrected_by TEXT NULL");
+      }
+
+      if (!tableHasColumn(db, "semantic_nodes", "superseded_at")) {
+        db.exec("ALTER TABLE semantic_nodes ADD COLUMN superseded_at INTEGER NULL");
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS semantic_nodes_status_updated_idx
+          ON semantic_nodes(status, updated_at DESC);
       `);
     },
   },

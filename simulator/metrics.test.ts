@@ -61,6 +61,7 @@ const TURN_METRICS_KEY_ORDER = [
   "transport_chat_attempts",
   "episode_count",
   "semantic_node_count",
+  "semantic_node_count_by_status",
   "semantic_edge_count",
   "semantic_nodes_added_since_last_check",
   "semantic_edges_added_since_last_check",
@@ -180,7 +181,10 @@ function fakeBorg(
     semantic: {
       nodes: {
         list: async () =>
-          Array.from({ length: semanticNodeCount }, (_, index) => ({ id: `node_${index}` })),
+          Array.from({ length: semanticNodeCount }, (_, index) => ({
+            id: `node_${index}`,
+            status: "active",
+          })),
       },
       edges: {
         list: () =>
@@ -338,6 +342,12 @@ describe("MetricsCapture", () => {
     expect(row.transport_chat_attempts).toBe(2);
     expect(row.episode_count).toBe(2);
     expect(row.semantic_node_count).toBe(1);
+    expect(row.semantic_node_count_by_status).toEqual({
+      active: 1,
+      superseded: 0,
+      contradicted: 0,
+      quarantined: 0,
+    });
     expect(row.semantic_edge_count).toBe(2);
     expect(row.semantic_nodes_added_since_last_check).toBe(0);
     expect(row.semantic_edges_added_since_last_check).toBe(0);

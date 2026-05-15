@@ -460,6 +460,222 @@ describe("resolveSemanticContext temporal validity", () => {
     expect(result.matchedNodeIds).toContain(underReview.id);
   });
 
+  it("ranks contradicted semantic nodes below active matches", async () => {
+    harness = await createOfflineTestHarness({ clock: new ManualClock(1_000_000) });
+    const episode = createEpisodeFixture({
+      title: "Atlas itinerary note",
+      tags: ["atlas"],
+    });
+    await harness.episodicRepository.insert(episode);
+    const active = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas itinerary has three nights",
+          source_episode_ids: [episode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const contradicted = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas itinerary has four nights",
+          source_episode_ids: [episode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    await harness.semanticNodeRepository.markContradicted(contradicted.id, active.id, 1_000_000);
+    const semanticGraph = new SemanticGraph({
+      nodeRepository: harness.semanticNodeRepository,
+      edgeRepository: harness.semanticEdgeRepository,
+    });
+
+    const result = await resolveSemanticContext(
+      "Atlas itinerary nights",
+      {
+        graphWalkDepth: 1,
+        maxGraphNodes: 4,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
+      },
+      {
+        embeddingClient: harness.embeddingClient,
+        episodicRepository: harness.episodicRepository,
+        semanticNodeRepository: harness.semanticNodeRepository,
+        semanticGraph,
+      },
+    );
+    const activeMatch = result.matchedNodes.find((node) => node.id === active.id);
+    const contradictedMatch = result.matchedNodes.find((node) => node.id === contradicted.id);
+
+    expect(activeMatch?.retrieval_score).toBe(activeMatch?.base_retrieval_score);
+    expect(contradictedMatch?.status).toBe("contradicted");
+    expect(contradictedMatch?.retrieval_score).toBeCloseTo(
+      (contradictedMatch?.base_retrieval_score ?? 0) * 0.3,
+    );
+    expect(result.matchedNodeIds[0]).toBe(active.id);
+    expect(result.matchedNodeIds).toContain(contradicted.id);
+  });
+
+  it("overfetches vector candidates with a bounded multiplier before status-weighted truncation", async () => {
+    harness = await createOfflineTestHarness({ clock: new ManualClock(1_000_000) });
+    const episode = createEpisodeFixture({
+      title: "San Sebastian itinerary note",
+      tags: ["itinerary"],
+    });
+    await harness.episodicRepository.insert(episode);
+    const active = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "San Sebastian is three nights",
+          description: "The corrected itinerary has three nights in San Sebastian.",
+          source_episode_ids: [episode.id],
+          updated_at: 1_000_000,
+        },
+        [0.97, 0.24, 0, 0],
+      ),
+    );
+
+    for (let index = 0; index < 5; index += 1) {
+      const stale = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: `San Sebastian stale four-night claim ${index}`,
+            description: "A superseded itinerary claim says San Sebastian is four nights.",
+            source_episode_ids: [episode.id],
+            updated_at: 1_000_100 + index,
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      await harness.semanticNodeRepository.markSuperseded(stale.id, active.id, 1_000_200 + index);
+    }
+
+    const semanticGraph = new SemanticGraph({
+      nodeRepository: harness.semanticNodeRepository,
+      edgeRepository: harness.semanticEdgeRepository,
+    });
+
+    const result = await resolveSemanticContext(
+      "San Sebastian nights",
+      {
+        graphWalkDepth: 1,
+        maxGraphNodes: 4,
+        overfetchMultiplier: 999,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
+      },
+      {
+        embeddingClient: harness.embeddingClient,
+        episodicRepository: harness.episodicRepository,
+        semanticNodeRepository: harness.semanticNodeRepository,
+        semanticGraph,
+      },
+    );
+
+    expect(result.matchedNodes).toHaveLength(3);
+    expect(result.matchedNodeIds[0]).toBe(active.id);
+    expect(result.matchedNodes[0]?.status).toBe("active");
+    expect(result.matchedNodes.slice(1).every((node) => node.status === "superseded")).toBe(true);
+  });
+
+  it("caps oversized semantic overfetch candidate limits", async () => {
+    const requestedVectorLimits: number[] = [];
+    const requestedExactLimits: number[] = [];
+
+    await resolveSemanticContext(
+      "Atlas",
+      {
+        exactTerms: ["Atlas"],
+        overfetchMultiplier: 999,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
+      },
+      {
+        embeddingClient: {
+          embed: async () => Float32Array.from([1, 0, 0, 0]),
+        } as never,
+        episodicRepository: {} as never,
+        semanticGraph: {} as never,
+        semanticNodeRepository: {
+          searchByVector: async (
+            _vector: Float32Array,
+            options: { limit?: number },
+          ): Promise<[]> => {
+            requestedVectorLimits.push(options.limit ?? 0);
+            return [];
+          },
+          findByExactLabelOrAlias: async (_term: string, limit: number): Promise<[]> => {
+            requestedExactLimits.push(limit);
+            return [];
+          },
+        } as never,
+      },
+    );
+
+    expect(requestedVectorLimits).toEqual([30]);
+    expect(requestedExactLimits).toEqual([50]);
+  });
+
+  it("keeps superseded graph-walk nodes visible with reduced status weight", async () => {
+    harness = await createOfflineTestHarness({ clock: new ManualClock(1_000_000) });
+    const episode = createEpisodeFixture({
+      title: "Atlas graph note",
+      tags: ["atlas"],
+    });
+    await harness.episodicRepository.insert(episode);
+    const root = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          kind: "entity",
+          label: "Atlas",
+          source_episode_ids: [episode.id],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const superseded = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas outdated supporting fact",
+          source_episode_ids: [episode.id],
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    harness.semanticEdgeRepository.addEdge({
+      from_node_id: root.id,
+      to_node_id: superseded.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: [episode.id],
+      created_at: 1_000_000,
+      last_verified_at: 1_000_000,
+    });
+    await harness.semanticNodeRepository.markSuperseded(superseded.id, root.id, 1_000_000);
+    const semanticGraph = new SemanticGraph({
+      nodeRepository: harness.semanticNodeRepository,
+      edgeRepository: harness.semanticEdgeRepository,
+    });
+
+    const result = await resolveSemanticContext(
+      "Atlas",
+      {
+        graphWalkDepth: 1,
+        maxGraphNodes: 4,
+        queryVector: Float32Array.from([1, 0, 0, 0]),
+      },
+      {
+        embeddingClient: harness.embeddingClient,
+        episodicRepository: harness.episodicRepository,
+        semanticNodeRepository: harness.semanticNodeRepository,
+        semanticGraph,
+      },
+    );
+    const hit = result.supportHits.find((item) => item.node.id === superseded.id);
+
+    expect(hit?.node.status).toBe("superseded");
+    expect(hit?.node.status_retrieval_multiplier).toBe(0.5);
+  });
+
   it("does not leak private belief-revision status across audience scopes", async () => {
     const clock = new ManualClock(1_000_000);
     const audienceA = "ent_aaaaaaaaaaaaaaaa" as EntityId;

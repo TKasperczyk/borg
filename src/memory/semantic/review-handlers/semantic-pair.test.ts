@@ -66,12 +66,12 @@ describe("semantic pair review handler", () => {
         node_ids: [firstNode.id, secondNode.id],
         node_labels: ["Atlas succeeds", "Atlas fails"],
       });
-      const update = vi.fn(async () => ({}));
+      const markSuperseded = vi.fn(async () => null);
       const handler = createSemanticPairReviewQueueHandler(kind);
       const ctx = ctxWith({
         semanticNodeRepository: {
           getMany: vi.fn(async () => [firstNode, secondNode]),
-          update,
+          markSuperseded,
         } as never,
       });
 
@@ -103,17 +103,14 @@ describe("semantic pair review handler", () => {
         ctx,
       });
 
-      expect(update).toHaveBeenCalledWith(secondNode.id, {
-        superseded_by: firstNode.id,
-        archived: true,
-      });
+      expect(markSuperseded).toHaveBeenCalledWith(secondNode.id, firstNode.id, 5_000);
     });
 
     it(`invalidates node-pair losers for ${kind}`, async () => {
       const refs = semanticPairReviewRefsSchema.parse({
         node_ids: [firstNode.id, secondNode.id],
       });
-      const update = vi.fn(async () => ({}));
+      const markContradicted = vi.fn(async () => null);
       const handler = createSemanticPairReviewQueueHandler(kind);
 
       await handler.apply({
@@ -132,15 +129,12 @@ describe("semantic pair review handler", () => {
         ctx: ctxWith({
           semanticNodeRepository: {
             getMany: vi.fn(async () => [firstNode, secondNode]),
-            update,
+            markContradicted,
           } as never,
         }),
       });
 
-      expect(update).toHaveBeenCalledWith(firstNode.id, {
-        confidence: 0,
-        archived: true,
-      });
+      expect(markContradicted).toHaveBeenCalledWith(firstNode.id, secondNode.id, 5_000);
     });
 
     it(`closes loser semantic edges for ${kind}`, async () => {

@@ -989,6 +989,9 @@ describe("belief reviser process", () => {
         resolution: "archive_node",
       });
       expect(updated?.archived).toBe(true);
+      expect(updated?.status).toBe("contradicted");
+      expect(updated?.corrected_by).toBe("seme_aaaaaaaaaaaaaaaa");
+      expect(updated?.superseded_at).toBe(2_000);
       expect(matches).toHaveLength(0);
     } finally {
       await harness.cleanup();
