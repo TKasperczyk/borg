@@ -365,4 +365,8 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
     expect(result.goals_retired).toBe(0);
     expect(goalsRepository.updateStatus).not.toHaveBeenCalled();
   });
+
+  it.todo(
+    "retires stale plan-branch commitments when a replacement branch is operationalized: lock 5-city itinerary, pivot to 3-anchor route skipping a city, operationalize 3-anchor via booked Renfe legs canonicalized into the artifact, assert old 5-city commitments transition to superseded/revoked without explicit canonicalizes references",
+  );
 });

@@ -16,8 +16,7 @@
   },
   "files": [
     "dist",
-    "README.md",
-    "ARCHITECTURE.md"
+    "README.md"
   ],
   "engines": {
     "node": ">=22"
