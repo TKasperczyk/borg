@@ -5,10 +5,15 @@ import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createEntityId, createGoalId } from "../../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
-import { GoalPromotionExtractor } from "./goal-promotion-extractor.js";
+import {
+  GOAL_PROMOTION_CLASSIFICATIONS,
+  GoalPromotionExtractor,
+  type GoalPromotionClassification,
+} from "./goal-promotion-extractor.js";
 
 type PromotionInput = {
-  classification?: "promote" | "none";
+  classification?: GoalPromotionClassification | string;
+  omitClassification?: boolean;
   description?: string;
   priority?: number;
   target_at?: number | null;
@@ -23,7 +28,32 @@ type PromotionInput = {
   } | null;
 };
 
-function goalPromotionResponse(promotions: PromotionInput[]): LLMCompleteResult {
+type GoalPromotionResponseOptions = {
+  durableGoalBatch?: "single" | "explicit_multiple";
+};
+
+function promotionPayload(promotion: PromotionInput, index: number): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    description: promotion.description ?? `Goal ${index}`,
+    priority: promotion.priority ?? 5,
+    target_at: promotion.target_at ?? null,
+    reason: promotion.reason ?? "Borg has an ongoing role.",
+    confidence: promotion.confidence ?? 0.9,
+    duplicate_of_goal_id: promotion.duplicate_of_goal_id ?? null,
+    initial_step: promotion.initial_step ?? null,
+  };
+
+  if (promotion.omitClassification !== true) {
+    payload.classification = promotion.classification ?? "durable_borg_goal";
+  }
+
+  return payload;
+}
+
+function goalPromotionResponse(
+  promotions: PromotionInput[],
+  options: GoalPromotionResponseOptions = {},
+): LLMCompleteResult {
   return {
     text: "",
     input_tokens: 5,
@@ -34,16 +64,8 @@ function goalPromotionResponse(promotions: PromotionInput[]): LLMCompleteResult 
         id: "toolu_goal_promotion",
         name: "EmitGoalPromotion",
         input: {
-          promotions: promotions.map((promotion, index) => ({
-            classification: promotion.classification ?? "promote",
-            description: promotion.description ?? `Goal ${index}`,
-            priority: promotion.priority ?? 5,
-            target_at: promotion.target_at ?? null,
-            reason: promotion.reason ?? "Borg has an ongoing role.",
-            confidence: promotion.confidence ?? 0.9,
-            duplicate_of_goal_id: promotion.duplicate_of_goal_id ?? null,
-            initial_step: promotion.initial_step ?? null,
-          })),
+          durable_goal_batch: options.durableGoalBatch ?? "single",
+          promotions: promotions.map((promotion, index) => promotionPayload(promotion, index)),
         },
       },
     ],
@@ -54,7 +76,7 @@ function createExtractorInput(
   overrides: Partial<Parameters<GoalPromotionExtractor["extract"]>[0]> = {},
 ) {
   return {
-    userMessage: "Help me track my italki shortlist.",
+    userMessage: "Help me track the release checklist.",
     recentHistory: [],
     audienceEntityId: createEntityId(),
     temporalCue: null,
@@ -63,15 +85,26 @@ function createExtractorInput(
   };
 }
 
+function tracingHarness() {
+  const emit = vi.fn();
+  const tracer = {
+    enabled: true,
+    includePayloads: false,
+    emit,
+  } satisfies TurnTracer;
+
+  return { emit, tracer };
+}
+
 describe("GoalPromotionExtractor", () => {
-  it("emits a high-confidence goal promotion candidate", async () => {
+  it("emits a high-confidence durable goal promotion candidate", async () => {
     const llm = new FakeLLMClient({
       responses: [
         goalPromotionResponse([
           {
-            description: "Help the user track their italki shortlist",
+            description: "Help the user track the release checklist",
             priority: 8,
-            reason: "The user asked Borg to track the shortlist over time.",
+            reason: "The user asked Borg to track the checklist over time.",
             confidence: 0.9,
           },
         ]),
@@ -86,10 +119,10 @@ describe("GoalPromotionExtractor", () => {
 
     expect(result).toEqual([
       {
-        description: "Help the user track their italki shortlist",
+        description: "Help the user track the release checklist",
         priority: 8,
         target_at: null,
-        reason: "The user asked Borg to track the shortlist over time.",
+        reason: "The user asked Borg to track the checklist over time.",
         confidence: 0.9,
         duplicate_of_goal_id: null,
         initial_step: null,
@@ -101,7 +134,7 @@ describe("GoalPromotionExtractor", () => {
       name: "EmitGoalPromotion",
     });
     expect(llm.requests[0]?.max_tokens).toBe(1536);
-    expect(llm.requests[0]?.system).toContain("I might book italki tonight");
+    expect(llm.requests[0]?.system).toContain("participant_action");
   });
 
   it("returns no candidates when the LLM finds no Borg role", async () => {
@@ -114,25 +147,25 @@ describe("GoalPromotionExtractor", () => {
     });
 
     await expect(
-      extractor.extract(createExtractorInput({ userMessage: "I should probably book italki." })),
+      extractor.extract(createExtractorInput({ userMessage: "I should probably update the docs." })),
     ).resolves.toEqual([]);
   });
 
-  it("returns a promotion with an initial executive step", async () => {
+  it("returns a durable goal promotion with an initial executive step", async () => {
     const llm = new FakeLLMClient({
       responses: [
         goalPromotionResponse([
           {
-            description: "Help the user keep the Monday postmortem straight",
+            description: "Help the user keep the Monday postmortem organized",
             priority: 9,
             target_at: 1_800_000,
-            reason: "The user asked Borg to help keep the postmortem organized.",
+            reason: "The user asked Borg to keep the postmortem work organized.",
             confidence: 0.92,
             initial_step: {
               description: "Ask for postmortem constraints before Monday",
               kind: "ask_user",
               due_at: 1_700_000,
-              rationale: "The user asked Borg to help keep the work straight.",
+              rationale: "Borg needs the constraints to track the postmortem well.",
             },
           },
         ]),
@@ -146,7 +179,7 @@ describe("GoalPromotionExtractor", () => {
     await expect(
       extractor.extract(
         createExtractorInput({
-          userMessage: "Write postmortem Monday, help me keep this straight.",
+          userMessage: "Write postmortem Monday, help me keep this organized.",
         }),
       ),
     ).resolves.toMatchObject([
@@ -161,12 +194,63 @@ describe("GoalPromotionExtractor", () => {
     ]);
   });
 
-  it("drops low-confidence promotions", async () => {
+  it.each(
+    GOAL_PROMOTION_CLASSIFICATIONS.filter(
+      (classification) => classification !== "durable_borg_goal",
+    ),
+  )("rejects non-durable taxonomy classification %s", async (classification) => {
+    const { emit, tracer } = tracingHarness();
     const llm = new FakeLLMClient({
       responses: [
         goalPromotionResponse([
           {
-            description: "Help the user track a possible appointment",
+            classification,
+            description: `Candidate classified as ${classification}`,
+            reason: `The current turn belongs in ${classification}.`,
+            confidence: 0.94,
+          },
+        ]),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn-goal-taxonomy-reject",
+    });
+
+    await expect(extractor.extract(createExtractorInput())).resolves.toEqual([]);
+
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_classification_rejected",
+      expect.objectContaining({
+        turnId: "turn-goal-taxonomy-reject",
+        classification,
+        reason: "non_durable_classification",
+      }),
+    );
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_extractor_completed",
+      expect.objectContaining({
+        turnId: "turn-goal-taxonomy-reject",
+        candidates_emitted: 0,
+        classification_counts: expect.objectContaining({
+          [classification]: 1,
+        }),
+        rejected_by_classification: expect.objectContaining({
+          [classification]: 1,
+        }),
+      }),
+    );
+  });
+
+  it("rejects low-confidence durable goals separately from taxonomy rejection", async () => {
+    const { emit, tracer } = tracingHarness();
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse([
+          {
+            description: "Help the user track a possible code review follow-up",
             confidence: 0.6,
           },
         ]),
@@ -175,11 +259,32 @@ describe("GoalPromotionExtractor", () => {
     const extractor = new GoalPromotionExtractor({
       llmClient: llm,
       model: "haiku",
+      tracer,
+      turnId: "turn-goal-low-confidence",
     });
 
     await expect(
-      extractor.extract(createExtractorInput({ userMessage: "Doctor appointment Tuesday." })),
+      extractor.extract(
+        createExtractorInput({ userMessage: "Maybe keep an eye on the code review." }),
+      ),
     ).resolves.toEqual([]);
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_classification_rejected",
+      expect.objectContaining({
+        turnId: "turn-goal-low-confidence",
+        classification: "durable_borg_goal",
+        reason: "low_confidence",
+      }),
+    );
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_extractor_completed",
+      expect.objectContaining({
+        rejected_low_confidence: 1,
+        rejected_by_classification: expect.objectContaining({
+          durable_borg_goal: 0,
+        }),
+      }),
+    );
   });
 
   it("preserves duplicate references for persistence-time dedup", async () => {
@@ -189,7 +294,7 @@ describe("GoalPromotionExtractor", () => {
       responses: [
         goalPromotionResponse([
           {
-            description: "Help the user track their italki shortlist",
+            description: "Help the user track their release checklist",
             duplicate_of_goal_id: existingGoalId,
             confidence: 0.95,
           },
@@ -203,11 +308,11 @@ describe("GoalPromotionExtractor", () => {
 
     const result = await extractor.extract(
       createExtractorInput({
-        userMessage: "Remind me about italki later.",
+        userMessage: "Keep tracking the release checklist.",
         activeGoals: [
           {
             id: existingGoalId,
-            description: "Help the user track their italki shortlist",
+            description: "Help the user track their release checklist",
             priority: 8,
             target_at: null,
             owner_entity_id: owner,
@@ -218,7 +323,7 @@ describe("GoalPromotionExtractor", () => {
 
     expect(result).toEqual([
       expect.objectContaining({
-        description: "Help the user track their italki shortlist",
+        description: "Help the user track their release checklist",
         duplicate_of_goal_id: existingGoalId,
       }),
     ]);
@@ -227,30 +332,83 @@ describe("GoalPromotionExtractor", () => {
     );
   });
 
-  it("caps promotions at three candidates", async () => {
+  it("caps single-mode durable promotions to the highest-confidence candidate", async () => {
+    const { emit, tracer } = tracingHarness();
     const llm = new FakeLLMClient({
       responses: [
         goalPromotionResponse([
-          { description: "Goal 1" },
-          { description: "Goal 2" },
-          { description: "Goal 3" },
-          { description: "Goal 4" },
-          { description: "Goal 5" },
+          { description: "Track the frontend rollout", confidence: 0.86 },
+          { description: "Track the API migration", confidence: 0.97 },
+          { description: "Track the design follow-up", confidence: 0.91 },
         ]),
       ],
     });
     const extractor = new GoalPromotionExtractor({
       llmClient: llm,
       model: "haiku",
+      tracer,
+      turnId: "turn-goal-single-cap",
+    });
+
+    const result = await extractor.extract(createExtractorInput());
+
+    expect(result.map((candidate) => candidate.description)).toEqual(["Track the API migration"]);
+    expect(
+      emit.mock.calls.filter(
+        ([event, data]) =>
+          event === "goal_promotion_classification_rejected" &&
+          typeof data === "object" &&
+          data !== null &&
+          "reason" in data &&
+          data.reason === "cap_exceeded",
+      ),
+    ).toHaveLength(2);
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_extractor_completed",
+      expect.objectContaining({
+        candidates_emitted: 1,
+        rejected_by_cap: 2,
+      }),
+    );
+  });
+
+  it("caps explicit-multiple durable promotions at three candidates", async () => {
+    const { emit, tracer } = tracingHarness();
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse(
+          [
+            { description: "Track the launch checklist", confidence: 0.9 },
+            { description: "Track the hiring follow-up", confidence: 0.89 },
+            { description: "Track the incident review", confidence: 0.88 },
+            { description: "Track the API migration", confidence: 0.99 },
+            { description: "Track the support handoff", confidence: 0.98 },
+          ],
+          { durableGoalBatch: "explicit_multiple" },
+        ),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn-goal-explicit-multiple",
     });
 
     const result = await extractor.extract(createExtractorInput());
 
     expect(result.map((candidate) => candidate.description)).toEqual([
-      "Goal 1",
-      "Goal 2",
-      "Goal 3",
+      "Track the launch checklist",
+      "Track the hiring follow-up",
+      "Track the incident review",
     ]);
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_extractor_completed",
+      expect.objectContaining({
+        candidates_emitted: 3,
+        rejected_by_cap: 2,
+      }),
+    );
   });
 
   it("salvages valid promotions when another promotion fails item validation", async () => {
@@ -310,6 +468,87 @@ describe("GoalPromotionExtractor", () => {
             reason: "invalid_duplicate_of_goal_id",
           },
         ],
+      }),
+    );
+  });
+
+  it("counts invalid enum classifications as item-level invalid classifications", async () => {
+    const { emit, tracer } = tracingHarness();
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse([
+          {
+            classification: "legacy_goal",
+            description: "Track the deprecated classification fixture",
+            confidence: 0.95,
+          },
+        ]),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn-goal-invalid-enum",
+    });
+
+    await expect(extractor.extract(createExtractorInput())).resolves.toEqual([]);
+    expect(emit).not.toHaveBeenCalledWith(
+      "goal_promotion_classification_rejected",
+      expect.anything(),
+    );
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_extractor_completed",
+      expect.objectContaining({
+        candidates_emitted: 0,
+        skipped_promotion_count: 1,
+        skipped_promotions: [
+          {
+            candidate_index: 0,
+            reason: "invalid_classification",
+          },
+        ],
+        classification_counts: expect.objectContaining({
+          invalid_classification: 1,
+        }),
+        rejected_invalid_enum: 1,
+      }),
+    );
+  });
+
+  it("requires classification and salvages missing-classification items as invalid classifications", async () => {
+    const { emit, tracer } = tracingHarness();
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse([
+          {
+            omitClassification: true,
+            description: "Track the missing classification fixture",
+            confidence: 0.95,
+          },
+        ]),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn-goal-missing-classification",
+    });
+
+    await expect(extractor.extract(createExtractorInput())).resolves.toEqual([]);
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_extractor_completed",
+      expect.objectContaining({
+        skipped_promotions: [
+          {
+            candidate_index: 0,
+            reason: "invalid_classification",
+          },
+        ],
+        classification_counts: expect.objectContaining({
+          invalid_classification: 1,
+        }),
       }),
     );
   });

@@ -397,6 +397,19 @@ function metricsRow(turnCounter: number): MetricsRow {
     goal_promotion_dedup_skipped_extractor_signal: 0,
     goal_promotion_dedup_skipped_embedding: 0,
     goal_promotion_dedup_degraded: 0,
+    goal_promotion_classifications_per_turn: {
+      durable_borg_goal: 0,
+      borg_one_off_action: 0,
+      participant_action: 0,
+      settled_decision: 0,
+      session_agenda: 0,
+      open_question: 0,
+      already_represented: 0,
+      none: 0,
+      invalid_classification: 0,
+    },
+    goal_promotion_rejected_classification: 0,
+    goal_promotion_cap_rejections: 0,
     overseer_due_on_suppressed_turn: false,
   };
 }

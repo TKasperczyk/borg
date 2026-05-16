@@ -53,6 +53,7 @@ export type TurnTraceEventName =
   | "decision_artifact_canonicalization_candidates"
   | "goal_promotion_extractor_degraded"
   | "goal_promotion_extractor_completed"
+  | "goal_promotion_classification_rejected"
   | "goal_promotion_initial_step_downgraded"
   | "goal_promotion_skipped_as_duplicate"
   | "goal_promotion_dedup_degraded"

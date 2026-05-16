@@ -76,9 +76,12 @@ export {
   type ExtractActionStatesInput,
 } from "./actions/action-state-extractor.js";
 export {
+  GOAL_PROMOTION_CLASSIFICATIONS,
   GoalPromotionExtractor,
+  goalPromotionClassificationSchema,
   type ExtractGoalPromotionInput,
   type GoalPromotionCandidate,
+  type GoalPromotionClassification,
   type GoalPromotionExtractorDegradedReason,
   type GoalPromotionExtractorOptions,
   type GoalPromotionInitialStep,

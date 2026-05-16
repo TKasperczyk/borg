@@ -3,12 +3,14 @@ import { performance } from "node:perf_hooks";
 import {
   QUARANTINED_USER_ENTRY_EVENT,
   ACTION_STATES,
+  GOAL_PROMOTION_CLASSIFICATIONS,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
   SEMANTIC_NODE_STATUSES,
   type ActionRecordCreationSource,
   type ActionState,
   type Borg,
+  type GoalPromotionClassification,
   type RelationalSlotState,
   type ReviewKind,
   type SemanticNode,
@@ -27,6 +29,7 @@ import type { TraceRecord } from "../assessor/types.js";
 import { appendJsonlLine } from "./jsonl.js";
 import { simulatorHealthWarningsForRows } from "./health-warnings.js";
 import type {
+  GoalPromotionClassificationMetricKey,
   MetricsRow,
   SimulatorHealthWarning,
   SimulatorHealthWarningKind,
@@ -46,6 +49,10 @@ const ACTIVE_ACTION_STATES: readonly ActionState[] = [
   "unknown",
 ];
 const ACTION_DUPLICATE_PRESSURE_CHECK_EVERY_TURNS = 10;
+const GOAL_PROMOTION_CLASSIFICATION_METRIC_KEYS = [
+  ...GOAL_PROMOTION_CLASSIFICATIONS,
+  "invalid_classification",
+] as const satisfies readonly GoalPromotionClassificationMetricKey[];
 
 type GoalTreeNodeLike = {
   children?: GoalTreeNodeLike[];
@@ -103,6 +110,9 @@ type GoalPromotionMetricCounts = Pick<
   | "goal_promotion_dedup_skipped_extractor_signal"
   | "goal_promotion_dedup_skipped_embedding"
   | "goal_promotion_dedup_degraded"
+  | "goal_promotion_classifications_per_turn"
+  | "goal_promotion_rejected_classification"
+  | "goal_promotion_cap_rejections"
 >;
 
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
@@ -292,6 +302,14 @@ function goalPromotionMetrics(
   const skippedAsDuplicate = traceRecords.filter(
     (record) => record.event === "goal_promotion_skipped_as_duplicate",
   );
+  const classificationRejected = traceRecords.filter(
+    (record) => record.event === "goal_promotion_classification_rejected",
+  );
+  const classificationsPerTurn = zeroGoalPromotionClassificationCounts();
+
+  for (const record of completed) {
+    addGoalPromotionClassificationCounts(classificationsPerTurn, record);
+  }
 
   return {
     goal_promotion_salvaged_promotions: completed.reduce(
@@ -314,6 +332,13 @@ function goalPromotionMetrics(
     goal_promotion_dedup_degraded: traceRecords.filter(
       (record) => record.event === "goal_promotion_dedup_degraded",
     ).length,
+    goal_promotion_classifications_per_turn: classificationsPerTurn,
+    goal_promotion_rejected_classification: classificationRejected.filter(
+      (record) => traceReason(record) === "non_durable_classification",
+    ).length,
+    goal_promotion_cap_rejections: classificationRejected.filter(
+      (record) => traceReason(record) === "cap_exceeded",
+    ).length,
   };
 }
 
@@ -323,6 +348,50 @@ function zeroCounts<K extends string>(keys: readonly K[]): Record<K, number> {
 
 function zeroActionCreationCounts(): Record<ActionRecordCreationSource, number> {
   return zeroCounts(ACTION_CREATION_SOURCES);
+}
+
+function zeroGoalPromotionClassificationCounts(): Record<
+  GoalPromotionClassificationMetricKey,
+  number
+> {
+  return zeroCounts(GOAL_PROMOTION_CLASSIFICATION_METRIC_KEYS);
+}
+
+function goalPromotionClassificationMetricValue(
+  value: string,
+): GoalPromotionClassificationMetricKey | null {
+  if (value === "invalid_classification") {
+    return value;
+  }
+
+  for (const classification of GOAL_PROMOTION_CLASSIFICATIONS) {
+    if (value === classification) {
+      return classification as GoalPromotionClassification;
+    }
+  }
+
+  return null;
+}
+
+function addGoalPromotionClassificationCounts(
+  target: Record<GoalPromotionClassificationMetricKey, number>,
+  record: TraceRecord,
+): void {
+  const counts = record.classification_counts;
+
+  if (counts === null || typeof counts !== "object" || Array.isArray(counts)) {
+    return;
+  }
+
+  for (const [rawKey, rawValue] of Object.entries(counts)) {
+    const key = goalPromotionClassificationMetricValue(rawKey);
+
+    if (key === null || typeof rawValue !== "number" || !Number.isFinite(rawValue)) {
+      continue;
+    }
+
+    target[key] += rawValue;
+  }
 }
 
 function actionCreationCountsFromRepository(
@@ -730,6 +799,11 @@ export class MetricsCapture {
         goalPromotionMetricCounts.goal_promotion_dedup_skipped_embedding,
       goal_promotion_dedup_degraded:
         goalPromotionMetricCounts.goal_promotion_dedup_degraded,
+      goal_promotion_classifications_per_turn:
+        goalPromotionMetricCounts.goal_promotion_classifications_per_turn,
+      goal_promotion_rejected_classification:
+        goalPromotionMetricCounts.goal_promotion_rejected_classification,
+      goal_promotion_cap_rejections: goalPromotionMetricCounts.goal_promotion_cap_rejections,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 
@@ -835,6 +909,11 @@ export class MetricsCapture {
         goalPromotionMetricCounts.goal_promotion_dedup_skipped_embedding,
       goal_promotion_dedup_degraded:
         goalPromotionMetricCounts.goal_promotion_dedup_degraded,
+      goal_promotion_classifications_per_turn:
+        goalPromotionMetricCounts.goal_promotion_classifications_per_turn,
+      goal_promotion_rejected_classification:
+        goalPromotionMetricCounts.goal_promotion_rejected_classification,
+      goal_promotion_cap_rejections: goalPromotionMetricCounts.goal_promotion_cap_rejections,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 

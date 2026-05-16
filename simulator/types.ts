@@ -2,11 +2,16 @@ import type {
   ActionRecordCreationSource,
   ActionState,
   GenerationSuppressionReason,
+  GoalPromotionClassification,
   RelationalSlotState,
   ReviewKind,
   SemanticNodeStatus,
   SessionId,
 } from "../src/index.js";
+
+export type GoalPromotionClassificationMetricKey =
+  | GoalPromotionClassification
+  | "invalid_classification";
 
 export type Persona = {
   key: string;
@@ -78,6 +83,9 @@ export type MetricsRow = {
   goal_promotion_dedup_skipped_extractor_signal: number;
   goal_promotion_dedup_skipped_embedding: number;
   goal_promotion_dedup_degraded: number;
+  goal_promotion_classifications_per_turn: Record<GoalPromotionClassificationMetricKey, number>;
+  goal_promotion_rejected_classification: number;
+  goal_promotion_cap_rejections: number;
   // True when a checkpoint was scheduled on a suppressed turn; an actual run
   // is represented by that turn's overseer verdict.
   overseer_due_on_suppressed_turn: boolean;

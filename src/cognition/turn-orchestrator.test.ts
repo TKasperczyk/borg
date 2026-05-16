@@ -541,6 +541,7 @@ function createGoalPromotionResponse(
       rationale: string;
     } | null;
   }>,
+  options: { durableGoalBatch?: "single" | "explicit_multiple" } = {},
 ) {
   return {
     text: "",
@@ -552,8 +553,9 @@ function createGoalPromotionResponse(
         id: "toolu_goal_promotion",
         name: "EmitGoalPromotion",
         input: {
+          durable_goal_batch: options.durableGoalBatch ?? "single",
           promotions: promotions.map((promotion) => ({
-            classification: "promote",
+            classification: "durable_borg_goal",
             description: promotion.description,
             priority: promotion.priority ?? 8,
             target_at: promotion.target_at ?? null,
@@ -929,7 +931,7 @@ describe("TurnOrchestrator evidence ledger", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_800_000_182_250);
-    const audience = "Spain Trip Planning Channel";
+    const audience = "Engineering Planning Channel";
     let groupEntityId: EntityId;
     const actionStateForCurrentUser = Object.assign(
       (options: LLMCompleteOptions) => {
@@ -944,7 +946,7 @@ describe("TurnOrchestrator evidence ledger", () => {
 
         return createActionStateResponse([
           {
-            description: "book the Alhambra tickets this weekend",
+            description: "update the API boundary notes this weekend",
             actor: "user",
             state: "committed_to_do",
             audience_entity_id: groupEntityId,
@@ -959,7 +961,7 @@ describe("TurnOrchestrator evidence ledger", () => {
         createCorrectivePreferenceResponse({ classification: "none" }),
         actionStateForCurrentUser,
         createGoalPromotionResponse([]),
-        createEmitAnswerResponse("Alice can own the Alhambra booking."),
+        createEmitAnswerResponse("Alice can own the API boundary notes."),
         createClosureResponseAuditResponse(),
         createEmptyReflectionResponse(),
         createCorrectivePreferenceResponse({ classification: "none" }),
@@ -993,7 +995,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       });
 
       await borg.turn({
-        userMessage: "I'll book the Alhambra tickets this weekend",
+        userMessage: "I'll update the API boundary notes this weekend",
         audience,
         senderEntityId: alice,
         stakes: "low",
@@ -1001,7 +1003,7 @@ describe("TurnOrchestrator evidence ledger", () => {
 
       const aliceAction = borg.actions
         .list({ limit: 10 })
-        .find((record) => record.description === "book the Alhambra tickets this weekend");
+        .find((record) => record.description === "update the API boundary notes this weekend");
 
       expect(aliceAction).toMatchObject({
         actor: alice,
@@ -1022,13 +1024,15 @@ describe("TurnOrchestrator evidence ledger", () => {
       const benFinalizerSystem = systemText(finalizerRequests(llm.requests).at(1));
 
       expect(benFinalizerSystem).toContain("<borg_evidence_ledger>");
-      expect(benFinalizerSystem).toContain("book the Alhambra tickets this weekend");
+      expect(benFinalizerSystem).toContain("update the API boundary notes this weekend");
       expect(benFinalizerSystem).toContain("actor: Alice");
       expect(benFinalizerSystem).not.toContain("actor: Ben");
       expect(
         borg.actions
           .list({ actor: ben, limit: 10 })
-          .some((record) => record.description === "book the Alhambra tickets this weekend"),
+          .some(
+            (record) => record.description === "update the API boundary notes this weekend",
+          ),
       ).toBe(false);
     } finally {
       await borg.close();
@@ -3865,28 +3869,31 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     const clock = new ManualClock(1_800_000_176_600);
     const llm = new FakeLLMClient({
       responses: [
-        createGoalPromotionResponse([
-          {
-            description: "Help the user track the launch checklist",
-            confidence: 0.95,
-          },
-          {
-            description: "Help the user prepare the investor update",
-            confidence: 0.94,
-          },
-          {
-            description: "Help the user schedule the design review",
-            confidence: 0.93,
-          },
-          {
-            description: "Help the user collect beta feedback",
-            confidence: 0.92,
-          },
-          {
-            description: "Help the user plan the onboarding pass",
-            confidence: 0.91,
-          },
-        ]),
+        createGoalPromotionResponse(
+          [
+            {
+              description: "Help the user track the launch checklist",
+              confidence: 0.95,
+            },
+            {
+              description: "Help the user prepare the investor update",
+              confidence: 0.94,
+            },
+            {
+              description: "Help the user schedule the design review",
+              confidence: 0.93,
+            },
+            {
+              description: "Help the user collect beta feedback",
+              confidence: 0.92,
+            },
+            {
+              description: "Help the user plan the onboarding pass",
+              confidence: 0.91,
+            },
+          ],
+          { durableGoalBatch: "explicit_multiple" },
+        ),
         createEmitAnswerResponse("I will keep the active goals focused."),
         createEmptyReflectionResponse(),
       ],
@@ -3972,7 +3979,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       responses: [
         createGoalPromotionResponse([
           {
-            description: "Help the user track their italki shortlist",
+            description: "Help the user track their API review checklist",
             duplicate_of_goal_id: existingGoalId,
             confidence: 0.95,
           },
@@ -3990,7 +3997,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       const samEntityId = internal.deps.entityRepository.resolve("Sam");
       const existingGoal = borg.self.goals.add({
         id: existingGoalId,
-        description: "Help the user track their italki shortlist",
+        description: "Help the user track their API review checklist",
         priority: 8,
         audienceEntityId: samEntityId,
         provenance: {
@@ -3999,7 +4006,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       });
 
       await borg.turn({
-        userMessage: "Remind me about italki later.",
+        userMessage: "Remind me about the API review checklist later.",
         audience: "Sam",
       });
 

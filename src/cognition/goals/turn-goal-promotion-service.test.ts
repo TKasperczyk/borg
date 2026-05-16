@@ -24,6 +24,7 @@ type GoalPromotionFixture = {
 
 function goalPromotionResponse(
   overrides: GoalPromotionFixture | readonly GoalPromotionFixture[] = {},
+  options: { durableGoalBatch?: "single" | "explicit_multiple" } = {},
 ) {
   const promotions = Array.isArray(overrides) ? overrides : [overrides];
 
@@ -37,16 +38,17 @@ function goalPromotionResponse(
         id: "toolu_goal",
         name: "EmitGoalPromotion",
         input: {
+          durable_goal_batch: options.durableGoalBatch ?? "single",
           promotions: promotions.map((promotion) => ({
-              classification: "promote",
-              description: promotion.description ?? "Track Alice drafting the launch brief",
-              priority: promotion.priority ?? 6,
-              target_at: promotion.target_at ?? null,
-              reason: promotion.reason ?? "Borg was asked to keep the work task organized.",
-              confidence: promotion.confidence ?? 0.93,
-              duplicate_of_goal_id: promotion.duplicate_of_goal_id ?? null,
-              initial_step: promotion.initial_step ?? null,
-            })),
+            classification: "durable_borg_goal",
+            description: promotion.description ?? "Track Alice drafting the launch brief",
+            priority: promotion.priority ?? 6,
+            target_at: promotion.target_at ?? null,
+            reason: promotion.reason ?? "Borg was asked to keep the work task organized.",
+            confidence: promotion.confidence ?? 0.93,
+            duplicate_of_goal_id: promotion.duplicate_of_goal_id ?? null,
+            initial_step: promotion.initial_step ?? null,
+          })),
         },
       },
     ],
@@ -665,10 +667,10 @@ describe("TurnGoalPromotionService", () => {
     const emit = vi.fn();
     const llm = new FakeLLMClient({
       responses: [
-        goalPromotionResponse([
-          { description: firstDescription },
-          { description: secondDescription },
-        ]),
+        goalPromotionResponse(
+          [{ description: firstDescription }, { description: secondDescription }],
+          { durableGoalBatch: "explicit_multiple" },
+        ),
       ],
     });
     const service = new TurnGoalPromotionService({

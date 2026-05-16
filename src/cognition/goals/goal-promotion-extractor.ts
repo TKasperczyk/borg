@@ -19,6 +19,31 @@ const MAX_PROMOTIONS_PER_TURN = 3;
 const GOAL_PROMOTION_MAX_TOKENS = 1536;
 const GOAL_PROMOTION_TOOL_NAME = "EmitGoalPromotion";
 
+export const GOAL_PROMOTION_CLASSIFICATIONS = [
+  "durable_borg_goal",
+  "borg_one_off_action",
+  "participant_action",
+  "settled_decision",
+  "session_agenda",
+  "open_question",
+  "already_represented",
+  "none",
+] as const;
+
+export const goalPromotionClassificationSchema = z.enum(GOAL_PROMOTION_CLASSIFICATIONS);
+export type GoalPromotionClassification = z.infer<typeof goalPromotionClassificationSchema>;
+
+const GOAL_PROMOTION_CLASSIFICATION_COUNT_KEYS = [
+  ...GOAL_PROMOTION_CLASSIFICATIONS,
+  "invalid_classification",
+] as const;
+
+type GoalPromotionClassificationCountKey =
+  (typeof GOAL_PROMOTION_CLASSIFICATION_COUNT_KEYS)[number];
+
+const goalPromotionBatchSchema = z.enum(["single", "explicit_multiple"]).default("single");
+type GoalPromotionBatch = z.infer<typeof goalPromotionBatchSchema>;
+
 const initialExecutiveStepSchema = z
   .object({
     description: z
@@ -39,15 +64,14 @@ const initialExecutiveStepSchema = z
 
 const goalPromotionSchema = z
   .object({
-    classification: z
-      .enum(["promote", "none"])
-      .optional()
-      .describe("Use promote only when Borg has an ongoing role for this goal."),
+    classification: goalPromotionClassificationSchema.describe(
+      "Classify the candidate by memory kind. Only durable_borg_goal can become a GoalRecord.",
+    ),
     description: z
       .string()
       .trim()
       .min(1)
-      .describe("Concise durable goal Borg should carry forward."),
+      .describe("Concise description of the candidate memory item."),
     priority: z
       .number()
       .finite()
@@ -65,7 +89,7 @@ const goalPromotionSchema = z
       .string()
       .trim()
       .min(1)
-      .describe("Semantic reason Borg has an ongoing tracking, support, or follow-up role."),
+      .describe("Semantic reason for the classification, grounded in the current user turn."),
     confidence: z
       .number()
       .min(0)
@@ -83,16 +107,20 @@ const goalPromotionSchema = z
 
 const goalPromotionOutputSchema = z
   .object({
+    durable_goal_batch: goalPromotionBatchSchema.describe(
+      "Use single unless the current turn explicitly asks Borg to track multiple separate ongoing responsibilities.",
+    ),
     promotions: z
       .array(goalPromotionSchema)
       .describe(
-        "Goal-promotion candidates. Emit an empty array when no new Borg-carried goal is created.",
+        "Goal-promotion taxonomy candidates. Emit an empty array when nothing is relevant.",
       ),
   })
   .strict();
 
 const goalPromotionEnvelopeSchema = z
   .object({
+    durable_goal_batch: goalPromotionBatchSchema,
     promotions: z.array(z.unknown()),
   })
   .strict();
@@ -100,29 +128,44 @@ const goalPromotionEnvelopeSchema = z
 const GOAL_PROMOTION_TOOL = {
   name: GOAL_PROMOTION_TOOL_NAME,
   description:
-    "Extract durable goals only when Borg has an ongoing tracking, support, reminder, or follow-up role.",
+    "Classify goal-like candidates by memory kind and emit durable Borg goals only when warranted.",
   inputSchema: toToolInputSchema(goalPromotionOutputSchema),
 } satisfies LLMToolDefinition;
 
 const GOAL_PROMOTION_SYSTEM_PROMPT = [
-  "Classify whether the current user turn creates a durable goal Borg should carry as active self-memory.",
-  "Promote only when the user asks Borg to track, support, remind, follow up, keep organized, or otherwise carry an ongoing role; or when the turn clearly establishes that Borg has committed to ongoing support.",
-  "Do not promote a goal just because the user mentions a possible intention, appointment, task, wish, plan, or event. Those may be pending actions or ordinary conversation, not Borg goals.",
+  "Classify goal-like candidates from the current user turn by memory kind.",
+  "Only durable_borg_goal can become active goal self-memory. Everything else is rejected from goal persistence.",
+  "Set durable_goal_batch=explicit_multiple only when the current turn explicitly asks Borg to track multiple separate ongoing responsibilities; otherwise use single.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
   "When speaker_entity_id is supplied and the current speaker creates a durable first-person goal, treat that speaker as the goal owner. In group chat, first-person user goals belong to the current sender, not the group, unless the message explicitly says the group is acting.",
-  "If an existing active goal on the same owner and audience axes already covers the request, set duplicate_of_goal_id and do not create a new goal.",
+  "If a supplied active goal already covers the request, classify as already_represented and set duplicate_of_goal_id.",
   "Use target_at only for a real goal deadline. Use the supplied temporal cue as context, not as an automatic trigger.",
-  "When uncertain, emit no promotions. Return only the required tool call.",
+  "",
+  "Classifications:",
+  "- durable_borg_goal: Borg has ongoing responsibility to track, monitor, periodically check in, or maintain continuity.",
+  "- borg_one_off_action: Borg should do one concrete finite thing.",
+  "- participant_action: a human participant will, might, or did do a concrete thing.",
+  "- settled_decision: the turn settles a planning fact or decision.",
+  "- session_agenda: a current-session item that becomes stale when the session ends.",
+  "- open_question: an unresolved issue or question, not an active Borg responsibility.",
+  "- already_represented: a supplied active goal already covers the candidate.",
+  "- none: not memory-worthy for goal promotion.",
+  "",
+  "Prefer one durable_borg_goal at most. When uncertain, emit no promotions. Return only the required tool call.",
   "",
   "Examples:",
-  "- Help me track my italki shortlist -> promote, because Borg has a tracking role.",
-  "- I might book italki tonight -> no promotion, because Borg has no ongoing role.",
-  "- Postmortem Monday, help me keep this straight -> promote with an initial step.",
-  "- Doctor appointment Tuesday -> no promotion unless the user asks Borg to track or follow up.",
+  "- Help me track the release checklist -> durable_borg_goal.",
+  "- I will update the API docs tonight -> participant_action.",
+  "- We decided to freeze schema changes until Friday -> settled_decision.",
+  "- Remind Alex and keep monitoring the deployment cleanup -> explicit_multiple if both are separate ongoing Borg responsibilities.",
 ].join("\n");
 
 type ParsedGoalPromotion = z.infer<typeof goalPromotionSchema>;
 type GoalPromotionEnvelopeInput = z.infer<typeof goalPromotionEnvelopeSchema>;
+type ParsedGoalPromotionWithIndex = {
+  candidateIndex: number;
+  promotion: ParsedGoalPromotion;
+};
 
 class MissingGoalPromotionToolCallError extends Error {}
 
@@ -193,43 +236,166 @@ type GoalPromotionParseResult = {
   candidates: GoalPromotionCandidate[];
   validPromotionCount: number;
   skippedPromotions: GoalPromotionSkippedPromotion[];
+  classificationCounts: Record<GoalPromotionClassificationCountKey, number>;
+  rejectedPromotions: GoalPromotionRejectedPromotion[];
+  rejectedLowConfidenceCount: number;
+  rejectedByCapCount: number;
 };
 
-function toCandidates(promotions: readonly ParsedGoalPromotion[]): GoalPromotionCandidate[] {
-  const candidates: GoalPromotionCandidate[] = [];
+type GoalPromotionRejectedReason =
+  | "non_durable_classification"
+  | "low_confidence"
+  | "cap_exceeded";
 
-  for (const promotion of promotions.slice(0, MAX_PROMOTIONS_PER_TURN)) {
-    if (promotion.classification === "none" || promotion.confidence < CONFIDENCE_THRESHOLD) {
+type GoalPromotionRejectedPromotion = {
+  candidate_index: number;
+  classification: GoalPromotionClassification;
+  description_excerpt: string;
+  reason: GoalPromotionRejectedReason;
+};
+
+type GoalPromotionCandidateWithMeta = {
+  candidate: GoalPromotionCandidate;
+  candidateIndex: number;
+};
+
+function zeroClassificationCounts(): Record<GoalPromotionClassificationCountKey, number> {
+  return {
+    durable_borg_goal: 0,
+    borg_one_off_action: 0,
+    participant_action: 0,
+    settled_decision: 0,
+    session_agenda: 0,
+    open_question: 0,
+    already_represented: 0,
+    none: 0,
+    invalid_classification: 0,
+  };
+}
+
+function incrementClassificationCount(
+  counts: Record<GoalPromotionClassificationCountKey, number>,
+  key: GoalPromotionClassificationCountKey,
+): void {
+  counts[key] += 1;
+}
+
+function descriptionExcerpt(description: string): string {
+  return description.trim().slice(0, 60);
+}
+
+function rejectedPromotion(input: {
+  candidateIndex: number;
+  classification: GoalPromotionClassification;
+  description: string;
+  reason: GoalPromotionRejectedReason;
+}): GoalPromotionRejectedPromotion {
+  return {
+    candidate_index: input.candidateIndex,
+    classification: input.classification,
+    description_excerpt: descriptionExcerpt(input.description),
+    reason: input.reason,
+  };
+}
+
+function candidateFromPromotion(promotion: ParsedGoalPromotion): GoalPromotionCandidate {
+  return {
+    description: promotion.description.trim(),
+    priority: promotion.priority,
+    target_at: promotion.target_at,
+    reason: promotion.reason.trim(),
+    confidence: promotion.confidence,
+    duplicate_of_goal_id: promotion.duplicate_of_goal_id,
+    initial_step:
+      promotion.initial_step === null || promotion.initial_step === undefined
+        ? null
+        : {
+            description: promotion.initial_step.description.trim(),
+            kind: promotion.initial_step.kind,
+            due_at: promotion.initial_step.due_at ?? null,
+            rationale: promotion.initial_step.rationale.trim(),
+          },
+  };
+}
+
+function toCandidates(input: {
+  promotions: readonly ParsedGoalPromotionWithIndex[];
+  durableGoalBatch: GoalPromotionBatch;
+}): {
+  candidates: GoalPromotionCandidate[];
+  rejectedPromotions: GoalPromotionRejectedPromotion[];
+  rejectedLowConfidenceCount: number;
+  rejectedByCapCount: number;
+} {
+  const durableCandidates: GoalPromotionCandidateWithMeta[] = [];
+  const rejectedPromotions: GoalPromotionRejectedPromotion[] = [];
+  let rejectedLowConfidenceCount = 0;
+
+  for (const parsed of input.promotions) {
+    const promotion = parsed.promotion;
+
+    if (promotion.classification !== "durable_borg_goal") {
+      rejectedPromotions.push(
+        rejectedPromotion({
+          candidateIndex: parsed.candidateIndex,
+          classification: promotion.classification,
+          description: promotion.description,
+          reason: "non_durable_classification",
+        }),
+      );
       continue;
     }
 
-    const description = promotion.description.trim();
-    const reason = promotion.reason.trim();
-
-    if (description.length === 0 || reason.length === 0) {
+    if (promotion.confidence < CONFIDENCE_THRESHOLD) {
+      rejectedLowConfidenceCount += 1;
+      rejectedPromotions.push(
+        rejectedPromotion({
+          candidateIndex: parsed.candidateIndex,
+          classification: promotion.classification,
+          description: promotion.description,
+          reason: "low_confidence",
+        }),
+      );
       continue;
     }
 
-    candidates.push({
-      description,
-      priority: promotion.priority,
-      target_at: promotion.target_at,
-      reason,
-      confidence: promotion.confidence,
-      duplicate_of_goal_id: promotion.duplicate_of_goal_id,
-      initial_step:
-        promotion.initial_step === null || promotion.initial_step === undefined
-          ? null
-          : {
-              description: promotion.initial_step.description.trim(),
-              kind: promotion.initial_step.kind,
-              due_at: promotion.initial_step.due_at ?? null,
-              rationale: promotion.initial_step.rationale.trim(),
-            },
+    durableCandidates.push({
+      candidate: candidateFromPromotion(promotion),
+      candidateIndex: parsed.candidateIndex,
     });
   }
 
-  return candidates;
+  const cap = input.durableGoalBatch === "explicit_multiple" ? MAX_PROMOTIONS_PER_TURN : 1;
+  const rankedCandidates =
+    input.durableGoalBatch === "explicit_multiple"
+      ? durableCandidates
+      : [...durableCandidates].sort((left, right) => {
+          const confidenceDelta = right.candidate.confidence - left.candidate.confidence;
+
+          return confidenceDelta === 0
+            ? left.candidateIndex - right.candidateIndex
+            : confidenceDelta;
+        });
+  const acceptedCandidates = rankedCandidates.slice(0, cap);
+  const cappedCandidates = rankedCandidates.slice(cap);
+
+  for (const capped of cappedCandidates) {
+    rejectedPromotions.push(
+      rejectedPromotion({
+        candidateIndex: capped.candidateIndex,
+        classification: "durable_borg_goal",
+        description: capped.candidate.description,
+        reason: "cap_exceeded",
+      }),
+    );
+  }
+
+  return {
+    candidates: acceptedCandidates.map((candidate) => candidate.candidate),
+    rejectedPromotions,
+    rejectedLowConfidenceCount,
+    rejectedByCapCount: cappedCandidates.length,
+  };
 }
 
 function skippedReasonFromIssue(issue: {
@@ -279,29 +445,42 @@ function skippedReasonFromError(error: z.ZodError): GoalPromotionSkippedReason {
 }
 
 function parsePromotions(envelope: GoalPromotionEnvelopeInput): {
-  promotions: ParsedGoalPromotion[];
+  promotions: ParsedGoalPromotionWithIndex[];
   skippedPromotions: GoalPromotionSkippedPromotion[];
+  classificationCounts: Record<GoalPromotionClassificationCountKey, number>;
 } {
-  const promotions: ParsedGoalPromotion[] = [];
+  const promotions: ParsedGoalPromotionWithIndex[] = [];
   const skippedPromotions: GoalPromotionSkippedPromotion[] = [];
+  const classificationCounts = zeroClassificationCounts();
 
   for (const [candidateIndex, rawPromotion] of envelope.promotions.entries()) {
     const parsed = goalPromotionSchema.safeParse(rawPromotion);
 
     if (!parsed.success) {
+      const reason = skippedReasonFromError(parsed.error);
+
+      if (reason === "invalid_classification") {
+        incrementClassificationCount(classificationCounts, "invalid_classification");
+      }
+
       skippedPromotions.push({
         candidate_index: candidateIndex,
-        reason: skippedReasonFromError(parsed.error),
+        reason,
       });
       continue;
     }
 
-    promotions.push(parsed.data);
+    incrementClassificationCount(classificationCounts, parsed.data.classification);
+    promotions.push({
+      candidateIndex,
+      promotion: parsed.data,
+    });
   }
 
   return {
     promotions,
     skippedPromotions,
+    classificationCounts,
   };
 }
 
@@ -320,12 +499,20 @@ function parseResponse(result: LLMCompleteResult): GoalPromotionParseResult {
     throw parsed.error;
   }
 
-  const { promotions, skippedPromotions } = parsePromotions(parsed.data);
+  const { promotions, skippedPromotions, classificationCounts } = parsePromotions(parsed.data);
+  const candidates = toCandidates({
+    promotions,
+    durableGoalBatch: parsed.data.durable_goal_batch,
+  });
 
   return {
-    candidates: toCandidates(promotions),
+    candidates: candidates.candidates,
     validPromotionCount: promotions.length,
     skippedPromotions,
+    classificationCounts,
+    rejectedPromotions: candidates.rejectedPromotions,
+    rejectedLowConfidenceCount: candidates.rejectedLowConfidenceCount,
+    rejectedByCapCount: candidates.rejectedByCapCount,
   };
 }
 
@@ -461,6 +648,23 @@ function traceExtractorCompleted(options: {
   const skippedPromotions = options.parseResult?.skippedPromotions ?? [];
   const skippedPromotionCount = skippedPromotions.length;
   const validPromotionCount = options.parseResult?.validPromotionCount ?? 0;
+  const classificationCounts =
+    options.parseResult?.classificationCounts ?? zeroClassificationCounts();
+  const rejectedPromotions = options.parseResult?.rejectedPromotions ?? [];
+  const rejectedByClassification = zeroClassificationCounts();
+
+  for (const rejection of rejectedPromotions) {
+    if (rejection.reason === "non_durable_classification") {
+      incrementClassificationCount(rejectedByClassification, rejection.classification);
+    }
+
+    options.tracer.emit("goal_promotion_classification_rejected", {
+      turnId: options.turnId,
+      classification: rejection.classification,
+      description_excerpt: rejection.description_excerpt,
+      reason: rejection.reason,
+    });
+  }
 
   options.tracer.emit("goal_promotion_extractor_completed", {
     turnId: options.turnId,
@@ -469,6 +673,11 @@ function traceExtractorCompleted(options: {
     skipped_promotion_count: skippedPromotionCount,
     salvaged_promotion_count: skippedPromotionCount > 0 ? validPromotionCount : 0,
     skipped_promotions: skippedPromotions.map((promotion) => ({ ...promotion })),
+    classification_counts: classificationCounts,
+    rejected_by_classification: rejectedByClassification,
+    rejected_low_confidence: options.parseResult?.rejectedLowConfidenceCount ?? 0,
+    rejected_by_cap: options.parseResult?.rejectedByCapCount ?? 0,
+    rejected_invalid_enum: classificationCounts.invalid_classification,
     degraded: options.degraded,
     ...(options.fatalReason === undefined ? {} : { fatal_reason: options.fatalReason }),
   });

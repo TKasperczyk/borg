@@ -105,6 +105,9 @@ const TURN_METRICS_KEY_ORDER = [
   "goal_promotion_dedup_skipped_extractor_signal",
   "goal_promotion_dedup_skipped_embedding",
   "goal_promotion_dedup_degraded",
+  "goal_promotion_classifications_per_turn",
+  "goal_promotion_rejected_classification",
+  "goal_promotion_cap_rejections",
   "overseer_due_on_suppressed_turn",
 ] as const;
 
@@ -406,6 +409,31 @@ describe("MetricsCapture", () => {
           event: "goal_promotion_extractor_completed",
           salvaged_promotion_count: 2,
           skipped_promotion_count: 1,
+          classification_counts: {
+            durable_borg_goal: 2,
+            borg_one_off_action: 1,
+            participant_action: 0,
+            settled_decision: 0,
+            session_agenda: 0,
+            open_question: 0,
+            already_represented: 0,
+            none: 0,
+            invalid_classification: 1,
+          },
+        },
+        {
+          ts: 100.5,
+          turnId: "turn-goal",
+          event: "goal_promotion_classification_rejected",
+          classification: "borg_one_off_action",
+          reason: "non_durable_classification",
+        },
+        {
+          ts: 100.6,
+          turnId: "turn-goal",
+          event: "goal_promotion_classification_rejected",
+          classification: "durable_borg_goal",
+          reason: "cap_exceeded",
         },
         {
           ts: 101,
@@ -437,6 +465,17 @@ describe("MetricsCapture", () => {
           event: "goal_promotion_extractor_completed",
           salvaged_promotion_count: 1,
           skipped_promotion_count: 1,
+          classification_counts: {
+            durable_borg_goal: 1,
+            borg_one_off_action: 0,
+            participant_action: 0,
+            settled_decision: 0,
+            session_agenda: 0,
+            open_question: 0,
+            already_represented: 0,
+            none: 0,
+            invalid_classification: 0,
+          },
         },
       ]
         .map((record) => JSON.stringify(record))
@@ -461,6 +500,19 @@ describe("MetricsCapture", () => {
       goal_promotion_dedup_skipped_extractor_signal: 1,
       goal_promotion_dedup_skipped_embedding: 1,
       goal_promotion_dedup_degraded: 1,
+      goal_promotion_classifications_per_turn: {
+        durable_borg_goal: 2,
+        borg_one_off_action: 1,
+        participant_action: 0,
+        settled_decision: 0,
+        session_agenda: 0,
+        open_question: 0,
+        already_represented: 0,
+        none: 0,
+        invalid_classification: 1,
+      },
+      goal_promotion_rejected_classification: 1,
+      goal_promotion_cap_rejections: 1,
     });
   });
 
