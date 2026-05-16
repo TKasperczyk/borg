@@ -99,6 +99,9 @@ const TURN_METRICS_KEY_ORDER = [
   "frame_anomaly_degraded_fallback_match_count",
   "quarantined_user_entry_count",
   "early_extractors_skipped_frame_anomaly_count",
+  "goal_promotion_salvaged_promotions",
+  "goal_promotion_skipped_promotions",
+  "goal_promotion_initial_step_downgraded",
   "overseer_due_on_suppressed_turn",
 ] as const;
 
@@ -377,6 +380,58 @@ describe("MetricsCapture", () => {
     const written = JSON.parse(readFileSync(metricsPath, "utf8").trim()) as MetricsRow;
 
     expect(Object.keys(written)).toEqual([...TURN_METRICS_KEY_ORDER]);
+  });
+
+  it("counts goal-promotion salvage and initial-step downgrade traces", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: "turn-goal",
+          event: "goal_promotion_extractor_completed",
+          salvaged_promotion_count: 2,
+          skipped_promotion_count: 1,
+        },
+        {
+          ts: 101,
+          turnId: "turn-goal",
+          event: "goal_promotion_initial_step_downgraded",
+          reason: "wait_without_due_at",
+        },
+        {
+          ts: 200,
+          turnId: "other-turn",
+          event: "goal_promotion_extractor_completed",
+          salvaged_promotion_count: 1,
+          skipped_promotion_count: 1,
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+      fakeBorg(),
+      "turn-goal",
+      1,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+
+    expect(row).toMatchObject({
+      goal_promotion_salvaged_promotions: 2,
+      goal_promotion_skipped_promotions: 1,
+      goal_promotion_initial_step_downgraded: 1,
+    });
   });
 
   it("counts frame-anomaly classifier, fallback, and durable quarantine markers", async () => {

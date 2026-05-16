@@ -7,7 +7,11 @@ import type { EntityId, ExecutiveStepId, GoalId, StreamEntryId } from "../../uti
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { TemporalCue } from "../types.js";
-import { GoalPromotionExtractor, type GoalPromotionCandidate } from "./goal-promotion-extractor.js";
+import {
+  GoalPromotionExtractor,
+  type GoalPromotionCandidate,
+  type GoalPromotionInitialStep,
+} from "./goal-promotion-extractor.js";
 
 const GOAL_PROMOTION_PROVENANCE = {
   kind: "online" as const,
@@ -150,16 +154,22 @@ export class TurnGoalPromotionService {
 
       persisted.goalIds.push(goal.id);
 
-      if (candidate.initial_step === null) {
+      const initialStep = this.initialStepForPersistence({
+        candidate,
+        goal,
+        turnId: input.turnId,
+      });
+
+      if (initialStep === null) {
         continue;
       }
 
       try {
         const step = this.options.executiveStepsRepository.add({
           goalId: goal.id,
-          description: candidate.initial_step.description,
-          kind: candidate.initial_step.kind,
-          dueAt: candidate.initial_step.due_at,
+          description: initialStep.description,
+          kind: initialStep.kind,
+          dueAt: initialStep.due_at,
           provenance: GOAL_PROMOTION_PROVENANCE,
         });
         persisted.executiveStepIds.push(step.id);
@@ -179,6 +189,46 @@ export class TurnGoalPromotionService {
     }
 
     return persisted;
+  }
+
+  private initialStepForPersistence(input: {
+    candidate: GoalPromotionCandidate;
+    goal: GoalRecord;
+    turnId: string;
+  }): GoalPromotionInitialStep | null {
+    const initialStep = input.candidate.initial_step;
+
+    if (initialStep === null) {
+      return null;
+    }
+
+    if (initialStep.kind === "wait" && initialStep.due_at === null) {
+      this.emitInitialStepDowngraded({
+        turnId: input.turnId,
+        goalId: input.goal.id,
+        description: initialStep.description,
+      });
+      return null;
+    }
+
+    return initialStep;
+  }
+
+  private emitInitialStepDowngraded(input: {
+    turnId: string;
+    goalId: GoalId;
+    description: string;
+  }): void {
+    if (!this.options.tracer.enabled) {
+      return;
+    }
+
+    this.options.tracer.emit("goal_promotion_initial_step_downgraded", {
+      turnId: input.turnId,
+      reason: "wait_without_due_at",
+      goalId: input.goalId,
+      ...(this.options.tracer.includePayloads ? { description: input.description } : {}),
+    });
   }
 
   private emitDegraded(input: {

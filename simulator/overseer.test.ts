@@ -165,6 +165,9 @@ function metricsRow(turn: number): MetricsRow {
     frame_anomaly_degraded_fallback_match_count: 0,
     quarantined_user_entry_count: 0,
     early_extractors_skipped_frame_anomaly_count: 0,
+    goal_promotion_salvaged_promotions: 0,
+    goal_promotion_skipped_promotions: 0,
+    goal_promotion_initial_step_downgraded: 0,
     overseer_due_on_suppressed_turn: false,
   };
 }

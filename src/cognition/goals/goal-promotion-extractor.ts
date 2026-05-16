@@ -16,6 +16,7 @@ import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROMOTIONS_PER_TURN = 3;
+const GOAL_PROMOTION_MAX_TOKENS = 1536;
 const GOAL_PROMOTION_TOOL_NAME = "EmitGoalPromotion";
 
 const initialExecutiveStepSchema = z
@@ -90,6 +91,12 @@ const goalPromotionOutputSchema = z
   })
   .strict();
 
+const goalPromotionEnvelopeSchema = z
+  .object({
+    promotions: z.array(z.unknown()),
+  })
+  .strict();
+
 const GOAL_PROMOTION_TOOL = {
   name: GOAL_PROMOTION_TOOL_NAME,
   description:
@@ -114,7 +121,8 @@ const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "- Doctor appointment Tuesday -> no promotion unless the user asks Borg to track or follow up.",
 ].join("\n");
 
-type GoalPromotionToolInput = z.infer<typeof goalPromotionOutputSchema>;
+type ParsedGoalPromotion = z.infer<typeof goalPromotionSchema>;
+type GoalPromotionEnvelopeInput = z.infer<typeof goalPromotionEnvelopeSchema>;
 
 class MissingGoalPromotionToolCallError extends Error {}
 
@@ -140,6 +148,22 @@ export type GoalPromotionExtractorDegradedReason =
   | "missing_tool_call"
   | "invalid_payload";
 
+export type GoalPromotionSkippedReason =
+  | "missing_description"
+  | "invalid_priority"
+  | "invalid_target_at"
+  | "invalid_reason"
+  | "invalid_confidence"
+  | "invalid_duplicate_of_goal_id"
+  | "invalid_initial_step"
+  | "invalid_classification"
+  | "invalid_promotion";
+
+export type GoalPromotionSkippedPromotion = {
+  candidate_index: number;
+  reason: GoalPromotionSkippedReason;
+};
+
 export type GoalPromotionExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
@@ -161,10 +185,16 @@ export type ExtractGoalPromotionInput = {
   activeGoals: readonly Pick<GoalRecord, "id" | "description" | "priority" | "target_at">[];
 };
 
-function toCandidates(input: GoalPromotionToolInput): GoalPromotionCandidate[] {
+type GoalPromotionParseResult = {
+  candidates: GoalPromotionCandidate[];
+  validPromotionCount: number;
+  skippedPromotions: GoalPromotionSkippedPromotion[];
+};
+
+function toCandidates(promotions: readonly ParsedGoalPromotion[]): GoalPromotionCandidate[] {
   const candidates: GoalPromotionCandidate[] = [];
 
-  for (const promotion of input.promotions.slice(0, MAX_PROMOTIONS_PER_TURN)) {
+  for (const promotion of promotions.slice(0, MAX_PROMOTIONS_PER_TURN)) {
     if (
       promotion.classification === "none" ||
       promotion.confidence < CONFIDENCE_THRESHOLD ||
@@ -201,7 +231,80 @@ function toCandidates(input: GoalPromotionToolInput): GoalPromotionCandidate[] {
   return candidates;
 }
 
-function parseResponse(result: LLMCompleteResult): GoalPromotionCandidate[] {
+function skippedReasonFromIssue(issue: {
+  path: readonly (string | number | symbol)[];
+}): GoalPromotionSkippedReason {
+  const field = issue.path[0];
+
+  if (field === "description") {
+    return "missing_description";
+  }
+
+  if (field === "priority") {
+    return "invalid_priority";
+  }
+
+  if (field === "target_at") {
+    return "invalid_target_at";
+  }
+
+  if (field === "reason") {
+    return "invalid_reason";
+  }
+
+  if (field === "confidence") {
+    return "invalid_confidence";
+  }
+
+  if (field === "duplicate_of_goal_id") {
+    return "invalid_duplicate_of_goal_id";
+  }
+
+  if (field === "initial_step") {
+    return "invalid_initial_step";
+  }
+
+  if (field === "classification") {
+    return "invalid_classification";
+  }
+
+  return "invalid_promotion";
+}
+
+function skippedReasonFromError(error: z.ZodError): GoalPromotionSkippedReason {
+  const duplicateIssue = error.issues.find((issue) => issue.path[0] === "duplicate_of_goal_id");
+
+  return skippedReasonFromIssue(duplicateIssue ?? error.issues[0] ?? { path: [] });
+}
+
+function parsePromotions(envelope: GoalPromotionEnvelopeInput): {
+  promotions: ParsedGoalPromotion[];
+  skippedPromotions: GoalPromotionSkippedPromotion[];
+} {
+  const promotions: ParsedGoalPromotion[] = [];
+  const skippedPromotions: GoalPromotionSkippedPromotion[] = [];
+
+  for (const [candidateIndex, rawPromotion] of envelope.promotions.entries()) {
+    const parsed = goalPromotionSchema.safeParse(rawPromotion);
+
+    if (!parsed.success) {
+      skippedPromotions.push({
+        candidate_index: candidateIndex,
+        reason: skippedReasonFromError(parsed.error),
+      });
+      continue;
+    }
+
+    promotions.push(parsed.data);
+  }
+
+  return {
+    promotions,
+    skippedPromotions,
+  };
+}
+
+function parseResponse(result: LLMCompleteResult): GoalPromotionParseResult {
   const call = result.tool_calls.find((toolCall) => toolCall.name === GOAL_PROMOTION_TOOL_NAME);
 
   if (call === undefined) {
@@ -210,13 +313,19 @@ function parseResponse(result: LLMCompleteResult): GoalPromotionCandidate[] {
     );
   }
 
-  const parsed = goalPromotionOutputSchema.safeParse(call.input);
+  const parsed = goalPromotionEnvelopeSchema.safeParse(call.input);
 
   if (!parsed.success) {
     throw parsed.error;
   }
 
-  return toCandidates(parsed.data);
+  const { promotions, skippedPromotions } = parsePromotions(parsed.data);
+
+  return {
+    candidates: toCandidates(promotions),
+    validPromotionCount: promotions.length,
+    skippedPromotions,
+  };
 }
 
 function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessage[] {
@@ -324,6 +433,45 @@ function traceLlmCallError(options: {
   }
 }
 
+function degradedReasonForParseError(error: unknown): GoalPromotionExtractorDegradedReason {
+  if (error instanceof MissingGoalPromotionToolCallError) {
+    return "missing_tool_call";
+  }
+
+  if (error instanceof z.ZodError) {
+    return "invalid_payload";
+  }
+
+  return "llm_failed";
+}
+
+function traceExtractorCompleted(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  parseResult?: GoalPromotionParseResult;
+  degraded: boolean;
+  fatalReason?: GoalPromotionExtractorDegradedReason;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  const skippedPromotions = options.parseResult?.skippedPromotions ?? [];
+  const skippedPromotionCount = skippedPromotions.length;
+  const validPromotionCount = options.parseResult?.validPromotionCount ?? 0;
+
+  options.tracer.emit("goal_promotion_extractor_completed", {
+    turnId: options.turnId,
+    candidates_emitted: options.parseResult?.candidates.length ?? 0,
+    valid_promotion_count: validPromotionCount,
+    skipped_promotion_count: skippedPromotionCount,
+    salvaged_promotion_count: skippedPromotionCount > 0 ? validPromotionCount : 0,
+    skipped_promotions: skippedPromotions.map((promotion) => ({ ...promotion })),
+    degraded: options.degraded,
+    ...(options.fatalReason === undefined ? {} : { fatal_reason: options.fatalReason }),
+  });
+}
+
 export class GoalPromotionExtractor {
   constructor(private readonly options: GoalPromotionExtractorOptions = {}) {}
 
@@ -340,6 +488,47 @@ export class GoalPromotionExtractor {
     return [];
   }
 
+  private async complete(input: {
+    messages: readonly LLMMessage[];
+    tools: readonly LLMToolDefinition[];
+  }): Promise<LLMCompleteResult> {
+    traceLlmCallStarted({
+      tracer: this.options.tracer,
+      turnId: this.options.turnId,
+      model: this.options.model as string,
+      messages: input.messages,
+      tools: input.tools,
+    });
+
+    try {
+      const response = await (this.options.llmClient as LLMClient).complete({
+        model: this.options.model as string,
+        system: GOAL_PROMOTION_SYSTEM_PROMPT,
+        messages: input.messages,
+        tools: input.tools,
+        tool_choice: { type: "tool", name: GOAL_PROMOTION_TOOL_NAME },
+        max_tokens: GOAL_PROMOTION_MAX_TOKENS,
+        budget: "goal-promotion-extractor",
+      });
+
+      traceLlmCallResponse({
+        tracer: this.options.tracer,
+        turnId: this.options.turnId,
+        response,
+      });
+
+      return response;
+    } catch (error) {
+      traceLlmCallError({
+        tracer: this.options.tracer,
+        turnId: this.options.turnId,
+        error,
+      });
+
+      throw error;
+    }
+  }
+
   async extract(input: ExtractGoalPromotionInput): Promise<GoalPromotionCandidate[]> {
     if (this.options.llmClient === undefined || this.options.model === undefined) {
       return this.degraded("llm_unavailable");
@@ -348,53 +537,39 @@ export class GoalPromotionExtractor {
     const messages = buildGoalPromotionMessages(input);
     const tools = [GOAL_PROMOTION_TOOL];
 
-    traceLlmCallStarted({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      model: this.options.model,
-      messages,
-      tools,
-    });
-
     let response: LLMCompleteResult;
 
     try {
-      response = await this.options.llmClient.complete({
-        model: this.options.model,
-        system: GOAL_PROMOTION_SYSTEM_PROMPT,
+      response = await this.complete({
         messages,
         tools,
-        tool_choice: { type: "tool", name: GOAL_PROMOTION_TOOL_NAME },
-        max_tokens: 768,
-        budget: "goal-promotion-extractor",
       });
     } catch (error) {
-      traceLlmCallError({
-        tracer: this.options.tracer,
-        turnId: this.options.turnId,
-        error,
-      });
-
       return this.degraded("llm_failed", error);
     }
 
-    traceLlmCallResponse({
-      tracer: this.options.tracer,
-      turnId: this.options.turnId,
-      response,
-    });
-
     try {
-      return parseResponse(response);
+      const parseResult = parseResponse(response);
+
+      traceExtractorCompleted({
+        tracer: this.options.tracer,
+        turnId: this.options.turnId,
+        parseResult,
+        degraded: false,
+      });
+
+      return parseResult.candidates;
     } catch (error) {
-      return this.degraded(
-        error instanceof MissingGoalPromotionToolCallError
-          ? "missing_tool_call"
-          : error instanceof z.ZodError
-            ? "invalid_payload"
-            : "llm_failed",
-        error,
-      );
+      const reason = degradedReasonForParseError(error);
+
+      traceExtractorCompleted({
+        tracer: this.options.tracer,
+        turnId: this.options.turnId,
+        degraded: true,
+        fatalReason: reason,
+      });
+
+      return this.degraded(reason, error);
     }
   }
 }

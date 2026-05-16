@@ -51,6 +51,8 @@ export type TurnTraceEventName =
   | "action_duplicate_pressure_observed"
   | "decision_artifact_canonicalization_candidates"
   | "goal_promotion_extractor_degraded"
+  | "goal_promotion_extractor_completed"
+  | "goal_promotion_initial_step_downgraded"
   | "frame_anomaly_classifier_degraded"
   | "frame_anomaly_classified"
   | "frame_anomaly_quarantine_appended"

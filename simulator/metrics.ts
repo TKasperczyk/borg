@@ -90,6 +90,13 @@ type FrameAnomalyMetricCounts = Pick<
   | "early_extractors_skipped_frame_anomaly_count"
 >;
 
+type GoalPromotionMetricCounts = Pick<
+  MetricsRow,
+  | "goal_promotion_salvaged_promotions"
+  | "goal_promotion_skipped_promotions"
+  | "goal_promotion_initial_step_downgraded"
+>;
+
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
   let count = 0;
   const stack = [...nodes];
@@ -187,6 +194,12 @@ function traceKind(record: TraceRecord): string | null {
   return typeof record.kind === "string" ? record.kind : null;
 }
 
+function traceNumber(record: TraceRecord, key: string): number {
+  const value = record[key];
+
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 function streamContentEvent(content: unknown): string | null {
   if (content === null || typeof content !== "object" || Array.isArray(content)) {
     return null;
@@ -255,6 +268,28 @@ function frameAnomalyMetrics(input: {
       input.turnId,
     ),
     early_extractors_skipped_frame_anomaly_count: actualAnomalyCount + fallbackMatchCount,
+  };
+}
+
+function goalPromotionMetrics(
+  traceRecords: readonly TraceRecord[],
+): GoalPromotionMetricCounts {
+  const completed = traceRecords.filter(
+    (record) => record.event === "goal_promotion_extractor_completed",
+  );
+
+  return {
+    goal_promotion_salvaged_promotions: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "salvaged_promotion_count"),
+      0,
+    ),
+    goal_promotion_skipped_promotions: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "skipped_promotion_count"),
+      0,
+    ),
+    goal_promotion_initial_step_downgraded: traceRecords.filter(
+      (record) => record.event === "goal_promotion_initial_step_downgraded",
+    ).length,
   };
 }
 
@@ -536,6 +571,7 @@ export class MetricsCapture {
       sessionIds: context.sessionIds,
       turnId,
     });
+    const goalPromotionMetricCounts = goalPromotionMetrics(traceRecords);
     await this.emitActionDuplicatePressureTrace({
       borg,
       turnId,
@@ -601,6 +637,12 @@ export class MetricsCapture {
       quarantined_user_entry_count: frameAnomalyMetricCounts.quarantined_user_entry_count,
       early_extractors_skipped_frame_anomaly_count:
         frameAnomalyMetricCounts.early_extractors_skipped_frame_anomaly_count,
+      goal_promotion_salvaged_promotions:
+        goalPromotionMetricCounts.goal_promotion_salvaged_promotions,
+      goal_promotion_skipped_promotions:
+        goalPromotionMetricCounts.goal_promotion_skipped_promotions,
+      goal_promotion_initial_step_downgraded:
+        goalPromotionMetricCounts.goal_promotion_initial_step_downgraded,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 
@@ -639,6 +681,7 @@ export class MetricsCapture {
       sessionIds: context.sessionIds,
       turnId,
     });
+    const goalPromotionMetricCounts = goalPromotionMetrics([]);
     const row: MetricsRow = {
       event,
       ts: Date.now(),
@@ -692,6 +735,12 @@ export class MetricsCapture {
       quarantined_user_entry_count: frameAnomalyMetricCounts.quarantined_user_entry_count,
       early_extractors_skipped_frame_anomaly_count:
         frameAnomalyMetricCounts.early_extractors_skipped_frame_anomaly_count,
+      goal_promotion_salvaged_promotions:
+        goalPromotionMetricCounts.goal_promotion_salvaged_promotions,
+      goal_promotion_skipped_promotions:
+        goalPromotionMetricCounts.goal_promotion_skipped_promotions,
+      goal_promotion_initial_step_downgraded:
+        goalPromotionMetricCounts.goal_promotion_initial_step_downgraded,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 

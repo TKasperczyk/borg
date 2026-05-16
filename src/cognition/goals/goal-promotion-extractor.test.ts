@@ -99,6 +99,7 @@ describe("GoalPromotionExtractor", () => {
       type: "tool",
       name: "EmitGoalPromotion",
     });
+    expect(llm.requests[0]?.max_tokens).toBe(1536);
     expect(llm.requests[0]?.system).toContain("I might book italki tonight");
   });
 
@@ -241,6 +242,67 @@ describe("GoalPromotionExtractor", () => {
     ]);
   });
 
+  it("salvages valid promotions when another promotion fails item validation", async () => {
+    const emit = vi.fn();
+    const tracer = {
+      enabled: true,
+      includePayloads: false,
+      emit,
+    } satisfies TurnTracer;
+    const onDegraded = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        goalPromotionResponse([
+          {
+            description: "Help the user maintain the onboarding checklist",
+            priority: 6,
+            reason: "The user asked Borg to keep the onboarding work organized.",
+            confidence: 0.91,
+          },
+          {
+            description: "Help the user track a duplicate learning objective",
+            duplicate_of_goal_id: "not-a-goal-id",
+            reason: "This promotion has an invalid duplicate reference.",
+            confidence: 0.94,
+          },
+        ]),
+      ],
+    });
+    const extractor = new GoalPromotionExtractor({
+      llmClient: llm,
+      model: "haiku",
+      tracer,
+      turnId: "turn-goal-salvage",
+      onDegraded,
+    });
+
+    const result = await extractor.extract(
+      createExtractorInput({
+        userMessage: "Keep the onboarding checklist moving this week.",
+      }),
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.description).toBe("Help the user maintain the onboarding checklist");
+    expect(onDegraded).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith(
+      "goal_promotion_extractor_completed",
+      expect.objectContaining({
+        turnId: "turn-goal-salvage",
+        candidates_emitted: 1,
+        valid_promotion_count: 1,
+        skipped_promotion_count: 1,
+        salvaged_promotion_count: 1,
+        skipped_promotions: [
+          {
+            candidate_index: 1,
+            reason: "invalid_duplicate_of_goal_id",
+          },
+        ],
+      }),
+    );
+  });
+
   it("traces extractor LLM calls and degrades on invalid payloads", async () => {
     const emit = vi.fn();
     const tracer = {
@@ -257,13 +319,7 @@ describe("GoalPromotionExtractor", () => {
             {
               id: "toolu_goal_promotion",
               name: "EmitGoalPromotion",
-              input: {
-                promotions: [
-                  {
-                    description: "",
-                  },
-                ],
-              },
+              input: {},
             },
           ],
         },
