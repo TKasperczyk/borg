@@ -231,7 +231,9 @@ export class TurnOrchestrator {
     const turnGoalPromotionService = new TurnGoalPromotionService({
       model: options.config.anthropic.models.recallExpansion,
       identityService: options.identityService,
+      goalsRepository: options.goalsRepository,
       executiveStepsRepository: options.executiveStepsRepository,
+      embeddingClient: options.embeddingClient,
       clock: this.clock,
       tracer: this.tracer,
     });

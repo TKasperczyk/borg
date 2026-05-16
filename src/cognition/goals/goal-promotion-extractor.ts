@@ -110,7 +110,7 @@ const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "Do not promote a goal just because the user mentions a possible intention, appointment, task, wish, plan, or event. Those may be pending actions or ordinary conversation, not Borg goals.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
   "When speaker_entity_id is supplied and the current speaker creates a durable first-person goal, treat that speaker as the goal owner. In group chat, first-person user goals belong to the current sender, not the group, unless the message explicitly says the group is acting.",
-  "If an existing active goal already covers the request, set duplicate_of_goal_id and do not create a new goal.",
+  "If an existing active goal on the same owner and audience axes already covers the request, set duplicate_of_goal_id and do not create a new goal.",
   "Use target_at only for a real goal deadline. Use the supplied temporal cue as context, not as an automatic trigger.",
   "When uncertain, emit no promotions. Return only the required tool call.",
   "",
@@ -139,6 +139,7 @@ export type GoalPromotionCandidate = {
   target_at: number | null;
   reason: string;
   confidence: number;
+  duplicate_of_goal_id: GoalRecord["id"] | null;
   initial_step: GoalPromotionInitialStep | null;
 };
 
@@ -182,7 +183,10 @@ export type ExtractGoalPromotionInput = {
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
   temporalCue: unknown;
-  activeGoals: readonly Pick<GoalRecord, "id" | "description" | "priority" | "target_at">[];
+  activeGoals: readonly Pick<
+    GoalRecord,
+    "id" | "description" | "priority" | "target_at" | "owner_entity_id"
+  >[];
 };
 
 type GoalPromotionParseResult = {
@@ -195,11 +199,7 @@ function toCandidates(promotions: readonly ParsedGoalPromotion[]): GoalPromotion
   const candidates: GoalPromotionCandidate[] = [];
 
   for (const promotion of promotions.slice(0, MAX_PROMOTIONS_PER_TURN)) {
-    if (
-      promotion.classification === "none" ||
-      promotion.confidence < CONFIDENCE_THRESHOLD ||
-      promotion.duplicate_of_goal_id !== null
-    ) {
+    if (promotion.classification === "none" || promotion.confidence < CONFIDENCE_THRESHOLD) {
       continue;
     }
 
@@ -216,6 +216,7 @@ function toCandidates(promotions: readonly ParsedGoalPromotion[]): GoalPromotion
       target_at: promotion.target_at,
       reason,
       confidence: promotion.confidence,
+      duplicate_of_goal_id: promotion.duplicate_of_goal_id,
       initial_step:
         promotion.initial_step === null || promotion.initial_step === undefined
           ? null
@@ -347,6 +348,7 @@ function buildGoalPromotionMessages(input: ExtractGoalPromotionInput): LLMMessag
           description: goal.description,
           priority: goal.priority,
           target_at: goal.target_at,
+          owner_entity_id: goal.owner_entity_id ?? null,
         })),
       }),
     },

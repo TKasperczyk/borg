@@ -75,9 +75,24 @@ export type MetricsRow = {
   goal_promotion_salvaged_promotions: number;
   goal_promotion_skipped_promotions: number;
   goal_promotion_initial_step_downgraded: number;
+  goal_promotion_dedup_skipped_extractor_signal: number;
+  goal_promotion_dedup_skipped_embedding: number;
+  goal_promotion_dedup_degraded: number;
   // True when a checkpoint was scheduled on a suppressed turn; an actual run
   // is represented by that turn's overseer verdict.
   overseer_due_on_suppressed_turn: boolean;
+};
+
+export type SimulatorHealthWarningKind = "active_goals_high" | "active_goals_growth_high";
+
+export type SimulatorHealthWarning = {
+  kind: SimulatorHealthWarningKind;
+  turn_counter: number;
+  turnId: string;
+  threshold: number;
+  observed_value: number;
+  window_start_turn?: number;
+  window_turns?: number;
 };
 
 export type OverseerVerdict = {
@@ -166,6 +181,7 @@ export type SimulatorRunReport = {
   sessions: SimulatorSessionRecord[];
   suppressionEvents: SimulatorSuppressionRecord[];
   overseerCheckpoints: OverseerVerdict[];
+  healthWarnings?: SimulatorHealthWarning[];
   turnFailures: Array<{ turn: number; error: string; attempts: number }>;
   finalMetrics: MetricsRow;
   durationMs: number;

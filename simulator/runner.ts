@@ -33,6 +33,7 @@ import type {
   MetricsRow,
   OverseerVerdict,
   Persona,
+  SimulatorHealthWarning,
   SimulatorRunReport,
   SimulatorSessionRecord,
   SimulatorSuppressionRecord,
@@ -977,6 +978,7 @@ export class SimulatorRunner {
         sessions,
         suppressionEvents,
         overseerCheckpoints,
+        healthWarnings: metrics.listHealthWarnings(),
         turnFailures: this.turnFailures,
         finalMetrics,
         durationMs: performance.now() - started,
@@ -1040,6 +1042,22 @@ function reportCarryoverFindingLine(finding: OverseerVerdict["findings"][number]
   ].join(" ");
 }
 
+function reportHealthWarningLine(warning: SimulatorHealthWarning): string {
+  const window =
+    warning.window_start_turn === undefined || warning.window_turns === undefined
+      ? ""
+      : ` window=${warning.window_start_turn}+${warning.window_turns}`;
+
+  return [
+    `- Turn ${warning.turn_counter}: ${warning.kind}`,
+    `observed=${warning.observed_value.toFixed(2)}`,
+    `threshold=${warning.threshold}`,
+    window,
+  ]
+    .filter((part) => part.length > 0)
+    .join(" ");
+}
+
 export function formatSimulatorReport(report: SimulatorRunReport): string {
   const participantLine =
     report.personas.length <= 1
@@ -1065,7 +1083,20 @@ export function formatSimulatorReport(report: SimulatorRunReport): string {
     `- Active goals: ${report.finalMetrics.active_goal_count}`,
     `- Mood: valence ${report.finalMetrics.mood_valence}, arousal ${report.finalMetrics.mood_arousal}`,
     "",
+    "## Health Warnings",
+    "",
   ];
+
+  const healthWarnings = report.healthWarnings ?? [];
+
+  if (healthWarnings.length === 0) {
+    lines.push("No simulator health warnings.", "");
+  } else {
+    for (const warning of healthWarnings) {
+      lines.push(reportHealthWarningLine(warning));
+    }
+    lines.push("");
+  }
 
   if (report.sessions.length > 0) {
     lines.push("## Sessions", "");

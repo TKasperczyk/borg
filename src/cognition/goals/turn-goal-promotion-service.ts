@@ -1,7 +1,9 @@
+import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { ExecutiveStepsRepository } from "../../executive/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
-import type { GoalRecord } from "../../memory/self/index.js";
+import type { GoalRecord, GoalsRepository } from "../../memory/self/index.js";
+import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import type { Clock } from "../../util/clock.js";
 import type { EntityId, ExecutiveStepId, GoalId, StreamEntryId } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
@@ -17,6 +19,7 @@ const GOAL_PROMOTION_PROVENANCE = {
   kind: "online" as const,
   process: "goal-promotion-extractor",
 };
+const GOAL_PROMOTION_DUPLICATE_SIMILARITY_THRESHOLD = 0.9;
 
 export type PersistedGoalPromotionIds = {
   goalIds: GoalId[];
@@ -26,7 +29,9 @@ export type PersistedGoalPromotionIds = {
 export type TurnGoalPromotionServiceOptions = {
   model: string;
   identityService: Pick<IdentityService, "addGoal">;
+  goalsRepository: Pick<GoalsRepository, "list">;
   executiveStepsRepository: Pick<ExecutiveStepsRepository, "add">;
+  embeddingClient: EmbeddingClient;
   clock: Clock;
   tracer: TurnTracer;
 };
@@ -84,6 +89,7 @@ export class TurnGoalPromotionService {
         description: goal.description,
         priority: goal.priority,
         target_at: goal.target_at,
+        owner_entity_id: goal.owner_entity_id ?? null,
       })),
     });
 
@@ -122,9 +128,92 @@ export class TurnGoalPromotionService {
       goalIds: [],
       executiveStepIds: [],
     };
+    const activeSameAxisGoals = this.listActiveSameAxisGoals({
+      audienceEntityId: input.audienceEntityId,
+      ownerEntityId: input.ownerEntityId,
+      turnId: input.turnId,
+    });
+    let embeddingDedupState:
+      | {
+          activeVectors: EmbeddedGoalVector[];
+          acceptedVectors: EmbeddedGoalVector[];
+        }
+      | null
+      | undefined;
+
+    const getEmbeddingDedupState = async (): Promise<
+      { activeVectors: EmbeddedGoalVector[]; acceptedVectors: EmbeddedGoalVector[] } | null
+    > => {
+      if (embeddingDedupState !== undefined) {
+        return embeddingDedupState;
+      }
+
+      try {
+        const embeddings =
+          activeSameAxisGoals.length === 0
+            ? []
+            : await this.options.embeddingClient.embedBatch(
+                activeSameAxisGoals.map((goal) => goal.description),
+              );
+
+        embeddingDedupState = {
+          activeVectors: activeSameAxisGoals.flatMap((goal, index) => {
+            const vector = embeddings[index];
+            return vector === undefined ? [] : [{ goalId: goal.id, vector }];
+          }),
+          acceptedVectors: [],
+        };
+      } catch (error) {
+        this.emitDedupDegraded({
+          turnId: input.turnId,
+          reason: "active_goal_embedding_failed",
+          error,
+        });
+        embeddingDedupState = null;
+      }
+
+      return embeddingDedupState;
+    };
 
     for (const candidate of input.candidates) {
       let goal: GoalRecord;
+      let candidateVector: Float32Array | null = null;
+
+      if (
+        candidate.duplicate_of_goal_id !== null &&
+        activeSameAxisGoals.some((goal) => goal.id === candidate.duplicate_of_goal_id)
+      ) {
+        this.emitSkippedAsDuplicate({
+          turnId: input.turnId,
+          candidateDescription: candidate.description,
+          reason: "extractor_signal",
+          duplicateOfGoalId: candidate.duplicate_of_goal_id,
+        });
+        continue;
+      }
+
+      const dedupState = await getEmbeddingDedupState();
+
+      if (dedupState !== null) {
+        const embeddingMatch = await this.findEmbeddingDuplicate({
+          turnId: input.turnId,
+          candidate,
+          state: dedupState,
+        });
+
+        if (embeddingMatch.kind === "matched") {
+          this.emitSkippedAsDuplicate({
+            turnId: input.turnId,
+            candidateDescription: candidate.description,
+            reason: "embedding",
+            matchedExistingId: embeddingMatch.goalId,
+            similarity: embeddingMatch.similarity,
+          });
+          continue;
+        }
+
+        candidateVector = embeddingMatch.candidateVector;
+      }
 
       try {
         goal = this.options.identityService.addGoal({
@@ -153,6 +242,13 @@ export class TurnGoalPromotionService {
       }
 
       persisted.goalIds.push(goal.id);
+
+      if (candidateVector !== null && dedupState !== null) {
+        dedupState.acceptedVectors.push({
+          goalId: goal.id,
+          vector: candidateVector,
+        });
+      }
 
       const initialStep = this.initialStepForPersistence({
         candidate,
@@ -189,6 +285,98 @@ export class TurnGoalPromotionService {
     }
 
     return persisted;
+  }
+
+  private listActiveSameAxisGoals(input: {
+    audienceEntityId: EntityId | null;
+    ownerEntityId: EntityId | null;
+    turnId: string;
+  }): GoalRecord[] {
+    try {
+      return flattenGoals(
+        this.options.goalsRepository.list({
+          status: "active",
+          ownerEntityId: input.ownerEntityId,
+        }),
+      ).filter(
+        (goal) =>
+          goal.status === "active" &&
+          goal.audience_entity_id === input.audienceEntityId &&
+          (goal.owner_entity_id ?? null) === input.ownerEntityId,
+      );
+    } catch (error) {
+      this.emitDedupDegraded({
+        turnId: input.turnId,
+        reason: "active_goal_lookup_failed",
+        error,
+      });
+      return [];
+    }
+  }
+
+  private async findEmbeddingDuplicate(input: {
+    turnId: string;
+    candidate: GoalPromotionCandidate;
+    state: {
+      activeVectors: EmbeddedGoalVector[];
+      acceptedVectors: EmbeddedGoalVector[];
+    };
+  }): Promise<
+    | {
+        kind: "matched";
+        goalId: GoalId;
+        similarity: number;
+      }
+    | {
+        kind: "clear";
+        candidateVector: Float32Array | null;
+      }
+  > {
+    let candidateVector: Float32Array;
+
+    try {
+      candidateVector = await this.options.embeddingClient.embed(input.candidate.description);
+    } catch (error) {
+      this.emitDedupDegraded({
+        turnId: input.turnId,
+        reason: "candidate_embedding_failed",
+        error,
+        candidateDescription: input.candidate.description,
+      });
+      return {
+        kind: "clear",
+        candidateVector: null,
+      };
+    }
+
+    let bestMatch: { goalId: GoalId; similarity: number } | null = null;
+
+    for (const existing of [...input.state.activeVectors, ...input.state.acceptedVectors]) {
+      const similarity = cosineSimilarity(candidateVector, existing.vector);
+
+      if (
+        similarity >= GOAL_PROMOTION_DUPLICATE_SIMILARITY_THRESHOLD &&
+        (bestMatch === null || similarity > bestMatch.similarity)
+      ) {
+        bestMatch = {
+          goalId: existing.goalId,
+          similarity,
+        };
+      }
+    }
+
+    if (bestMatch !== null) {
+      return {
+        kind: "matched",
+        goalId: bestMatch.goalId,
+        similarity: bestMatch.similarity,
+      };
+    }
+
+    return {
+      kind: "clear",
+      candidateVector,
+    };
   }
 
   private initialStepForPersistence(input: {
@@ -231,6 +419,52 @@ export class TurnGoalPromotionService {
     });
   }
 
+  private emitSkippedAsDuplicate(input: {
+    turnId: string;
+    candidateDescription: string;
+    reason: "extractor_signal" | "embedding";
+    duplicateOfGoalId?: GoalId;
+    matchedExistingId?: GoalId;
+    similarity?: number;
+  }): void {
+    if (!this.options.tracer.enabled) {
+      return;
+    }
+
+    this.options.tracer.emit("goal_promotion_skipped_as_duplicate", {
+      turnId: input.turnId,
+      candidate_description: input.candidateDescription,
+      reason: input.reason,
+      ...(input.duplicateOfGoalId === undefined
+        ? {}
+        : { duplicate_of_goal_id: input.duplicateOfGoalId }),
+      ...(input.matchedExistingId === undefined
+        ? {}
+        : { matched_existing_id: input.matchedExistingId }),
+      ...(input.similarity === undefined ? {} : { similarity: input.similarity }),
+    });
+  }
+
+  private emitDedupDegraded(input: {
+    turnId: string;
+    reason: string;
+    error: unknown;
+    candidateDescription?: string;
+  }): void {
+    if (!this.options.tracer.enabled) {
+      return;
+    }
+
+    this.options.tracer.emit("goal_promotion_dedup_degraded", {
+      turnId: input.turnId,
+      reason: input.reason,
+      error: input.error instanceof Error ? input.error.message : String(input.error),
+      ...(input.candidateDescription === undefined
+        ? {}
+        : { candidate_description: input.candidateDescription }),
+    });
+  }
+
   private emitDegraded(input: {
     turnId: string;
     reason: string;
@@ -250,4 +484,31 @@ export class TurnGoalPromotionService {
         : {}),
     });
   }
+}
+
+type GoalTreeNodeLike = GoalRecord & {
+  children?: readonly GoalTreeNodeLike[];
+};
+
+type EmbeddedGoalVector = {
+  goalId: GoalId;
+  vector: Float32Array;
+};
+
+function flattenGoals(goals: readonly GoalTreeNodeLike[]): GoalRecord[] {
+  const flattened: GoalRecord[] = [];
+  const stack = [...goals];
+
+  while (stack.length > 0) {
+    const next = stack.shift();
+
+    if (next === undefined) {
+      continue;
+    }
+
+    flattened.push(next);
+    stack.push(...(next.children ?? []));
+  }
+
+  return flattened;
 }

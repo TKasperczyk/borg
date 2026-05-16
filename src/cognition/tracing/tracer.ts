@@ -54,6 +54,8 @@ export type TurnTraceEventName =
   | "goal_promotion_extractor_degraded"
   | "goal_promotion_extractor_completed"
   | "goal_promotion_initial_step_downgraded"
+  | "goal_promotion_skipped_as_duplicate"
+  | "goal_promotion_dedup_degraded"
   | "frame_anomaly_classifier_degraded"
   | "frame_anomaly_classified"
   | "frame_anomaly_quarantine_appended"

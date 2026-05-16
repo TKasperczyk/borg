@@ -25,7 +25,12 @@ import { readTraceEvents } from "../assessor/trace-reader.js";
 import type { TraceRecord } from "../assessor/types.js";
 
 import { appendJsonlLine } from "./jsonl.js";
-import type { MetricsRow } from "./types.js";
+import { simulatorHealthWarningsForRows } from "./health-warnings.js";
+import type {
+  MetricsRow,
+  SimulatorHealthWarning,
+  SimulatorHealthWarningKind,
+} from "./types.js";
 
 const LARGE_COUNT_LIMIT = 1_000_000;
 const TURN_METRICS_EVENT = "turn_metrics";
@@ -95,6 +100,9 @@ type GoalPromotionMetricCounts = Pick<
   | "goal_promotion_salvaged_promotions"
   | "goal_promotion_skipped_promotions"
   | "goal_promotion_initial_step_downgraded"
+  | "goal_promotion_dedup_skipped_extractor_signal"
+  | "goal_promotion_dedup_skipped_embedding"
+  | "goal_promotion_dedup_degraded"
 >;
 
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
@@ -194,6 +202,10 @@ function traceKind(record: TraceRecord): string | null {
   return typeof record.kind === "string" ? record.kind : null;
 }
 
+function traceReason(record: TraceRecord): string | null {
+  return typeof record.reason === "string" ? record.reason : null;
+}
+
 function traceNumber(record: TraceRecord, key: string): number {
   const value = record[key];
 
@@ -277,6 +289,9 @@ function goalPromotionMetrics(
   const completed = traceRecords.filter(
     (record) => record.event === "goal_promotion_extractor_completed",
   );
+  const skippedAsDuplicate = traceRecords.filter(
+    (record) => record.event === "goal_promotion_skipped_as_duplicate",
+  );
 
   return {
     goal_promotion_salvaged_promotions: completed.reduce(
@@ -289,6 +304,15 @@ function goalPromotionMetrics(
     ),
     goal_promotion_initial_step_downgraded: traceRecords.filter(
       (record) => record.event === "goal_promotion_initial_step_downgraded",
+    ).length,
+    goal_promotion_dedup_skipped_extractor_signal: skippedAsDuplicate.filter(
+      (record) => traceReason(record) === "extractor_signal",
+    ).length,
+    goal_promotion_dedup_skipped_embedding: skippedAsDuplicate.filter(
+      (record) => traceReason(record) === "embedding",
+    ).length,
+    goal_promotion_dedup_degraded: traceRecords.filter(
+      (record) => record.event === "goal_promotion_dedup_degraded",
     ).length,
   };
 }
@@ -405,10 +429,67 @@ export class MetricsCapture {
   private previousActionCreationCountsBySource: Record<ActionRecordCreationSource, number> =
     zeroActionCreationCounts();
   private readonly completedActionIdsSeen = new Set<ActionId>();
+  private readonly capturedRows: MetricsRow[] = [];
+  private readonly healthWarnings: SimulatorHealthWarning[] = [];
+  private readonly activeHealthWarningKinds = new Set<SimulatorHealthWarningKind>();
 
   constructor(filepath: string, options: MetricsCaptureOptions = {}) {
     this.filepath = filepath;
     this.tracePath = options.tracePath;
+  }
+
+  listHealthWarnings(): SimulatorHealthWarning[] {
+    return this.healthWarnings.map((warning) => ({ ...warning }));
+  }
+
+  private recordHealthWarnings(row: MetricsRow): void {
+    this.capturedRows.push(row);
+    const warnings = simulatorHealthWarningsForRows(this.capturedRows);
+    const currentKinds = new Set(warnings.map((warning) => warning.kind));
+    const risingWarnings = warnings.filter(
+      (warning) => !this.activeHealthWarningKinds.has(warning.kind),
+    );
+
+    for (const kind of [...this.activeHealthWarningKinds]) {
+      if (!currentKinds.has(kind)) {
+        this.activeHealthWarningKinds.delete(kind);
+      }
+    }
+
+    for (const kind of currentKinds) {
+      this.activeHealthWarningKinds.add(kind);
+    }
+
+    if (risingWarnings.length === 0) {
+      return;
+    }
+
+    this.healthWarnings.push(...risingWarnings);
+
+    if (this.tracePath === undefined) {
+      return;
+    }
+
+    for (const warning of risingWarnings) {
+      appendJsonlLine(
+        this.tracePath,
+        `${JSON.stringify({
+          ts: Date.now(),
+          wallMs: performance.now(),
+          turnId: warning.turnId,
+          event: "simulator_health_warning",
+          artifact: "simulator",
+          warning_kind: warning.kind,
+          turn_counter: warning.turn_counter,
+          threshold: warning.threshold,
+          observed_value: warning.observed_value,
+          ...(warning.window_start_turn === undefined
+            ? {}
+            : { window_start_turn: warning.window_start_turn }),
+          ...(warning.window_turns === undefined ? {} : { window_turns: warning.window_turns }),
+        })}\n`,
+      );
+    }
   }
 
   private captureMemoryBandMetrics(borg: Borg, sessionId: SessionId): MemoryBandMetricCounts {
@@ -643,6 +724,12 @@ export class MetricsCapture {
         goalPromotionMetricCounts.goal_promotion_skipped_promotions,
       goal_promotion_initial_step_downgraded:
         goalPromotionMetricCounts.goal_promotion_initial_step_downgraded,
+      goal_promotion_dedup_skipped_extractor_signal:
+        goalPromotionMetricCounts.goal_promotion_dedup_skipped_extractor_signal,
+      goal_promotion_dedup_skipped_embedding:
+        goalPromotionMetricCounts.goal_promotion_dedup_skipped_embedding,
+      goal_promotion_dedup_degraded:
+        goalPromotionMetricCounts.goal_promotion_dedup_degraded,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 
@@ -650,6 +737,7 @@ export class MetricsCapture {
     this.previousSemanticEdgeCount = semanticEdges.length;
     this.previousActionCreationCountsBySource = actionCreationCountsFromRepository(borg);
     appendJsonlLine(this.filepath, `${JSON.stringify(row)}\n`);
+    this.recordHealthWarnings(row);
     return row;
   }
 
@@ -741,11 +829,18 @@ export class MetricsCapture {
         goalPromotionMetricCounts.goal_promotion_skipped_promotions,
       goal_promotion_initial_step_downgraded:
         goalPromotionMetricCounts.goal_promotion_initial_step_downgraded,
+      goal_promotion_dedup_skipped_extractor_signal:
+        goalPromotionMetricCounts.goal_promotion_dedup_skipped_extractor_signal,
+      goal_promotion_dedup_skipped_embedding:
+        goalPromotionMetricCounts.goal_promotion_dedup_skipped_embedding,
+      goal_promotion_dedup_degraded:
+        goalPromotionMetricCounts.goal_promotion_dedup_degraded,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 
     this.previousActionCreationCountsBySource = actionCreationCountsFromRepository(borg);
     appendJsonlLine(this.filepath, `${JSON.stringify(row)}\n`);
+    this.recordHealthWarnings(row);
     return row;
   }
 

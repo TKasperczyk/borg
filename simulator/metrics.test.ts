@@ -102,6 +102,9 @@ const TURN_METRICS_KEY_ORDER = [
   "goal_promotion_salvaged_promotions",
   "goal_promotion_skipped_promotions",
   "goal_promotion_initial_step_downgraded",
+  "goal_promotion_dedup_skipped_extractor_signal",
+  "goal_promotion_dedup_skipped_embedding",
+  "goal_promotion_dedup_degraded",
   "overseer_due_on_suppressed_turn",
 ] as const;
 
@@ -161,6 +164,7 @@ function fakeBorg(
   counts: {
     semanticNodes?: number;
     semanticEdges?: number;
+    activeGoals?: number;
     suppressedSessions?: readonly SessionId[];
     streamEntriesBySession?: ReadonlyMap<SessionId, readonly StreamEntry[]>;
   } = {},
@@ -168,6 +172,7 @@ function fakeBorg(
 ): Borg {
   const semanticNodeCount = counts.semanticNodes ?? 1;
   const semanticEdgeCount = counts.semanticEdges ?? 2;
+  const activeGoalCount = counts.activeGoals ?? 2;
   const suppressedSessions = new Set(counts.suppressedSessions ?? []);
   const streamEntriesBySession = counts.streamEntriesBySession ?? new Map();
 
@@ -214,7 +219,11 @@ function fakeBorg(
         list: () => [{ id: "question_1" }],
       },
       goals: {
-        list: () => [{ id: "goal_1", children: [{ id: "goal_2" }] }],
+        list: () =>
+          Array.from({ length: activeGoalCount }, (_, index) => ({
+            id: `goal_${index}`,
+            children: [],
+          })),
       },
     },
     commitments: {
@@ -405,6 +414,24 @@ describe("MetricsCapture", () => {
           reason: "wait_without_due_at",
         },
         {
+          ts: 102,
+          turnId: "turn-goal",
+          event: "goal_promotion_skipped_as_duplicate",
+          reason: "extractor_signal",
+        },
+        {
+          ts: 103,
+          turnId: "turn-goal",
+          event: "goal_promotion_skipped_as_duplicate",
+          reason: "embedding",
+        },
+        {
+          ts: 104,
+          turnId: "turn-goal",
+          event: "goal_promotion_dedup_degraded",
+          reason: "candidate_embedding_failed",
+        },
+        {
           ts: 200,
           turnId: "other-turn",
           event: "goal_promotion_extractor_completed",
@@ -431,7 +458,130 @@ describe("MetricsCapture", () => {
       goal_promotion_salvaged_promotions: 2,
       goal_promotion_skipped_promotions: 1,
       goal_promotion_initial_step_downgraded: 1,
+      goal_promotion_dedup_skipped_extractor_signal: 1,
+      goal_promotion_dedup_skipped_embedding: 1,
+      goal_promotion_dedup_degraded: 1,
     });
+  });
+
+  it("emits simulator health warning traces when active goals are high", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+      fakeBorg({ activeGoals: 26 }),
+      "turn-health-high",
+      5,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+    const trace = readFileSync(tracePath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    expect(row.active_goal_count).toBe(26);
+    expect(trace).toContainEqual(
+      expect.objectContaining({
+        event: "simulator_health_warning",
+        warning_kind: "active_goals_high",
+        turn_counter: 5,
+        threshold: 25,
+        observed_value: 26,
+      }),
+    );
+  });
+
+  it("emits active-goals-high warnings only on rising edges", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+    const capture = new MetricsCapture(metricsPath, { tracePath });
+
+    await capture.capture(fakeBorg({ activeGoals: 26 }), "turn-warning-rise-1", 1, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+    await capture.capture(fakeBorg({ activeGoals: 27 }), "turn-warning-still-high", 2, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+    await capture.capture(fakeBorg({ activeGoals: 24 }), "turn-warning-cleared", 3, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+    await capture.capture(fakeBorg({ activeGoals: 28 }), "turn-warning-rise-2", 4, {
+      sessionId,
+      sessionIds: [sessionId],
+      transportChatAttempts: 1,
+    });
+
+    const warningEvents = readFileSync(tracePath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter(
+        (record) =>
+          record.event === "simulator_health_warning" &&
+          record.warning_kind === "active_goals_high",
+      );
+
+    expect(warningEvents).toEqual([
+      expect.objectContaining({
+        turnId: "turn-warning-rise-1",
+        observed_value: 26,
+      }),
+      expect.objectContaining({
+        turnId: "turn-warning-rise-2",
+        observed_value: 28,
+      }),
+    ]);
+    expect(capture.listHealthWarnings().map((warning) => warning.turnId)).toEqual([
+      "turn-warning-rise-1",
+      "turn-warning-rise-2",
+    ]);
+  });
+
+  it("emits simulator health warning traces when active goal growth is high after turn twenty", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+    const capture = new MetricsCapture(metricsPath, { tracePath });
+
+    for (let turn = 21; turn <= 30; turn += 1) {
+      await capture.capture(fakeBorg({ activeGoals: turn - 20 }), `turn-growth-${turn}`, turn, {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      });
+    }
+
+    const trace = readFileSync(tracePath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    expect(trace).toContainEqual(
+      expect.objectContaining({
+        event: "simulator_health_warning",
+        warning_kind: "active_goals_growth_high",
+        turn_counter: 30,
+        threshold: 0.5,
+        observed_value: 1,
+        window_start_turn: 21,
+        window_turns: 9,
+      }),
+    );
   });
 
   it("counts frame-anomaly classifier, fallback, and durable quarantine markers", async () => {

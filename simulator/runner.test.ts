@@ -394,6 +394,9 @@ function metricsRow(turnCounter: number): MetricsRow {
     goal_promotion_salvaged_promotions: 0,
     goal_promotion_skipped_promotions: 0,
     goal_promotion_initial_step_downgraded: 0,
+    goal_promotion_dedup_skipped_extractor_signal: 0,
+    goal_promotion_dedup_skipped_embedding: 0,
+    goal_promotion_dedup_degraded: 0,
     overseer_due_on_suppressed_turn: false,
   };
 }
@@ -451,6 +454,39 @@ describe("SimulatorRunner", () => {
     expect(report).toContain("original_impact=concerning");
     expect(report).toContain("carryover from turn 10");
     expect(report).not.toContain("Validated findings");
+  });
+
+  it("formats simulator health warnings in the run report", () => {
+    const report = formatSimulatorReport({
+      runId: "sim-runner-health-warning-test",
+      persona: tomPersona.key,
+      personas: [tomPersona.key],
+      audience: "Tom",
+      totalTurns: 30,
+      resultState: "completed",
+      sessions: [],
+      suppressionEvents: [],
+      overseerCheckpoints: [],
+      healthWarnings: [
+        {
+          kind: "active_goals_growth_high",
+          turn_counter: 30,
+          turnId: "turn-30",
+          threshold: 0.5,
+          observed_value: 0.75,
+          window_start_turn: 21,
+          window_turns: 9,
+        },
+      ],
+      turnFailures: [],
+      finalMetrics: metricsRow(30),
+      durationMs: 1,
+    });
+
+    expect(report).toContain("## Health Warnings");
+    expect(report).toContain("active_goals_growth_high");
+    expect(report).toContain("observed=0.75");
+    expect(report).toContain("threshold=0.5");
   });
 
   it("builds emission baseline config overrides", () => {

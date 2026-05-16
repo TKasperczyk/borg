@@ -91,6 +91,7 @@ describe("GoalPromotionExtractor", () => {
         target_at: null,
         reason: "The user asked Borg to track the shortlist over time.",
         confidence: 0.9,
+        duplicate_of_goal_id: null,
         initial_step: null,
       },
     ]);
@@ -181,8 +182,9 @@ describe("GoalPromotionExtractor", () => {
     ).resolves.toEqual([]);
   });
 
-  it("skips duplicate references to existing active goals", async () => {
+  it("preserves duplicate references for persistence-time dedup", async () => {
     const existingGoalId = createGoalId();
+    const owner = createEntityId();
     const llm = new FakeLLMClient({
       responses: [
         goalPromotionResponse([
@@ -208,12 +210,21 @@ describe("GoalPromotionExtractor", () => {
             description: "Help the user track their italki shortlist",
             priority: 8,
             target_at: null,
+            owner_entity_id: owner,
           },
         ],
       }),
     );
 
-    expect(result).toEqual([]);
+    expect(result).toEqual([
+      expect.objectContaining({
+        description: "Help the user track their italki shortlist",
+        duplicate_of_goal_id: existingGoalId,
+      }),
+    ]);
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+      `"owner_entity_id":"${owner}"`,
+    );
   });
 
   it("caps promotions at three candidates", async () => {

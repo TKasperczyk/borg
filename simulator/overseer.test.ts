@@ -168,6 +168,9 @@ function metricsRow(turn: number): MetricsRow {
     goal_promotion_salvaged_promotions: 0,
     goal_promotion_skipped_promotions: 0,
     goal_promotion_initial_step_downgraded: 0,
+    goal_promotion_dedup_skipped_extractor_signal: 0,
+    goal_promotion_dedup_skipped_embedding: 0,
+    goal_promotion_dedup_degraded: 0,
     overseer_due_on_suppressed_turn: false,
   };
 }
