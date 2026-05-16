@@ -1,4 +1,5 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
+import { emptySectionCountRecord } from "./budget.js";
 import type {
   EvidenceLedger,
   EvidenceLedgerEntry,
@@ -44,14 +45,16 @@ export function summarizeEvidenceLedgerTrace(ledger: EvidenceLedger): EvidenceLe
   // that load to specific bands. Surfacing it in the trace lets us tell
   // ledger-side bloat (transcript, action records) apart from
   // retrieval-side bloat (semantic walks, episodes).
-  const estimatedTokensBySection = Object.fromEntries(
-    ledger.sections.map((section) => [section.id, estimateSectionTokens(section)]),
-  ) as Record<EvidenceLedgerSectionId, number>;
+  const estimatedTokensBySection = emptySectionCountRecord();
+  const entryCountsBySection = emptySectionCountRecord();
+
+  for (const section of ledger.sections) {
+    estimatedTokensBySection[section.id] = estimateSectionTokens(section);
+    entryCountsBySection[section.id] = section.entries.length;
+  }
 
   return {
-    entryCountsBySection: Object.fromEntries(
-      ledger.sections.map((section) => [section.id, section.entries.length]),
-    ) as Record<EvidenceLedgerSectionId, number>,
+    entryCountsBySection,
     estimatedTokensBySection,
     transcriptIncluded: ledger.transcriptIncluded,
     transcriptCompacted: ledger.transcriptCompacted,

@@ -5,11 +5,17 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ActionRecord, ActionRecordListFilter } from "../../memory/actions/index.js";
-import type { CommitmentRecord } from "../../memory/commitments/index.js";
+import type {
+  CommitmentListOptions,
+  CommitmentRecord,
+  EntityRecord,
+} from "../../memory/commitments/index.js";
 import type { RelationalSlot } from "../../memory/relational-slots/index.js";
 import {
   OpenQuestionsRepository,
+  type GoalListOptions,
   type GoalRecord,
+  type GoalTreeNode,
   type OpenQuestion,
 } from "../../memory/self/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
@@ -20,7 +26,12 @@ import {
   createSemanticNodeFixture,
 } from "../../offline/test-support.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
-import { StreamReader, StreamWriter, type StreamEntry } from "../../stream/index.js";
+import {
+  QUARANTINED_USER_ENTRY_EVENT,
+  StreamReader,
+  StreamWriter,
+  type StreamEntry,
+} from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
@@ -38,7 +49,12 @@ import {
   type EntityId,
 } from "../../util/ids.js";
 import { EvidenceLedgerBuilder } from "./builder.js";
-import { renderCompactPlannerLedger, renderEvidenceLedger } from "./renderer.js";
+import { summarizeEvidenceLedgerTrace } from "./trace-summary.js";
+import {
+  compactEvidenceLedger,
+  renderCompactPlannerLedger,
+  renderEvidenceLedger,
+} from "./renderer.js";
 
 const NOW_MS = 1_800_000_000_000;
 
@@ -256,6 +272,152 @@ function makeOpenQuestion(episodeId: ReturnType<typeof createEpisodeId>): OpenQu
   };
 }
 
+function makeEntity(
+  id: EntityId,
+  canonicalName: string,
+  kind: EntityRecord["kind"] = "person",
+): EntityRecord {
+  return {
+    id,
+    canonical_name: canonicalName,
+    aliases: [],
+    kind,
+    name_provenance: "user_declared",
+    created_at: NOW_MS,
+  };
+}
+
+function entityRepository(records: readonly EntityRecord[]) {
+  const byId = new Map(records.map((record) => [record.id, record]));
+
+  return {
+    get: (entityId: EntityId) => byId.get(entityId) ?? null,
+  };
+}
+
+function actionList(records: readonly ActionRecord[]) {
+  return (filter: ActionRecordListFilter = {}) =>
+    records
+      .filter(
+        (action) =>
+          (filter.actor === undefined || action.actor === filter.actor) &&
+          (filter.state === undefined || action.state === filter.state) &&
+          (filter.states === undefined || filter.states.includes(action.state)) &&
+          (!("audienceEntityId" in filter) ||
+            (filter.audienceEntityId === null
+              ? action.audience_entity_id === null
+              : action.audience_entity_id === filter.audienceEntityId)) &&
+          (filter.goalId === undefined || action.goal_id === filter.goalId) &&
+          (filter.openQuestionId === undefined || action.open_question_id === filter.openQuestionId),
+      )
+      .slice(0, filter.limit ?? records.length);
+}
+
+function commitmentList(records: readonly CommitmentRecord[]) {
+  return (options: CommitmentListOptions = {}) =>
+    records.filter((commitment) => {
+      if (
+        options.activeOnly === true &&
+        (commitment.revoked_at !== null ||
+          commitment.superseded_by !== null ||
+          commitment.expired_at !== null ||
+          (commitment.expires_at !== null && commitment.expires_at <= NOW_MS))
+      ) {
+        return false;
+      }
+
+      if (options.audience !== undefined) {
+        const audienceMatches =
+          options.audience === null
+            ? commitment.restricted_audience === null && commitment.made_to_entity === null
+            : (commitment.restricted_audience === null &&
+                (commitment.made_to_entity === null ||
+                  commitment.made_to_entity === options.audience)) ||
+              commitment.restricted_audience === options.audience;
+
+        if (!audienceMatches) {
+          return false;
+        }
+      }
+
+      if (
+        options.aboutEntity !== undefined &&
+        options.aboutEntity !== null &&
+        commitment.about_entity !== null &&
+        commitment.about_entity !== options.aboutEntity
+      ) {
+        return false;
+      }
+
+      if (
+        options.committedByEntity !== undefined &&
+        commitment.committed_by_entity_id !== options.committedByEntity
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+}
+
+function goalList(records: readonly GoalRecord[]) {
+  return (options: GoalListOptions = {}): GoalTreeNode[] =>
+    records
+      .filter((goal) => {
+        if (options.status !== undefined && goal.status !== options.status) {
+          return false;
+        }
+
+        if (options.visibleToAudienceEntityId !== undefined) {
+          const audienceMatches =
+            options.visibleToAudienceEntityId === null
+              ? goal.audience_entity_id === null
+              : goal.audience_entity_id === null ||
+                goal.audience_entity_id === options.visibleToAudienceEntityId;
+
+          if (!audienceMatches) {
+            return false;
+          }
+        }
+
+        if (
+          options.ownerEntityId !== undefined &&
+          goal.owner_entity_id !== options.ownerEntityId
+        ) {
+          return false;
+        }
+
+        return true;
+      })
+      .map((goal) => ({ ...goal, children: [] }));
+}
+
+function attributionBuilder(input: {
+  tempDir: string;
+  actions?: readonly ActionRecord[];
+  commitments?: readonly CommitmentRecord[];
+  goals?: readonly GoalRecord[];
+  entities?: readonly EntityRecord[];
+}) {
+  return new EvidenceLedgerBuilder({
+    createStreamReader: (sessionId) => new StreamReader({ dataDir: input.tempDir, sessionId }),
+    relationalSlotRepository: {
+      list: () => [],
+    },
+    actionRepository: {
+      list: actionList(input.actions ?? []),
+    },
+    commitmentRepository: {
+      list: commitmentList(input.commitments ?? []),
+    },
+    goalsRepository: {
+      list: goalList(input.goals ?? []),
+    },
+    currentSessionTranscriptTokenBudget: 50_000,
+    entityRepository: entityRepository(input.entities ?? []),
+  });
+}
+
 describe("EvidenceLedgerBuilder", () => {
   const tempDirs: string[] = [];
 
@@ -263,6 +425,674 @@ describe("EvidenceLedgerBuilder", () => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
+  });
+
+  it("renders a structural attribution matrix without leaking owner, actor, or assistant rationale buckets", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const ben = createEntityId();
+    const aliceEntry = await writer.append({
+      kind: "user_msg",
+      content: "I will own the migration goal, but Ben should update the release checklist.",
+      sender_entity_id: alice,
+    });
+    const assistantEntry = await writer.append({
+      kind: "agent_msg",
+      content: "The risky part is the rollback rationale, so I would keep that separate.",
+    });
+    const benEntry = await writer.append({
+      kind: "user_msg",
+      content: "I will update the release checklist after the refactor diff lands.",
+      sender_entity_id: ben,
+    });
+    const aliceGoal = makeGoal(aliceEntry.id, {
+      description: "Alice owns the migration goal while Ben updates the release checklist.",
+      owner_entity_id: alice,
+    });
+    const benCommitment = {
+      ...makeCommitment(benEntry.id),
+      directive_family: "release_checklist_update",
+      directive: "Ben is committed to updating the release checklist.",
+      committed_by_entity_id: ben,
+    };
+    const benAction = makeAction(benEntry.id, {
+      description: "Update the release checklist",
+      actor: ben,
+      state: "committed_to_do",
+      committed_at: NOW_MS,
+      scheduled_at: null,
+    });
+    const ledger = await attributionBuilder({
+      tempDir,
+      actions: [benAction],
+      commitments: [benCommitment],
+      goals: [aliceGoal],
+      entities: [makeEntity(alice, "Alice"), makeEntity(ben, "Ben")],
+    }).build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-attribution-matrix",
+      audienceEntityId: null,
+      currentUserMessage: String(benEntry.content),
+      currentUserEntry: benEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        { entityId: alice, displayName: "Alice", role: "participant" },
+        { entityId: ben, displayName: "Ben", role: "speaker" },
+      ],
+    });
+    const matrixEntries =
+      ledger.sections.find((section) => section.id === "attribution_matrix")?.entries ?? [];
+    const aliceMatrix = matrixEntries.find(
+      (entry) => entry.id === `attribution_matrix:participant:${alice}`,
+    );
+    const benMatrix = matrixEntries.find(
+      (entry) => entry.id === `attribution_matrix:participant:${ben}`,
+    );
+    const assistantMatrix = matrixEntries.find(
+      (entry) => entry.id === "attribution_matrix:assistant",
+    );
+
+    expect(aliceMatrix?.text).toContain(`- owned goals: ${aliceGoal.id}`);
+    expect(aliceMatrix?.text).not.toContain(benCommitment.id);
+    expect(aliceMatrix?.text).not.toContain(benAction.id);
+    expect(aliceMatrix?.text).not.toContain(assistantEntry.id);
+    expect(benMatrix?.text).toContain(`- commitments: ${benCommitment.id}`);
+    expect(benMatrix?.text).toContain(`- assigned actions: ${benAction.id}`);
+    expect(benMatrix?.text).not.toContain(aliceGoal.id);
+    expect(benMatrix?.text).not.toContain(assistantEntry.id);
+    expect(assistantMatrix?.text).toContain(`- prior reasoning: ${assistantEntry.id}`);
+  });
+
+  it("renders a current-session attribution sidebar grouped by sender entity id", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const ben = createEntityId();
+    const aliceEntry = await writer.append({
+      kind: "user_msg",
+      content: "Alice will review the API boundary before the refactor branch merges.",
+      sender_entity_id: alice,
+    });
+    const assistantEntry = await writer.append({
+      kind: "agent_msg",
+      content: "I think the boundary review should happen before the database change.",
+    });
+    const benEntry = await writer.append({
+      kind: "user_msg",
+      content: "Ben will run the migration smoke test after the database change.",
+      sender_entity_id: ben,
+    });
+    const ledger = await attributionBuilder({
+      tempDir,
+      entities: [makeEntity(alice, "Alice"), makeEntity(ben, "Ben")],
+    }).build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-attribution-sidebar",
+      audienceEntityId: null,
+      currentUserMessage: String(benEntry.content),
+      currentUserEntry: benEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        { entityId: alice, displayName: "Alice", role: "participant" },
+        { entityId: ben, displayName: "Ben", role: "speaker" },
+      ],
+    });
+    const sidebarEntries =
+      ledger.sections.find((section) => section.id === "current_session_attribution_sidebar")
+        ?.entries ?? [];
+    const aliceSidebar = sidebarEntries.find(
+      (entry) => entry.id === `current_session_attribution_sidebar:participant:${alice}`,
+    );
+    const benSidebar = sidebarEntries.find(
+      (entry) => entry.id === `current_session_attribution_sidebar:participant:${ben}`,
+    );
+    const assistantSidebar = sidebarEntries.find(
+      (entry) => entry.id === "current_session_attribution_sidebar:assistant",
+    );
+
+    expect(aliceSidebar?.text).toContain(`### Alice <${alice}>`);
+    expect(aliceSidebar?.text).toContain(`${aliceEntry.id} [`);
+    expect(aliceSidebar?.text).toContain("Alice will review the API boundary");
+    expect(aliceSidebar?.text).not.toContain(benEntry.id);
+    expect(benSidebar?.text).toContain(`### Ben <${ben}>`);
+    expect(benSidebar?.text).toContain(`${benEntry.id} [`);
+    expect(benSidebar?.text).toContain("Ben will run the migration smoke test");
+    expect(benSidebar?.text).not.toContain(aliceEntry.id);
+    expect(assistantSidebar?.text).toContain("### Borg / Assistant");
+    expect(assistantSidebar?.text).toContain(`${assistantEntry.id} [`);
+    expect(assistantSidebar?.text).toContain("boundary review should happen");
+  });
+
+  it("omits optional attribution sections for a single active speaker", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const userEntry = await writer.append({
+      kind: "user_msg",
+      content: "I will update the refactor checklist.",
+      sender_entity_id: alice,
+    });
+    const action = makeAction(userEntry.id, {
+      description: "Update the refactor checklist",
+      actor: alice,
+    });
+    const ledger = await attributionBuilder({
+      tempDir,
+      actions: [action],
+      entities: [makeEntity(alice, "Alice")],
+    }).build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-single-speaker",
+      audienceEntityId: null,
+      currentUserMessage: String(userEntry.content),
+      currentUserEntry: userEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [{ entityId: alice, displayName: "Alice", role: "speaker" }],
+    });
+
+    expect(ledger.sections.find((section) => section.id === "attribution_matrix")).toBeUndefined();
+    expect(
+      ledger.sections.find((section) => section.id === "current_session_attribution_sidebar"),
+    ).toBeUndefined();
+    expect(renderEvidenceLedger(ledger)).not.toContain("## Attribution Matrix");
+    expect(renderEvidenceLedger(ledger)).not.toContain("## Current Session Attribution Sidebar");
+  });
+
+  it("keeps null-scoped group/channel records out of participant matrix rows", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const channel = createEntityId();
+    const alice = createEntityId();
+    const ben = createEntityId();
+    const aliceEntry = await writer.append({
+      kind: "user_msg",
+      content: "The team channel should keep the rollout gate visible.",
+      audience: "Engineering Rollout Channel",
+      sender_entity_id: alice,
+    });
+    const benEntry = await writer.append({
+      kind: "user_msg",
+      content: "I agree; the channel-level gate should stay visible.",
+      audience: "Engineering Rollout Channel",
+      sender_entity_id: ben,
+    });
+    const groupCommitment = {
+      ...makeCommitment(aliceEntry.id),
+      directive_family: "rollout_gate_visibility",
+      directive: "Keep the rollout gate visible to the engineering channel.",
+      restricted_audience: channel,
+      committed_by_entity_id: null,
+    };
+    const groupGoal = makeGoal(aliceEntry.id, {
+      description: "Keep the rollout gate visible to the engineering channel.",
+      audience_entity_id: channel,
+      owner_entity_id: null,
+    });
+    const groupAction = makeAction(benEntry.id, {
+      description: "Maintain the channel-level rollout gate",
+      actor: channel,
+      audience_entity_id: channel,
+    });
+    const ledger = await attributionBuilder({
+      tempDir,
+      actions: [groupAction],
+      commitments: [groupCommitment],
+      goals: [groupGoal],
+      entities: [
+        makeEntity(channel, "Engineering Rollout Channel", "group"),
+        makeEntity(alice, "Alice"),
+        makeEntity(ben, "Ben"),
+      ],
+    }).build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-group-separation",
+      audienceEntityId: channel,
+      currentUserMessage: String(benEntry.content),
+      currentUserEntry: benEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [groupCommitment],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        { entityId: alice, displayName: "Alice", role: "participant" },
+        { entityId: ben, displayName: "Ben", role: "speaker" },
+      ],
+    });
+    const matrixEntries =
+      ledger.sections.find((section) => section.id === "attribution_matrix")?.entries ?? [];
+    const groupMatrix = matrixEntries.find(
+      (entry) => entry.id === "attribution_matrix:group_channel",
+    );
+    const participantText = matrixEntries
+      .filter((entry) => entry.id !== "attribution_matrix:group_channel")
+      .map((entry) => entry.text ?? "")
+      .join("\n");
+
+    expect(groupMatrix?.text).toContain(groupCommitment.id);
+    expect(groupMatrix?.text).toContain(groupGoal.id);
+    expect(groupMatrix?.text).toContain(groupAction.id);
+    expect(participantText).not.toContain(groupCommitment.id);
+    expect(participantText).not.toContain(groupGoal.id);
+    expect(participantText).not.toContain(groupAction.id);
+  });
+
+  it("never renders assistant utterances in participant said-this-session rows", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const ben = createEntityId();
+    const aliceEntry = await writer.append({
+      kind: "user_msg",
+      content: "I see the test-risk split.",
+      sender_entity_id: alice,
+    });
+    const assistantEntry = await writer.append({
+      kind: "agent_msg",
+      content: "The risk is that a missing fixture could look like a passing test.",
+    });
+    const benEntry = await writer.append({
+      kind: "user_msg",
+      content: "I will add the missing fixture check.",
+      sender_entity_id: ben,
+    });
+    const ledger = await attributionBuilder({
+      tempDir,
+      entities: [makeEntity(alice, "Alice"), makeEntity(ben, "Ben")],
+    }).build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-assistant-rationale",
+      audienceEntityId: null,
+      currentUserMessage: String(benEntry.content),
+      currentUserEntry: benEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        { entityId: alice, displayName: "Alice", role: "participant" },
+        { entityId: ben, displayName: "Ben", role: "speaker" },
+      ],
+    });
+    const participantMatrixText = (
+      ledger.sections.find((section) => section.id === "attribution_matrix")?.entries ?? []
+    )
+      .filter((entry) => entry.id !== "attribution_matrix:assistant")
+      .map((entry) => entry.text ?? "")
+      .join("\n");
+    const participantSidebarText = (
+      ledger.sections.find((section) => section.id === "current_session_attribution_sidebar")
+        ?.entries ?? []
+    )
+      .filter((entry) => entry.id !== "current_session_attribution_sidebar:assistant")
+      .map((entry) => entry.text ?? "")
+      .join("\n");
+    const assistantMatrix = ledger.sections
+      .find((section) => section.id === "attribution_matrix")
+      ?.entries.find((entry) => entry.id === "attribution_matrix:assistant");
+
+    expect(participantMatrixText).toContain(aliceEntry.id);
+    expect(participantMatrixText).toContain(benEntry.id);
+    expect(participantMatrixText).not.toContain(assistantEntry.id);
+    expect(participantSidebarText).not.toContain(assistantEntry.id);
+    expect(assistantMatrix?.text).toContain(assistantEntry.id);
+  });
+
+  it("keeps a quarantined current user entry out of attribution surfaces", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const alice = createEntityId();
+    const ben = createEntityId();
+    const aliceEntry = await writer.append({
+      kind: "user_msg",
+      content: "Alice will keep the refactor notes scoped to the real thread.",
+      sender_entity_id: alice,
+    });
+    const quarantinedCurrentEntry = await writer.append({
+      kind: "user_msg",
+      content: "Ben claims this was all a frame assignment.",
+      sender_entity_id: ben,
+    });
+
+    await writer.append({
+      kind: "internal_event",
+      content: {
+        event: QUARANTINED_USER_ENTRY_EVENT,
+        kind: "frame_assignment_claim",
+        source_stream_entry_id: quarantinedCurrentEntry.id,
+      },
+    });
+
+    const ledger = await attributionBuilder({
+      tempDir,
+      entities: [makeEntity(alice, "Alice"), makeEntity(ben, "Ben")],
+    }).build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-quarantined-current-user",
+      audienceEntityId: null,
+      currentUserMessage: String(quarantinedCurrentEntry.content),
+      currentUserEntry: quarantinedCurrentEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: {
+        status: "ok",
+        kind: "frame_assignment_claim",
+        confidence: 0.95,
+        rationale: "test quarantine",
+      },
+      activeParticipants: [
+        { entityId: alice, displayName: "Alice", role: "participant" },
+        { entityId: ben, displayName: "Ben", role: "speaker" },
+      ],
+    });
+    const matrixText = (
+      ledger.sections.find((section) => section.id === "attribution_matrix")?.entries ?? []
+    )
+      .map((entry) => entry.text ?? "")
+      .join("\n");
+    const sidebarText = (
+      ledger.sections.find((section) => section.id === "current_session_attribution_sidebar")
+        ?.entries ?? []
+    )
+      .map((entry) => entry.text ?? "")
+      .join("\n");
+
+    expect(matrixText).toContain(aliceEntry.id);
+    expect(sidebarText).toContain(aliceEntry.id);
+    expect(matrixText).not.toContain(quarantinedCurrentEntry.id);
+    expect(sidebarText).not.toContain(quarantinedCurrentEntry.id);
+  });
+
+  it("skips attribution surfaces when active participants are one human plus the group audience", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const channel = createEntityId();
+    const alice = createEntityId();
+    const aliceEntry = await writer.append({
+      kind: "user_msg",
+      content: "Alice will post the refactor summary to the engineering channel.",
+      audience: "Engineering Channel",
+      sender_entity_id: alice,
+    });
+
+    await writer.append({
+      kind: "agent_msg",
+      content: "I will keep watching unless the channel needs a decision.",
+    });
+
+    const ledger = await attributionBuilder({
+      tempDir,
+      entities: [
+        makeEntity(channel, "Engineering Channel", "group"),
+        makeEntity(alice, "Alice"),
+      ],
+    }).build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-single-human-plus-group",
+      audienceEntityId: channel,
+      currentUserMessage: String(aliceEntry.content),
+      currentUserEntry: aliceEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        { entityId: alice, displayName: "Alice", role: "speaker" },
+        { entityId: channel, displayName: "Engineering Channel", role: "audience" },
+      ],
+    });
+
+    expect(ledger.sections.find((section) => section.id === "attribution_matrix")).toBeUndefined();
+    expect(
+      ledger.sections.find((section) => section.id === "current_session_attribution_sidebar"),
+    ).toBeUndefined();
+  });
+
+  it("keeps group-entity-owned records in Group/Channel attribution only", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const channel = createEntityId();
+    const alice = createEntityId();
+    const ben = createEntityId();
+    const aliceEntry = await writer.append({
+      kind: "user_msg",
+      content: "Alice says the service boundary should stay a channel-level decision.",
+      audience: "Engineering Channel",
+      sender_entity_id: alice,
+    });
+    const benEntry = await writer.append({
+      kind: "user_msg",
+      content: "Ben agrees the channel should own that service boundary.",
+      audience: "Engineering Channel",
+      sender_entity_id: ben,
+    });
+    const groupCommitment = {
+      ...makeCommitment(aliceEntry.id),
+      directive_family: "service_boundary_channel_owner",
+      directive: "The engineering channel owns the service boundary decision.",
+      restricted_audience: channel,
+      committed_by_entity_id: channel,
+    };
+    const groupGoal = makeGoal(aliceEntry.id, {
+      description: "The engineering channel owns the service boundary goal.",
+      audience_entity_id: channel,
+      owner_entity_id: channel,
+    });
+    const ledger = await attributionBuilder({
+      tempDir,
+      commitments: [groupCommitment],
+      goals: [groupGoal],
+      entities: [
+        makeEntity(channel, "Engineering Channel", "group"),
+        makeEntity(alice, "Alice"),
+        makeEntity(ben, "Ben"),
+      ],
+    }).build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-group-entity-owned-records",
+      audienceEntityId: channel,
+      currentUserMessage: String(benEntry.content),
+      currentUserEntry: benEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [groupCommitment],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: [
+        { entityId: alice, displayName: "Alice", role: "participant" },
+        { entityId: ben, displayName: "Ben", role: "speaker" },
+        { entityId: channel, displayName: "Engineering Channel", role: "audience" },
+      ],
+    });
+    const matrixEntries =
+      ledger.sections.find((section) => section.id === "attribution_matrix")?.entries ?? [];
+    const groupMatrix = matrixEntries.find(
+      (entry) => entry.id === "attribution_matrix:group_channel",
+    );
+    const participantText = matrixEntries
+      .filter((entry) => entry.id !== "attribution_matrix:group_channel")
+      .map((entry) => entry.text ?? "")
+      .join("\n");
+
+    expect(groupMatrix?.text).toContain(groupCommitment.id);
+    expect(groupMatrix?.text).toContain(groupGoal.id);
+    expect(participantText).not.toContain(groupCommitment.id);
+    expect(participantText).not.toContain(groupGoal.id);
+  });
+
+  it("bounds attribution matrix and sidebar with the finalizer ledger section caps", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const participants: {
+      entityId: EntityId;
+      displayName: string;
+      role: "speaker" | "participant";
+    }[] = Array.from({ length: 30 }, (_, index) => ({
+      entityId: createEntityId(),
+      displayName: `Engineer ${index}`,
+      role: index === 29 ? "speaker" : "participant",
+    }));
+    const entries: StreamEntry[] = [];
+
+    for (const [index, participant] of participants.entries()) {
+      entries.push(
+        await writer.append({
+          kind: "user_msg",
+          content: `Engineer ${index} reports refactor status ${"with bounded attribution detail ".repeat(10)}`,
+          sender_entity_id: participant.entityId,
+        }),
+      );
+    }
+
+    for (let index = 0; index < 8; index += 1) {
+      await writer.append({
+        kind: "agent_msg",
+        content: `Assistant rationale ${index} ${"keeps prior reasoning separate ".repeat(10)}`,
+      });
+    }
+
+    const actions = participants.map((participant, index) =>
+      makeAction(entries[index]!.id, {
+        description: `Update module ${index} handoff notes`,
+        actor: participant.entityId,
+      }),
+    );
+    const commitments = participants.map((participant, index) => ({
+      ...makeCommitment(entries[index]!.id),
+      directive_family: `engineer_${index}_handoff`,
+      directive: `Engineer ${index} keeps the handoff note current.`,
+      committed_by_entity_id: participant.entityId,
+    }));
+    const goals = participants.map((participant, index) =>
+      makeGoal(entries[index]!.id, {
+        description: `Engineer ${index} owns the module ${index} handoff goal.`,
+        owner_entity_id: participant.entityId,
+      }),
+    );
+    const currentEntry = entries.at(-1)!;
+    const ledger = await attributionBuilder({
+      tempDir,
+      actions,
+      commitments,
+      goals,
+      entities: participants.map((participant) =>
+        makeEntity(participant.entityId, participant.displayName),
+      ),
+    }).build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-attribution-budget",
+      audienceEntityId: null,
+      currentUserMessage: String(currentEntry.content),
+      currentUserEntry: currentEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+      activeParticipants: participants,
+    });
+    const compacted = compactEvidenceLedger(ledger);
+    const summary = summarizeEvidenceLedgerTrace(compacted.ledger);
+    const combinedAttributionTokens =
+      summary.estimatedTokensBySection.attribution_matrix +
+      summary.estimatedTokensBySection.current_session_attribution_sidebar;
+
+    expect(combinedAttributionTokens).toBeLessThanOrEqual(1_500);
+    expect(
+      compacted.traceSummary.omittedEntryCountsBySection.current_session_attribution_sidebar,
+    ).toBeGreaterThan(0);
+    expect(compacted.traceSummary.omittedEntryCountsBySection.attribution_matrix).toBeGreaterThan(
+      0,
+    );
   });
 
   it("orders sections, derives current/prior scope from handles, and includes transcript under budget", async () => {

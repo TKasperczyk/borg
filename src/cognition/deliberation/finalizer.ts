@@ -115,6 +115,7 @@ const EMISSION_FINALIZER_INSTRUCTIONS = [
   "Use EmitSelfReport for first-person expression of Borg's interior state, identity reflection, voice, or boundary. EmitSelfReport must include kind=self_report, persistence_class=assistant_self_report, and text. It is shown to the user exactly like EmitAnswer and persisted as assistant_self_report.",
   "",
   "Do not hide factual or source-sensitive content. If a name, place, number, date, callback, action state, relational/profile detail, or claim about Borg's own prior behavior cannot be grounded in prompt-visible evidence, remove it or phrase it qualitatively.",
+  "Use the Attribution Matrix and Attribution Sidebar as authoritative for who said, committed, decided, or reasoned what. Assistant rationale entries are Borg's prior reasoning, not participant claims.",
   "When a named entity is supported by evidence that uses only a pronoun or descriptive noun phrase for the predicate, do not present the name and predicate together unless the prompt-visible evidence also establishes that the name belongs to that entity.",
   "If the discourse-state section declares HARD CONSTRAINT - CLOSURE PRESSURE, treat it as binding. Do not append a sign-off, valediction, weather observation, single-line noted/held acknowledgment, or any sentence that reads as a coda. End on substantive content or call EmitNoOutput.",
 ].join("\n");

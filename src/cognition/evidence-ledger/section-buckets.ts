@@ -66,11 +66,21 @@ function sectionEntries(
 }
 
 export function finalSections(sections: SectionBuckets): EvidenceLedgerSection[] {
-  return EVIDENCE_LEDGER_SECTION_DEFINITIONS.map((definition) => ({
-    id: definition.id,
-    label: definition.label,
-    entries: sectionEntries(sections, definition.id),
-  }));
+  return EVIDENCE_LEDGER_SECTION_DEFINITIONS.flatMap((definition) => {
+    const entries = sectionEntries(sections, definition.id);
+
+    if ("optional" in definition && definition.optional === true && entries.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        id: definition.id,
+        label: definition.label,
+        entries,
+      },
+    ];
+  });
 }
 
 export function addEntry(

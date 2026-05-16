@@ -40,6 +40,12 @@ export type EvidenceLedgerEntry = {
   citations?: string[];
 };
 
+type EvidenceLedgerSectionDefinition = {
+  id: string;
+  label: string;
+  optional?: boolean;
+};
+
 export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
   {
     id: "current_user_message",
@@ -48,6 +54,16 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
   {
     id: "current_session_transcript",
     label: "2. Current-Session Transcript",
+  },
+  {
+    id: "current_session_attribution_sidebar",
+    label: "Current Session Attribution Sidebar",
+    optional: true,
+  },
+  {
+    id: "attribution_matrix",
+    label: "Attribution Matrix",
+    optional: true,
   },
   {
     id: "commitments_and_constraints",
@@ -97,7 +113,7 @@ export const EVIDENCE_LEDGER_SECTION_DEFINITIONS = [
     id: "prior_session_memory",
     label: "14. Prior-Session Memory",
   },
-] as const;
+] as const satisfies readonly EvidenceLedgerSectionDefinition[];
 
 export type EvidenceLedgerSectionId = (typeof EVIDENCE_LEDGER_SECTION_DEFINITIONS)[number]["id"];
 

@@ -4,6 +4,8 @@ import type { EvidenceLedger, EvidenceLedgerEntry, EvidenceLedgerSectionId } fro
 const CANONICAL_SECTION_PRIORITY = {
   current_user_message: 110,
   current_session_transcript: 100,
+  current_session_attribution_sidebar: 96,
+  attribution_matrix: 90,
   commitments_and_constraints: 85,
   closure_discourse_state: 80,
   contradictions_quarantines: 78,

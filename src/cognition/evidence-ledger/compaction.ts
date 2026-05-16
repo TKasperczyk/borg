@@ -55,6 +55,14 @@ const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
     maxEntries: 96,
     maxTokens: 8_000,
   },
+  current_session_attribution_sidebar: {
+    maxEntries: 16,
+    maxTokens: 600,
+  },
+  attribution_matrix: {
+    maxEntries: 24,
+    maxTokens: 900,
+  },
   commitments_and_constraints: {
     maxEntries: 80,
     maxTokens: 5_000,
@@ -111,8 +119,10 @@ const LOWEST_TRUST_SECTION_ORDER = [
   "episodes",
   "retrieved_memory_evidence",
   "open_questions",
+  "current_session_attribution_sidebar",
   "relational_slots",
   "group_channel_memory",
+  "attribution_matrix",
   "action_states",
   "contradictions_quarantines",
   "closure_discourse_state",

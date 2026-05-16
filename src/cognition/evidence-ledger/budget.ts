@@ -10,6 +10,8 @@ export function allSectionIds(): EvidenceLedgerSectionId[] {
   return [
     "current_user_message",
     "current_session_transcript",
+    "current_session_attribution_sidebar",
+    "attribution_matrix",
     "commitments_and_constraints",
     "closure_discourse_state",
     "contradictions_quarantines",

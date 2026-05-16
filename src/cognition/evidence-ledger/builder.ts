@@ -23,6 +23,10 @@ import {
   addCurrentSessionTranscriptSection,
   addCurrentUserMessageSection,
 } from "./sections/current-session.js";
+import {
+  addAttributionMatrixSection,
+  addCurrentSessionAttributionSidebarSection,
+} from "./sections/attribution.js";
 import { addDiscourseStateSection } from "./sections/discourse-state.js";
 import { addEpisodesSection } from "./sections/episodes.js";
 import { addGroupChannelMemorySection } from "./sections/group-channel-memory.js";
@@ -117,6 +121,8 @@ export class EvidenceLedgerBuilder {
 
     addCurrentUserMessageSection(context);
     addCurrentSessionTranscriptSection(context);
+    addCurrentSessionAttributionSidebarSection(context);
+    addAttributionMatrixSection(context);
     addCommitmentsAndConstraintsSection(context);
     addDiscourseStateSection(context);
     addContradictionsAndQuarantinesSection(context);
