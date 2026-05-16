@@ -15,6 +15,8 @@ import {
   type DecisionArtifactEntryKind,
   type DecisionArtifactOperation,
   type DecisionArtifactRepository,
+  type DecisionArtifactSourceTrustRejectionReason,
+  type DecisionArtifactSourceTrustValidator,
 } from "../../memory/decision-artifacts/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
@@ -273,6 +275,8 @@ export type CompileDecisionArtifactInput = {
   promptVisibleLedger: string;
   previousArtifact?: DecisionArtifact | null;
   allowedSourceStreamEntryIds?: readonly StreamEntryId[];
+  offLimitsSourceStreamEntryIds?: readonly StreamEntryId[];
+  sourceTrustValidator?: DecisionArtifactSourceTrustValidator;
   canonicalizationCandidates?: DecisionArtifactCanonicalizationCandidates;
   reconciliation?: DecisionArtifactReconciliationRepositories;
   clock?: Clock;
@@ -300,9 +304,13 @@ type PatchRejection = {
     | "missing_citation"
     | "invalid_source_stream_entry_id"
     | "disallowed_source_stream_entry_id"
+    | "quarantined_source_stream_entry_id"
+    | "inactive_source_stream_entry_id"
     | "empty_update";
   operationType: ParsedPatchOperation["type"];
   operationIndex: number;
+  sourceStreamEntryId?: string;
+  sourceTrustReason?: DecisionArtifactSourceTrustRejectionReason | "unknown";
 };
 
 type CanonicalizeIdChannel = "goal" | "commitment" | "action" | "open_question";
@@ -371,6 +379,8 @@ function buildDecisionArtifactMessages(input: {
   promptVisibleLedger: string;
   previousArtifactSummary: DecisionArtifactPromptSummary | null;
   canonicalizationCandidates: DecisionArtifactCanonicalizationCandidates;
+  allowedSourceStreamEntryIds?: readonly StreamEntryId[];
+  offLimitsSourceStreamEntryIds?: readonly StreamEntryId[];
 }): LLMMessage[] {
   const canonicalizationCandidates = buildCanonicalizationCandidatePromptPayload(
     input.canonicalizationCandidates,
@@ -390,6 +400,11 @@ function buildDecisionArtifactMessages(input: {
         current_user_turn: {
           stream_entry_id: input.currentUserStreamEntryId,
           text: input.currentUserMessage,
+        },
+        source_trust: {
+          citation_eligible_source_stream_entry_id_count:
+            input.allowedSourceStreamEntryIds?.length ?? null,
+          off_limits_source_stream_entry_ids: input.offLimitsSourceStreamEntryIds ?? [],
         },
         previous_artifact_summary: input.previousArtifactSummary,
         canonicalization_candidates: canonicalizationCandidates,
@@ -575,6 +590,16 @@ function traceCompileCompleted(options: {
       operationCount: options.operationCount,
       rejectedCount: options.rejected.length,
       rejectionReasons: options.rejected.map((rejection) => rejection.reason),
+      source_trust_rejections: toTraceJsonValue(
+        options.rejected
+          .filter((rejection) => rejection.sourceTrustReason !== undefined)
+          .map((rejection) => ({
+            operation_index: rejection.operationIndex,
+            operation_type: rejection.operationType,
+            source_stream_entry_id: rejection.sourceStreamEntryId ?? null,
+            source_trust_reason: rejection.sourceTrustReason ?? "unknown",
+          })),
+      ),
       applied: options.applied,
       recordVersion: options.artifact?.record_version ?? null,
       artifactEntryCount: artifactSummary.renderedEntryCount,
@@ -672,7 +697,13 @@ function parseEntryId(value: string): DecisionArtifactEntryId | null {
 function parseSourceStreamEntryIds(
   values: readonly string[],
   allowedSourceStreamEntryIds: ReadonlySet<StreamEntryId> | null,
-): { streamEntryIds: StreamEntryId[]; reason: PatchRejection["reason"] | null } {
+  sourceTrustValidator: DecisionArtifactSourceTrustValidator | undefined,
+): {
+  streamEntryIds: StreamEntryId[];
+  reason: PatchRejection["reason"] | null;
+  rejectedStreamEntryId?: string;
+  sourceTrustReason?: DecisionArtifactSourceTrustRejectionReason | "unknown";
+} {
   if (values.length === 0) {
     return { streamEntryIds: [], reason: "missing_citation" };
   }
@@ -681,11 +712,33 @@ function parseSourceStreamEntryIds(
 
   for (const value of values) {
     if (!streamEntryIdHelpers.is(value)) {
-      return { streamEntryIds: [], reason: "invalid_source_stream_entry_id" };
+      return {
+        streamEntryIds: [],
+        reason: "invalid_source_stream_entry_id",
+        rejectedStreamEntryId: value,
+      };
+    }
+
+    const trust = sourceTrustValidator?.(value);
+
+    if (trust?.allowed === false) {
+      return {
+        streamEntryIds: [],
+        reason:
+          trust.reason === "quarantined"
+            ? "quarantined_source_stream_entry_id"
+            : "inactive_source_stream_entry_id",
+        rejectedStreamEntryId: value,
+        sourceTrustReason: trust.reason ?? "unknown",
+      };
     }
 
     if (allowedSourceStreamEntryIds !== null && !allowedSourceStreamEntryIds.has(value)) {
-      return { streamEntryIds: [], reason: "disallowed_source_stream_entry_id" };
+      return {
+        streamEntryIds: [],
+        reason: "disallowed_source_stream_entry_id",
+        rejectedStreamEntryId: value,
+      };
     }
 
     if (!streamEntryIds.some((entryId) => entryId === value)) {
@@ -908,11 +961,13 @@ function rejection(
   operation: ParsedPatchOperation,
   operationIndex: number,
   reason: PatchRejection["reason"],
+  details: Pick<PatchRejection, "sourceStreamEntryId" | "sourceTrustReason"> = {},
 ): PatchRejection {
   return {
     reason,
     operationType: operation.type,
     operationIndex,
+    ...details,
   };
 }
 
@@ -924,6 +979,7 @@ function normalizePatch(input: {
   speakerEntityId: EntityId | null;
   participants: readonly DecisionArtifactParticipantContext[];
   allowedSourceStreamEntryIds: ReadonlySet<StreamEntryId> | null;
+  sourceTrustValidator?: DecisionArtifactSourceTrustValidator;
   allowedCanonicalizationIds: AllowedCanonicalizationIds;
 }): {
   operations: DecisionArtifactOperation[];
@@ -966,10 +1022,16 @@ function normalizePatch(input: {
         const citations = parseSourceStreamEntryIds(
           operation.source_stream_entry_ids,
           input.allowedSourceStreamEntryIds,
+          input.sourceTrustValidator,
         );
 
         if (citations.reason !== null) {
-          rejected.push(rejection(operation, operationIndex, citations.reason));
+          rejected.push(
+            rejection(operation, operationIndex, citations.reason, {
+              sourceStreamEntryId: citations.rejectedStreamEntryId,
+              sourceTrustReason: citations.sourceTrustReason,
+            }),
+          );
           return;
         }
 
@@ -1034,10 +1096,16 @@ function normalizePatch(input: {
         const citations = parseSourceStreamEntryIds(
           operation.source_stream_entry_ids,
           input.allowedSourceStreamEntryIds,
+          input.sourceTrustValidator,
         );
 
         if (citations.reason !== null) {
-          rejected.push(rejection(operation, operationIndex, citations.reason));
+          rejected.push(
+            rejection(operation, operationIndex, citations.reason, {
+              sourceStreamEntryId: citations.rejectedStreamEntryId,
+              sourceTrustReason: citations.sourceTrustReason,
+            }),
+          );
           return;
         }
 
@@ -1090,10 +1158,16 @@ function normalizePatch(input: {
         const replacementCitations = parseSourceStreamEntryIds(
           operation.replacement.source_stream_entry_ids,
           input.allowedSourceStreamEntryIds,
+          input.sourceTrustValidator,
         );
 
         if (replacementCitations.reason !== null) {
-          rejected.push(rejection(operation, operationIndex, replacementCitations.reason));
+          rejected.push(
+            rejection(operation, operationIndex, replacementCitations.reason, {
+              sourceStreamEntryId: replacementCitations.rejectedStreamEntryId,
+              sourceTrustReason: replacementCitations.sourceTrustReason,
+            }),
+          );
           return;
         }
 
@@ -1102,10 +1176,16 @@ function normalizePatch(input: {
         const updateCitations = parseSourceStreamEntryIds(
           updateCitationValues,
           input.allowedSourceStreamEntryIds,
+          input.sourceTrustValidator,
         );
 
         if (updateCitations.reason !== null) {
-          rejected.push(rejection(operation, operationIndex, updateCitations.reason));
+          rejected.push(
+            rejection(operation, operationIndex, updateCitations.reason, {
+              sourceStreamEntryId: updateCitations.rejectedStreamEntryId,
+              sourceTrustReason: updateCitations.sourceTrustReason,
+            }),
+          );
           return;
         }
 
@@ -1908,6 +1988,8 @@ export async function compileDecisionArtifact(
     promptVisibleLedger: input.promptVisibleLedger,
     previousArtifactSummary,
     canonicalizationCandidates,
+    allowedSourceStreamEntryIds: input.allowedSourceStreamEntryIds,
+    offLimitsSourceStreamEntryIds: input.offLimitsSourceStreamEntryIds,
   });
   const tools = [DECISION_ARTIFACT_TOOL];
   const ledgerMode = input.ledgerMode ?? "full_fallback";
@@ -2020,6 +2102,7 @@ export async function compileDecisionArtifact(
     speakerEntityId,
     participants: input.participants,
     allowedSourceStreamEntryIds,
+    sourceTrustValidator: input.sourceTrustValidator,
     allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
   });
 
@@ -2078,6 +2161,7 @@ export async function compileDecisionArtifact(
         now: nowMs,
         lastCompiledAt: nowMs,
         lastCompiledStreamEntryId: input.currentUserStreamEntryId,
+        sourceTrustValidator: input.sourceTrustValidator,
       });
     } catch (error) {
       traceCompileCompleted({
@@ -2105,6 +2189,9 @@ export async function compileDecisionArtifact(
       repositories: input.reconciliation,
       unknownIds: normalized.droppedCanonicalizeIds,
       nowMs,
+      sourceTrustValidator: input.sourceTrustValidator,
+      tracer: input.tracer,
+      turnId: input.turnId,
     });
 
     traceReconciliationCompleted({
@@ -2139,6 +2226,7 @@ export async function compileDecisionArtifact(
       now: nowMs,
       lastCompiledAt: nowMs,
       lastCompiledStreamEntryId: input.currentUserStreamEntryId,
+      sourceTrustValidator: input.sourceTrustValidator,
     });
 
     const reconciliationWorkSet = buildDecisionArtifactReconciliationWorkSet({
@@ -2152,6 +2240,9 @@ export async function compileDecisionArtifact(
       repositories: input.reconciliation,
       unknownIds: normalized.droppedCanonicalizeIds,
       nowMs,
+      sourceTrustValidator: input.sourceTrustValidator,
+      tracer: input.tracer,
+      turnId: input.turnId,
     });
 
     traceReconciliationCompleted({

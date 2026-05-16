@@ -20,10 +20,12 @@ import {
   decisionArtifactEntrySchema,
   decisionArtifactCanonicalizesSchema,
   decisionArtifactSchema,
+  allowAllSourceTrustValidator,
   type DecisionArtifact,
   type DecisionArtifactCanonicalizes,
   type DecisionArtifactEntry,
   type DecisionArtifactEntryKind,
+  type DecisionArtifactSourceTrustValidator,
 } from "./types.js";
 
 const DECISION_ARTIFACT_JSON_ARRAY_CODEC = {
@@ -88,11 +90,13 @@ export type DecisionArtifactUpsertOptions = IdentityCasOptions & {
   now?: number;
   lastCompiledAt?: number | null;
   lastCompiledStreamEntryId?: StreamEntryId | null;
+  sourceTrustValidator?: DecisionArtifactSourceTrustValidator;
 };
 
 export type DecisionArtifactRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
+  sourceTrustValidator?: DecisionArtifactSourceTrustValidator;
 };
 
 function parseStreamEntryIds(value: string, label: string): StreamEntryId[] {
@@ -415,10 +419,43 @@ export class DecisionArtifactRepository {
       );
   }
 
+  private sourceTrustValidator(
+    override: DecisionArtifactSourceTrustValidator | undefined,
+  ): DecisionArtifactSourceTrustValidator {
+    return override ?? this.options.sourceTrustValidator ?? allowAllSourceTrustValidator;
+  }
+
+  private assertTrustedSourceStreamIds(
+    streamEntryIds: readonly StreamEntryId[],
+    field: "provenance_stream_entry_ids" | "last_updated_stream_entry_ids",
+    validator: DecisionArtifactSourceTrustValidator,
+  ): void {
+    for (const streamEntryId of streamEntryIds) {
+      const trust = validator(streamEntryId);
+
+      if (trust.allowed) {
+        continue;
+      }
+
+      throw new StorageError(
+        `Decision artifact ${field} contains a non-source-eligible stream entry: ${streamEntryId}`,
+        {
+          code: "DECISION_ARTIFACT_SOURCE_NOT_TRUSTED",
+          cause: {
+            streamEntryId,
+            field,
+            reason: trust.reason ?? "inactive",
+          },
+        },
+      );
+    }
+  }
+
   private addEntry(
     audienceEntityId: EntityId,
     operation: Omit<DecisionArtifactAddOperation, "type">,
     nowMs: number,
+    sourceTrustValidator: DecisionArtifactSourceTrustValidator,
   ): DecisionArtifactEntry {
     const provenanceStreamEntryIds = uniqueStreamEntryIds([
       ...operation.provenance_stream_entry_ids,
@@ -426,6 +463,18 @@ export class DecisionArtifactRepository {
     const lastUpdatedStreamEntryIds = uniqueStreamEntryIds([
       ...(operation.last_updated_stream_entry_ids ?? operation.provenance_stream_entry_ids),
     ]);
+
+    this.assertTrustedSourceStreamIds(
+      provenanceStreamEntryIds,
+      "provenance_stream_entry_ids",
+      sourceTrustValidator,
+    );
+    this.assertTrustedSourceStreamIds(
+      lastUpdatedStreamEntryIds,
+      "last_updated_stream_entry_ids",
+      sourceTrustValidator,
+    );
+
     const entry = decisionArtifactEntrySchema.parse({
       id: operation.id ?? createDecisionArtifactEntryId(),
       audience_entity_id: audienceEntityId,
@@ -449,9 +498,29 @@ export class DecisionArtifactRepository {
     audienceEntityId: EntityId,
     operation: DecisionArtifactUpdateOperation,
     nowMs: number,
+    sourceTrustValidator: DecisionArtifactSourceTrustValidator,
   ): void {
     const current = this.getEntry(operation.id, audienceEntityId);
     const addProvenance = operation.add_provenance_stream_entry_ids ?? [];
+    const provenanceStreamEntryIds = uniqueStreamEntryIds([
+      ...current.provenance_stream_entry_ids,
+      ...addProvenance,
+    ]);
+    const lastUpdatedStreamEntryIds = uniqueStreamEntryIds([
+      ...operation.last_updated_stream_entry_ids,
+    ]);
+
+    this.assertTrustedSourceStreamIds(
+      provenanceStreamEntryIds,
+      "provenance_stream_entry_ids",
+      sourceTrustValidator,
+    );
+    this.assertTrustedSourceStreamIds(
+      lastUpdatedStreamEntryIds,
+      "last_updated_stream_entry_ids",
+      sourceTrustValidator,
+    );
+
     const next = decisionArtifactEntrySchema.parse({
       ...current,
       kind: operation.kind ?? current.kind,
@@ -460,13 +529,8 @@ export class DecisionArtifactRepository {
         operation.owner_entity_id === undefined
           ? current.owner_entity_id
           : operation.owner_entity_id,
-      provenance_stream_entry_ids: uniqueStreamEntryIds([
-        ...current.provenance_stream_entry_ids,
-        ...addProvenance,
-      ]),
-      last_updated_stream_entry_ids: uniqueStreamEntryIds([
-        ...operation.last_updated_stream_entry_ids,
-      ]),
+      provenance_stream_entry_ids: provenanceStreamEntryIds,
+      last_updated_stream_entry_ids: lastUpdatedStreamEntryIds,
       last_updated_at: operation.last_updated_at ?? nowMs,
       rank: operation.rank ?? current.rank,
       canonicalizes: mergeCanonicalizes(current.canonicalizes, operation.canonicalizes),
@@ -505,6 +569,7 @@ export class DecisionArtifactRepository {
     audienceEntityId: EntityId,
     operation: DecisionArtifactSupersedeOperation,
     nowMs: number,
+    sourceTrustValidator: DecisionArtifactSourceTrustValidator,
   ): void {
     const current = this.getEntry(operation.id, audienceEntityId);
     const replacementId = operation.replacement.id ?? createDecisionArtifactEntryId();
@@ -522,11 +587,18 @@ export class DecisionArtifactRepository {
         id: parseDecisionArtifactEntryId(replacementId),
       },
       nowMs,
+      sourceTrustValidator,
     );
     const lastUpdatedAt = operation.last_updated_at ?? nowMs;
     const lastUpdatedStreamEntryIds = uniqueStreamEntryIds([
       ...operation.last_updated_stream_entry_ids,
     ]);
+
+    this.assertTrustedSourceStreamIds(
+      lastUpdatedStreamEntryIds,
+      "last_updated_stream_entry_ids",
+      sourceTrustValidator,
+    );
 
     decisionArtifactEntrySchema.parse({
       ...current,
@@ -646,6 +718,7 @@ export class DecisionArtifactRepository {
     const nowMs = options.now ?? this.clock.now();
     const lastCompiledAt = options.lastCompiledAt ?? nowMs;
     const lastCompiledStreamEntryId = options.lastCompiledStreamEntryId ?? null;
+    const sourceTrustValidator = this.sourceTrustValidator(options.sourceTrustValidator);
     const write = this.db.transaction(() => {
       if (current === null) {
         this.insertParent({
@@ -668,13 +741,13 @@ export class DecisionArtifactRepository {
       for (const operation of operations) {
         switch (operation.type) {
           case "add":
-            this.addEntry(audienceEntityId, operation, nowMs);
+            this.addEntry(audienceEntityId, operation, nowMs, sourceTrustValidator);
             break;
           case "update":
-            this.updateEntry(audienceEntityId, operation, nowMs);
+            this.updateEntry(audienceEntityId, operation, nowMs, sourceTrustValidator);
             break;
           case "supersede":
-            this.supersedeEntry(audienceEntityId, operation, nowMs);
+            this.supersedeEntry(audienceEntityId, operation, nowMs, sourceTrustValidator);
             break;
           case "prune":
             this.pruneEntry(audienceEntityId, operation);

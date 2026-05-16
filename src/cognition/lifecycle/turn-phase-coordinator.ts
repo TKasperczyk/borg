@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from "node:fs";
+
 import { performAction } from "../action/index.js";
 import type { ToolLoopCallRecord } from "../action/index.js";
 import type { TurnActionCoordinator } from "../action/turn-action-coordinator.js";
@@ -79,6 +81,7 @@ import type {
   DecisionArtifact,
   DecisionArtifactEntryKind,
   DecisionArtifactRepository,
+  DecisionArtifactSourceTrustValidator,
 } from "../../memory/decision-artifacts/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
 import {
@@ -91,14 +94,20 @@ import type { SocialRepository } from "../../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import {
   QUARANTINED_USER_ENTRY_EVENT,
+  collectInactiveStreamEntryRefs,
+  getStreamDirectory,
+  isQuarantinedUserEntryMarker,
+  loadSessionStreamEntries,
+  StreamReader,
+  streamEntryIsActive,
   type StreamEntry,
-  type StreamReader,
   type StreamWriter,
 } from "../../stream/index.js";
 import type { ToolDispatcher } from "../../tools/index.js";
 import type { Clock } from "../../util/clock.js";
 import { CognitionError } from "../../util/errors.js";
 import {
+  parseSessionId,
   streamEntryIdHelpers,
   type EntityId,
   type SessionId,
@@ -283,6 +292,137 @@ function addDecisionArtifactAllowedStreamIds(ids: Set<StreamEntryId>, value: unk
   for (const item of value) {
     addDecisionArtifactAllowedStreamId(ids, item);
   }
+}
+
+function isDecisionArtifactStreamContentRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function collectQuarantinedDecisionArtifactStreamEntryIds(
+  entries: readonly StreamEntry[],
+  ids: Set<StreamEntryId> = new Set<StreamEntryId>(),
+): Set<StreamEntryId> {
+  for (const entry of entries) {
+    if (!isQuarantinedUserEntryMarker(entry)) {
+      continue;
+    }
+
+    const content = isDecisionArtifactStreamContentRecord(entry.content) ? entry.content : {};
+
+    addDecisionArtifactAllowedStreamId(ids, content.source_stream_entry_id);
+    addDecisionArtifactAllowedStreamIds(ids, content.cited_stream_entry_ids);
+  }
+
+  return ids;
+}
+
+const DECISION_ARTIFACT_STREAM_SESSION_FILE_SUFFIX = ".jsonl";
+
+function listDecisionArtifactStreamSessionIds(dataDir: string): SessionId[] {
+  const streamDir = getStreamDirectory(dataDir);
+
+  if (!existsSync(streamDir)) {
+    return [];
+  }
+
+  return readdirSync(streamDir)
+    .map((filename) => {
+      if (!filename.endsWith(DECISION_ARTIFACT_STREAM_SESSION_FILE_SUFFIX)) {
+        return null;
+      }
+
+      try {
+        return parseSessionId(
+          filename.slice(0, -DECISION_ARTIFACT_STREAM_SESSION_FILE_SUFFIX.length),
+        );
+      } catch {
+        return null;
+      }
+    })
+    .filter((sessionId): sessionId is SessionId => sessionId !== null);
+}
+
+async function collectCrossSessionQuarantinedDecisionArtifactStreamEntryIds(
+  dataDir: string,
+): Promise<ReadonlySet<StreamEntryId>> {
+  const ids = new Set<StreamEntryId>();
+
+  for (const sessionId of listDecisionArtifactStreamSessionIds(dataDir)) {
+    const reader = new StreamReader({
+      dataDir,
+      sessionId,
+    });
+
+    for await (const entry of reader.iterate({ kinds: ["internal_event"] })) {
+      collectQuarantinedDecisionArtifactStreamEntryIds([entry], ids);
+    }
+  }
+
+  return ids;
+}
+
+function buildDecisionArtifactSourceTrustValidator(input: {
+  currentSessionEntries: readonly StreamEntry[];
+  quarantinedStreamEntryIds: ReadonlySet<StreamEntryId>;
+}): DecisionArtifactSourceTrustValidator {
+  const inactiveRefs = collectInactiveStreamEntryRefs(input.currentSessionEntries);
+  const entriesById = new Map(input.currentSessionEntries.map((entry) => [entry.id, entry]));
+
+  return (streamEntryId) => {
+    if (input.quarantinedStreamEntryIds.has(streamEntryId)) {
+      return {
+        allowed: false,
+        reason: "quarantined",
+      };
+    }
+
+    const entry = entriesById.get(streamEntryId);
+
+    if (entry !== undefined) {
+      return streamEntryIsActive(entry, inactiveRefs)
+        ? { allowed: true }
+        : {
+            allowed: false,
+            reason: "inactive",
+          };
+    }
+
+    if (inactiveRefs.streamEntryIds.has(streamEntryId)) {
+      return {
+        allowed: false,
+        reason: "inactive",
+      };
+    }
+
+    return { allowed: true };
+  };
+}
+
+function sourceStreamEntryIdIsTrusted(
+  streamEntryId: StreamEntryId,
+  validator: DecisionArtifactSourceTrustValidator | undefined,
+): boolean {
+  return validator?.(streamEntryId).allowed !== false;
+}
+
+function filterTrustedDecisionArtifactSourceStreamEntryIds(
+  streamEntryIds: readonly StreamEntryId[],
+  validator: DecisionArtifactSourceTrustValidator | undefined,
+): StreamEntryId[] {
+  return streamEntryIds.filter((streamEntryId) =>
+    sourceStreamEntryIdIsTrusted(streamEntryId, validator),
+  );
+}
+
+function collectOffLimitsDecisionArtifactSourceStreamEntryIds(
+  streamEntryIds: readonly StreamEntryId[],
+  validator: DecisionArtifactSourceTrustValidator | undefined,
+): StreamEntryId[] {
+  if (validator === undefined) {
+    return [];
+  }
+
+  return streamEntryIds.filter((streamEntryId) => validator(streamEntryId).allowed === false);
 }
 
 function compactDecisionArtifactCandidateText(value: string, maxLength = 180): string {
@@ -638,21 +778,32 @@ export function buildDecisionArtifactLedgerPromptContext(input: {
   fullPromptVisibleLedger: string;
   enabled: boolean;
   minTailPerSection: number;
+  sourceTrustValidator?: DecisionArtifactSourceTrustValidator;
 }): {
   promptVisibleLedger: string;
   ledgerMode: DecisionArtifactLedgerMode;
   visibleStreamEntryIds: StreamEntryId[];
+  offLimitsSourceStreamEntryIds: StreamEntryId[];
 } {
   const anchorStreamEntryId = input.previousArtifact?.last_compiled_stream_entry_id ?? null;
   const fullVisibleStreamEntryIds = collectDecisionArtifactLedgerVisibleStreamEntryIds(
     input.ledger,
+  );
+  const fullTrustedVisibleStreamEntryIds = filterTrustedDecisionArtifactSourceStreamEntryIds(
+    fullVisibleStreamEntryIds,
+    input.sourceTrustValidator,
+  );
+  const fullOffLimitsSourceStreamEntryIds = collectOffLimitsDecisionArtifactSourceStreamEntryIds(
+    fullVisibleStreamEntryIds,
+    input.sourceTrustValidator,
   );
 
   if (!input.enabled || anchorStreamEntryId === null) {
     return {
       promptVisibleLedger: input.fullPromptVisibleLedger,
       ledgerMode: "full_fallback",
-      visibleStreamEntryIds: fullVisibleStreamEntryIds,
+      visibleStreamEntryIds: fullTrustedVisibleStreamEntryIds,
+      offLimitsSourceStreamEntryIds: fullOffLimitsSourceStreamEntryIds,
     };
   }
 
@@ -668,7 +819,8 @@ export function buildDecisionArtifactLedgerPromptContext(input: {
     return {
       promptVisibleLedger: input.fullPromptVisibleLedger,
       ledgerMode: "full_fallback",
-      visibleStreamEntryIds: fullVisibleStreamEntryIds,
+      visibleStreamEntryIds: fullTrustedVisibleStreamEntryIds,
+      offLimitsSourceStreamEntryIds: fullOffLimitsSourceStreamEntryIds,
     };
   }
 
@@ -699,11 +851,21 @@ export function buildDecisionArtifactLedgerPromptContext(input: {
     ...deltaLedgerForEstimate,
     estimatedTokens: estimateEvidenceLedgerPromptTokens(deltaLedgerForEstimate),
   };
+  const deltaVisibleStreamEntryIds = collectDecisionArtifactLedgerVisibleStreamEntryIds(
+    deltaLedger,
+  );
 
   return {
     promptVisibleLedger: renderEvidenceLedger(deltaLedger) ?? "",
     ledgerMode: "delta",
-    visibleStreamEntryIds: collectDecisionArtifactLedgerVisibleStreamEntryIds(deltaLedger),
+    visibleStreamEntryIds: filterTrustedDecisionArtifactSourceStreamEntryIds(
+      deltaVisibleStreamEntryIds,
+      input.sourceTrustValidator,
+    ),
+    offLimitsSourceStreamEntryIds: collectOffLimitsDecisionArtifactSourceStreamEntryIds(
+      deltaVisibleStreamEntryIds,
+      input.sourceTrustValidator,
+    ),
   };
 }
 
@@ -2074,6 +2236,23 @@ export class TurnPhaseCoordinator {
       return previousArtifact;
     }
 
+    const sourceTrustEntries =
+      typeof this.options.createStreamReader === "function"
+        ? await loadSessionStreamEntries(this.options.createStreamReader(input.input.sessionId))
+        : [];
+    const currentSessionTrustEntries = sourceTrustEntries.some(
+      (entry) => entry.id === input.input.currentUserEntry?.id,
+    )
+      ? sourceTrustEntries
+      : [...sourceTrustEntries, input.input.currentUserEntry];
+    const quarantinedStreamEntryIds =
+      await collectCrossSessionQuarantinedDecisionArtifactStreamEntryIds(
+        this.options.config.dataDir,
+      );
+    const sourceTrustValidator = buildDecisionArtifactSourceTrustValidator({
+      currentSessionEntries: currentSessionTrustEntries,
+      quarantinedStreamEntryIds,
+    });
     const decisionArtifactConfig = this.options.config.generation.evidenceLedger.decisionArtifact;
     const unsettledReconciliation =
       decisionArtifactConfig.compilerPrefilter.enabled === true
@@ -2148,6 +2327,7 @@ export class TurnPhaseCoordinator {
       fullPromptVisibleLedger: input.promptVisibleLedger,
       enabled: decisionArtifactConfig.ledgerDelta.enabled,
       minTailPerSection: decisionArtifactConfig.ledgerDelta.minTailPerSection,
+      sourceTrustValidator,
     });
     const selfEntityId = this.options.entityRepository.resolve("self", {
       kind: "self",
@@ -2217,6 +2397,8 @@ export class TurnPhaseCoordinator {
       promptVisibleLedger: ledgerPromptContext.promptVisibleLedger,
       previousArtifact,
       allowedSourceStreamEntryIds: ledgerPromptContext.visibleStreamEntryIds,
+      offLimitsSourceStreamEntryIds: ledgerPromptContext.offLimitsSourceStreamEntryIds,
+      sourceTrustValidator,
       canonicalizationCandidates,
       reconciliation: {
         goalsRepository: this.options.goalsRepository,

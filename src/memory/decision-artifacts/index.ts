@@ -12,6 +12,7 @@ export {
 export {
   ACTIVE_DECISION_ARTIFACT_ENTRY_KINDS,
   DECISION_ARTIFACT_ENTRY_KINDS,
+  allowAllSourceTrustValidator,
   decisionArtifactEntryIdSchema,
   decisionArtifactEntryKindSchema,
   decisionArtifactEntrySchema,
@@ -23,4 +24,7 @@ export {
   type DecisionArtifactCanonicalizes,
   type DecisionArtifactEntry,
   type DecisionArtifactEntryKind,
+  type DecisionArtifactSourceTrustRejectionReason,
+  type DecisionArtifactSourceTrustResult,
+  type DecisionArtifactSourceTrustValidator,
 } from "./types.js";

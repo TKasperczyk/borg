@@ -8,11 +8,14 @@ import type {
   DecisionArtifact,
   DecisionArtifactCanonicalizes,
   DecisionArtifactEntry,
+  DecisionArtifactSourceTrustRejectionReason,
+  DecisionArtifactSourceTrustValidator,
 } from "../../memory/decision-artifacts/index.js";
 import type { GoalsRepository, OpenQuestionsRepository } from "../../memory/self/index.js";
 import type { ActionId, CommitmentId, GoalId, OpenQuestionId } from "../../util/ids.js";
 import type { Provenance } from "../../memory/common/provenance.js";
 import type { DroppedCanonicalizeId } from "./compiler.js";
+import { toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import {
   DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES,
   type DecisionArtifactCommitmentCanonicalizationType,
@@ -102,6 +105,14 @@ export type ReconcileDecisionArtifactCanonicalizationsInput = {
   repositories?: DecisionArtifactReconciliationRepositories;
   unknownIds?: readonly DroppedCanonicalizeId[];
   nowMs?: number;
+  sourceTrustValidator?: DecisionArtifactSourceTrustValidator;
+  tracer?: TurnTracer;
+  turnId?: string;
+};
+
+type ContaminatedDecisionArtifactSource = {
+  streamEntryId: string;
+  reason: DecisionArtifactSourceTrustRejectionReason | "unknown";
 };
 
 function errorMessage(error: unknown): string {
@@ -133,6 +144,84 @@ function activeLockedEntries(
     (entry) =>
       entry.kind === "locked" && entry.superseded_by_id === null && hasCanonicalizedIds(entry),
   );
+}
+
+function contaminatedDecisionArtifactSources(
+  entry: DecisionArtifactEntry,
+  validator: DecisionArtifactSourceTrustValidator | undefined,
+): ContaminatedDecisionArtifactSource[] {
+  if (validator === undefined) {
+    return [];
+  }
+
+  const sources = new Set([
+    ...entry.provenance_stream_entry_ids,
+    ...entry.last_updated_stream_entry_ids,
+  ]);
+  const contaminated: ContaminatedDecisionArtifactSource[] = [];
+
+  for (const streamEntryId of sources) {
+    const trust = validator(streamEntryId);
+
+    if (trust.allowed) {
+      continue;
+    }
+
+    contaminated.push({
+      streamEntryId,
+      reason: trust.reason ?? "unknown",
+    });
+  }
+
+  return contaminated;
+}
+
+function recordCanonicalizationSkipsForEntry(
+  result: DecisionArtifactReconciliationResult,
+  entry: DecisionArtifactEntry,
+): void {
+  const goalCount = entry.canonicalizes.goal_ids.length;
+  const commitmentCount = entry.canonicalizes.commitment_ids.length;
+  const actionCount = entry.canonicalizes.action_ids.length;
+  const openQuestionCount = entry.canonicalizes.open_question_ids.length;
+
+  result.goals_canonicalized_attempted += goalCount;
+  result.goals_canonicalized_skipped += goalCount;
+  result.commitments_revoked_attempted += commitmentCount;
+  result.commitments_revoked_skipped += commitmentCount;
+  result.actions_completed_attempted += actionCount;
+  result.actions_completed_skipped += actionCount;
+  result.open_questions_resolved_attempted += openQuestionCount;
+  result.open_questions_resolved_skipped += openQuestionCount;
+}
+
+function traceContaminatedDecisionArtifactEntrySkip(input: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  entry: DecisionArtifactEntry;
+  contaminatedSources: readonly ContaminatedDecisionArtifactSource[];
+}): void {
+  if (input.tracer?.enabled !== true || input.turnId === undefined) {
+    return;
+  }
+
+  const quarantinedSourceCount = input.contaminatedSources.filter(
+    (source) => source.reason === "quarantined",
+  ).length;
+  const inactiveSourceCount = input.contaminatedSources.filter(
+    (source) => source.reason !== "quarantined",
+  ).length;
+
+  input.tracer.emit("decision_artifact_reconciliation_skipped_contaminated_entry", {
+    turnId: input.turnId,
+    artifact_entry_id: input.entry.id,
+    kind: input.entry.kind,
+    contaminated_source_id_count: input.contaminatedSources.length,
+    quarantined_source_id_count: quarantinedSourceCount,
+    inactive_source_id_count: inactiveSourceCount,
+    contaminated_sources: toTraceJsonValue(input.contaminatedSources),
+    canonicalizes: toTraceJsonValue(input.entry.canonicalizes),
+  });
 }
 
 function isTerminalGoalStatus(status: string): boolean {
@@ -339,6 +428,22 @@ export function reconcileDecisionArtifactCanonicalizations(
   const retiredOpenQuestions = new Set<OpenQuestionId>();
 
   for (const entry of entries) {
+    const contaminatedSources = contaminatedDecisionArtifactSources(
+      entry,
+      input.sourceTrustValidator,
+    );
+
+    if (contaminatedSources.length > 0) {
+      recordCanonicalizationSkipsForEntry(result, entry);
+      traceContaminatedDecisionArtifactEntrySkip({
+        tracer: input.tracer,
+        turnId: input.turnId,
+        entry,
+        contaminatedSources,
+      });
+      continue;
+    }
+
     for (const goalId of entry.canonicalizes.goal_ids) {
       result.goals_canonicalized_attempted += 1;
 

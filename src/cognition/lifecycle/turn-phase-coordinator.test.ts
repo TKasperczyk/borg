@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../config/index.js";
@@ -13,9 +17,16 @@ import {
   createDecisionArtifactEntryId,
   createEntityId,
   createGoalId,
+  createSessionId,
   createStreamEntryId,
+  type SessionId,
   type StreamEntryId,
 } from "../../util/ids.js";
+import {
+  QUARANTINED_USER_ENTRY_EVENT,
+  StreamReader,
+  StreamWriter,
+} from "../../stream/index.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
@@ -841,6 +852,198 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
       },
     });
   });
+
+  it("excludes stream ids quarantined in another session from the compiler source allow-list", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-quarantine-scope-"));
+    const priorSession = createSessionId();
+    const currentSession = createSessionId();
+    const audience = createEntityId();
+    const self = createEntityId();
+    const quarantinedSource = createStreamEntryId();
+    const currentSource = createStreamEntryId();
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    let upsertCount = 0;
+
+    try {
+      const priorWriter = new StreamWriter({
+        dataDir: tempDir,
+        sessionId: priorSession,
+        clock: { now: () => 1_000 },
+      });
+
+      try {
+        await priorWriter.append({
+          kind: "internal_event",
+          turn_id: "turn_prior_quarantine",
+          content: {
+            event: QUARANTINED_USER_ENTRY_EVENT,
+            turn_id: "turn_prior_quarantine",
+            source_stream_entry_id: quarantinedSource,
+            cited_stream_entry_ids: [quarantinedSource],
+            kind: "frame_assignment_claim",
+            confidence: 0.99,
+            rationale: "test marker",
+          },
+        });
+      } finally {
+        priorWriter.close();
+      }
+
+      const llmClient = new FakeLLMClient({
+        responses: [
+          {
+            text: "",
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_decision_patch",
+                name: DECISION_ARTIFACT_TOOL_NAME,
+                input: {
+                  operations: [
+                    {
+                      type: "add",
+                      kind: "locked",
+                      text: "Canonical workstream decision",
+                      owner_entity_id: audience,
+                      source_stream_entry_ids: [quarantinedSource],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const coordinator = new TurnPhaseCoordinator({
+        config: {
+          ...DEFAULT_CONFIG,
+          dataDir: tempDir,
+        },
+        createStreamReader: (sessionId: SessionId) =>
+          new StreamReader({
+            dataDir: tempDir,
+            sessionId,
+          }),
+        decisionArtifactRepository: {
+          get: () => null,
+          upsert: () => {
+            upsertCount += 1;
+            return null;
+          },
+        },
+        goalsRepository: {
+          list: () => [],
+          get: () => null,
+          updateStatus: () => ({}),
+        },
+        commitmentRepository: {
+          list: () => [],
+          get: () => null,
+        },
+        actionRepository: {
+          get: () => null,
+          update: () => undefined,
+          list: () => [],
+        },
+        openQuestionsRepository: {
+          get: () => null,
+          list: () => [],
+        },
+        entityRepository: {
+          resolve: () => self,
+        },
+        llmFactory: () => llmClient,
+        clock: {
+          now: () => 2_000,
+        },
+        tracer: {
+          enabled: true,
+          includePayloads: true,
+          emit: (event: string, data: Record<string, unknown>) => {
+            events.push({ event, data });
+          },
+        },
+      } as never);
+      const ledger = evidenceLedger([
+        ledgerEntry({
+          streamEntryId: quarantinedSource,
+          streamIndex: 0,
+          text: "Prior quarantined context remains visible",
+        }),
+        ledgerEntry({
+          streamEntryId: currentSource,
+          streamIndex: 1,
+          text: "Current trusted context remains citable",
+        }),
+      ]);
+
+      await (
+        coordinator as unknown as {
+          compileDecisionArtifactForEvidenceLedger(input: {
+            input: Record<string, unknown>;
+            ledger: EvidenceLedger;
+            promptVisibleLedger: string;
+          }): Promise<DecisionArtifact | null>;
+        }
+      ).compileDecisionArtifactForEvidenceLedger({
+        input: {
+          sessionId: currentSession,
+          audienceEntityId: audience,
+          isUserTurn: true,
+          currentUserEntry: {
+            id: currentSource,
+            sender_entity_id: null,
+          },
+          currentUserMessage: "Lock the workstream decision.",
+          perception: {
+            mode: "problem_solving",
+          },
+          frameAnomaly: null,
+          closureLoopAssessment: null,
+          activeParticipants: [],
+          turnId: "turn_cross_session_quarantine",
+        },
+        ledger,
+        promptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+      });
+
+      const requestPayload = JSON.parse(
+        String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
+      ) as {
+        source_trust?: {
+          citation_eligible_source_stream_entry_id_count?: number;
+          off_limits_source_stream_entry_ids?: string[];
+        };
+      };
+      const completed = events.find(
+        (event) => event.event === "decision_artifact_compile_completed",
+      );
+
+      expect(upsertCount).toBe(0);
+      expect(requestPayload.source_trust).toEqual({
+        citation_eligible_source_stream_entry_id_count: 1,
+        off_limits_source_stream_entry_ids: [quarantinedSource],
+      });
+      expect(completed?.data).toEqual(
+        expect.objectContaining({
+          rejectedCount: 1,
+          rejectionReasons: ["quarantined_source_stream_entry_id"],
+          source_trust_rejections: [
+            {
+              operation_index: 0,
+              operation_type: "add",
+              source_stream_entry_id: quarantinedSource,
+              source_trust_reason: "quarantined",
+            },
+          ],
+        }),
+      );
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("buildDecisionArtifactLedgerPromptContext", () => {
@@ -894,6 +1097,7 @@ describe("buildDecisionArtifactLedgerPromptContext", () => {
       promptVisibleLedger: fullPromptVisibleLedger,
       ledgerMode: "full_fallback",
       visibleStreamEntryIds: [older, current],
+      offLimitsSourceStreamEntryIds: [],
     });
   });
 
@@ -959,6 +1163,7 @@ describe("buildDecisionArtifactLedgerPromptContext", () => {
       promptVisibleLedger: fullPromptVisibleLedger,
       ledgerMode: "full_fallback",
       visibleStreamEntryIds: [retainedOne, retainedTwo, anchor],
+      offLimitsSourceStreamEntryIds: [],
     });
   });
 });

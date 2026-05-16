@@ -75,6 +75,7 @@ function ledgerEntry(input: {
   streamEntryId: StreamEntryId;
   streamIndex: number;
   text: string;
+  taint?: EvidenceLedgerEntry["taint"];
 }): EvidenceLedgerEntry {
   return {
     id: `current_session_stream:${input.streamEntryId}`,
@@ -83,7 +84,7 @@ function ledgerEntry(input: {
     actor: "user",
     trust_rank: 95,
     text: input.text,
-    taint: "none",
+    taint: input.taint ?? "none",
     stream_index: input.streamIndex,
   };
 }
@@ -1030,6 +1031,101 @@ describe("compileDecisionArtifact", () => {
           rejectionReasons: ["disallowed_source_stream_entry_id"] satisfies JsonValue,
           applied: false,
         }),
+      }),
+    );
+  });
+
+  it("keeps quarantined ledger entries visible while removing their stream ids from the source allow-list", () => {
+    const quarantinedSource = createStreamEntryId();
+    const trustedSource = createStreamEntryId();
+    const ledger = evidenceLedger([
+      ledgerEntry({
+        streamEntryId: quarantinedSource,
+        streamIndex: 0,
+        text: "Quarantined context remains visible.",
+        taint: "quarantined",
+      }),
+      ledgerEntry({
+        streamEntryId: trustedSource,
+        streamIndex: 1,
+        text: "Trusted context remains citable.",
+      }),
+    ]);
+    const context = buildDecisionArtifactLedgerPromptContext({
+      ledger,
+      previousArtifact: null,
+      fullPromptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+      enabled: true,
+      minTailPerSection: 1,
+      sourceTrustValidator: (streamEntryId) =>
+        streamEntryId === quarantinedSource
+          ? { allowed: false, reason: "quarantined" }
+          : { allowed: true },
+    });
+
+    expect(context.ledgerMode).toBe("full_fallback");
+    expect(context.visibleStreamEntryIds).toEqual([trustedSource]);
+    expect(context.offLimitsSourceStreamEntryIds).toEqual([quarantinedSource]);
+    expect(context.promptVisibleLedger).toContain("Quarantined context remains visible.");
+    expect(context.promptVisibleLedger).toContain(quarantinedSource);
+  });
+
+  it("marks citation-guard rejections for quarantined stream ids with source trust details", async () => {
+    const trace = createTraceRecorder();
+    const quarantinedSource = createStreamEntryId();
+    const trustedSource = createStreamEntryId();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitDecisionArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "Canonical decision from an off-limits source",
+              owner_entity_id: audience,
+              source_stream_entry_ids: [quarantinedSource],
+            },
+          ],
+        }),
+      ],
+    });
+
+    await compileDecisionArtifact({
+      ...baseInput(llmClient),
+      promptVisibleLedger: "Trusted context and off-limits context are both visible.",
+      allowedSourceStreamEntryIds: [trustedSource],
+      offLimitsSourceStreamEntryIds: [quarantinedSource],
+      sourceTrustValidator: (streamEntryId) =>
+        streamEntryId === quarantinedSource
+          ? { allowed: false, reason: "quarantined" }
+          : { allowed: true },
+      tracer: trace,
+    });
+
+    const requestPayload = JSON.parse(String(llmClient.requests[0]?.messages[0]?.content)) as {
+      source_trust?: unknown;
+    };
+    const completed = trace.events.find(
+      (event) => event.event === "decision_artifact_compile_completed",
+    );
+
+    expect(repository.get(audience)?.entries ?? []).toHaveLength(0);
+    expect(requestPayload.source_trust).toEqual({
+      citation_eligible_source_stream_entry_id_count: 1,
+      off_limits_source_stream_entry_ids: [quarantinedSource],
+    });
+    expect(completed?.data).toEqual(
+      expect.objectContaining({
+        rejectedCount: 1,
+        rejectionReasons: ["quarantined_source_stream_entry_id"] satisfies JsonValue,
+        source_trust_rejections: [
+          {
+            operation_index: 0,
+            operation_type: "add",
+            source_stream_entry_id: quarantinedSource,
+            source_trust_reason: "quarantined",
+          },
+        ] satisfies JsonValue,
       }),
     );
   });

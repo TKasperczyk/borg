@@ -25,6 +25,7 @@ import {
   reconcileDecisionArtifactCanonicalizations,
 } from "./reconciliation.js";
 import { DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES } from "./commitment-canonicalization.js";
+import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
 
 const CANONICALIZABLE_COMMITMENT_TYPES = DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES;
 const NON_CANONICALIZABLE_COMMITMENT_TYPES = [
@@ -94,6 +95,21 @@ function addCommitment(
   });
 }
 
+function createTraceRecorder(): TurnTracer & {
+  events: Array<{ event: TurnTraceEventName; data: TurnTraceData }>;
+} {
+  const events: Array<{ event: TurnTraceEventName; data: TurnTraceData }> = [];
+
+  return {
+    enabled: true,
+    includePayloads: true,
+    events,
+    emit: vi.fn((event: TurnTraceEventName, data: TurnTraceData) => {
+      events.push({ event, data });
+    }),
+  };
+}
+
 describe("findUnsettledDecisionArtifactReconciliation", () => {
   it("does not flag durable commitment canonicalizations as unsettled", () => {
     const db = openDatabase(":memory:", {
@@ -137,6 +153,99 @@ describe("findUnsettledDecisionArtifactReconciliation", () => {
 });
 
 describe("reconcileDecisionArtifactCanonicalizations", () => {
+  it("skips contaminated locked entries and traces the skipped canonicalization", () => {
+    const quarantinedSource = createStreamEntryId();
+    const goalId = createGoalId();
+    const commitmentId = createCommitmentId();
+    const actionId = createActionId();
+    const openQuestionId = createOpenQuestionId();
+    const entry = lockedEntry({
+      provenance_stream_entry_ids: [quarantinedSource],
+      last_updated_stream_entry_ids: [quarantinedSource],
+      canonicalizes: {
+        goal_ids: [goalId],
+        commitment_ids: [commitmentId],
+        action_ids: [actionId],
+        open_question_ids: [openQuestionId],
+      },
+    });
+    const goalsRepository = {
+      updateStatus: vi.fn(),
+    };
+    const commitmentRepository = {
+      get: vi.fn(),
+      revoke: vi.fn(),
+    };
+    const actionRepository = {
+      get: vi.fn(),
+      update: vi.fn(),
+    };
+    const openQuestionsRepository = {
+      get: vi.fn(),
+      resolve: vi.fn(),
+    };
+    const trace = createTraceRecorder();
+
+    const result = reconcileDecisionArtifactCanonicalizations({
+      entries: [entry],
+      repositories: {
+        goalsRepository,
+        commitmentRepository,
+        actionRepository,
+        openQuestionsRepository,
+      },
+      sourceTrustValidator: (streamEntryId) =>
+        streamEntryId === quarantinedSource
+          ? { allowed: false, reason: "quarantined" }
+          : { allowed: true },
+      tracer: trace,
+      turnId: "turn_reconcile_trust",
+    });
+    const skipEvents = trace.events.filter(
+      (event) => event.event === "decision_artifact_reconciliation_skipped_contaminated_entry",
+    );
+
+    expect(goalsRepository.updateStatus).not.toHaveBeenCalled();
+    expect(commitmentRepository.get).not.toHaveBeenCalled();
+    expect(commitmentRepository.revoke).not.toHaveBeenCalled();
+    expect(actionRepository.get).not.toHaveBeenCalled();
+    expect(actionRepository.update).not.toHaveBeenCalled();
+    expect(openQuestionsRepository.get).not.toHaveBeenCalled();
+    expect(openQuestionsRepository.resolve).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      goals_retired: 0,
+      commitments_retired: 0,
+      actions_retired: 0,
+      open_questions_retired: 0,
+      goals_canonicalized_attempted: 1,
+      goals_canonicalized_succeeded: 0,
+      goals_canonicalized_skipped: 1,
+      commitments_revoked_attempted: 1,
+      commitments_revoked_succeeded: 0,
+      commitments_revoked_skipped: 1,
+      actions_completed_attempted: 1,
+      actions_completed_succeeded: 0,
+      actions_completed_skipped: 1,
+      open_questions_resolved_attempted: 1,
+      open_questions_resolved_succeeded: 0,
+      open_questions_resolved_skipped: 1,
+      errors: [],
+    });
+    expect(skipEvents).toHaveLength(1);
+    expect(skipEvents).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_reconciliation_skipped_contaminated_entry",
+        data: expect.objectContaining({
+          turnId: "turn_reconcile_trust",
+          artifact_entry_id: entry.id,
+          contaminated_source_id_count: 1,
+          quarantined_source_id_count: 1,
+          inactive_source_id_count: 0,
+        }),
+      }),
+    );
+  });
+
   it("retires canonicalized state through existing repository APIs", () => {
     const goalId = createGoalId();
     const commitmentId = createCommitmentId();

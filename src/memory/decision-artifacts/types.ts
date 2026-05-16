@@ -120,3 +120,20 @@ export type DecisionArtifactEntryKind = z.infer<typeof decisionArtifactEntryKind
 export type DecisionArtifactCanonicalizes = z.infer<typeof decisionArtifactCanonicalizesSchema>;
 export type DecisionArtifactEntry = z.infer<typeof decisionArtifactEntrySchema>;
 export type DecisionArtifact = z.infer<typeof decisionArtifactSchema>;
+export type DecisionArtifactSourceTrustRejectionReason = "quarantined" | "inactive";
+export type DecisionArtifactSourceTrustResult =
+  | {
+      allowed: true;
+      reason?: never;
+    }
+  | {
+      allowed: false;
+      reason?: DecisionArtifactSourceTrustRejectionReason;
+    };
+export type DecisionArtifactSourceTrustValidator = (
+  streamEntryId: StreamEntryId,
+) => DecisionArtifactSourceTrustResult;
+
+export const allowAllSourceTrustValidator: DecisionArtifactSourceTrustValidator = () => ({
+  allowed: true,
+});

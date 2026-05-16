@@ -10,7 +10,7 @@ import {
   type SqliteDatabase,
 } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { IdentityCasMismatchError } from "../../util/errors.js";
+import { IdentityCasMismatchError, StorageError } from "../../util/errors.js";
 import { createEntityId, createStreamEntryId } from "../../util/ids.js";
 import { decisionArtifactMigrations } from "./migrations.js";
 import { DecisionArtifactRepository } from "./repository.js";
@@ -33,6 +33,33 @@ describe("DecisionArtifactRepository", () => {
   afterEach(() => {
     db.close();
   });
+
+  function expectSourceTrustRejection(
+    write: () => unknown,
+    expected: {
+      streamEntryId: string;
+      field?: string;
+      reason?: string;
+    },
+  ) {
+    let thrown: unknown;
+
+    try {
+      write();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(StorageError);
+    expect(thrown).toMatchObject({
+      code: "DECISION_ARTIFACT_SOURCE_NOT_TRUSTED",
+    });
+    expect((thrown as Error).cause).toMatchObject({
+      streamEntryId: expected.streamEntryId,
+      ...(expected.field === undefined ? {} : { field: expected.field }),
+      ...(expected.reason === undefined ? {} : { reason: expected.reason }),
+    });
+  }
 
   it("returns null for an empty artifact", () => {
     expect(repository.get(createEntityId())).toBeNull();
@@ -72,6 +99,213 @@ describe("DecisionArtifactRepository", () => {
       last_updated_stream_entry_ids: [source],
       superseded_by_id: null,
     });
+  });
+
+  it("rejects add, update, and supersede writes with quarantined source ids when a trust validator is configured", () => {
+    const audience = createEntityId();
+    const allowedSource = createStreamEntryId();
+    const quarantinedSource = createStreamEntryId();
+    const trustedRepository = new DecisionArtifactRepository({
+      db,
+      clock,
+      sourceTrustValidator: (streamEntryId) =>
+        streamEntryId === quarantinedSource
+          ? { allowed: false, reason: "quarantined" }
+          : { allowed: true },
+    });
+    const expectUntrustedSource = (write: () => unknown) => {
+      let thrown: unknown;
+
+      try {
+        write();
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(StorageError);
+      expect(thrown).toMatchObject({
+        code: "DECISION_ARTIFACT_SOURCE_NOT_TRUSTED",
+      });
+      expect((thrown as Error).cause).toMatchObject({
+        streamEntryId: quarantinedSource,
+        reason: "quarantined",
+      });
+    };
+
+    const initial = trustedRepository.upsert(audience, [
+      {
+        type: "add",
+        kind: "locked",
+        text: "Canonical workstream decision",
+        provenance_stream_entry_ids: [allowedSource],
+      },
+    ]);
+    const entryId = initial?.entries[0]?.id;
+
+    expect(entryId).toBeDefined();
+    expect(trustedRepository.get(audience)?.entries[0]?.provenance_stream_entry_ids).toEqual([
+      allowedSource,
+    ]);
+    expectUntrustedSource(() =>
+      trustedRepository.upsert(audience, [
+        {
+          type: "add",
+          kind: "locked",
+          text: "Untrusted canonical decision",
+          provenance_stream_entry_ids: [quarantinedSource],
+        },
+      ]),
+    );
+    expectUntrustedSource(() =>
+      trustedRepository.upsert(audience, [
+        {
+          type: "update",
+          id: entryId!,
+          text: "Updated canonical workstream decision",
+          add_provenance_stream_entry_ids: [quarantinedSource],
+          last_updated_stream_entry_ids: [quarantinedSource],
+        },
+      ]),
+    );
+    expectUntrustedSource(() =>
+      trustedRepository.upsert(audience, [
+        {
+          type: "supersede",
+          id: entryId!,
+          replacement: {
+            kind: "locked",
+            text: "Replacement canonical workstream decision",
+            provenance_stream_entry_ids: [quarantinedSource],
+          },
+          last_updated_stream_entry_ids: [quarantinedSource],
+        },
+      ]),
+    );
+  });
+
+  it("rejects add writes with quarantined last-updated ids when provenance is trusted", () => {
+    const audience = createEntityId();
+    const allowedSource = createStreamEntryId();
+    const quarantinedSource = createStreamEntryId();
+    const trustedRepository = new DecisionArtifactRepository({
+      db,
+      clock,
+      sourceTrustValidator: (streamEntryId) =>
+        streamEntryId === quarantinedSource
+          ? { allowed: false, reason: "quarantined" }
+          : { allowed: true },
+    });
+
+    expectSourceTrustRejection(
+      () =>
+        trustedRepository.upsert(audience, [
+          {
+            type: "add",
+            kind: "locked",
+            text: "Canonical workstream decision",
+            provenance_stream_entry_ids: [allowedSource],
+            last_updated_stream_entry_ids: [quarantinedSource],
+          },
+        ]),
+      {
+        streamEntryId: quarantinedSource,
+        field: "last_updated_stream_entry_ids",
+        reason: "quarantined",
+      },
+    );
+  });
+
+  it("rejects update writes with quarantined last-updated ids when provenance is trusted", () => {
+    const audience = createEntityId();
+    const firstSource = createStreamEntryId();
+    const secondSource = createStreamEntryId();
+    const quarantinedSource = createStreamEntryId();
+    const trustedRepository = new DecisionArtifactRepository({
+      db,
+      clock,
+      sourceTrustValidator: (streamEntryId) =>
+        streamEntryId === quarantinedSource
+          ? { allowed: false, reason: "quarantined" }
+          : { allowed: true },
+    });
+    const initial = trustedRepository.upsert(audience, [
+      {
+        type: "add",
+        kind: "locked",
+        text: "Canonical workstream decision",
+        provenance_stream_entry_ids: [firstSource],
+      },
+    ]);
+    const entryId = initial?.entries[0]?.id;
+    const before = trustedRepository.get(audience);
+
+    expect(entryId).toBeDefined();
+    expectSourceTrustRejection(
+      () =>
+        trustedRepository.upsert(audience, [
+          {
+            type: "update",
+            id: entryId!,
+            text: "Updated canonical workstream decision",
+            add_provenance_stream_entry_ids: [secondSource],
+            last_updated_stream_entry_ids: [quarantinedSource],
+          },
+        ]),
+      {
+        streamEntryId: quarantinedSource,
+        field: "last_updated_stream_entry_ids",
+        reason: "quarantined",
+      },
+    );
+    expect(trustedRepository.get(audience)).toEqual(before);
+  });
+
+  it("rejects supersede writes with quarantined last-updated ids when replacement provenance is trusted", () => {
+    const audience = createEntityId();
+    const firstSource = createStreamEntryId();
+    const replacementSource = createStreamEntryId();
+    const quarantinedSource = createStreamEntryId();
+    const trustedRepository = new DecisionArtifactRepository({
+      db,
+      clock,
+      sourceTrustValidator: (streamEntryId) =>
+        streamEntryId === quarantinedSource
+          ? { allowed: false, reason: "quarantined" }
+          : { allowed: true },
+    });
+    const initial = trustedRepository.upsert(audience, [
+      {
+        type: "add",
+        kind: "locked",
+        text: "Canonical workstream decision",
+        provenance_stream_entry_ids: [firstSource],
+      },
+    ]);
+    const entryId = initial?.entries[0]?.id;
+    const before = trustedRepository.get(audience);
+
+    expect(entryId).toBeDefined();
+    expectSourceTrustRejection(
+      () =>
+        trustedRepository.upsert(audience, [
+          {
+            type: "supersede",
+            id: entryId!,
+            replacement: {
+              kind: "locked",
+              text: "Replacement canonical workstream decision",
+              provenance_stream_entry_ids: [replacementSource],
+            },
+            last_updated_stream_entry_ids: [quarantinedSource],
+          },
+        ]),
+      {
+        streamEntryId: quarantinedSource,
+        field: "last_updated_stream_entry_ids",
+        reason: "quarantined",
+      },
+    );
+    expect(trustedRepository.get(audience)).toEqual(before);
   });
 
   it("increments the parent record version on update", () => {
