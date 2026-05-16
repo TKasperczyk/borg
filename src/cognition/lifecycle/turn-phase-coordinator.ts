@@ -28,8 +28,10 @@ import {
 import { isActionVisibleToSession } from "../evidence-ledger/audience-visibility.js";
 import {
   compileDecisionArtifact,
+  DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES,
   findUnsettledDecisionArtifactReconciliation,
   type DecisionArtifactCanonicalizationCandidates,
+  type DecisionArtifactCommitmentCanonicalizationType,
   type DecisionArtifactLedgerMode,
   type DecisionArtifactUnsettledReconciliationSummary,
 } from "../decision-artifact/index.js";
@@ -68,7 +70,11 @@ import type { Config } from "../../config/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { ActionRecord, ActionRepository, ActionState } from "../../memory/actions/index.js";
-import type { CommitmentRepository, EntityRepository } from "../../memory/commitments/index.js";
+import type {
+  CommitmentRecord,
+  CommitmentRepository,
+  EntityRepository,
+} from "../../memory/commitments/index.js";
 import type {
   DecisionArtifact,
   DecisionArtifactEntryKind,
@@ -283,6 +289,20 @@ function compactDecisionArtifactCandidateText(value: string, maxLength = 180): s
   const trimmed = value.trim();
 
   return trimmed.length <= maxLength ? trimmed : `${trimmed.slice(0, maxLength - 3)}...`;
+}
+
+const DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPE_SET = new Set<string>(
+  DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES,
+);
+
+type DecisionArtifactCommitmentCanonicalizationRecord = CommitmentRecord & {
+  type: DecisionArtifactCommitmentCanonicalizationType;
+};
+
+function isDecisionArtifactCommitmentCanonicalizationRecord(
+  commitment: CommitmentRecord,
+): commitment is DecisionArtifactCommitmentCanonicalizationRecord {
+  return DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPE_SET.has(commitment.type);
 }
 
 function addScopedActionCandidates(input: {
@@ -2153,9 +2173,12 @@ export class TurnPhaseCoordinator {
           activeOnly: true,
           audience: audienceEntityId,
         })
+        .filter(isDecisionArtifactCommitmentCanonicalizationRecord)
         .map((commitment) => ({
           id: commitment.id,
           text: compactDecisionArtifactCandidateText(commitment.directive),
+          type: commitment.type,
+          directive_family: commitment.directive_family,
         })),
       actions: actionCanonicalizationCandidates.candidates ?? [],
       openQuestions: this.options.openQuestionsRepository

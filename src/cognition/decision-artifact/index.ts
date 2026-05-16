@@ -6,6 +6,7 @@ export {
   type CompileDecisionArtifactInput,
   type DecisionArtifactCanonicalizationCandidate,
   type DecisionArtifactCanonicalizationCandidates,
+  type DecisionArtifactCommitmentCanonicalizationCandidate,
   type DecisionArtifactCompileDegradedReason,
   type DecisionArtifactLedgerMode,
   type DecisionArtifactLifecycleOptions,
@@ -14,12 +15,17 @@ export {
   type EmitDecisionArtifactPatch,
 } from "./compiler.js";
 export {
+  DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES,
+  type DecisionArtifactCommitmentCanonicalizationType,
+} from "./commitment-canonicalization.js";
+export {
   findUnsettledDecisionArtifactReconciliation,
   reconcileDecisionArtifactCanonicalizations,
   type DecisionArtifactReconciliationError,
   type DecisionArtifactReconciliationLookupRepositories,
   type DecisionArtifactReconciliationRepositories,
   type DecisionArtifactReconciliationResult,
+  type DecisionArtifactSkippedCommitmentCanonicalization,
   type DecisionArtifactUnsettledReconciliation,
   type DecisionArtifactUnsettledReconciliationSummary,
   type ReconcileDecisionArtifactCanonicalizationsInput,

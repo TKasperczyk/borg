@@ -224,7 +224,14 @@ describe("compileDecisionArtifact", () => {
       ...baseInput(llmClient),
       canonicalizationCandidates: {
         goals: [{ id: goalId, text: "Lock Granada for 3 nights" }],
-        commitments: [{ id: commitmentId, text: "Remember Granada is locked" }],
+        commitments: [
+          {
+            id: commitmentId,
+            text: "Keep the release window locked.",
+            type: "promise",
+            directive_family: "release_window",
+          },
+        ],
         actions: [{ id: actionId, text: "Track Granada planning" }],
         openQuestions: [{ id: openQuestionId, text: "Is Granada final?" }],
       },

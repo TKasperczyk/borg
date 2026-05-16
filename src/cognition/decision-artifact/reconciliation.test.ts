@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ActionRepository, actionMigrations } from "../../memory/actions/index.js";
-import { CommitmentRepository, commitmentMigrations } from "../../memory/commitments/index.js";
-import type { DecisionArtifactEntry } from "../../memory/decision-artifacts/index.js";
+import {
+  CommitmentRepository,
+  commitmentMigrations,
+  type CommitmentRecord,
+  type CommitmentType,
+} from "../../memory/commitments/index.js";
+import type { DecisionArtifact, DecisionArtifactEntry } from "../../memory/decision-artifacts/index.js";
 import { OpenQuestionsRepository, selfMigrations } from "../../memory/self/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
@@ -15,7 +20,19 @@ import {
   createOpenQuestionId,
   createStreamEntryId,
 } from "../../util/ids.js";
-import { reconcileDecisionArtifactCanonicalizations } from "./reconciliation.js";
+import {
+  findUnsettledDecisionArtifactReconciliation,
+  reconcileDecisionArtifactCanonicalizations,
+} from "./reconciliation.js";
+import { DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES } from "./commitment-canonicalization.js";
+
+const CANONICALIZABLE_COMMITMENT_TYPES = DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES;
+const NON_CANONICALIZABLE_COMMITMENT_TYPES = [
+  "preference",
+  "boundary",
+] as const satisfies readonly CommitmentType[];
+const PROMISE_COMMITMENT_TYPE = CANONICALIZABLE_COMMITMENT_TYPES[0];
+const PREFERENCE_COMMITMENT_TYPE = NON_CANONICALIZABLE_COMMITMENT_TYPES[0];
 
 function lockedEntry(overrides: Partial<DecisionArtifactEntry> = {}): DecisionArtifactEntry {
   const streamEntryId = createStreamEntryId();
@@ -24,7 +41,7 @@ function lockedEntry(overrides: Partial<DecisionArtifactEntry> = {}): DecisionAr
     id: overrides.id ?? createDecisionArtifactEntryId(),
     audience_entity_id: overrides.audience_entity_id ?? createEntityId(),
     kind: overrides.kind ?? "locked",
-    text: overrides.text ?? "Granada is locked for 3 nights",
+    text: overrides.text ?? "Release freeze is locked for the workstream",
     owner_entity_id: overrides.owner_entity_id ?? null,
     provenance_stream_entry_ids: overrides.provenance_stream_entry_ids ?? [streamEntryId],
     last_updated_stream_entry_ids: overrides.last_updated_stream_entry_ids ?? [streamEntryId],
@@ -40,6 +57,84 @@ function lockedEntry(overrides: Partial<DecisionArtifactEntry> = {}): DecisionAr
     },
   };
 }
+
+function decisionArtifact(entries: readonly DecisionArtifactEntry[]): DecisionArtifact {
+  const audienceEntityId = entries[0]?.audience_entity_id ?? createEntityId();
+
+  return {
+    audience_entity_id: audienceEntityId,
+    record_version: 1,
+    created_at: 1_000,
+    updated_at: 1_000,
+    last_compiled_at: 1_000,
+    last_compiled_stream_entry_id: createStreamEntryId(),
+    entries: [...entries],
+  };
+}
+
+function addCommitment(
+  repository: CommitmentRepository,
+  input: {
+    type: CommitmentRecord["type"];
+    directiveFamily: string;
+    directive: string;
+    createdAt?: number;
+    expiresAt?: number | null;
+  },
+): CommitmentRecord {
+  return repository.add({
+    type: input.type,
+    directiveFamily: input.directiveFamily,
+    directive: input.directive,
+    priority: 5,
+    provenance: { kind: "manual" },
+    createdAt: input.createdAt,
+    expiresAt: input.expiresAt,
+    skipDirectiveFamilyMerge: true,
+  });
+}
+
+describe("findUnsettledDecisionArtifactReconciliation", () => {
+  it("does not flag durable commitment canonicalizations as unsettled", () => {
+    const db = openDatabase(":memory:", {
+      migrations: commitmentMigrations,
+    });
+    const clock = new FixedClock(1_000);
+    const commitmentRepository = new CommitmentRepository({
+      db,
+      clock,
+    });
+
+    try {
+      const commitment = addCommitment(commitmentRepository, {
+        type: PREFERENCE_COMMITMENT_TYPE,
+        directiveFamily: "work update style",
+        directive: "Prefer concise work updates.",
+        createdAt: 500,
+      });
+      const entry = lockedEntry({
+        canonicalizes: {
+          goal_ids: [],
+          commitment_ids: [commitment.id],
+          action_ids: [],
+          open_question_ids: [],
+        },
+      });
+
+      const unsettledReconciliation = findUnsettledDecisionArtifactReconciliation({
+        previousArtifact: decisionArtifact([entry]),
+        repositories: {
+          commitmentRepository,
+        },
+        nowMs: clock.now(),
+      });
+
+      expect(unsettledReconciliation).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+});
 
 describe("reconcileDecisionArtifactCanonicalizations", () => {
   it("retires canonicalized state through existing repository APIs", () => {
@@ -59,6 +154,17 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
       updateStatus: vi.fn(),
     };
     const commitmentRepository = {
+      get: vi.fn(
+        () =>
+          ({
+            id: commitmentId,
+            type: PROMISE_COMMITMENT_TYPE,
+            revoked_at: null,
+            expired_at: null,
+            expires_at: null,
+            superseded_by: null,
+          }) as never,
+      ),
       revoke: vi.fn(() => ({ id: commitmentId }) as never),
     };
     const actionRepository = {
@@ -231,6 +337,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
       },
     });
     const commitmentRepository = {
+      get: vi.fn(() => null),
       revoke: vi.fn(() => null),
     };
 
@@ -296,7 +403,7 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
 
     try {
       const expired = commitmentRepository.add({
-        type: "promise",
+        type: PROMISE_COMMITMENT_TYPE,
         directiveFamily: "expired artifact fixture",
         directive: "Use the expired artifact fixture.",
         priority: 5,
@@ -338,6 +445,137 @@ describe("reconcileDecisionArtifactCanonicalizations", () => {
       db.close();
     }
   });
+
+  it.each(NON_CANONICALIZABLE_COMMITMENT_TYPES)(
+    "skips %s commitment canonicalizations without revoking",
+    (type) => {
+      const db = openDatabase(":memory:", {
+        migrations: commitmentMigrations,
+      });
+      const clock = new FixedClock(1_000);
+      const commitmentRepository = new CommitmentRepository({
+        db,
+        clock,
+      });
+
+      try {
+        const commitment = addCommitment(commitmentRepository, {
+          type,
+          directiveFamily: `${type} work policy`,
+          directive: "Keep the work policy active.",
+          createdAt: 500,
+        });
+        const revoke = vi.spyOn(commitmentRepository, "revoke");
+        const entry = lockedEntry({
+          canonicalizes: {
+            goal_ids: [],
+            commitment_ids: [commitment.id],
+            action_ids: [],
+            open_question_ids: [],
+          },
+        });
+
+        const result = reconcileDecisionArtifactCanonicalizations({
+          entries: [entry],
+          repositories: {
+            commitmentRepository,
+          },
+          nowMs: clock.now(),
+        });
+
+        expect(result).toMatchObject({
+          commitments_retired: 0,
+          commitments_revoked_attempted: 1,
+          commitments_revoked_succeeded: 0,
+          commitments_revoked_skipped: 1,
+          errors: [],
+          skipped_commitments: [
+            {
+              channel: "commitment",
+              id: commitment.id,
+              artifactEntryId: entry.id,
+              reason: "non_canonicalizable_commitment_type",
+              commitmentType: type,
+            },
+          ],
+        });
+        expect(revoke).not.toHaveBeenCalled();
+        expect(commitmentRepository.get(commitment.id)).toMatchObject({
+          revoked_at: null,
+          canonicalized_by_artifact_entry_id: null,
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each(CANONICALIZABLE_COMMITMENT_TYPES)(
+    "revokes %s commitment canonicalizations with artifact backref",
+    (type) => {
+      const db = openDatabase(":memory:", {
+        migrations: commitmentMigrations,
+      });
+      const clock = new FixedClock(1_000);
+      const commitmentRepository = new CommitmentRepository({
+        db,
+        clock,
+      });
+
+      try {
+        const commitment = addCommitment(commitmentRepository, {
+          type,
+          directiveFamily: `${type} release decision`,
+          directive: "Use the locked release decision.",
+          createdAt: 500,
+        });
+        const revoke = vi.spyOn(commitmentRepository, "revoke");
+        const entry = lockedEntry({
+          canonicalizes: {
+            goal_ids: [],
+            commitment_ids: [commitment.id],
+            action_ids: [],
+            open_question_ids: [],
+          },
+        });
+
+        const result = reconcileDecisionArtifactCanonicalizations({
+          entries: [entry],
+          repositories: {
+            commitmentRepository,
+          },
+          nowMs: clock.now(),
+        });
+
+        expect(result).toMatchObject({
+          commitments_retired: 1,
+          commitments_revoked_attempted: 1,
+          commitments_revoked_succeeded: 1,
+          commitments_revoked_skipped: 0,
+          errors: [],
+          skipped_commitments: [],
+        });
+        expect(revoke).toHaveBeenCalledWith(
+          commitment.id,
+          `canonicalized_by_artifact_entry_id=${entry.id}`,
+          {
+            kind: "online",
+            process: "decision_artifact_reconciliation",
+          },
+          undefined,
+          {
+            canonicalizedByArtifactEntryId: entry.id,
+          },
+        );
+        expect(commitmentRepository.get(commitment.id)).toMatchObject({
+          revoked_at: clock.now(),
+          canonicalized_by_artifact_entry_id: entry.id,
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
 
   it("ignores non-locked entries", () => {
     const goalId = createGoalId();

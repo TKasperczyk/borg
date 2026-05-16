@@ -1,5 +1,9 @@
 import type { ActionRepository } from "../../memory/actions/index.js";
-import type { CommitmentRepository } from "../../memory/commitments/index.js";
+import type {
+  CommitmentRecord,
+  CommitmentRepository,
+  CommitmentType,
+} from "../../memory/commitments/index.js";
 import type {
   DecisionArtifact,
   DecisionArtifactCanonicalizes,
@@ -9,16 +13,23 @@ import type { GoalsRepository, OpenQuestionsRepository } from "../../memory/self
 import type { ActionId, CommitmentId, GoalId, OpenQuestionId } from "../../util/ids.js";
 import type { Provenance } from "../../memory/common/provenance.js";
 import type { DroppedCanonicalizeId } from "./compiler.js";
+import {
+  DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES,
+  type DecisionArtifactCommitmentCanonicalizationType,
+} from "./commitment-canonicalization.js";
 
 const RECONCILIATION_PROVENANCE = {
   kind: "online",
   process: "decision_artifact_reconciliation",
 } as const satisfies Provenance;
 
+const DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPE_SET = new Set<CommitmentType>(
+  DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES,
+);
+
 export type DecisionArtifactReconciliationRepositories = {
   goalsRepository?: Pick<GoalsRepository, "updateStatus"> & Partial<Pick<GoalsRepository, "get">>;
-  commitmentRepository?: Pick<CommitmentRepository, "revoke"> &
-    Partial<Pick<CommitmentRepository, "get">>;
+  commitmentRepository?: Pick<CommitmentRepository, "get" | "revoke">;
   actionRepository?: Pick<ActionRepository, "update"> & Partial<Pick<ActionRepository, "get">>;
   openQuestionsRepository?: Pick<OpenQuestionsRepository, "resolve"> &
     Partial<Pick<OpenQuestionsRepository, "get">>;
@@ -56,6 +67,14 @@ export type DecisionArtifactReconciliationError = {
   message: string;
 };
 
+export type DecisionArtifactSkippedCommitmentCanonicalization = {
+  channel: "commitment";
+  id: string;
+  artifactEntryId: string;
+  reason: "non_canonicalizable_commitment_type";
+  commitmentType: CommitmentType;
+};
+
 export type DecisionArtifactReconciliationResult = {
   goals_retired: number;
   commitments_retired: number;
@@ -74,6 +93,7 @@ export type DecisionArtifactReconciliationResult = {
   open_questions_resolved_succeeded: number;
   open_questions_resolved_skipped: number;
   unknown_ids: readonly DroppedCanonicalizeId[];
+  skipped_commitments: DecisionArtifactSkippedCommitmentCanonicalization[];
   errors: DecisionArtifactReconciliationError[];
 };
 
@@ -129,6 +149,12 @@ function isTerminalCommitment(
     (commitment.expires_at !== null && commitment.expires_at <= nowMs) ||
     commitment.superseded_by !== null
   );
+}
+
+function isDecisionArtifactCanonicalizableCommitmentType(
+  type: CommitmentRecord["type"],
+): type is DecisionArtifactCommitmentCanonicalizationType {
+  return DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPE_SET.has(type);
 }
 
 function isTerminalActionState(state: string): boolean {
@@ -220,7 +246,11 @@ export function findUnsettledDecisionArtifactReconciliation(input: {
     for (const commitmentId of entry.canonicalizes.commitment_ids) {
       const commitment = commitmentRepository?.get?.(commitmentId) ?? null;
 
-      if (commitment !== null && !isTerminalCommitment(commitment, nowMs)) {
+      if (
+        commitment !== null &&
+        !isTerminalCommitment(commitment, nowMs) &&
+        isDecisionArtifactCanonicalizableCommitmentType(commitment.type)
+      ) {
         retryEntry(retryEntriesById, entry).canonicalizes.commitment_ids.push(commitmentId);
         unsettledCommitmentCount += 1;
       }
@@ -293,6 +323,7 @@ export function reconcileDecisionArtifactCanonicalizations(
     open_questions_resolved_succeeded: 0,
     open_questions_resolved_skipped: 0,
     unknown_ids: input.unknownIds ?? [],
+    skipped_commitments: [],
     errors: [],
   };
   recordUnknownIdSkips(result, result.unknown_ids);
@@ -359,10 +390,25 @@ export function reconcileDecisionArtifactCanonicalizations(
       }
 
       try {
-        const commitment = commitmentRepository.get?.(commitmentId) ?? null;
+        const commitment = commitmentRepository.get(commitmentId);
 
         if (commitment !== null && isTerminalCommitment(commitment, nowMs)) {
           result.commitments_revoked_skipped += 1;
+          continue;
+        }
+
+        if (
+          commitment !== null &&
+          !isDecisionArtifactCanonicalizableCommitmentType(commitment.type)
+        ) {
+          result.commitments_revoked_skipped += 1;
+          result.skipped_commitments.push({
+            channel: "commitment",
+            id: commitmentId,
+            artifactEntryId: entry.id,
+            reason: "non_canonicalizable_commitment_type",
+            commitmentType: commitment.type,
+          });
           continue;
         }
 

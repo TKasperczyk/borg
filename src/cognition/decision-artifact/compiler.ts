@@ -53,6 +53,7 @@ import {
   type DecisionArtifactReconciliationResult,
   type DecisionArtifactUnsettledReconciliationSummary,
 } from "./reconciliation.js";
+import type { DecisionArtifactCommitmentCanonicalizationType } from "./commitment-canonicalization.js";
 
 const DECISION_ARTIFACT_TOOL_NAME = "EmitDecisionArtifactPatch";
 const MAX_OPERATIONS_PER_COMPILE = 40;
@@ -73,7 +74,6 @@ const DECISION_ARTIFACT_LIFECYCLE_PRUNE_ORDER = [
   "pending",
   "live",
 ] as const satisfies readonly DecisionArtifactEntryKind[];
-
 const decisionArtifactToolKindSchema = z.enum(DECISION_ARTIFACT_ENTRY_KINDS);
 const sourceStreamEntryIdsSchema = z
   .array(z.string().trim().min(1))
@@ -190,13 +190,15 @@ const DECISION_ARTIFACT_SYSTEM_PROMPT = [
   "",
   "What does not belong:",
   '- Participant tasks, such as "Ben will check Alhambra booking"; those stay as action records.',
-  '- Assistant commitments, such as "Borg will wait for Ben\'s numbers"; those stay as commitment records.',
+  '- Assistant commitments, such as "Borg will send the status note tomorrow"; those stay as commitment records.',
   "- Observations or social facts such as mood, signoffs, or group dynamics; those stay in the semantic graph or stream.",
   "- Stream-level chitchat such as greetings, emoji closures, or thanks.",
   "",
   "Canonicalization handles:",
-  "- The input includes active_goals, active_commitments, active_actions, and open_questions as compact id:text lists.",
+  "- The input includes active_goals, active_commitments, active_actions, and open_questions as compact id:text lists; active_commitments also include type and directive_family.",
   "- When a locked add, update, or supersede replacement makes listed active state redundant, set canonicalizes with only those exact ids.",
+  "- For commitments, canonicalize only supplied active promises or rules that the locked artifact entry fully subsumes; never create an artifact entry merely to restate a commitment.",
+  "- Never canonicalize preference or boundary commitments.",
   "- Do not canonicalize ids for live, pending, tentative, or invalidated entries.",
   "- Do not infer ids that are not supplied.",
   "",
@@ -229,9 +231,15 @@ export type DecisionArtifactCanonicalizationCandidate = {
   text: string;
 };
 
+export type DecisionArtifactCommitmentCanonicalizationCandidate =
+  DecisionArtifactCanonicalizationCandidate & {
+    type: DecisionArtifactCommitmentCanonicalizationType;
+    directive_family: string;
+  };
+
 export type DecisionArtifactCanonicalizationCandidates = {
   goals?: readonly DecisionArtifactCanonicalizationCandidate[];
-  commitments?: readonly DecisionArtifactCanonicalizationCandidate[];
+  commitments?: readonly DecisionArtifactCommitmentCanonicalizationCandidate[];
   actions?: readonly DecisionArtifactCanonicalizationCandidate[];
   openQuestions?: readonly DecisionArtifactCanonicalizationCandidate[];
 };
@@ -341,7 +349,7 @@ function buildCanonicalizationCandidatePromptPayload(
   candidates: DecisionArtifactCanonicalizationCandidates,
 ): {
   active_goals: readonly DecisionArtifactCanonicalizationCandidate[];
-  active_commitments: readonly DecisionArtifactCanonicalizationCandidate[];
+  active_commitments: readonly DecisionArtifactCommitmentCanonicalizationCandidate[];
   active_actions: readonly DecisionArtifactCanonicalizationCandidate[];
   open_questions: readonly DecisionArtifactCanonicalizationCandidate[];
 } {
@@ -647,6 +655,7 @@ function traceReconciliationCompleted(options: {
       current_operation_canonicalization_count: options.currentOperationCanonicalizationCount ?? 0,
       retried_stranded_canonicalization_count: options.retriedStrandedCanonicalizationCount ?? 0,
       retry_unsettled_summary: toTraceJsonValue(options.retrySummary ?? null),
+      skipped_commitments: toTraceJsonValue(options.result.skipped_commitments),
       errors: toTraceJsonValue(options.result.errors),
     });
   }

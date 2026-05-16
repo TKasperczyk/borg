@@ -9,6 +9,7 @@ import type {
 } from "../../memory/decision-artifacts/index.js";
 import {
   createActionId,
+  createCommitmentId,
   createDecisionArtifactEntryId,
   createEntityId,
   createGoalId,
@@ -16,6 +17,7 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
+import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { renderEvidenceLedger } from "../evidence-ledger/index.js";
 import {
@@ -28,6 +30,13 @@ import {
   shouldSkipDecisionArtifactCompile,
   TurnPhaseCoordinator,
 } from "./turn-phase-coordinator.js";
+
+const PROMISE_COMMITMENT_TYPE = "promise" as const;
+const RULE_COMMITMENT_TYPE = "rule" as const;
+const PREFERENCE_COMMITMENT_TYPE = "preference" as const;
+const BOUNDARY_COMMITMENT_TYPE = "boundary" as const;
+const DEPLOYMENT_WINDOW_DIRECTIVE_FAMILY = "deployment_window";
+const RELEASE_FREEZE_DIRECTIVE_FAMILY = "release_freeze";
 
 function decisionArtifactEntry(input: {
   audience: DecisionArtifact["audience_entity_id"];
@@ -152,6 +161,36 @@ function actionRecord(input: {
     not_done_at: null,
     unknown_at: null,
     canonicalized_by_artifact_entry_id: null,
+  };
+}
+
+function commitmentRecord(input: {
+  type: CommitmentRecord["type"];
+  directiveFamily: string;
+  directive: string;
+}): CommitmentRecord {
+  return {
+    id: createCommitmentId(),
+    record_version: 1,
+    type: input.type,
+    directive_family: input.directiveFamily,
+    closure_pressure_relevance: "neutral",
+    directive: input.directive,
+    priority: 1,
+    made_to_entity: null,
+    restricted_audience: null,
+    about_entity: null,
+    committed_by_entity_id: null,
+    provenance: { kind: "manual" },
+    created_at: 1_000,
+    expires_at: null,
+    expired_at: null,
+    revoked_at: null,
+    revoked_reason: null,
+    revoke_provenance: null,
+    superseded_by: null,
+    canonicalized_by_artifact_entry_id: null,
+    last_reinforced_at: 1_000,
   };
 }
 
@@ -603,26 +642,46 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
     );
   });
 
-  it("surfaces global, audience, and participant-actor action canonicalization candidates", async () => {
+  it("surfaces action and eligible commitment canonicalization candidates", async () => {
     const audience = createEntityId();
     const self = createEntityId();
     const alice = createEntityId();
     const current = createStreamEntryId();
     const audienceAction = actionRecord({
-      description: "Audience-scoped itinerary action",
+      description: "Audience-scoped release action",
       audienceEntityId: audience,
       updatedAt: 2_000,
     });
     const globalAction = actionRecord({
-      description: "Global itinerary action",
+      description: "Global release action",
       audienceEntityId: null,
       updatedAt: 1_000,
     });
     const actorAction = actionRecord({
-      description: "Alice actor-scoped itinerary action",
+      description: "Alice actor-scoped release action",
       actor: alice,
       audienceEntityId: alice,
       updatedAt: 3_000,
+    });
+    const promiseCommitment = commitmentRecord({
+      type: PROMISE_COMMITMENT_TYPE,
+      directiveFamily: DEPLOYMENT_WINDOW_DIRECTIVE_FAMILY,
+      directive: "Keep the deployment window locked at 16:00 UTC.",
+    });
+    const ruleCommitment = commitmentRecord({
+      type: RULE_COMMITMENT_TYPE,
+      directiveFamily: RELEASE_FREEZE_DIRECTIVE_FAMILY,
+      directive: "Treat the release branch freeze as final.",
+    });
+    const preferenceCommitment = commitmentRecord({
+      type: PREFERENCE_COMMITMENT_TYPE,
+      directiveFamily: "status_update_style",
+      directive: "Prefer terse status updates.",
+    });
+    const boundaryCommitment = commitmentRecord({
+      type: BOUNDARY_COMMITMENT_TYPE,
+      directiveFamily: "private_feedback_boundary",
+      directive: "Do not discuss private feedback outside the review.",
     });
     const events: Array<{ event: string; data: Record<string, unknown> }> = [];
     const llmClient = new FakeLLMClient({
@@ -654,7 +713,12 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
         updateStatus: () => ({}),
       },
       commitmentRepository: {
-        list: () => [],
+        list: () => [
+          promiseCommitment,
+          ruleCommitment,
+          preferenceCommitment,
+          boundaryCommitment,
+        ],
         get: () => null,
       },
       actionRepository: {
@@ -699,7 +763,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
       },
     } as never);
     const ledger = evidenceLedger([
-      ledgerEntry({ streamEntryId: current, streamIndex: 0, text: "itinerary closure turn" }),
+      ledgerEntry({ streamEntryId: current, streamIndex: 0, text: "release closure turn" }),
     ]);
 
     await (
@@ -718,7 +782,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
           id: current,
           sender_entity_id: alice,
         },
-        currentUserMessage: "Lock the itinerary.",
+        currentUserMessage: "Lock the release window.",
         perception: {
           mode: "problem_solving",
         },
@@ -736,13 +800,33 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
     ) as {
       canonicalization_candidates?: {
         active_actions?: Array<{ id: string; text: string }>;
+        active_commitments?: Array<{
+          id: string;
+          text: string;
+          type: string;
+          directive_family: string;
+        }>;
       };
     };
 
     expect(requestPayload.canonicalization_candidates?.active_actions).toEqual([
-      { id: actorAction.id, text: "Alice actor-scoped itinerary action" },
-      { id: audienceAction.id, text: "Audience-scoped itinerary action" },
-      { id: globalAction.id, text: "Global itinerary action" },
+      { id: actorAction.id, text: "Alice actor-scoped release action" },
+      { id: audienceAction.id, text: "Audience-scoped release action" },
+      { id: globalAction.id, text: "Global release action" },
+    ]);
+    expect(requestPayload.canonicalization_candidates?.active_commitments).toEqual([
+      {
+        id: promiseCommitment.id,
+        text: "Keep the deployment window locked at 16:00 UTC.",
+        type: PROMISE_COMMITMENT_TYPE,
+        directive_family: DEPLOYMENT_WINDOW_DIRECTIVE_FAMILY,
+      },
+      {
+        id: ruleCommitment.id,
+        text: "Treat the release branch freeze as final.",
+        type: RULE_COMMITMENT_TYPE,
+        directive_family: RELEASE_FREEZE_DIRECTIVE_FAMILY,
+      },
     ]);
     expect(events).toContainEqual({
       event: "decision_artifact_canonicalization_candidates",
