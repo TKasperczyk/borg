@@ -21,11 +21,8 @@ const GOAL_PROMOTION_TOOL_NAME = "EmitGoalPromotion";
 
 export const GOAL_PROMOTION_CLASSIFICATIONS = [
   "durable_borg_goal",
-  "borg_one_off_action",
-  "participant_action",
-  "settled_decision",
-  "session_agenda",
-  "open_question",
+  "one_off",
+  "not_borg_responsibility",
   "already_represented",
   "none",
 ] as const;
@@ -134,7 +131,7 @@ const GOAL_PROMOTION_TOOL = {
 
 const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "Classify goal-like candidates from the current user turn by memory kind.",
-  "Only durable_borg_goal can become active goal self-memory. Everything else is rejected from goal persistence.",
+  "Only durable_borg_goal becomes active goal self-memory; other labels are rejected from goal storage but explain why.",
   "Set durable_goal_batch=explicit_multiple only when the current turn explicitly asks Borg to track multiple separate ongoing responsibilities; otherwise use single.",
   "Judge semantic intent across languages. Do not rely on wording, punctuation, capitalization, or phrase shapes.",
   "When speaker_entity_id is supplied and the current speaker creates a durable first-person goal, treat that speaker as the goal owner. In group chat, first-person user goals belong to the current sender, not the group, unless the message explicitly says the group is acting.",
@@ -142,22 +139,19 @@ const GOAL_PROMOTION_SYSTEM_PROMPT = [
   "Use target_at only for a real goal deadline. Use the supplied temporal cue as context, not as an automatic trigger.",
   "",
   "Classifications:",
-  "- durable_borg_goal: Borg has ongoing responsibility to track, monitor, periodically check in, or maintain continuity.",
-  "- borg_one_off_action: Borg should do one concrete finite thing.",
-  "- participant_action: a human participant will, might, or did do a concrete thing.",
-  "- settled_decision: the turn settles a planning fact or decision.",
-  "- session_agenda: a current-session item that becomes stale when the session ends.",
-  "- open_question: an unresolved issue or question, not an active Borg responsibility.",
+  "- durable_borg_goal: Borg must track, monitor, maintain, or revisit across turns.",
+  "- one_off: finite event, task, reply, or fact; no ongoing tracking.",
+  "- not_borg_responsibility: responsibility belongs elsewhere, not to Borg.",
   "- already_represented: a supplied active goal already covers the candidate.",
-  "- none: not memory-worthy for goal promotion.",
+  "- none: not memory-worthy at all.",
   "",
   "Prefer one durable_borg_goal at most. When uncertain, emit no promotions. Return only the required tool call.",
   "",
   "Examples:",
-  "- Help me track the release checklist -> durable_borg_goal.",
-  "- I will update the API docs tonight -> participant_action.",
-  "- We decided to freeze schema changes until Friday -> settled_decision.",
-  "- Remind Alex and keep monitoring the deployment cleanup -> explicit_multiple if both are separate ongoing Borg responsibilities.",
+  "- Coding: track refactor across sessions -> durable_borg_goal; read this file -> one_off; user will deploy -> not_borg_responsibility.",
+  "- Relationships: support through job search -> durable_borg_goal; send one message -> one_off; friend will respond -> not_borg_responsibility.",
+  "- Planning: track the plan across sessions -> durable_borg_goal; execute tonight's agenda -> one_off; Ben will pull flight numbers -> not_borg_responsibility.",
+  "- Monitor deployment cleanup and job-search support -> explicit_multiple only if both are separate ongoing Borg responsibilities.",
 ].join("\n");
 
 type ParsedGoalPromotion = z.infer<typeof goalPromotionSchema>;
@@ -262,11 +256,8 @@ type GoalPromotionCandidateWithMeta = {
 function zeroClassificationCounts(): Record<GoalPromotionClassificationCountKey, number> {
   return {
     durable_borg_goal: 0,
-    borg_one_off_action: 0,
-    participant_action: 0,
-    settled_decision: 0,
-    session_agenda: 0,
-    open_question: 0,
+    one_off: 0,
+    not_borg_responsibility: 0,
     already_represented: 0,
     none: 0,
     invalid_classification: 0,

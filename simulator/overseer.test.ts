@@ -173,11 +173,8 @@ function metricsRow(turn: number): MetricsRow {
     goal_promotion_dedup_degraded: 0,
     goal_promotion_classifications_per_turn: {
       durable_borg_goal: 0,
-      borg_one_off_action: 0,
-      participant_action: 0,
-      settled_decision: 0,
-      session_agenda: 0,
-      open_question: 0,
+      one_off: 0,
+      not_borg_responsibility: 0,
       already_represented: 0,
       none: 0,
       invalid_classification: 0,

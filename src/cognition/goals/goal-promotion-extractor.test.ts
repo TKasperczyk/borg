@@ -76,7 +76,7 @@ function createExtractorInput(
   overrides: Partial<Parameters<GoalPromotionExtractor["extract"]>[0]> = {},
 ) {
   return {
-    userMessage: "Help me track the release checklist.",
+    userMessage: "Help me track the refactor across sessions.",
     recentHistory: [],
     audienceEntityId: createEntityId(),
     temporalCue: null,
@@ -102,9 +102,9 @@ describe("GoalPromotionExtractor", () => {
       responses: [
         goalPromotionResponse([
           {
-            description: "Help the user track the release checklist",
+            description: "Help the user track the refactor across sessions",
             priority: 8,
-            reason: "The user asked Borg to track the checklist over time.",
+            reason: "The user asked Borg to track the refactor over time.",
             confidence: 0.9,
           },
         ]),
@@ -119,10 +119,10 @@ describe("GoalPromotionExtractor", () => {
 
     expect(result).toEqual([
       {
-        description: "Help the user track the release checklist",
+        description: "Help the user track the refactor across sessions",
         priority: 8,
         target_at: null,
-        reason: "The user asked Borg to track the checklist over time.",
+        reason: "The user asked Borg to track the refactor over time.",
         confidence: 0.9,
         duplicate_of_goal_id: null,
         initial_step: null,
@@ -134,7 +134,7 @@ describe("GoalPromotionExtractor", () => {
       name: "EmitGoalPromotion",
     });
     expect(llm.requests[0]?.max_tokens).toBe(1536);
-    expect(llm.requests[0]?.system).toContain("participant_action");
+    expect(llm.requests[0]?.system).toContain("not_borg_responsibility");
   });
 
   it("returns no candidates when the LLM finds no Borg role", async () => {
@@ -147,7 +147,9 @@ describe("GoalPromotionExtractor", () => {
     });
 
     await expect(
-      extractor.extract(createExtractorInput({ userMessage: "I should probably update the docs." })),
+      extractor.extract(
+        createExtractorInput({ userMessage: "My friend will respond when she can." }),
+      ),
     ).resolves.toEqual([]);
   });
 
@@ -156,16 +158,16 @@ describe("GoalPromotionExtractor", () => {
       responses: [
         goalPromotionResponse([
           {
-            description: "Help the user keep the Monday postmortem organized",
+            description: "Help the user keep the Monday planning review organized",
             priority: 9,
             target_at: 1_800_000,
-            reason: "The user asked Borg to keep the postmortem work organized.",
+            reason: "The user asked Borg to keep the planning review organized.",
             confidence: 0.92,
             initial_step: {
-              description: "Ask for postmortem constraints before Monday",
+              description: "Ask for review constraints before Monday",
               kind: "ask_user",
               due_at: 1_700_000,
-              rationale: "Borg needs the constraints to track the postmortem well.",
+              rationale: "Borg needs the constraints to track the review well.",
             },
           },
         ]),
@@ -179,14 +181,14 @@ describe("GoalPromotionExtractor", () => {
     await expect(
       extractor.extract(
         createExtractorInput({
-          userMessage: "Write postmortem Monday, help me keep this organized.",
+          userMessage: "Monday's planning review matters; help me keep it organized.",
         }),
       ),
     ).resolves.toMatchObject([
       {
         target_at: 1_800_000,
         initial_step: {
-          description: "Ask for postmortem constraints before Monday",
+          description: "Ask for review constraints before Monday",
           kind: "ask_user",
           due_at: 1_700_000,
         },
@@ -250,7 +252,7 @@ describe("GoalPromotionExtractor", () => {
       responses: [
         goalPromotionResponse([
           {
-            description: "Help the user track a possible code review follow-up",
+            description: "Help the user keep supporting their sibling through a job search",
             confidence: 0.6,
           },
         ]),
@@ -265,7 +267,9 @@ describe("GoalPromotionExtractor", () => {
 
     await expect(
       extractor.extract(
-        createExtractorInput({ userMessage: "Maybe keep an eye on the code review." }),
+        createExtractorInput({
+          userMessage: "Maybe keep an eye on how I support my sibling's job search.",
+        }),
       ),
     ).resolves.toEqual([]);
     expect(emit).toHaveBeenCalledWith(
@@ -337,9 +341,9 @@ describe("GoalPromotionExtractor", () => {
     const llm = new FakeLLMClient({
       responses: [
         goalPromotionResponse([
-          { description: "Track the frontend rollout", confidence: 0.86 },
+          { description: "Track the relationship check-in rhythm", confidence: 0.86 },
           { description: "Track the API migration", confidence: 0.97 },
-          { description: "Track the design follow-up", confidence: 0.91 },
+          { description: "Track the planning review follow-up", confidence: 0.91 },
         ]),
       ],
     });
@@ -378,11 +382,11 @@ describe("GoalPromotionExtractor", () => {
       responses: [
         goalPromotionResponse(
           [
-            { description: "Track the launch checklist", confidence: 0.9 },
-            { description: "Track the hiring follow-up", confidence: 0.89 },
-            { description: "Track the incident review", confidence: 0.88 },
+            { description: "Track the plan across sessions", confidence: 0.9 },
+            { description: "Track the job-search support", confidence: 0.89 },
+            { description: "Track the refactor cleanup", confidence: 0.88 },
             { description: "Track the API migration", confidence: 0.99 },
-            { description: "Track the support handoff", confidence: 0.98 },
+            { description: "Track the relationship check-in", confidence: 0.98 },
           ],
           { durableGoalBatch: "explicit_multiple" },
         ),
@@ -398,9 +402,9 @@ describe("GoalPromotionExtractor", () => {
     const result = await extractor.extract(createExtractorInput());
 
     expect(result.map((candidate) => candidate.description)).toEqual([
-      "Track the launch checklist",
-      "Track the hiring follow-up",
-      "Track the incident review",
+      "Track the plan across sessions",
+      "Track the job-search support",
+      "Track the refactor cleanup",
     ]);
     expect(emit).toHaveBeenCalledWith(
       "goal_promotion_extractor_completed",
