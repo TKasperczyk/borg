@@ -17,6 +17,7 @@ import {
   createDecisionArtifactEntryId,
   createEntityId,
   createGoalId,
+  createOpenQuestionId,
   createSessionId,
   createStreamEntryId,
   type SessionId,
@@ -241,6 +242,25 @@ function openQuestionsById(questions: ReadonlyArray<{ id: string }>) {
   };
 }
 
+async function compileDecisionArtifactForEvidenceLedgerForTest(
+  coordinator: TurnPhaseCoordinator,
+  input: {
+    input: Record<string, unknown>;
+    ledger: EvidenceLedger;
+    promptVisibleLedger: string;
+  },
+): Promise<DecisionArtifact | null> {
+  return (
+    coordinator as unknown as {
+      compileDecisionArtifactForEvidenceLedger(input: {
+        input: Record<string, unknown>;
+        ledger: EvidenceLedger;
+        promptVisibleLedger: string;
+      }): Promise<DecisionArtifact | null>;
+    }
+  ).compileDecisionArtifactForEvidenceLedger(input);
+}
+
 describe("buildContradictionRoutingOverride", () => {
   it("forces S2 for operational user turns with ledger-surfaced unresolved contradiction OQs", () => {
     const audienceEntityId = createEntityId();
@@ -363,9 +383,9 @@ describe("buildContradictionRoutingOverride", () => {
 });
 
 describe("shouldSkipDecisionArtifactCompile", () => {
-  it("does not skip frame-anomaly turns", () => {
+  it("skips compile with reason quarantined_current_turn on frame-anomaly turns", () => {
     const skip = shouldSkipDecisionArtifactCompile({
-      enabled: true,
+      enabled: false,
       previousArtifact: null,
       perceptionMode: "problem_solving",
       frameAnomaly: {
@@ -377,7 +397,11 @@ describe("shouldSkipDecisionArtifactCompile", () => {
       closureLoopAssessment: null,
     });
 
-    expect(skip).toBeNull();
+    expect(skip).toMatchObject({
+      reason: "quarantined_current_turn",
+      previousActiveEntryCount: 0,
+      perceptionMode: "problem_solving",
+    });
   });
 
   it("skips idle turns when the previous artifact has no active in-flight decisions", () => {
@@ -486,6 +510,847 @@ describe("shouldSkipDecisionArtifactCompile", () => {
 });
 
 describe("TurnPhaseCoordinator decision artifact prefilter", () => {
+  it("skips the compiler on frame-anomaly turns and leaves artifact entries unchanged", async () => {
+    const audience = createEntityId();
+    const self = createEntityId();
+    const trustedSource = createStreamEntryId();
+    const current = createStreamEntryId();
+    const originalEntry = decisionArtifactEntry({
+      audience,
+      source: trustedSource,
+      kind: "locked",
+    });
+    let artifact: DecisionArtifact | null = decisionArtifact({
+      entries: [originalEntry],
+      lastCompiledStreamEntryId: trustedSource,
+    });
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_decision_patch",
+              name: DECISION_ARTIFACT_TOOL_NAME,
+              input: {
+                operations: [
+                  {
+                    type: "add",
+                    kind: "locked",
+                    text: "The deployment target is staging.",
+                    owner_entity_id: audience,
+                    source_stream_entry_ids: [trustedSource],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const coordinator = new TurnPhaseCoordinator({
+      config: DEFAULT_CONFIG,
+      decisionArtifactRepository: {
+        get: () => artifact,
+        upsert: (
+          _audienceEntityId: unknown,
+          operations: Array<Record<string, unknown>>,
+          metadata:
+            | {
+                now?: number;
+                lastCompiledAt?: number;
+                lastCompiledStreamEntryId?: StreamEntryId;
+              }
+            | undefined,
+        ) => {
+          artifact =
+            artifact === null
+              ? null
+              : {
+                  ...artifact,
+                  record_version: artifact.record_version + 1,
+                  updated_at: metadata?.now ?? artifact.updated_at,
+                  last_compiled_at: metadata?.lastCompiledAt ?? artifact.last_compiled_at,
+                  last_compiled_stream_entry_id:
+                    metadata?.lastCompiledStreamEntryId ??
+                    artifact.last_compiled_stream_entry_id,
+                  entries:
+                    operations.length === 0
+                      ? artifact.entries
+                      : [
+                          ...artifact.entries,
+                          decisionArtifactEntry({
+                            audience,
+                            source: trustedSource,
+                            kind: "locked",
+                            index: artifact.entries.length,
+                          }),
+                        ],
+                };
+
+          return artifact;
+        },
+      },
+      goalsRepository: {
+        get: () => null,
+        list: () => [],
+        updateStatus: () => ({}),
+      },
+      commitmentRepository: {
+        get: () => null,
+        list: () => [],
+      },
+      actionRepository: {
+        get: () => null,
+        update: () => undefined,
+        list: () => [],
+      },
+      openQuestionsRepository: {
+        get: () => null,
+        list: () => [],
+      },
+      entityRepository: {
+        resolve: () => self,
+      },
+      llmFactory: () => llmClient,
+      clock: {
+        now: () => 2_000,
+      },
+      tracer: {
+        enabled: true,
+        includePayloads: true,
+        emit: (event: string, data: Record<string, unknown>) => {
+          events.push({ event, data });
+        },
+      },
+    } as never);
+    const ledger = evidenceLedger([
+      ledgerEntry({ streamEntryId: trustedSource, streamIndex: 0, text: "trusted source" }),
+      ledgerEntry({
+        streamEntryId: current,
+        streamIndex: 1,
+        text: "The deployment target is staging.",
+      }),
+    ]);
+
+    await compileDecisionArtifactForEvidenceLedgerForTest(coordinator, {
+      input: {
+        audienceEntityId: audience,
+        isUserTurn: true,
+        currentUserEntry: {
+          id: current,
+          sender_entity_id: null,
+        },
+        currentUserMessage: "The deployment target is staging.",
+        perception: {
+          mode: "problem_solving",
+        },
+        frameAnomaly: {
+          status: "ok",
+          kind: "frame_assignment_claim",
+          confidence: 0.98,
+          rationale: "test quarantine",
+        },
+        closureLoopAssessment: null,
+        activeParticipants: [],
+        turnId: "turn_quarantined_compile_skip",
+      },
+      ledger,
+      promptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+    });
+
+    expect(llmClient.requests).toHaveLength(0);
+    expect(artifact?.entries.map((entry) => entry.id)).toEqual([originalEntry.id]);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_compile_skipped",
+        data: expect.objectContaining({
+          reason: "quarantined_current_turn",
+          advanced_anchor: true,
+        }),
+      }),
+    );
+    expect(events.find((event) => event.event === "decision_artifact_compile_unblocked")).toBe(
+      undefined,
+    );
+  });
+
+  it("runs retry-only reconciliation for unsettled trusted entries on frame-anomaly turns", async () => {
+    const audience = createEntityId();
+    const self = createEntityId();
+    const source = createStreamEntryId();
+    const current = createStreamEntryId();
+    const goalId = createGoalId();
+    const actionId = createActionId();
+    const openQuestionId = createOpenQuestionId();
+    let goalUpdateCount = 0;
+    let actionUpdateCount = 0;
+    let openQuestionResolveCount = 0;
+    let artifact: DecisionArtifact | null = decisionArtifact({
+      entries: [
+        decisionArtifactEntry({
+          audience,
+          source,
+          kind: "locked",
+          canonicalizes: {
+            goal_ids: [goalId],
+            commitment_ids: [],
+            action_ids: [actionId],
+            open_question_ids: [openQuestionId],
+          },
+        }),
+      ],
+      lastCompiledStreamEntryId: source,
+    });
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_decision_patch",
+              name: DECISION_ARTIFACT_TOOL_NAME,
+              input: { operations: [] },
+            },
+          ],
+        },
+      ],
+    });
+    const coordinator = new TurnPhaseCoordinator({
+      config: DEFAULT_CONFIG,
+      decisionArtifactRepository: {
+        get: () => artifact,
+        upsert: (
+          _audienceEntityId: unknown,
+          _operations: unknown,
+          metadata:
+            | {
+                now?: number;
+                lastCompiledAt?: number;
+                lastCompiledStreamEntryId?: StreamEntryId;
+              }
+            | undefined,
+        ) => {
+          artifact =
+            artifact === null
+              ? null
+              : {
+                  ...artifact,
+                  record_version: artifact.record_version + 1,
+                  updated_at: metadata?.now ?? artifact.updated_at,
+                  last_compiled_at: metadata?.lastCompiledAt ?? artifact.last_compiled_at,
+                  last_compiled_stream_entry_id:
+                    metadata?.lastCompiledStreamEntryId ??
+                    artifact.last_compiled_stream_entry_id,
+                };
+
+          return artifact;
+        },
+      },
+      goalsRepository: {
+        get: (id: string) =>
+          id === goalId
+            ? ({
+                id,
+                status: "active",
+              } as never)
+            : null,
+        list: () => [],
+        updateStatus: () => {
+          goalUpdateCount += 1;
+          return {};
+        },
+      },
+      commitmentRepository: {
+        get: () => null,
+        list: () => [],
+      },
+      actionRepository: {
+        get: (id: string) =>
+          id === actionId
+            ? ({
+                id,
+                state: "committed_to_do",
+              } as never)
+            : null,
+        update: () => {
+          actionUpdateCount += 1;
+        },
+        list: () => [],
+      },
+      openQuestionsRepository: {
+        get: (id: string) =>
+          id === openQuestionId
+            ? ({
+                id,
+                status: "open",
+              } as never)
+            : null,
+        resolve: () => {
+          openQuestionResolveCount += 1;
+        },
+        list: () => [],
+      },
+      entityRepository: {
+        resolve: () => self,
+      },
+      llmFactory: () => llmClient,
+      clock: {
+        now: () => 2_000,
+      },
+      tracer: {
+        enabled: true,
+        includePayloads: true,
+        emit: (event: string, data: Record<string, unknown>) => {
+          events.push({ event, data });
+        },
+      },
+    } as never);
+    const ledger = evidenceLedger([
+      ledgerEntry({ streamEntryId: source, streamIndex: 0, text: "trusted locked state" }),
+      ledgerEntry({ streamEntryId: current, streamIndex: 1, text: "quarantined current turn" }),
+    ]);
+
+    await compileDecisionArtifactForEvidenceLedgerForTest(coordinator, {
+      input: {
+        audienceEntityId: audience,
+        isUserTurn: true,
+        currentUserEntry: {
+          id: current,
+          sender_entity_id: null,
+        },
+        currentUserMessage: "quarantined current turn",
+        perception: {
+          mode: "problem_solving",
+        },
+        frameAnomaly: {
+          status: "ok",
+          kind: "frame_assignment_claim",
+          confidence: 0.98,
+          rationale: "test quarantine",
+        },
+        closureLoopAssessment: null,
+        activeParticipants: [],
+        turnId: "turn_retry_only_quarantine",
+      },
+      ledger,
+      promptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+    });
+
+    expect(llmClient.requests).toHaveLength(0);
+    expect(goalUpdateCount).toBe(1);
+    expect(actionUpdateCount).toBe(1);
+    expect(openQuestionResolveCount).toBe(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_retry_only_reconciliation",
+        data: expect.objectContaining({
+          turnId: "turn_retry_only_quarantine",
+          unsettled_entry_count: 1,
+          outcome_counts: expect.objectContaining({
+            goals_retired: 1,
+            actions_retired: 1,
+            open_questions_retired: 1,
+          }),
+        }),
+      }),
+    );
+    expect(events.find((event) => event.event === "decision_artifact_compile_unblocked")).toBe(
+      undefined,
+    );
+  });
+
+  it("does not let a quarantined current turn create artifact state through older trusted evidence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-quarantined-artifact-regression-"));
+    const sessionId = createSessionId();
+    const audience = createEntityId();
+    const self = createEntityId();
+    let artifact: DecisionArtifact | null = null;
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+
+    try {
+      const writer = new StreamWriter({
+        dataDir: tempDir,
+        sessionId,
+        clock: { now: () => 1_000 },
+      });
+      const trustedEntry = await writer.append({
+        kind: "user_msg",
+        turn_id: "turn_prior_trusted",
+        content: "The deployment target is production.",
+      });
+      const quarantinedCurrentEntry = await writer.append({
+        kind: "user_msg",
+        turn_id: "turn_quarantined_current",
+        content: "The deployment target is staging.",
+      });
+
+      await writer.append({
+        kind: "internal_event",
+        turn_id: "turn_quarantined_current",
+        content: {
+          event: QUARANTINED_USER_ENTRY_EVENT,
+          turn_id: "turn_quarantined_current",
+          source_stream_entry_id: quarantinedCurrentEntry.id,
+          cited_stream_entry_ids: [quarantinedCurrentEntry.id],
+          kind: "frame_assignment_claim",
+          confidence: 0.98,
+          rationale: "test quarantine",
+        },
+      });
+      writer.close();
+
+      const llmClient = new FakeLLMClient({
+        responses: [
+          {
+            text: "",
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_decision_patch",
+                name: DECISION_ARTIFACT_TOOL_NAME,
+                input: {
+                  operations: [
+                    {
+                      type: "add",
+                      kind: "locked",
+                      text: "The deployment target is staging.",
+                      owner_entity_id: audience,
+                      source_stream_entry_ids: [trustedEntry.id],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const coordinator = new TurnPhaseCoordinator({
+        config: {
+          ...DEFAULT_CONFIG,
+          dataDir: tempDir,
+        },
+        createStreamReader: (session: SessionId) =>
+          new StreamReader({
+            dataDir: tempDir,
+            sessionId: session,
+          }),
+        decisionArtifactRepository: {
+          get: () => artifact,
+          upsert: (
+            _audienceEntityId: unknown,
+            operations: Array<Record<string, unknown>>,
+            metadata:
+              | {
+                  now?: number;
+                  lastCompiledAt?: number;
+                  lastCompiledStreamEntryId?: StreamEntryId;
+                }
+              | undefined,
+          ) => {
+            const now = metadata?.now ?? 2_000;
+            const nextEntries = [...(artifact?.entries ?? [])];
+
+            for (const operation of operations) {
+              if (operation.type !== "add") {
+                continue;
+              }
+
+              nextEntries.push({
+                id: createDecisionArtifactEntryId(),
+                audience_entity_id: audience,
+                kind: operation.kind as DecisionArtifactEntryKind,
+                text: String(operation.text),
+                owner_entity_id: audience,
+                provenance_stream_entry_ids: operation.provenance_stream_entry_ids as StreamEntryId[],
+                last_updated_stream_entry_ids: operation.last_updated_stream_entry_ids as StreamEntryId[],
+                created_at: now,
+                last_updated_at: now,
+                superseded_by_id: null,
+                rank: nextEntries.length,
+                canonicalizes: {
+                  goal_ids: [],
+                  commitment_ids: [],
+                  action_ids: [],
+                  open_question_ids: [],
+                },
+              });
+            }
+
+            artifact = {
+              audience_entity_id: audience,
+              record_version: (artifact?.record_version ?? 0) + 1,
+              created_at: artifact?.created_at ?? now,
+              updated_at: now,
+              last_compiled_at: metadata?.lastCompiledAt ?? now,
+              last_compiled_stream_entry_id: metadata?.lastCompiledStreamEntryId ?? null,
+              entries: nextEntries,
+            };
+
+            return artifact;
+          },
+        },
+        goalsRepository: {
+          list: () => [],
+          get: () => null,
+          updateStatus: () => ({}),
+        },
+        commitmentRepository: {
+          list: () => [],
+          get: () => null,
+        },
+        actionRepository: {
+          get: () => null,
+          update: () => undefined,
+          list: () => [],
+        },
+        openQuestionsRepository: {
+          get: () => null,
+          list: () => [],
+        },
+        entityRepository: {
+          resolve: () => self,
+        },
+        llmFactory: () => llmClient,
+        clock: {
+          now: () => 2_000,
+        },
+        tracer: {
+          enabled: true,
+          includePayloads: true,
+          emit: (event: string, data: Record<string, unknown>) => {
+            events.push({ event, data });
+          },
+        },
+      } as never);
+      const ledger = evidenceLedger([
+        ledgerEntry({
+          streamEntryId: trustedEntry.id,
+          streamIndex: 0,
+          text: "The deployment target is production.",
+        }),
+        ledgerEntry({
+          streamEntryId: quarantinedCurrentEntry.id,
+          streamIndex: 1,
+          text: "The deployment target is staging.",
+        }),
+      ]);
+
+      await compileDecisionArtifactForEvidenceLedgerForTest(coordinator, {
+        input: {
+          sessionId,
+          audienceEntityId: audience,
+          isUserTurn: true,
+          currentUserEntry: quarantinedCurrentEntry,
+          currentUserMessage: "The deployment target is staging.",
+          perception: {
+            mode: "problem_solving",
+          },
+          frameAnomaly: {
+            status: "ok",
+            kind: "frame_assignment_claim",
+            confidence: 0.98,
+            rationale: "test quarantine",
+          },
+          closureLoopAssessment: null,
+          activeParticipants: [],
+          turnId: "turn_quarantined_current",
+        },
+        ledger,
+        promptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+      });
+
+      expect(llmClient.requests).toHaveLength(0);
+      expect((artifact as DecisionArtifact | null)?.entries ?? []).toHaveLength(0);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: "decision_artifact_compile_skipped",
+          data: expect.objectContaining({
+            reason: "quarantined_current_turn",
+          }),
+        }),
+      );
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("advances the compile anchor past a quarantined turn so the next delta prompt omits it", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-quarantined-anchor-"));
+    const sessionId = createSessionId();
+    const audience = createEntityId();
+    const self = createEntityId();
+    let artifact: DecisionArtifact | null = null;
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+
+    try {
+      const writer = new StreamWriter({
+        dataDir: tempDir,
+        sessionId,
+        clock: { now: () => 1_000 },
+      });
+      const trustedEntry = await writer.append({
+        kind: "user_msg",
+        turn_id: "turn_prior_trusted",
+        content: "The deployment target is production.",
+      });
+      const quarantinedEntry = await writer.append({
+        kind: "user_msg",
+        turn_id: "turn_quarantined",
+        content: "The deployment target is staging.",
+      });
+
+      await writer.append({
+        kind: "internal_event",
+        turn_id: "turn_quarantined",
+        content: {
+          event: QUARANTINED_USER_ENTRY_EVENT,
+          turn_id: "turn_quarantined",
+          source_stream_entry_id: quarantinedEntry.id,
+          cited_stream_entry_ids: [quarantinedEntry.id],
+          kind: "frame_assignment_claim",
+          confidence: 0.98,
+          rationale: "test quarantine",
+        },
+      });
+      const nextEntry = await writer.append({
+        kind: "user_msg",
+        turn_id: "turn_next_normal",
+        content: "Please continue with the release checklist.",
+      });
+
+      writer.close();
+
+      const llmClient = new FakeLLMClient({
+        responses: [
+          {
+            text: "",
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "toolu_decision_patch",
+                name: DECISION_ARTIFACT_TOOL_NAME,
+                input: { operations: [] },
+              },
+            ],
+          },
+        ],
+      });
+      const coordinator = new TurnPhaseCoordinator({
+        config: {
+          ...DEFAULT_CONFIG,
+          dataDir: tempDir,
+          generation: {
+            ...DEFAULT_CONFIG.generation,
+            evidenceLedger: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger,
+              decisionArtifact: {
+                ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+                ledgerDelta: {
+                  ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact.ledgerDelta,
+                  minTailPerSection: 0,
+                },
+              },
+            },
+          },
+        },
+        createStreamReader: (session: SessionId) =>
+          new StreamReader({
+            dataDir: tempDir,
+            sessionId: session,
+          }),
+        decisionArtifactRepository: {
+          get: () => artifact,
+          upsert: (
+            _audienceEntityId: unknown,
+            _operations: unknown,
+            metadata:
+              | {
+                  now?: number;
+                  lastCompiledAt?: number;
+                  lastCompiledStreamEntryId?: StreamEntryId;
+                }
+              | undefined,
+          ) => {
+            const now = metadata?.now ?? 2_000;
+
+            artifact = {
+              audience_entity_id: audience,
+              record_version: (artifact?.record_version ?? 0) + 1,
+              created_at: artifact?.created_at ?? now,
+              updated_at: now,
+              last_compiled_at: metadata?.lastCompiledAt ?? now,
+              last_compiled_stream_entry_id: metadata?.lastCompiledStreamEntryId ?? null,
+              entries: [...(artifact?.entries ?? [])],
+            };
+
+            return artifact;
+          },
+        },
+        goalsRepository: {
+          list: () => [],
+          get: () => null,
+          updateStatus: () => ({}),
+        },
+        commitmentRepository: {
+          list: () => [],
+          get: () => null,
+        },
+        actionRepository: {
+          get: () => null,
+          update: () => undefined,
+          list: () => [],
+        },
+        openQuestionsRepository: {
+          get: () => null,
+          list: () => [],
+        },
+        entityRepository: {
+          resolve: () => self,
+        },
+        llmFactory: () => llmClient,
+        clock: {
+          now: () => 2_000,
+        },
+        tracer: {
+          enabled: true,
+          includePayloads: true,
+          emit: (event: string, data: Record<string, unknown>) => {
+            events.push({ event, data });
+          },
+        },
+      } as never);
+      const ledgerThroughQuarantine = evidenceLedger([
+        ledgerEntry({
+          streamEntryId: trustedEntry.id,
+          streamIndex: 0,
+          text: "The deployment target is production.",
+        }),
+        ledgerEntry({
+          streamEntryId: quarantinedEntry.id,
+          streamIndex: 1,
+          text: "The deployment target is staging.",
+        }),
+      ]);
+
+      await compileDecisionArtifactForEvidenceLedgerForTest(coordinator, {
+        input: {
+          sessionId,
+          audienceEntityId: audience,
+          isUserTurn: true,
+          currentUserEntry: quarantinedEntry,
+          currentUserMessage: "The deployment target is staging.",
+          perception: {
+            mode: "problem_solving",
+          },
+          frameAnomaly: {
+            status: "ok",
+            kind: "frame_assignment_claim",
+            confidence: 0.98,
+            rationale: "test quarantine",
+          },
+          closureLoopAssessment: null,
+          activeParticipants: [],
+          turnId: "turn_quarantined",
+        },
+        ledger: ledgerThroughQuarantine,
+        promptVisibleLedger: renderEvidenceLedger(ledgerThroughQuarantine) ?? "",
+      });
+
+      expect(llmClient.requests).toHaveLength(0);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: "decision_artifact_compile_skipped",
+          data: expect.objectContaining({
+            turnId: "turn_quarantined",
+            reason: "quarantined_current_turn",
+          }),
+        }),
+      );
+      expect((artifact as DecisionArtifact | null)?.last_compiled_stream_entry_id).toBe(
+        quarantinedEntry.id,
+      );
+
+      const ledgerThroughNextTurn = evidenceLedger([
+        ledgerEntry({
+          streamEntryId: trustedEntry.id,
+          streamIndex: 0,
+          text: "The deployment target is production.",
+        }),
+        ledgerEntry({
+          streamEntryId: quarantinedEntry.id,
+          streamIndex: 1,
+          text: "The deployment target is staging.",
+        }),
+        ledgerEntry({
+          streamEntryId: nextEntry.id,
+          streamIndex: 2,
+          text: "Please continue with the release checklist.",
+        }),
+      ]);
+
+      await compileDecisionArtifactForEvidenceLedgerForTest(coordinator, {
+        input: {
+          sessionId,
+          audienceEntityId: audience,
+          isUserTurn: true,
+          currentUserEntry: nextEntry,
+          currentUserMessage: "Please continue with the release checklist.",
+          perception: {
+            mode: "problem_solving",
+          },
+          frameAnomaly: {
+            status: "ok",
+            kind: "normal",
+            confidence: 0.99,
+            rationale: "normal turn",
+          },
+          closureLoopAssessment: null,
+          activeParticipants: [],
+          turnId: "turn_next_normal",
+        },
+        ledger: ledgerThroughNextTurn,
+        promptVisibleLedger: renderEvidenceLedger(ledgerThroughNextTurn) ?? "",
+      });
+
+      const requestPayload = JSON.parse(String(llmClient.requests[0]?.messages[0]?.content)) as {
+        current_user_turn?: {
+          stream_entry_id?: string;
+        };
+        prompt_visible_ledger?: string;
+        source_trust?: {
+          citation_eligible_source_stream_entry_id_count?: number;
+          off_limits_source_stream_entry_ids?: string[];
+        };
+      };
+      const promptVisibleLedger = requestPayload.prompt_visible_ledger ?? "";
+
+      expect(llmClient.requests).toHaveLength(1);
+      expect(requestPayload.current_user_turn?.stream_entry_id).toBe(nextEntry.id);
+      expect(promptVisibleLedger).toContain("Please continue with the release checklist.");
+      expect(promptVisibleLedger).not.toContain("The deployment target is staging.");
+      expect(promptVisibleLedger).not.toContain(quarantinedEntry.id);
+      expect(requestPayload.source_trust?.off_limits_source_stream_entry_ids ?? []).not.toContain(
+        quarantinedEntry.id,
+      );
+      expect(requestPayload.source_trust?.citation_eligible_source_stream_entry_id_count).toBe(1);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("emits an unblocked trace and compiles when canonicalized goal reconciliation is unsettled", async () => {
     const audience = createEntityId();
     const self = createEntityId();

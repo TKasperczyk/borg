@@ -23,6 +23,7 @@ export type TurnTraceEventName =
   | "decision_artifact_compile_completed"
   | "decision_artifact_compile_over_budget"
   | "decision_artifact_lifecycle_unable_to_cap"
+  | "decision_artifact_retry_only_reconciliation"
   | "decision_artifact_reconciliation_completed"
   | "decision_artifact_reconciliation_skipped_contaminated_entry"
   | "planner_compact_ledger_built"
