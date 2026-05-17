@@ -7,6 +7,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
   ACTION_STATES,
   actionEntityIdSchema,
@@ -15,10 +16,12 @@ import {
   type ActionRepository,
   type ActionState,
 } from "../../memory/actions/index.js";
+import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
 import {
   createActionId,
+  type ActionId,
   type EntityId,
   type GoalId,
   type OpenQuestionId,
@@ -28,6 +31,31 @@ import type { RecencyMessage } from "../recency/index.js";
 import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
+const ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
+const ACTIVE_ACTION_STATES: readonly ActionState[] = [
+  "considering",
+  "committed_to_do",
+  "scheduled",
+];
+
+export const ACTION_CANDIDATE_CLASSIFICATIONS = [
+  "concrete_action",
+  "conversational_acknowledgment",
+  "decision_or_preference",
+  "already_represented",
+  "none",
+] as const;
+
+export const actionCandidateClassificationSchema = z.enum(ACTION_CANDIDATE_CLASSIFICATIONS);
+export type ActionCandidateClassification = z.infer<typeof actionCandidateClassificationSchema>;
+
+const ACTION_CANDIDATE_CLASSIFICATION_COUNT_KEYS = [
+  ...ACTION_CANDIDATE_CLASSIFICATIONS,
+  "invalid_classification",
+] as const;
+
+type ActionCandidateClassificationCountKey =
+  (typeof ACTION_CANDIDATE_CLASSIFICATION_COUNT_KEYS)[number];
 
 const extractedActionStateSchema = z.enum([
   "considering",
@@ -39,6 +67,9 @@ const extractedActionStateSchema = z.enum([
 
 const actionStateCandidateSchema = z
   .object({
+    classification: actionCandidateClassificationSchema.describe(
+      "Classify the candidate before persistence. Only concrete_action can become an ActionRecord.",
+    ),
     description: z.string().trim().min(1),
     actor: actionActorSchema,
     state: extractedActionStateSchema,
@@ -55,6 +86,12 @@ const actionStateOutputSchema = z
       .describe(
         "Action-state assertions in the current user message. Emit an empty array when none are present.",
       ),
+  })
+  .strict();
+
+const actionStateEnvelopeSchema = z
+  .object({
+    action_states: z.array(z.unknown()),
   })
   .strict();
 
@@ -75,6 +112,13 @@ const ACTION_STATE_SYSTEM_PROMPT = [
   "In group chat, first-person user actions belong to the current sender, not the group, unless the message explicitly says the group is acting.",
   "Set audience_entity_id only when the current message clearly scopes the action to a supplied audience; otherwise use null so Borg can default it to the current audience.",
   "",
+  "Classifications:",
+  "- concrete_action: a discrete task someone (Borg, the user, a participant, or a third party) will do, has done, is doing, or is considering doing. Has a clear actor and a clear thing being done.",
+  '- conversational_acknowledgment: a remark about state, mood, or transition that is not a task, such as "going to sleep", "heading back", "got it", or "thanks". Not memory-worthy as an action.',
+  '- decision_or_preference: a settled decision or preference belongs to the decision artifact or commitments, not as a standalone action, such as "lock the service as the anchor", "avoid one-off handoffs", or "we prefer evenings".',
+  "- already_represented: covered by an existing active action, commitment, or goal already in memory.",
+  "- none: not memory-worthy at all.",
+  "",
   "States:",
   "- considering: the user is weighing or contemplating an action, not committing.",
   "- committed_to_do: the user says they will do something or intends to do it.",
@@ -83,18 +127,55 @@ const ACTION_STATE_SYSTEM_PROMPT = [
   "- not_done: the user says the action has not happened, was abandoned, or was not completed.",
   "",
   "Examples:",
-  '- "I booked it Tuesday 7pm" -> completed.',
-  '- "Tuesday 7pm with Marisol" when the user just confirmed booking happened -> completed.',
-  '- "I\'ll try to book this weekend" -> committed_to_do.',
-  '- "Booked it for Tuesday 7pm" -> scheduled, or completed if already past, but if time cannot be known prefer scheduled for future-tense arrangements and completed when the user says they did it.',
+  '- "I sent the review note" -> completed.',
+  '- "I\'ll review the pull request this weekend" -> committed_to_do.',
+  '- "Design review Tuesday 7pm" -> scheduled when the message arranges a future slot.',
+  '- "The release checklist is done" -> completed.',
   '- "Yeah, I haven\'t gotten to it" -> not_done.',
-  '- "Maybe I should try iTalki" -> considering.',
+  '- "Maybe I should send the card" -> considering.',
   "Return only the required tool call.",
 ].join("\n");
 
-type ActionStateToolInput = z.infer<typeof actionStateOutputSchema>;
+type ActionStateEnvelopeInput = z.infer<typeof actionStateEnvelopeSchema>;
 type ParsedActionStateCandidate = z.infer<typeof actionStateCandidateSchema>;
-type ActionStateSkippedReason = "missing_current_user_evidence" | "repository_failed";
+type ParsedActionStateCandidateWithIndex = {
+  candidateIndex: number;
+  candidate: ParsedActionStateCandidate;
+};
+type ActionStateSkippedReason =
+  | "missing_current_user_evidence"
+  | "repository_failed"
+  | "invalid_classification"
+  | "invalid_candidate"
+  | "non_concrete_classification"
+  | "embedding_dedup";
+type ActionStateSkippedCandidate = {
+  candidate_index: number;
+  reason: ActionStateSkippedReason;
+};
+type ActionCandidateRejectedReason = "non_concrete_classification" | "embedding_dedup";
+type ActionCandidateRejected = {
+  candidate_index: number;
+  classification: ActionCandidateClassification;
+  description_excerpt: string;
+  reason: ActionCandidateRejectedReason;
+};
+type ActionStateParseResult = {
+  candidates: ParsedActionStateCandidateWithIndex[];
+  candidatesEmitted: number;
+  validCandidateCount: number;
+  skippedCandidates: ActionStateSkippedCandidate[];
+  classificationCounts: Record<ActionCandidateClassificationCountKey, number>;
+  rejectedCandidates: ActionCandidateRejected[];
+};
+type EmbeddedActionVector = {
+  actionId: ActionId;
+  vector: Float32Array;
+};
+type ActionEmbeddingDedupState = {
+  activeVectors: EmbeddedActionVector[];
+  acceptedVectors: EmbeddedActionVector[];
+};
 
 class MissingActionStateToolCallError extends Error {}
 
@@ -109,7 +190,8 @@ export type ActionStateExtractorDegradedReason =
 export type ActionStateExtractorOptions = {
   llmClient?: LLMClient;
   model?: string;
-  actionRepository?: Pick<ActionRepository, "add">;
+  actionRepository?: Pick<ActionRepository, "add"> & Partial<Pick<ActionRepository, "list">>;
+  embeddingClient?: EmbeddingClient;
   clock?: Clock;
   tracer?: TurnTracer;
   turnId?: string;
@@ -149,7 +231,109 @@ function buildActionStateMessages(input: ExtractActionStatesInput): LLMMessage[]
   ];
 }
 
-function parseResponse(result: LLMCompleteResult): ActionStateToolInput {
+function zeroClassificationCounts(): Record<ActionCandidateClassificationCountKey, number> {
+  return {
+    concrete_action: 0,
+    conversational_acknowledgment: 0,
+    decision_or_preference: 0,
+    already_represented: 0,
+    none: 0,
+    invalid_classification: 0,
+  };
+}
+
+function incrementClassificationCount(
+  counts: Record<ActionCandidateClassificationCountKey, number>,
+  key: ActionCandidateClassificationCountKey,
+): void {
+  counts[key] += 1;
+}
+
+function descriptionExcerpt(description: string): string {
+  return description.trim().slice(0, 60);
+}
+
+function skippedReasonFromIssue(issue: {
+  path: readonly (string | number | symbol)[];
+}): ActionStateSkippedReason {
+  return issue.path[0] === "classification" ? "invalid_classification" : "invalid_candidate";
+}
+
+function skippedReasonFromError(error: z.ZodError): ActionStateSkippedReason {
+  return skippedReasonFromIssue(error.issues[0] ?? { path: [] });
+}
+
+function rejectedCandidate(input: {
+  candidateIndex: number;
+  classification: ActionCandidateClassification;
+  description: string;
+  reason: ActionCandidateRejectedReason;
+}): ActionCandidateRejected {
+  return {
+    candidate_index: input.candidateIndex,
+    classification: input.classification,
+    description_excerpt: descriptionExcerpt(input.description),
+    reason: input.reason,
+  };
+}
+
+function parseCandidates(envelope: ActionStateEnvelopeInput): {
+  candidates: ParsedActionStateCandidateWithIndex[];
+  skippedCandidates: ActionStateSkippedCandidate[];
+  classificationCounts: Record<ActionCandidateClassificationCountKey, number>;
+  rejectedCandidates: ActionCandidateRejected[];
+} {
+  const candidates: ParsedActionStateCandidateWithIndex[] = [];
+  const skippedCandidates: ActionStateSkippedCandidate[] = [];
+  const classificationCounts = zeroClassificationCounts();
+  const rejectedCandidates: ActionCandidateRejected[] = [];
+
+  for (const [candidateIndex, rawCandidate] of envelope.action_states.entries()) {
+    const parsed = actionStateCandidateSchema.safeParse(rawCandidate);
+
+    if (!parsed.success) {
+      const reason = skippedReasonFromError(parsed.error);
+
+      if (reason === "invalid_classification") {
+        incrementClassificationCount(classificationCounts, "invalid_classification");
+      }
+
+      skippedCandidates.push({
+        candidate_index: candidateIndex,
+        reason,
+      });
+      continue;
+    }
+
+    incrementClassificationCount(classificationCounts, parsed.data.classification);
+
+    if (parsed.data.classification !== "concrete_action") {
+      rejectedCandidates.push(
+        rejectedCandidate({
+          candidateIndex,
+          classification: parsed.data.classification,
+          description: parsed.data.description,
+          reason: "non_concrete_classification",
+        }),
+      );
+      continue;
+    }
+
+    candidates.push({
+      candidateIndex,
+      candidate: parsed.data,
+    });
+  }
+
+  return {
+    candidates,
+    skippedCandidates,
+    classificationCounts,
+    rejectedCandidates,
+  };
+}
+
+function parseResponse(result: LLMCompleteResult): ActionStateParseResult {
   const call = result.tool_calls.find((toolCall) => toolCall.name === ACTION_STATE_TOOL_NAME);
 
   if (call === undefined) {
@@ -158,13 +342,22 @@ function parseResponse(result: LLMCompleteResult): ActionStateToolInput {
     );
   }
 
-  const parsed = actionStateOutputSchema.safeParse(call.input);
+  const parsed = actionStateEnvelopeSchema.safeParse(call.input);
 
   if (!parsed.success) {
     throw parsed.error;
   }
 
-  return parsed.data;
+  const candidates = parseCandidates(parsed.data);
+
+  return {
+    candidates: candidates.candidates,
+    candidatesEmitted: parsed.data.action_states.length,
+    validCandidateCount: candidates.candidates.length + candidates.rejectedCandidates.length,
+    skippedCandidates: candidates.skippedCandidates,
+    classificationCounts: candidates.classificationCounts,
+    rejectedCandidates: candidates.rejectedCandidates,
+  };
 }
 
 function hasCurrentUserEvidence(
@@ -333,9 +526,16 @@ function traceExtractorCompleted(options: {
   tracer?: TurnTracer;
   turnId?: string;
   candidatesEmitted: number;
+  validCandidateCount?: number;
   persisted: readonly ActionRecord[];
   skippedReasons: ReadonlyMap<ActionStateSkippedReason, number>;
+  skippedCandidates?: readonly ActionStateSkippedCandidate[];
+  classificationCounts?: Record<ActionCandidateClassificationCountKey, number>;
+  rejectedCandidates?: readonly ActionCandidateRejected[];
+  dedupSkippedEmbedding?: number;
+  dedupDegraded?: number;
   degraded: boolean;
+  fatalReason?: ActionStateExtractorDegradedReason;
 }): void {
   if (options.tracer?.enabled !== true || options.turnId === undefined) {
     return;
@@ -351,15 +551,39 @@ function traceExtractorCompleted(options: {
     reason,
     count,
   }));
+  const rejectedByClassification = zeroClassificationCounts();
+  const classificationCounts = options.classificationCounts ?? zeroClassificationCounts();
+  const rejectedCandidates = options.rejectedCandidates ?? [];
+
+  for (const rejection of rejectedCandidates) {
+    if (rejection.reason === "non_concrete_classification") {
+      incrementClassificationCount(rejectedByClassification, rejection.classification);
+    }
+
+    options.tracer.emit("action_candidate_classification_rejected", {
+      turnId: options.turnId,
+      classification: rejection.classification,
+      description_excerpt: rejection.description_excerpt,
+      reason: rejection.reason,
+    });
+  }
 
   options.tracer.emit("action_state_extractor_completed", {
     turnId: options.turnId,
     candidates_emitted: options.candidatesEmitted,
+    valid_candidate_count: options.validCandidateCount ?? 0,
     persisted_count: options.persisted.length,
     skipped_count: skippedReasons.reduce((sum, reason) => sum + reason.count, 0),
     skipped_reasons: skippedReasons,
+    skipped_candidates: options.skippedCandidates?.map((candidate) => ({ ...candidate })) ?? [],
     persisted_by_state: persistedByState,
+    classification_counts: classificationCounts,
+    rejected_by_classification: rejectedByClassification,
+    rejected_invalid_enum: classificationCounts.invalid_classification,
+    action_persistence_dedup_skipped_embedding: options.dedupSkippedEmbedding ?? 0,
+    action_persistence_dedup_degraded: options.dedupDegraded ?? 0,
     degraded: options.degraded,
+    ...(options.fatalReason === undefined ? {} : { fatal_reason: options.fatalReason }),
   });
 }
 
@@ -368,6 +592,84 @@ function incrementSkippedReason(
   reason: ActionStateSkippedReason,
 ): void {
   reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+}
+
+function incrementSkippedCandidate(
+  skippedCandidates: ActionStateSkippedCandidate[],
+  candidateIndex: number,
+  reason: ActionStateSkippedReason,
+): void {
+  skippedCandidates.push({
+    candidate_index: candidateIndex,
+    reason,
+  });
+}
+
+type ActionDedupAxis = Pick<
+  ActionRecord,
+  "actor" | "audience_entity_id" | "goal_id" | "open_question_id"
+>;
+
+function actionAxisKey(record: ActionDedupAxis): string {
+  return JSON.stringify([
+    record.actor,
+    record.audience_entity_id,
+    record.goal_id,
+    record.open_question_id,
+  ]);
+}
+
+function sameActionDedupAxis(left: ActionDedupAxis, right: ActionDedupAxis): boolean {
+  return (
+    left.actor === right.actor &&
+    left.audience_entity_id === right.audience_entity_id &&
+    left.goal_id === right.goal_id &&
+    left.open_question_id === right.open_question_id
+  );
+}
+
+function traceDedupSkippedEmbedding(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  candidate: ActionCandidateRejected;
+  matchedActionId?: ActionId;
+  similarity: number;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("action_persistence_dedup_skipped_embedding", {
+    turnId: options.turnId,
+    classification: options.candidate.classification,
+    description_excerpt: options.candidate.description_excerpt,
+    reason: options.candidate.reason,
+    similarity: options.similarity,
+    ...(options.matchedActionId === undefined
+      ? {}
+      : { matched_action_id: options.matchedActionId }),
+  });
+}
+
+function traceDedupDegraded(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  reason: string;
+  error: unknown;
+  candidateDescription?: string;
+}): void {
+  if (options.tracer?.enabled !== true || options.turnId === undefined) {
+    return;
+  }
+
+  options.tracer.emit("action_persistence_dedup_degraded", {
+    turnId: options.turnId,
+    reason: options.reason,
+    error: options.error instanceof Error ? options.error.message : String(options.error),
+    ...(options.candidateDescription === undefined
+      ? {}
+      : { description_excerpt: descriptionExcerpt(options.candidateDescription) }),
+  });
 }
 
 export class ActionStateExtractor {
@@ -456,29 +758,112 @@ export class ActionStateExtractor {
       response,
     });
 
-    let parsed: ActionStateToolInput;
+    let parsed: ActionStateParseResult;
 
     try {
       parsed = parseResponse(response);
     } catch (error) {
-      return this.degradedWithTrace(
+      const reason =
         error instanceof MissingActionStateToolCallError
           ? "missing_tool_call"
           : error instanceof z.ZodError
             ? "invalid_payload"
-            : "llm_failed",
-        error,
-      );
+            : "llm_failed";
+      const result = await this.degraded(reason, error);
+
+      traceExtractorCompleted({
+        tracer: this.options.tracer,
+        turnId: this.options.turnId,
+        candidatesEmitted: 0,
+        persisted: result,
+        skippedReasons: new Map(),
+        degraded: true,
+        fatalReason: reason,
+      });
+
+      return result;
     }
 
     const persisted: ActionRecord[] = [];
     const skippedReasons = new Map<ActionStateSkippedReason, number>();
+    for (const skippedCandidate of parsed.skippedCandidates) {
+      incrementSkippedReason(skippedReasons, skippedCandidate.reason);
+    }
+    const skippedCandidates = [...parsed.skippedCandidates];
+    const rejectedCandidates = [...parsed.rejectedCandidates];
+    for (const rejected of rejectedCandidates) {
+      incrementSkippedReason(
+        skippedReasons,
+        rejected.reason === "embedding_dedup" ? "embedding_dedup" : "non_concrete_classification",
+      );
+    }
     let degraded = false;
+    let dedupSkippedEmbedding = 0;
+    let dedupDegraded = 0;
     const nowMs = this.clock.now();
+    const dedupStates = new Map<string, ActionEmbeddingDedupState | null>();
 
-    for (const candidate of parsed.action_states) {
+    const getEmbeddingDedupState = async (
+      record: ActionRecord,
+    ): Promise<ActionEmbeddingDedupState | null> => {
+      if (
+        this.options.embeddingClient === undefined ||
+        this.options.actionRepository?.list === undefined
+      ) {
+        return null;
+      }
+
+      const axisKey = actionAxisKey(record);
+
+      if (dedupStates.has(axisKey)) {
+        return dedupStates.get(axisKey) ?? null;
+      }
+
+      try {
+        const activeActions = this.options.actionRepository.list({
+          states: ACTIVE_ACTION_STATES,
+          actor: record.actor,
+          audienceEntityId: record.audience_entity_id,
+        }).filter((action) => sameActionDedupAxis(action, record));
+        const embeddings =
+          activeActions.length === 0
+            ? []
+            : await this.options.embeddingClient.embedBatch(
+                activeActions.map((action) => action.description),
+              );
+        const state = {
+          activeVectors: activeActions.flatMap((action, index) => {
+            const vector = embeddings[index];
+            return vector === undefined ? [] : [{ actionId: action.id, vector }];
+          }),
+          acceptedVectors: [],
+        } satisfies ActionEmbeddingDedupState;
+
+        dedupStates.set(axisKey, state);
+        return state;
+      } catch (error) {
+        degraded = true;
+        dedupDegraded += 1;
+        traceDedupDegraded({
+          tracer: this.options.tracer,
+          turnId: this.options.turnId,
+          reason: "active_action_embedding_failed",
+          error,
+        });
+        dedupStates.set(axisKey, null);
+        return null;
+      }
+    };
+
+    for (const parsedCandidate of parsed.candidates) {
+      const candidate = parsedCandidate.candidate;
       if (!hasCurrentUserEvidence(candidate, input.currentUserStreamEntryId)) {
         incrementSkippedReason(skippedReasons, "missing_current_user_evidence");
+        incrementSkippedCandidate(
+          skippedCandidates,
+          parsedCandidate.candidateIndex,
+          "missing_current_user_evidence",
+        );
         continue;
       }
 
@@ -491,13 +876,86 @@ export class ActionStateExtractor {
         openQuestionId: input.openQuestionId ?? null,
         nowMs,
       });
+      const dedupState = await getEmbeddingDedupState(record);
+      let candidateVector: Float32Array | null = null;
+
+      if (dedupState !== null && this.options.embeddingClient !== undefined) {
+        try {
+          candidateVector = await this.options.embeddingClient.embed(record.description);
+        } catch (error) {
+          degraded = true;
+          dedupDegraded += 1;
+          traceDedupDegraded({
+            tracer: this.options.tracer,
+            turnId: this.options.turnId,
+            reason: "candidate_embedding_failed",
+            error,
+            candidateDescription: record.description,
+          });
+        }
+
+        if (candidateVector !== null) {
+          let bestMatch: { actionId: ActionId; similarity: number } | null = null;
+
+          for (const existing of [...dedupState.activeVectors, ...dedupState.acceptedVectors]) {
+            const similarity = cosineSimilarity(candidateVector, existing.vector);
+
+            if (
+              similarity >= ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD &&
+              (bestMatch === null || similarity > bestMatch.similarity)
+            ) {
+              bestMatch = {
+                actionId: existing.actionId,
+                similarity,
+              };
+            }
+          }
+
+          if (bestMatch !== null) {
+            const rejection = rejectedCandidate({
+              candidateIndex: parsedCandidate.candidateIndex,
+              classification: "concrete_action",
+              description: record.description,
+              reason: "embedding_dedup",
+            });
+
+            dedupSkippedEmbedding += 1;
+            incrementSkippedReason(skippedReasons, "embedding_dedup");
+            incrementSkippedCandidate(
+              skippedCandidates,
+              parsedCandidate.candidateIndex,
+              "embedding_dedup",
+            );
+            rejectedCandidates.push(rejection);
+            traceDedupSkippedEmbedding({
+              tracer: this.options.tracer,
+              turnId: this.options.turnId,
+              candidate: rejection,
+              matchedActionId: bestMatch.actionId,
+              similarity: bestMatch.similarity,
+            });
+            continue;
+          }
+        }
+      }
 
       try {
         this.options.actionRepository.add(record, { creationSource: "extractor" });
         persisted.push(record);
+        if (dedupState !== null && candidateVector !== null) {
+          dedupState.acceptedVectors.push({
+            actionId: record.id,
+            vector: candidateVector,
+          });
+        }
       } catch (error) {
         degraded = true;
         incrementSkippedReason(skippedReasons, "repository_failed");
+        incrementSkippedCandidate(
+          skippedCandidates,
+          parsedCandidate.candidateIndex,
+          "repository_failed",
+        );
         await this.degraded("repository_failed", error);
       }
     }
@@ -505,9 +963,15 @@ export class ActionStateExtractor {
     traceExtractorCompleted({
       tracer: this.options.tracer,
       turnId: this.options.turnId,
-      candidatesEmitted: parsed.action_states.length,
+      candidatesEmitted: parsed.candidatesEmitted,
+      validCandidateCount: parsed.validCandidateCount,
       persisted,
       skippedReasons,
+      skippedCandidates,
+      classificationCounts: parsed.classificationCounts,
+      rejectedCandidates,
+      dedupSkippedEmbedding,
+      dedupDegraded,
       degraded,
     });
 

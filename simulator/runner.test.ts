@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ACTION_CANDIDATE_CLASSIFICATIONS,
   ACTION_STATES,
   Borg,
   RELATIONAL_SLOT_STATES,
@@ -364,6 +365,13 @@ function metricsRow(turnCounter: number): MetricsRow {
       unknown: 0,
     },
     action_record_creation_count_this_turn: 0,
+    action_candidate_classifications_per_turn: {
+      ...zeroCounts(ACTION_CANDIDATE_CLASSIFICATIONS),
+      invalid_classification: 0,
+    },
+    action_candidate_rejected_classification: 0,
+    action_persistence_dedup_skipped_embedding: 0,
+    action_persistence_dedup_degraded: 0,
     recent_completed_action_count: 0,
     commitment_count_active: 0,
     commitment_count_superseded: 0,

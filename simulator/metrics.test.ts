@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  ACTION_CANDIDATE_CLASSIFICATIONS,
   ACTION_STATES,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
@@ -82,6 +83,10 @@ const TURN_METRICS_KEY_ORDER = [
   "action_record_count_active",
   "action_record_creation_source_per_turn",
   "action_record_creation_count_this_turn",
+  "action_candidate_classifications_per_turn",
+  "action_candidate_rejected_classification",
+  "action_persistence_dedup_skipped_embedding",
+  "action_persistence_dedup_degraded",
   "recent_completed_action_count",
   "commitment_count_active",
   "commitment_count_superseded",
@@ -392,6 +397,89 @@ describe("MetricsCapture", () => {
     const written = JSON.parse(readFileSync(metricsPath, "utf8").trim()) as MetricsRow;
 
     expect(Object.keys(written)).toEqual([...TURN_METRICS_KEY_ORDER]);
+  });
+
+  it("counts action candidate classification and embedding-dedup traces", async () => {
+    const dir = tempDir();
+    const tracePath = join(dir, "trace.jsonl");
+    const metricsPath = join(dir, "metrics.jsonl");
+    const sessionId = createSessionId();
+
+    writeFileSync(
+      tracePath,
+      [
+        {
+          ts: 100,
+          turnId: "turn-action",
+          event: "action_state_extractor_completed",
+          classification_counts: {
+            concrete_action: 2,
+            conversational_acknowledgment: 1,
+            decision_or_preference: 0,
+            already_represented: 0,
+            none: 0,
+            invalid_classification: 1,
+          },
+        },
+        {
+          ts: 101,
+          turnId: "turn-action",
+          event: "action_candidate_classification_rejected",
+          classification: "conversational_acknowledgment",
+          reason: "non_concrete_classification",
+        },
+        {
+          ts: 102,
+          turnId: "turn-action",
+          event: "action_candidate_classification_rejected",
+          classification: "concrete_action",
+          reason: "embedding_dedup",
+        },
+        {
+          ts: 103,
+          turnId: "turn-action",
+          event: "action_persistence_dedup_skipped_embedding",
+          reason: "embedding_dedup",
+        },
+        {
+          ts: 104,
+          turnId: "turn-action",
+          event: "action_persistence_dedup_degraded",
+          reason: "candidate_embedding_failed",
+        },
+        {
+          ts: 200,
+          turnId: "other-turn",
+          event: "action_persistence_dedup_skipped_embedding",
+          reason: "embedding_dedup",
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n"),
+    );
+
+    const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+      fakeBorg(),
+      "turn-action",
+      1,
+      {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      },
+    );
+
+    expect(row).toMatchObject({
+      action_candidate_classifications_per_turn: {
+        ...zeroCounts(ACTION_CANDIDATE_CLASSIFICATIONS),
+        concrete_action: 2,
+        conversational_acknowledgment: 1,
+        invalid_classification: 1,
+      },
+      action_candidate_rejected_classification: 1,
+      action_persistence_dedup_skipped_embedding: 1,
+      action_persistence_dedup_degraded: 1,
+    });
   });
 
   it("counts goal-promotion salvage and initial-step downgrade traces", async () => {

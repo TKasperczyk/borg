@@ -51,6 +51,7 @@ export {
 } from "./llm/index.js";
 
 export {
+  ACTION_CANDIDATE_CLASSIFICATIONS,
   COGNITIVE_MODES,
   FRAME_ANOMALY_KINDS,
   GENERATION_GATE_TOOL,
@@ -58,6 +59,7 @@ export {
   EvidenceLedgerBuilder,
   GenerationGate,
   FrameAnomalyClassifier,
+  actionCandidateClassificationSchema,
   goalPromotionClassificationSchema,
   JsonlTracer,
   NOOP_TRACER,
@@ -76,6 +78,7 @@ export {
   setStopUntilSubstantiveContent,
   summarizeEvidenceLedgerTrace,
   type AttentionWeights,
+  type ActionCandidateClassification,
   type CognitiveMode,
   type CreateTurnTracerOptions,
   type GenerationSuppressionReason,

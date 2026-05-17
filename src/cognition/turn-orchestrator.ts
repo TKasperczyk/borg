@@ -225,6 +225,7 @@ export class TurnOrchestrator {
     const turnActionStateService = new TurnActionStateService({
       model: options.config.anthropic.models.recallExpansion,
       actionRepository: options.actionRepository,
+      embeddingClient: options.embeddingClient,
       clock: this.clock,
       tracer: this.tracer,
     });

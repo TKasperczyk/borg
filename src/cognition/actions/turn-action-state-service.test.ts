@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import { createOfflineTestHarness } from "../../offline/test-support.js";
+import { TestEmbeddingClient, createOfflineTestHarness } from "../../offline/test-support.js";
 import { FixedClock } from "../../util/clock.js";
 import { createStreamEntryId } from "../../util/ids.js";
 import { NOOP_TRACER } from "../tracing/tracer.js";
@@ -31,6 +31,7 @@ describe("TurnActionStateService", () => {
     const service = new TurnActionStateService({
       model: "test-recall",
       actionRepository: { add: vi.fn() } as never,
+      embeddingClient: new TestEmbeddingClient(),
       clock: new FixedClock(1_000),
       tracer: NOOP_TRACER,
     });
@@ -67,6 +68,7 @@ describe("TurnActionStateService", () => {
         createActionStateResponse({
           action_states: [
             {
+              classification: "concrete_action",
               description: "Send the Atlas follow-up",
               actor: "borg",
               state: "committed_to_do",
@@ -96,6 +98,7 @@ describe("TurnActionStateService", () => {
       const service = new TurnActionStateService({
         model: "test-recall",
         actionRepository: harness.actionRepository,
+        embeddingClient: harness.embeddingClient,
         clock: harness.clock,
         tracer: NOOP_TRACER,
       });

@@ -1,4 +1,5 @@
 import type {
+  ActionCandidateClassification,
   ActionRecordCreationSource,
   ActionState,
   GenerationSuppressionReason,
@@ -11,6 +12,9 @@ import type {
 
 export type GoalPromotionClassificationMetricKey =
   | GoalPromotionClassification
+  | "invalid_classification";
+export type ActionCandidateClassificationMetricKey =
+  | ActionCandidateClassification
   | "invalid_classification";
 
 export type Persona = {
@@ -58,6 +62,10 @@ export type MetricsRow = {
   action_record_count_active: number;
   action_record_creation_source_per_turn: Record<ActionRecordCreationSource, number>;
   action_record_creation_count_this_turn: number;
+  action_candidate_classifications_per_turn: Record<ActionCandidateClassificationMetricKey, number>;
+  action_candidate_rejected_classification: number;
+  action_persistence_dedup_skipped_embedding: number;
+  action_persistence_dedup_degraded: number;
   recent_completed_action_count: number;
   commitment_count_active: number;
   commitment_count_superseded: number;

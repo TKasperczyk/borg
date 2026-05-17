@@ -2,11 +2,13 @@ import { performance } from "node:perf_hooks";
 
 import {
   QUARANTINED_USER_ENTRY_EVENT,
+  ACTION_CANDIDATE_CLASSIFICATIONS,
   ACTION_STATES,
   GOAL_PROMOTION_CLASSIFICATIONS,
   RELATIONAL_SLOT_STATES,
   REVIEW_KINDS,
   SEMANTIC_NODE_STATUSES,
+  type ActionCandidateClassification,
   type ActionRecordCreationSource,
   type ActionState,
   type Borg,
@@ -29,6 +31,7 @@ import type { TraceRecord } from "../assessor/types.js";
 import { appendJsonlLine } from "./jsonl.js";
 import { simulatorHealthWarningsForRows } from "./health-warnings.js";
 import type {
+  ActionCandidateClassificationMetricKey,
   GoalPromotionClassificationMetricKey,
   MetricsRow,
   SimulatorHealthWarning,
@@ -42,6 +45,10 @@ const ABORTED_ATTEMPT_EVENT = "aborted_attempt";
 const OPEN_QUESTION_RECORD_TYPE = "open_question";
 const RESOLVED_STATUS = "resolved";
 const ACTION_CREATION_SOURCES = ["extractor", "reflector", "api", "unknown"] as const;
+const ACTION_CANDIDATE_CLASSIFICATION_METRIC_KEYS = [
+  ...ACTION_CANDIDATE_CLASSIFICATIONS,
+  "invalid_classification",
+] as const satisfies readonly ActionCandidateClassificationMetricKey[];
 const ACTIVE_ACTION_STATES: readonly ActionState[] = [
   "considering",
   "committed_to_do",
@@ -113,6 +120,14 @@ type GoalPromotionMetricCounts = Pick<
   | "goal_promotion_classifications_per_turn"
   | "goal_promotion_rejected_classification"
   | "goal_promotion_cap_rejections"
+>;
+
+type ActionCandidateMetricCounts = Pick<
+  MetricsRow,
+  | "action_candidate_classifications_per_turn"
+  | "action_candidate_rejected_classification"
+  | "action_persistence_dedup_skipped_embedding"
+  | "action_persistence_dedup_degraded"
 >;
 
 function flattenGoalCount(nodes: readonly GoalTreeNodeLike[]): number {
@@ -293,6 +308,35 @@ function frameAnomalyMetrics(input: {
   };
 }
 
+function actionCandidateMetrics(
+  traceRecords: readonly TraceRecord[],
+): ActionCandidateMetricCounts {
+  const completed = traceRecords.filter(
+    (record) => record.event === "action_state_extractor_completed",
+  );
+  const classificationRejected = traceRecords.filter(
+    (record) => record.event === "action_candidate_classification_rejected",
+  );
+  const classificationsPerTurn = zeroActionCandidateClassificationCounts();
+
+  for (const record of completed) {
+    addActionCandidateClassificationCounts(classificationsPerTurn, record);
+  }
+
+  return {
+    action_candidate_classifications_per_turn: classificationsPerTurn,
+    action_candidate_rejected_classification: classificationRejected.filter(
+      (record) => traceReason(record) === "non_concrete_classification",
+    ).length,
+    action_persistence_dedup_skipped_embedding: traceRecords.filter(
+      (record) => record.event === "action_persistence_dedup_skipped_embedding",
+    ).length,
+    action_persistence_dedup_degraded: traceRecords.filter(
+      (record) => record.event === "action_persistence_dedup_degraded",
+    ).length,
+  };
+}
+
 function goalPromotionMetrics(
   traceRecords: readonly TraceRecord[],
 ): GoalPromotionMetricCounts {
@@ -348,6 +392,50 @@ function zeroCounts<K extends string>(keys: readonly K[]): Record<K, number> {
 
 function zeroActionCreationCounts(): Record<ActionRecordCreationSource, number> {
   return zeroCounts(ACTION_CREATION_SOURCES);
+}
+
+function zeroActionCandidateClassificationCounts(): Record<
+  ActionCandidateClassificationMetricKey,
+  number
+> {
+  return zeroCounts(ACTION_CANDIDATE_CLASSIFICATION_METRIC_KEYS);
+}
+
+function actionCandidateClassificationMetricValue(
+  value: string,
+): ActionCandidateClassificationMetricKey | null {
+  if (value === "invalid_classification") {
+    return value;
+  }
+
+  for (const classification of ACTION_CANDIDATE_CLASSIFICATIONS) {
+    if (value === classification) {
+      return classification as ActionCandidateClassification;
+    }
+  }
+
+  return null;
+}
+
+function addActionCandidateClassificationCounts(
+  target: Record<ActionCandidateClassificationMetricKey, number>,
+  record: TraceRecord,
+): void {
+  const counts = record.classification_counts;
+
+  if (counts === null || typeof counts !== "object" || Array.isArray(counts)) {
+    return;
+  }
+
+  for (const [rawKey, rawValue] of Object.entries(counts)) {
+    const key = actionCandidateClassificationMetricValue(rawKey);
+
+    if (key === null || typeof rawValue !== "number" || !Number.isFinite(rawValue)) {
+      continue;
+    }
+
+    target[key] += rawValue;
+  }
 }
 
 function zeroGoalPromotionClassificationCounts(): Record<
@@ -721,6 +809,7 @@ export class MetricsCapture {
       sessionIds: context.sessionIds,
       turnId,
     });
+    const actionCandidateMetricCounts = actionCandidateMetrics(traceRecords);
     const goalPromotionMetricCounts = goalPromotionMetrics(traceRecords);
     await this.emitActionDuplicatePressureTrace({
       borg,
@@ -766,6 +855,14 @@ export class MetricsCapture {
         memoryBandMetrics.action_record_creation_source_per_turn,
       action_record_creation_count_this_turn:
         memoryBandMetrics.action_record_creation_count_this_turn,
+      action_candidate_classifications_per_turn:
+        actionCandidateMetricCounts.action_candidate_classifications_per_turn,
+      action_candidate_rejected_classification:
+        actionCandidateMetricCounts.action_candidate_rejected_classification,
+      action_persistence_dedup_skipped_embedding:
+        actionCandidateMetricCounts.action_persistence_dedup_skipped_embedding,
+      action_persistence_dedup_degraded:
+        actionCandidateMetricCounts.action_persistence_dedup_degraded,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,
@@ -843,6 +940,7 @@ export class MetricsCapture {
       sessionIds: context.sessionIds,
       turnId,
     });
+    const actionCandidateMetricCounts = actionCandidateMetrics([]);
     const goalPromotionMetricCounts = goalPromotionMetrics([]);
     const row: MetricsRow = {
       event,
@@ -876,6 +974,14 @@ export class MetricsCapture {
         memoryBandMetrics.action_record_creation_source_per_turn,
       action_record_creation_count_this_turn:
         memoryBandMetrics.action_record_creation_count_this_turn,
+      action_candidate_classifications_per_turn:
+        actionCandidateMetricCounts.action_candidate_classifications_per_turn,
+      action_candidate_rejected_classification:
+        actionCandidateMetricCounts.action_candidate_rejected_classification,
+      action_persistence_dedup_skipped_embedding:
+        actionCandidateMetricCounts.action_persistence_dedup_skipped_embedding,
+      action_persistence_dedup_degraded:
+        actionCandidateMetricCounts.action_persistence_dedup_degraded,
       recent_completed_action_count: memoryBandMetrics.recent_completed_action_count,
       commitment_count_active: memoryBandMetrics.commitment_count_active,
       commitment_count_superseded: memoryBandMetrics.commitment_count_superseded,

@@ -1,4 +1,5 @@
 import type { LLMClient } from "../../llm/index.js";
+import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { ActionRepository } from "../../memory/actions/index.js";
 import type { Clock } from "../../util/clock.js";
 import type { ActionId, EntityId, GoalId, OpenQuestionId, StreamEntryId } from "../../util/ids.js";
@@ -10,6 +11,7 @@ import { ActionStateExtractor } from "./action-state-extractor.js";
 export type TurnActionStateServiceOptions = {
   model: string;
   actionRepository: ActionRepository;
+  embeddingClient: EmbeddingClient;
   clock: Clock;
   tracer: TurnTracer;
 };
@@ -45,6 +47,7 @@ export class TurnActionStateService {
       llmClient: input.llmClient,
       model: this.options.model,
       actionRepository: this.options.actionRepository,
+      embeddingClient: this.options.embeddingClient,
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.turnId,

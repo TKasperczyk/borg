@@ -572,6 +572,7 @@ function createGoalPromotionResponse(
 
 function createActionStateResponse(
   actionStates: Array<{
+    classification?: "concrete_action";
     description: string;
     actor?: "user" | "borg";
     state?: "considering" | "committed_to_do" | "scheduled" | "completed" | "not_done";
@@ -591,6 +592,7 @@ function createActionStateResponse(
         name: "EmitActionStates",
         input: {
           action_states: actionStates.map((actionState) => ({
+            classification: actionState.classification ?? "concrete_action",
             description: actionState.description,
             actor: actionState.actor ?? "user",
             state: actionState.state ?? "completed",

@@ -70,7 +70,10 @@ export {
   type ExtractCorrectivePreferenceInput,
 } from "./commitments/corrective-preference-extractor.js";
 export {
+  ACTION_CANDIDATE_CLASSIFICATIONS,
   ActionStateExtractor,
+  actionCandidateClassificationSchema,
+  type ActionCandidateClassification,
   type ActionStateExtractorDegradedReason,
   type ActionStateExtractorOptions,
   type ExtractActionStatesInput,
