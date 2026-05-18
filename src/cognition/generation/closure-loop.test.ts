@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createStreamEntryId, type StreamEntryId } from "../../util/ids.js";
+import { shouldSkipDecisionArtifactCompile } from "../lifecycle/turn-phase-coordinator.js";
 import type { TurnTracer, TurnTraceData, TurnTraceEventName } from "../tracing/tracer.js";
 import {
   CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
@@ -69,11 +70,31 @@ function message(input: {
 function classified(
   supplied: ClosureLoopMessageForClassification,
   act: ClosureLoopClassifiedMessage["act"],
+  axes: Partial<
+    Pick<
+      ClosureLoopClassifiedMessage,
+      "is_closure_shaped" | "has_substantive_content" | "has_substantive_state_delta"
+    >
+  > = {},
 ): ClosureLoopClassifiedMessage {
+  const isClosureShaped =
+    supplied.role === "user"
+      ? act === "signoff"
+      : act === "assistant_imperative_closer" ||
+        act === "assistant_valediction" ||
+        act === "minimal_acknowledgment";
+  const hasSubstantiveContent =
+    act === "substantive" ||
+    act === "reopening_after_signoff" ||
+    act === "meta_objection_to_closure";
+
   return {
     message_ref: supplied.message_ref,
     role: supplied.role,
     act,
+    is_closure_shaped: axes.is_closure_shaped ?? isClosureShaped,
+    has_substantive_content: axes.has_substantive_content ?? hasSubstantiveContent,
+    has_substantive_state_delta: axes.has_substantive_state_delta ?? false,
   };
 }
 
@@ -111,6 +132,95 @@ describe("ClosureLoopClassifier", () => {
     });
   });
 
+  it("parses independent closure, content, and state-delta booleans", async () => {
+    const supplied = [
+      message({ role: "user", content: "Decision: rollback to v1.2.3. EOD.", ts: 1 }),
+      message({ role: "user", content: "Thanks, goodnight.", ts: 2 }),
+      message({ role: "user", content: "What's the timeline?", ts: 3 }),
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        closureLoopResponse([
+          classified(supplied[0]!, "signoff", {
+            is_closure_shaped: true,
+            has_substantive_content: true,
+            has_substantive_state_delta: true,
+          }),
+          classified(supplied[1]!, "signoff", {
+            is_closure_shaped: true,
+            has_substantive_content: false,
+            has_substantive_state_delta: false,
+          }),
+          classified(supplied[2]!, "substantive", {
+            is_closure_shaped: false,
+            has_substantive_content: true,
+            has_substantive_state_delta: false,
+          }),
+        ]),
+      ],
+    });
+    const classifier = new ClosureLoopClassifier({
+      llmClient: llm,
+      model: "test-recall",
+    });
+
+    const result = await classifier.classify({
+      messages: supplied,
+    });
+
+    expect(result.messages).toEqual([
+      expect.objectContaining({
+        is_closure_shaped: true,
+        has_substantive_content: true,
+        has_substantive_state_delta: true,
+      }),
+      expect.objectContaining({
+        is_closure_shaped: true,
+        has_substantive_content: false,
+        has_substantive_state_delta: false,
+      }),
+      expect.objectContaining({
+        is_closure_shaped: false,
+        has_substantive_content: true,
+        has_substantive_state_delta: false,
+      }),
+    ]);
+  });
+
+  it("surfaces mixed closure plus state delta on the current user assessment", async () => {
+    const supplied = [
+      message({ role: "user", content: "Decision: rollback to v1.2.3. EOD.", ts: 1 }),
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        closureLoopResponse([
+          classified(supplied[0]!, "signoff", {
+            is_closure_shaped: true,
+            has_substantive_content: true,
+            has_substantive_state_delta: true,
+          }),
+        ]),
+      ],
+    });
+    const classifier = new ClosureLoopClassifier({
+      llmClient: llm,
+      model: "test-recall",
+    });
+    const result = await classifier.classify({
+      messages: supplied,
+    });
+
+    const assessment = assessClosureLoopClassification({
+      classification: result,
+      suppliedMessages: supplied,
+      currentUserRef: supplied[0]!.message_ref,
+    });
+
+    expect(assessment.currentUserClosureShaped).toBe(true);
+    expect(assessment.currentUserSubstantive).toBe(true);
+    expect(assessment.currentUserHasSubstantiveStateDelta).toBe(true);
+  });
+
   it("fills omitted supplied message refs as substantive", async () => {
     const degraded: string[] = [];
     const supplied = [
@@ -135,9 +245,122 @@ describe("ClosureLoopClassifier", () => {
     expect(result.degraded).toBe(false);
     expect(result.messages).toEqual([
       classified(supplied[0]!, "assistant_valediction"),
-      classified(supplied[1]!, "substantive"),
+      classified(supplied[1]!, "substantive", {
+        has_substantive_state_delta: true,
+      }),
     ]);
     expect(degraded).toEqual([]);
+  });
+
+  it("defaults omitted boolean axes to fail-open values and traces the normalized payload", async () => {
+    const tracer = new TestTracer();
+    const supplied = [message({ role: "user", content: "phone down", ts: 1 })];
+    const llm = new FakeLLMClient({
+      responses: [
+        closureLoopResponse([
+          {
+            message_ref: supplied[0]!.message_ref,
+            role: "user",
+            act: "signoff",
+          },
+        ]),
+      ],
+    });
+    const classifier = new ClosureLoopClassifier({
+      llmClient: llm,
+      model: "test-recall",
+      tracer,
+      turnId: "turn-default-closure-axes",
+    });
+
+    const result = await classifier.classify({
+      messages: supplied,
+    });
+    const normalized = tracer.records.find(
+      (record) => record.event === "closure_loop_classifier_payload_normalized",
+    );
+
+    expect(result.messages).toEqual([
+      classified(supplied[0]!, "signoff", {
+        is_closure_shaped: false,
+        has_substantive_content: true,
+        has_substantive_state_delta: true,
+      }),
+    ]);
+    expect(normalized?.normalizations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "is_closure_shaped", action: "defaulted", to: false }),
+        expect.objectContaining({
+          field: "has_substantive_content",
+          action: "defaulted",
+          to: true,
+        }),
+        expect.objectContaining({
+          field: "has_substantive_state_delta",
+          action: "defaulted",
+          to: true,
+        }),
+      ]),
+    );
+    expect(normalized?.normalizedPayload).toMatchObject({
+      messages: [
+        {
+          is_closure_shaped: false,
+          has_substantive_content: true,
+          has_substantive_state_delta: true,
+        },
+      ],
+    });
+
+    const assessment = assessClosureLoopClassification({
+      classification: result,
+      suppliedMessages: supplied,
+      currentUserRef: supplied[0]!.message_ref,
+    });
+
+    expect(
+      shouldSkipDecisionArtifactCompile({
+        enabled: true,
+        previousArtifact: null,
+        perceptionMode: "problem_solving",
+        frameAnomaly: null,
+        closureLoopAssessment: assessment,
+      }),
+    ).toBeNull();
+  });
+
+  it("defaults invalid boolean axes to fail-open values", async () => {
+    const supplied = [message({ role: "user", content: "phone down", ts: 1 })];
+    const llm = new FakeLLMClient({
+      responses: [
+        closureLoopResponse([
+          {
+            message_ref: supplied[0]!.message_ref,
+            role: "user",
+            act: "signoff",
+            is_closure_shaped: "yes",
+            has_substantive_content: null,
+            has_substantive_state_delta: "no",
+          },
+        ]),
+      ],
+    });
+    const classifier = new ClosureLoopClassifier({
+      llmClient: llm,
+      model: "test-recall",
+    });
+
+    const result = await classifier.classify({
+      messages: supplied,
+    });
+
+    expect(result.messages).toEqual([
+      classified(supplied[0]!, "signoff", {
+        is_closure_shaped: false,
+        has_substantive_content: true,
+        has_substantive_state_delta: true,
+      }),
+    ]);
   });
 
   it("takes the first duplicate message ref and traces the duplicate", async () => {
@@ -211,11 +434,11 @@ describe("ClosureLoopClassifier", () => {
     const llm = new FakeLLMClient({
       responses: [
         closureLoopResponse([
-          { ...classified(supplied[0]!, "substantive"), act: "user_signoff" },
-          { ...classified(supplied[1]!, "substantive"), act: "assistant_signoff" },
-          { ...classified(supplied[2]!, "substantive"), act: "user_closure" },
-          { ...classified(supplied[3]!, "substantive"), act: "assistant_goodnight" },
-          { ...classified(supplied[4]!, "substantive"), act: "user_signoff" },
+          { ...classified(supplied[0]!, "signoff"), act: "user_signoff" },
+          { ...classified(supplied[1]!, "assistant_imperative_closer"), act: "assistant_signoff" },
+          { ...classified(supplied[2]!, "signoff"), act: "user_closure" },
+          { ...classified(supplied[3]!, "assistant_valediction"), act: "assistant_goodnight" },
+          { ...classified(supplied[4]!, "signoff"), act: "user_signoff" },
         ]),
       ],
     });
@@ -502,6 +725,8 @@ describe("assessClosureLoopClassification", () => {
     });
 
     expect(assessment.currentUserClosureShaped).toBe(true);
+    expect(assessment.currentUserSubstantive).toBe(false);
+    expect(assessment.currentUserHasSubstantiveStateDelta).toBe(false);
     expect(assessment.closureLoopDetected).toBe(false);
   });
 
@@ -526,6 +751,7 @@ describe("assessClosureLoopClassification", () => {
     expect(assessment.closureLoopDetected).toBe(false);
     expect(assessment.currentUserClosureShaped).toBe(false);
     expect(assessment.currentUserSubstantive).toBe(false);
+    expect(assessment.currentUserHasSubstantiveStateDelta).toBe(false);
     expect(assessment.reason).toContain("suppression failed open");
   });
 });

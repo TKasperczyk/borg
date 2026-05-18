@@ -786,7 +786,14 @@ function defaultPersonaRoleBleedResponse(): LLMCompleteResult {
 
 function defaultClosureLoopClassifiedMessages(
   messages: readonly LLMMessage[],
-): Array<{ message_ref: string; role: "user" | "assistant"; act: "substantive" }> {
+): Array<{
+  message_ref: string;
+  role: "user" | "assistant";
+  act: "substantive";
+  is_closure_shaped: false;
+  has_substantive_content: true;
+  has_substantive_state_delta: false;
+}> {
   const request = messages[0];
 
   if (request === undefined) {
@@ -805,6 +812,9 @@ function defaultClosureLoopClassifiedMessages(
       message_ref: string;
       role: "user" | "assistant";
       act: "substantive";
+      is_closure_shaped: false;
+      has_substantive_content: true;
+      has_substantive_state_delta: false;
     }> = [];
 
     for (const item of dialogueWindow) {
@@ -825,6 +835,9 @@ function defaultClosureLoopClassifiedMessages(
         message_ref: message.message_ref,
         role: message.role,
         act: "substantive",
+        is_closure_shaped: false,
+        has_substantive_content: true,
+        has_substantive_state_delta: false,
       });
     }
 

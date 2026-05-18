@@ -389,6 +389,9 @@ function createClosureLoopSignoffResponseFromRequest() {
           message_ref: message.message_ref,
           role: message.role,
           act: message.role === "user" ? "signoff" : "assistant_valediction",
+          is_closure_shaped: true,
+          has_substantive_content: false,
+          has_substantive_state_delta: false,
         });
       }
 

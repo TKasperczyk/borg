@@ -36,6 +36,7 @@ import {
   DECISION_ARTIFACT_TOOL_NAME,
   findUnsettledDecisionArtifactReconciliation,
 } from "../decision-artifact/index.js";
+import type { ClosureLoopAssessment } from "../generation/closure-loop.js";
 import {
   buildDecisionArtifactLedgerPromptContext,
   buildContradictionRoutingOverride,
@@ -445,6 +446,104 @@ describe("shouldSkipDecisionArtifactCompile", () => {
     ).toBeNull();
   });
 
+  it("does not skip closure-shaped turns that contain durable state deltas", () => {
+    const source = createStreamEntryId();
+    const skip = shouldSkipDecisionArtifactCompile({
+      enabled: true,
+      previousArtifact: null,
+      perceptionMode: "problem_solving",
+      frameAnomaly: null,
+      closureLoopAssessment: {
+        closureLoopDetected: false,
+        currentUserAct: "signoff",
+        currentUserClosureShaped: true,
+        currentUserSubstantive: true,
+        currentUserHasSubstantiveStateDelta: true,
+        mutualClosureCycles: 0,
+        sourceStreamEntryIds: [source],
+        reason: "Decision: rollback to v1.2.3. EOD.",
+      },
+    });
+
+    expect(skip).toBeNull();
+  });
+
+  it("does not skip legacy-shaped closure turns once the state-delta axis is present", () => {
+    const source = createStreamEntryId();
+    const skip = shouldSkipDecisionArtifactCompile({
+      enabled: true,
+      previousArtifact: null,
+      perceptionMode: "problem_solving",
+      frameAnomaly: null,
+      closureLoopAssessment: {
+        closureLoopDetected: false,
+        currentUserAct: "signoff",
+        currentUserClosureShaped: true,
+        currentUserSubstantive: false,
+        currentUserHasSubstantiveStateDelta: true,
+        mutualClosureCycles: 0,
+        sourceStreamEntryIds: [source],
+        reason: "Decision: rollback to v1.2.3. EOD.",
+      },
+    });
+
+    expect(skip).toBeNull();
+  });
+
+  it("skips pure closure-shaped turns with no durable state delta", () => {
+    const source = createStreamEntryId();
+    const skip = shouldSkipDecisionArtifactCompile({
+      enabled: true,
+      previousArtifact: null,
+      perceptionMode: "problem_solving",
+      frameAnomaly: null,
+      closureLoopAssessment: {
+        closureLoopDetected: false,
+        currentUserAct: "signoff",
+        currentUserClosureShaped: true,
+        currentUserSubstantive: false,
+        currentUserHasSubstantiveStateDelta: false,
+        mutualClosureCycles: 0,
+        sourceStreamEntryIds: [source],
+        reason: "Thanks, goodnight.",
+      },
+    });
+
+    expect(skip).toMatchObject({
+      reason: "closure_shaped",
+      closureShaped: true,
+      hasStateDelta: false,
+    });
+  });
+
+  it("keeps reply suppression separate from artifact skip for closure-shaped content without state delta", () => {
+    const source = createStreamEntryId();
+    const closureLoopAssessment: ClosureLoopAssessment = {
+      closureLoopDetected: false,
+      currentUserAct: "signoff",
+      currentUserClosureShaped: true,
+      currentUserSubstantive: true,
+      currentUserHasSubstantiveStateDelta: false,
+      mutualClosureCycles: 0,
+      sourceStreamEntryIds: [source],
+      reason: "Quick question before bed: thoughts on the rollback?",
+    };
+    const skip = shouldSkipDecisionArtifactCompile({
+      enabled: true,
+      previousArtifact: null,
+      perceptionMode: "problem_solving",
+      frameAnomaly: null,
+      closureLoopAssessment,
+    });
+
+    expect(skip).toMatchObject({
+      reason: "closure_shaped",
+      closureShaped: true,
+      hasStateDelta: false,
+    });
+    expect(closureLoopAssessment.currentUserSubstantive).toBe(true);
+  });
+
   it("does not skip when a locked canonicalized goal is still unsettled", () => {
     const audience = createEntityId();
     const source = createStreamEntryId();
@@ -492,6 +591,7 @@ describe("shouldSkipDecisionArtifactCompile", () => {
         currentUserAct: "signoff",
         currentUserClosureShaped: true,
         currentUserSubstantive: false,
+        currentUserHasSubstantiveStateDelta: false,
         mutualClosureCycles: 1,
         sourceStreamEntryIds: [source],
         reason: "test",
@@ -1491,6 +1591,7 @@ describe("TurnPhaseCoordinator decision artifact prefilter", () => {
           currentUserAct: "signoff",
           currentUserClosureShaped: true,
           currentUserSubstantive: false,
+          currentUserHasSubstantiveStateDelta: false,
           mutualClosureCycles: 1,
           sourceStreamEntryIds: [current],
           reason: "test",

@@ -617,6 +617,8 @@ export type DecisionArtifactCompileSkip = {
   reason: DecisionArtifactCompileSkipReason;
   previousActiveEntryCount: number;
   perceptionMode: CognitiveMode;
+  closureShaped?: boolean;
+  hasStateDelta?: boolean;
 };
 
 function previousDecisionArtifactActiveEntryCount(
@@ -663,12 +665,14 @@ export function shouldSkipDecisionArtifactCompile(input: {
 
   if (
     input.closureLoopAssessment?.currentUserClosureShaped === true &&
-    input.closureLoopAssessment.currentUserSubstantive === false
+    input.closureLoopAssessment.currentUserHasSubstantiveStateDelta === false
   ) {
     return {
       reason: "closure_shaped",
       previousActiveEntryCount,
       perceptionMode: input.perceptionMode,
+      closureShaped: true,
+      hasStateDelta: false,
     };
   }
 
@@ -2383,6 +2387,12 @@ export class TurnPhaseCoordinator {
           previous_active_entry_count: skip.previousActiveEntryCount,
           perception_mode: skip.perceptionMode,
           advanced_anchor: advancedAnchor,
+          ...(skip.closureShaped === undefined
+            ? {}
+            : {
+                closure_shaped: skip.closureShaped,
+                has_state_delta: skip.hasStateDelta ?? null,
+              }),
         });
       }
 

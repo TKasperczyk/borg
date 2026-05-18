@@ -33,7 +33,14 @@ export type ClosureLoopDialogueAct = (typeof CLOSURE_LOOP_DIALOGUE_ACTS)[number]
 export const CLOSURE_LOOP_CLASSIFIER_TOOL_NAME = "ClassifyClosureLoopDialogueActs";
 const CLOSURE_LOOP_RATIONALE_MAX_CHARS = 2_000;
 const CLOSURE_LOOP_CLASSIFICATION_FIELDS = ["messages", "confidence", "rationale"] as const;
-const CLOSURE_LOOP_MESSAGE_FIELDS = ["message_ref", "role", "act"] as const;
+const CLOSURE_LOOP_MESSAGE_FIELDS = [
+  "message_ref",
+  "role",
+  "act",
+  "is_closure_shaped",
+  "has_substantive_content",
+  "has_substantive_state_delta",
+] as const;
 const closureLoopDialogueActSchema = z.enum(CLOSURE_LOOP_DIALOGUE_ACTS);
 const CLOSURE_LOOP_DIALOGUE_ACT_ALIASES: Readonly<Record<string, ClosureLoopDialogueAct>> = {
   user_signoff: "signoff",
@@ -56,6 +63,13 @@ const closureLoopClassifiedMessageSchema = z
     message_ref: z.string().min(1),
     role: z.enum(["user", "assistant"]),
     act: closureLoopDialogueActSchema,
+    is_closure_shaped: z.boolean().describe("Whether the message has discourse-closure shape."),
+    has_substantive_content: z
+      .boolean()
+      .describe("Whether the message contains content beyond pure acknowledgment or closure."),
+    has_substantive_state_delta: z
+      .boolean()
+      .describe("Whether the message contains a durable state change."),
   })
   .passthrough();
 
@@ -70,12 +84,12 @@ const closureLoopClassificationSchema = z
 const CLOSURE_LOOP_CLASSIFIER_TOOL = {
   name: CLOSURE_LOOP_CLASSIFIER_TOOL_NAME,
   description:
-    "Classify recent user/assistant messages into dialogue acts for closure-loop detection.",
+    "Classify recent user/assistant messages into dialogue acts and independent closure/content/state axes.",
   inputSchema: toToolInputSchema(closureLoopClassificationSchema),
 } satisfies LLMToolDefinition;
 
 const CLOSURE_LOOP_SYSTEM_PROMPT = [
-  "Classify each supplied dialogue message by discourse function.",
+  "Classify each supplied dialogue message by discourse function and independent boolean axes.",
   "Use exactly one act from the schema for each message_ref.",
   "substantive: asks, answers, introduces information, changes topic, makes a real request, or otherwise advances content.",
   "signoff: user-side goodbye, leaving, phone-down, sleep, or closure intent.",
@@ -85,6 +99,19 @@ const CLOSURE_LOOP_SYSTEM_PROMPT = [
   "assistant_valediction: assistant-side goodbye, send-off, farewell, or closure token.",
   "minimal_acknowledgment: short assistant-side acknowledgment that does not add content.",
   "meta_objection_to_closure: names, objects to, or analyzes the closure loop itself.",
+  "",
+  "Boolean axes are independent from act:",
+  "- is_closure_shaped: true when the message has discourse-closure shape such as leaving, signoff, goodnight, EOD, talk-tomorrow, or similar closure intent.",
+  "- has_substantive_content: true when the message contains substantive content beyond pure acknowledgment or closure. A question, request, answer, decision, assignment, boundary, correction, or topic advance counts.",
+  "- has_substantive_state_delta: true only when the message contains a durable state change, such as a decision lock, supersession of prior state, assignment, boundary, correction, or completed/action state update. This is narrower than substantive content.",
+  "",
+  "Examples:",
+  '- "Decision: rollback to v1.2.3. EOD." -> is_closure_shaped=true, has_substantive_content=true, has_substantive_state_delta=true.',
+  '- "Ben owns the writeup now. Talk tomorrow." -> is_closure_shaped=true, has_substantive_content=true, has_substantive_state_delta=true.',
+  '- "I need space this week. Talk Saturday." -> is_closure_shaped=true, has_substantive_content=true, has_substantive_state_delta=true.',
+  '- "Thanks, goodnight." -> is_closure_shaped=true, has_substantive_content=false, has_substantive_state_delta=false.',
+  '- "What\'s the timeline?" -> is_closure_shaped=false, has_substantive_content=true, has_substantive_state_delta=false.',
+  '- "Could you check X?" -> is_closure_shaped=false, has_substantive_content=true, has_substantive_state_delta=false.',
   "Judge semantic function across languages. Do not rely on exact words, punctuation, capitalization, or phrase shape.",
   "Return classifications only for supplied message_ref values. Use the tool exactly once.",
 ].join("\n");
@@ -132,6 +159,7 @@ export type ClosureLoopAssessment = {
   currentUserAct: ClosureLoopDialogueAct | null;
   currentUserClosureShaped: boolean;
   currentUserSubstantive: boolean;
+  currentUserHasSubstantiveStateDelta: boolean;
   mutualClosureCycles: number;
   sourceStreamEntryIds: StreamEntryId[];
   reason: string;
@@ -232,6 +260,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizeMachineLabel(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function isUserClosureAct(act: ClosureLoopDialogueAct): boolean {
+  return act === "signoff";
+}
+
+function isAssistantClosureAct(act: ClosureLoopDialogueAct): boolean {
+  return (
+    act === "assistant_imperative_closer" ||
+    act === "assistant_valediction" ||
+    act === "minimal_acknowledgment"
+  );
+}
+
+function isSubstantiveForClosureState(act: ClosureLoopDialogueAct): boolean {
+  return (
+    act === "substantive" ||
+    act === "reopening_after_signoff" ||
+    act === "meta_objection_to_closure"
+  );
 }
 
 function normalizeClosureLoopConfidence(
@@ -370,6 +418,30 @@ function normalizeClosureLoopAct(
   return "substantive";
 }
 
+function normalizeClosureLoopBoolean(input: {
+  value: unknown;
+  field: keyof Pick<
+    ClosureLoopClassifiedMessage,
+    "is_closure_shaped" | "has_substantive_content" | "has_substantive_state_delta"
+  >;
+  messageRef: string;
+  defaultValue: boolean;
+  normalizations: ClosureLoopPayloadNormalization[];
+}): boolean {
+  if (typeof input.value === "boolean") {
+    return input.value;
+  }
+
+  input.normalizations.push({
+    field: input.field,
+    messageRef: input.messageRef,
+    action: input.value === undefined ? "defaulted" : "invalid_type_defaulted",
+    ...(input.value === undefined ? {} : { from: toTraceJsonValue(input.value) }),
+    to: input.defaultValue,
+  });
+  return input.defaultValue;
+}
+
 function normalizeClosureLoopToolInput(
   input: unknown,
   suppliedMessages: readonly ClosureLoopMessageForClassification[],
@@ -473,10 +545,32 @@ function normalizeClosureLoopToolInput(
       });
     }
 
+    const act = normalizeClosureLoopAct(rawMessage.act, messageRef, normalizations);
     firstByRef.set(messageRef, {
       message_ref: messageRef,
       role: supplied.role,
-      act: normalizeClosureLoopAct(rawMessage.act, messageRef, normalizations),
+      act,
+      is_closure_shaped: normalizeClosureLoopBoolean({
+        value: rawMessage.is_closure_shaped,
+        field: "is_closure_shaped",
+        messageRef,
+        defaultValue: false,
+        normalizations,
+      }),
+      has_substantive_content: normalizeClosureLoopBoolean({
+        value: rawMessage.has_substantive_content,
+        field: "has_substantive_content",
+        messageRef,
+        defaultValue: true,
+        normalizations,
+      }),
+      has_substantive_state_delta: normalizeClosureLoopBoolean({
+        value: rawMessage.has_substantive_state_delta,
+        field: "has_substantive_state_delta",
+        messageRef,
+        defaultValue: true,
+        normalizations,
+      }),
     });
   }
 
@@ -498,6 +592,9 @@ function normalizeClosureLoopToolInput(
       message_ref: message.message_ref,
       role: message.role,
       act: "substantive" as const,
+      is_closure_shaped: false,
+      has_substantive_content: true,
+      has_substantive_state_delta: true,
     };
   });
 
@@ -515,6 +612,7 @@ function traceClosureLoopPayloadNormalized(options: {
   tracer?: TurnTracer;
   turnId?: string;
   rawToolInput: unknown;
+  normalizedPayload: z.input<typeof closureLoopClassificationSchema>;
   normalizations: readonly ClosureLoopPayloadNormalization[];
 }): void {
   if (
@@ -529,8 +627,12 @@ function traceClosureLoopPayloadNormalized(options: {
     turnId: options.turnId,
     normalizations: options.normalizations.map((normalization) => ({ ...normalization })),
     rawToolInputShape: summarizeTraceValueShape(options.rawToolInput),
+    normalizedPayloadShape: summarizeTraceValueShape(options.normalizedPayload),
     ...(options.tracer.includePayloads
-      ? { rawToolInput: toTraceJsonValue(options.rawToolInput) }
+      ? {
+          rawToolInput: toTraceJsonValue(options.rawToolInput),
+          normalizedPayload: toTraceJsonValue(options.normalizedPayload),
+        }
       : {}),
   });
 }
@@ -563,6 +665,7 @@ function parseClosureLoopResponse(
   traceClosureLoopPayloadNormalized({
     ...traceOptions,
     rawToolInput: call.input,
+    normalizedPayload: normalized.payload,
     normalizations: normalized.normalizations,
   });
 
@@ -641,26 +744,6 @@ function traceLlmCallError(options: {
   }
 }
 
-function isUserClosureAct(act: ClosureLoopDialogueAct): boolean {
-  return act === "signoff";
-}
-
-function isAssistantClosureAct(act: ClosureLoopDialogueAct): boolean {
-  return (
-    act === "assistant_imperative_closer" ||
-    act === "assistant_valediction" ||
-    act === "minimal_acknowledgment"
-  );
-}
-
-function isSubstantiveForClosureState(act: ClosureLoopDialogueAct): boolean {
-  return (
-    act === "substantive" ||
-    act === "reopening_after_signoff" ||
-    act === "meta_objection_to_closure"
-  );
-}
-
 export function assessClosureLoopClassification(input: {
   classification: ClosureLoopClassification;
   suppliedMessages: readonly ClosureLoopMessageForClassification[];
@@ -700,9 +783,11 @@ export function assessClosureLoopClassification(input: {
   const currentUser = ordered.find((message) => message.message_ref === input.currentUserRef);
   const currentUserAct = currentUser?.role === "user" ? currentUser.act : null;
   const currentUserClosureShaped =
-    currentUserAct === null ? false : isUserClosureAct(currentUserAct);
+    currentUser?.role === "user" ? currentUser.is_closure_shaped : false;
   const currentUserSubstantive =
-    currentUserAct === null ? false : isSubstantiveForClosureState(currentUserAct);
+    currentUser?.role === "user" ? currentUser.has_substantive_content : false;
+  const currentUserHasSubstantiveStateDelta =
+    currentUser?.role === "user" ? currentUser.has_substantive_state_delta : false;
   const closureLoopDetected =
     mutualClosureCycles >= 2 &&
     (currentUserClosureShaped || ordered[ordered.length - 1]?.role === "assistant");
@@ -727,6 +812,7 @@ export function assessClosureLoopClassification(input: {
     currentUserAct,
     currentUserClosureShaped,
     currentUserSubstantive,
+    currentUserHasSubstantiveStateDelta,
     mutualClosureCycles,
     sourceStreamEntryIds,
     reason: input.classification.rationale,
@@ -762,6 +848,7 @@ export function assessDegradedClosureLoopFallback(input: {
     currentUserAct: null,
     currentUserClosureShaped: false,
     currentUserSubstantive: false,
+    currentUserHasSubstantiveStateDelta: false,
     mutualClosureCycles: 0,
     sourceStreamEntryIds,
     reason: ambiguousClosureBeat
