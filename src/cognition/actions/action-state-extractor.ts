@@ -32,6 +32,8 @@ import { buildUsageTraceBlock, type TurnTracer } from "../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
 const ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
+// v62 P3 action classification fields made the old 768 cap truncate in v63 runs.
+const ACTION_STATE_EXTRACTOR_MAX_TOKENS = 1536;
 const ACTIVE_ACTION_STATES: readonly ActionState[] = [
   "considering",
   "committed_to_do",
@@ -739,7 +741,7 @@ export class ActionStateExtractor {
         messages,
         tools,
         tool_choice: { type: "tool", name: ACTION_STATE_TOOL_NAME },
-        max_tokens: 768,
+        max_tokens: ACTION_STATE_EXTRACTOR_MAX_TOKENS,
         budget: "action-state-extractor",
       });
     } catch (error) {
