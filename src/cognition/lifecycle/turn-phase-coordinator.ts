@@ -55,6 +55,7 @@ import {
   isFrameAnomaly,
   type ActualFrameAnomalyClassification,
   type FrameAnomalyClassification,
+  type FrameAnomalyConversationContext,
 } from "../frame-anomaly/index.js";
 import type { TurnGoalPromotionService } from "../goals/turn-goal-promotion-service.js";
 import type { PerceptionGateway } from "../perception/gateway.js";
@@ -922,9 +923,8 @@ export function buildDecisionArtifactLedgerPromptContext(input: {
     ...deltaLedgerForEstimate,
     estimatedTokens: estimateEvidenceLedgerPromptTokens(deltaLedgerForEstimate),
   };
-  const deltaVisibleStreamEntryIds = collectDecisionArtifactLedgerVisibleStreamEntryIds(
-    deltaLedger,
-  );
+  const deltaVisibleStreamEntryIds =
+    collectDecisionArtifactLedgerVisibleStreamEntryIds(deltaLedger);
 
   return {
     promptVisibleLedger: renderEvidenceLedger(deltaLedger) ?? "",
@@ -1020,6 +1020,94 @@ function evidenceLedgerCompactionChanged(summary: EvidenceLedgerCompactionTraceS
     summary.postCapTokens < summary.preCapTokens ||
     Object.values(summary.omittedEntryCountsBySection).some((count) => count > 0)
   );
+}
+
+function entityDisplayName(
+  entityRepository: Pick<EntityRepository, "get">,
+  entityId: EntityId | null | undefined,
+): string | null {
+  if (entityId === null || entityId === undefined) {
+    return null;
+  }
+
+  return entityRepository.get(entityId)?.canonical_name ?? null;
+}
+
+function previousUserSenderContext(input: {
+  currentUserEntryId: StreamEntryId;
+  streamEntries: readonly StreamEntry[];
+  entityRepository: Pick<EntityRepository, "get">;
+}): FrameAnomalyConversationContext["previous_user_sender"] {
+  for (let index = input.streamEntries.length - 1; index >= 0; index -= 1) {
+    const entry = input.streamEntries[index];
+
+    if (entry === undefined || entry.kind !== "user_msg" || entry.id === input.currentUserEntryId) {
+      continue;
+    }
+
+    const senderEntityId = entry.sender_entity_id ?? null;
+
+    if (senderEntityId === null) {
+      return null;
+    }
+
+    return {
+      id: senderEntityId,
+      display_name: entityDisplayName(input.entityRepository, senderEntityId),
+    };
+  }
+
+  return null;
+}
+
+function buildFrameAnomalyConversationContext(input: {
+  audienceEntityId: EntityId | null;
+  audienceEntity: ReturnType<EntityRepository["get"]>;
+  currentUserEntry: StreamEntry | null | undefined;
+  activeParticipants: readonly ActiveParticipant[];
+  participantStreamEntries: readonly StreamEntry[];
+  entityRepository: Pick<EntityRepository, "get" | "resolve">;
+}): FrameAnomalyConversationContext | undefined {
+  if (
+    input.audienceEntity?.kind !== "group" ||
+    input.currentUserEntry === null ||
+    input.currentUserEntry === undefined
+  ) {
+    return undefined;
+  }
+
+  const currentSenderEntityId = input.currentUserEntry.sender_entity_id ?? null;
+  const previousUserSender = previousUserSenderContext({
+    currentUserEntryId: input.currentUserEntry.id,
+    streamEntries: input.participantStreamEntries,
+    entityRepository: input.entityRepository,
+  });
+  const assistantEntityId = input.entityRepository.resolve("self", {
+    kind: "self",
+    provenance: "assistant_seeded",
+  });
+
+  return {
+    audience: {
+      id: input.audienceEntityId,
+      display_name: input.audienceEntity.canonical_name,
+      kind: input.audienceEntity.kind,
+    },
+    current_sender: {
+      id: currentSenderEntityId,
+      display_name: entityDisplayName(input.entityRepository, currentSenderEntityId),
+    },
+    participants: input.activeParticipants,
+    assistant_identity: {
+      id: assistantEntityId,
+      display_name: "Borg / Assistant",
+    },
+    previous_user_sender: previousUserSender,
+    sender_changed_since_previous_user_turn:
+      previousUserSender !== null &&
+      currentSenderEntityId !== null &&
+      previousUserSender.id !== currentSenderEntityId,
+  };
 }
 
 export class TurnPhaseCoordinator {
@@ -1182,12 +1270,21 @@ export class TurnPhaseCoordinator {
       audienceProfile = audienceProfileForParticipants(participantProfiles, audienceEntityId);
     }
 
+    const frameAnomalyConversationContext = buildFrameAnomalyConversationContext({
+      audienceEntityId,
+      audienceEntity,
+      currentUserEntry: persistedUserEntry,
+      activeParticipants,
+      participantStreamEntries: participantScan?.entries ?? [],
+      entityRepository: this.options.entityRepository,
+    });
     const frameAnomalyClassification = await this.classifyFrameAnomaly({
       llmClient,
       turnId,
       isUserTurn,
       userMessage: turnInput.userMessage,
       recentHistory: recencyWindow.messages,
+      conversationContext: frameAnomalyConversationContext,
       persistedUserEntryId,
       streamWriter,
     });
@@ -1719,6 +1816,7 @@ export class TurnPhaseCoordinator {
     isUserTurn: boolean;
     userMessage: string;
     recentHistory: readonly RecencyMessage[];
+    conversationContext?: FrameAnomalyConversationContext;
     persistedUserEntryId?: StreamEntryId;
     streamWriter: StreamWriter;
   }): Promise<FrameAnomalyClassification | null> {
@@ -1748,6 +1846,9 @@ export class TurnPhaseCoordinator {
     let classification = await classifier.classify({
       userMessage: input.userMessage,
       recentHistory: input.recentHistory,
+      ...(input.conversationContext === undefined
+        ? {}
+        : { conversationContext: input.conversationContext }),
     });
 
     if (classification.status === "degraded") {

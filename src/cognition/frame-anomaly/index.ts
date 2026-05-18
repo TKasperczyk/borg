@@ -4,6 +4,8 @@ export {
   FrameAnomalyClassifier,
   classifyFrameAnomalyDegradedFallback,
   type ClassifyFrameAnomalyInput,
+  type FrameAnomalyConversationContext,
+  type FrameAnomalyConversationEntityContext,
   type FrameAnomalyDegradedFallbackResult,
   type FrameAnomalyClassifierDegradedReason,
   type FrameAnomalyClassifierOptions,

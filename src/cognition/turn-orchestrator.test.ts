@@ -362,6 +362,89 @@ function createFrameAnomalyResponse(input: {
   };
 }
 
+function createGroupAwareFrameAnomalyResponse(input: {
+  normalRationale?: string;
+  missingContextKind?: FrameAnomalyKind;
+  missingContextRationale?: string;
+}) {
+  return Object.assign(
+    (options: LLMCompleteOptions) => {
+      const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+        conversation_context?: {
+          audience?: {
+            kind?: unknown;
+          };
+          sender_changed_since_previous_user_turn?: unknown;
+        };
+      };
+      const context = payload.conversation_context;
+
+      if (
+        context?.audience?.kind === "group" &&
+        context.sender_changed_since_previous_user_turn === true
+      ) {
+        return createFrameAnomalyResponse({
+          kind: "normal",
+          confidence: 0.95,
+          rationale: input.normalRationale ?? "Group speaker switch is structurally normal.",
+        });
+      }
+
+      return createFrameAnomalyResponse({
+        kind: input.missingContextKind ?? "roleplay_inversion",
+        confidence: 0.95,
+        rationale:
+          input.missingContextRationale ??
+          "Missing group context leaves a speaker switch ambiguous.",
+      });
+    },
+    { budget: "frame-anomaly-classifier" },
+  );
+}
+
+type FrameAnomalyPromptEntity = {
+  id?: unknown;
+  display_name?: unknown;
+  kind?: unknown;
+};
+
+type FrameAnomalyPromptParticipant = {
+  id?: unknown;
+  display_name?: unknown;
+  role?: unknown;
+};
+
+type FrameAnomalyPromptContext = {
+  audience?: FrameAnomalyPromptEntity;
+  current_sender?: FrameAnomalyPromptEntity;
+  participants?: FrameAnomalyPromptParticipant[];
+  assistant_identity?: FrameAnomalyPromptEntity;
+  previous_user_sender?: FrameAnomalyPromptEntity | null;
+  sender_changed_since_previous_user_turn?: unknown;
+};
+
+function createFrameAnomalyContextAssertionResponse(
+  assertContext: (context: FrameAnomalyPromptContext) => void,
+) {
+  return Object.assign(
+    (options: LLMCompleteOptions) => {
+      const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
+        conversation_context?: FrameAnomalyPromptContext;
+      };
+
+      expect(payload.conversation_context).toBeDefined();
+      assertContext(payload.conversation_context as FrameAnomalyPromptContext);
+
+      return createFrameAnomalyResponse({
+        kind: "normal",
+        confidence: 0.95,
+        rationale: "Group conversation context assertion passed.",
+      });
+    },
+    { budget: "frame-anomaly-classifier" },
+  );
+}
+
 function createClosureLoopSignoffResponseFromRequest() {
   return Object.assign(
     (options: LLMCompleteOptions) => {
@@ -1035,10 +1118,212 @@ describe("TurnOrchestrator evidence ledger", () => {
       expect(
         borg.actions
           .list({ actor: ben, limit: 10 })
-          .some(
-            (record) => record.description === "update the API boundary notes this weekend",
-          ),
+          .some((record) => record.description === "update the API boundary notes this weekend"),
       ).toBe(false);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("does not quarantine normal group-chat speaker switches", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_350);
+    const audience = "Engineering Planning Channel";
+    const llm = new FakeLLMClient({
+      responses: [
+        createFrameAnomalyResponse({
+          kind: "normal",
+          rationale: "Initial group message is normal.",
+        }),
+        createEmitAnswerResponse("I will keep the release checklist visible."),
+        createEmptyReflectionResponse(),
+        createGroupAwareFrameAnomalyResponse({}),
+        createEmitAnswerResponse("Alice's review request is clear."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.entities.resolve(audience, {
+        kind: "group",
+      });
+      const alice = borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+      const ben = borg.entities.resolve("Ben", {
+        kind: "person",
+      });
+
+      await borg.turn({
+        userMessage: "I will update the release checklist today.",
+        audience,
+        senderEntityId: alice,
+        stakes: "low",
+      });
+
+      await borg.turn({
+        userMessage: "Hey Alice, can you review the API migration notes?",
+        audience,
+        senderEntityId: ben,
+        stakes: "low",
+      });
+
+      const quarantineEvents = borg.stream.tail(50).filter((entry) => {
+        const content = entry.content as { event?: unknown };
+
+        return entry.kind === "internal_event" && content.event === QUARANTINED_USER_ENTRY_EVENT;
+      });
+
+      expect(quarantineEvents).toEqual([]);
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("passes null previous sender context on the first group user turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_360);
+    const audience = "Engineering Planning Channel";
+    const llm = new FakeLLMClient({
+      responses: [
+        createFrameAnomalyContextAssertionResponse((context) => {
+          expect(context.previous_user_sender).toBeNull();
+          expect(context.sender_changed_since_previous_user_turn).toBe(false);
+        }),
+        createEmitAnswerResponse("I will keep the checklist visible."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.entities.resolve(audience, {
+        kind: "group",
+      });
+      const alice = borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+
+      await borg.turn({
+        userMessage: "I will update the release checklist today.",
+        audience,
+        senderEntityId: alice,
+        stakes: "low",
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("passes same previous sender context when a group sender speaks twice", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_370);
+    const audience = "Engineering Planning Channel";
+    let alice: EntityId;
+    const llm = new FakeLLMClient({
+      responses: [
+        createFrameAnomalyResponse({
+          kind: "normal",
+          rationale: "Initial group message is normal.",
+        }),
+        createEmitAnswerResponse("I will track that."),
+        createEmptyReflectionResponse(),
+        createFrameAnomalyContextAssertionResponse((context) => {
+          expect(context.previous_user_sender).toMatchObject({
+            id: alice,
+            display_name: "Alice",
+          });
+          expect(context.sender_changed_since_previous_user_turn).toBe(false);
+        }),
+        createEmitAnswerResponse("Alice's follow-up is recorded."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      borg.entities.resolve(audience, {
+        kind: "group",
+      });
+      alice = borg.entities.resolve("Alice", {
+        kind: "person",
+      });
+
+      await borg.turn({
+        userMessage: "I will update the release checklist today.",
+        audience,
+        senderEntityId: alice,
+        stakes: "low",
+      });
+
+      await borg.turn({
+        userMessage: "I also need to verify the deployment notes.",
+        audience,
+        senderEntityId: alice,
+        stakes: "low",
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("passes degenerate group participants with one human and assistant identity", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_182_380);
+    const audience = "Family Logistics";
+    let groupId: EntityId;
+    let priya: EntityId;
+    const llm = new FakeLLMClient({
+      responses: [
+        createFrameAnomalyContextAssertionResponse((context) => {
+          expect(context.audience).toMatchObject({
+            display_name: audience,
+            kind: "group",
+          });
+          expect(context.current_sender).toMatchObject({
+            display_name: "Priya",
+          });
+          expect(context.participants).toEqual([
+            {
+              id: priya,
+              display_name: "Priya",
+              role: "speaker",
+            },
+            {
+              id: groupId,
+              display_name: audience,
+              role: "audience",
+            },
+          ]);
+          expect(context.assistant_identity).toMatchObject({
+            display_name: "Borg / Assistant",
+          });
+        }),
+        createEmitAnswerResponse("I will keep the logistics clear."),
+        createEmptyReflectionResponse(),
+      ],
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+
+    try {
+      groupId = borg.entities.resolve(audience, {
+        kind: "group",
+      });
+      priya = borg.entities.resolve("Priya", {
+        kind: "person",
+      });
+
+      await borg.turn({
+        userMessage: "Borg, can you keep a note that dinner starts at six?",
+        audience,
+        senderEntityId: priya,
+        stakes: "low",
+      });
     } finally {
       await borg.close();
     }
