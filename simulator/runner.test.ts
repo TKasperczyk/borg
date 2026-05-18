@@ -415,6 +415,10 @@ function metricsRow(turnCounter: number): MetricsRow {
     },
     goal_promotion_rejected_classification: 0,
     goal_promotion_cap_rejections: 0,
+    decision_artifact_semantic_revisions_attempted: 0,
+    decision_artifact_semantic_revisions_completed_succeeded: 0,
+    decision_artifact_semantic_nodes_marked_superseded: 0,
+    decision_artifact_semantic_nodes_marked_contradicted: 0,
     overseer_due_on_suppressed_turn: false,
   };
 }

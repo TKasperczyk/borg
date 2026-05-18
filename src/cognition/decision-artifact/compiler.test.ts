@@ -4,8 +4,15 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { decisionArtifactMigrations } from "../../memory/decision-artifacts/migrations.js";
 import { DecisionArtifactRepository } from "../../memory/decision-artifacts/repository.js";
 import type { DecisionArtifactEntryKind } from "../../memory/decision-artifacts/types.js";
+import {
+  createEpisodeFixture,
+  createOfflineTestHarness,
+  createSemanticNodeFixture,
+  TestEmbeddingClient,
+} from "../../offline/test-support.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import { GoalsRepository } from "../../memory/self/goals-repository.js";
+import { resolveSemanticContext, toRetrievedSemantic } from "../../retrieval/semantic-retrieval.js";
 import {
   composeMigrations,
   openDatabase,
@@ -25,6 +32,7 @@ import {
 } from "../../util/ids.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { renderDecisionStateArtifact, renderEvidenceLedger } from "../evidence-ledger/index.js";
+import { summarizeSemanticContext } from "../deliberation/prompt/retrieval.js";
 import {
   advanceDecisionArtifactCompileSkipAnchor,
   buildDecisionArtifactLedgerPromptContext,
@@ -47,6 +55,26 @@ function emitDecisionArtifactPatchResponse(patch: EmitDecisionArtifactPatch) {
         id: "toolu_decision_patch",
         name: DECISION_ARTIFACT_TOOL_NAME,
         input: patch,
+      },
+    ],
+  };
+}
+
+function emitSemanticRevisionResponse(input: {
+  verdicts: Array<{ node_id: string; verdict: "supersede" | "contradict" | "keep" | "uncertain" }>;
+}) {
+  return {
+    text: "",
+    input_tokens: 7,
+    output_tokens: 5,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_decision_artifact_semantic_revision",
+        name: "EmitDecisionArtifactSemanticRevision",
+        input: {
+          verdicts: input.verdicts,
+        },
       },
     ],
   };
@@ -506,6 +534,209 @@ describe("compileDecisionArtifact", () => {
       canonicalized_by_artifact_entry_id: artifactEntry?.id,
     });
   });
+
+  it("runs semantic belief revision from an accepted locked artifact entry", async () => {
+    const embeddingClient = new TestEmbeddingClient(
+      new Map([["Project runtime is Node 22", [1, 0, 0, 0]]]),
+    );
+    const harness = await createOfflineTestHarness({
+      clock,
+      embeddingClient,
+    });
+    const artifactRepository = new DecisionArtifactRepository({
+      db: harness.db,
+      clock,
+    });
+
+    try {
+      const sourceEpisode = createEpisodeFixture({
+        audience_entity_id: audience,
+        shared: false,
+      });
+      await harness.episodicRepository.insert(sourceEpisode);
+      const staleNode = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: "Project runtime is Node 20",
+            description: "The project runtime is Node 20.",
+            source_episode_ids: [sourceEpisode.id],
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const llmClient = new FakeLLMClient({
+        responses: [
+          emitDecisionArtifactPatchResponse({
+            operations: [
+              {
+                type: "add",
+                kind: "locked",
+                text: "Project runtime is Node 22",
+                owner_entity_id: audience,
+                source_stream_entry_ids: [currentStreamEntryId],
+              },
+            ],
+          }),
+          emitSemanticRevisionResponse({
+            verdicts: [
+              {
+                node_id: staleNode.id,
+                verdict: "supersede",
+              },
+            ],
+          }),
+        ],
+      });
+
+      await compileDecisionArtifact({
+        ...baseInput(llmClient),
+        repository: artifactRepository,
+        currentUserMessage: "Lock the project runtime as Node 22; the Node 20 note is stale.",
+        promptVisibleLedger: "Semantic context says the project runtime is Node 20.",
+        semanticBeliefRevision: {
+          semanticNodeRepository: harness.semanticNodeRepository,
+          episodicRepository: harness.episodicRepository,
+          embeddingClient,
+          model: "semantic-revision-test",
+        },
+      });
+
+      const artifactEntry = artifactRepository.get(audience)?.entries[0];
+      const updatedStaleNode = await harness.semanticNodeRepository.get(staleNode.id);
+      expect(artifactEntry).toMatchObject({
+        kind: "locked",
+        text: "Project runtime is Node 22",
+      });
+      expect(updatedStaleNode).toMatchObject({
+        status: "superseded",
+        corrected_by: currentStreamEntryId,
+        superseded_at: 2_000,
+      });
+
+      const semantic = toRetrievedSemantic(
+        await resolveSemanticContext(
+          "Project runtime",
+          {
+            audienceEntityId: audience,
+            queryVector: Float32Array.from([1, 0, 0, 0]),
+            graphWalkDepth: 1,
+            maxGraphNodes: 4,
+          },
+          {
+            embeddingClient,
+            episodicRepository: harness.episodicRepository,
+            semanticNodeRepository: harness.semanticNodeRepository,
+            semanticGraph: harness.semanticGraph,
+          },
+        ),
+      );
+      const retrievedStaleNode = semantic.matched_nodes.find((node) => node.id === staleNode.id);
+      const summary = summarizeSemanticContext(semantic, 2_000, clock.now());
+
+      expect(retrievedStaleNode).toMatchObject({
+        status: "superseded",
+        status_retrieval_multiplier: 0.5,
+      });
+      expect(summary).toContain("[status=superseded, t=2000]");
+      expect(summary).not.toContain(currentStreamEntryId);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it.each(["search", "judge"] as const)(
+    "accepts the artifact when semantic revision %s fails",
+    async (failure) => {
+      const embeddingClient = new TestEmbeddingClient(
+        new Map([["Project runtime is Node 22", [1, 0, 0, 0]]]),
+      );
+      const harness = await createOfflineTestHarness({
+        clock,
+        embeddingClient,
+      });
+      const artifactRepository = new DecisionArtifactRepository({
+        db: harness.db,
+        clock,
+      });
+      const trace = createTraceRecorder();
+
+      try {
+        const sourceEpisode = createEpisodeFixture({
+          audience_entity_id: audience,
+          shared: false,
+        });
+        await harness.episodicRepository.insert(sourceEpisode);
+        const staleNode = await harness.semanticNodeRepository.insert(
+          createSemanticNodeFixture(
+            {
+              label: "Project runtime is Node 20",
+              description: "The project runtime is Node 20.",
+              source_episode_ids: [sourceEpisode.id],
+            },
+            [1, 0, 0, 0],
+          ),
+        );
+        const llmClient = new FakeLLMClient({
+          responses: [
+            emitDecisionArtifactPatchResponse({
+              operations: [
+                {
+                  type: "add",
+                  kind: "locked",
+                  text: "Project runtime is Node 22",
+                  owner_entity_id: audience,
+                  source_stream_entry_ids: [currentStreamEntryId],
+                },
+              ],
+            }),
+            ...(failure === "judge" ? [throwingResponse] : []),
+          ],
+        });
+        const semanticNodeRepository = {
+          searchByVector:
+            failure === "search"
+              ? vi.fn(async () => {
+                  throw new Error("semantic vector search failed");
+                })
+              : harness.semanticNodeRepository.searchByVector.bind(harness.semanticNodeRepository),
+          markSuperseded: harness.semanticNodeRepository.markSuperseded.bind(
+            harness.semanticNodeRepository,
+          ),
+          markContradicted: harness.semanticNodeRepository.markContradicted.bind(
+            harness.semanticNodeRepository,
+          ),
+        };
+
+        await compileDecisionArtifact({
+          ...baseInput(llmClient),
+          repository: artifactRepository,
+          currentUserMessage: "Lock the project runtime as Node 22.",
+          semanticBeliefRevision: {
+            semanticNodeRepository,
+            episodicRepository: harness.episodicRepository,
+            embeddingClient,
+            model: "semantic-revision-test",
+          },
+          tracer: trace,
+        });
+
+        expect(artifactRepository.get(audience)?.entries[0]).toMatchObject({
+          kind: "locked",
+          text: "Project runtime is Node 22",
+        });
+        await expect(harness.semanticNodeRepository.get(staleNode.id)).resolves.toMatchObject({
+          status: "active",
+        });
+        expect(trace.events).toContainEqual(
+          expect.objectContaining({
+            event: "decision_artifact_semantic_revision_degraded",
+          }),
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
 
   it("retries stranded canonicalizes on an otherwise no-op compile", async () => {
     const trace = createTraceRecorder();

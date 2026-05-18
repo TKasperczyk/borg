@@ -50,7 +50,10 @@ import {
 import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../tracing/tracer.js";
 import {
   findUnsettledDecisionArtifactReconciliation,
+  mergeSemanticBeliefRevisionResult,
   reconcileDecisionArtifactCanonicalizations,
+  reconcileSemanticBeliefRevision,
+  type DecisionArtifactSemanticBeliefRevisionDependencies,
   type DecisionArtifactReconciliationRepositories,
   type DecisionArtifactReconciliationResult,
   type DecisionArtifactUnsettledReconciliationSummary,
@@ -279,6 +282,7 @@ export type CompileDecisionArtifactInput = {
   sourceTrustValidator?: DecisionArtifactSourceTrustValidator;
   canonicalizationCandidates?: DecisionArtifactCanonicalizationCandidates;
   reconciliation?: DecisionArtifactReconciliationRepositories;
+  semanticBeliefRevision?: Omit<DecisionArtifactSemanticBeliefRevisionDependencies, "llmClient">;
   clock?: Clock;
   tracer?: TurnTracer;
   turnId?: string;
@@ -673,6 +677,10 @@ function traceReconciliationCompleted(options: {
       open_questions_resolved_attempted: options.result.open_questions_resolved_attempted,
       open_questions_resolved_succeeded: options.result.open_questions_resolved_succeeded,
       open_questions_resolved_skipped: options.result.open_questions_resolved_skipped,
+      semantic_nodes_reviewed_attempted: options.result.semantic_nodes_reviewed_attempted,
+      semantic_nodes_marked_superseded: options.result.semantic_nodes_marked_superseded,
+      semantic_nodes_marked_contradicted: options.result.semantic_nodes_marked_contradicted,
+      semantic_nodes_skipped: options.result.semantic_nodes_skipped,
       unknown_ids: toTraceJsonValue(options.result.unknown_ids),
       canonicalization_duplicates_dropped: toTraceJsonValue(
         options.canonicalizationDuplicateDrops ?? [],
@@ -683,6 +691,34 @@ function traceReconciliationCompleted(options: {
       skipped_commitments: toTraceJsonValue(options.result.skipped_commitments),
       errors: toTraceJsonValue(options.result.errors),
     });
+  }
+}
+
+function semanticBeliefRevisionDependencies(
+  input: CompileDecisionArtifactInput,
+): DecisionArtifactSemanticBeliefRevisionDependencies | undefined {
+  if (input.semanticBeliefRevision === undefined || input.llmClient === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...input.semanticBeliefRevision,
+    llmClient: input.llmClient,
+  };
+}
+
+async function reconcileSemanticBeliefRevisionFailOpen(
+  input: Parameters<typeof reconcileSemanticBeliefRevision>[0],
+): ReturnType<typeof reconcileSemanticBeliefRevision> {
+  try {
+    return await reconcileSemanticBeliefRevision(input);
+  } catch {
+    return {
+      semantic_nodes_reviewed_attempted: 0,
+      semantic_nodes_marked_superseded: 0,
+      semantic_nodes_marked_contradicted: 0,
+      semantic_nodes_skipped: 0,
+    };
   }
 }
 
@@ -2193,6 +2229,16 @@ export async function compileDecisionArtifact(
       tracer: input.tracer,
       turnId: input.turnId,
     });
+    const semanticReconciliationResult = await reconcileSemanticBeliefRevisionFailOpen({
+      artifact: markedArtifact,
+      operations: [],
+      dependencies: semanticBeliefRevisionDependencies(input),
+      nowMs,
+      sourceTrustValidator: input.sourceTrustValidator,
+      tracer: input.tracer,
+      turnId: input.turnId,
+    });
+    mergeSemanticBeliefRevisionResult(reconciliationResult, semanticReconciliationResult);
 
     traceReconciliationCompleted({
       tracer: input.tracer,
@@ -2244,6 +2290,16 @@ export async function compileDecisionArtifact(
       tracer: input.tracer,
       turnId: input.turnId,
     });
+    const semanticReconciliationResult = await reconcileSemanticBeliefRevisionFailOpen({
+      artifact: nextArtifact,
+      operations,
+      dependencies: semanticBeliefRevisionDependencies(input),
+      nowMs,
+      sourceTrustValidator: input.sourceTrustValidator,
+      tracer: input.tracer,
+      turnId: input.turnId,
+    });
+    mergeSemanticBeliefRevisionResult(reconciliationResult, semanticReconciliationResult);
 
     traceReconciliationCompleted({
       tracer: input.tracer,

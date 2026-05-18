@@ -27,7 +27,7 @@ import type {
   TraitsRepository,
   ValuesRepository,
 } from "../memory/self/index.js";
-import type { ReviewQueueRepository } from "../memory/semantic/index.js";
+import type { ReviewQueueRepository, SemanticNodeRepository } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { WorkingMemoryStore } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
@@ -42,6 +42,7 @@ export type BuildTurnOrchestratorOptions = {
   retrievalPipeline: RetrievalPipeline;
   embeddingClient: EmbeddingClient;
   episodicRepository: EpisodicRepository;
+  semanticNodeRepository: SemanticNodeRepository;
   entityRepository: EntityRepository;
   commitmentRepository: CommitmentRepository;
   decisionArtifactRepository: DecisionArtifactRepository;
@@ -77,6 +78,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     retrievalPipeline: options.retrievalPipeline,
     embeddingClient: options.embeddingClient,
     episodicRepository: options.episodicRepository,
+    semanticNodeRepository: options.semanticNodeRepository,
     entityRepository: options.entityRepository,
     commitmentRepository: options.commitmentRepository,
     decisionArtifactRepository: options.decisionArtifactRepository,

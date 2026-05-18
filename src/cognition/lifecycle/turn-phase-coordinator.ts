@@ -88,6 +88,7 @@ import type {
   DecisionArtifactRepository,
   DecisionArtifactSourceTrustValidator,
 } from "../../memory/decision-artifacts/index.js";
+import type { EpisodicRepository } from "../../memory/episodic/index.js";
 import type { RelationalSlotRepository } from "../../memory/relational-slots/index.js";
 import {
   appendInternalFailureEvent,
@@ -95,6 +96,7 @@ import {
   type OpenQuestion,
   type OpenQuestionsRepository,
 } from "../../memory/self/index.js";
+import type { SemanticNodeRepository } from "../../memory/semantic/index.js";
 import type { SocialRepository } from "../../memory/social/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../../memory/working/index.js";
 import {
@@ -734,6 +736,10 @@ function decisionArtifactReconciliationOutcomeCounts(
     open_questions_resolved_attempted: result.open_questions_resolved_attempted,
     open_questions_resolved_succeeded: result.open_questions_resolved_succeeded,
     open_questions_resolved_skipped: result.open_questions_resolved_skipped,
+    semantic_nodes_reviewed_attempted: result.semantic_nodes_reviewed_attempted,
+    semantic_nodes_marked_superseded: result.semantic_nodes_marked_superseded,
+    semantic_nodes_marked_contradicted: result.semantic_nodes_marked_contradicted,
+    semantic_nodes_skipped: result.semantic_nodes_skipped,
     unknown_id_count: result.unknown_ids.length,
     skipped_commitment_count: result.skipped_commitments.length,
     error_count: result.errors.length,
@@ -972,6 +978,11 @@ export type TurnPhaseResult = {
 export type TurnPhaseCoordinatorOptions = {
   config: Config;
   embeddingClient: EmbeddingClient;
+  episodicRepository?: Pick<EpisodicRepository, "getMany">;
+  semanticNodeRepository?: Pick<
+    SemanticNodeRepository,
+    "searchByVector" | "markSuperseded" | "markContradicted"
+  >;
   workingMemoryStore: WorkingMemoryStore;
   entityRepository: EntityRepository;
   socialRepository: SocialRepository;
@@ -2572,8 +2583,20 @@ export class TurnPhaseCoordinator {
       });
     }
 
+    const decisionArtifactLlmClient = this.options.llmFactory();
+    const semanticBeliefRevision =
+      this.options.semanticNodeRepository === undefined ||
+      this.options.episodicRepository === undefined
+        ? undefined
+        : {
+            semanticNodeRepository: this.options.semanticNodeRepository,
+            episodicRepository: this.options.episodicRepository,
+            embeddingClient: this.options.embeddingClient,
+            model: this.options.config.anthropic.models.background,
+          };
+
     await compileDecisionArtifact({
-      llmClient: this.options.llmFactory(),
+      llmClient: decisionArtifactLlmClient,
       model: this.options.config.anthropic.models.recallExpansion,
       repository: this.options.decisionArtifactRepository,
       audienceEntityId,
@@ -2592,6 +2615,7 @@ export class TurnPhaseCoordinator {
       sourceTrustValidator,
       canonicalizationCandidates,
       reconciliation: reconciliationRepositories,
+      semanticBeliefRevision,
       clock: this.options.clock,
       tracer: this.options.tracer,
       turnId: input.input.turnId,

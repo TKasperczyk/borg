@@ -113,6 +113,10 @@ const TURN_METRICS_KEY_ORDER = [
   "goal_promotion_classifications_per_turn",
   "goal_promotion_rejected_classification",
   "goal_promotion_cap_rejections",
+  "decision_artifact_semantic_revisions_attempted",
+  "decision_artifact_semantic_revisions_completed_succeeded",
+  "decision_artifact_semantic_nodes_marked_superseded",
+  "decision_artifact_semantic_nodes_marked_contradicted",
   "overseer_due_on_suppressed_turn",
 ] as const;
 
@@ -333,6 +337,28 @@ describe("MetricsCapture", () => {
           event: "llm_call_response",
           usage: { inputTokens: 11, outputTokens: 7 },
         },
+        {
+          ts: 191,
+          turnId: "turn-1",
+          event: "decision_artifact_semantic_revision_completed",
+          artifact_entry_id: "dart_metrics_completed",
+          superseded_count: 2,
+          contradicted_count: 1,
+        },
+        {
+          ts: 192,
+          turnId: "turn-1",
+          event: "decision_artifact_semantic_revision_degraded",
+          artifact_entry_id: "dart_metrics_degraded",
+          reason: "judge unavailable",
+        },
+        {
+          ts: 193,
+          turnId: "turn-1",
+          event: "decision_artifact_semantic_revision_degraded",
+          artifact_entry_id: "dart_metrics_completed",
+          reason: "mark failed after partial apply",
+        },
       ]
         .map((record) => JSON.stringify(record))
         .join("\n"),
@@ -378,6 +404,10 @@ describe("MetricsCapture", () => {
     expect(row.deliberation_latency_ms).toBe(60);
     expect(row.borg_input_tokens).toBe(11);
     expect(row.borg_output_tokens).toBe(7);
+    expect(row.decision_artifact_semantic_revisions_attempted).toBe(2);
+    expect(row.decision_artifact_semantic_revisions_completed_succeeded).toBe(1);
+    expect(row.decision_artifact_semantic_nodes_marked_superseded).toBe(2);
+    expect(row.decision_artifact_semantic_nodes_marked_contradicted).toBe(1);
     expect(observed.moodSessions).toEqual([sessionId]);
     expect(observed.tailSessions).toEqual([sessionId, otherSessionId, sessionId, otherSessionId]);
     expect(written).toEqual(row);

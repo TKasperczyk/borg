@@ -127,6 +127,7 @@ export async function openBorgDependencies(
       retrievalPipeline: repositories.retrievalPipeline,
       embeddingClient,
       episodicRepository: repositories.episodicRepository,
+      semanticNodeRepository: repositories.semanticNodeRepository,
       entityRepository: repositories.entityRepository,
       commitmentRepository: repositories.commitmentRepository,
       decisionArtifactRepository: repositories.decisionArtifactRepository,

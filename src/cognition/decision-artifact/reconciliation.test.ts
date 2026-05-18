@@ -7,7 +7,15 @@ import {
   type CommitmentRecord,
   type CommitmentType,
 } from "../../memory/commitments/index.js";
-import type { DecisionArtifact, DecisionArtifactEntry } from "../../memory/decision-artifacts/index.js";
+import type {
+  DecisionArtifact,
+  DecisionArtifactEntry,
+} from "../../memory/decision-artifacts/index.js";
+import type {
+  SemanticNodeCorrectionRef,
+  SemanticNodeSearchCandidate,
+  SemanticNodeStatusTransition,
+} from "../../memory/semantic/index.js";
 import { OpenQuestionsRepository, selfMigrations } from "../../memory/self/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
@@ -16,13 +24,19 @@ import {
   createCommitmentId,
   createDecisionArtifactEntryId,
   createEntityId,
+  createEpisodeId,
   createGoalId,
   createOpenQuestionId,
+  createSemanticNodeId,
   createStreamEntryId,
+  type EpisodeId,
+  type SemanticNodeId,
 } from "../../util/ids.js";
+import { createEpisodeFixture, createSemanticNodeFixture } from "../../offline/test-support.js";
 import {
   findUnsettledDecisionArtifactReconciliation,
   reconcileDecisionArtifactCanonicalizations,
+  reconcileSemanticBeliefRevision,
 } from "./reconciliation.js";
 import { DECISION_ARTIFACT_COMMITMENT_CANONICALIZATION_TYPES } from "./commitment-canonicalization.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../tracing/tracer.js";
@@ -110,6 +124,166 @@ function createTraceRecorder(): TurnTracer & {
   };
 }
 
+function semanticRevisionResponse(input: {
+  verdicts: Array<{
+    node_id: SemanticNodeId;
+    verdict: "supersede" | "contradict" | "keep" | "uncertain";
+  }>;
+}) {
+  return {
+    text: "",
+    input_tokens: 5,
+    output_tokens: 5,
+    stop_reason: "tool_use",
+    tool_calls: [
+      {
+        id: "toolu_decision_artifact_semantic_revision",
+        name: "EmitDecisionArtifactSemanticRevision",
+        input: {
+          verdicts: input.verdicts,
+        },
+      },
+    ],
+  };
+}
+
+function semanticRevisionOperation(entry: DecisionArtifactEntry) {
+  return {
+    type: "add" as const,
+    id: entry.id,
+    kind: "locked" as const,
+    text: entry.text,
+    owner_entity_id: entry.owner_entity_id,
+    provenance_stream_entry_ids: entry.provenance_stream_entry_ids,
+    last_updated_stream_entry_ids: entry.last_updated_stream_entry_ids,
+    rank: entry.rank,
+    canonicalizes: entry.canonicalizes,
+  };
+}
+
+function semanticRevisionDependencies(input: {
+  nodeId?: SemanticNodeId;
+  verdict?: "supersede" | "contradict" | "keep" | "uncertain";
+  searchError?: Error;
+  llmError?: Error;
+  candidateCount?: number;
+}) {
+  const episodeId = createEpisodeId();
+  const node = createSemanticNodeFixture(
+    {
+      id: input.nodeId ?? createSemanticNodeId(),
+      label: "Project runtime is Node 20",
+      description: "The project runtime is Node 20.",
+      source_episode_ids: [episodeId],
+    },
+    [1, 0, 0, 0],
+  );
+  const candidates = Array.from({ length: input.candidateCount ?? 1 }, (_, index) => ({
+    node:
+      index === 0
+        ? node
+        : createSemanticNodeFixture(
+            {
+              id: createSemanticNodeId(),
+              label: `Project runtime candidate ${index}`,
+              description: `Runtime candidate ${index}.`,
+              source_episode_ids: [episodeId],
+            },
+            [1, 0, 0, 0],
+          ),
+    similarity: 0.95,
+  }));
+  const searchByVector = vi.fn(async () => {
+    if (input.searchError !== undefined) {
+      throw input.searchError;
+    }
+
+    return candidates;
+  });
+  const markSuperseded = vi.fn(
+    async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) => ({
+      id,
+      fromStatus: "active" as const,
+      toStatus: "superseded" as const,
+      correctedBy,
+      supersededAt,
+    }),
+  );
+  const markContradicted = vi.fn(
+    async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) => ({
+      id,
+      fromStatus: "active" as const,
+      toStatus: "contradicted" as const,
+      correctedBy,
+      supersededAt,
+    }),
+  );
+  const complete = vi.fn(async () => {
+    if (input.llmError !== undefined) {
+      throw input.llmError;
+    }
+
+    return semanticRevisionResponse({
+      verdicts: candidates.map((candidate) => ({
+        node_id: candidate.node.id,
+        verdict: input.verdict ?? "keep",
+      })),
+    });
+  });
+
+  return {
+    node,
+    searchByVector,
+    markSuperseded,
+    markContradicted,
+    complete,
+    dependencies: {
+      semanticNodeRepository: {
+        searchByVector,
+        markSuperseded,
+        markContradicted,
+      },
+      episodicRepository: {
+        getMany: vi.fn(async (ids: EpisodeId[]) =>
+          ids.map((id) =>
+            createEpisodeFixture({
+              id,
+              audience_entity_id: null,
+              shared: true,
+            }),
+          ),
+        ),
+      },
+      embeddingClient: {
+        embed: vi.fn(async () => Float32Array.from([1, 0, 0, 0])),
+        embedBatch: vi.fn(async (texts: readonly string[]) =>
+          texts.map(() => Float32Array.from([1, 0, 0, 0])),
+        ),
+      },
+      llmClient: {
+        complete,
+        converse: vi.fn(),
+      },
+      model: "semantic-revision-test",
+    },
+  };
+}
+
+function semanticStatusTransition(input: {
+  id: SemanticNodeId;
+  toStatus: "superseded" | "contradicted";
+  correctedBy: SemanticNodeCorrectionRef;
+  supersededAt: number;
+}): SemanticNodeStatusTransition {
+  return {
+    id: input.id,
+    fromStatus: "active",
+    toStatus: input.toStatus,
+    correctedBy: input.correctedBy,
+    supersededAt: input.supersededAt,
+  };
+}
+
 describe("findUnsettledDecisionArtifactReconciliation", () => {
   it("does not flag durable commitment canonicalizations as unsettled", () => {
     const db = openDatabase(":memory:", {
@@ -149,6 +323,537 @@ describe("findUnsettledDecisionArtifactReconciliation", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe("reconcileSemanticBeliefRevision", () => {
+  it("keeps active candidate nodes when the judge returns keep", async () => {
+    const entry = lockedEntry({
+      text: "Project runtime is Node 22",
+    });
+    const deps = semanticRevisionDependencies({
+      verdict: "keep",
+    });
+    const trace = createTraceRecorder();
+
+    const result = await reconcileSemanticBeliefRevision({
+      artifact: decisionArtifact([entry]),
+      operations: [semanticRevisionOperation(entry)],
+      dependencies: deps.dependencies,
+      nowMs: 2_000,
+      tracer: trace,
+      turnId: "turn_semantic_keep",
+    });
+
+    expect(deps.searchByVector).toHaveBeenCalledTimes(1);
+    expect(deps.complete).toHaveBeenCalledTimes(1);
+    expect(deps.markSuperseded).not.toHaveBeenCalled();
+    expect(deps.markContradicted).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      semantic_nodes_reviewed_attempted: 1,
+      semantic_nodes_marked_superseded: 0,
+      semantic_nodes_marked_contradicted: 0,
+    });
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_semantic_revision_completed",
+        data: expect.objectContaining({
+          artifact_entry_id: entry.id,
+          candidates_enumerated: 1,
+          kept_count: 1,
+        }),
+      }),
+    );
+  });
+
+  it("succeeds without calling the judge when embedding search returns no candidates", async () => {
+    const entry = lockedEntry({
+      text: "Project runtime is Node 22",
+    });
+    const deps = semanticRevisionDependencies({
+      candidateCount: 0,
+    });
+    const trace = createTraceRecorder();
+
+    const result = await reconcileSemanticBeliefRevision({
+      artifact: decisionArtifact([entry]),
+      operations: [semanticRevisionOperation(entry)],
+      dependencies: deps.dependencies,
+      nowMs: 2_000,
+      tracer: trace,
+      turnId: "turn_semantic_empty",
+    });
+
+    expect(deps.searchByVector).toHaveBeenCalledTimes(1);
+    expect(deps.complete).not.toHaveBeenCalled();
+    expect(result.semantic_nodes_reviewed_attempted).toBe(0);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_semantic_revision_completed",
+        data: expect.objectContaining({
+          artifact_entry_id: entry.id,
+          candidates_enumerated: 0,
+        }),
+      }),
+    );
+  });
+
+  it("degrades without marking nodes when embedding search fails", async () => {
+    const entry = lockedEntry({
+      text: "Project runtime is Node 22",
+    });
+    const deps = semanticRevisionDependencies({
+      searchError: new Error("vector index unavailable"),
+    });
+    const trace = createTraceRecorder();
+
+    const result = await reconcileSemanticBeliefRevision({
+      artifact: decisionArtifact([entry]),
+      operations: [semanticRevisionOperation(entry)],
+      dependencies: deps.dependencies,
+      nowMs: 2_000,
+      tracer: trace,
+      turnId: "turn_semantic_search_error",
+    });
+
+    expect(deps.complete).not.toHaveBeenCalled();
+    expect(deps.markSuperseded).not.toHaveBeenCalled();
+    expect(result.semantic_nodes_marked_superseded).toBe(0);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_semantic_revision_degraded",
+        data: expect.objectContaining({
+          artifact_entry_id: entry.id,
+          reason: "vector index unavailable",
+        }),
+      }),
+    );
+  });
+
+  it("degrades without marking nodes when the LLM judge fails", async () => {
+    const entry = lockedEntry({
+      text: "Project runtime is Node 22",
+    });
+    const deps = semanticRevisionDependencies({
+      llmError: new Error("judge unavailable"),
+    });
+    const trace = createTraceRecorder();
+
+    const result = await reconcileSemanticBeliefRevision({
+      artifact: decisionArtifact([entry]),
+      operations: [semanticRevisionOperation(entry)],
+      dependencies: deps.dependencies,
+      nowMs: 2_000,
+      tracer: trace,
+      turnId: "turn_semantic_llm_error",
+    });
+
+    expect(deps.searchByVector).toHaveBeenCalledTimes(1);
+    expect(deps.markSuperseded).not.toHaveBeenCalled();
+    expect(result.semantic_nodes_marked_superseded).toBe(0);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_semantic_revision_degraded",
+        data: expect.objectContaining({
+          artifact_entry_id: entry.id,
+          reason: "judge unavailable",
+        }),
+      }),
+    );
+  });
+
+  it("does not process locked entries with contaminated provenance", async () => {
+    const source = createStreamEntryId();
+    const entry = lockedEntry({
+      text: "Project runtime is Node 22",
+      provenance_stream_entry_ids: [source],
+      last_updated_stream_entry_ids: [source],
+    });
+    const deps = semanticRevisionDependencies({
+      verdict: "supersede",
+    });
+
+    const result = await reconcileSemanticBeliefRevision({
+      artifact: decisionArtifact([entry]),
+      operations: [semanticRevisionOperation(entry)],
+      dependencies: deps.dependencies,
+      nowMs: 2_000,
+      sourceTrustValidator: () => ({ allowed: false, reason: "quarantined" }),
+      turnId: "turn_semantic_contaminated",
+    });
+
+    expect(deps.searchByVector).not.toHaveBeenCalled();
+    expect(deps.complete).not.toHaveBeenCalled();
+    expect(deps.markSuperseded).not.toHaveBeenCalled();
+    expect(result.semantic_nodes_reviewed_attempted).toBe(0);
+  });
+
+  it("overfetches vector candidates before filtering active and audience visibility", async () => {
+    const audience = createEntityId();
+    const otherAudience = createEntityId();
+    const visibleEpisodeId = createEpisodeId();
+    const hiddenEpisodeId = createEpisodeId();
+    const entry = lockedEntry({
+      audience_entity_id: audience,
+      text: "Project runtime is Node 22",
+    });
+    const inactiveNode = createSemanticNodeFixture({
+      label: "Project runtime is Node 18",
+      description: "The project runtime is Node 18.",
+      source_episode_ids: [visibleEpisodeId],
+      status: "superseded",
+    });
+    const crossAudienceNode = createSemanticNodeFixture({
+      label: "Project runtime is Node 19",
+      description: "The project runtime is Node 19.",
+      source_episode_ids: [hiddenEpisodeId],
+    });
+    const archivedNode = createSemanticNodeFixture({
+      label: "Project runtime is Node 21",
+      description: "The project runtime is Node 21.",
+      source_episode_ids: [visibleEpisodeId],
+      archived: true,
+    });
+    const targetNode = createSemanticNodeFixture({
+      label: "Project runtime is Node 20",
+      description: "The project runtime is Node 20.",
+      source_episode_ids: [visibleEpisodeId],
+    });
+    const extraNode = createSemanticNodeFixture({
+      label: "Project runtime was planned for Node 20",
+      description: "A prior plan mentioned Node 20.",
+      source_episode_ids: [visibleEpisodeId],
+    });
+    const candidates: SemanticNodeSearchCandidate[] = [
+      inactiveNode,
+      crossAudienceNode,
+      archivedNode,
+      targetNode,
+      extraNode,
+    ].map((node, index) => ({
+      node,
+      similarity: 0.99 - index * 0.01,
+    }));
+    const searchByVector = vi.fn(
+      async (_embedding: Float32Array, options: { limit?: number }) =>
+        candidates.slice(0, options.limit ?? candidates.length),
+    );
+    const markSuperseded = vi.fn(
+      async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) =>
+        semanticStatusTransition({
+          id,
+          toStatus: "superseded",
+          correctedBy,
+          supersededAt,
+        }),
+    );
+    const complete = vi.fn(async () =>
+      semanticRevisionResponse({
+        verdicts: [
+          {
+            node_id: targetNode.id,
+            verdict: "supersede",
+          },
+        ],
+      }),
+    );
+    const trace = createTraceRecorder();
+
+    const result = await reconcileSemanticBeliefRevision({
+      artifact: decisionArtifact([entry]),
+      operations: [semanticRevisionOperation(entry)],
+      dependencies: {
+        semanticNodeRepository: {
+          searchByVector,
+          markSuperseded,
+          markContradicted: vi.fn(),
+        },
+        episodicRepository: {
+          getMany: vi.fn(async (ids: EpisodeId[]) =>
+            ids.map((id) =>
+              createEpisodeFixture({
+                id,
+                audience_entity_id: id === hiddenEpisodeId ? otherAudience : null,
+                shared: id === hiddenEpisodeId ? false : true,
+              }),
+            ),
+          ),
+        },
+        embeddingClient: {
+          embed: vi.fn(async () => Float32Array.from([1, 0, 0, 0])),
+          embedBatch: vi.fn(),
+        },
+        llmClient: {
+          complete,
+          converse: vi.fn(),
+        },
+        model: "semantic-revision-test",
+        candidateLimit: 3,
+      },
+      nowMs: 2_000,
+      tracer: trace,
+      turnId: "turn_semantic_overfetch",
+    });
+
+    expect(searchByVector).toHaveBeenCalledWith(
+      expect.any(Float32Array),
+      expect.objectContaining({ limit: 9 }),
+    );
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(markSuperseded).toHaveBeenCalledWith(
+      targetNode.id,
+      entry.last_updated_stream_entry_ids[0],
+      2_000,
+    );
+    expect(result.semantic_nodes_reviewed_attempted).toBe(2);
+    expect(result.semantic_nodes_marked_superseded).toBe(1);
+  });
+
+  it("does not revise semantic nodes extracted from the same source stream as the artifact entry", async () => {
+    const source = createStreamEntryId();
+    const episodeId = createEpisodeId();
+    const node = createSemanticNodeFixture({
+      label: "Project runtime is Node 20",
+      description: "The project runtime is Node 20.",
+      source_episode_ids: [episodeId],
+    });
+    const entry = lockedEntry({
+      text: "Project runtime is Node 22",
+      provenance_stream_entry_ids: [source],
+      last_updated_stream_entry_ids: [source],
+    });
+    const searchByVector = vi.fn(async () => [{ node, similarity: 0.98 }]);
+    const markSuperseded = vi.fn(
+      async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) =>
+        semanticStatusTransition({
+          id,
+          toStatus: "superseded",
+          correctedBy,
+          supersededAt,
+        }),
+    );
+    const complete = vi.fn(async () =>
+      semanticRevisionResponse({
+        verdicts: [
+          {
+            node_id: node.id,
+            verdict: "supersede",
+          },
+        ],
+      }),
+    );
+    const trace = createTraceRecorder();
+
+    const result = await reconcileSemanticBeliefRevision({
+      artifact: decisionArtifact([entry]),
+      operations: [semanticRevisionOperation(entry)],
+      dependencies: {
+        semanticNodeRepository: {
+          searchByVector,
+          markSuperseded,
+          markContradicted: vi.fn(),
+        },
+        episodicRepository: {
+          getMany: vi.fn(async () => [
+            createEpisodeFixture({
+              id: episodeId,
+              source_stream_ids: [source],
+              shared: true,
+            }),
+          ]),
+        },
+        embeddingClient: {
+          embed: vi.fn(async () => Float32Array.from([1, 0, 0, 0])),
+          embedBatch: vi.fn(),
+        },
+        llmClient: {
+          complete,
+          converse: vi.fn(),
+        },
+        model: "semantic-revision-test",
+      },
+      nowMs: 2_000,
+      tracer: trace,
+      turnId: "turn_semantic_same_source",
+    });
+
+    expect(complete).not.toHaveBeenCalled();
+    expect(markSuperseded).not.toHaveBeenCalled();
+    expect(result.semantic_nodes_reviewed_attempted).toBe(0);
+    expect(result.semantic_nodes_marked_superseded).toBe(0);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_semantic_revision_completed",
+        data: expect.objectContaining({
+          artifact_entry_id: entry.id,
+          candidates_enumerated: 0,
+        }),
+      }),
+    );
+  });
+
+  it("counts missing nodes from mark calls as skipped while processing the remaining verdicts", async () => {
+    const episodeId = createEpisodeId();
+    const entry = lockedEntry({
+      text: "Project runtime is Node 22",
+    });
+    const nodes = Array.from({ length: 3 }, (_, index) =>
+      createSemanticNodeFixture({
+        label: `Project runtime stale candidate ${index}`,
+        description: `The project runtime stale candidate ${index}.`,
+        source_episode_ids: [episodeId],
+      }),
+    );
+    const candidates = nodes.map((node) => ({ node, similarity: 0.97 }));
+    const searchByVector = vi.fn(async () => candidates);
+    const markSuperseded = vi.fn(
+      async (id: SemanticNodeId, correctedBy: SemanticNodeCorrectionRef, supersededAt: number) =>
+        id === nodes[0]?.id
+          ? null
+          : semanticStatusTransition({
+              id,
+              toStatus: "superseded",
+              correctedBy,
+              supersededAt,
+            }),
+    );
+    const complete = vi.fn(async () =>
+      semanticRevisionResponse({
+        verdicts: nodes.map((node) => ({
+          node_id: node.id,
+          verdict: "supersede",
+        })),
+      }),
+    );
+    const trace = createTraceRecorder();
+
+    const result = await reconcileSemanticBeliefRevision({
+      artifact: decisionArtifact([entry]),
+      operations: [semanticRevisionOperation(entry)],
+      dependencies: {
+        semanticNodeRepository: {
+          searchByVector,
+          markSuperseded,
+          markContradicted: vi.fn(),
+        },
+        episodicRepository: {
+          getMany: vi.fn(async (ids: EpisodeId[]) =>
+            ids.map((id) =>
+              createEpisodeFixture({
+                id,
+                shared: true,
+              }),
+            ),
+          ),
+        },
+        embeddingClient: {
+          embed: vi.fn(async () => Float32Array.from([1, 0, 0, 0])),
+          embedBatch: vi.fn(),
+        },
+        llmClient: {
+          complete,
+          converse: vi.fn(),
+        },
+        model: "semantic-revision-test",
+      },
+      nowMs: 2_000,
+      tracer: trace,
+      turnId: "turn_semantic_node_missing",
+    });
+
+    expect(markSuperseded).toHaveBeenCalledTimes(3);
+    expect(result.semantic_nodes_marked_superseded).toBe(2);
+    expect(result.semantic_nodes_skipped).toBe(1);
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_semantic_revision_degraded",
+        data: expect.objectContaining({
+          artifact_entry_id: entry.id,
+          node_id: nodes[0]?.id,
+          verdict: "supersede",
+          reason: "node_missing",
+        }),
+      }),
+    );
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "decision_artifact_semantic_revision_completed",
+        data: expect.objectContaining({
+          artifact_entry_id: entry.id,
+          superseded_count: 2,
+          skipped_count: 1,
+          skipped_count_by_reason: expect.objectContaining({
+            node_missing: 1,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("caps semantic revision to the first five locked artifact entries per turn", async () => {
+    const entries = Array.from({ length: 7 }, (_, index) =>
+      lockedEntry({
+        text: `Workstream runtime decision ${index} is locked`,
+        rank: index,
+      }),
+    );
+    const searchByVector = vi.fn(async () => []);
+    const trace = createTraceRecorder();
+
+    const result = await reconcileSemanticBeliefRevision({
+      artifact: decisionArtifact(entries),
+      operations: entries.map((entry) => semanticRevisionOperation(entry)),
+      dependencies: {
+        semanticNodeRepository: {
+          searchByVector,
+          markSuperseded: vi.fn(),
+          markContradicted: vi.fn(),
+        },
+        episodicRepository: {
+          getMany: vi.fn(),
+        },
+        embeddingClient: {
+          embed: vi.fn(async () => Float32Array.from([1, 0, 0, 0])),
+          embedBatch: vi.fn(),
+        },
+        llmClient: {
+          complete: vi.fn(),
+          converse: vi.fn(),
+        },
+        model: "semantic-revision-test",
+      },
+      nowMs: 2_000,
+      tracer: trace,
+      turnId: "turn_semantic_entry_cap",
+    });
+
+    expect(searchByVector).toHaveBeenCalledTimes(5);
+    expect(result.semantic_nodes_reviewed_attempted).toBe(0);
+    expect(
+      trace.events.filter(
+        (event) => event.event === "decision_artifact_semantic_revision_completed",
+      ),
+    ).toHaveLength(5);
+    expect(
+      trace.events.filter(
+        (event) =>
+          event.event === "decision_artifact_semantic_revision_degraded" &&
+          event.data.reason === "skipped_over_cap",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          artifact_entry_id: entries[5]?.id,
+          reason: "skipped_over_cap",
+        }),
+      }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          artifact_entry_id: entries[6]?.id,
+          reason: "skipped_over_cap",
+        }),
+      }),
+    ]);
   });
 });
 

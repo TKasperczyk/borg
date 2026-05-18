@@ -21,12 +21,15 @@ export {
 export {
   findUnsettledDecisionArtifactReconciliation,
   reconcileDecisionArtifactCanonicalizations,
+  reconcileSemanticBeliefRevision,
   type DecisionArtifactReconciliationError,
   type DecisionArtifactReconciliationLookupRepositories,
   type DecisionArtifactReconciliationRepositories,
   type DecisionArtifactReconciliationResult,
+  type DecisionArtifactSemanticBeliefRevisionDependencies,
   type DecisionArtifactSkippedCommitmentCanonicalization,
   type DecisionArtifactUnsettledReconciliation,
   type DecisionArtifactUnsettledReconciliationSummary,
   type ReconcileDecisionArtifactCanonicalizationsInput,
+  type ReconcileSemanticBeliefRevisionInput,
 } from "./reconciliation.js";

@@ -20,7 +20,7 @@ import {
   ValuesRepository,
   type OpenQuestionsRepository,
 } from "../memory/self/index.js";
-import { ReviewQueueRepository } from "../memory/semantic/index.js";
+import { ReviewQueueRepository, type SemanticNodeRepository } from "../memory/semantic/index.js";
 import { SocialRepository } from "../memory/social/index.js";
 import { WorkingMemoryStore, type WorkingMemory } from "../memory/working/index.js";
 import type { RetrievalPipeline } from "../retrieval/index.js";
@@ -93,6 +93,7 @@ export type TurnOrchestratorOptions = {
   retrievalPipeline: RetrievalPipeline;
   embeddingClient: EmbeddingClient;
   episodicRepository: EpisodicRepository;
+  semanticNodeRepository?: SemanticNodeRepository;
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
@@ -273,6 +274,8 @@ export class TurnOrchestrator {
     this.turnPhaseCoordinator = new TurnPhaseCoordinator({
       config: options.config,
       embeddingClient: options.embeddingClient,
+      episodicRepository: options.episodicRepository,
+      semanticNodeRepository: options.semanticNodeRepository,
       workingMemoryStore: options.workingMemoryStore,
       entityRepository: options.entityRepository,
       socialRepository: options.socialRepository,

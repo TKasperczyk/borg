@@ -122,6 +122,14 @@ type GoalPromotionMetricCounts = Pick<
   | "goal_promotion_cap_rejections"
 >;
 
+type DecisionArtifactSemanticRevisionMetricCounts = Pick<
+  MetricsRow,
+  | "decision_artifact_semantic_revisions_attempted"
+  | "decision_artifact_semantic_revisions_completed_succeeded"
+  | "decision_artifact_semantic_nodes_marked_superseded"
+  | "decision_artifact_semantic_nodes_marked_contradicted"
+>;
+
 type ActionCandidateMetricCounts = Pick<
   MetricsRow,
   | "action_candidate_classifications_per_turn"
@@ -308,9 +316,7 @@ function frameAnomalyMetrics(input: {
   };
 }
 
-function actionCandidateMetrics(
-  traceRecords: readonly TraceRecord[],
-): ActionCandidateMetricCounts {
+function actionCandidateMetrics(traceRecords: readonly TraceRecord[]): ActionCandidateMetricCounts {
   const completed = traceRecords.filter(
     (record) => record.event === "action_state_extractor_completed",
   );
@@ -337,9 +343,7 @@ function actionCandidateMetrics(
   };
 }
 
-function goalPromotionMetrics(
-  traceRecords: readonly TraceRecord[],
-): GoalPromotionMetricCounts {
+function goalPromotionMetrics(traceRecords: readonly TraceRecord[]): GoalPromotionMetricCounts {
   const completed = traceRecords.filter(
     (record) => record.event === "goal_promotion_extractor_completed",
   );
@@ -383,6 +387,37 @@ function goalPromotionMetrics(
     goal_promotion_cap_rejections: classificationRejected.filter(
       (record) => traceReason(record) === "cap_exceeded",
     ).length,
+  };
+}
+
+function decisionArtifactSemanticRevisionMetrics(
+  traceRecords: readonly TraceRecord[],
+): DecisionArtifactSemanticRevisionMetricCounts {
+  const completed = traceRecords.filter(
+    (record) => record.event === "decision_artifact_semantic_revision_completed",
+  );
+  const degraded = traceRecords.filter(
+    (record) => record.event === "decision_artifact_semantic_revision_degraded",
+  );
+  const attemptedArtifactEntryIds = new Set(
+    [...completed, ...degraded].map((record, index) =>
+      typeof record.artifact_entry_id === "string"
+        ? record.artifact_entry_id
+        : `unidentified:${index}`,
+    ),
+  );
+
+  return {
+    decision_artifact_semantic_revisions_attempted: attemptedArtifactEntryIds.size,
+    decision_artifact_semantic_revisions_completed_succeeded: completed.length,
+    decision_artifact_semantic_nodes_marked_superseded: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "superseded_count"),
+      0,
+    ),
+    decision_artifact_semantic_nodes_marked_contradicted: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "contradicted_count"),
+      0,
+    ),
   };
 }
 
@@ -811,6 +846,8 @@ export class MetricsCapture {
     });
     const actionCandidateMetricCounts = actionCandidateMetrics(traceRecords);
     const goalPromotionMetricCounts = goalPromotionMetrics(traceRecords);
+    const decisionArtifactSemanticRevisionMetricCounts =
+      decisionArtifactSemanticRevisionMetrics(traceRecords);
     await this.emitActionDuplicatePressureTrace({
       borg,
       turnId,
@@ -894,13 +931,20 @@ export class MetricsCapture {
         goalPromotionMetricCounts.goal_promotion_dedup_skipped_extractor_signal,
       goal_promotion_dedup_skipped_embedding:
         goalPromotionMetricCounts.goal_promotion_dedup_skipped_embedding,
-      goal_promotion_dedup_degraded:
-        goalPromotionMetricCounts.goal_promotion_dedup_degraded,
+      goal_promotion_dedup_degraded: goalPromotionMetricCounts.goal_promotion_dedup_degraded,
       goal_promotion_classifications_per_turn:
         goalPromotionMetricCounts.goal_promotion_classifications_per_turn,
       goal_promotion_rejected_classification:
         goalPromotionMetricCounts.goal_promotion_rejected_classification,
       goal_promotion_cap_rejections: goalPromotionMetricCounts.goal_promotion_cap_rejections,
+      decision_artifact_semantic_revisions_attempted:
+        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_attempted,
+      decision_artifact_semantic_revisions_completed_succeeded:
+        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_completed_succeeded,
+      decision_artifact_semantic_nodes_marked_superseded:
+        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_superseded,
+      decision_artifact_semantic_nodes_marked_contradicted:
+        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_contradicted,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 
@@ -942,6 +986,9 @@ export class MetricsCapture {
     });
     const actionCandidateMetricCounts = actionCandidateMetrics([]);
     const goalPromotionMetricCounts = goalPromotionMetrics([]);
+    const decisionArtifactSemanticRevisionMetricCounts = decisionArtifactSemanticRevisionMetrics(
+      [],
+    );
     const row: MetricsRow = {
       event,
       ts: Date.now(),
@@ -1013,13 +1060,20 @@ export class MetricsCapture {
         goalPromotionMetricCounts.goal_promotion_dedup_skipped_extractor_signal,
       goal_promotion_dedup_skipped_embedding:
         goalPromotionMetricCounts.goal_promotion_dedup_skipped_embedding,
-      goal_promotion_dedup_degraded:
-        goalPromotionMetricCounts.goal_promotion_dedup_degraded,
+      goal_promotion_dedup_degraded: goalPromotionMetricCounts.goal_promotion_dedup_degraded,
       goal_promotion_classifications_per_turn:
         goalPromotionMetricCounts.goal_promotion_classifications_per_turn,
       goal_promotion_rejected_classification:
         goalPromotionMetricCounts.goal_promotion_rejected_classification,
       goal_promotion_cap_rejections: goalPromotionMetricCounts.goal_promotion_cap_rejections,
+      decision_artifact_semantic_revisions_attempted:
+        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_attempted,
+      decision_artifact_semantic_revisions_completed_succeeded:
+        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_revisions_completed_succeeded,
+      decision_artifact_semantic_nodes_marked_superseded:
+        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_superseded,
+      decision_artifact_semantic_nodes_marked_contradicted:
+        decisionArtifactSemanticRevisionMetricCounts.decision_artifact_semantic_nodes_marked_contradicted,
       overseer_due_on_suppressed_turn: context.overseerDueOnSuppressedTurn ?? false,
     };
 
