@@ -28,6 +28,14 @@ export {
 } from "./orchestrator.js";
 export { OverseerProcess, type OverseerProcessOptions } from "./overseer/index.js";
 export {
+  DEFAULT_REVIEW_RESOLVER_MAX_ITEMS_PER_PASS,
+  ReviewResolverProcess,
+  reviewResolverPlanSchema,
+  type ReviewResolverPlan,
+  type ReviewResolverProcessOptions,
+  type ReviewResolverVerdict,
+} from "./review-resolver/index.js";
+export {
   revalidateReviewQueue,
   type ReviewRevalidationOptions,
   type ReviewRevalidationResult,

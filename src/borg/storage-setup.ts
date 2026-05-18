@@ -139,6 +139,10 @@ export function resolveBorgConfig(options: {
         ...DEFAULT_CONFIG.offline.overseer,
         ...rawConfig.offline?.overseer,
       },
+      reviewResolver: {
+        ...DEFAULT_CONFIG.offline.reviewResolver,
+        ...rawConfig.offline?.reviewResolver,
+      },
       ruminator: {
         ...DEFAULT_CONFIG.offline.ruminator,
         ...rawConfig.offline?.ruminator,

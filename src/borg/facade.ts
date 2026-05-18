@@ -133,6 +133,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       "semantic-extractor": deps.config.offline.semanticExtractor.enabled,
       curator: deps.config.offline.curator.enabled,
       overseer: deps.config.offline.overseer.enabled,
+      "review-resolver": deps.config.offline.reviewResolver.enabled,
       ruminator: deps.config.offline.ruminator.enabled,
       "self-narrator": deps.config.offline.selfNarrator.enabled,
       "procedural-synthesizer": deps.config.offline.proceduralSynthesizer.enabled,

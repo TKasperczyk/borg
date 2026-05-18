@@ -200,6 +200,10 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
         ...DEFAULT_CONFIG.offline.overseer,
         ...options.config?.offline?.overseer,
       },
+      reviewResolver: {
+        ...DEFAULT_CONFIG.offline.reviewResolver,
+        ...options.config?.offline?.reviewResolver,
+      },
       ruminator: {
         ...DEFAULT_CONFIG.offline.ruminator,
         ...options.config?.offline?.ruminator,

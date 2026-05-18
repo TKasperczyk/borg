@@ -78,6 +78,14 @@ export type MetricsRow = {
   pending_action_merge_count: number;
   relational_slot_count_by_state: Record<RelationalSlotState, number>;
   review_queue_open_count_by_type: Record<ReviewKind, number>;
+  review_resolver_attempted?: number;
+  review_resolver_accepted?: number;
+  review_resolver_dismissed?: number;
+  review_resolver_rejected?: number;
+  review_resolver_needs_manual?: number;
+  review_queue_enqueued_this_turn?: number;
+  review_queue_resolved_this_turn?: number;
+  review_queue_drain_rate?: number | null;
   frame_anomaly_classifier_calls: number;
   frame_anomaly_classified_normal_count: number;
   frame_anomaly_actual_anomaly_count: number;

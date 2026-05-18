@@ -5,6 +5,7 @@ import { consolidatorPlanSchema } from "./consolidator/index.js";
 import { curatorPlanSchema } from "./curator/index.js";
 import { ruminatorPlanSchema } from "./ruminator/index.js";
 import { reflectorPlanSchema } from "./reflector/index.js";
+import { reviewResolverPlanSchema } from "./review-resolver/index.js";
 import { semanticExtractorProcessPlanSchema } from "./semantic-extractor/index.js";
 import { selfNarratorPlanSchema } from "./self-narrator/index.js";
 import { overseerPlanSchema } from "./overseer/index.js";
@@ -16,6 +17,7 @@ export const offlineProcessPlanSchema = z.discriminatedUnion("process", [
   semanticExtractorProcessPlanSchema,
   curatorPlanSchema,
   overseerPlanSchema,
+  reviewResolverPlanSchema,
   ruminatorPlanSchema,
   selfNarratorPlanSchema,
   proceduralSynthesizerPlanSchema,

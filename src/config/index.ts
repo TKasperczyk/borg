@@ -159,6 +159,7 @@ const maintenanceProcessSchema = z.enum([
   "semantic-extractor",
   "curator",
   "overseer",
+  "review-resolver",
   "ruminator",
   "self-narrator",
   "procedural-synthesizer",
@@ -330,6 +331,13 @@ const configBaseSchema = z.object({
           budget: z.number().int().positive().nullable().default(null),
         })
         .prefault({}),
+      reviewResolver: z
+        .object({
+          enabled: z.boolean().default(true),
+          maxItemsPerPass: z.number().int().positive().default(3),
+          budget: z.number().int().positive().nullable().default(null),
+        })
+        .prefault({}),
       ruminator: z
         .object({
           enabled: z.boolean().default(true),
@@ -386,6 +394,7 @@ const configBaseSchema = z.object({
         .default([
           "reflector",
           "overseer",
+          "review-resolver",
           "ruminator",
           "self-narrator",
           "procedural-synthesizer",

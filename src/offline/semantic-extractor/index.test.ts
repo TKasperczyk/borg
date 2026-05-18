@@ -106,6 +106,7 @@ function createProcessRegistry(
     "semantic-extractor",
     "curator",
     "overseer",
+    "review-resolver",
     "ruminator",
     "self-narrator",
     "procedural-synthesizer",

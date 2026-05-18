@@ -557,6 +557,10 @@ export async function selectScriptClients(options: {
         ...DEFAULT_CONFIG.offline.overseer,
         ...loaded.offline.overseer,
       },
+      reviewResolver: {
+        ...DEFAULT_CONFIG.offline.reviewResolver,
+        ...loaded.offline.reviewResolver,
+      },
       ruminator: {
         ...DEFAULT_CONFIG.offline.ruminator,
         ...loaded.offline.ruminator,

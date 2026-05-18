@@ -85,6 +85,7 @@ describe("Borg", () => {
           reflector: { enabled: false },
           curator: { enabled: false },
           overseer: { enabled: false },
+          reviewResolver: { enabled: false },
           ruminator: { enabled: false },
           selfNarrator: { enabled: false },
           proceduralSynthesizer: { enabled: false },

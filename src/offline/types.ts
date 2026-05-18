@@ -38,6 +38,7 @@ export const OFFLINE_PROCESS_NAMES = [
   "semantic-extractor",
   "curator",
   "overseer",
+  "review-resolver",
   "ruminator",
   "self-narrator",
   "procedural-synthesizer",

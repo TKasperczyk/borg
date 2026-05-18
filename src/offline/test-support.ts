@@ -320,6 +320,10 @@ export function createTestConfig(
         ...DEFAULT_CONFIG.offline.overseer,
         ...overrides.offline?.overseer,
       },
+      reviewResolver: {
+        ...DEFAULT_CONFIG.offline.reviewResolver,
+        ...overrides.offline?.reviewResolver,
+      },
       ruminator: {
         ...DEFAULT_CONFIG.offline.ruminator,
         ...overrides.offline?.ruminator,

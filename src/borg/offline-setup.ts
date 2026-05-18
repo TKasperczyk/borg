@@ -38,6 +38,7 @@ import {
   ProceduralSynthesizerProcess,
   ReflectorProcess,
   ReverserRegistry,
+  ReviewResolverProcess,
   RuminatorProcess,
   SemanticExtractorProcess,
   SelfNarratorProcess,
@@ -124,6 +125,10 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
     overseer: new OverseerProcess({
       reviewQueueRepository: options.reviewQueueRepository,
       registry: reverserRegistry,
+    }),
+    "review-resolver": new ReviewResolverProcess({
+      db: options.sqlite,
+      maxItemsPerPass: options.config.offline.reviewResolver.maxItemsPerPass,
     }),
     ruminator: new RuminatorProcess({
       openQuestionsRepository: options.openQuestionsRepository,

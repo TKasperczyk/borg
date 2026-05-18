@@ -130,6 +130,17 @@ type DecisionArtifactSemanticRevisionMetricCounts = Pick<
   | "decision_artifact_semantic_nodes_marked_contradicted"
 >;
 
+type ReviewResolverMetricCounts = {
+  review_resolver_attempted: number;
+  review_resolver_accepted: number;
+  review_resolver_dismissed: number;
+  review_resolver_rejected: number;
+  review_resolver_needs_manual: number;
+  review_queue_enqueued_this_turn: number;
+  review_queue_resolved_this_turn: number;
+  review_queue_drain_rate: number | null;
+};
+
 type ActionCandidateMetricCounts = Pick<
   MetricsRow,
   | "action_candidate_classifications_per_turn"
@@ -421,6 +432,48 @@ function decisionArtifactSemanticRevisionMetrics(
   };
 }
 
+function reviewResolverMetrics(traceRecords: readonly TraceRecord[]): ReviewResolverMetricCounts {
+  const completed = traceRecords.filter(
+    (record) => record.event === "review_resolver_pass_completed",
+  );
+  const reviewQueueDecisions = traceRecords.filter(
+    (record) => record.event === "review_queue_decision",
+  );
+  const enqueued = reviewQueueDecisions.filter((record) => record.decision === "enqueued").length;
+  const resolved = reviewQueueDecisions.filter(
+    (record) =>
+      record.decision === "auto_accepted" ||
+      record.decision === "manually_accepted" ||
+      record.decision === "rejected",
+  ).length;
+
+  return {
+    review_resolver_attempted: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "processed"),
+      0,
+    ),
+    review_resolver_accepted: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "accepted"),
+      0,
+    ),
+    review_resolver_dismissed: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "dismissed"),
+      0,
+    ),
+    review_resolver_rejected: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "rejected"),
+      0,
+    ),
+    review_resolver_needs_manual: completed.reduce(
+      (sum, record) => sum + traceNumber(record, "needs_manual"),
+      0,
+    ),
+    review_queue_enqueued_this_turn: enqueued,
+    review_queue_resolved_this_turn: resolved,
+    review_queue_drain_rate: enqueued === 0 ? null : resolved / enqueued,
+  };
+}
+
 function zeroCounts<K extends string>(keys: readonly K[]): Record<K, number> {
   return Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
 }
@@ -618,6 +671,7 @@ export class MetricsCapture {
   private readonly tracePath?: string;
   private previousSemanticNodeCount?: number;
   private previousSemanticEdgeCount?: number;
+  private previousTraceRecordCount = 0;
   private previousActionCreationCountsBySource: Record<ActionRecordCreationSource, number> =
     zeroActionCreationCounts();
   private readonly completedActionIdsSeen = new Set<ActionId>();
@@ -814,10 +868,9 @@ export class MetricsCapture {
     turnCounter: number,
     context: MetricsCaptureContext,
   ): Promise<MetricsRow> {
-    const traceRecords =
-      this.tracePath === undefined
-        ? []
-        : readTraceEvents(this.tracePath).filter((record) => record.turnId === turnId);
+    const allTraceRecords = this.tracePath === undefined ? [] : readTraceEvents(this.tracePath);
+    const traceRecords = allTraceRecords.filter((record) => record.turnId === turnId);
+    const traceRecordsSinceLastCapture = allTraceRecords.slice(this.previousTraceRecordCount);
     const usage = usageForTurn(traceRecords);
     const mood = borg.mood.current(context.sessionId);
     const episodeResult = await borg.episodic.list({ limit: LARGE_COUNT_LIMIT });
@@ -848,6 +901,7 @@ export class MetricsCapture {
     const goalPromotionMetricCounts = goalPromotionMetrics(traceRecords);
     const decisionArtifactSemanticRevisionMetricCounts =
       decisionArtifactSemanticRevisionMetrics(traceRecords);
+    const reviewResolverMetricCounts = reviewResolverMetrics(traceRecordsSinceLastCapture);
     await this.emitActionDuplicatePressureTrace({
       borg,
       turnId,
@@ -910,6 +964,14 @@ export class MetricsCapture {
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
       review_queue_open_count_by_type: memoryBandMetrics.review_queue_open_count_by_type,
+      review_resolver_attempted: reviewResolverMetricCounts.review_resolver_attempted,
+      review_resolver_accepted: reviewResolverMetricCounts.review_resolver_accepted,
+      review_resolver_dismissed: reviewResolverMetricCounts.review_resolver_dismissed,
+      review_resolver_rejected: reviewResolverMetricCounts.review_resolver_rejected,
+      review_resolver_needs_manual: reviewResolverMetricCounts.review_resolver_needs_manual,
+      review_queue_enqueued_this_turn: reviewResolverMetricCounts.review_queue_enqueued_this_turn,
+      review_queue_resolved_this_turn: reviewResolverMetricCounts.review_queue_resolved_this_turn,
+      review_queue_drain_rate: reviewResolverMetricCounts.review_queue_drain_rate,
       frame_anomaly_classifier_calls: frameAnomalyMetricCounts.frame_anomaly_classifier_calls,
       frame_anomaly_classified_normal_count:
         frameAnomalyMetricCounts.frame_anomaly_classified_normal_count,
@@ -950,6 +1012,7 @@ export class MetricsCapture {
 
     this.previousSemanticNodeCount = semanticNodes.length;
     this.previousSemanticEdgeCount = semanticEdges.length;
+    this.previousTraceRecordCount = allTraceRecords.length;
     this.previousActionCreationCountsBySource = actionCreationCountsFromRepository(borg);
     appendJsonlLine(this.filepath, `${JSON.stringify(row)}\n`);
     this.recordHealthWarnings(row);
@@ -989,6 +1052,7 @@ export class MetricsCapture {
     const decisionArtifactSemanticRevisionMetricCounts = decisionArtifactSemanticRevisionMetrics(
       [],
     );
+    const reviewResolverMetricCounts = reviewResolverMetrics([]);
     const row: MetricsRow = {
       event,
       ts: Date.now(),
@@ -1039,6 +1103,14 @@ export class MetricsCapture {
       pending_action_merge_count: memoryBandMetrics.pending_action_merge_count,
       relational_slot_count_by_state: memoryBandMetrics.relational_slot_count_by_state,
       review_queue_open_count_by_type: memoryBandMetrics.review_queue_open_count_by_type,
+      review_resolver_attempted: reviewResolverMetricCounts.review_resolver_attempted,
+      review_resolver_accepted: reviewResolverMetricCounts.review_resolver_accepted,
+      review_resolver_dismissed: reviewResolverMetricCounts.review_resolver_dismissed,
+      review_resolver_rejected: reviewResolverMetricCounts.review_resolver_rejected,
+      review_resolver_needs_manual: reviewResolverMetricCounts.review_resolver_needs_manual,
+      review_queue_enqueued_this_turn: reviewResolverMetricCounts.review_queue_enqueued_this_turn,
+      review_queue_resolved_this_turn: reviewResolverMetricCounts.review_queue_resolved_this_turn,
+      review_queue_drain_rate: reviewResolverMetricCounts.review_queue_drain_rate,
       frame_anomaly_classifier_calls: frameAnomalyMetricCounts.frame_anomaly_classifier_calls,
       frame_anomaly_classified_normal_count:
         frameAnomalyMetricCounts.frame_anomaly_classified_normal_count,
